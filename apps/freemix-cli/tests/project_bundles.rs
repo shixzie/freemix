@@ -97,7 +97,7 @@ fn media_uri(project: &StoredProject, id: u128) -> String {
         .find(|candidate| candidate.id == input(id))
         .unwrap_or_else(|| panic!("input {id} is missing"));
     match &input.kind {
-        InputKind::Media { asset_uri } => asset_uri.clone(),
+        InputKind::Media { asset_uri, .. } => asset_uri.clone(),
         other => panic!("input {id} is not media: {other:?}"),
     }
 }

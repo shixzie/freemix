@@ -170,7 +170,7 @@ fn export_bundle(
     let mut project = stored.project().clone();
     let mut rewritten_inputs = Vec::new();
     for input in stored.project().inputs() {
-        if let InputKind::Media { asset_uri: uri } = &input.kind
+        if let InputKind::Media { asset_uri: uri, .. } = &input.kind
             && let Some(bundled) = mapping.get(uri.as_str())
             && bundled != uri
         {
@@ -222,7 +222,7 @@ fn portable_mapping(
         .map(|uri| (uri.clone(), String::new()))
         .collect::<BTreeMap<_, _>>();
     for input in stored.project().inputs() {
-        if let InputKind::Media { asset_uri: uri } = &input.kind {
+        if let InputKind::Media { asset_uri: uri, .. } = &input.kind {
             uris.insert(uri.clone(), String::new());
         }
     }

@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.36\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.37\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -94,8 +94,8 @@ fn base64url(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn protocol_version_is_2_36() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 36));
+fn protocol_version_is_2_37() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 37));
 }
 
 #[test]
@@ -437,7 +437,7 @@ fn snapshot_grade_state_count_is_bounded() {
 
     let line = encode_line(&sample_snapshot()).unwrap();
     assert!(
-        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\n"),
+        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\n"),
         "{line}"
     );
     let over = line.replace(
@@ -505,6 +505,7 @@ fn sample_snapshot() -> WireMessage {
         playlist_follows: false,
         grade_states: 0,
         animation_preset_states: 0,
+        media_states: 0,
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     })
 }

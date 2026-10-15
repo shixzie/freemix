@@ -510,6 +510,7 @@ pub(super) fn run(
         title_previews: &title_previews,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
+        media_clock: std::cell::RefCell::new(crate::media_clock::MediaClock::default()),
         grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
     };
     let mut native = native;
@@ -678,11 +679,35 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
+        if native.is_none()
+            && let Err(error) = runtime.media_clock.borrow_mut().poll(
+                &mut control.borrow_mut(),
+                authority,
+                durable.project().settings().frame_rate,
+                Instant::now(),
+            )
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority)
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        if let Err(error) = crate::media_clock::feed_end_triggers(
+            control,
+            store,
+            durable,
+            authority,
+            native.as_deref_mut(),
+            Some(process_shutdown),
+        ) {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
         if let Some(native) = native.as_deref_mut() {
-            if let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority) {
-                shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
-                return Err(error);
-            }
             if let Some(progress) = progress.as_mut() {
                 progress.poll(control, store, durable);
             }
@@ -927,6 +952,8 @@ struct Runtime<'a> {
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
+    /// Simulated runtime: plays media transports in wall time.
+    media_clock: std::cell::RefCell<crate::media_clock::MediaClock>,
     /// Compiled grades per engine revision for exact scene previews.
     grade_cache: std::cell::RefCell<crate::grading::GradeCache>,
 }
@@ -1219,6 +1246,12 @@ impl Runtime<'_> {
                     .animation_preset_states()
                     .into_iter()
                     .map(WireMessage::AnimationPresetState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .media_states()
+                    .into_iter()
+                    .map(WireMessage::MediaState),
             );
         }
     }

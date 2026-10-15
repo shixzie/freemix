@@ -1689,6 +1689,13 @@ pub enum CommandPayload {
         preset: NonZeroU32,
         frames: u32,
     },
+    /// Controls a media-file input (Protocol 2.37, IN-003). Wire payloads
+    /// `media_<operation token>`. Transport operations are operator
+    /// controls; the others edit the input's persisted playback settings.
+    Media {
+        input: WireInputId,
+        operation: crate::MediaOperation,
+    },
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2072,11 +2079,16 @@ pub struct SnapshotMessage {
     /// its title states and playlist state), at most [`MAX_GRADE_STATES`].
     pub grade_states: u16,
     /// How many [`AnimationPresetStateMessage`] records follow this
-    /// snapshot (after every other follow-on record), at most
+    /// snapshot (after its scene layout states), at most
     /// [`MAX_ANIMATION_PRESETS`] (Protocol 2.34).
     pub animation_preset_states: u16,
     /// The favourite transition buttons, slot 1 first (Protocol 2.36).
     pub transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
+    /// How many [`crate::MediaStateMessage`] records follow this snapshot
+    /// (after its animation preset states), one per media input in
+    /// ascending input order, at most [`crate::MAX_MEDIA_STATES`] (Protocol
+    /// 2.37).
+    pub media_states: u16,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2195,6 +2207,13 @@ pub enum EventPayload {
         slot: u8,
         favorite: TransitionFavoriteStatus,
     },
+    /// A media command was accepted for `frame` (Protocol 2.37): the
+    /// operation and the input's complete status projected onto `frame`.
+    MediaChanged {
+        frame: u64,
+        operation: crate::MediaOperation,
+        status: Box<crate::MediaStatus>,
+    },
 }
 
 /// One durable revision.
@@ -2265,6 +2284,14 @@ pub enum RuntimeLifecycleEvent {
     },
     Superseded {
         by_revision: u64,
+    },
+    /// A media input's transport changed on `frame` (Protocol 2.37): what
+    /// happened (possibly nothing, for a periodic position sample) and the
+    /// input's complete status afterwards.
+    Media {
+        frame: u64,
+        events: Vec<crate::MediaEvent>,
+        status: Box<crate::MediaStatus>,
     },
 }
 
@@ -2548,4 +2575,5 @@ pub enum WireMessage {
     ScenePreviewRequest(ScenePreviewRequest),
     ScenePreviewFrame(ScenePreviewFrameMessage),
     AnimationPresetState(AnimationPresetStateMessage),
+    MediaState(crate::MediaStateMessage),
 }

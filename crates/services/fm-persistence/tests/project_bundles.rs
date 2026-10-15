@@ -102,6 +102,7 @@ fn media(id: u128, name: &str, uri: &str) -> Input {
         name: name.into(),
         kind: InputKind::Media {
             asset_uri: uri.into(),
+            playback: fm_model::MediaPlaybackSettings::default(),
         },
         required_capabilities: Vec::new(),
     }
@@ -149,7 +150,7 @@ fn uri_of(project: &StoredProject, input: u128) -> &str {
         .unwrap()
         .kind
     {
-        InputKind::Media { asset_uri } => asset_uri,
+        InputKind::Media { asset_uri, .. } => asset_uri,
         other => panic!("input {input} is not media: {other:?}"),
     }
 }

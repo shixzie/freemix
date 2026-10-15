@@ -144,6 +144,8 @@ pub struct ShowState {
     luts: BTreeMap<LutId, EngineLut>,
     animation_presets: fm_model::AnimationPresetLibrary,
     transition_favorites: fm_model::TransitionFavorites,
+    /// Every media input's playback settings (IN-003).
+    media: BTreeMap<InputId, fm_model::MediaPlaybackSettings>,
 }
 
 impl ShowState {
@@ -212,6 +214,7 @@ impl ShowState {
             luts: BTreeMap::new(),
             animation_presets: fm_model::AnimationPresetLibrary::default(),
             transition_favorites: fm_model::TransitionFavorites::default(),
+            media: BTreeMap::new(),
         })
     }
 
@@ -449,6 +452,7 @@ impl ShowState {
         self.titles.remove(&input);
         self.scene_inputs.remove(&input);
         self.grading.inputs.remove(&input);
+        self.media.remove(&input);
         Ok(())
     }
 
@@ -770,6 +774,54 @@ impl ShowState {
         }
         self.animation_presets = library;
         Ok(())
+    }
+
+    /// Makes `input` a media input with `settings`, replacing any settings
+    /// it already had.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when the input is outside this
+    /// show and [`ShowError::InvalidMediaPlayback`] for out-of-bounds
+    /// settings.
+    pub fn set_media_input(
+        &mut self,
+        input: InputId,
+        settings: fm_model::MediaPlaybackSettings,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        settings
+            .validate()
+            .map_err(|error| ShowError::InvalidMediaPlayback(input, error))?;
+        self.media.insert(input, settings);
+        Ok(())
+    }
+
+    /// Media input `input`'s playback settings, or `None` when `input` is
+    /// not a media input.
+    #[must_use]
+    pub fn media_settings(&self, input: InputId) -> Option<&fm_model::MediaPlaybackSettings> {
+        self.media.get(&input)
+    }
+
+    /// Every media input's playback settings, ascending by input.
+    #[must_use]
+    pub const fn media_inputs(&self) -> &BTreeMap<InputId, fm_model::MediaPlaybackSettings> {
+        &self.media
+    }
+
+    /// Replaces an existing media input's settings (validated by the
+    /// accepting command).
+    pub(crate) fn set_media_settings(
+        &mut self,
+        input: InputId,
+        settings: fm_model::MediaPlaybackSettings,
+    ) {
+        if let Some(current) = self.media.get_mut(&input) {
+            *current = settings;
+        }
     }
 
     pub(crate) const fn animation_presets_mut(&mut self) -> &mut fm_model::AnimationPresetLibrary {

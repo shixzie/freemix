@@ -11,14 +11,15 @@ use crate::{
     EventCursor, EventMessage, EventPayload, FadeToBlackState, GradeChange, GradeEntry,
     GradeStateMessage, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus, LiveInputSource,
-    MAX_ANIMATION_PRESETS, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind,
-    ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, PlaylistOperation,
-    PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage,
-    ScenePreviewRequest, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
-    TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
+    MAX_ANIMATION_PRESETS, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, MAX_MEDIA_STATES,
+    ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus,
+    PlaylistOperation, PlaylistStateMessage, ResumeCursor, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, SceneAnimationStateMessage,
+    SceneLayoutStateMessage, ScenePreviewRequest, ServerIdentity, SnapshotMessage, SnapshotReason,
+    StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness, StingerStatus,
+    StreamStatusMessage, StructuredError, TitleAnimationStateMessage, TitleFieldUpdate,
+    TitleLayoutStateMessage, TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage,
+    WireGradeSource, WireMessage,
 };
 
 use super::animation::{
@@ -31,6 +32,10 @@ use super::grade::{
     validate_preset_name,
 };
 use super::layout::encode_layout_elements;
+use super::media::{
+    encode_media_events, encode_media_operation_fields, encode_media_status, event_operation_field,
+    media_payload_name,
+};
 use super::playlist::{
     encode_frame_rate, encode_optional_entry, encode_playlist_entries, encode_playlist_start,
     encode_playlist_state, playlist_loop,
@@ -121,6 +126,14 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::AnimationPresetState(message) => {
             encode_animation_preset_state(&mut record, message)?;
+        }
+        WireMessage::MediaState(message) => {
+            record.kind("media_state");
+            record.field("revision", message.revision)?;
+            record.field("frame", message.frame)?;
+            encode_media_status(&message.status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
         }
     }
     record.finish()
@@ -296,6 +309,13 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "transition")?;
             record.field("kind", kind.token())?;
             record.field("duration_frames", duration_frames)?;
+        }
+        CommandPayload::Media { input, operation } => {
+            record.field("payload", media_payload_name(*operation))?;
+            record.field("input", input)?;
+            encode_media_operation_fields(*operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
         }
         CommandPayload::SetTransitionFavorite { slot, favorite } => {
             record.field("payload", "transition_favorite_set")?;
@@ -1265,7 +1285,14 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "transition_favorites",
         encode_favorites(&message.transition_favorites)?,
-    )
+    )?;
+    if message.media_states > MAX_MEDIA_STATES {
+        return Err(CodecError::InvalidField {
+            field: "media_states",
+            value: message.media_states.to_string(),
+        });
+    }
+    record.field("media_states", message.media_states)
 }
 
 /// Writes a grade source as `library=<id>` or `grade=<grade>`.
@@ -1812,6 +1839,19 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::AnimationPresetChanged(change) => {
             encode_animation_preset_changed(record, change)?;
         }
+        EventPayload::MediaChanged {
+            frame,
+            operation,
+            status,
+        } => {
+            record.field("event", "media_changed")?;
+            record.field("frame", frame)?;
+            record.field("operation", operation.token())?;
+            encode_media_operation_fields(*operation, &mut |name, value| {
+                record.field_string(event_operation_field(name), value)
+            })?;
+            encode_media_status(status, &mut |name, value| record.field_string(name, value))?;
+        }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)
 }
@@ -2003,6 +2043,16 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::Superseded { by_revision } => {
             record.field("event", "superseded")?;
             record.field("by_revision", by_revision)?;
+        }
+        RuntimeLifecycleEvent::Media {
+            frame,
+            events,
+            status,
+        } => {
+            record.field("event", "media")?;
+            record.field("frame", frame)?;
+            record.field_string("media_events", encode_media_events(events)?)?;
+            encode_media_status(status, &mut |name, value| record.field_string(name, value))?;
         }
     }
     Ok(())

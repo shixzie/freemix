@@ -597,6 +597,7 @@ fn native_daemon_hot_replaces_audible_local_stinger_pool() {
         name: "Audible Stinger replacement".into(),
         kind: InputKind::Media {
             asset_uri: "asset://stinger.mov".into(),
+            playback: fm_model::MediaPlaybackSettings::default(),
         },
         required_capabilities: Vec::new(),
     });
@@ -3698,6 +3699,7 @@ fn prepare_stinger_project(project_path: &Path) -> Result<(), String> {
         name: "Stinger media".into(),
         kind: InputKind::Media {
             asset_uri: "asset://stinger.mkv".into(),
+            playback: fm_model::MediaPlaybackSettings::default(),
         },
         required_capabilities: Vec::new(),
     });
@@ -3742,6 +3744,7 @@ fn prepare_audible_stinger_project(project_path: &Path) -> Result<(), String> {
         name: "Audible Stinger media".into(),
         kind: InputKind::Media {
             asset_uri: "asset://stinger.mov".into(),
+            playback: fm_model::MediaPlaybackSettings::default(),
         },
         required_capabilities: Vec::new(),
     });
@@ -4527,6 +4530,7 @@ fn save_media_project(path: &Path, first_uri: &str, second_uri: &str, recording_
             name: format!("Media {id}"),
             kind: InputKind::Media {
                 asset_uri: uri.into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
             },
             required_capabilities: Vec::new(),
         });

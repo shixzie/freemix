@@ -1,6 +1,7 @@
 mod animation_preset;
 mod cycles;
 mod grade;
+mod media_playback;
 mod playlist;
 mod project;
 mod resolve;
@@ -20,6 +21,14 @@ pub use grade::{
     MAX_LUT_NAME_BYTES, MAX_PROJECT_GRADES, MAX_PROJECT_LAYER_GRADES, MAX_PROJECT_LUTS,
     ProjectGrade, ProjectGrading, ProjectLut, SceneLayerRef, lut_asset_key, lut_asset_uri,
     lut_id_from_uri, next_free_id,
+};
+pub use media_playback::{
+    DEFAULT_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_FRAME,
+    MAX_MEDIA_IDLE_COMPLETION_REFRESHES, MAX_MEDIA_LIVE_EDGE_OFFSET_FRAMES,
+    MAX_MEDIA_SPEED_BASIS_POINTS, MEDIA_SPEED_NORMAL_BASIS_POINTS,
+    MIN_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MIN_MEDIA_SPEED_BASIS_POINTS, MediaAudioSpeedPolicy,
+    MediaEndAction, MediaGrowing, MediaPlaybackSettings, MediaPlaybackSettingsError,
+    SetMediaPlaybackError,
 };
 pub use playlist::{
     MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES, Playlist,

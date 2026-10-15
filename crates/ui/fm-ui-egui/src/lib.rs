@@ -25,7 +25,9 @@ use fm_protocol::{
     StreamStatusMessage, TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId,
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
-use fm_protocol::{AutoTransitionKind, OverlayTransitionKind, TransitionFavoriteStatus};
+use fm_protocol::{
+    AutoTransitionKind, MediaOperation, OverlayTransitionKind, TransitionFavoriteStatus,
+};
 use fm_types::{InputId, OutputId};
 use fm_ui_model::grade_editor::GradeCommand;
 use fm_ui_model::i18n::{Locale, Msg};
@@ -45,6 +47,7 @@ pub mod hover_audit;
 mod input_bank;
 mod input_catalogue;
 mod l10n;
+mod media_transport;
 mod menu;
 mod meter_ballistics;
 mod mixer;
@@ -78,6 +81,9 @@ pub use input_catalogue::{
     CatalogueAvailability, CatalogueRefusal, CatalogueRequest, MAX_LIVE_INPUTS, NewInputKind,
     add_input_availability, catalogue_refusal_message, input_in_use_detail, input_name_problem,
     input_usage_reason, next_free_input_id, remove_input_availability, suggested_input_name,
+};
+pub use media_transport::{
+    MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
 };
 pub use menu::ConsoleLayout;
 pub use playlist::{
@@ -261,6 +267,12 @@ pub enum StudioIntent {
     Title(TitleCommand),
     /// Sends one playlist command: a list edit or transport.
     Playlist(PlaylistIntent),
+    /// Drives one media-file input's transport (operator control) or edits
+    /// its persisted playback settings (project edit) (Protocol 2.37).
+    Media {
+        input: InputId,
+        operation: MediaOperation,
+    },
     /// Sends one grade command from the Colour window: a target's grade,
     /// a library save, or a LUT import.
     Grade(GradeCommand),

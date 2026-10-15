@@ -641,8 +641,11 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
         InputKind::Color => {
             output.push_str("{\"type\": \"color\"}");
         }
-        InputKind::Media { asset_uri } => {
-            write_string_variant(output, "media", "asset_uri", asset_uri);
+        InputKind::Media {
+            asset_uri,
+            playback,
+        } => {
+            super::media_playback::write_media_input(output, asset_uri, playback);
         }
         InputKind::Device { stable_key } => {
             write_string_variant(output, "device", "stable_key", stable_key);

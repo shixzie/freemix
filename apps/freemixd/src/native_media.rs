@@ -2357,9 +2357,25 @@ impl From<SinkConfigError> for NativeMasterError {
     }
 }
 
+/// Audio a frame-driven producer hands the Master for each engine frame
+/// instead of a decoded stream: a transport-controlled media file (IN-003),
+/// whose samples follow the engine's seeks, loops, and rate.
+#[derive(Debug, Default)]
+struct PushedAudio {
+    /// Each frame's planes in the Master channel layout at the producer's
+    /// sample rate, by engine frame, oldest first.
+    frames: BTreeMap<u64, Vec<Vec<f32>>>,
+}
+
+/// Engine frames of pushed audio a source holds at most; older ones drop.
+const MAX_PUSHED_AUDIO_FRAMES: usize = 8;
+
 #[derive(Debug)]
 struct NativeAudioSource {
     explicit_silence: bool,
+    /// `Some` for a pushed source (see [`PushedAudio`]), which never has a
+    /// synchronizer.
+    pushed: Option<PushedAudio>,
     synchronizer: Option<ClockMappedAudioSynchronizer>,
     timeline_origin: AudioCadenceOrigin,
     next_sample: u64,
@@ -2378,6 +2394,7 @@ impl NativeAudioSource {
     fn silence() -> Self {
         Self {
             explicit_silence: true,
+            pushed: None,
             synchronizer: None,
             timeline_origin: AudioCadenceOrigin::new(NormalizedTimestamp::from_nanos(0), 0),
             next_sample: 0,
@@ -2405,6 +2422,7 @@ impl NativeAudioSource {
         let restart_sample = synchronizer.source_origin().sample_index();
         Self {
             explicit_silence: false,
+            pushed: None,
             synchronizer: Some(synchronizer),
             timeline_origin,
             next_sample: page.next_sample,
@@ -3290,6 +3308,74 @@ impl NativeMasterRuntime {
         Ok(())
     }
 
+    /// Turns silent input `input` into a pushed source: from now on each
+    /// realized frame mixes the audio [`Self::push_frame_audio`] handed it
+    /// for exactly that frame, or silence when none arrived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeMasterError::DecodeContract`] for an input that is
+    /// not a silent source of this Master.
+    pub fn attach_pushed_audio(&mut self, input: InputId) -> Result<(), NativeMasterError> {
+        let channels = self.format.channels.channels().len();
+        let capacity = self.scratch.mix.first().map_or(0, Vec::len);
+        let source = self
+            .sources
+            .get_mut(&input)
+            .ok_or(NativeMasterError::DecodeContract { input })?;
+        if !source.explicit_silence || source.synchronizer.is_some() {
+            return Err(NativeMasterError::DecodeContract { input });
+        }
+        source.explicit_silence = false;
+        source.pushed = Some(PushedAudio::default());
+        self.scratch
+            .rendered
+            .insert(input, vec![vec![0.0; capacity]; channels]);
+        Ok(())
+    }
+
+    /// Hands pushed source `input` its audio for engine frame `frame`.
+    ///
+    /// The block's channels map onto the Master layout (mono feeds every
+    /// channel; otherwise channel `n` feeds channel `n` and missing channels
+    /// are silent); rendering resamples linearly to the frame's Master
+    /// sample count when the block's differs. Only the newest
+    /// [`MAX_PUSHED_AUDIO_FRAMES`] frames are kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeMasterError::DecodeContract`] for an input that is
+    /// not a pushed source.
+    pub fn push_frame_audio(
+        &mut self,
+        input: InputId,
+        frame: u64,
+        block: &AudioBlock,
+    ) -> Result<(), NativeMasterError> {
+        let channels = self.format.channels.channels().len();
+        let pushed = self
+            .sources
+            .get_mut(&input)
+            .and_then(|source| source.pushed.as_mut())
+            .ok_or(NativeMasterError::DecodeContract { input })?;
+        let planes = block.planes();
+        let samples = block.sample_count();
+        let mapped = (0..channels)
+            .map(|channel| match planes.len() {
+                1 => planes[0].clone(),
+                _ => planes
+                    .get(channel)
+                    .cloned()
+                    .unwrap_or_else(|| vec![0.0; samples]),
+            })
+            .collect();
+        pushed.frames.insert(frame, mapped);
+        while pushed.frames.len() > MAX_PUSHED_AUDIO_FRAMES {
+            pushed.frames.pop_first();
+        }
+        Ok(())
+    }
+
     /// Takes the latest completed native Master meter interval.
     pub fn take_audio_meters(&mut self) -> Option<NativeAudioMeters<'_>> {
         let (frame, start_sample, end_sample) = self.scratch.meter_frame.take()?;
@@ -3533,7 +3619,10 @@ impl NativeMasterRuntime {
         self.scratch.uncovered.clear();
         self.scratch.padding_requests.clear();
         for (&input, source) in &mut self.sources {
-            if source.explicit_silence || end_sample <= source.audio_start_master_sample {
+            if source.explicit_silence
+                || source.pushed.is_some()
+                || end_sample <= source.audio_start_master_sample
+            {
                 continue;
             }
             let render_start = start_sample.max(source.audio_start_master_sample);
@@ -3780,7 +3869,7 @@ impl NativeMasterRuntime {
             .sources
             .get(&input)
             .ok_or(NativeMasterError::DecodeContract { input })?;
-        if source.explicit_silence {
+        if source.explicit_silence || source.pushed.is_some() {
             return Ok(None);
         }
         let synchronizer = source
@@ -4071,6 +4160,27 @@ impl NativeMasterRuntime {
             for plane in &mut *output {
                 plane[..samples].fill(0.0);
             }
+            if let Some(pushed) = source.pushed.as_mut() {
+                while pushed
+                    .frames
+                    .first_key_value()
+                    .is_some_and(|(&pushed_frame, _)| pushed_frame < actual)
+                {
+                    pushed.frames.pop_first();
+                }
+                if let Some(planes) = pushed.frames.remove(&actual) {
+                    for (plane, input_plane) in output.iter_mut().zip(planes) {
+                        if input_plane.len() == samples {
+                            plane[..samples].copy_from_slice(&input_plane);
+                        } else {
+                            plane[..samples].copy_from_slice(
+                                &fm_engine::fm_playback::resample_linear(&input_plane, samples),
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
             if end_sample <= source.audio_start_master_sample {
                 continue;
             }
@@ -4117,6 +4227,7 @@ impl NativeMasterRuntime {
                 &self.scratch.rendered,
                 &mut self.scratch.mix,
                 self.format.sample_rate,
+                &self.format.channels,
                 &mut self.scratch.master_meters,
                 &mut self.scratch.input_meters,
             )?;
@@ -4127,6 +4238,7 @@ impl NativeMasterRuntime {
                 strip_plan.primary_gain,
                 samples,
                 self.format.sample_rate,
+                &self.format.channels,
                 &self.sources,
                 &self.scratch.rendered,
             )?;
@@ -4139,6 +4251,7 @@ impl NativeMasterRuntime {
                         gain,
                         samples,
                         self.format.sample_rate,
+                        &self.format.channels,
                         &self.sources,
                         &self.scratch.rendered,
                     )
@@ -5019,6 +5132,7 @@ fn mix_project_audio_strips(
     rendered: &BTreeMap<InputId, Vec<Vec<f32>>>,
     output: &mut [Vec<f32>],
     sample_rate: fm_types::SampleRate,
+    master_layout: &fm_types::ChannelLayout,
     master_meters: &mut [ChannelMeter],
     input_meters: &mut [ChannelMeter],
 ) -> Result<(), NativeMasterError> {
@@ -5033,6 +5147,7 @@ fn mix_project_audio_strips(
             logical_source_gain(program, logical),
             samples,
             sample_rate,
+            master_layout,
             sources,
             rendered,
         )?;
@@ -5064,6 +5179,7 @@ fn mix_project_audio_strips(
             logical_source_gain(program, logical),
             samples,
             sample_rate,
+            master_layout,
             sources,
             rendered,
         )?
@@ -5087,12 +5203,14 @@ fn mix_project_audio_strips(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn planar_audio_submission<'a>(
     logical: InputId,
     physical: InputId,
     source_gain: SourceGain,
     samples: usize,
     sample_rate: fm_types::SampleRate,
+    master_layout: &'a fm_types::ChannelLayout,
     sources: &'a BTreeMap<InputId, NativeAudioSource>,
     rendered: &'a BTreeMap<InputId, Vec<Vec<f32>>>,
 ) -> Result<Option<PlanarAudioSource<'a>>, NativeMasterError> {
@@ -5102,17 +5220,18 @@ fn planar_audio_submission<'a>(
     if source.explicit_silence {
         return Ok(None);
     }
-    let synchronizer = source
-        .synchronizer
-        .as_ref()
-        .ok_or(NativeMasterError::DecodeContract { input: physical })?;
+    let channel_layout = match (&source.synchronizer, &source.pushed) {
+        (Some(synchronizer), _) => synchronizer.channel_layout(),
+        (None, Some(_)) => master_layout,
+        (None, None) => return Err(NativeMasterError::DecodeContract { input: physical }),
+    };
     let planes = rendered
         .get(&physical)
         .ok_or(NativeMasterError::DecodeContract { input: physical })?;
     Ok(Some(PlanarAudioSource {
         input: logical,
         sample_rate,
-        channel_layout: synchronizer.channel_layout(),
+        channel_layout,
         planes,
         samples,
         source_gain,
@@ -8324,6 +8443,7 @@ mod tests {
             input_audio_strip_updates: Vec::new(),
             titles: Vec::new(),
             scenes: Vec::new(),
+            media: Vec::new(),
             frame: FrameNumber::new(frame),
             deadline: ClockTime::ZERO,
             program: ProgramFrame {
@@ -10491,6 +10611,59 @@ mod tests {
             .render_frame_audio(&frame_result(0, source_id, None))
             .unwrap();
         assert_eq!(block.plane(0).unwrap(), &[0.1, 0.2, 0.3, 0.0]);
+    }
+
+    /// IN-003: a pushed source mixes exactly the audio handed it for each
+    /// realized frame, resampled to the frame's Master sample count, and
+    /// silence for a frame nothing was pushed for; it never decodes.
+    #[test]
+    fn pushed_sources_mix_each_frames_audio_and_silence_when_absent() {
+        let source_id = input(1);
+        let mut master = silent_test_master(source_id, 4);
+        master.frame_rate = FrameRate::new(12_000, 1).unwrap();
+        master.attach_pushed_audio(source_id).unwrap();
+        assert!(matches!(
+            master.attach_pushed_audio(source_id),
+            Err(NativeMasterError::DecodeContract { .. })
+        ));
+        let format = master.format.clone();
+        let domain = master.clock_domain;
+        master
+            .push_frame_audio(
+                source_id,
+                0,
+                &audio_block(0, 0, &[0.0, 1.0], &format, domain),
+            )
+            .unwrap();
+        master
+            .push_frame_audio(
+                source_id,
+                2,
+                &audio_block(1, 8, &[0.5, 0.25, -0.25, -0.5], &format, domain),
+            )
+            .unwrap();
+        let mut rendered = Vec::new();
+        for frame in 0..3 {
+            assert!(master.service_next_frame().unwrap());
+            let block = master
+                .render_frame_audio(&frame_result(frame, source_id, None))
+                .unwrap();
+            rendered.push(block.plane(0).unwrap().to_vec());
+        }
+        assert_eq!(
+            rendered[0],
+            fm_engine::fm_playback::resample_linear(&[0.0, 1.0], 4)
+        );
+        assert_eq!(rendered[1], [0.0; 4]);
+        assert_eq!(rendered[2], [0.5, 0.25, -0.25, -0.5]);
+        assert!(
+            master.sources[&source_id]
+                .pushed
+                .as_ref()
+                .unwrap()
+                .frames
+                .is_empty()
+        );
     }
 
     #[test]

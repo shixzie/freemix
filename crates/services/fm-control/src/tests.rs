@@ -5099,3 +5099,199 @@ fn overlay_motion_transitions_replicate_and_take_their_duration() {
         7
     );
 }
+
+fn media_service() -> ControlService {
+    let mut show = ShowState::new(
+        "media show",
+        named_inputs([input(1), input(2)]),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    show.set_media_input(input(2), fm_model::MediaPlaybackSettings::default())
+        .unwrap();
+    let rate = FrameRate::new(25, 1).unwrap();
+    let mut engine = Engine::new(show, rate, ClockDomainId::new(NonZeroU128::new(1).unwrap()));
+    engine
+        .set_media_source(
+            input(2),
+            Some(fm_engine::EngineMediaSource::synthetic(
+                &fm_model::MediaPlaybackSettings::default(),
+                rate,
+            )),
+        )
+        .unwrap();
+    ControlService::new(
+        engine,
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 64,
+            max_subscribers: 4,
+            subscriber_queue: 256,
+        },
+    )
+}
+
+/// IN-003, Protocol 2.37: media transport is an operator control, media
+/// settings are project edits; accepted commands publish `media_changed`
+/// with the projected status, snapshots announce one `media_state` per media
+/// input, and ticks publish `media` runtime events for what happened plus a
+/// position sample each second.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn media_commands_states_and_runtime_events_propagate_exactly() {
+    use fm_protocol::{
+        MediaEndAction, MediaEvent, MediaOperation, MediaSeekTarget, MediaTransportState,
+    };
+
+    let mut control = media_service();
+    let clip = WireInputId::from_domain(input(2));
+    assert_eq!(control.snapshot().snapshot.media_states, 1);
+    let states = control.media_states();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].status.input, clip);
+    assert!(states[0].status.transport.available);
+    assert_eq!(states[0].status.transport.frames, 250);
+
+    let play = CommandPayload::Media {
+        input: clip,
+        operation: MediaOperation::Play,
+    };
+    assert_eq!(
+        control.required_classes(&play).primary(),
+        CommandClass::Transition
+    );
+    let loop_end = CommandPayload::Media {
+        input: clip,
+        operation: MediaOperation::EndAction(MediaEndAction::Loop),
+    };
+    assert_eq!(
+        control.required_classes(&loop_end).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            command("o", "o", loop_end.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    let looped = control
+        .submit(&principal(Role::Graphics), command("l", "l", loop_end), 0)
+        .unwrap();
+    assert!(looped.is_accepted(), "{:?}", looped.output.result);
+    assert_wire_exact(&control, &looped);
+    control.tick(&server_identity()).unwrap();
+
+    let subscription = control.subscribe().unwrap();
+    let played = control
+        .submit(&principal(Role::Operator), command("p", "p", play), 0)
+        .unwrap();
+    assert!(played.is_accepted(), "{:?}", played.output.result);
+    assert_wire_exact(&control, &played);
+    let EventPayload::MediaChanged {
+        frame,
+        operation,
+        status,
+    } = &played.output.events[0].payload
+    else {
+        panic!("{:?}", played.output.events[0].payload)
+    };
+    assert_eq!((*frame, *operation), (1, MediaOperation::Play));
+    assert_eq!(status.transport.state, MediaTransportState::Playing);
+    assert_eq!(status.settings.end_action, MediaEndAction::Loop);
+
+    // The first frame publishes the realized command and the state change;
+    // then a position sample each second.
+    let mut media_events = Vec::new();
+    for _ in 0..60 {
+        let tick = control.tick(&server_identity()).unwrap();
+        for event in tick.runtime_events {
+            let message = WireMessage::RuntimeEvent(event.clone());
+            let line = fm_protocol::encode_line(&message).unwrap();
+            assert_eq!(fm_protocol::decode_line(&line).unwrap(), message);
+            if let RuntimeLifecycleEvent::Media { frame, status, .. } = event.event {
+                media_events.push((frame, status.transport.position));
+            }
+        }
+    }
+    assert_eq!(media_events, [(1, 1), (25, 25), (50, 50)]);
+    let mut received = 0;
+    while let Ok(event) = subscription.try_recv() {
+        if matches!(
+            event,
+            LiveEvent::Runtime(RuntimeEventMessage {
+                event: RuntimeLifecycleEvent::Media { .. },
+                ..
+            })
+        ) {
+            received += 1;
+        }
+    }
+    assert_eq!(received, 3);
+
+    // Seeks near the end fire the configured loop.
+    let seek = control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "s",
+                "s",
+                CommandPayload::Media {
+                    input: clip,
+                    operation: MediaOperation::Seek(MediaSeekTarget::Frame(248)),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(seek.is_accepted(), "{:?}", seek.output.result);
+    let mut events = Vec::new();
+    for _ in 0..3 {
+        for event in control.tick(&server_identity()).unwrap().runtime_events {
+            if let RuntimeLifecycleEvent::Media { events: list, .. } = event.event {
+                events.extend(list);
+            }
+        }
+    }
+    assert!(events.contains(&MediaEvent::Seeked { frame: 248 }));
+    assert!(events.contains(&MediaEvent::Ended {
+        action: MediaEndAction::Loop
+    }));
+    assert!(events.contains(&MediaEvent::Looped { count: 1 }));
+
+    // A non-media input refuses media commands.
+    let refused = control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "x",
+                "x",
+                CommandPayload::Media {
+                    input: WireInputId::from_domain(input(1)),
+                    operation: MediaOperation::Play,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(!refused.is_accepted());
+
+    // A fault is published once and replicated in the state records.
+    control
+        .set_media_fault(input(2), fm_engine::EngineMediaFault::DecodeFailed)
+        .unwrap();
+    let tick = control.tick(&server_identity()).unwrap();
+    assert!(tick.runtime_events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeLifecycleEvent::Media { events, .. }
+            if events == &[MediaEvent::Faulted { fault: fm_protocol::MediaFault::DecodeFailed }]
+    )));
+    assert_eq!(
+        control.media_states()[0].status.transport.fault,
+        Some(fm_protocol::MediaFault::DecodeFailed)
+    );
+}

@@ -211,7 +211,12 @@ pub(super) fn advance_command(frame: u64, revision: u64) -> CommandMessage {
 }
 
 /// The engine frame wall time has reached since the anchor.
-fn wall_frame(anchor_frame: u64, anchor_at: Instant, now: Instant, rate: FrameRate) -> u64 {
+pub(super) fn wall_frame(
+    anchor_frame: u64,
+    anchor_at: Instant,
+    now: Instant,
+    rate: FrameRate,
+) -> u64 {
     let elapsed = now.saturating_duration_since(anchor_at).as_nanos();
     let frames =
         elapsed * u128::from(rate.numerator()) / (u128::from(rate.denominator()) * 1_000_000_000);

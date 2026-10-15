@@ -153,6 +153,7 @@ fn input_source_replacement_refuses_missing_scenes_and_scene_cycles() {
             input_id(1),
             InputKind::Media {
                 asset_uri: "asset://clip.mp4".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
             },
             Vec::new(),
         )

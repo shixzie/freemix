@@ -905,7 +905,7 @@ impl Names<'_> {
     }
 }
 
-fn key_button(label: &str, tone: Option<Color32>, width: f32) -> Button<'static> {
+pub(crate) fn key_button(label: &str, tone: Option<Color32>, width: f32) -> Button<'static> {
     let (fill, stroke) = tone.map_or((widget_color(), border_strong_color()), |color| {
         (color.gamma_multiply(0.18), color.gamma_multiply(0.7))
     });
@@ -2151,6 +2151,7 @@ mod tests {
             playlist_follows: playlist.is_some(),
             grade_states: 0,
             animation_preset_states: 0,
+            media_states: 0,
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         let mut model = ClientModel::new(project);

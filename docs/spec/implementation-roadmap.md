@@ -450,11 +450,50 @@ timestamps are refused with typed errors, and a complete source must not
 change at all. Acceptance (`accept-in-003`) asserts frame numbers from decoded
 pixels and sample indices from decoded ramps for Matroska/NUT/MPEG-TS with
 B-frames and 12-frame GOPs, and plays an MPEG-TS that is appended in three
-segments while playing. The transport is not yet wired into the engine,
-project schema, protocol, daemon, CLI, or Studio; there is no persistent
-decoder process (each window is a bounded tool run), no reverse play, no
-variable-frame-rate source support, and no pitch-preserving time stretch, so
-`IN-003` remains planned.
+segments while playing.
+
+The transport is wired end to end. Schema 36 gives every media-file input
+persisted `playback` settings: trim in/out, end action (stop, hold, loop),
+end-trigger lead, speed (2500-40000 basis points), audio speed policy,
+optional audio stream, a growing flag with live-edge offset and idle
+completion count, and a start frame inside the trim range. The engine owns
+one transport per media input, ticked once per engine frame; transport
+commands (play, pause, stop, frame or rational-time seek, complete source)
+are operator live operations and settings commands are padlock-honouring
+project edits. Protocol 2.37 carries them as `media_*` commands, the
+`media_changed` event, one `media_state` follow-on record per media input
+after a snapshot, and `media` runtime events (seeked, end trigger, ended,
+looped, live edge reached, resumed, source grew/completed, audio track
+changed, faulted, plus a once-a-second position sample); `FilePlaybackError`
+maps to typed input faults. An end trigger of the input on air in a playing
+playlist journals a playlist `next`, which replays after a restart. The
+simulated daemon drives each input over a synthetic 10-second source (two
+audio tracks) in wall time. The native daemon (`--features native-media`
+with `--native-media`) runs one `FilePlayer` per media input on its own
+worker thread at the program rate: the worker presents the engine's tick
+(`FilePlayer::present`) and decodes the next window ahead (`prefetch`), the
+render thread never decodes, a late picture holds the previous frame and is
+counted (`FREEMIXD_MEDIA_FILES ... late_frames`), video replaces the input's
+live frame in the compositor, and audio is pushed per frame into the Master
+mix (resampled linearly to the frame's sample count and channel-mapped, not
+through the per-source decode synchronizer the other inputs use). Native
+media files must match the project size and carry colour tags, as native
+import already requires. The CLI edits settings offline
+(`input-media-trim|rate|end-action|end-trigger|audio-track|audio-policy`,
+`input-media-list`) and drives a running daemon
+(`remote-input-media-<operation>`); Studio's Media tab gives each media
+input a transport bar (play, pause, stop, finish for a growing file,
+scrubber, trim handles, 0.25x-4x speed menu, end action, audio-track menu
+with language names, live and waiting-for-data badges) with English and
+Spanish hover help. Acceptance adds model, persistence, protocol, engine,
+client, CLI, simulated daemon process, and Studio worker coverage, and
+`freemixd --test native_media_files` decodes a Matroska fixture with two
+tracks end to end when built with `--features native-media`
+(`FM_REQUIRE_FFMPEG=1` and `FM_REQUIRE_NATIVE_MEDIA=1` make missing tools a
+failure). There is still no persistent decoder process (each window is a
+bounded tool run), no reverse play, no variable-frame-rate source support,
+no pitch-preserving time stretch, and no certification on the Windows,
+macOS, or profile-a-hd profiles, so `IN-003` remains planned.
 
 Current implementation boundary for item 8: `fm-gpu` provides a portable,
 bounded latest-frame presentation policy plus opaque, context-bound native
@@ -2470,7 +2509,7 @@ proxy frame, not from the full-resolution graded output; and native
 graded scene previews match the GPU only within the 8-bit CPU and 16-bit
 float GPU pipeline difference, so `SW-019` remains planned. Grades travel
 between
-projects as `.fmgrade` files (schema 35): strict JSON (`kind: "grade"`)
+projects as `.fmgrade` files (schema 36): strict JSON (`kind: "grade"`)
 holding the grade's name and values without its project LUT reference, and
 its LUT by name and strength with the `.cube` text embedded when it is at
 most 32 KiB, otherwise written to a sibling `.cube` file the document names

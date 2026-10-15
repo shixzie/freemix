@@ -187,6 +187,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         playlist_follows: false,
         grade_states: 0,
         animation_preset_states: 0,
+        media_states: 0,
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }
 }
@@ -1904,6 +1905,7 @@ mod playlists {
             playlist_follows: true,
             grade_states: 0,
             animation_preset_states: 0,
+            media_states: 0,
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             ..snapshot(revision)
         }
@@ -2740,6 +2742,154 @@ mod animation_presets {
                     preset: NonZeroU32::new(1).unwrap(),
                 }),
             }),
+        );
+    }
+}
+
+/// Protocol 2.37 (IN-003): a snapshot announces one `media_state` per media
+/// input, which complete it after every other follow-on record, and `media`
+/// runtime events keep each input's transport current.
+mod media {
+    use fm_protocol::{
+        MediaEvent, MediaSettingsStatus, MediaStateMessage, MediaStatus, MediaTime,
+        MediaTransportState, MediaTransportStatus,
+    };
+
+    use super::*;
+
+    fn status(input_id: u128, state: MediaTransportState, position: u64) -> MediaStatus {
+        MediaStatus {
+            input: input(input_id),
+            settings: MediaSettingsStatus::default(),
+            transport: MediaTransportStatus {
+                available: true,
+                state,
+                position,
+                position_time: MediaTime {
+                    numerator: u128::from(position),
+                    denominator: 25,
+                }
+                .reduced(),
+                playable_end: 250,
+                frames: 250,
+                complete: true,
+                loops: 0,
+                audio_track: None,
+                tracks: Vec::new(),
+                source_rate: Some(fm_types::FrameRate::new(25, 1).unwrap()),
+                fault: None,
+            },
+        }
+    }
+
+    fn media_state(revision: u64, input_id: u128) -> WireMessage {
+        WireMessage::MediaState(MediaStateMessage {
+            revision,
+            frame: 7,
+            status: status(input_id, MediaTransportState::Stopped, 0),
+        })
+    }
+
+    fn synchronizing(media_states: u16) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(SnapshotMessage {
+                media_states,
+                ..snapshot(4)
+            }))
+            .unwrap();
+        client
+    }
+
+    fn resyncs(client: &mut Client, message: WireMessage) {
+        let error = client.intake(message).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn announced_media_states_complete_the_snapshot_and_runtime_events_track_them() {
+        let mut client = synchronizing(2);
+        assert_eq!(
+            client.intake(media_state(4, 1)).unwrap(),
+            Intake::MediaStateApplied
+        );
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        client.intake(media_state(4, 2)).unwrap();
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let media = client.model().state().unwrap().media().clone();
+        assert_eq!(media.len(), 2);
+
+        client
+            .apply_runtime_event(runtime_event(
+                4,
+                9,
+                1,
+                RuntimeLifecycleEvent::Media {
+                    frame: 30,
+                    events: vec![MediaEvent::Resumed { frame: 0 }],
+                    status: Box::new(status(2, MediaTransportState::Playing, 23)),
+                },
+            ))
+            .unwrap();
+        let replicated = client
+            .model()
+            .state()
+            .unwrap()
+            .media_status(input(2).to_domain())
+            .unwrap()
+            .clone();
+        assert_eq!(replicated.transport.state, MediaTransportState::Playing);
+        assert_eq!(replicated.transport.position, 23);
+        assert_eq!(
+            replicated.transport.position_time,
+            MediaTime {
+                numerator: 23,
+                denominator: 25
+            }
+        );
+        // The runtime event does not move the durable cursor.
+        assert_eq!(client.last_applied_cursor().unwrap().revision, 4);
+    }
+
+    #[test]
+    fn unannounced_mismatched_or_unknown_media_states_force_a_snapshot() {
+        // Beyond the announced count.
+        let mut client = synchronizing(1);
+        client.intake(media_state(4, 1)).unwrap();
+        resyncs(&mut client, media_state(4, 2));
+        // At another revision.
+        resyncs(&mut synchronizing(1), media_state(3, 1));
+        // An input the snapshot does not list.
+        resyncs(&mut synchronizing(1), media_state(4, 9));
+        // Once ready.
+        resyncs(&mut ready_client(4), media_state(4, 1));
+        // A runtime status for an input the show lacks.
+        let mut client = ready_client(4);
+        assert!(
+            client
+                .apply_runtime_event(runtime_event(
+                    4,
+                    9,
+                    1,
+                    RuntimeLifecycleEvent::Media {
+                        frame: 1,
+                        events: Vec::new(),
+                        status: Box::new(status(9, MediaTransportState::Playing, 1)),
+                    },
+                ))
+                .is_err()
         );
     }
 }

@@ -22,6 +22,16 @@ pub fn cli_token(token: &str) -> String {
     token.replace('_', "-")
 }
 
+/// A media-file input's transport or playback setting (IN-003).
+pub use fm_protocol::{MediaAudioPolicy, MediaEndAction, MediaOperation, MediaSeekTarget};
+
+/// Where an `input-media-*` command goes: a stored project or a server.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MediaTarget {
+    Local(PathBuf),
+    Remote(SocketAddr),
+}
+
 /// The automatic mix a CLI token names.
 pub fn transition_kind(value: &str) -> Result<TransitionKind, ArgsError> {
     TransitionKind::from_token(&value.replace('-', "_")).ok_or_else(|| ArgsError::InvalidChoice {
@@ -601,6 +611,19 @@ pub enum Command {
         path: PathBuf,
         kind: TransitionKind,
         frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists the media-file inputs' playback settings.
+    InputMediaList {
+        path: PathBuf,
+    },
+    /// Drives one media-file input's transport or edits its playback
+    /// settings, locally or on a server (IN-003).
+    InputMedia {
+        target: MediaTarget,
+        input: u128,
+        operation: MediaOperation,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -1531,8 +1554,23 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             reject_extra(&mut arguments)?;
             Ok(Command::RecentProjectsPrune { file })
         }
+        "input-media-list" => {
+            let path = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::InputMediaList { path })
+        }
         "help" | "--help" | "-h" => Ok(Command::Help),
-        _ => Err(ArgsError::UnknownCommand(command)),
+        _ => {
+            if let Some(operation) = command.strip_prefix("remote-input-media-") {
+                let address = socket_address(&required(&mut arguments, "address")?)?;
+                parse_input_media(MediaTarget::Remote(address), operation, arguments)
+            } else if let Some(operation) = command.strip_prefix("input-media-") {
+                let path = required_path(&mut arguments, "project path")?;
+                parse_input_media(MediaTarget::Local(path), operation, arguments)
+            } else {
+                Err(ArgsError::UnknownCommand(command))
+            }
+        }
     }
 }
 
@@ -3983,6 +4021,108 @@ fn parse_remote_stinger_removal(
         slot,
         key,
         expected_revision,
+    })
+}
+
+/// `input-media-<operation> <target> <input> <operands...> [--key K]
+/// [--expect N]`.
+fn parse_input_media(
+    target: MediaTarget,
+    operation: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let operation = match operation {
+        "play" => MediaOperation::Play,
+        "pause" => MediaOperation::Pause,
+        "stop" => MediaOperation::Stop,
+        "complete" => MediaOperation::CompleteSource,
+        "seek" => MediaOperation::Seek(media_seek_target(&required(
+            &mut arguments,
+            "seek position",
+        )?)?),
+        "trim" => {
+            let trim_in = number(&required(&mut arguments, "trim in")?, "trim in")?;
+            let trim_out = required(&mut arguments, "trim out")?;
+            let trim_out = if trim_out == "end" {
+                None
+            } else {
+                Some(number(&trim_out, "trim out")?)
+            };
+            MediaOperation::Trim { trim_in, trim_out }
+        }
+        "rate" => MediaOperation::Rate {
+            speed_basis_points: number(
+                &required(&mut arguments, "speed basis points")?,
+                "speed basis points",
+            )?,
+        },
+        "end-action" => {
+            let value = required(&mut arguments, "end action")?;
+            MediaOperation::EndAction(MediaEndAction::from_token(&value).ok_or(
+                ArgsError::InvalidChoice {
+                    field: "end action",
+                    value,
+                },
+            )?)
+        }
+        "end-trigger" => {
+            let value = required(&mut arguments, "end-trigger lead")?;
+            MediaOperation::EndTriggerLead(if value == "off" {
+                None
+            } else {
+                Some(number(&value, "end-trigger lead")?)
+            })
+        }
+        "audio-track" => {
+            let value = required(&mut arguments, "audio track")?;
+            MediaOperation::AudioTrack(if value == "none" {
+                None
+            } else {
+                Some(number(&value, "audio track")?)
+            })
+        }
+        "audio-policy" => {
+            let value = required(&mut arguments, "audio policy")?;
+            MediaOperation::AudioPolicy(MediaAudioPolicy::from_token(&value).ok_or(
+                ArgsError::InvalidChoice {
+                    field: "audio policy",
+                    value,
+                },
+            )?)
+        }
+        other => {
+            return Err(ArgsError::UnknownCommand(format!("input-media-{other}")));
+        }
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::InputMedia {
+        target,
+        input,
+        operation,
+        key,
+        expected_revision,
+    })
+}
+
+/// A source frame (`120`) or a rational time in seconds (`6/5s`, `3s`).
+fn media_seek_target(value: &str) -> Result<MediaSeekTarget, ArgsError> {
+    let invalid = || ArgsError::InvalidNumber {
+        field: "seek position",
+        value: value.to_owned(),
+    };
+    let Some(seconds) = value.strip_suffix('s') else {
+        return number(value, "seek position").map(MediaSeekTarget::Frame);
+    };
+    let (numerator, denominator) = seconds.split_once('/').unwrap_or((seconds, "1"));
+    let numerator: u64 = numerator.parse().map_err(|_| invalid())?;
+    let denominator: u64 = denominator.parse().map_err(|_| invalid())?;
+    if denominator == 0 {
+        return Err(invalid());
+    }
+    Ok(MediaSeekTarget::Time {
+        numerator,
+        denominator,
     })
 }
 

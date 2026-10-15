@@ -215,6 +215,7 @@ pub fn import_media(
             name,
             InputKind::Media {
                 asset_uri: imported.asset_uri,
+                playback: fm_model::MediaPlaybackSettings::default(),
             },
         )?;
     }

@@ -77,6 +77,60 @@ fn print_diagnostics(response: &DiagnosticsResponse) {
     );
 }
 
+/// One media input's settings and transport on one line (IN-003).
+pub(crate) fn format_media_status(status: &fm_protocol::MediaStatus) -> String {
+    let settings = &status.settings;
+    let transport = &status.transport;
+    let tracks = transport
+        .tracks
+        .iter()
+        .map(|track| {
+            format!(
+                "{}:{}{}",
+                track.stream_index,
+                track.language.as_deref().unwrap_or("und"),
+                if track.default { "*" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "Media(input={}, available={}, state={}, position={}, time={}/{}, end={}, frames={}, complete={}, loops={}, track={}, tracks=[{}], trim={}..{}, speed_bp={}, end_action={}, end_trigger={}, audio_policy={}, audio_stream={}, growing={}, start={}, fault={})",
+        status.input,
+        transport.available,
+        transport.state.token(),
+        transport.position,
+        transport.position_time.numerator,
+        transport.position_time.denominator,
+        transport.playable_end,
+        transport.frames,
+        transport.complete,
+        transport.loops,
+        optional_number(transport.audio_track.map(u64::from)),
+        tracks,
+        settings.trim_in,
+        settings
+            .trim_out
+            .map_or_else(|| "end".to_owned(), |frame| frame.to_string()),
+        settings.speed_basis_points,
+        settings.end_action.token(),
+        settings
+            .end_trigger_lead
+            .map_or_else(|| "off".to_owned(), |lead| lead.to_string()),
+        settings.audio_policy.token(),
+        optional_number(settings.audio_stream.map(u64::from)),
+        settings.growing.map_or_else(
+            || "none".to_owned(),
+            |growing| format!(
+                "{}/{}",
+                growing.live_edge_offset_frames, growing.idle_completion_refreshes
+            )
+        ),
+        settings.start_frame,
+        transport.fault.map_or("none", |fault| fault.token()),
+    )
+}
+
 fn optional_number(value: Option<u64>) -> String {
     value.map_or_else(|| "none".to_owned(), |value| value.to_string())
 }
@@ -106,11 +160,13 @@ pub fn execute(
     let role = match completion {
         CommandCompletion::Project
         | CommandCompletion::Padlock
-        | CommandCompletion::Playlist { edit: true } => Role::Graphics,
+        | CommandCompletion::Playlist { edit: true }
+        | CommandCompletion::Media { transport: false } => Role::Graphics,
         CommandCompletion::Audio => Role::Audio,
         CommandCompletion::Switcher
         | CommandCompletion::Favorite
         | CommandCompletion::Playlist { edit: false }
+        | CommandCompletion::Media { transport: true }
         | CommandCompletion::TitleTake {
             edits_fields: false,
         } => Role::Operator,
@@ -152,6 +208,12 @@ enum CommandCompletion {
     /// that completes on `transition_favorite_changed` and project
     /// realization.
     Favorite,
+    /// A media transport control or settings edit: completes on
+    /// `media_changed` and media realization (Protocol 2.37). Transport is
+    /// an operator control; settings are project edits.
+    Media {
+        transport: bool,
+    },
 }
 
 impl CommandCompletion {
@@ -170,6 +232,9 @@ impl CommandCompletion {
             },
             CommandPayload::SetPlaylist { .. } => Self::Playlist { edit: true },
             CommandPayload::SetTransitionFavorite { .. } => Self::Favorite,
+            CommandPayload::Media { operation, .. } => Self::Media {
+                transport: operation.is_transport(),
+            },
             CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
                 Self::Playlist { edit: false }
             }
@@ -183,6 +248,7 @@ impl CommandCompletion {
                 domain == "project"
             }
             Self::Audio => domain == "audio",
+            Self::Media { .. } => domain == "media",
             Self::Switcher | Self::TitleTake { .. } | Self::Playlist { edit: false } => {
                 domain == "switcher"
             }
@@ -283,7 +349,8 @@ impl Remote {
                 | WireMessage::TitleLayoutState(_)
                 | WireMessage::SceneAnimationState(_)
                 | WireMessage::SceneLayoutState(_)
-                | WireMessage::AnimationPresetState(_)) => {
+                | WireMessage::AnimationPresetState(_)
+                | WireMessage::MediaState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
@@ -434,6 +501,9 @@ impl Remote {
                             completion,
                             CommandCompletion::Favorite | CommandCompletion::History
                         ),
+                        EventPayload::MediaChanged { .. } => {
+                            matches!(completion, CommandCompletion::Media { .. })
+                        }
                     };
                     if matches_revision && !expected_event {
                         return Err(RemoteFailure(
@@ -510,6 +580,9 @@ impl Remote {
                 playlist.state,
                 playlist.entries.len()
             );
+        }
+        for status in state.media().values() {
+            println!("{}", format_media_status(status));
         }
         if let Some(status) = &self.latest_stream_status {
             for sample in &status.samples {

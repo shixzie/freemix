@@ -23,7 +23,8 @@ use fm_codec_ffmpeg::{
 };
 use fm_frame::{ClockDomainId, CpuVideoFrame};
 use fm_playback::{
-    AudioSpeedPolicy, FrameIndex, MediaEndAction, MediaEvent, MediaState, PlaybackRate,
+    AudioPlan, AudioSpeedPolicy, FrameIndex, MediaEndAction, MediaEvent, MediaPlayback,
+    MediaSourceConfig, MediaState, PlaybackRate,
 };
 use fm_types::FrameRate;
 use tempfile::tempdir;
@@ -758,4 +759,72 @@ fn explicit_stream_selection_and_missing_video_are_typed() {
         &audio_only,
     );
     assert!(adapter.open_playback(&audio_only, config(None)).is_err());
+}
+
+/// An authority that owns the transport elsewhere (the engine) hands each of
+/// its ticks to `present`, which decodes exactly what the tick plans; the
+/// player's own transport stays put. `prefetch` decodes the next window
+/// ahead, so forward playback crosses window boundaries without a new tool
+/// run.
+#[test]
+fn present_decodes_an_external_transports_ticks_and_prefetch_reads_ahead() {
+    let _guard = guard();
+    let Some(adapter) = require_ffmpeg() else {
+        return;
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("external.mkv");
+    generate_mkv(&path);
+    let mut player = adapter.open_playback(&path, config(None)).unwrap();
+    let mut transport = MediaPlayback::new(MediaSourceConfig {
+        source_rate: player.frame_rate(),
+        output_rate: FrameRate::new(25, 1).unwrap(),
+        available_frames: player.frame_count(),
+        complete: true,
+        audio_tracks: player.audio_tracks().to_vec(),
+        selected_audio: Some(2),
+    })
+    .unwrap();
+    assert!(!player.prefetch().unwrap(), "nothing presented yet");
+    transport.play();
+    let first = player.present(transport.tick()).unwrap();
+    assert_eq!(assert_exact(&first), 0);
+    let audio = first.audio.as_ref().unwrap();
+    assert_eq!((audio.sample_count(), audio.planes().len()), (1_920, 2));
+    let windows = player.telemetry().video_windows;
+    assert!(player.prefetch().unwrap());
+    assert!(
+        !player.prefetch().unwrap(),
+        "the next window is already decoded"
+    );
+    assert_eq!(player.telemetry().video_windows, windows + 1);
+    // Frames 1..=23 come from the presented and the prefetched windows.
+    for expected in 1..24 {
+        assert_eq!(
+            assert_exact(&player.present(transport.tick()).unwrap()),
+            expected
+        );
+    }
+    assert_eq!(player.telemetry().video_windows, windows + 1);
+    // The player's own transport never moved.
+    assert_eq!(player.controller().position(), FrameIndex::new(0));
+    assert_eq!(player.controller().state(), MediaState::Stopped);
+
+    transport.seek(FrameIndex::new(70)).unwrap();
+    let seeked = player.present(transport.tick()).unwrap();
+    assert_eq!(assert_exact(&seeked), 70);
+    assert!(matches!(
+        seeked.tick.audio,
+        AudioPlan::Source { track: 2, .. }
+    ));
+    transport.select_audio_track(Some(9)).unwrap_err();
+    let mut unknown = transport.tick();
+    unknown.audio = AudioPlan::Silence {
+        track: 9,
+        output_samples: 1_920,
+    };
+    assert!(matches!(
+        player.present(unknown),
+        Err(FilePlaybackError::Control(_))
+    ));
 }

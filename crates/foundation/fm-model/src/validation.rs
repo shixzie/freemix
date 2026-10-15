@@ -522,6 +522,51 @@ fn validate_unique_entities(project: &Project, errors: &mut Vec<ValidationError>
     );
 }
 
+/// A simulated input's sine stays inside the audible range and below the
+/// project's Nyquist frequency.
+fn validate_simulated_audio(
+    project: &Project,
+    entity: Option<EntityRef>,
+    audio: SimulatedAudio,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let SimulatedAudio::Sine { frequency_hz } = audio {
+        let nyquist_hz = project.settings().audio.sample_rate.hertz() / 2;
+        if !(SimulatedAudio::MIN_SINE_FREQUENCY_HZ
+            ..=SimulatedAudio::MAX_SINE_FREQUENCY_HZ.min(nyquist_hz))
+            .contains(&frequency_hz)
+        {
+            errors.push(ValidationError {
+                entity,
+                field: "kind.simulated.audio.frequency_hz",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
+}
+
+/// A media input's playback settings (schema 36, IN-003).
+fn validate_media_playback(
+    entity: Option<EntityRef>,
+    playback: &crate::MediaPlaybackSettings,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Err(error) = playback.validate() {
+        errors.push(ValidationError {
+            entity,
+            field: match error.field() {
+                "trim" => "kind.media.trim",
+                "start_frame" => "kind.media.start_frame",
+                "speed_basis_points" => "kind.media.speed_basis_points",
+                "end_trigger_lead" => "kind.media.end_trigger_lead",
+                "live_edge_offset_frames" => "kind.media.live_edge_offset_frames",
+                _ => "kind.media.idle_completion_refreshes",
+            },
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
 fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
     for input in project.inputs() {
         let entity = Some(EntityRef::Input(input.id));
@@ -540,8 +585,12 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             // A title is a leaf: its template is a bundle asset checked by
             // persistence, so only its own field list is validated here.
             InputKind::Title(title) => validate_title(entity, title, errors),
-            InputKind::Media { asset_uri } => {
+            InputKind::Media {
+                asset_uri,
+                playback,
+            } => {
                 require_name(errors, entity, "asset_uri", asset_uri);
+                validate_media_playback(entity, playback, errors);
             }
             InputKind::Device { stable_key } => {
                 require_name(errors, entity, "stable_key", stable_key);
@@ -605,19 +654,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                 }
             }
             InputKind::Simulated(simulated) => {
-                if let SimulatedAudio::Sine { frequency_hz } = simulated.audio {
-                    let nyquist_hz = project.settings().audio.sample_rate.hertz() / 2;
-                    if !(SimulatedAudio::MIN_SINE_FREQUENCY_HZ
-                        ..=SimulatedAudio::MAX_SINE_FREQUENCY_HZ.min(nyquist_hz))
-                        .contains(&frequency_hz)
-                    {
-                        errors.push(ValidationError {
-                            entity,
-                            field: "kind.simulated.audio.frequency_hz",
-                            kind: ValidationErrorKind::OutOfRange,
-                        });
-                    }
-                }
+                validate_simulated_audio(project, entity, simulated.audio, errors);
             }
         }
         validate_capabilities(

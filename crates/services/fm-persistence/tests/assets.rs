@@ -83,6 +83,7 @@ fn stored_project(
                 id,
                 InputKind::Media {
                     asset_uri: asset_uri.into(),
+                    playback: fm_model::MediaPlaybackSettings::default(),
                 },
             )
         })

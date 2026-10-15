@@ -806,7 +806,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(35);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(36);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1439,11 +1439,52 @@ impl Project {
         if !matches!(self.inputs[index].kind, InputKind::Media { .. }) {
             return Err(RelinkMediaInputError::NotMediaInput(input));
         }
-        let InputKind::Media { asset_uri: current } = &mut self.inputs[index].kind else {
+        let InputKind::Media {
+            asset_uri: current, ..
+        } = &mut self.inputs[index].kind
+        else {
             unreachable!("media input kind was validated above");
         };
         *current = asset_uri;
         Ok(())
+    }
+
+    /// Replaces a media input's playback settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::SetMediaPlaybackError`] for an unknown or non-media
+    /// input or settings outside their bounds. Nothing changes on error.
+    pub fn set_media_playback(
+        &mut self,
+        input: InputId,
+        settings: crate::MediaPlaybackSettings,
+    ) -> Result<(), crate::SetMediaPlaybackError> {
+        settings
+            .validate()
+            .map_err(crate::SetMediaPlaybackError::Invalid)?;
+        let target = self
+            .inputs
+            .iter_mut()
+            .find(|candidate| candidate.id == input)
+            .ok_or(crate::SetMediaPlaybackError::UnknownInput(input))?;
+        let InputKind::Media { playback, .. } = &mut target.kind else {
+            return Err(crate::SetMediaPlaybackError::NotMediaInput(input));
+        };
+        *playback = settings;
+        Ok(())
+    }
+
+    /// The playback settings of media input `input`.
+    #[must_use]
+    pub fn media_playback(&self, input: InputId) -> Option<&crate::MediaPlaybackSettings> {
+        self.inputs
+            .iter()
+            .find(|candidate| candidate.id == input)
+            .and_then(|candidate| match &candidate.kind {
+                InputKind::Media { playback, .. } => Some(playback),
+                _ => None,
+            })
     }
 
     /// Replaces a title input's field values and field revision.
@@ -3268,8 +3309,10 @@ pub struct InputAudioStrip {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputKind {
     Color,
+    /// A media file (or still image) and how it plays (schema 36, IN-003).
     Media {
         asset_uri: String,
+        playback: crate::MediaPlaybackSettings,
     },
     /// Exact adapter-qualified source identity from platform discovery.
     Device {

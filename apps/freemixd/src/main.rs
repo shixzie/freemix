@@ -96,7 +96,10 @@ mod grading;
 mod hls_server;
 mod journal;
 mod latest_record;
+mod media_clock;
 mod monitor_tap;
+#[cfg(feature = "native-media")]
+mod native_files;
 #[cfg(feature = "native-media")]
 mod native_titles;
 mod non_native_sessions;
@@ -671,6 +674,9 @@ struct NativeDaemon {
     /// Title inputs realized as live source frames rendered off the loop;
     /// see [`native_titles`].
     titles: native_titles::NativeTitleSources,
+    /// Transport-controlled media-file inputs decoded off the loop; see
+    /// [`native_files`].
+    files: native_files::NativeMediaFiles,
     #[cfg(target_os = "macos")]
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
@@ -4379,6 +4385,12 @@ impl NativeDaemon {
                 .into());
             }
         }
+        // Stinger clips (and hot Stinger mutations) keep their clip-local
+        // sequential decode; every other media file plays through its
+        // engine-driven transport as a live source.
+        let resolved_sources = sources.clone();
+        let (files, file_inputs) =
+            resolve_native_file_sources(adapter.as_ref(), stored, &mut sources)?;
 
         let master = NativeMasterRuntime::preflight_project_local_blocking(
             adapter.as_ref(),
@@ -4394,8 +4406,17 @@ impl NativeDaemon {
             Some(context) => NativeMediaRuntime::from_context_blocking(context)?,
             None => NativeMediaRuntime::new_blocking([platform_native_backend()])?,
         });
-        let (playback, stingers) =
-            preflight_native_video(&runtime, adapter.as_ref(), sources.clone(), stored)?;
+        let mut master = master;
+        for input in file_inputs {
+            master.attach_pushed_audio(input)?;
+        }
+        let (playback, stingers) = preflight_native_video(
+            &runtime,
+            adapter.as_ref(),
+            sources,
+            &resolved_sources,
+            stored,
+        )?;
         // Stream runtimes compile after video/audio preflight so a destination
         // problem is reported against an otherwise healthy show. Starting one
         // is deferred to readiness; failures there latch per target.
@@ -4426,7 +4447,7 @@ impl NativeDaemon {
             stingers,
             projected_frame: None,
             runtime,
-            resolved_sources: Arc::new(sources),
+            resolved_sources: Arc::new(resolved_sources),
             assets_root: store.assets_root().clone(),
             pending_stinger_mutation: None,
             stinger_retirements: NativeStingerRetirements::start()?,
@@ -4459,6 +4480,7 @@ impl NativeDaemon {
             pending_stream_status: None,
             monitor: NativeMonitorTap::new(stored.project().settings()),
             titles,
+            files,
             #[cfg(target_os = "macos")]
             cameras: resolution.cameras,
             #[cfg(target_os = "macos")]
@@ -5491,6 +5513,7 @@ impl NativeDaemon {
                 .service_control(self.runtime.context())
                 .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
         }
+        self.apply_file_reports(control)?;
         let covered = self.service_playback(control)?;
         let host_deadline = self.next_deadline()?;
         let now = Instant::now();
@@ -5514,6 +5537,7 @@ impl NativeDaemon {
             if requested_daemon_shutdown(Some(&*self), process_shutdown).is_some() {
                 return Ok(None);
             }
+            self.apply_file_reports(control)?;
             let covered = self.service_playback(control)?;
             let host_deadline = self.next_deadline()?;
             let now = Instant::now();
@@ -5528,6 +5552,47 @@ impl NativeDaemon {
         self.realize_one(control, server).map(Some)
     }
 
+    /// Hands the engine every media-file growth, completion, and fault the
+    /// file workers reported. A change voids the projected frame, whose media
+    /// ticks it moves.
+    fn apply_file_reports(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
+        let reports = self.files.take_reports();
+        if reports.is_empty() {
+            return Ok(());
+        }
+        for (input, report) in reports {
+            let applied = match report {
+                native_files::FileReport::Source { frames, complete } => {
+                    control.update_media_source(input, frames, complete)
+                }
+                native_files::FileReport::Fault(fault) => {
+                    eprintln!(
+                        "FREEMIXD_MEDIA\tv=1\tinput={input}\tfault={}",
+                        fault.token()
+                    );
+                    control.set_media_fault(input, fault)
+                }
+            };
+            applied.map_err(|error| {
+                AppFailure(format!(
+                    "media input {input} cannot take its source report: {error}"
+                ))
+            })?;
+        }
+        self.invalidate_projection();
+        Ok(())
+    }
+
+    /// Opens every media-file input's transport on its decoder's source.
+    fn attach_media_sources(&self, control: &mut ControlService<Policy>) -> AppResult<()> {
+        for (input, source) in self.files.sources() {
+            control
+                .set_media_source(*input, Some(source.clone()))
+                .map_err(|error| AppFailure(format!("media input {input} cannot open: {error}")))?;
+        }
+        Ok(())
+    }
+
     fn service_playback(&mut self, control: &ControlService<Policy>) -> AppResult<bool> {
         #[cfg(target_os = "macos")]
         self.cameras.poll_into(&self.runtime, &mut self.playback)?;
@@ -5535,6 +5600,19 @@ impl NativeDaemon {
         for (input, frame) in self.titles.take_completed() {
             self.runtime
                 .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
+        }
+        for presented in self.files.take_completed() {
+            if let Some(frame) = presented.video {
+                self.runtime.ingest_live_video_frame_blocking(
+                    &mut self.playback,
+                    presented.input,
+                    frame,
+                )?;
+            }
+            if let Some(audio) = &presented.audio {
+                self.master
+                    .push_frame_audio(presented.input, presented.frame, audio)?;
+            }
         }
         let deadline = control.next_frame_deadline()?;
         let video_covered = self
@@ -5549,9 +5627,12 @@ impl NativeDaemon {
             .as_ref()
             .expect("next frame projection was initialized");
         self.titles.observe_frame(projected);
+        self.files.observe_frame(projected);
         // An animating title holds the frame until its projected pose is
-        // ingested (bounded), so each In and Out frame airs as projected.
+        // ingested (bounded), so each In and Out frame airs as projected;
+        // a media file until its projected tick is presented (bounded).
         let titles_covered = self.titles.covered(projected, self.next_deadline()?);
+        let files_covered = self.files.covered(projected, self.next_deadline()?);
         let audio_covered = self
             .master
             .service_project_next_frame(projected, &self.project_plan)?;
@@ -5566,7 +5647,7 @@ impl NativeDaemon {
                 .map_err(Box::<dyn Error>::from)?,
             None => true,
         };
-        Ok(audio_covered && video_covered && stinger_covered && titles_covered)
+        Ok(audio_covered && video_covered && stinger_covered && titles_covered && files_covered)
     }
 
     /// Attaches the grades of `control`'s current revision to the project
@@ -5843,6 +5924,13 @@ impl NativeDaemon {
         }
         self.emit_camera_source_telemetry();
         self.observe_native_telemetry();
+        if !self.files.sources().is_empty() {
+            eprintln!(
+                "FREEMIXD_MEDIA_FILES\tv=1\tinputs={}\tlate_frames={}",
+                self.files.sources().len(),
+                self.files.late_frames()
+            );
+        }
         #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
         let presentation = self
             .program
@@ -5956,13 +6044,14 @@ fn preflight_native_video(
     runtime: &NativeMediaRuntime,
     adapter: Option<&Adapter>,
     sources: Vec<NativeResolvedSource>,
+    stinger_sources: &[NativeResolvedSource],
     stored: &StoredProject,
 ) -> AppResult<(
     freemixd::native_media::NativeSourcePlayback,
     freemixd::native_media::NativeSourcePlayback,
 )> {
     let (stingers, playback_limit) =
-        preflight_native_stinger_video(runtime, adapter, &sources, stored)?;
+        preflight_native_stinger_video(runtime, adapter, stinger_sources, stored)?;
     let playback = runtime.preflight_resolved_source_playback_mixed_blocking(
         adapter,
         sources,
@@ -5976,6 +6065,60 @@ fn preflight_native_video(
     let expected = stored.project().settings().video.dimensions;
     validate_native_video_dimensions("media source", playback.registry(), expected)?;
     Ok((playback, stingers))
+}
+
+/// Starts the media-file inputs of `stored` that play through their engine
+/// transport (every local-video media input no Stinger names) and swaps each
+/// one's resolved source for a live source seeded with its startup picture.
+/// Returns the inputs, whose Master audio becomes pushed.
+#[cfg(feature = "native-media")]
+fn resolve_native_file_sources(
+    adapter: Option<&Adapter>,
+    stored: &StoredProject,
+    sources: &mut [NativeResolvedSource],
+) -> AppResult<(native_files::NativeMediaFiles, Vec<InputId>)> {
+    let project = stored.project();
+    let stinger_media = project
+        .stingers()
+        .iter()
+        .map(|config| config.media_input)
+        .collect::<std::collections::BTreeSet<_>>();
+    let inputs = sources
+        .iter()
+        .filter_map(|source| match source {
+            NativeResolvedSource::LocalVideo { input, path } if !stinger_media.contains(input) => {
+                let settings = *project.media_playback(*input)?;
+                Some(native_files::MediaFileInput {
+                    input: *input,
+                    path: path.clone(),
+                    settings,
+                })
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let ids = inputs.iter().map(|input| input.input).collect::<Vec<_>>();
+    let dimensions = project.settings().video.dimensions;
+    let (files, seeds) = match adapter {
+        Some(adapter) => native_files::NativeMediaFiles::start(
+            adapter,
+            inputs,
+            project.settings().frame_rate,
+            native_clock_domain(),
+            (dimensions.width(), dimensions.height()),
+        )
+        .map_err(AppFailure)?,
+        None if inputs.is_empty() => native_files::NativeMediaFiles::start_empty(),
+        None => {
+            return Err(AppFailure("native media files require ffmpeg".into()).into());
+        }
+    };
+    for (input, frame) in seeds {
+        if let Some(source) = sources.iter_mut().find(|source| source.input() == input) {
+            *source = NativeResolvedSource::LiveFrame { input, frame };
+        }
+    }
+    Ok((files, ids))
 }
 
 #[cfg(feature = "native-media")]
@@ -6254,6 +6397,11 @@ impl NativeDaemon {
     #[allow(clippy::unused_self)]
     fn invalidate_projection(&mut self) {}
 
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    fn attach_media_sources(&self, _control: &mut ControlService<Policy>) -> AppResult<()> {
+        Ok(())
+    }
+
     fn start(
         _store: &ProjectStore,
         _stored: &StoredProject,
@@ -6392,7 +6540,7 @@ fn resolve_native_sources(
     let mut sources = Vec::with_capacity(stored.project().inputs().len());
     for input in stored.project().inputs() {
         let source = match &input.kind {
-            InputKind::Media { asset_uri } => resolve_native_media_source(
+            InputKind::Media { asset_uri, .. } => resolve_native_media_source(
                 store,
                 input.id,
                 asset_uri,
@@ -8339,6 +8487,11 @@ fn serve_inner(
         format!("{identity}-log"),
         ControlLimits::default(),
     )));
+    // The simulated engine plays every media input from a synthetic source;
+    // the native runtime opens each file's decoder.
+    if matches!(&mode, NativeServeMode::Disabled) {
+        attach_synthetic_media(&mut control.borrow_mut(), project.project())?;
+    }
     #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
     let fullscreen_active = matches!(&mode, NativeServeMode::Program(_));
     let mut native = match mode {
@@ -8366,6 +8519,9 @@ fn serve_inner(
             )?)
         }
     };
+    if let Some(native) = native.as_ref() {
+        native.attach_media_sources(&mut control.borrow_mut())?;
+    }
     // Every authored local HLS output is a configured show destination, so it
     // fails closed before serving exactly like the configured recording
     // output below: too little free space in any local output directory
@@ -9275,6 +9431,50 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
 }
 
 #[allow(clippy::too_many_lines)] // one restore step per project part
+/// Opens every media input of `project` on its synthetic source (the
+/// simulated engine's stand-in for the file's decoder, see
+/// [`fm_engine::EngineMediaSource::synthetic`]).
+fn attach_synthetic_media(
+    control: &mut ControlService<Policy>,
+    project: &fm_model::Project,
+) -> AppResult<()> {
+    let rate = project.settings().frame_rate;
+    for input in project.inputs() {
+        if let fm_model::InputKind::Media { playback, .. } = &input.kind {
+            control
+                .set_media_source(
+                    input.id,
+                    Some(fm_engine::EngineMediaSource::synthetic(playback, rate)),
+                )
+                .map_err(|error| {
+                    AppFailure(format!("media input {} cannot open: {error}", input.id))
+                })?;
+        }
+    }
+    Ok(())
+}
+
+/// The animation preset library, the favourite transition buttons, and
+/// each media input's playback settings (IN-003).
+fn restore_presets_favorites_and_media(
+    show: &mut ShowState,
+    canonical: &fm_model::Project,
+) -> AppResult<()> {
+    show.restore_animation_presets(canonical.animation_presets().clone())
+        .map_err(|error| {
+            AppFailure(format!(
+                "project animation presets cannot be restored: {error}"
+            ))
+        })?;
+    show.restore_transition_favorites(*canonical.transition_favorites());
+    for input in canonical.inputs() {
+        if let fm_model::InputKind::Media { playback, .. } = &input.kind {
+            show.set_media_input(input.id, *playback)?;
+        }
+    }
+    Ok(())
+}
+
 fn restore_engine_with_titles(
     project: &StoredProject,
     bundle_assets: &BundleAssets,
@@ -9365,13 +9565,7 @@ fn restore_engine_with_titles(
     show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
-    show.restore_animation_presets(canonical.animation_presets().clone())
-        .map_err(|error| {
-            AppFailure(format!(
-                "project animation presets cannot be restored: {error}"
-            ))
-        })?;
-    show.restore_transition_favorites(*canonical.transition_favorites());
+    restore_presets_favorites_and_media(&mut show, canonical)?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -9666,6 +9860,9 @@ fn handle_client(
                     &mut session,
                     &WireMessage::AnimationPresetState(state),
                 )?;
+            }
+            for state in control.borrow().media_states() {
+                write_session_message(&mut writer, &mut session, &WireMessage::MediaState(state))?;
             }
         }
         SyncPayload::Resume(events) => {
@@ -11040,6 +11237,7 @@ fn command_base_ticks(
         | CommandPayload::ConfigureStinger { .. }
         | CommandPayload::RemoveStinger { .. }
         | CommandPayload::SetTransitionFavorite { .. }
+        | CommandPayload::Media { .. }
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -11215,6 +11413,17 @@ fn stored_project_with_receipts(
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());
+    for (&input, settings) in show.media_inputs() {
+        if project.media_playback(input) != Some(settings) {
+            project
+                .set_media_playback(input, *settings)
+                .map_err(|error| {
+                    AppFailure(format!(
+                        "project cannot take media input {input}'s playback: {error}"
+                    ))
+                })?;
+        }
+    }
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -17854,6 +18063,7 @@ mod tests {
                 name: format!("Media {value}"),
                 kind: InputKind::Media {
                     asset_uri: asset_uri.into(),
+                    playback: fm_model::MediaPlaybackSettings::default(),
                 },
                 required_capabilities: Vec::new(),
             });

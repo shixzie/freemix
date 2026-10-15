@@ -7,15 +7,15 @@
 //! intent for realization.
 
 use core::{cmp::Ordering, fmt, num::NonZeroU128};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use fm_command::{CommandId, Revision};
 pub use fm_protocol::EditHistoryStatus;
 use fm_protocol::{
     AnimationPresetChange, AnimationPresetStateMessage, GradeChange, GradeStateMessage,
-    SceneAnimationStateMessage, SceneLayoutStateMessage, TitleAnimationStateMessage,
-    TitleLayoutStateMessage, WireSceneLayout, WireTitleLayout,
+    MediaStateMessage, MediaStatus, SceneAnimationStateMessage, SceneLayoutStateMessage,
+    TitleAnimationStateMessage, TitleLayoutStateMessage, WireSceneLayout, WireTitleLayout,
 };
 use fm_protocol::{
     CommandResult, EditLockScope, EngineIdentity, EventCursor, EventMessage, EventPayload,
@@ -427,6 +427,9 @@ pub struct ProjectSnapshot {
     pub animation_preset_states: u16,
     /// The favourite transition buttons, slot 1 first (Protocol 2.36).
     pub transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
+    /// How many `media_state` records complete this snapshot (Protocol
+    /// 2.37).
+    pub media_states: u16,
 }
 
 impl ProjectSnapshot {
@@ -508,6 +511,7 @@ impl ProjectSnapshot {
             grade_states: message.grade_states,
             animation_preset_states: message.animation_preset_states,
             transition_favorites: message.transition_favorites,
+            media_states: message.media_states,
         }
     }
 }
@@ -596,6 +600,11 @@ pub enum DurableChange {
     TransitionFavoriteChanged {
         slot: u8,
         favorite: TransitionFavoriteStatus,
+    },
+    /// A media input's complete status after an accepted media command
+    /// (Protocol 2.37).
+    MediaChanged {
+        status: Box<MediaStatus>,
     },
 }
 
@@ -742,6 +751,7 @@ impl DurableProjectEvent {
             EventPayload::TransitionFavoriteChanged { slot, favorite } => {
                 DurableChange::TransitionFavoriteChanged { slot, favorite }
             }
+            EventPayload::MediaChanged { status, .. } => DurableChange::MediaChanged { status },
             EventPayload::AnimationPresetChanged(change) => {
                 DurableChange::AnimationPresetChanged(change)
             }
@@ -840,9 +850,33 @@ pub struct ProjectState {
     /// not arrived.
     animation_preset_states_pending: u16,
     transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
+    /// Every media input's replicated status (Protocol 2.37), kept current
+    /// by `media_changed` and `media` runtime events.
+    media: BTreeMap<InputId, MediaStatus>,
+    /// `media_state` records the snapshot announced that have not arrived.
+    media_states_pending: u16,
 }
 
 impl ProjectState {
+    /// Returns every media input's replicated status, ascending by input.
+    /// Complete only once [`Self::media_complete`].
+    #[must_use]
+    pub const fn media(&self) -> &BTreeMap<InputId, MediaStatus> {
+        &self.media
+    }
+
+    /// Returns media input `input`'s replicated status.
+    #[must_use]
+    pub fn media_status(&self, input: InputId) -> Option<&MediaStatus> {
+        self.media.get(&input)
+    }
+
+    /// Returns whether every `media_state` the snapshot announced arrived.
+    #[must_use]
+    pub const fn media_complete(&self) -> bool {
+        self.media_states_pending == 0
+    }
+
     /// Returns the replicated project grading. Complete only once
     /// [`Self::grading_complete`].
     #[must_use]
@@ -1335,6 +1369,12 @@ pub enum ModelError {
     InvalidAnimationPresetChange,
     /// A `transition_favorite_changed` names no favourite slot.
     InvalidTransitionFavorite(u8),
+    /// A `media_state` arrived that the applied snapshot did not announce,
+    /// at another revision, out of input order, or for an unknown input.
+    MediaStateMismatch,
+    /// A media status (`media_changed` or a `media` runtime event) names an
+    /// input outside the replicated project.
+    InvalidMediaChange(InputId),
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
@@ -1457,6 +1497,8 @@ impl fmt::Display for ModelError {
             | Self::InvalidGradeChange
             | Self::AnimationPresetStateMismatch
             | Self::InvalidAnimationPresetChange
+            | Self::MediaStateMismatch
+            | Self::InvalidMediaChange(_)
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
             Self::InvalidTransitionFavorite(slot) => write!(
                 formatter,
@@ -1518,6 +1560,12 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
         }
         ModelError::InvalidAnimationPresetChange => formatter
             .write_str("animation preset change does not match the replicated preset library"),
+        ModelError::MediaStateMismatch => {
+            formatter.write_str("media state does not match the snapshot it follows")
+        }
+        ModelError::InvalidMediaChange(input) => {
+            write!(formatter, "media status names unknown input {input}")
+        }
         _ => Ok(()),
     }
 }
@@ -1856,6 +1904,8 @@ impl ClientModel {
             animation_presets: AnimationPresetsStatus::default(),
             animation_preset_states_pending: snapshot.animation_preset_states,
             transition_favorites: snapshot.transition_favorites,
+            media: BTreeMap::new(),
+            media_states_pending: snapshot.media_states,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -2099,6 +2149,55 @@ impl ClientModel {
             return Err(ModelError::AnimationPresetStateMismatch);
         }
         state.animation_preset_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `media_state` records the installed snapshot
+    /// announced (Protocol 2.37), in ascending input order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::MediaStateMismatch`] when the record is at another
+    /// revision, unannounced, out of input order, or for an unknown input;
+    /// the model is then unchanged and the caller must resynchronize.
+    pub fn apply_media_state(&mut self, message: MediaStateMessage) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.status.input.to_domain();
+        if Revision::new(message.revision) != revision
+            || state.media_states_pending == 0
+            || !state.inputs.contains(&input)
+            || state
+                .media
+                .last_key_value()
+                .is_some_and(|(last, _)| last.get() >= input.get())
+        {
+            return Err(ModelError::MediaStateMismatch);
+        }
+        state.media.insert(input, message.status);
+        state.media_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Replaces a media input's status from a `media` runtime event
+    /// (Protocol 2.37). Runtime events never move the durable cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::InvalidMediaChange`] for an input outside the project.
+    pub fn apply_runtime_media(&mut self, status: MediaStatus) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = status.input.to_domain();
+        if !state.inputs.contains(&input) {
+            return Err(ModelError::InvalidMediaChange(input));
+        }
+        state.media.insert(input, status);
         Ok(())
     }
 
@@ -2980,6 +3079,14 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             target: EditLockTarget::Project,
             ..
         } => return Ok(()),
+        DurableChange::MediaChanged { status } => {
+            let input = status.input.to_domain();
+            return if state.inputs.contains(&input) {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidMediaChange(input))
+            };
+        }
         DurableChange::TransitionFavoriteChanged { slot, .. } => {
             return if (1..=TRANSITION_FAVORITE_COUNT).contains(&usize::from(*slot)) {
                 Ok(())
@@ -3114,6 +3221,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.titles.retain(|title| title.input != input);
     state.scenes.retain(|scene| scene.input != input);
     state.grading.remove_input(input);
+    state.media.remove(&input);
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
         .desired_overlays
@@ -3222,6 +3330,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TransitionFavoriteChanged { slot, favorite } => {
             state.transition_favorites[usize::from(slot) - 1] = favorite;
+        }
+        DurableChange::MediaChanged { status } => {
+            state.media.insert(status.input.to_domain(), *status);
         }
         DurableChange::TitleAnimationChanged { inputs, animation } => {
             for title in &mut state.titles {

@@ -6,6 +6,7 @@ mod error;
 mod grade;
 mod grade_edit;
 mod history;
+mod media;
 mod playlist;
 mod scene_animation;
 mod state;
@@ -22,13 +23,21 @@ pub use engine::{
     TitleAirRequirement, TitleCue, TitleCueAction,
 };
 pub use error::{
-    EngineError, InputCatalogueError, ShowError, SnapshotError, TitleRejection, TitleRejectionKind,
+    EngineError, EngineMediaError, InputCatalogueError, ShowError, SnapshotError, TitleRejection,
+    TitleRejectionKind,
 };
+pub use fm_playback;
 pub use grade::{CompiledProjectGrades, GradeCompileError, GradeTarget};
 pub use grade_edit::{EngineGradeEdit, EngineLut};
 pub use history::{
     EditHistoryEntry, EditLockScope, EditRejection, EditRejectionKind, EngineCommandKind,
     MAX_EDIT_HISTORY,
+};
+pub use media::{
+    EngineMediaCommand, EngineMediaFault, EngineMediaFrame, EngineMediaOperation, EngineMediaSeek,
+    EngineMediaSource, EngineMediaStatus, MAX_MEDIA_TRACK_LANGUAGE_BYTES,
+    MAX_MEDIA_TRACK_TITLE_BYTES, MAX_MEDIA_TRACKS, SYNTHETIC_GROWING_START_SECONDS,
+    SYNTHETIC_MEDIA_SECONDS,
 };
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,

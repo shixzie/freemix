@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.36 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.37 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -844,6 +844,58 @@ buttons (`SW-002`, `SW-005`):
   `transition_favorites`); a new project starts with Fade, Wipe, Fly, and
   Cube at 30 frames.
 - 2.35 is refused.
+
+Protocol 2.37 plays media-file inputs (`IN-003`: video files and growing
+files with seek, pause, resume, loop, trim, speed change, end triggers, audio
+track selection, and frame-accurate position):
+
+- Commands, each naming its media `input`:
+  - transport (operator class, realized on the `media` domain):
+    `media_play`, `media_pause`, `media_stop` (stops and cues the trim in
+    point), `media_seek` (exactly one of `frame=<source frame>` or
+    `time=<numerator>/<denominator>` seconds, the frame displayed at that
+    time), and `media_complete_source` (declares a growing file finished);
+  - playback settings (project edits, refused under the project or the
+    input's padlock, persisted): `media_trim` (`trim_in`, `trim_out`
+    `<frame>` or `-` for the file's end, greater than `trim_in`),
+    `media_rate` (`speed_basis_points` 2500 through 40000, 0.25x to 4x),
+    `media_end_action` (`end_action` `stop|hold|loop`),
+    `media_end_trigger_lead` (`end_trigger_lead` 0 through 3600 frames or
+    `-` for none), `media_audio_track` (`audio_track` a stream index the
+    file lists, or `-` for its default track), and `media_audio_policy`
+    (`audio_policy` `mute|resample`, the audio at a speed other than 1x).
+- `event=media_changed` (`frame`, `operation` and its fields prefixed
+  `operation_`, then the input's complete status) announces each accepted
+  media command.
+- A media status is the input and its settings (`trim_in`, `trim_out`,
+  `end_action`, `end_trigger_lead`, `speed_basis_points`, `audio_policy`,
+  `audio_stream`, `growing` `-` or `<live-edge offset frames>:<idle
+  refreshes before completion>`, `start_frame`) then its transport
+  (`available`, `state` `stopped|playing|paused|waiting|ended`, `position`
+  source frame, `position_time` exact seconds in lowest terms,
+  `playable_end`, `frames`, `complete`, `loops`, `audio_track`, `tracks`
+  with each stream's sample rate, channels, default flag, language, and
+  title, `source_rate`, and `fault`). `waiting` is a growing file starved at
+  its live edge.
+- The snapshot gains `media_states` (at most 256); one `kind=media_state`
+  record per media input (ascending input) follows the animation preset
+  states and completes the snapshot.
+- `runtime_event=media` (`frame`, `media_events`, then the complete status)
+  reports what happened on a frame: `seeked`, `end_trigger` (remaining
+  frames before the end), `ended` (with the end action), `looped`,
+  `live_edge_reached`, `resumed`, `source_grew`, `source_completed`,
+  `audio_track_changed`, and `faulted` (`source_missing`,
+  `source_truncated`, `source_replaced`, `source_rewritten`,
+  `source_changed`, `unsupported`, `decode_failed`, `tool_unavailable`). It
+  is also sent once a second as a position sample while the transport
+  advances.
+- An end trigger of the input on air in a playing playlist advances the
+  playlist (a journaled `playlist_control` `next`), so a clip's end can
+  drive the running order.
+- Durability: the settings are project state (schema 36, each media input's
+  `playback`); the transport itself is runtime state and a restored show
+  cues each input at its `start_frame`, stopped.
+- 2.36 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

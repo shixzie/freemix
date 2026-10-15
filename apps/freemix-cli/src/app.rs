@@ -122,7 +122,10 @@ pub fn run(command: Command) -> AppResult<()> {
                 &path,
                 input_id(input)?,
                 name,
-                InputKind::Media { asset_uri },
+                InputKind::Media {
+                    asset_uri,
+                    playback: fm_model::MediaPlaybackSettings::default(),
+                },
             )?;
         }
         Command::MediaInputRelink {
@@ -507,6 +510,52 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::InputMediaList { path } => {
+            let project = inspect_engine(&path)?;
+            for status in project.engine.media_statuses() {
+                println!(
+                    "{}",
+                    remote::format_media_status(&fm_control::wire_media_status(&status))
+                );
+            }
+        }
+        Command::InputMedia {
+            target,
+            input,
+            operation,
+            key,
+            expected_revision,
+        } => match target {
+            crate::args::MediaTarget::Local(path) => {
+                if operation.is_transport() {
+                    return Err(AppFailure(format!(
+                        "media {} drives a playing transport, which only a running freemixd has; use remote-input-media-{}",
+                        operation.token(),
+                        crate::args::cli_token(operation.token())
+                    ))
+                    .into());
+                }
+                mutate(
+                    &path,
+                    EngineCommand::Media(fm_engine::EngineMediaCommand {
+                        input: input_id(input)?,
+                        operation: fm_control::domain_media_operation(operation),
+                    }),
+                    1,
+                    key,
+                    expected_revision,
+                )?;
+            }
+            crate::args::MediaTarget::Remote(address) => remote::execute(
+                address,
+                fm_protocol::CommandPayload::Media {
+                    input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                    operation,
+                },
+                key,
+                expected_revision,
+            )?,
+        },
         Command::TransitionFavoriteSet {
             path,
             slot,
@@ -1898,6 +1947,17 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
     project.set_transition_favorites(*snapshot.show().transition_favorites());
+    for (&input, settings) in snapshot.show().media_inputs() {
+        if project.media_playback(input) != Some(settings) {
+            project
+                .set_media_playback(input, *settings)
+                .map_err(|error| {
+                    AppFailure(format!(
+                        "project cannot take media input {input}'s playback: {error}"
+                    ))
+                })?;
+        }
+    }
     let stored = StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -3021,7 +3081,14 @@ fn replace_input_solid(path: &Path, input: InputId, color: SolidColor) -> AppRes
 fn replace_input_media(path: &Path, input: InputId, asset_uri: String) -> AppResult<()> {
     update_project(path, |project| {
         project
-            .replace_input_source(input, InputKind::Media { asset_uri }, Vec::new())
+            .replace_input_source(
+                input,
+                InputKind::Media {
+                    asset_uri,
+                    playback: fm_model::MediaPlaybackSettings::default(),
+                },
+                Vec::new(),
+            )
             .map_err(Into::into)
     })
 }
@@ -3080,13 +3147,18 @@ fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
 }
 
 /// The project-owned state the engine edits: the favourite transition
-/// buttons and the padlocks. The persisted padlock is engine state, so local
+/// buttons, the padlocks, and the media inputs' playback settings. The persisted padlock is engine state, so local
 /// engine commands honor it exactly as the daemon does.
 fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppResult<()> {
     show.restore_transition_favorites(*project.transition_favorites());
     show.set_project_locked(project.project_locked());
     for &input in project.locked_inputs() {
         show.set_input_locked(input, true)?;
+    }
+    for input in project.inputs() {
+        if let InputKind::Media { playback, .. } = &input.kind {
+            show.set_media_input(input.id, *playback)?;
+        }
     }
     Ok(())
 }
@@ -4266,6 +4338,9 @@ Usage:
   freemix-cli input-replace-solid <show.freemix> <input-id> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255>
   freemix-cli input-replace-media <show.freemix> <input-id> <asset://key>
   freemix-cli input-replace-scene <show.freemix> <input-id> <existing-scene-id>
+  freemix-cli input-media-list <show.freemix>
+  freemix-cli input-media-<trim|rate|end-action|end-trigger|audio-track|audio-policy> <show.freemix> <input-id> <operands> [--key <key>] [--expect <revision>]
+      trim <in> <out|end>; rate <2500..=40000 basis points>; end-action <stop|hold|loop>; end-trigger <frames|off>; audio-track <stream|none>; audio-policy <mute|resample>
   freemix-cli status <show.freemix>
   freemix-cli journal-recover <show.freemix>
   freemix-cli inputs <show.freemix>
@@ -4328,6 +4403,8 @@ Usage:
   freemix-cli remote-zoom <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-transition <127.0.0.1:port> <kind> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-transition-favorite-set <127.0.0.1:port> <slot:1..=4> <cut|kind|stinger-N> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-media-<play|pause|stop|complete|seek|trim|rate|end-action|end-trigger|audio-track|audio-policy> <127.0.0.1:port> <input-id> <operands> [--key <key>] [--expect <revision>]
+      seek <frame|N/Ds|Ns>; complete declares a growing file finished
   freemix-cli remote-stinger <127.0.0.1:port> <slot:1..=8> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-configure <127.0.0.1:port> <slot:1..=8> <media-input> <true|false> <cut-point-frames> <muted|stinger-only|mix-with-program> <cut|fade|keep-program> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-remove <127.0.0.1:port> <slot:1..=8> [--key <key>] [--expect <revision>]

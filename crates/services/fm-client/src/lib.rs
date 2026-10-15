@@ -186,6 +186,9 @@ pub enum Intake {
     /// An `animation_preset_state` completed one library preset the
     /// snapshot announced (Protocol 2.34).
     AnimationPresetStateApplied,
+    /// A `media_state` completed one media input the snapshot announced
+    /// (Protocol 2.37).
+    MediaStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -603,6 +606,10 @@ impl Client {
             WireMessage::AnimationPresetState(state) => {
                 self.apply_animation_preset_state(state)?;
                 Ok(Intake::AnimationPresetStateApplied)
+            }
+            WireMessage::MediaState(state) => {
+                self.apply_media_state(state)?;
+                Ok(Intake::MediaStateApplied)
             }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
@@ -1132,6 +1139,59 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one media input the snapshot announced with its
+    /// `media_state` (Protocol 2.37).
+    ///
+    /// Media states arrive only while synchronizing from a snapshot, in
+    /// ascending input order after every other follow-on record and before
+    /// any event.
+    ///
+    /// # Errors
+    ///
+    /// A media state in any other state, at another revision, beyond the
+    /// announced count, out of order, or before the earlier follow-on records
+    /// forces a fresh-snapshot reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_media_state(
+        &mut self,
+        state: fm_protocol::MediaStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_media_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1151,6 +1211,7 @@ impl Client {
                 && state.scene_animations_complete()
                 && state.scene_layouts_complete()
                 && state.animation_presets_complete()
+                && state.media_complete()
         })
     }
 
@@ -1310,6 +1371,9 @@ impl Client {
                 fade_to_black: *fade_to_black,
             })?;
         }
+        if let RuntimeLifecycleEvent::Media { status, .. } = &event.event {
+            self.model.apply_runtime_media(status.as_ref().clone())?;
+        }
         self.runtime_server = Some(event.server);
         self.runtime_sequence = Some((event.generation, event.sequence));
         Ok(())
@@ -1379,6 +1443,7 @@ impl Client {
             | CommandPayload::Zoom { .. }
             | CommandPayload::Transition { .. }
             | CommandPayload::SetTransitionFavorite { .. }
+            | CommandPayload::Media { .. }
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

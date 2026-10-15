@@ -209,7 +209,7 @@ impl ProjectStore {
             .inputs()
             .iter()
             .filter_map(|input| match &input.kind {
-                InputKind::Media { asset_uri } => Some(asset_uri.clone()),
+                InputKind::Media { asset_uri, .. } => Some(asset_uri.clone()),
                 _ => None,
             })
             // A media URI also used by a title was already placed verbatim.
@@ -568,8 +568,12 @@ fn append_inputs(
             });
         }
         let kind = match &input.kind {
-            InputKind::Media { asset_uri: uri } => InputKind::Media {
+            InputKind::Media {
+                asset_uri: uri,
+                playback,
+            } => InputKind::Media {
                 asset_uri: maps.uris.get(uri).cloned().unwrap_or_else(|| uri.clone()),
+                playback: *playback,
             },
             InputKind::Scene {
                 scene_id,

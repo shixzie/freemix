@@ -13,11 +13,11 @@
 //! [`MAX_PRESET_FILE_BYTES`].
 //!
 //! ```text
-//! {"schema_version": 35, "kind": "animation_preset", "name": "Swoosh",
+//! {"schema_version": 36, "kind": "animation_preset", "name": "Swoosh",
 //!  "phase": "in", "timebase": "30/1", "frames": 15, "width": 400,
 //!  "height": 100, "tracks": [...]}
 //!
-//! {"schema_version": 35, "kind": "grade", "name": "Warm", "grade": GRADE,
+//! {"schema_version": 36, "kind": "grade", "name": "Warm", "grade": GRADE,
 //!  "lut": null
 //!       | {"name": "Film", "strength_permille": 800, "cube": "<.cube text>"}
 //!       | {"name": "Film", "strength_permille": 800, "file": "Warm.cube"}}
@@ -51,7 +51,7 @@ use crate::json::{Object, SyntaxError, escape_string};
 
 /// The project schema version preset files carry; any other is refused.
 /// The project store checks it equals its current schema.
-pub const SCHEMA_VERSION: u32 = 35;
+pub const SCHEMA_VERSION: u32 = 36;
 /// Longest grade name, in bytes (the project grade library bound).
 pub const MAX_GRADE_NAME_BYTES: usize = 128;
 /// Longest LUT name, in bytes (the project LUT bound).

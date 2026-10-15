@@ -18,11 +18,16 @@ use std::{
 mod animation_preset;
 mod automation;
 mod grade;
+mod media;
 mod playlist;
 mod scene_animation;
 mod title_animation;
 mod title_layout;
 mod transition;
+pub use media::{
+    domain_media_operation, wire_media_events, wire_media_fault, wire_media_operation,
+    wire_media_status,
+};
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
 };
@@ -750,6 +755,23 @@ pub struct ControlService<A = Policy> {
     active_fade_to_black: Option<ActiveTransition>,
     runtime_sequence_generation: u64,
     runtime_sequence: u64,
+    /// Each media input's transport state on the last published frame.
+    media_published: HashMap<InputId, Option<fm_engine::fm_playback::MediaState>>,
+    /// End triggers fired since the authority last took them, oldest first
+    /// (bounded by [`MAX_PENDING_MEDIA_END_TRIGGERS`]).
+    media_end_triggers: Vec<MediaEndTrigger>,
+}
+
+/// How many fired media end triggers wait for the authority at most; older
+/// ones are dropped first.
+pub const MAX_PENDING_MEDIA_END_TRIGGERS: usize = 64;
+
+/// A media input's end trigger fired on `frame` (IN-003): the authority may
+/// feed it to playlist automation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MediaEndTrigger {
+    pub input: InputId,
+    pub frame: u64,
 }
 
 impl<A: AuthorizationHook> ControlService<A> {
@@ -788,7 +810,85 @@ impl<A: AuthorizationHook> ControlService<A> {
             active_fade_to_black: None,
             runtime_sequence_generation,
             runtime_sequence: 0,
+            media_published: HashMap::new(),
+            media_end_triggers: Vec::new(),
         }
+    }
+
+    /// Takes the media end triggers fired since the last call, oldest first.
+    pub fn take_media_end_triggers(&mut self) -> Vec<MediaEndTrigger> {
+        std::mem::take(&mut self.media_end_triggers)
+    }
+
+    /// Returns the `media_state` records a session writes after
+    /// [`Self::animation_preset_states`], last of a snapshot's follow-on
+    /// records: one per media input in ascending input order, exactly as many
+    /// as the snapshot announces (Protocol 2.37).
+    #[must_use]
+    pub fn media_states(&self) -> Vec<fm_protocol::MediaStateMessage> {
+        media::media_states(&self.engine)
+    }
+
+    /// Media input `input`'s projected status (see
+    /// [`Engine::media_status`]).
+    #[must_use]
+    pub fn media_status(&self, input: InputId) -> Option<fm_engine::EngineMediaStatus> {
+        self.engine.media_status(input)
+    }
+
+    /// Every media input's projected status, ascending by input.
+    #[must_use]
+    pub fn media_statuses(&self) -> Vec<fm_engine::EngineMediaStatus> {
+        self.engine.media_statuses()
+    }
+
+    /// Whether any media transport changes on the next frame (see
+    /// [`Engine::media_advancing`]).
+    #[must_use]
+    pub fn media_advancing(&self) -> bool {
+        self.engine.media_advancing()
+    }
+
+    /// Opens or closes a media input's source (see
+    /// [`Engine::set_media_source`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's refusal.
+    pub fn set_media_source(
+        &mut self,
+        input: InputId,
+        source: Option<fm_engine::EngineMediaSource>,
+    ) -> Result<(), fm_engine::EngineMediaError> {
+        self.engine.set_media_source(input, source)
+    }
+
+    /// Reports an external source's growth or completion (see
+    /// [`Engine::update_media_source`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's refusal.
+    pub fn update_media_source(
+        &mut self,
+        input: InputId,
+        frames: u64,
+        complete: bool,
+    ) -> Result<(), fm_engine::EngineMediaError> {
+        self.engine.update_media_source(input, frames, complete)
+    }
+
+    /// Faults a media input (see [`Engine::set_media_fault`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's refusal.
+    pub fn set_media_fault(
+        &mut self,
+        input: InputId,
+        fault: fm_engine::EngineMediaFault,
+    ) -> Result<(), fm_engine::EngineMediaError> {
+        self.engine.set_media_fault(input, fault)
     }
 
     #[must_use]
@@ -1260,6 +1360,57 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.tick_with_realizer_inner(server, realizer, true)
     }
 
+    /// Queues the end triggers fired on `frame` for the playlist and, when
+    /// publishing, returns its `media` runtime events.
+    fn observe_media_frames(
+        &mut self,
+        server: &ServerIdentity,
+        frame: &FrameResult,
+        generation: u64,
+        publish: bool,
+    ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
+        for media_frame in &frame.media {
+            let fired = media_frame.tick.as_ref().is_some_and(|tick| {
+                tick.events.iter().any(|event| {
+                    matches!(event, fm_engine::fm_playback::MediaEvent::EndTrigger { .. })
+                })
+            });
+            if fired {
+                if self.media_end_triggers.len() == MAX_PENDING_MEDIA_END_TRIGGERS {
+                    self.media_end_triggers.remove(0);
+                }
+                self.media_end_triggers.push(MediaEndTrigger {
+                    input: media_frame.input,
+                    frame: frame.frame.get(),
+                });
+            }
+        }
+        let mut events = Vec::new();
+        if !publish {
+            return Ok(events);
+        }
+        let frames_per_second = u64::from(self.engine.frame_rate().numerator())
+            .div_ceil(u64::from(self.engine.frame_rate().denominator()));
+        let revision = self.engine.revision().get();
+        for media_frame in &frame.media {
+            let state = media_frame.tick.as_ref().map(|tick| tick.state);
+            let previous = self
+                .media_published
+                .insert(media_frame.input, state)
+                .flatten();
+            if !media::publishes(media_frame, previous, frame.frame.get(), frames_per_second) {
+                continue;
+            }
+            let event = RuntimeLifecycleEvent::Media {
+                frame: frame.frame.get(),
+                events: media::wire_media_events(media_frame),
+                status: Box::new(media::runtime_status(&self.engine, media_frame.input)),
+            };
+            events.push(self.runtime_event(server, revision, generation, event)?);
+        }
+        Ok(events)
+    }
+
     fn tick_with_realizer_inner<E>(
         &mut self,
         server: &ServerIdentity,
@@ -1346,6 +1497,16 @@ impl<A: AuthorizationHook> ControlService<A> {
                 );
             }
         }
+
+        runtime_events.extend(
+            self.observe_media_frames(
+                server,
+                &frame,
+                current_generation,
+                publish_runtime_realization,
+            )
+            .map_err(TickWithRealizerError::Tick)?,
+        );
 
         self.snapshot = snapshot_record(&self.engine, &self.identity);
         let live_events = runtime_events
@@ -1477,6 +1638,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. } => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
+        EngineCommand::Media(_) => "media",
         _ => "switcher",
     }
 }
@@ -1502,6 +1664,16 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
 /// template like a field save, so they are `EditProject` too. Assigning a
 /// favourite transition button configures switching like a Stinger slot, so
 /// it is `Transition`.
+/// Media transport is an operator control like a title take; a media
+/// playback setting is a project edit (Protocol 2.37).
+const fn media_command_class(operation: fm_protocol::MediaOperation) -> CommandClass {
+    if operation.is_transport() {
+        CommandClass::Transition
+    } else {
+        CommandClass::EditProject
+    }
+}
+
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
         CommandPayload::SetTitleAnimation { .. }
@@ -1535,6 +1707,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
+        CommandPayload::Media { operation, .. } => media_command_class(*operation),
         CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
         CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
         CommandPayload::Cut
@@ -1643,6 +1816,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         },
         CommandPayload::SetTransitionFavorite { slot, favorite } => {
             transition::set_favorite_command(*slot, *favorite)
+        }
+        CommandPayload::Media { input, operation } => {
+            media::media_engine_command(*input, *operation)
         }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
@@ -2358,6 +2534,19 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     }) {
         return grade::grade_changed(engine, edit);
     }
+    if let Some((input, frame, operation)) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::MediaChanged {
+            input,
+            frame,
+            operation,
+        } = &event.payload
+        else {
+            return None;
+        };
+        Some((*input, *frame, *operation))
+    }) {
+        return media::media_changed(engine, input, frame, operation);
+    }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
             return None;
@@ -2577,6 +2766,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
         grade_states: grade::grade_state_count(engine),
         animation_preset_states: animation_preset::animation_preset_state_count(engine),
         transition_favorites: transition::wire_favorites(engine),
+        media_states: media::media_state_count(engine),
     };
     SnapshotRecord {
         cursor: EventCursor {

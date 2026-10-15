@@ -19,6 +19,7 @@ pub enum ShowError {
     DuplicateOutputName,
     DuplicateOutput(OutputId),
     UnknownInput(InputId),
+    InvalidMediaPlayback(InputId, fm_model::MediaPlaybackSettingsError),
     Switcher(SwitcherError),
 }
 
@@ -40,12 +41,35 @@ impl fmt::Display for ShowError {
                 write!(formatter, "show output identifier {output} is duplicated")
             }
             Self::UnknownInput(input) => write!(formatter, "show does not contain input {input}"),
+            Self::InvalidMediaPlayback(input, error) => {
+                write!(formatter, "media input {input} playback settings: {error}")
+            }
             Self::Switcher(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for ShowError {}
+
+/// Refusal of a media source report (IN-003).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EngineMediaError {
+    /// The input is not a media input of the show.
+    NotMediaInput(InputId),
+    /// The source's rates cannot drive a transport.
+    Playback(fm_playback::MediaControlError),
+}
+
+impl fmt::Display for EngineMediaError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotMediaInput(input) => write!(formatter, "input {input} is not a media input"),
+            Self::Playback(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for EngineMediaError {}
 
 /// Refusal of a live input add or remove.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

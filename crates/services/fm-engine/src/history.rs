@@ -130,6 +130,13 @@ impl EngineCommand {
             | Self::SceneAnimation(_)
             | Self::AnimationPreset(_)
             | Self::SetTransitionFavorite { .. } => EngineCommandKind::ProjectEdit,
+            Self::Media(command) => {
+                if command.operation.is_transport() {
+                    EngineCommandKind::LiveOperation
+                } else {
+                    EngineCommandKind::ProjectEdit
+                }
+            }
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -744,6 +751,7 @@ pub(crate) fn check_edit_locks(
         EngineCommand::RenameInput { input, .. }
         | EngineCommand::RemoveInput { input }
         | EngineCommand::Grade(EngineGradeEdit::SetInput { input, .. })
+        | EngineCommand::Media(crate::EngineMediaCommand { input, .. })
             if state.is_input_locked(*input) =>
         {
             Err(EditRejection::InputLocked(*input))

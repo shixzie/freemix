@@ -2,6 +2,7 @@
 
 mod codec;
 mod dto;
+mod media;
 mod monitor_image;
 mod version;
 
@@ -63,6 +64,15 @@ pub use dto::{
     TitleAnimationStateMessage, TitleLayoutStateMessage, TitlePreviewFrameMessage,
     TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
     WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
+};
+pub use media::{
+    MAX_MEDIA_AUDIO_TRACKS, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_EVENTS, MAX_MEDIA_FRAME,
+    MAX_MEDIA_IDLE_COMPLETION_REFRESHES, MAX_MEDIA_LIVE_EDGE_OFFSET_FRAMES,
+    MAX_MEDIA_SPEED_BASIS_POINTS, MAX_MEDIA_STATES, MAX_MEDIA_TRACK_LANGUAGE_BYTES,
+    MAX_MEDIA_TRACK_TITLE_BYTES, MIN_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MIN_MEDIA_SPEED_BASIS_POINTS,
+    MediaAudioPolicy, MediaAudioTrack, MediaEndAction, MediaEvent, MediaFault, MediaGrowingStatus,
+    MediaOperation, MediaSeekTarget, MediaSettingsStatus, MediaStateMessage, MediaStatus,
+    MediaTime, MediaTransportState, MediaTransportStatus,
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,

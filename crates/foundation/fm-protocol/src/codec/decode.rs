@@ -10,17 +10,18 @@ use crate::{
     FadeToBlackState, GradeChange, GradeEntry, GradeStateMessage, HandshakeOutcome,
     HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
     InputAudioMeters, InputAudioStripStatus, LiveInputSource, MAX_ANIMATION_PRESETS,
-    MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind, ManualTransitionPosition,
-    ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
-    MonitorTap, OverlayStatus, PlaylistOperation, PlaylistStateMessage, ResumeCursor,
-    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent,
-    SceneAnimationStateMessage, SceneLayoutStateMessage, ScenePreviewRequest, ServerIdentity,
-    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
-    StructuredError, TitleAnimationStateMessage, TitleFieldStatus, TitleLayoutStateMessage,
-    TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireInputId,
-    WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireSceneLayerId,
-    WireStingerSlotId, WireStreamTargetId, WireTitleElementId,
+    MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, MAX_MEDIA_STATES, ManualTransitionKind,
+    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MediaStateMessage,
+    MonitorFrameMessage, MonitorFrameOrigin, MonitorTap, OverlayStatus, PlaylistOperation,
+    PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
+    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage,
+    ScenePreviewRequest, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
+    StreamStatusMessage, StreamStatusSample, StructuredError, TitleAnimationStateMessage,
+    TitleFieldStatus, TitleLayoutStateMessage, TitlePreviewFrameMessage, TitlePreviewRequest,
+    TitleStateMessage, WireGradeSource, WireInputId, WireMessage, WireOutputId,
+    WireOverlayChannelId, WireRecorderSlot, WireSceneLayerId, WireStingerSlotId,
+    WireStreamTargetId, WireTitleElementId,
 };
 
 use super::animation::{
@@ -33,6 +34,10 @@ use super::grade::{
     validate_lut_size, validate_preset_name,
 };
 use super::layout::decode_layout;
+use super::media::{
+    EventOperationFields, FieldSource, decode_media_events, decode_media_operation,
+    decode_media_status, operation_payload_name,
+};
 use super::playlist::{
     decode_frame_rate, decode_optional_entry, decode_playlist_entries, decode_playlist_start,
     decode_playlist_state, parse_playlist_loop,
@@ -147,6 +152,11 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "animation_preset_state" => {
             WireMessage::AnimationPresetState(decode_animation_preset_state(&mut fields)?)
         }
+        "media_state" => WireMessage::MediaState(MediaStateMessage {
+            revision: fields.canonical_required("revision")?,
+            frame: fields.canonical_required("frame")?,
+            status: decode_media_status(&mut |name| fields.required(name))?,
+        }),
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
     fields.finish()?;
@@ -215,6 +225,16 @@ impl LineDecoder {
 }
 
 struct Fields(BTreeMap<String, String>);
+
+impl FieldSource for Fields {
+    fn required(&mut self, name: &'static str) -> Result<String, CodecError> {
+        Self::required(self, name)
+    }
+
+    fn optional(&mut self, name: &'static str) -> Option<String> {
+        Self::optional(self, name)
+    }
+}
 
 impl Fields {
     fn parse<'a>(parts: impl Iterator<Item = &'a str>) -> Result<Self, CodecError> {
@@ -413,6 +433,15 @@ fn decode_command_payload(
             kind: decode_auto_transition_kind(fields.required("kind")?, "kind")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
+        media if media.starts_with("media_") => {
+            let input = fields.canonical_input("input")?;
+            let operation =
+                decode_media_operation(media, fields)?.ok_or_else(|| CodecError::InvalidField {
+                    field: "payload",
+                    value: media.to_owned(),
+                })?;
+            CommandPayload::Media { input, operation }
+        }
         "transition_favorite_set" => CommandPayload::SetTransitionFavorite {
             slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
             favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,
@@ -1420,6 +1449,16 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         grade_states,
         animation_preset_states,
         transition_favorites: decode_favorites(&fields.required("transition_favorites")?)?,
+        media_states: {
+            let value = fields.required("media_states")?;
+            parse_canonical_u64(&value)
+                .and_then(|count| u16::try_from(count).ok())
+                .filter(|count| *count <= MAX_MEDIA_STATES)
+                .ok_or(CodecError::InvalidField {
+                    field: "media_states",
+                    value,
+                })?
+        },
     })
 }
 
@@ -1941,6 +1980,25 @@ fn invalid_stingers(value: &str) -> CodecError {
     }
 }
 
+/// `event=media_changed` (Protocol 2.37).
+fn decode_media_changed(fields: &mut Fields) -> Result<EventPayload, CodecError> {
+    let frame = fields.canonical_required("frame")?;
+    let token = fields.required("operation")?;
+    let operation = operation_payload_name(&token)
+        .map(|name| decode_media_operation(name, &mut EventOperationFields(fields)))
+        .transpose()?
+        .flatten()
+        .ok_or(CodecError::InvalidField {
+            field: "operation",
+            value: token,
+        })?;
+    Ok(EventPayload::MediaChanged {
+        frame,
+        operation,
+        status: Box::new(decode_media_status(&mut |name| fields.required(name))?),
+    })
+}
+
 fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
     let event = fields.required("event")?;
     let payload = match event.as_str() {
@@ -1982,6 +2040,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             recorder: decode_recorder_slot(fields)?,
             active: fields.boolean("active")?,
         },
+        "media_changed" => decode_media_changed(fields)?,
         "transition_favorite_changed" => EventPayload::TransitionFavoriteChanged {
             slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
             favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,
@@ -2241,6 +2300,11 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         }
         "superseded" => RuntimeLifecycleEvent::Superseded {
             by_revision: fields.parse_required("by_revision")?,
+        },
+        "media" => RuntimeLifecycleEvent::Media {
+            frame: fields.canonical_required("frame")?,
+            events: decode_media_events(&fields.required("media_events")?)?,
+            status: Box::new(decode_media_status(&mut |name| fields.required(name))?),
         },
         _ => {
             return Err(CodecError::InvalidField {

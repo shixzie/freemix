@@ -4,7 +4,7 @@
 //! # Approach
 //!
 //! The audit renders the real [`StudioShell`] headlessly over rich fixtures
-//! (each side tab, every dialog, the advanced controls behind each
+//! (each side tab, including the Media tab's transport bars, every dialog, the advanced controls behind each
 //! disclosure, a session without permissions, a live manual transition, a
 //! locked project, Fade-to-Black and a running playlist, toasts, and a
 //! disconnected console) in English
@@ -280,6 +280,7 @@ fn model(variant: Variant) -> ClientModel {
         playlist_follows: true,
         grade_states: 4,
         animation_preset_states: 0,
+        media_states: 2,
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
     let mut model = ClientModel::new(project);
@@ -418,6 +419,80 @@ fn model(variant: Variant) -> ClientModel {
                 }
             } else {
                 PlaylistRunState::Stopped
+            },
+        })
+        .unwrap();
+    // IN-003: the Guest input is a finished file, cued and editable; the
+    // (padlocked) Clip input plays a growing file that caught up with its
+    // writer: the live badge, the waiting-for-data indicator, Finish, and a
+    // two-language track menu.
+    let track = |stream_index: u32, language: &str, default: bool| fm_protocol::MediaAudioTrack {
+        stream_index,
+        sample_rate: 48_000,
+        channels: 2,
+        language: Some(language.into()),
+        title: None,
+        default,
+    };
+    model
+        .apply_media_state(fm_protocol::MediaStateMessage {
+            revision: 10,
+            frame: 100,
+            status: fm_protocol::MediaStatus {
+                input: wire(4),
+                settings: fm_protocol::MediaSettingsStatus::default(),
+                transport: fm_protocol::MediaTransportStatus {
+                    available: true,
+                    state: fm_protocol::MediaTransportState::Stopped,
+                    position: 0,
+                    position_time: fm_protocol::MediaTime::ZERO,
+                    playable_end: 250,
+                    frames: 250,
+                    complete: true,
+                    loops: 0,
+                    audio_track: Some(1),
+                    tracks: vec![track(1, "eng", true)],
+                    source_rate: Some(FrameRate::new(25, 1).unwrap()),
+                    fault: None,
+                },
+            },
+        })
+        .unwrap();
+    model
+        .apply_media_state(fm_protocol::MediaStateMessage {
+            revision: 10,
+            frame: 100,
+            status: fm_protocol::MediaStatus {
+                input: wire(5),
+                settings: fm_protocol::MediaSettingsStatus {
+                    trim_in: 25,
+                    end_action: fm_protocol::MediaEndAction::Loop,
+                    speed_basis_points: 15_000,
+                    audio_stream: Some(2),
+                    growing: Some(fm_protocol::MediaGrowingStatus {
+                        live_edge_offset_frames: 12,
+                        idle_completion_refreshes: 0,
+                    }),
+                    start_frame: 25,
+                    ..fm_protocol::MediaSettingsStatus::default()
+                },
+                transport: fm_protocol::MediaTransportStatus {
+                    available: true,
+                    state: fm_protocol::MediaTransportState::Waiting,
+                    position: 488,
+                    position_time: fm_protocol::MediaTime {
+                        numerator: 488,
+                        denominator: 25,
+                    },
+                    playable_end: 488,
+                    frames: 500,
+                    complete: false,
+                    loops: 0,
+                    audio_track: Some(2),
+                    tracks: vec![track(1, "eng", true), track(2, "spa", false)],
+                    source_rate: Some(FrameRate::new(25, 1).unwrap()),
+                    fault: None,
+                },
             },
         })
         .unwrap();
@@ -628,6 +703,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         ("stingers", SideTab::Stingers),
         ("titles", SideTab::Titles),
         ("playlist", SideTab::Playlist),
+        ("media", SideTab::Media),
     ];
     for (operator, role) in [(true, "operator"), (false, "viewer")] {
         for (tab_name, tab) in tabs {

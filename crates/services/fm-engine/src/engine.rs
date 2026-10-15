@@ -314,6 +314,10 @@ pub enum EngineCommand {
         slot: u8,
         favorite: fm_model::TransitionFavorite,
     },
+    /// Controls a media-file input (IN-003). Transport operations are live
+    /// operations; settings changes are project edits (padlocked, without
+    /// an undo entry). Realized on the target frame (see [`crate::media`]).
+    Media(crate::EngineMediaCommand),
 }
 
 /// What an accepted title command does on air.
@@ -422,6 +426,14 @@ pub enum EngineEvent {
     /// [`ShowState::transition_favorites`].
     TransitionFavoriteChanged {
         slot: u8,
+    },
+    /// A media command was accepted for `frame`; the input's settings
+    /// afterwards are read from [`ShowState::media_settings`] and its
+    /// projected transport from [`Engine::media_status`].
+    MediaChanged {
+        input: InputId,
+        frame: u64,
+        operation: crate::EngineMediaOperation,
     },
 }
 
@@ -545,6 +557,9 @@ pub struct FrameResult {
     /// input, with the pose to render it in (GX-011 stage 5). A scene
     /// absent here (shown any other way, or restored) holds.
     pub scenes: Vec<crate::EngineSceneAir>,
+    /// Every media input with an open source, a realized command, or a
+    /// fault this frame, ascending by input (IN-003).
+    pub media: Vec<crate::EngineMediaFrame>,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -677,6 +692,9 @@ pub struct Engine {
     /// Whether a scene clip can be carried to clients (see
     /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
     scene_clip_bound: Option<crate::SceneClipBound>,
+    /// Media-file transports by input (IN-003). Runtime state: never
+    /// snapshotted, so a restored source is cued at its start frame.
+    media: BTreeMap<InputId, crate::media::MediaRuntime>,
 }
 
 impl Engine {
@@ -699,7 +717,109 @@ impl Engine {
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             scene_clip_bound: None,
+            media: BTreeMap::new(),
         }
+    }
+
+    /// Opens (`Some`) or closes (`None`) media input `input`'s source, cued
+    /// at its start frame and stopped, clearing any fault.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineMediaError::NotMediaInput`] for an input that
+    /// is not a media input of the show, and
+    /// [`crate::EngineMediaError::Playback`] when the source's rates cannot
+    /// drive a transport (the input is faulted as unsupported).
+    pub fn set_media_source(
+        &mut self,
+        input: InputId,
+        source: Option<crate::EngineMediaSource>,
+    ) -> Result<(), crate::EngineMediaError> {
+        let settings = *self
+            .show()
+            .media_settings(input)
+            .ok_or(crate::EngineMediaError::NotMediaInput(input))?;
+        let runtime = self.media.entry(input).or_default();
+        if let Err(error) = runtime.open(source, &settings, self.frame_rate) {
+            runtime.fault(crate::EngineMediaFault::Unsupported);
+            return Err(crate::EngineMediaError::Playback(error));
+        }
+        Ok(())
+    }
+
+    /// Reports an external source's current frame count and completion. A
+    /// shrinking source faults as truncated; a completed source that
+    /// changes faults as changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineMediaError::NotMediaInput`] for an input that
+    /// is not a media input of the show.
+    pub fn update_media_source(
+        &mut self,
+        input: InputId,
+        frames: u64,
+        complete: bool,
+    ) -> Result<(), crate::EngineMediaError> {
+        if self.show().media_settings(input).is_none() {
+            return Err(crate::EngineMediaError::NotMediaInput(input));
+        }
+        self.media
+            .entry(input)
+            .or_default()
+            .update_source(frames, complete);
+        Ok(())
+    }
+
+    /// Closes media input `input`'s source with `fault`; the next frame
+    /// reports it once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineMediaError::NotMediaInput`] for an input that
+    /// is not a media input of the show.
+    pub fn set_media_fault(
+        &mut self,
+        input: InputId,
+        fault: crate::EngineMediaFault,
+    ) -> Result<(), crate::EngineMediaError> {
+        if self.show().media_settings(input).is_none() {
+            return Err(crate::EngineMediaError::NotMediaInput(input));
+        }
+        self.media.entry(input).or_default().fault(fault);
+        Ok(())
+    }
+
+    /// Media input `input`'s status once every accepted media command is
+    /// realized, or `None` for an input that is not a media input.
+    #[must_use]
+    pub fn media_status(&self, input: InputId) -> Option<crate::EngineMediaStatus> {
+        let settings = self.show().media_settings(input)?;
+        Some(self.media.get(&input).map_or_else(
+            || crate::media::MediaRuntime::default().status(input, settings),
+            |runtime| runtime.status(input, settings),
+        ))
+    }
+
+    /// Every media input's status (see [`Self::media_status`]), ascending
+    /// by input.
+    #[must_use]
+    pub fn media_statuses(&self) -> Vec<crate::EngineMediaStatus> {
+        self.show()
+            .media_inputs()
+            .keys()
+            .filter_map(|input| self.media_status(*input))
+            .collect()
+    }
+
+    /// Whether any media transport changes on the next frame absent new
+    /// commands: one is playing or waiting, a synthetic source is still
+    /// growing, or a command or fault is still to be realized.
+    #[must_use]
+    pub fn media_advancing(&self) -> bool {
+        self.media
+            .values()
+            .any(crate::media::MediaRuntime::advancing)
     }
 
     /// Refuses every title animation edit (undo and redo included) whose
@@ -1063,6 +1183,13 @@ impl Engine {
             ) => self.realized_switcher.on_air_usage(*input),
             _ => None,
         };
+        let media_tracks = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(EngineCommand::Media(command)) => self
+                .media
+                .get(&command.input)
+                .and_then(crate::media::MediaRuntime::track_indexes),
+            _ => None,
+        };
         let staged_resolution = resolution.clone();
         let title_clip_bound = self.title_clip_bound;
         let scene_clip_bound = self.scene_clip_bound;
@@ -1091,6 +1218,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::SceneAnimation(_))
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
+                && !matches!(&command, EngineCommand::Media(_))
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1115,6 +1243,7 @@ impl Engine {
                 playlist,
                 title_clip_bound,
                 scene_clip_bound,
+                media_tracks,
             })
         });
 
@@ -1136,6 +1265,12 @@ impl Engine {
             }
             if target_frame > next_frame {
                 self.playlist_hold = Some(target_frame);
+            }
+            if let EngineCommand::Media(media) = &command {
+                self.media
+                    .entry(media.input)
+                    .or_default()
+                    .accept(media.operation);
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
@@ -1171,6 +1306,28 @@ impl Engine {
         }
     }
 
+    /// Advances every media input's transport one frame; `operations`
+    /// counts the media commands realized on this frame per input.
+    fn tick_media(
+        &mut self,
+        operations: &BTreeMap<InputId, usize>,
+    ) -> Vec<crate::EngineMediaFrame> {
+        let show = self.commands.state();
+        self.media
+            .retain(|input, _| show.media_settings(*input).is_some());
+        self.media
+            .iter_mut()
+            .filter_map(|(input, runtime)| {
+                let settings = show.media_settings(*input)?;
+                runtime.tick(
+                    *input,
+                    operations.get(input).copied().unwrap_or(0),
+                    settings,
+                )
+            })
+            .collect()
+    }
+
     /// Renders the next frame at its exact simulated deadline.
     ///
     /// # Errors
@@ -1195,12 +1352,16 @@ impl Engine {
 
         let mut events = Vec::new();
         let mut input_audio_strip_updates = Vec::new();
+        let mut media_operations = BTreeMap::<InputId, usize>::new();
         let frame = tick.deadline.frame.get();
         for scheduled in tick.actions {
             if let EngineCommand::SetInputAudioStrip { input, state } = scheduled.action {
                 input_audio_strip_updates.push((input, state));
             }
-            let command_events = if let EngineCommand::RealizeTitle(cue) = scheduled.action {
+            let command_events = if let EngineCommand::Media(command) = scheduled.action {
+                *media_operations.entry(command.input).or_default() += 1;
+                Vec::new()
+            } else if let EngineCommand::RealizeTitle(cue) = scheduled.action {
                 realize_title(
                     &mut self.realized_switcher,
                     &mut self.title_air,
@@ -1279,6 +1440,7 @@ impl Engine {
             input_audio_strip_updates,
             titles,
             scenes,
+            media: self.tick_media(&media_operations),
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
@@ -1399,6 +1561,7 @@ impl Engine {
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             scene_clip_bound: None,
+            media: BTreeMap::new(),
         })
     }
 }
@@ -1513,6 +1676,8 @@ struct EngineMutation {
     title_clip_bound: Option<crate::TitleClipBound>,
     /// The engine's scene clip bound, for a scene animation edit.
     scene_clip_bound: Option<crate::SceneClipBound>,
+    /// The open source's audio stream indexes, for a media command.
+    media_tracks: Option<Vec<u32>>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -1566,6 +1731,18 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
         if let EngineCommand::AnimationPreset(edit) = self.command {
             crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
             events.push(EngineEvent::AnimationPresetsChanged(edit));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::Media(command) = &self.command {
+            let settings = crate::media::accept(state, command, self.media_tracks.as_deref())?;
+            state.set_media_settings(command.input, settings);
+            events.push(EngineEvent::MediaChanged {
+                input: command.input,
+                frame: self.target_frame.get(),
+                operation: command.operation,
+            });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });
@@ -1843,7 +2020,8 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::AnimationPreset(_)
-            | EngineCommand::SetTransitionFavorite { .. } => {
+            | EngineCommand::SetTransitionFavorite { .. }
+            | EngineCommand::Media(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
         };
@@ -2187,6 +2365,7 @@ fn apply_runtime(
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
+            | EngineCommand::Media(_)
     ) {
         return Ok(Vec::new());
     }
@@ -2337,7 +2516,8 @@ fn apply_runtime(
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::AnimationPreset(_)
-        | EngineCommand::SetTransitionFavorite { .. } => {
+        | EngineCommand::SetTransitionFavorite { .. }
+        | EngineCommand::Media(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
     })
@@ -2472,7 +2652,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::AnimationPreset(_)
-        | EngineCommand::SetTransitionFavorite { .. } => None,
+        | EngineCommand::SetTransitionFavorite { .. }
+        | EngineCommand::Media(_) => None,
     }
 }
 

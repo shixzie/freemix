@@ -316,6 +316,8 @@ pub struct FilePlayer {
     window_frames: usize,
     audio_window_samples: usize,
     video_window: Option<VideoWindow>,
+    /// The window after `video_window`, decoded ahead by [`FilePlayer::prefetch`].
+    next_window: Option<VideoWindow>,
     audio_window: Option<AudioWindow>,
     last_video: Option<Arc<CpuVideoFrame>>,
     telemetry: FilePlaybackTelemetry,
@@ -447,6 +449,7 @@ impl FilePlayer {
             audio_window_samples: usize::try_from(config.audio_window_samples.get())
                 .map_err(|_| FilePlaybackError::InvalidConfig)?,
             video_window: None,
+            next_window: None,
             audio_window: None,
             last_video: None,
             telemetry: FilePlaybackTelemetry::default(),
@@ -557,6 +560,80 @@ impl FilePlayer {
             video_late,
             audio,
         })
+    }
+
+    /// Decodes what an externally driven transport's `tick` presents.
+    ///
+    /// [`Self::tick`] advances this player's own transport; an authority that
+    /// owns the transport elsewhere (the engine, which realizes operator
+    /// commands on exact frames) computes each tick itself and hands it here.
+    /// The tick must come from a transport over this file's index and audio
+    /// tracks (same frame count, live-edge offset, and track indexes), with a
+    /// playable range inside this player's. A planned frame a growing source
+    /// cannot produce yet repeats the previous frame (`video_late`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source-identity, tool, verification, or decode error,
+    /// or [`MediaControlError::UnknownAudioTrack`] for a track this file does
+    /// not have.
+    pub fn present(&mut self, tick: MediaTick) -> Result<PlaybackOutput, FilePlaybackError> {
+        let (video, video_late) = match tick.frame {
+            Some(frame) => match self.frame(frame)? {
+                Some(decoded) => {
+                    self.last_video = Some(Arc::clone(&decoded));
+                    (Some(decoded), false)
+                }
+                None => (self.last_video.clone(), true),
+            },
+            None => (self.last_video.clone(), false),
+        };
+        let audio = self.audio_for(&tick)?;
+        Ok(PlaybackOutput {
+            tick,
+            video,
+            video_late,
+            audio,
+        })
+    }
+
+    /// Decodes the video window after the current one ahead of need, so
+    /// forward playback crosses a window boundary without waiting on a tool
+    /// run. Does nothing (returns `false`) when that window is already
+    /// decoded, nothing was presented yet, or the current window reaches the
+    /// playable end.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source-identity, tool, or verification error.
+    pub fn prefetch(&mut self) -> Result<bool, FilePlaybackError> {
+        let Some(window) = &self.video_window else {
+            return Ok(false);
+        };
+        let next = window.start + u64::try_from(window.frames.len()).unwrap_or(u64::MAX);
+        if self
+            .next_window
+            .as_ref()
+            .is_some_and(|ahead| ahead.start == next)
+        {
+            return Ok(false);
+        }
+        let start = usize::try_from(next).map_err(|_| Error::InvalidTimeline)?;
+        let end = usize::try_from(self.controller.playable_end().get())
+            .map_err(|_| Error::InvalidTimeline)?
+            .min(self.index.pts.len());
+        if start >= end {
+            return Ok(false);
+        }
+        let frames = self.decode_video_window(start, self.window_frames.min(end - start))?;
+        if frames.is_empty() {
+            return Ok(false);
+        }
+        self.next_window = Some(VideoWindow {
+            start: next,
+            frames,
+        });
+        Ok(true)
     }
 
     /// Decodes one exact source frame (random access, e.g. for scrubbing).
@@ -736,6 +813,16 @@ impl FilePlayer {
                 .and_then(|offset| window.frames.get(offset))
         {
             return Ok(Some(Arc::clone(decoded)));
+        }
+        if let Some(window) = &self.next_window
+            && frame.get() >= window.start
+            && let Some(decoded) = usize::try_from(frame.get() - window.start)
+                .ok()
+                .and_then(|offset| window.frames.get(offset))
+        {
+            let decoded = Arc::clone(decoded);
+            self.video_window = self.next_window.take();
+            return Ok(Some(decoded));
         }
         let start = usize::try_from(frame.get()).map_err(|_| Error::InvalidTimeline)?;
         let end = usize::try_from(self.controller.playable_end().get())

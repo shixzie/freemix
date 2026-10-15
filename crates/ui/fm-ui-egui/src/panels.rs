@@ -1,5 +1,6 @@
 //! Right-hand side panel: on-air outputs (recording and streams) above a
-//! tabbed area for overlays, stingers, titles, and the playlist.
+//! tabbed area for overlays, stingers, titles, the playlist, and media
+//! inputs.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
@@ -32,12 +33,18 @@ pub(crate) enum SideTab {
     Stingers,
     Titles,
     Playlist,
+    Media,
 }
 
 impl SideTab {
     /// Every tab in panel order.
-    pub(crate) const ALL: [Self; 4] =
-        [Self::Overlays, Self::Stingers, Self::Titles, Self::Playlist];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Overlays,
+        Self::Stingers,
+        Self::Titles,
+        Self::Playlist,
+        Self::Media,
+    ];
 
     /// The tab's title.
     pub(crate) const fn title(self) -> Msg {
@@ -46,6 +53,7 @@ impl SideTab {
             Self::Stingers => Msg::TabStingers,
             Self::Titles => Msg::TabTitles,
             Self::Playlist => Msg::TabPlaylist,
+            Self::Media => Msg::TabMedia,
         }
     }
 
@@ -56,6 +64,7 @@ impl SideTab {
             Self::Stingers => Msg::TabStingersHover,
             Self::Titles => Msg::TabTitlesHover,
             Self::Playlist => Msg::TabPlaylistHover,
+            Self::Media => Msg::TabMediaHover,
         }
     }
 }
@@ -83,9 +92,9 @@ impl StudioShell {
         ui.horizontal(|ui| {
             let tabs = SideTab::ALL;
             let spacing = ui.spacing().item_spacing.x;
-            // Every tab gets an exact quarter of the row, so the row never
+            // Every tab gets an exact share of the row, so the row never
             // overflows a narrow panel; a long label ellipsizes instead.
-            #[allow(clippy::cast_precision_loss)] // four tabs
+            #[allow(clippy::cast_precision_loss)] // five tabs
             let tab_width = ((ui.available_width() - spacing * (tabs.len() - 1) as f32)
                 / tabs.len() as f32)
                 .floor()
@@ -167,6 +176,7 @@ impl StudioShell {
                     }
                 }
                 SideTab::Playlist => self.playlist.draw(ui, state, intents),
+                SideTab::Media => crate::media_transport::draw_media(ui, state, intents),
             });
     }
 

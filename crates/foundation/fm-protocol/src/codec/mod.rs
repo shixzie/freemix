@@ -3,6 +3,7 @@ mod decode;
 mod encode;
 mod grade;
 mod layout;
+mod media;
 mod playlist;
 mod scene_layout;
 mod title;

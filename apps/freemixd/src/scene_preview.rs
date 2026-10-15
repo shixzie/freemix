@@ -686,6 +686,7 @@ mod tests {
             name: "Clip".into(),
             kind: InputKind::Media {
                 asset_uri: "asset://media/clip.mov".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
             },
             required_capabilities: Vec::new(),
         });
@@ -804,6 +805,7 @@ mod native_tests {
             name: "Clip".into(),
             kind: InputKind::Media {
                 asset_uri: "asset://media/clip.mov".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
             },
             required_capabilities: Vec::new(),
         });

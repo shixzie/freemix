@@ -1327,6 +1327,7 @@ dependencies = [
  "fm-command",
  "fm-grade",
  "fm-model",
+ "fm-playback",
  "fm-scheduler",
  "fm-switcher",
  "fm-titles",

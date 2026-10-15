@@ -3888,4 +3888,137 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "La LUT de {name} es demasiado grande para importarla por la conexión; importe la corrección con la línea de órdenes (freemix-cli grade-import)",
         ),
     ),
+    (Msg::TabMedia, t("Medios")),
+    (
+        Msg::TabMediaHover,
+        t(
+            "Entradas de archivo: reproducir, desplazar, recortar, cambiar la velocidad y elegir la acción final y la pista de audio",
+        ),
+    ),
+    (
+        Msg::MediaIntro,
+        t(
+            "Cada entrada de archivo tiene su propio transporte. Reproducir, Pausa, Detener y buscar son controles de operador; el recorte, la velocidad, la acción final y la pista de audio se guardan con el proyecto.",
+        ),
+    ),
+    (Msg::MediaNone, t("Sin entradas de archivo")),
+    (
+        Msg::MediaNoneDetail,
+        t("Añada una entrada de archivo para reproducirla aquí."),
+    ),
+    (
+        Msg::MediaNotSynced,
+        t("Las entradas de archivo aparecen cuando el estado del proyecto está sincronizado."),
+    ),
+    (Msg::MediaStateWaiting, t("ESPERANDO")),
+    (Msg::MediaStateEnded, t("TERMINADO")),
+    (
+        Msg::MediaStateHover,
+        t("Estado del transporte de esta entrada"),
+    ),
+    (
+        Msg::MediaLiveHover,
+        t("El archivo aún se está escribiendo; la reproducción sigue su final creciente"),
+    ),
+    (Msg::MediaEofWaiting, t("ESPERANDO DATOS")),
+    (
+        Msg::MediaEofWaitingHover,
+        t(
+            "La reproducción alcanzó el final escrito hasta ahora y continúa en cuanto el archivo crece",
+        ),
+    ),
+    (Msg::MediaOffline, t("SIN ARCHIVO")),
+    (
+        Msg::MediaOfflineHover,
+        t("El archivo no se puede reproducir: {fault}"),
+    ),
+    (
+        Msg::MediaPositionHover,
+        t(
+            "Cabezal / final del rango reproducible (código de tiempo de origen); bucles hasta ahora: {count}",
+        ),
+    ),
+    (Msg::MediaPlay, t("Reproducir")),
+    (
+        Msg::MediaPlayHover,
+        t("Reproducir esta entrada desde el cabezal"),
+    ),
+    (
+        Msg::MediaPauseHover,
+        t("Congelar el fotograma actual; Reproducir continúa desde él"),
+    ),
+    (
+        Msg::MediaStopHover,
+        t("Detener y volver al punto de entrada del recorte"),
+    ),
+    (Msg::MediaComplete, t("Finalizar")),
+    (
+        Msg::MediaCompleteHover,
+        t(
+            "Declarar terminado el archivo creciente, para que su último fotograma se reproduzca como final",
+        ),
+    ),
+    (
+        Msg::MediaScrubHover,
+        t("Arrastre para buscar; el cabezal se sitúa en el fotograma exacto al soltar"),
+    ),
+    (Msg::MediaTrimIn, t("Entrada")),
+    (
+        Msg::MediaTrimInHover,
+        t("Recorte de entrada: el primer fotograma que se reproduce"),
+    ),
+    (Msg::MediaTrimOut, t("Salida")),
+    (
+        Msg::MediaTrimOutHover,
+        t(
+            "Recorte de salida: la reproducción termina antes de este fotograma (el final del archivo cuando es igual al número de fotogramas)",
+        ),
+    ),
+    (
+        Msg::MediaSpeedHover,
+        t("Velocidad de reproducción, de 0,25× a 4×"),
+    ),
+    (Msg::MediaSpeedOptionHover, t("Reproducir a {speed}")),
+    (
+        Msg::MediaEndActionHover,
+        t("Qué ocurre al final del rango reproducible"),
+    ),
+    (Msg::MediaEndStop, t("Detener al final")),
+    (
+        Msg::MediaEndStopHover,
+        t("Al final, detener y volver al punto de entrada"),
+    ),
+    (Msg::MediaEndHold, t("Congelar último fotograma")),
+    (
+        Msg::MediaEndHoldHover,
+        t("Al final, seguir mostrando el último fotograma"),
+    ),
+    (
+        Msg::MediaEndLoopHover,
+        t("Al final, volver al punto de entrada y seguir reproduciendo"),
+    ),
+    (
+        Msg::MediaAudioTrackHover,
+        t("La pista de audio que reproduce esta entrada"),
+    ),
+    (Msg::MediaAudioDefault, t("Pista predeterminada")),
+    (
+        Msg::MediaAudioDefaultHover,
+        t("Reproducir la pista de audio predeterminada del archivo"),
+    ),
+    (
+        Msg::MediaAudioTrackOptionHover,
+        t("Reproducir la pista de audio {track}"),
+    ),
+    (Msg::MediaNoAudio, t("Sin pistas de audio")),
+    (
+        Msg::MediaReasonUnavailable,
+        t("el archivo de medios no está disponible"),
+    ),
+    (Msg::MediaLanguageEnglish, t("Inglés")),
+    (Msg::MediaLanguageSpanish, t("Español")),
+    (Msg::MediaLanguageFrench, t("Francés")),
+    (Msg::MediaLanguageGerman, t("Alemán")),
+    (Msg::MediaLanguageItalian, t("Italiano")),
+    (Msg::MediaLanguagePortuguese, t("Portugués")),
 ];

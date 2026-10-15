@@ -2333,6 +2333,17 @@ fn intent_payload(
         StudioIntent::Title(command) => title_payload(&command)
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
+        StudioIntent::Media { input, operation } => {
+            if let Some(view) = view
+                && !view.inputs.contains(&input)
+            {
+                return Err("Input no longer exists".to_owned());
+            }
+            CommandPayload::Media {
+                input: WireInputId::from_domain(input),
+                operation,
+            }
+        }
         StudioIntent::Grade(command) => command.payload(),
         StudioIntent::TitleAnimation(payload)
         | StudioIntent::SceneAnimation(payload)
@@ -2949,6 +2960,7 @@ mod tests {
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            media_states: 0,
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
     }
@@ -4361,6 +4373,148 @@ mod tests {
             "{:?}",
             refused.error
         );
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    fn media_status(
+        state: fm_protocol::MediaTransportState,
+        position: u64,
+    ) -> fm_protocol::MediaStatus {
+        fm_protocol::MediaStatus {
+            input: heartbeat_snapshot().inputs[0].input,
+            settings: fm_protocol::MediaSettingsStatus::default(),
+            transport: fm_protocol::MediaTransportStatus {
+                available: true,
+                state,
+                position,
+                position_time: fm_protocol::MediaTime {
+                    numerator: u128::from(position),
+                    denominator: 25,
+                }
+                .reduced(),
+                playable_end: 250,
+                frames: 250,
+                complete: true,
+                loops: 0,
+                audio_track: None,
+                tracks: Vec::new(),
+                source_rate: Some(fm_types::FrameRate::new(25, 1).unwrap()),
+                fault: None,
+            },
+        }
+    }
+
+    /// IN-003: the snapshot's `media_state` completes the sync, a media
+    /// intent goes out as its `media_*` command, and `media_changed` plus
+    /// `media` runtime events keep the replicated transport current.
+    fn serve_worker_media(listener: &TcpListener) {
+        use fm_protocol::{MediaOperation, MediaSeekTarget, MediaTransportState};
+        let mut peer = HeartbeatPeer::accept(listener);
+        peer.handshake_request();
+        peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        peer.send(&WireMessage::Snapshot(SnapshotMessage {
+            media_states: 1,
+            ..heartbeat_snapshot()
+        }));
+        peer.send(&WireMessage::MediaState(fm_protocol::MediaStateMessage {
+            revision: 4,
+            frame: 0,
+            status: media_status(MediaTransportState::Stopped, 0),
+        }));
+        let input = heartbeat_snapshot().inputs[0].input;
+        loop {
+            let Some(line) = peer.next_line() else {
+                return;
+            };
+            match decode_line(&line).unwrap() {
+                WireMessage::Heartbeat(heartbeat) => {
+                    if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                        HeartbeatAcknowledgementMessage {
+                            server: heartbeat.server,
+                            heartbeat_sequence: heartbeat.sequence,
+                            received_at_ms: heartbeat.sent_at_ms,
+                        },
+                    )) {
+                        return;
+                    }
+                }
+                WireMessage::Command(command) => {
+                    let operation = MediaOperation::Seek(MediaSeekTarget::Frame(40));
+                    assert_eq!(command.payload, CommandPayload::Media { input, operation });
+                    peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                        id: command.id,
+                        revision: 5,
+                        scheduled_frame: Some(1),
+                    }));
+                    peer.send(&WireMessage::Event(EventMessage {
+                        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                        cursor: EventCursor {
+                            engine: heartbeat_snapshot().engine,
+                            revision: 5,
+                        },
+                        payload: EventPayload::MediaChanged {
+                            frame: 1,
+                            operation,
+                            status: Box::new(media_status(MediaTransportState::Stopped, 40)),
+                        },
+                    }));
+                    peer.send(&WireMessage::RuntimeEvent(RuntimeEventMessage {
+                        event: RuntimeLifecycleEvent::Media {
+                            frame: 2,
+                            events: vec![fm_protocol::MediaEvent::Resumed { frame: 40 }],
+                            status: Box::new(media_status(MediaTransportState::Playing, 41)),
+                        },
+                        ..recording_runtime_event(5, 1)
+                    }));
+                }
+                other => panic!("unexpected peer message: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn worker_media_intents_send_media_commands_and_replicate_the_transport() {
+        use fm_protocol::{MediaOperation, MediaSeekTarget, MediaTransportState};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || serve_worker_media(&listener));
+        let (request_sender, updates, worker) = spawn_existing_worker(address, "media-test");
+        let input = fm_types::InputId::new(NonZeroU128::new(2).unwrap());
+        let ready = receive_state_where(&updates, |state| {
+            state.connection_status == StudioConnectionStatus::Ready
+                && state.project_state.is_some()
+        });
+        let media = ready.project_state.as_ref().unwrap().media();
+        assert_eq!(media[&input].transport.state, MediaTransportState::Stopped);
+
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::Media {
+                input,
+                operation: MediaOperation::Seek(MediaSeekTarget::Frame(40)),
+            }))
+            .unwrap();
+        let playing = receive_state_where(&updates, |state| {
+            state.project_state.as_ref().is_some_and(|project| {
+                project
+                    .media_status(input)
+                    .is_some_and(|status| status.transport.state == MediaTransportState::Playing)
+            })
+        });
+        assert!(playing.error.is_none(), "{:?}", playing.error);
+        let status = playing
+            .project_state
+            .as_ref()
+            .unwrap()
+            .media_status(input)
+            .unwrap();
+        assert_eq!(status.transport.position, 41);
 
         request_sender.send(WorkerRequest::Shutdown).unwrap();
         worker.join().unwrap();
@@ -6051,6 +6205,7 @@ mod tests {
             peer.send(&WireMessage::HandshakeResponse(handshake));
             peer.send(&WireMessage::Snapshot(SnapshotMessage {
                 animation_preset_states: 1,
+                media_states: 0,
                 transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
                 ..title_snapshot()
             }));

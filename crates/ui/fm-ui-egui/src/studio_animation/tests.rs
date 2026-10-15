@@ -138,6 +138,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         playlist_follows: false,
         grade_states: 0,
         animation_preset_states: 0,
+        media_states: 0,
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
     let mut model = ClientModel::new(project);
@@ -729,6 +730,7 @@ mod scenes {
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            media_states: 0,
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         let mut model = ClientModel::new(project);

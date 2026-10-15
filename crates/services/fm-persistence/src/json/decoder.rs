@@ -426,6 +426,7 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
         "color" => InputKind::Color,
         "media" => InputKind::Media {
             asset_uri: object.string("asset_uri")?,
+            playback: super::media_playback::parse_media_playback(object.take("playback")?)?,
         },
         "device" => InputKind::Device {
             stable_key: object.string("stable_key")?,
