@@ -25,6 +25,7 @@ use fm_protocol::{
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
+use fm_ui_model::grade_editor::GradeCommand;
 use fm_ui_model::i18n::{Locale, Msg};
 use fm_ui_model::title_editor::{TitleAccess, TitleCommand};
 use fm_ui_model::{ClientView, ManualTransitionStatus, ProjectState, StreamStatus, SwitcherState};
@@ -56,6 +57,7 @@ mod playlist;
 mod preferences;
 mod stinger_config;
 mod stream_control;
+mod studio_color;
 mod theme;
 mod titles;
 mod toasts;
@@ -89,6 +91,7 @@ pub use stinger_config::{
     stinger_remove_intent, stinger_setup_block_reason,
 };
 pub use stream_control::{StreamAction, stream_action, stream_command_pending};
+pub use studio_color::{COLOR_SHORTCUT, GradeLutFile, GradeLutRequest, GradeRefusal};
 pub use titles::TitleUpdate;
 
 use panels::SideTab;
@@ -233,6 +236,9 @@ pub enum StudioIntent {
     Title(TitleCommand),
     /// Sends one playlist command: a list edit or transport.
     Playlist(PlaylistIntent),
+    /// Sends one grade command from the Colour window: a target's grade,
+    /// a library save, or a LUT import.
+    Grade(GradeCommand),
 }
 
 impl StudioIntent {
@@ -365,6 +371,8 @@ pub struct StudioUiState {
     /// Title command answers in arrival order. Each is published once;
     /// the host hands them to [`StudioShell::receive_title_updates`].
     pub title_updates: Vec<TitleUpdate>,
+    /// The latest refused grade command, published once with its rejection.
+    pub grade_refusal: Option<GradeRefusal>,
 }
 
 impl StudioUiState {
@@ -396,6 +404,7 @@ impl StudioUiState {
             project_state: None,
             title_access: TitleAccess::new(false, false, false),
             title_updates: Vec::new(),
+            grade_refusal: None,
         }
     }
 
@@ -762,7 +771,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 16] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 17] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -847,6 +856,13 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 16] = [
         group: ShortcutGroup::Console,
         keys: preferences::PREFERENCES_SHORTCUT,
         action: Msg::ShortcutPreferences.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_color_on_key`].
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: studio_color::COLOR_SHORTCUT,
+        action: Msg::ShortcutColor.en(),
         key: None,
     },
     ShortcutEntry {
@@ -1091,6 +1107,8 @@ pub struct StudioShell {
     default_locale: Locale,
     /// Whether the Preferences window is open.
     show_preferences: bool,
+    /// The Colour window and its grade draft.
+    color: studio_color::ColorWindow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1275,6 +1293,13 @@ impl StudioShell {
         }
     }
 
+    /// The keys that open and close the keyboard reference and the
+    /// Colour window.
+    fn toggle_windows_on_keys(&mut self, ui: &mut Ui) {
+        self.toggle_help_on_key(ui);
+        self.toggle_color_on_key(ui);
+    }
+
     /// Whether a dialog, menu, or popup owns the keyboard. Dialogs are modal
     /// and an open menu or popup closes on Esc, so Esc must not also cancel a
     /// live manual transition, nor may console keys act behind them.
@@ -1284,6 +1309,7 @@ impl StudioShell {
             || self.show_preferences
             || self.add_input.is_some()
             || self.remove_input.is_some()
+            || self.color_owns_keyboard()
             || egui::Popup::is_any_open(context)
     }
 
@@ -1347,7 +1373,7 @@ impl StudioShell {
                 )
             }),
         );
-        self.toggle_help_on_key(ui);
+        self.toggle_windows_on_keys(ui);
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
         // prediction however long a frame gap really is; toasts and meter
@@ -1430,6 +1456,7 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
+        self.draw_color_window(ui.ctx(), state, &mut intents);
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         theme::paint_focus_ring(ui.ctx());
         intents
@@ -1700,6 +1727,7 @@ impl Default for StudioShell {
             appearance: preferences::Appearance::default(),
             default_locale: Locale::ENGLISH,
             show_preferences: false,
+            color: studio_color::ColorWindow::default(),
         }
     }
 }
@@ -2228,7 +2256,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.group == ShortcutGroup::Console)
             .collect();
-        assert_eq!(console.len(), 5);
+        assert_eq!(console.len(), 6);
         assert_eq!(console[0].keys, Msg::KeyHelp.en());
         assert!(console.iter().all(|entry| entry.key.is_none()));
         // Every group has entries, and every entry's group is drawn.

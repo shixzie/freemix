@@ -77,6 +77,7 @@ pub(super) fn slider(
     (width, layout): (f32, SliderLayout),
     disabled: Option<&str>,
 ) -> Response {
+    let disabled = state.lock_reason.or(disabled);
     let enabled = disabled.is_none();
     let value = param.get(document.grade());
     let name = text::param_name(l, param);
@@ -272,11 +273,16 @@ pub(super) fn wheel(
                     let section = GradeSection::Wheel(kind);
                     let neutral = section.is_default(document.grade());
                     let reset = ui
-                        .add_enabled(!neutral, crate::theme::small_button("↺"))
+                        .add_enabled(
+                            !neutral && state.lock_reason.is_none(),
+                            crate::theme::small_button("↺"),
+                        )
                         .hint_in(
                             l,
                             &l.format(Msg::GradeWheelResetHover, &[("wheel", Arg::Str(name))]),
-                            l.text(Msg::GradeReasonDefault),
+                            state
+                                .lock_reason
+                                .unwrap_or_else(|| l.text(Msg::GradeReasonDefault)),
                         );
                     if reset.clicked()
                         && let Err(error) = document.reset_section(section)
@@ -308,15 +314,24 @@ fn wheel_disc(
     kind: WheelKind,
     size: f32,
 ) -> Rect {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag());
+    let lock = state.lock_reason;
+    let (rect, response) = ui
+        .add_enabled_ui(lock.is_none(), |ui| {
+            ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag())
+        })
+        .inner;
     let current = document.grade().wheels.get(kind);
     let name = text::wheel_name(l, kind);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, name));
-    let response = response.on_hover_text(format!(
-        "{}\n{}",
-        text::wheel_hover(l, kind),
-        text::wheel_help(l, current.x, current.y)
-    ));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, lock.is_none(), name));
+    let response = response.hint_in(
+        l,
+        &format!(
+            "{}\n{}",
+            text::wheel_hover(l, kind),
+            text::wheel_help(l, current.x, current.y)
+        ),
+        lock.unwrap_or(""),
+    );
     let radius = size / 2.0 - 3.0;
     let shift = fine(ui);
     if response.drag_started()
@@ -453,14 +468,23 @@ pub(super) fn curve_editor(
     target: CurveTarget,
     size: Vec2,
 ) -> Rect {
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let lock = state.lock_reason;
+    let (rect, response) = ui
+        .add_enabled_ui(lock.is_none(), |ui| {
+            ui.allocate_exact_size(size, Sense::click_and_drag())
+        })
+        .inner;
     let name = text::curve_name(l, target);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, name));
-    let response = response.on_hover_text(format!(
-        "{}\n{}",
-        text::curve_hover(l, target),
-        l.text(Msg::GradeCurveCanvasHover)
-    ));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, lock.is_none(), name));
+    let response = response.hint_in(
+        l,
+        &format!(
+            "{}\n{}",
+            text::curve_hover(l, target),
+            l.text(Msg::GradeCurveCanvasHover)
+        ),
+        lock.unwrap_or(""),
+    );
     let inner = rect.shrink2(vec2(8.0, 8.0));
     let to_unit = |pos: Pos2| {
         [

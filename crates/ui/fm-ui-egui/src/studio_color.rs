@@ -1,0 +1,1202 @@
+//! The Studio Colour window (SW-019): the colour grading panel bound to the
+//! replicated grade of one input or Program.
+//!
+//! The window keeps one [`GradeBinding`]: authority updates reset its draft
+//! while it is clean, and edits leave as [`StudioIntent::Grade`] commands,
+//! throttled while a control is dragged and sent at once on release. The
+//! preview grades a picture of the target locally so drags are instant;
+//! the monitors show what the server applied. Only an *ungraded* picture
+//! is a valid preview source (grading an already graded frame would apply
+//! the grade twice), so the window borrows a monitor tap frame only while
+//! the target shows there without a grade on air, keeps the last such frame
+//! per target, and otherwise previews a test still.
+//!
+//! The window also saves the draft to the project's grade library, applies
+//! library grades (linked by reference), and imports `.cube` LUTs. Studio
+//! reads LUT files in the host (this crate does no I/O): the window queues a
+//! [`GradeLutRequest`] and the host answers with a [`GradeLutFile`].
+
+use core::num::NonZeroU32;
+use core::time::Duration;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+
+use egui::{ComboBox, Frame, Key, Margin, Modifiers, RichText, ScrollArea, Stroke, TextEdit, Ui};
+use fm_protocol::{MonitorImage, MonitorTap, WireInputId};
+use fm_ui_model::GradingStatus;
+use fm_ui_model::grade_editor::{
+    GradeBinding, GradeCommand, GradeNameProblem, GradeSyncStatus, GradeTarget, RgbaImage,
+    library_name_problem, lut_name_problem, lut_uri, next_library_id, next_lut_id, sample_still,
+    target_grade,
+};
+
+use crate::color_panel::{ColorPanelState, ColorPanelWidget, PREVIEW_MAX};
+use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
+use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Arg, Locale, Msg};
+use crate::monitors::MONITOR_STALE_AFTER;
+use crate::theme::{
+    AMBER, Tone, border_strong_color, caption, close_key, muted_color, raised_color, section_label,
+    small_button, status_chip,
+};
+use crate::toasts::ToastKind;
+use crate::{StudioIntent, StudioShell, StudioUiState};
+
+/// The shortcut that opens and closes the Colour window.
+pub const COLOR_SHORTCUT: &str = "Ctrl+G";
+/// Shortest gap between two live preview frames while idle.
+const SOURCE_REFRESH: Duration = Duration::from_millis(400);
+/// Most targets whose last ungraded frame is kept.
+const HELD_SOURCES: usize = 16;
+
+/// The refusal of one grade command, published once with its rejection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GradeRefusal {
+    pub command_id: String,
+    /// The target a refused grade set addressed; `None` for library saves
+    /// and LUT imports.
+    pub target: Option<GradeTarget>,
+}
+
+/// A `.cube` file the operator asked to import; the host reads it and
+/// answers with [`StudioShell::receive_grade_lut_file`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GradeLutRequest {
+    pub path: PathBuf,
+    pub lut: NonZeroU32,
+    pub name: String,
+}
+
+/// What the host read for a [`GradeLutRequest`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GradeLutFile {
+    /// The whole file, at most the protocol limit.
+    Text(String),
+    /// The file is larger than one command carries.
+    TooLarge { bytes: u64 },
+    /// The file is not UTF-8 text.
+    NotText,
+    /// The file could not be read.
+    Unreadable(String),
+}
+
+/// Where the preview's picture came from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceKind {
+    Live(MonitorTap),
+    Held,
+    Still,
+}
+
+/// The Colour window's state, next to the console.
+pub(crate) struct ColorWindow {
+    pub(crate) open: bool,
+    target: GradeTarget,
+    binding: Option<GradeBinding>,
+    pub(crate) panel: ColorPanelState,
+    pub(crate) library_pick: Option<NonZeroU32>,
+    pub(crate) library_name: String,
+    pub(crate) lut_path: String,
+    lut_requests: Vec<GradeLutRequest>,
+    /// The picture shown and the frame it came from.
+    source: Option<(GradeTarget, SourceKind)>,
+    source_frame: Option<(MonitorTap, u64)>,
+    source_at: Option<Instant>,
+    held: BTreeMap<GradeTarget, RgbaImage>,
+    /// The last grade refusal handled.
+    refusal: Option<String>,
+}
+
+impl Default for ColorWindow {
+    fn default() -> Self {
+        Self {
+            open: false,
+            target: GradeTarget::Program,
+            binding: None,
+            panel: ColorPanelState::default(),
+            library_pick: None,
+            library_name: String::new(),
+            lut_path: String::new(),
+            lut_requests: Vec::new(),
+            source: None,
+            source_frame: None,
+            source_at: None,
+            held: BTreeMap::new(),
+            refusal: None,
+        }
+    }
+}
+
+/// Clones what the console compares (open and target); previews, textures,
+/// and drafts start over.
+impl Clone for ColorWindow {
+    fn clone(&self) -> Self {
+        Self {
+            open: self.open,
+            target: self.target,
+            ..Self::default()
+        }
+    }
+}
+
+impl core::fmt::Debug for ColorWindow {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ColorWindow")
+            .field("open", &self.open)
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ColorWindow {
+    fn eq(&self, other: &Self) -> bool {
+        self.open == other.open && self.target == other.target
+    }
+}
+
+impl Eq for ColorWindow {}
+
+/// The project grading once every announced record arrived.
+fn grading(state: &StudioUiState) -> Option<&GradingStatus> {
+    state
+        .project_state
+        .as_ref()
+        .filter(|project| project.grading_complete())
+        .map(fm_ui_model::ProjectState::grading)
+}
+
+/// Why `target`'s grade cannot be edited now (catalog English), if it
+/// cannot: the session gates first, then padlocks (an input padlock also
+/// covers that input's grade).
+pub(crate) fn grade_lock_reason(
+    state: &StudioUiState,
+    target: GradeTarget,
+) -> Option<&'static str> {
+    if !state.connection_status.controls_enabled()
+        || state.view.is_none()
+        || !state.can_edit_project
+    {
+        return Some(unavailable_reason(state, Capability::EditProject));
+    }
+    if grading(state).is_none() {
+        return Some(Msg::ColorReasonGradingPending.en());
+    }
+    let locks = &state.view.as_ref()?.edit_locks;
+    if locks.project {
+        Some(PROJECT_LOCKED_REASON)
+    } else if matches!(target, GradeTarget::Input(input) if locks.is_input_locked(input)) {
+        Some(INPUT_LOCKED_REASON)
+    } else {
+        None
+    }
+}
+
+/// The library-wide edits (saves, LUT imports) are project edits: only the
+/// session gates and the project padlock apply.
+fn project_lock_reason(state: &StudioUiState) -> Option<&'static str> {
+    grade_lock_reason(state, GradeTarget::Program)
+}
+
+/// The monitor tap frame that shows `target` without any grade on air, if
+/// one is fresh: a valid source for the local preview.
+pub(crate) fn ungraded_frame<'a>(
+    state: &'a StudioUiState,
+    grading: &GradingStatus,
+    target: GradeTarget,
+    now: Instant,
+) -> Option<(MonitorTap, &'a MonitorImage)> {
+    let view = state.view.as_ref()?;
+    let fresh = |tap: MonitorTap| {
+        state.monitor_images[tap.index()]
+            .as_ref()
+            .filter(|(_, at)| now.saturating_duration_since(*at) < MONITOR_STALE_AFTER)
+            .map(|(image, _)| image)
+    };
+    let program_clean = target_grade(grading, GradeTarget::Program).is_identity();
+    match target {
+        GradeTarget::Program => fresh(MonitorTap::Program)
+            .filter(|_| program_clean)
+            .map(|image| (MonitorTap::Program, image)),
+        GradeTarget::Input(input) => {
+            if !target_grade(grading, target).is_identity() {
+                return None;
+            }
+            let wire = WireInputId::from_domain(input);
+            [MonitorTap::Preview, MonitorTap::Program]
+                .into_iter()
+                .find_map(|tap| {
+                    let realized = match tap {
+                        MonitorTap::Preview => view.switcher.realized.preview,
+                        MonitorTap::Program => view.switcher.realized.program,
+                    };
+                    let image = fresh(tap)?;
+                    (realized == input
+                        && image.input == wire
+                        && (tap == MonitorTap::Preview || program_clean))
+                        .then_some((tap, image))
+                })
+        }
+    }
+}
+
+fn rgba(image: &MonitorImage) -> Option<RgbaImage> {
+    RgbaImage::new(
+        u32::from(image.width),
+        u32::from(image.height),
+        image.rgba.to_vec(),
+    )
+    .map(|image| image.fit_within(PREVIEW_MAX.0, PREVIEW_MAX.1))
+}
+
+fn name_reason(problem: GradeNameProblem, lut: bool) -> &'static str {
+    match problem {
+        GradeNameProblem::Blank if lut => Msg::ColorReasonNoPath.en(),
+        GradeNameProblem::Blank => Msg::ColorReasonNameBlank.en(),
+        GradeNameProblem::TooLong => Msg::ReasonNameTooLongBytes.en(),
+        GradeNameProblem::ControlCharacter => Msg::ColorReasonNameControl.en(),
+        GradeNameProblem::Taken if lut => Msg::ColorReasonLutNameTaken.en(),
+        GradeNameProblem::Taken => Msg::ColorReasonNameTaken.en(),
+    }
+}
+
+/// The LUT name a path imports as: its file name without `.cube`.
+fn lut_name(path: &str) -> String {
+    let path = path.trim();
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    file.strip_suffix(".cube")
+        .or_else(|| file.strip_suffix(".CUBE"))
+        .unwrap_or(file)
+        .to_owned()
+}
+
+/// `target`'s name in the target list.
+fn target_label(l: Locale, state: &StudioUiState, target: GradeTarget) -> String {
+    match target {
+        GradeTarget::Program => l.text(Msg::ColorTargetProgram).to_owned(),
+        GradeTarget::Input(input) => state
+            .view
+            .as_ref()
+            .and_then(|view| {
+                let index = view
+                    .inputs
+                    .iter()
+                    .position(|candidate| *candidate == input)?;
+                Some(format!("{:02} · {}", index + 1, view.input_names[index]))
+            })
+            .unwrap_or_else(|| format!("Input {input}")),
+    }
+}
+
+const fn status_look(status: GradeSyncStatus) -> (Msg, Msg, Tone) {
+    match status {
+        GradeSyncStatus::OnAir => (Msg::OverlayOnAir, Msg::ColorStatusOnAirHover, Tone::Ready),
+        GradeSyncStatus::Editing => (
+            Msg::ColorStatusEditing,
+            Msg::ColorStatusEditingHover,
+            Tone::Pending,
+        ),
+        GradeSyncStatus::Sending => (
+            Msg::ColorStatusSending,
+            Msg::ColorStatusSendingHover,
+            Tone::Pending,
+        ),
+        GradeSyncStatus::Refused => (
+            Msg::ColorStatusRefused,
+            Msg::ColorStatusRefusedHover,
+            Tone::Fault,
+        ),
+        GradeSyncStatus::Diverged => (
+            Msg::ColorStatusDiverged,
+            Msg::ColorStatusDivergedHover,
+            Tone::Pending,
+        ),
+    }
+}
+
+impl ColorWindow {
+    /// Binds the draft to the authority and handles a published refusal.
+    fn sync(&mut self, state: &StudioUiState) {
+        if let GradeTarget::Input(input) = self.target
+            && state
+                .view
+                .as_ref()
+                .is_some_and(|view| !view.inputs.contains(&input))
+        {
+            self.target = GradeTarget::Program;
+        }
+        let Some(grading) = grading(state) else {
+            if let Some(binding) = &mut self.binding {
+                binding.abandon_in_flight();
+            }
+            return;
+        };
+        let revision = state
+            .view
+            .as_ref()
+            .map_or(0, |view| view.cursor.revision.get());
+        let binding = self
+            .binding
+            .get_or_insert_with(|| GradeBinding::new(self.target, grading, revision));
+        binding.retarget(self.target, grading, revision);
+        if let Some(refusal) = &state.grade_refusal
+            && self.refusal.as_ref() != Some(&refusal.command_id)
+        {
+            self.refusal = Some(refusal.command_id.clone());
+            if refusal.target == Some(binding.target()) {
+                binding.refused();
+            }
+        }
+        binding.sync(grading, revision);
+        self.panel.lut_choices = grading
+            .luts
+            .iter()
+            .map(|entry| lut_uri(entry.lut))
+            .collect();
+        self.panel.lut_names = grading
+            .luts
+            .iter()
+            .map(|entry| (lut_uri(entry.lut), entry.name.clone()))
+            .collect();
+        if self
+            .library_pick
+            .is_some_and(|pick| grading.library_grade(pick).is_none())
+        {
+            self.library_pick = None;
+        }
+    }
+
+    /// Feeds the preview an ungraded picture of the target.
+    fn refresh_source(&mut self, state: &StudioUiState, now: Instant) {
+        let dragging = self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.document().gesture_active());
+        if dragging {
+            return;
+        }
+        let target = self.target;
+        let live = grading(state).and_then(|grading| ungraded_frame(state, grading, target, now));
+        if let Some((tap, image)) = live {
+            let same_target = self.source.is_some_and(|(shown, _)| shown == target);
+            let due = !same_target
+                || self
+                    .source_at
+                    .is_none_or(|at| now.saturating_duration_since(at) >= SOURCE_REFRESH);
+            if due
+                && self.source_frame != Some((tap, image.sequence))
+                && let Some(picture) = rgba(image)
+            {
+                self.panel.set_source(&picture);
+                if self.held.len() >= HELD_SOURCES && !self.held.contains_key(&target) {
+                    self.held.pop_first();
+                }
+                self.held.insert(target, picture);
+                self.source = Some((target, SourceKind::Live(tap)));
+                self.source_frame = Some((tap, image.sequence));
+                self.source_at = Some(now);
+            }
+            return;
+        }
+        let kind = if self.held.contains_key(&target) {
+            SourceKind::Held
+        } else {
+            SourceKind::Still
+        };
+        if self.source == Some((target, kind)) {
+            return;
+        }
+        let picture = self
+            .held
+            .get(&target)
+            .cloned()
+            .unwrap_or_else(|| sample_still(PREVIEW_MAX.0, PREVIEW_MAX.1));
+        self.panel.set_source(&picture);
+        self.source = Some((target, kind));
+        self.source_frame = None;
+        self.source_at = Some(now);
+    }
+}
+
+impl StudioShell {
+    /// Opens the Colour window on `target`, or on its last target.
+    pub(crate) fn open_color(&mut self, target: Option<GradeTarget>) {
+        self.color.open = true;
+        if let Some(target) = target {
+            self.color.target = target;
+        }
+    }
+
+    /// Whether the Colour window is open.
+    #[must_use]
+    pub fn color_open(&self) -> bool {
+        self.color.open
+    }
+
+    /// The Colour window's target.
+    #[must_use]
+    pub const fn color_target(&self) -> GradeTarget {
+        self.color.target
+    }
+
+    /// Opens the Colour window on `target` (for hosts and tests).
+    pub fn open_color_window(&mut self, target: GradeTarget) {
+        self.open_color(Some(target));
+    }
+
+    /// Takes the LUT files the operator asked to import. The host reads
+    /// each (at most [`fm_protocol::MAX_GRADE_LUT_IMPORT_BYTES`]) and
+    /// answers with [`Self::receive_grade_lut_file`].
+    pub fn take_grade_lut_requests(&mut self) -> Vec<GradeLutRequest> {
+        std::mem::take(&mut self.color.lut_requests)
+    }
+
+    /// Answers one [`GradeLutRequest`]: returns the import command to send,
+    /// or toasts why the file cannot be imported. A valid LUT also becomes
+    /// available to the local preview.
+    pub fn receive_grade_lut_file(
+        &mut self,
+        request: GradeLutRequest,
+        file: GradeLutFile,
+    ) -> Option<StudioIntent> {
+        let l = self.locale;
+        let path = request.path.display().to_string();
+        let file_arg = ("file", Arg::Str(&path));
+        let problem = match file {
+            GradeLutFile::Text(text) => match fm_grade::parse_cube(&text) {
+                Ok((lut, _warnings)) => {
+                    self.color
+                        .panel
+                        .set_lut(&lut_uri(request.lut), Arc::new(lut));
+                    self.toasts.upsert(
+                        &format!("grade-lut-{}", request.lut),
+                        ToastKind::Pending,
+                        l.format(Msg::ColorLutImporting, &[("name", Arg::Str(&request.name))]),
+                    );
+                    return Some(StudioIntent::Grade(GradeCommand::ImportLut {
+                        lut: request.lut,
+                        name: request.name,
+                        data: text,
+                    }));
+                }
+                Err(error) => l.format(
+                    Msg::ColorLutInvalid,
+                    &[file_arg, ("error", Arg::Str(&error.to_string()))],
+                ),
+            },
+            GradeLutFile::TooLarge { bytes } => l.format(
+                Msg::ColorLutTooLarge,
+                &[file_arg, ("size", Arg::Count(bytes.div_ceil(1024)))],
+            ),
+            GradeLutFile::NotText => l.format(Msg::ColorLutNotText, &[file_arg]),
+            GradeLutFile::Unreadable(error) => l.format(
+                Msg::ColorLutUnreadable,
+                &[file_arg, ("error", Arg::Str(&error))],
+            ),
+        };
+        self.toasts.push(ToastKind::Error, problem);
+        None
+    }
+
+    /// Forgets grade commands whose answers will not arrive (the worker
+    /// stopped or never got them); their drafts stay for the operator.
+    pub fn abandon_grade_requests(&mut self) {
+        if let Some(binding) = &mut self.color.binding {
+            binding.abandon_in_flight();
+        }
+    }
+
+    /// `Ctrl+G` opens or closes the Colour window unless a text field or a
+    /// dialog owns the keyboard.
+    pub(crate) fn toggle_color_on_key(&mut self, ui: &mut Ui) {
+        let context = ui.ctx().clone();
+        if context.egui_wants_keyboard_input()
+            || self.show_shortcuts
+            || self.show_about
+            || self.show_preferences
+            || self.add_input.is_some()
+            || self.remove_input.is_some()
+        {
+            return;
+        }
+        if ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::G)) {
+            self.color.open = !self.color.open;
+        }
+    }
+
+    /// Whether the Colour panel owns the keyboard (its single-key shortcuts
+    /// must not reach the console).
+    pub(crate) fn color_owns_keyboard(&self) -> bool {
+        self.color.open && self.color.panel.keyboard_active
+    }
+
+    /// Draws the Colour window when open and sends due grade commands.
+    pub(crate) fn draw_color_window(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let now = Instant::now();
+        let time = Duration::from_secs_f64(context.input(|input| input.time).max(0.0));
+        if self.color.open {
+            self.color.sync(state);
+            self.color.refresh_source(state, now);
+            let l = self.locale;
+            let mut open = true;
+            let max_height = (context.viewport_rect().height() - 60.0).max(240.0);
+            egui::Window::new(l.text(Msg::GradeTitle))
+                .id(egui::Id::new("studio-color-window"))
+                .title_bar(false)
+                .auto_sized()
+                .collapsible(false)
+                // Bottom left, over the input bank: the Program monitor stays
+                // in view to show the grade the server applied.
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .default_pos(egui::pos2(12.0, context.viewport_rect().bottom() - 30.0))
+                .frame(
+                    Frame::new()
+                        .fill(raised_color())
+                        .stroke(Stroke::new(
+                            crate::theme::line_width(),
+                            border_strong_color(),
+                        ))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(Margin::same(12)),
+                )
+                .show(context, |ui| {
+                    ScrollArea::vertical()
+                        .id_salt("studio-color-scroll")
+                        .max_height(max_height)
+                        .show(ui, |ui| {
+                            self.draw_color_contents(ui, state, intents, &mut open);
+                        });
+                });
+            if !open {
+                self.color.open = false;
+                self.color.panel.keyboard_active = false;
+            }
+        }
+        let lock = grade_lock_reason(state, self.color.target);
+        if let Some(binding) = &mut self.color.binding {
+            if let Some(command) = binding.poll(time, lock.is_none()) {
+                intents.push(StudioIntent::Grade(command));
+            }
+            if let Some(wait) = binding.next_send_in(time) {
+                context.request_repaint_after(wait.max(Duration::from_millis(10)));
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // one window: header, library, LUTs, panel
+    fn draw_color_contents(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+        open: &mut bool,
+    ) {
+        let l = self.locale;
+        let target = self.color.target;
+        let lock = grade_lock_reason(state, target);
+        let graded: Vec<GradeTarget> = grading(state).map_or_else(Vec::new, |grading| {
+            grading
+                .inputs
+                .keys()
+                .map(|input| GradeTarget::Input(*input))
+                .chain(grading.program.as_ref().map(|_| GradeTarget::Program))
+                .collect()
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(section_label(l.text(Msg::ColorTarget)))
+                .on_hover_text(l.text(Msg::ColorTargetHover));
+            let mut targets = vec![GradeTarget::Program];
+            if let Some(view) = &state.view {
+                targets.extend(view.inputs.iter().map(|input| GradeTarget::Input(*input)));
+            }
+            let label = |candidate: GradeTarget| {
+                let name = target_label(l, state, candidate);
+                if graded.contains(&candidate) {
+                    format!("{name} · {}", l.text(Msg::ColorGraded))
+                } else {
+                    name
+                }
+            };
+            let mut picked = None;
+            ComboBox::from_id_salt("studio-color-target")
+                .selected_text(crate::theme::ellipsize(&label(target), 30))
+                .width(230.0)
+                .show_ui(ui, |ui| {
+                    for candidate in targets {
+                        let hover = match candidate {
+                            GradeTarget::Program => l.text(Msg::ColorTargetProgramHover),
+                            GradeTarget::Input(_) => l.text(Msg::ColorTargetInputHover),
+                        };
+                        if ui
+                            .selectable_label(candidate == target, label(candidate))
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            picked = Some(candidate);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(l.text(Msg::ColorTargetHover));
+            if let Some(candidate) = picked {
+                self.color.target = candidate;
+            }
+            if let Some(binding) = &self.color.binding {
+                let (text, hover, tone) = status_look(binding.status());
+                status_chip(ui, l.text(text), tone, 96.0).on_hover_text(l.text(hover));
+                let differs = binding.document().grade() != binding.authority();
+                let revert = ui
+                    .add_enabled(differs, small_button(l.text(Msg::ColorRevert)))
+                    .hint(l.text(Msg::ColorRevertHover), Msg::ColorReasonOnAir.en());
+                if revert.clicked()
+                    && let Some(binding) = &mut self.color.binding
+                {
+                    binding.revert();
+                }
+            }
+            // In the row, not right-aligned: an auto-sized window would grow
+            // to the whole screen to push a trailing key to its edge.
+            ui.separator();
+            if ui
+                .add(close_key(14.0))
+                .on_hover_text(l10n::with_key(l, l.text(Msg::ColorClose), COLOR_SHORTCUT))
+                .clicked()
+            {
+                *open = false;
+            }
+        });
+        if let Some(reason) = lock {
+            ui.label(caption(l10n::unavailable(l, reason)).color(AMBER));
+        }
+        self.draw_color_library(ui, state, intents);
+        let caption_text = match self.color.source.map(|(_, kind)| kind) {
+            Some(SourceKind::Live(tap)) => l.format(
+                Msg::ColorSourceLive,
+                &[(
+                    "tap",
+                    Arg::Str(match tap {
+                        MonitorTap::Preview => l.text(Msg::TallyPreview),
+                        MonitorTap::Program => l.text(Msg::TallyProgram),
+                    }),
+                )],
+            ),
+            Some(SourceKind::Held) => l.text(Msg::ColorSourceHeld).to_owned(),
+            Some(SourceKind::Still) | None => l.text(Msg::ColorSourceStill).to_owned(),
+        };
+        ui.label(caption(caption_text).color(muted_color()))
+            .on_hover_text(l.text(Msg::ColorSourceHover));
+        ui.add_space(4.0);
+        if let Some(binding) = &mut self.color.binding {
+            self.color.panel.lock_reason = lock;
+            if lock.is_some() {
+                self.color.panel.keyboard_active = false;
+            }
+            let _ = ColorPanelWidget::new(binding.document_mut(), &mut self.color.panel)
+                .locale(l)
+                .show(ui);
+        } else {
+            ui.label(caption(l10n::unavailable(
+                l,
+                lock.unwrap_or(Msg::ColorReasonGradingPending.en()),
+            )));
+        }
+    }
+
+    /// The library and LUT import rows.
+    #[allow(clippy::too_many_lines)] // two rows of gated controls
+    fn draw_color_library(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let l = self.locale;
+        let empty = GradingStatus::default();
+        let grading = grading(state).unwrap_or(&empty);
+        let target_lock = grade_lock_reason(state, self.color.target);
+        let project_lock = project_lock_reason(state);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(section_label(l.text(Msg::ColorLibrary)))
+                .on_hover_text(l.text(Msg::ColorLibraryHover));
+            let pick = self.color.library_pick;
+            let shown = pick
+                .and_then(|pick| grading.library_grade(pick))
+                .map_or_else(
+                    || l.text(Msg::ColorLibraryNone).to_owned(),
+                    |entry| entry.name.clone(),
+                );
+            let has_library = !grading.library.is_empty();
+            let mut picked = None;
+            let combo = ui
+                .add_enabled_ui(has_library, |ui| {
+                    ComboBox::from_id_salt("studio-color-library")
+                        .selected_text(crate::theme::ellipsize(&shown, 22))
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for entry in &grading.library {
+                                if ui
+                                    .selectable_label(pick == Some(entry.grade), &entry.name)
+                                    .on_hover_text(l.text(Msg::ColorLibraryPickHover))
+                                    .clicked()
+                                {
+                                    picked = Some(entry.grade);
+                                }
+                            }
+                        })
+                        .response
+                })
+                .inner;
+            let _ = combo.hint(
+                l.text(Msg::ColorLibraryPickHover),
+                Msg::ColorReasonNoLibrary.en(),
+            );
+            if picked.is_some() {
+                self.color.library_pick = picked;
+            }
+            let chosen = self
+                .color
+                .library_pick
+                .and_then(|pick| grading.library_grade(pick));
+            let apply_reason = target_lock.or_else(|| {
+                if !has_library {
+                    Some(Msg::ColorReasonNoLibrary.en())
+                } else if chosen.is_none() {
+                    Some(Msg::ColorReasonPickLibrary.en())
+                } else {
+                    None
+                }
+            });
+            let apply = ui
+                .add_enabled(
+                    apply_reason.is_none(),
+                    small_button(l.text(Msg::ColorLibraryApply)),
+                )
+                .hint(
+                    l.text(Msg::ColorLibraryApplyHover),
+                    apply_reason.unwrap_or(""),
+                );
+            if apply.clicked()
+                && let Some(entry) = chosen
+                && let Some(binding) = &mut self.color.binding
+                && let Err(error) = binding.apply_library(entry.grade, &entry.value)
+            {
+                self.color.panel.show_error(&error);
+            }
+            ui.separator();
+            let name = ui
+                .add_enabled(
+                    project_lock.is_none(),
+                    TextEdit::singleline(&mut self.color.library_name)
+                        .hint_text(l.text(Msg::ColorLibraryNameHint))
+                        .desired_width(150.0),
+                )
+                .hint(
+                    l.text(Msg::ColorLibraryNameHover),
+                    project_lock.unwrap_or(""),
+                );
+            let typed = self.color.library_name.trim().to_owned();
+            let save_reason = project_lock
+                .or_else(|| library_name_problem(&typed, grading).map(|p| name_reason(p, false)))
+                .or_else(|| {
+                    next_library_id(grading)
+                        .is_none()
+                        .then_some(Msg::ColorReasonLibraryFull.en())
+                });
+            let save = ui
+                .add_enabled(
+                    save_reason.is_none(),
+                    small_button(l.text(Msg::ColorLibrarySave)),
+                )
+                .hint(
+                    l.text(Msg::ColorLibrarySaveHover),
+                    save_reason.unwrap_or(""),
+                );
+            let submitted = name.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            if (save.clicked() || (submitted && save_reason.is_none()))
+                && let Some(grade) = next_library_id(grading)
+                && let Some(binding) = &self.color.binding
+            {
+                intents.push(StudioIntent::Grade(GradeCommand::AddLibrary {
+                    grade,
+                    name: typed,
+                    value: Box::new(binding.document().grade().clone()),
+                }));
+                self.color.library_name.clear();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(section_label(l.text(Msg::ColorLut)))
+                .on_hover_text(l.text(Msg::ColorLutHover));
+            ui.add_enabled(
+                project_lock.is_none(),
+                TextEdit::singleline(&mut self.color.lut_path)
+                    .hint_text(l.text(Msg::ColorLutPathHint))
+                    .desired_width(300.0),
+            )
+            .hint(l.text(Msg::ColorLutPathHover), project_lock.unwrap_or(""));
+            let name = lut_name(&self.color.lut_path);
+            let import_reason = project_lock
+                .or_else(|| {
+                    self.color
+                        .lut_path
+                        .trim()
+                        .is_empty()
+                        .then_some(Msg::ColorReasonNoPath.en())
+                })
+                .or_else(|| lut_name_problem(&name, grading).map(|p| name_reason(p, true)))
+                .or_else(|| {
+                    next_lut_id(grading)
+                        .is_none()
+                        .then_some(Msg::ColorReasonLutsFull.en())
+                });
+            let import = ui
+                .add_enabled(
+                    import_reason.is_none(),
+                    small_button(l.text(Msg::ColorLutImport)),
+                )
+                .hint(
+                    l.text(Msg::ColorLutImportHover),
+                    import_reason.unwrap_or(""),
+                );
+            if import.clicked()
+                && let Some(lut) = next_lut_id(grading)
+            {
+                self.color.lut_requests.push(GradeLutRequest {
+                    path: PathBuf::from(self.color.lut_path.trim()),
+                    lut,
+                    name,
+                });
+                self.color.lut_path.clear();
+            }
+        });
+        ui.label(
+            RichText::new(l.text(Msg::ColorLutLimit))
+                .size(crate::theme::legible(10.0))
+                .color(muted_color()),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroU128;
+
+    use fm_protocol::{
+        EngineIdentity, FadeToBlackPosition, FadeToBlackState, GradeEntry, GradeStateMessage,
+        InputStatus, ManualTransitionStatus, MonitorFrameOrigin, OverlayStatus, RecordingStatus,
+        SnapshotMessage, WireGradeSource, WireRecorderSlot,
+    };
+    use fm_types::{InputId, ProjectId};
+    use fm_ui_model::grade_editor::GradeParam;
+    use fm_ui_model::{ClientModel, ProjectSnapshot};
+
+    use super::*;
+    use crate::StudioConnectionStatus;
+
+    fn input(value: u128) -> InputId {
+        InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn wire(value: u128) -> WireInputId {
+        WireInputId::from_domain(input(value))
+    }
+
+    fn warm() -> fm_grade::Grade {
+        let mut grade = fm_grade::Grade::IDENTITY;
+        grade.white_balance.temperature = 300;
+        grade
+    }
+
+    /// Three inputs, input 1 on Program and 2 on Preview; `graded` inputs
+    /// carry a warm grade and `locked` engages the project padlock.
+    fn ready(graded: &[u128], locked: bool, edit: bool) -> StudioUiState {
+        let project = ProjectId::new(NonZeroU128::new(1).unwrap());
+        let live = FadeToBlackState {
+            target_active: false,
+            position: FadeToBlackPosition::LIVE,
+        };
+        let snapshot = SnapshotMessage {
+            engine: EngineIdentity {
+                engine_id: "e".into(),
+                state_epoch: 1,
+                log_id: "l".into(),
+            },
+            revision: 10,
+            show_name: "Show".into(),
+            inputs: (1..=3)
+                .map(|value| InputStatus {
+                    input: wire(value),
+                    name: format!("Cam {value}"),
+                })
+                .collect(),
+            outputs: Vec::new(),
+            input_audio_strips: (1..=3)
+                .map(|value| fm_protocol::InputAudioStripStatus {
+                    input: wire(value),
+                    gain_millidb: 0,
+                    balance_basis_points: 0,
+                    muted: false,
+                    soloed: false,
+                    follow_video: true,
+                    delay_samples: 0,
+                })
+                .collect(),
+            desired_program: wire(1),
+            desired_preview: wire(2),
+            realized_program: wire(1),
+            realized_preview: wire(2),
+            desired_manual_transition: ManualTransitionStatus::Inactive,
+            realized_manual_transition: ManualTransitionStatus::Inactive,
+            desired_fade_to_black: live,
+            realized_fade_to_black: live,
+            stingers: Vec::new(),
+            streams: Vec::new(),
+            recordings: [1, 2]
+                .map(|slot| RecordingStatus {
+                    recorder: WireRecorderSlot::new(slot).unwrap(),
+                    desired_active: false,
+                })
+                .to_vec(),
+            desired_overlays: OverlayStatus::empty_channels(),
+            realized_overlays: OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus {
+                project: locked,
+                inputs: Vec::new(),
+            },
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
+            grade_states: u16::try_from(graded.len()).unwrap(),
+        };
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(project, snapshot))
+            .unwrap();
+        for value in graded {
+            model
+                .apply_grade_state(GradeStateMessage {
+                    revision: 10,
+                    entry: GradeEntry::Input {
+                        input: wire(*value),
+                        source: WireGradeSource::Inline(Box::new(warm())),
+                    },
+                })
+                .unwrap();
+        }
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(model.view().unwrap())
+            .with_switcher_permissions(true, true)
+            .with_edit_project_permission(edit);
+        state.project_state = model.state().cloned();
+        state
+    }
+
+    fn frame(tap: MonitorTap, source: u128, sequence: u64) -> (MonitorImage, Instant) {
+        (
+            MonitorImage {
+                tap,
+                sequence,
+                frame: sequence,
+                input: wire(source),
+                origin: MonitorFrameOrigin::Simulated,
+                width: 4,
+                height: 2,
+                rgba: vec![90; 4 * 2 * 4].into(),
+            },
+            Instant::now(),
+        )
+    }
+
+    fn draw(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+    ) -> Vec<StudioIntent> {
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(1600.0, 1000.0),
+            )),
+            ..egui::RawInput::default()
+        });
+        let mut ui = Ui::new(
+            context.clone(),
+            egui::Id::new("fm-ui-egui-colour-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let intents = shell.draw(&mut ui, state);
+        let _ = context.end_pass();
+        intents
+    }
+
+    #[test]
+    fn only_ungraded_tap_frames_of_the_target_feed_the_preview() {
+        let mut state = ready(&[], false, true);
+        state.monitor_images = [
+            Some(frame(MonitorTap::Preview, 2, 1)),
+            Some(frame(MonitorTap::Program, 1, 1)),
+        ];
+        let grading = state.project_state.as_ref().unwrap().grading().clone();
+        let now = Instant::now();
+        let tap = |state: &StudioUiState, grading: &GradingStatus, target| {
+            ungraded_frame(state, grading, target, now).map(|(tap, _)| tap)
+        };
+        assert_eq!(
+            tap(&state, &grading, GradeTarget::Input(input(2))),
+            Some(MonitorTap::Preview)
+        );
+        assert_eq!(
+            tap(&state, &grading, GradeTarget::Input(input(1))),
+            Some(MonitorTap::Program)
+        );
+        assert_eq!(tap(&state, &grading, GradeTarget::Input(input(3))), None);
+        assert_eq!(
+            tap(&state, &grading, GradeTarget::Program),
+            Some(MonitorTap::Program)
+        );
+        // A graded input's frames already carry its grade.
+        let graded = ready(&[2], false, true);
+        let grading = graded.project_state.as_ref().unwrap().grading().clone();
+        assert_eq!(tap(&state, &grading, GradeTarget::Input(input(2))), None);
+        // A Program grade taints the Program tap for inputs and Program.
+        let grading = GradingStatus {
+            program: Some(WireGradeSource::Inline(Box::new(warm()))),
+            ..GradingStatus::default()
+        };
+        assert_eq!(tap(&state, &grading, GradeTarget::Input(input(1))), None);
+        assert_eq!(tap(&state, &grading, GradeTarget::Program), None);
+        assert_eq!(
+            tap(&state, &grading, GradeTarget::Input(input(2))),
+            Some(MonitorTap::Preview)
+        );
+    }
+
+    #[test]
+    fn edits_in_the_colour_window_send_grade_commands_unless_locked() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let state = ready(&[2], false, true);
+        shell.open_color_window(GradeTarget::Input(input(2)));
+        assert_eq!(draw(&context, &mut shell, &state), Vec::new());
+        let binding = shell.color.binding.as_mut().unwrap();
+        assert_eq!(
+            binding.document().grade(),
+            &warm(),
+            "starts from the grade on air"
+        );
+        binding
+            .document_mut()
+            .set_param(GradeParam::Exposure, 500)
+            .unwrap();
+        let intents = draw(&context, &mut shell, &state);
+        let mut expected = warm();
+        expected.exposure_millistops = 500;
+        assert_eq!(
+            intents,
+            vec![StudioIntent::Grade(GradeCommand::Set {
+                target: GradeTarget::Input(input(2)),
+                source: Some(WireGradeSource::Inline(Box::new(expected))),
+            })]
+        );
+
+        // The project padlock holds edits back and explains itself.
+        let locked = ready(&[2], true, true);
+        assert_eq!(
+            grade_lock_reason(&locked, GradeTarget::Program),
+            Some(PROJECT_LOCKED_REASON)
+        );
+        let binding = shell.color.binding.as_mut().unwrap();
+        binding.revert();
+        binding
+            .document_mut()
+            .set_param(GradeParam::Exposure, -500)
+            .unwrap();
+        assert_eq!(draw(&context, &mut shell, &locked), Vec::new());
+        assert_eq!(shell.color.panel.lock_reason, Some(PROJECT_LOCKED_REASON));
+        let viewer = ready(&[], false, false);
+        assert_eq!(
+            grade_lock_reason(&viewer, GradeTarget::Input(input(1))),
+            Some(Msg::ReasonNoEditProject.en())
+        );
+    }
+
+    #[test]
+    fn a_refusal_marks_the_targets_draft_and_authority_updates_reset_clean_drafts() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        shell.open_color_window(GradeTarget::Input(input(2)));
+        let mut state = ready(&[], false, true);
+        draw(&context, &mut shell, &state);
+        shell
+            .color
+            .binding
+            .as_mut()
+            .unwrap()
+            .document_mut()
+            .set_param(GradeParam::Saturation, 1500)
+            .unwrap();
+        assert_eq!(draw(&context, &mut shell, &state).len(), 1);
+        state.grade_refusal = Some(GradeRefusal {
+            command_id: "c1".into(),
+            target: Some(GradeTarget::Input(input(2))),
+        });
+        draw(&context, &mut shell, &state);
+        let binding = shell.color.binding.as_ref().unwrap();
+        assert_eq!(binding.status(), GradeSyncStatus::Refused);
+        // Revert drops the refused draft; the next authority grade is
+        // adopted.
+        shell.color.binding.as_mut().unwrap().revert();
+        let graded = ready(&[2], false, true);
+        draw(&context, &mut shell, &graded);
+        assert_eq!(
+            shell.color.binding.as_ref().unwrap().document().grade(),
+            &warm()
+        );
+    }
+
+    #[test]
+    fn oversized_or_invalid_lut_files_are_explained_not_sent() {
+        let mut shell = StudioShell::default();
+        let request = GradeLutRequest {
+            path: PathBuf::from("/luts/big.cube"),
+            lut: NonZeroU32::new(3).unwrap(),
+            name: "big".into(),
+        };
+        assert_eq!(
+            shell.receive_grade_lut_file(request.clone(), GradeLutFile::TooLarge { bytes: 70_000 }),
+            None
+        );
+        let toast = shell.toasts.iter().last().unwrap().message.clone();
+        assert!(toast.contains("freemix-cli grade-import-lut"), "{toast}");
+        assert!(toast.contains("69 KiB"), "{toast}");
+        assert_eq!(
+            shell.receive_grade_lut_file(request.clone(), GradeLutFile::Text("nonsense".into())),
+            None
+        );
+        let text = "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n".to_owned();
+        assert_eq!(
+            shell.receive_grade_lut_file(request, GradeLutFile::Text(text.clone())),
+            Some(StudioIntent::Grade(GradeCommand::ImportLut {
+                lut: NonZeroU32::new(3).unwrap(),
+                name: "big".into(),
+                data: text,
+            }))
+        );
+        assert!(shell.color.panel.preview().has_lut("asset://luts/3.cube"));
+        assert_eq!(lut_name(" /a/b/Warm Film.cube "), "Warm Film");
+        assert_eq!(lut_name("C:\\luts\\x.CUBE"), "x");
+    }
+}

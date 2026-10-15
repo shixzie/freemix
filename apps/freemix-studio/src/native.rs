@@ -22,12 +22,13 @@ use fm_protocol::{
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
-    CatalogueRefusal, CatalogueRequest, ExternalStudioAction, InputAudioStripUpdate,
-    InputMoveDirection, PlaylistIntent, ReconnectStatus, RecordingAction, StreamAction,
-    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice,
-    TitleUpdate, external_intent,
+    CatalogueRefusal, CatalogueRequest, ExternalStudioAction, GradeLutFile, GradeRefusal,
+    InputAudioStripUpdate, InputMoveDirection, PlaylistIntent, ReconnectStatus, RecordingAction,
+    StreamAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
+    TerminalUncertaintyNotice, TitleUpdate, external_intent,
 };
 use fm_ui_model::ClientView;
+use fm_ui_model::grade_editor::GradeCommand;
 use fm_ui_model::title_editor::{TitleAccess, title_payload};
 
 #[cfg(test)]
@@ -134,6 +135,14 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             current_update.soloed = update.soloed.or(current_update.soloed);
             current_update.follow_video = update.follow_video.or(current_update.follow_video);
             current_update.delay_samples = update.delay_samples.or(current_update.delay_samples);
+            true
+        }
+        // A newer draft of the same target's grade replaces a queued one:
+        // drags send the latest grade, never a backlog.
+        (StudioIntent::Grade(current), StudioIntent::Grade(incoming))
+            if current.target().is_some() && current.target() == incoming.target() =>
+        {
+            *current = incoming;
             true
         }
         _ => false,
@@ -304,6 +313,8 @@ impl StudioApp {
                 self.shell
                     .receive_title_updates([TitleUpdate::Abandoned { request }]);
             }
+            // Nor a grade command: its draft stays, marked not on air.
+            self.shell.abandon_grade_requests();
             self.handle_enqueue_error(error);
         }
     }
@@ -342,8 +353,9 @@ impl StudioApp {
         }
         let worker = self.worker.take().expect("worker handle was just checked");
         let failed = worker.join().is_err();
-        // Nothing will answer the title commands it was pursuing.
+        // Nothing will answer the title or grade commands it was pursuing.
         self.shell.abandon_title_requests();
+        self.shell.abandon_grade_requests();
         if !self.shutdown_sent {
             reconcile_finished_worker(&mut self.state, &mut self.updates, failed);
         }
@@ -428,6 +440,12 @@ impl eframe::App for StudioApp {
         for intent in self.shell.draw(ui, &self.state) {
             self.enqueue_intent(intent);
         }
+        for request in self.shell.take_grade_lut_requests() {
+            let file = read_grade_lut(&request.path);
+            if let Some(intent) = self.shell.receive_grade_lut_file(request, file) {
+                self.enqueue_intent(intent);
+            }
+        }
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),
@@ -456,6 +474,28 @@ impl Drop for StudioApp {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+/// Reads one `.cube` file for a Colour window LUT import, refusing files
+/// larger than one `grade_lut_import` command carries before reading them.
+fn read_grade_lut(path: &std::path::Path) -> GradeLutFile {
+    let limit = fm_protocol::MAX_GRADE_LUT_IMPORT_BYTES as u64;
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > limit => {
+            return GradeLutFile::TooLarge {
+                bytes: metadata.len(),
+            };
+        }
+        Ok(_) => {}
+        Err(error) => return GradeLutFile::Unreadable(error.to_string()),
+    }
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() as u64 > limit => GradeLutFile::TooLarge {
+            bytes: bytes.len() as u64,
+        },
+        Ok(bytes) => String::from_utf8(bytes).map_or(GradeLutFile::NotText, GradeLutFile::Text),
+        Err(error) => GradeLutFile::Unreadable(error.to_string()),
     }
 }
 
@@ -1597,10 +1637,11 @@ fn consume_command_sequence(
             ..
         } => {
             let refusal = catalogue_refusal(runtime.session().client(), command_id, &result);
+            let grade = grade_refusal(runtime.session().client(), command_id);
             publication.rejection(
                 runtime,
                 fm_ui_egui::command_rejection_message(code, message, fields),
-                refusal,
+                (refusal, grade),
                 *deferred_rejections,
             );
             return Ok(());
@@ -1708,7 +1749,7 @@ impl CommandPublication<'_> {
         self,
         runtime: &mut StudioRuntime,
         error: String,
-        catalogue_refusal: Option<CatalogueRefusal>,
+        (catalogue_refusal, grade_refusal): (Option<CatalogueRefusal>, Option<GradeRefusal>),
         deferred_rejections: usize,
     ) {
         if self.publish_updates {
@@ -1721,6 +1762,7 @@ impl CommandPublication<'_> {
             );
             state.terminal_uncertainties = self.terminal_uncertainties.to_vec();
             state.catalogue_refusal = catalogue_refusal;
+            state.grade_refusal = grade_refusal;
             self.publisher.publish(state);
         }
     }
@@ -2068,6 +2110,7 @@ fn intent_payload(
         StudioIntent::Title(command) => title_payload(&command)
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
+        StudioIntent::Grade(command) => command.payload(),
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -2140,6 +2183,16 @@ fn catalogue_refusal(
         code: code.clone(),
         reason: issue.map(|issue| issue.code.clone()),
         message: issue.map_or_else(|| message.clone(), |issue| issue.message.clone()),
+    })
+}
+
+/// The refusal of a grade command, naming the target a refused grade set
+/// addressed, so the Colour window marks that draft as not on air.
+fn grade_refusal(client: &Client, command_id: &str) -> Option<GradeRefusal> {
+    let command = GradeCommand::from_payload(&client.command(command_id)?.command.payload)?;
+    Some(GradeRefusal {
+        command_id: command_id.to_owned(),
+        target: command.target(),
     })
 }
 
@@ -3844,6 +3897,229 @@ mod tests {
         request_sender.send(WorkerRequest::Shutdown).unwrap();
         worker.join().unwrap();
         server.join().unwrap();
+    }
+
+    /// An inline grade warmed to `temperature`.
+    fn warm_source(temperature: i32) -> fm_protocol::WireGradeSource {
+        let mut document = fm_ui_model::grade_editor::GradeDocument::default();
+        document
+            .set_param(
+                fm_ui_model::grade_editor::GradeParam::Temperature,
+                temperature,
+            )
+            .unwrap();
+        fm_protocol::WireGradeSource::Inline(Box::new(document.grade().clone()))
+    }
+
+    /// Answers the first grade command by applying it (accepted, then its
+    /// `grade_changed` event and runtime realization) and refuses the
+    /// second as the project padlock would.
+    fn serve_worker_grades(listener: &TcpListener) {
+        let mut peer = HeartbeatPeer::accept(listener);
+        peer.handshake_request();
+        peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+        let input = heartbeat_snapshot().inputs[0].input;
+        let mut answered = 0;
+        loop {
+            let Some(line) = peer.next_line() else {
+                return;
+            };
+            match decode_line(&line).unwrap() {
+                WireMessage::Heartbeat(heartbeat) => {
+                    if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                        HeartbeatAcknowledgementMessage {
+                            server: heartbeat.server,
+                            heartbeat_sequence: heartbeat.sequence,
+                            received_at_ms: heartbeat.sent_at_ms,
+                        },
+                    )) {
+                        return;
+                    }
+                }
+                WireMessage::Command(command) if answered == 0 => {
+                    let source = warm_source(300);
+                    assert_eq!(
+                        command.payload,
+                        CommandPayload::SetInputGrade {
+                            input,
+                            source: Some(source.clone()),
+                        }
+                    );
+                    assert_eq!(command.expected_revision, Some(4));
+                    answered += 1;
+                    peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                        id: command.id,
+                        revision: 5,
+                        scheduled_frame: None,
+                    }));
+                    peer.send(&WireMessage::Event(EventMessage {
+                        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                        cursor: EventCursor {
+                            engine: heartbeat_snapshot().engine,
+                            revision: 5,
+                        },
+                        payload: EventPayload::GradeChanged(fm_protocol::GradeChange::Input {
+                            input,
+                            source: Some(source),
+                        }),
+                    }));
+                    peer.send(&WireMessage::RuntimeEvent(recording_runtime_event(5, 1)));
+                }
+                WireMessage::Command(command) => {
+                    assert_eq!(
+                        command.payload,
+                        CommandPayload::SetProgramGrade { source: None }
+                    );
+                    answered += 1;
+                    peer.send(&WireMessage::CommandResult(CommandResult::Rejected {
+                        id: command.id,
+                        code: "conflict".to_owned(),
+                        message: "the project is locked".to_owned(),
+                        fields: vec![fm_protocol::FieldIssue {
+                            field: "project".to_owned(),
+                            code: "project_locked".to_owned(),
+                            message: "the project padlock is engaged".to_owned(),
+                        }],
+                        current_revision: 5,
+                        retryable: false,
+                    }));
+                }
+                other => panic!("unexpected peer message: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn worker_grade_edits_round_trip_into_the_replicated_grading() {
+        use fm_ui_model::grade_editor::{GradeBinding, GradeParam, GradeTarget};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || serve_worker_grades(&listener));
+        let (request_sender, updates, worker) = spawn_existing_worker(address, "grade-test");
+        let ready = receive_state_where(&updates, |state| {
+            state.connection_status == StudioConnectionStatus::Ready
+                && state.project_state.is_some()
+        });
+        let target = GradeTarget::Input(fm_types::InputId::new(NonZeroU128::new(2).unwrap()));
+        let grading = ready.project_state.as_ref().unwrap().grading().clone();
+        assert!(grading.inputs.is_empty());
+
+        // The Colour window's binding turns an edit into the grade command.
+        let mut binding = GradeBinding::new(target, &grading, 4);
+        binding
+            .document_mut()
+            .set_param(GradeParam::Temperature, 300)
+            .unwrap();
+        let command = binding.poll(Duration::ZERO, true).unwrap();
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::Grade(command)))
+            .unwrap();
+        let applied = receive_state_where(&updates, |state| {
+            state.pending_commands == 0
+                && state
+                    .project_state
+                    .as_ref()
+                    .is_some_and(|project| !project.grading().inputs.is_empty())
+        });
+        assert!(applied.error.is_none(), "{:?}", applied.error);
+        let grading = applied.project_state.as_ref().unwrap().grading();
+        assert_eq!(
+            grading.inputs[&fm_types::InputId::new(NonZeroU128::new(2).unwrap())],
+            warm_source(300)
+        );
+        // The authority now has the draft: the binding is on air.
+        binding.sync(grading, 5);
+        assert_eq!(
+            binding.status(),
+            fm_ui_model::grade_editor::GradeSyncStatus::OnAir
+        );
+
+        // A refused grade is published once with its target for the window.
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::Grade(
+                GradeCommand::Set {
+                    target: GradeTarget::Program,
+                    source: None,
+                },
+            )))
+            .unwrap();
+        let refused = receive_state_where(&updates, |state| state.grade_refusal.is_some());
+        assert_eq!(
+            refused.grade_refusal.as_ref().unwrap().target,
+            Some(GradeTarget::Program)
+        );
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("project_locked")),
+            "{:?}",
+            refused.error
+        );
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn queued_grade_drafts_of_one_target_coalesce_to_the_latest() {
+        use fm_ui_model::grade_editor::GradeTarget;
+        let set = |target, temperature| {
+            StudioIntent::Grade(GradeCommand::Set {
+                target,
+                source: Some(warm_source(temperature)),
+            })
+        };
+        let mut pending = PendingIntents::new();
+        pending.push(set(GradeTarget::Program, 100)).unwrap();
+        pending.push(set(GradeTarget::Program, 200)).unwrap();
+        let input = GradeTarget::Input(fm_types::InputId::new(NonZeroU128::new(2).unwrap()));
+        pending.push(set(input, 300)).unwrap();
+        pending.push(set(input, 400)).unwrap();
+        let queued: Vec<_> = pending.intents.iter().cloned().collect();
+        assert_eq!(
+            queued,
+            vec![set(GradeTarget::Program, 200), set(input, 400)]
+        );
+    }
+
+    #[test]
+    fn lut_files_over_the_protocol_limit_are_not_read() {
+        let directory = std::env::temp_dir().join(format!(
+            "freemix-studio-lut-{}-{}",
+            std::process::id(),
+            NEXT_WORKER_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let small = directory.join("small.cube");
+        std::fs::write(&small, "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n").unwrap();
+        assert_eq!(
+            read_grade_lut(&small),
+            GradeLutFile::Text("LUT_1D_SIZE 2\n0 0 0\n1 1 1\n".to_owned())
+        );
+        let large = directory.join("large.cube");
+        std::fs::write(&large, vec![b'#'; 32 * 1024 + 1]).unwrap();
+        assert_eq!(
+            read_grade_lut(&large),
+            GradeLutFile::TooLarge {
+                bytes: 32 * 1024 + 1
+            }
+        );
+        let binary = directory.join("binary.cube");
+        std::fs::write(&binary, [0xff, 0xfe]).unwrap();
+        assert_eq!(read_grade_lut(&binary), GradeLutFile::NotText);
+        assert!(matches!(
+            read_grade_lut(&directory.join("missing.cube")),
+            GradeLutFile::Unreadable(_)
+        ));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     fn stream_target_40() -> WireStreamTargetId {

@@ -147,21 +147,23 @@ pub fn action_spec(
     locale: Locale,
 ) -> ActionSpec {
     let l = locale;
-    let busy = document
+    let dragging = document
         .gesture_active()
         .then(|| l.text(Msg::AnimReasonDrag));
+    // A locked panel edits nothing; viewing (mode, copy) stays available.
+    let busy = state.lock_reason.or(dragging);
     let (label, text, reason, active): (String, String, Option<&'static str>, bool) = match action {
         GradeAction::ToggleMode => match state.mode {
             PanelMode::Simple => (
                 l.text(Msg::AnimAdvanced).to_owned(),
                 l.text(Msg::GradeToAdvancedHover).to_owned(),
-                busy,
+                dragging,
                 false,
             ),
             PanelMode::Advanced => (
                 l.text(Msg::AnimSimple).to_owned(),
                 l.text(Msg::GradeToSimpleHover).to_owned(),
-                busy,
+                dragging,
                 true,
             ),
         },
@@ -322,6 +324,12 @@ pub struct ColorPanelState {
     pub curve: CurveTarget,
     /// LUT asset URIs the operator may pick from.
     pub lut_choices: Vec<String>,
+    /// Display names of LUT asset URIs; others show their file name.
+    pub lut_names: std::collections::BTreeMap<String, String>,
+    /// Why the grade cannot be edited (catalog English, worded in the
+    /// panel's locale when shown); `None` while editing is allowed. A
+    /// locked panel still previews, compares, and copies.
+    pub lock_reason: Option<&'static str>,
     pub(crate) notice: Option<Notice>,
     pub(crate) drag: Option<PanelDrag>,
     pub(crate) preview: GradePreview,
@@ -342,6 +350,8 @@ impl Default for ColorPanelState {
             scope: ScopeKind::Waveform,
             curve: CurveTarget::RGB[0],
             lut_choices: Vec::new(),
+            lut_names: std::collections::BTreeMap::new(),
+            lock_reason: None,
             notice: None,
             drag: None,
             preview: GradePreview::default(),
@@ -666,13 +676,15 @@ fn simple(
     let picture = state.preview.source().is_some();
     let auto = ui
         .add_enabled(
-            picture,
+            picture && state.lock_reason.is_none(),
             crate::theme::small_button(l.text(Msg::GradeAutoBalance)),
         )
         .hint_in(
             l,
             l.text(Msg::GradeAutoBalanceHover),
-            l.text(Msg::GradeReasonNoPicture),
+            state
+                .lock_reason
+                .unwrap_or_else(|| l.text(Msg::GradeReasonNoPicture)),
         );
     rects.auto_balance = Some(auto.rect);
     if auto.clicked()
@@ -796,7 +808,7 @@ fn advanced(
             let flat = section.is_default(document.grade());
             let reset = ui
                 .add_enabled(
-                    !flat,
+                    !flat && state.lock_reason.is_none(),
                     crate::theme::small_button(l.text(Msg::GradeCurveReset)),
                 )
                 .hint_in(
@@ -805,7 +817,9 @@ fn advanced(
                         Msg::GradeCurveResetHover,
                         &[("curve", Arg::Str(text::curve_name(l, target)))],
                     ),
-                    l.text(Msg::GradeReasonDefault),
+                    state
+                        .lock_reason
+                        .unwrap_or_else(|| l.text(Msg::GradeReasonDefault)),
                 );
             if reset.clicked()
                 && let Err(error) = document.reset_section(section)
@@ -872,6 +886,11 @@ fn handle_keys(
 ) -> Vec<Result<GradeAction, GradeEditorError>> {
     let mut results = Vec::new();
     if !state.keyboard_active || ui.ctx().egui_wants_keyboard_input() {
+        return results;
+    }
+    if state.lock_reason.is_some() {
+        // Keys that would edit explain the lock like the disabled keys do.
+        state.keyboard_active = false;
         return results;
     }
     let shortcuts = ui.input_mut(|input| {

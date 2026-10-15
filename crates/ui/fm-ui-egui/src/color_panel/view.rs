@@ -564,10 +564,19 @@ pub(super) fn looks(
             ui.spacing_mut().item_spacing.x = gap;
             for preset in row {
                 let name = text::preset_name(l, preset.id).unwrap_or(preset.name);
-                let (rect, response) =
-                    ui.allocate_exact_size(thumb + vec2(0.0, 18.0), Sense::click());
+                let lock = state.lock_reason;
+                let (rect, response) = ui
+                    .add_enabled_ui(lock.is_none(), |ui| {
+                        ui.allocate_exact_size(thumb + vec2(0.0, 18.0), Sense::click())
+                    })
+                    .inner;
                 response.widget_info(|| {
-                    WidgetInfo::selected(WidgetType::Button, true, current == Some(preset.id), name)
+                    WidgetInfo::selected(
+                        WidgetType::Button,
+                        lock.is_none(),
+                        current == Some(preset.id),
+                        name,
+                    )
                 });
                 let hover = format!(
                     "{}\n{}",
@@ -578,7 +587,7 @@ pub(super) fn looks(
                         Msg::GradeLookApply
                     })
                 );
-                let response = response.on_hover_text(hover);
+                let response = response.hint_in(l, &hover, lock.unwrap_or(""));
                 rects.looks.push((preset.id, rect));
                 if response.clicked() {
                     clicked = Some(preset);
@@ -671,6 +680,14 @@ fn refresh_thumbs(
 }
 
 /// The LUT picker, strength, and remove key.
+/// The name `uri` is shown by: its LUT name, else its file name.
+fn lut_label<'a>(state: &'a ColorPanelState, uri: &'a str) -> &'a str {
+    state.lut_names.get(uri).map_or_else(
+        || uri.strip_prefix(LUT_URI_PREFIX).unwrap_or(uri),
+        String::as_str,
+    )
+}
+
 pub(super) fn lut_slot(
     ui: &mut Ui,
     l: Locale,
@@ -684,17 +701,13 @@ pub(super) fn lut_slot(
     let current = document.grade().lut.clone();
     let shown = current.as_ref().map_or_else(
         || l.text(Msg::GradeLutNone).to_owned(),
-        |lut| {
-            lut.asset_uri
-                .strip_prefix(LUT_URI_PREFIX)
-                .unwrap_or(&lut.asset_uri)
-                .to_owned()
-        },
+        |lut| lut_label(state, &lut.asset_uri).to_owned(),
     );
     let choices = state.lut_choices.clone();
     let mut picked: Option<Option<String>> = None;
+    let lock = state.lock_reason;
     let combo = ui
-        .add_enabled_ui(!choices.is_empty(), |ui| {
+        .add_enabled_ui(!choices.is_empty() && lock.is_none(), |ui| {
             egui::ComboBox::from_id_salt("fm-color-lut")
                 .selected_text(crate::theme::ellipsize(&shown, 28))
                 .width(width - 8.0)
@@ -708,7 +721,7 @@ pub(super) fn lut_slot(
                     }
                     for uri in &choices {
                         let selected = current.as_ref().is_some_and(|lut| lut.asset_uri == *uri);
-                        let name = uri.strip_prefix(LUT_URI_PREFIX).unwrap_or(uri);
+                        let name = lut_label(state, uri);
                         if ui
                             .selectable_label(selected, name)
                             .on_hover_text(format!("{uri}\n{}", l.text(Msg::GradeLutPickHover)))
@@ -724,7 +737,7 @@ pub(super) fn lut_slot(
     let _ = combo.hint_in(
         l,
         l.text(Msg::GradeLutPickHover),
-        l.text(Msg::GradeReasonNoLuts),
+        lock.unwrap_or_else(|| l.text(Msg::GradeReasonNoLuts)),
     );
     if let Some(choice) = picked {
         let strength = current.as_ref().map_or(1000, |lut| lut.strength_permille);
@@ -753,13 +766,13 @@ pub(super) fn lut_slot(
     rects.sliders.push((GradeParam::LutStrength, strength.rect));
     let remove = ui
         .add_enabled(
-            !no_lut,
+            !no_lut && lock.is_none(),
             crate::theme::small_button(l.text(Msg::GradeLutRemove)),
         )
         .hint_in(
             l,
             l.text(Msg::GradeLutRemoveHover),
-            l.text(Msg::GradeReasonNoLut),
+            lock.unwrap_or_else(|| l.text(Msg::GradeReasonNoLut)),
         );
     if remove.clicked()
         && let Err(error) = document.set_lut(None)

@@ -78,6 +78,7 @@ use crate::color_panel::{
 };
 use crate::panels::SideTab;
 use crate::{StudioConnectionStatus, StudioShell, StudioUiState};
+use fm_ui_model::grade_editor::GradeTarget;
 
 const SCREEN: Vec2 = Vec2::new(1920.0, 1080.0);
 const TITLE_INPUT: u128 = 6;
@@ -251,7 +252,7 @@ fn model(variant: Variant) -> ClientModel {
         }],
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: true,
-        grade_states: 0,
+        grade_states: 3,
     };
     let mut model = ClientModel::new(project);
     model
@@ -298,6 +299,37 @@ fn model(variant: Variant) -> ClientModel {
             ],
         })
         .unwrap();
+    // A LUT, a library grade, and a graded camera for the Colour window.
+    let grade_id = |value: u32| core::num::NonZeroU32::new(value).unwrap();
+    let mut night = fm_grade::Grade::IDENTITY;
+    night.exposure_millistops = -600;
+    night.saturation_permille = 800;
+    let mut warm = fm_grade::Grade::IDENTITY;
+    warm.white_balance.temperature = 400;
+    for entry in [
+        fm_protocol::GradeEntry::Lut {
+            lut: grade_id(1),
+            name: "Film".into(),
+            kind: fm_grade::CubeKind::ThreeD,
+            size: 17,
+        },
+        fm_protocol::GradeEntry::Library {
+            grade: grade_id(1),
+            name: "Night look".into(),
+            value: Box::new(night),
+        },
+        fm_protocol::GradeEntry::Input {
+            input: wire(2),
+            source: fm_protocol::WireGradeSource::Inline(Box::new(warm)),
+        },
+    ] {
+        model
+            .apply_grade_state(fm_protocol::GradeStateMessage {
+                revision: 10,
+                entry,
+            })
+            .unwrap();
+    }
     let entry = |id: u64, source: u128, transition, transition_frames, enabled| PlaylistEntrySpec {
         id,
         input: wire(source),
@@ -516,6 +548,49 @@ fn scenes(language: Language) -> Vec<Scene> {
             shell(open),
             operator.clone(),
         ));
+    }
+    // The Colour window: Simple on a graded camera, Advanced on Program
+    // with a library grade chosen and a name and LUT path typed, and locked
+    // by a missing permission and by the project padlock.
+    let colour: [(&str, Configure, StudioUiState); 4] = [
+        (
+            "operator/colour",
+            &|shell| shell.open_color(Some(GradeTarget::Input(input(2)))),
+            ready(true, Variant::default()),
+        ),
+        (
+            "operator/colour-advanced",
+            &|shell| {
+                shell.open_color(Some(GradeTarget::Program));
+                shell.color.panel.mode = PanelMode::Advanced;
+                shell.color.library_pick = core::num::NonZeroU32::new(1);
+                shell.color.library_name = "Evening".into();
+                shell.color.lut_path = "/luts/warm.cube".into();
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "viewer/colour",
+            &|shell| shell.open_color(Some(GradeTarget::Input(input(1)))),
+            ready(false, Variant::default()),
+        ),
+        (
+            "operator/colour-locked",
+            &|shell| {
+                shell.open_color(Some(GradeTarget::Input(input(2))));
+                shell.color.panel.mode = PanelMode::Advanced;
+            },
+            ready(
+                true,
+                Variant {
+                    locked: true,
+                    ..Variant::default()
+                },
+            ),
+        ),
+    ];
+    for (name, open, state) in colour {
+        scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.push(Scene::console(
         "disconnected",

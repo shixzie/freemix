@@ -491,6 +491,17 @@ impl StudioShell {
     fn view_menu(&mut self, ui: &mut Ui) {
         let l = self.locale;
         ui.set_min_width(VIEW_MENU_WIDTH);
+        if item(
+            ui,
+            true,
+            l.text(Msg::ColorMenuItem),
+            Some(crate::COLOR_SHORTCUT),
+            l.text(Msg::ColorMenuHover),
+            "",
+        ) {
+            self.open_color(None);
+        }
+        ui.separator();
         heading(ui, l.text(Msg::ViewPanels));
         ui.checkbox(&mut self.layout.show_input_bank, l.text(Msg::InputBank))
             .on_hover_text(l.text(Msg::ViewInputBankHover));

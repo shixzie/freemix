@@ -19,14 +19,22 @@
 //! * [`preview`]: local graded previews through
 //!   [`fm_grade::CompiledGrade`] with caching, before/after compositing, and
 //!   the debounced latest-wins [`RecomputeScheduler`].
+//! * [`binding`]: binds a document to one target's replicated grade and
+//!   turns edits into debounced grade commands.
 //! * [`scopes`]: waveform, parade, vectorscope, and histogram grids.
 
+pub mod binding;
 pub mod curves;
 pub mod document;
 pub mod preview;
 pub mod scopes;
 pub mod wheel;
 
+pub use binding::{
+    DRAG_SEND_INTERVAL, GradeBinding, GradeCommand, GradeNameProblem, GradeSyncStatus, GradeTarget,
+    SyncOutcome, library_name_problem, lut_fits_protocol, lut_id, lut_name_problem, lut_uri,
+    next_library_id, next_lut_id, target_grade, target_source,
+};
 pub use curves::{CurveTarget, HUE_ANCHORS, MIN_HUE_GAP, MIN_LUMA_GAP, MIN_RGB_GAP};
 pub use document::{
     AbSlot, GRADE_UNDO_LIMIT, GradeDocument, GradeEditorError, GradeParam, GradeSection,

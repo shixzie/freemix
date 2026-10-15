@@ -577,6 +577,16 @@ impl StudioShell {
         ) {
             intents.extend(tile_intents(input, TileGesture::Cut, gates));
         }
+        if item(
+            ui,
+            true,
+            l.text(Msg::ColorTileItem),
+            if locked { LOCKED_MARK } else { "" },
+            l.text(Msg::ColorTileHover),
+            "",
+        ) {
+            self.open_color(Some(fm_ui_model::grade_editor::GradeTarget::Input(input)));
+        }
         ui.separator();
         let edit_mark = if locked { LOCKED_MARK } else { "" };
         let [left_lock, right_lock] = tile.move_locks;

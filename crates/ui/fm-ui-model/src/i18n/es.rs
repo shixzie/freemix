@@ -3114,4 +3114,205 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::GradeCurveShowHover,
         t("Haga clic para editar esta curva."),
     ),
+    // Studio Colour window (SW-019).
+    (Msg::ColorMenuItem, t("Corrección de color…")),
+    (
+        Msg::ColorMenuHover,
+        t("Abrir la ventana Color para corregir una entrada o el Programa"),
+    ),
+    (Msg::ColorTileItem, t("Corregir color…")),
+    (
+        Msg::ColorTileHover,
+        t("Abrir esta entrada en la ventana Color para corregirla"),
+    ),
+    (Msg::ShortcutColor, t("Abrir o cerrar la ventana Color")),
+    (Msg::ColorTarget, t("Destino")),
+    (
+        Msg::ColorTargetHover,
+        t(
+            "Qué corregir: una entrada (antes de mezclar, dondequiera que aparezca) o el Programa (después de las superposiciones, antes del fundido a negro)",
+        ),
+    ),
+    (Msg::ColorTargetProgram, t("Salida de Programa")),
+    (
+        Msg::ColorTargetProgramHover,
+        t("Corregir la imagen compuesta de Programa"),
+    ),
+    (
+        Msg::ColorTargetInputHover,
+        t("Corregir esta entrada dondequiera que aparezca"),
+    ),
+    (Msg::ColorGraded, t("corregida")),
+    (
+        Msg::ColorStatusOnAirHover,
+        t("El servidor aplicó esta corrección; los monitores la muestran"),
+    ),
+    (Msg::ColorStatusEditing, t("EDITANDO")),
+    (
+        Msg::ColorStatusEditingHover,
+        t("El cambio se envía mientras arrastra y otra vez al soltar"),
+    ),
+    (Msg::ColorStatusSending, t("ENVIANDO")),
+    (
+        Msg::ColorStatusSendingHover,
+        t("Enviada; esperando a que el servidor la aplique"),
+    ),
+    (Msg::ColorStatusRefused, t("RECHAZADA")),
+    (
+        Msg::ColorStatusRefusedHover,
+        t(
+            "El servidor rechazó esta corrección, así que no está al aire (el aviso dice por qué). Reviértala o cámbiela para enviarla de nuevo",
+        ),
+    ),
+    (Msg::ColorStatusDiverged, t("NO AL AIRE")),
+    (
+        Msg::ColorStatusDivergedHover,
+        t(
+            "Este borrador difiere de la corrección al aire y no se aplicó. Reviértalo o cámbielo para enviarlo de nuevo",
+        ),
+    ),
+    (Msg::ColorRevert, t("Revertir")),
+    (
+        Msg::ColorRevertHover,
+        t("Descartar este borrador y volver a la corrección al aire"),
+    ),
+    (
+        Msg::ColorReasonOnAir,
+        t("el borrador ya es la corrección al aire"),
+    ),
+    (
+        Msg::ColorReasonGradingPending,
+        t("las correcciones del proyecto aún se están sincronizando"),
+    ),
+    (
+        Msg::ColorClose,
+        t("Cerrar la ventana Color; un cambio que aún se envía se envía igualmente"),
+    ),
+    (Msg::ColorLibrary, t("Biblioteca")),
+    (
+        Msg::ColorLibraryHover,
+        t(
+            "Correcciones con nombre guardadas en el proyecto. Un destino que aplica una sigue sus actualizaciones posteriores",
+        ),
+    ),
+    (
+        Msg::ColorLibraryPickHover,
+        t("Elegir una corrección de la biblioteca para aplicarla"),
+    ),
+    (
+        Msg::ColorLibraryNone,
+        t("Aún no hay correcciones en la biblioteca"),
+    ),
+    (Msg::ColorLibraryApply, t("Aplicar")),
+    (
+        Msg::ColorLibraryApplyHover,
+        t(
+            "Aplicar la corrección elegida a este destino (vinculada: sigue las actualizaciones posteriores de la biblioteca)",
+        ),
+    ),
+    (
+        Msg::ColorReasonNoLibrary,
+        t("la biblioteca del proyecto aún no tiene correcciones; guarde una primero"),
+    ),
+    (
+        Msg::ColorReasonPickLibrary,
+        t("elija primero una corrección de la biblioteca"),
+    ),
+    (Msg::ColorLibraryNameHint, t("Nombre de esta corrección")),
+    (
+        Msg::ColorLibraryNameHover,
+        t("Nombre de la nueva corrección de biblioteca: único, de 128 bytes como máximo"),
+    ),
+    (Msg::ColorLibrarySave, t("Guardar en biblioteca")),
+    (
+        Msg::ColorLibrarySaveHover,
+        t("Guardar el borrador actual en la biblioteca del proyecto con este nombre"),
+    ),
+    (Msg::ColorReasonNameBlank, t("escriba primero un nombre")),
+    (
+        Msg::ColorReasonNameControl,
+        t("el nombre contiene caracteres de control"),
+    ),
+    (
+        Msg::ColorReasonNameTaken,
+        t("otra corrección de la biblioteca ya tiene este nombre"),
+    ),
+    (
+        Msg::ColorReasonLibraryFull,
+        t("la biblioteca del proyecto está llena"),
+    ),
+    (Msg::ColorLut, t("Importar LUT")),
+    (
+        Msg::ColorLutHover,
+        t("Importar una LUT .cube al proyecto; después elíjala en el modo Avanzado, en LUT"),
+    ),
+    (Msg::ColorLutPathHint, t("Ruta de un archivo .cube")),
+    (
+        Msg::ColorLutPathHover,
+        t("Ruta de un archivo .cube en este equipo. Studio envía su texto, de 32 KiB como máximo"),
+    ),
+    (Msg::ColorLutImport, t("Importar")),
+    (
+        Msg::ColorLutImportHover,
+        t("Leer el archivo e importarlo como LUT del proyecto con el nombre del archivo"),
+    ),
+    (
+        Msg::ColorReasonNoPath,
+        t("escriba primero la ruta de un archivo .cube"),
+    ),
+    (
+        Msg::ColorReasonLutNameTaken,
+        t("el proyecto ya tiene una LUT con este nombre de archivo"),
+    ),
+    (
+        Msg::ColorReasonLutsFull,
+        t("el proyecto no tiene ningún id de LUT libre"),
+    ),
+    (
+        Msg::ColorLutLimit,
+        t(
+            "Hasta 32 KiB por la conexión (LUT 1D y 3D hasta unos 17³). Importe LUT mayores con freemix-cli grade-import-lut.",
+        ),
+    ),
+    (
+        Msg::ColorLutTooLarge,
+        t(
+            "{file} ocupa {size} KiB; Studio envía LUT de 32 KiB como máximo. Impórtela sin conexión con freemix-cli grade-import-lut.",
+        ),
+    ),
+    (
+        Msg::ColorLutUnreadable,
+        t("No se pudo leer {file}: {error}"),
+    ),
+    (
+        Msg::ColorLutNotText,
+        t("{file} no es un archivo .cube de texto"),
+    ),
+    (
+        Msg::ColorLutInvalid,
+        t("{file} no es una LUT .cube válida: {error}"),
+    ),
+    (Msg::ColorLutImporting, t("Importando la LUT {name}…")),
+    (
+        Msg::ColorSourceLive,
+        t("Imagen: fotograma en vivo del monitor {tap}"),
+    ),
+    (
+        Msg::ColorSourceHeld,
+        t(
+            "Imagen: último fotograma sin corregir de esta fuente; los monitores muestran la corrección al aire",
+        ),
+    ),
+    (
+        Msg::ColorSourceStill,
+        t(
+            "Imagen: imagen de prueba. No ha llegado ningún fotograma sin corregir de esta fuente; póngala en Previo para verla en vivo",
+        ),
+    ),
+    (
+        Msg::ColorSourceHover,
+        t(
+            "La vista previa corrige esta imagen en este equipo, así que arrastrar es instantáneo; el servidor aplica la corrección a los monitores",
+        ),
+    ),
 ];
