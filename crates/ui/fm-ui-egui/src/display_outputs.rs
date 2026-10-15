@@ -8,6 +8,13 @@
 //! applied, lists the displays from the daemon's `display_inventory` reply
 //! (with their modes and HDR capability), and shows each configured slot's
 //! live state (active on a display, or waiting and why).
+//!
+//! A draft records the slot configuration it was started from. Apply sends
+//! it only while the live slot still equals that base, and keeps it until
+//! the server answers: an accepted change clears it once the change lands,
+//! a refused one keeps it and shows why. A slot changed elsewhere meanwhile
+//! offers Reload (start again from the live slot) or Overwrite (send the
+//! draft anyway).
 
 use egui::{Button, ComboBox, RichText, Ui, Vec2};
 use fm_protocol::{
@@ -24,6 +31,40 @@ use crate::theme::{Tone, card, muted_color, section_label, status_chip, text_dim
 use crate::{StudioIntent, StudioShell, StudioUiState, stinger_edit_lock_reason};
 
 const DIALOG_WIDTH: f32 = 600.0;
+const SLOTS: usize = fm_protocol::MAX_DISPLAY_OUTPUTS;
+
+/// The server's answer to this session's latest set or clear of one slot,
+/// kept by the host per slot until another answer for that slot arrives.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisplayOutputAnswer {
+    pub command_id: String,
+    pub slot: DisplayOutputSlot,
+    /// The revision the accepted change lands at, or why it was refused.
+    pub outcome: Result<u64, String>,
+}
+
+/// One slot's unsaved edit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SlotDraft {
+    /// The edited configuration.
+    pub(crate) config: DisplayOutputConfig,
+    /// The live configuration the edit started from (`None`: unconfigured).
+    pub(crate) base: Option<DisplayOutputConfig>,
+}
+
+/// A change this dialog sent for one slot and has not seen settle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Awaiting {
+    /// Sent; the server has not answered.
+    Set(DisplayOutputConfig),
+    /// Accepted at a revision the replicated view has not reached yet.
+    Landing {
+        config: DisplayOutputConfig,
+        revision: u64,
+    },
+    /// A clear was sent.
+    Clear,
+}
 
 /// The dialog's open state and per-slot drafts.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -31,7 +72,160 @@ pub(crate) struct DisplayOutputsDialog {
     /// Whether the dialog is open.
     pub(crate) open: bool,
     /// Unsaved edits per slot; `None` follows the replicated configuration.
-    pub(crate) drafts: [Option<DisplayOutputConfig>; fm_protocol::MAX_DISPLAY_OUTPUTS],
+    pub(crate) drafts: [Option<SlotDraft>; SLOTS],
+    /// The change sent per slot and not settled yet.
+    pub(crate) awaiting: [Option<Awaiting>; SLOTS],
+    /// Why the server refused the latest change per slot.
+    pub(crate) refusals: [Option<String>; SLOTS],
+    /// The command id of the latest answer handled per slot.
+    seen_answers: [Option<String>; SLOTS],
+}
+
+impl DisplayOutputsDialog {
+    /// Settles sent changes against the server's answers and the
+    /// replicated slots; run every frame, open or not. `revision` is the
+    /// replicated view's, and `live` each slot's configuration.
+    pub(crate) fn settle(
+        &mut self,
+        revision: Option<u64>,
+        live: [Option<&DisplayOutputConfig>; SLOTS],
+        answers: &[Option<DisplayOutputAnswer>; SLOTS],
+    ) {
+        for index in 0..SLOTS {
+            if let Some(answer) = &answers[index]
+                && self.seen_answers[index].as_ref() != Some(&answer.command_id)
+            {
+                self.seen_answers[index] = Some(answer.command_id.clone());
+                match (&answer.outcome, self.awaiting[index].take()) {
+                    (Err(reason), Some(_)) => self.refusals[index] = Some(reason.clone()),
+                    (Ok(revision), Some(Awaiting::Set(config))) => {
+                        self.awaiting[index] = Some(Awaiting::Landing {
+                            config,
+                            revision: *revision,
+                        });
+                    }
+                    (_, awaiting) => self.awaiting[index] = awaiting,
+                }
+            }
+            let landed = match &self.awaiting[index] {
+                // The change is on screen (its echo may beat the answer).
+                Some(Awaiting::Set(config) | Awaiting::Landing { config, .. })
+                    if live[index] == Some(config) =>
+                {
+                    Some(config.clone())
+                }
+                // Accepted and replicated, though something newer may have
+                // replaced it since.
+                Some(Awaiting::Landing {
+                    config,
+                    revision: at,
+                }) if revision.is_some_and(|revision| revision >= *at) => Some(config.clone()),
+                Some(Awaiting::Clear) if live[index].is_none() => {
+                    self.awaiting[index] = None;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(config) = landed {
+                self.awaiting[index] = None;
+                // The applied draft is done; later edits build on it.
+                match &mut self.drafts[index] {
+                    Some(draft) if draft.config == config => self.drafts[index] = None,
+                    Some(draft) => draft.base = Some(config),
+                    None => {}
+                }
+            }
+            // A draft equal to the live configuration is no draft.
+            if self.awaiting[index].is_none()
+                && self.drafts[index]
+                    .as_ref()
+                    .is_some_and(|draft| Some(&draft.config) == live[index])
+            {
+                self.drafts[index] = None;
+            }
+        }
+    }
+
+    /// Records an edit of `slot`; a new draft starts from `live`.
+    pub(crate) fn edit(
+        &mut self,
+        slot: DisplayOutputSlot,
+        live: Option<&DisplayOutputConfig>,
+        config: DisplayOutputConfig,
+    ) {
+        match &mut self.drafts[slot.index()] {
+            Some(draft) => draft.config = config,
+            draft @ None => {
+                *draft = Some(SlotDraft {
+                    config,
+                    base: live.cloned(),
+                });
+            }
+        }
+    }
+
+    /// Whether `slot` changed elsewhere since its draft started.
+    pub(crate) fn changed_elsewhere(
+        &self,
+        slot: DisplayOutputSlot,
+        live: Option<&DisplayOutputConfig>,
+    ) -> bool {
+        self.awaiting[slot.index()].is_none()
+            && self.drafts[slot.index()]
+                .as_ref()
+                .is_some_and(|draft| draft.base.as_ref() != live)
+    }
+
+    /// Whether a change to `slot` was sent and has not settled.
+    pub(crate) const fn applying(&self, slot: DisplayOutputSlot) -> bool {
+        self.awaiting[slot.index()].is_some()
+    }
+
+    /// The intent that applies the draft of `slot`: only while the live
+    /// slot still equals the draft's base, unless `overwrite` rebases the
+    /// draft onto the live slot first. Marks the slot as applying.
+    pub(crate) fn apply(
+        &mut self,
+        state: &StudioUiState,
+        slot: DisplayOutputSlot,
+        overwrite: bool,
+    ) -> Option<StudioIntent> {
+        let live = state
+            .view
+            .as_ref()
+            .and_then(|view| view.display_output(slot))
+            .cloned();
+        if self.applying(slot) || (!overwrite && self.changed_elsewhere(slot, live.as_ref())) {
+            return None;
+        }
+        let draft = self.drafts[slot.index()].as_mut()?;
+        let intent = display_output_set_intent(state, slot, &draft.config)?;
+        draft.base = live;
+        self.awaiting[slot.index()] = Some(Awaiting::Set(draft.config.clone()));
+        self.refusals[slot.index()] = None;
+        Some(intent)
+    }
+
+    /// The intent that clears `slot`, discarding its draft.
+    pub(crate) fn clear(
+        &mut self,
+        state: &StudioUiState,
+        slot: DisplayOutputSlot,
+    ) -> Option<StudioIntent> {
+        let intent = display_output_clear_intent(state, slot)?;
+        self.drafts[slot.index()] = None;
+        self.awaiting[slot.index()] = Some(Awaiting::Clear);
+        self.refusals[slot.index()] = None;
+        Some(intent)
+    }
+
+    /// Discards the draft of `slot` and forgets any change in flight, so
+    /// the slot follows the live configuration again.
+    pub(crate) fn discard(&mut self, slot: DisplayOutputSlot) {
+        self.drafts[slot.index()] = None;
+        self.awaiting[slot.index()] = None;
+        self.refusals[slot.index()] = None;
+    }
 }
 
 /// Why slot edits are unavailable, if they are: a session gate first
@@ -261,6 +455,12 @@ impl StudioShell {
         state: &StudioUiState,
         intents: &mut Vec<StudioIntent>,
     ) {
+        let view = state.view.as_ref();
+        self.display_outputs.settle(
+            view.map(|view| view.cursor.revision.get()),
+            DisplayOutputSlot::ALL.map(|slot| view.and_then(|view| view.display_output(slot))),
+            &state.display_output_answers,
+        );
         if !self.display_outputs.open {
             return;
         }
@@ -339,12 +539,9 @@ fn draw_slot(
     let slot_arg = ("slot", Arg::Plain(u64::from(slot.get())));
     let view = state.view.as_ref();
     let saved = view.and_then(|view| view.display_output(slot)).cloned();
-    // A draft equal to the saved configuration is no draft.
-    if dialog.drafts[slot.index()].as_ref() == saved.as_ref() {
-        dialog.drafts[slot.index()] = None;
-    }
     let draft = dialog.drafts[slot.index()]
-        .clone()
+        .as_ref()
+        .map(|draft| draft.config.clone())
         .or_else(|| saved.clone());
     let inventory = view.and_then(|view| view.display_inventory.as_ref());
     card().show(ui, |ui| {
@@ -616,65 +813,138 @@ fn draw_slot(
                 });
                 ui.end_row();
             });
-        if edited != draft {
-            dialog.drafts[slot.index()].clone_from(&edited);
+        if edited != draft
+            && let Some(config) = edited.clone()
+        {
+            dialog.edit(slot, saved.as_ref(), config);
         }
-        let unsaved = dialog.drafts[slot.index()].is_some();
-        if unsaved {
-            ui.label(
-                RichText::new(l.text(Msg::DisplayUnsaved))
-                    .size(crate::theme::legible(10.5))
-                    .color(crate::theme::accent_color()),
-            );
-        }
-        ui.horizontal(|ui| {
-            let apply = edited
-                .as_ref()
-                .and_then(|config| display_output_set_intent(state, slot, config));
+        draw_slot_footer(ui, state, dialog, slot, edited.is_none(), intents);
+    });
+}
+
+/// The slot's draft notices (unsaved, applying, refused, changed
+/// elsewhere) and its buttons.
+#[allow(clippy::too_many_lines)] // one immediate-mode row of notices and buttons
+fn draw_slot_footer(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    dialog: &mut DisplayOutputsDialog,
+    slot: DisplayOutputSlot,
+    unconfigured: bool,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let blocked = display_output_block_reason(state);
+    let reason = blocked.unwrap_or_else(|| unavailable_reason(state, Capability::EditProject));
+    let slot_arg = ("slot", Arg::Plain(u64::from(slot.get())));
+    let saved = state
+        .view
+        .as_ref()
+        .and_then(|view| view.display_output(slot))
+        .cloned();
+    let unsaved = dialog.drafts[slot.index()].is_some();
+    let applying = dialog.applying(slot);
+    let elsewhere = dialog.changed_elsewhere(slot, saved.as_ref());
+    let note = |ui: &mut Ui, text: &str, color: egui::Color32| {
+        ui.label(
+            RichText::new(text)
+                .size(crate::theme::legible(10.5))
+                .color(color),
+        );
+    };
+    if applying {
+        note(ui, l.text(Msg::DisplayApplying), muted_color());
+    } else if unsaved {
+        note(
+            ui,
+            l.text(Msg::DisplayUnsaved),
+            crate::theme::accent_color(),
+        );
+    }
+    if let Some(refusal) = &dialog.refusals[slot.index()] {
+        note(
+            ui,
+            &l.format(Msg::DisplayRefused, &[("reason", Arg::Str(l.tr(refusal)))]),
+            crate::theme::ERROR,
+        );
+    }
+    if elsewhere {
+        note(
+            ui,
+            &l.format(Msg::DisplayChangedElsewhere, &[slot_arg]),
+            crate::theme::AMBER,
+        );
+    }
+    ui.horizontal(|ui| {
+        let applicable = dialog.drafts[slot.index()]
+            .as_ref()
+            .is_some_and(|draft| display_output_set_intent(state, slot, &draft.config).is_some());
+        if elsewhere {
+            if ui
+                .button(l.text(Msg::DisplayReload))
+                .on_hover_text(l.format(Msg::DisplayReloadHover, &[slot_arg]))
+                .clicked()
+            {
+                dialog.discard(slot);
+            }
+            if ui
+                .add_enabled(applicable, Button::new(l.text(Msg::DisplayOverwrite)))
+                .hint(&l.format(Msg::DisplayOverwriteHover, &[slot_arg]), reason)
+                .clicked()
+                && let Some(intent) = dialog.apply(state, slot, true)
+            {
+                intents.push(intent);
+            }
+        } else {
             let apply_reason = if blocked.is_some() {
                 reason
-            } else if edited.is_none() {
+            } else if applying {
+                Msg::ReasonDisplayApplying.en()
+            } else if unconfigured {
                 Msg::ReasonDisplayChooseDisplay.en()
             } else {
                 Msg::ReasonDisplayNoChanges.en()
             };
             if ui
-                .add_enabled(apply.is_some(), Button::new(l.text(Msg::DisplayApply)))
+                .add_enabled(
+                    applicable && !applying,
+                    Button::new(l.text(Msg::DisplayApply)),
+                )
                 .hint(&l.format(Msg::DisplayApplyHover, &[slot_arg]), apply_reason)
                 .clicked()
-                && let Some(intent) = apply
+                && let Some(intent) = dialog.apply(state, slot, false)
             {
                 intents.push(intent);
-                dialog.drafts[slot.index()] = None;
             }
-            if ui
-                .add_enabled(unsaved, Button::new(l.text(Msg::DisplayRevert)))
-                .hint(
-                    &l.format(Msg::DisplayRevertHover, &[slot_arg]),
-                    Msg::ReasonDisplayNoChanges.en(),
-                )
-                .clicked()
-            {
-                dialog.drafts[slot.index()] = None;
-            }
-            let clear = display_output_clear_intent(state, slot);
-            if ui
-                .add_enabled(clear.is_some(), Button::new(l.text(Msg::DisplayClear)))
-                .hint(
-                    &l.format(Msg::DisplayClearHover, &[slot_arg]),
-                    if blocked.is_some() {
-                        reason
-                    } else {
-                        Msg::ReasonDisplayNotConfigured.en()
-                    },
-                )
-                .clicked()
-                && let Some(intent) = clear
-            {
-                intents.push(intent);
-                dialog.drafts[slot.index()] = None;
-            }
-        });
+        }
+        if ui
+            .add_enabled(unsaved || applying, Button::new(l.text(Msg::DisplayRevert)))
+            .hint(
+                &l.format(Msg::DisplayRevertHover, &[slot_arg]),
+                Msg::ReasonDisplayNoChanges.en(),
+            )
+            .clicked()
+        {
+            dialog.discard(slot);
+        }
+        let clear = !applying && display_output_clear_intent(state, slot).is_some();
+        if ui
+            .add_enabled(clear, Button::new(l.text(Msg::DisplayClear)))
+            .hint(
+                &l.format(Msg::DisplayClearHover, &[slot_arg]),
+                if blocked.is_some() {
+                    reason
+                } else if applying {
+                    Msg::ReasonDisplayApplying.en()
+                } else {
+                    Msg::ReasonDisplayNotConfigured.en()
+                },
+            )
+            .clicked()
+            && let Some(intent) = dialog.clear(state, slot)
+        {
+            intents.push(intent);
+        }
     });
 }
 
@@ -685,6 +955,171 @@ mod tests {
 
     fn slot(value: u8) -> DisplayOutputSlot {
         DisplayOutputSlot::new(value).unwrap()
+    }
+
+    fn config(scaling: OutputScaling) -> DisplayOutputConfig {
+        DisplayOutputConfig {
+            scaling,
+            ..DisplayOutputConfig::program_on(DisplaySelector::Name("Wall".into()))
+        }
+    }
+
+    /// A ready operator session whose slot 1 is `live`, at `revision`.
+    fn state(live: Option<DisplayOutputConfig>, revision: u64) -> StudioUiState {
+        let mut view = crate::tests::recording_view([false, false]);
+        let mut cursor = view.cursor.resume_cursor();
+        cursor.revision = revision;
+        view.cursor =
+            fm_ui_model::ProjectCursor::from_resume_cursor(view.cursor.project_id, cursor).unwrap();
+        view.display_outputs = live
+            .into_iter()
+            .map(|config| fm_protocol::DisplayOutputEntry {
+                slot: slot(1),
+                config,
+            })
+            .collect();
+        let mut state = StudioUiState::new(crate::StudioConnectionStatus::Ready).with_view(view);
+        state.can_edit_project = true;
+        state
+    }
+
+    fn settle(dialog: &mut DisplayOutputsDialog, state: &StudioUiState) {
+        let view = state.view.as_ref().unwrap();
+        dialog.settle(
+            Some(view.cursor.revision.get()),
+            DisplayOutputSlot::ALL.map(|slot| view.display_output(slot)),
+            &state.display_output_answers,
+        );
+    }
+
+    fn answer(command_id: &str, outcome: Result<u64, String>) -> [Option<DisplayOutputAnswer>; 2] {
+        [
+            Some(DisplayOutputAnswer {
+                command_id: command_id.into(),
+                slot: slot(1),
+                outcome,
+            }),
+            None,
+        ]
+    }
+
+    #[test]
+    fn a_refused_apply_keeps_the_draft_and_says_why() {
+        let mut dialog = DisplayOutputsDialog::default();
+        let mut live = state(Some(config(OutputScaling::Fit)), 5);
+        dialog.edit(
+            slot(1),
+            live.view.as_ref().unwrap().display_output(slot(1)),
+            config(OutputScaling::Fill),
+        );
+        let intent = dialog.apply(&live, slot(1), false);
+        assert!(matches!(
+            intent,
+            Some(StudioIntent::SetDisplayOutput { .. })
+        ));
+        settle(&mut dialog, &live);
+        assert!(dialog.applying(slot(1)), "the draft waits for the answer");
+        assert_eq!(
+            dialog.drafts[0].as_ref().map(|draft| &draft.config),
+            Some(&config(OutputScaling::Fill))
+        );
+        assert_eq!(dialog.apply(&live, slot(1), false), None, "no second send");
+
+        live.display_output_answers = answer("cmd-1", Err("the project is locked".into()));
+        settle(&mut dialog, &live);
+        assert!(!dialog.applying(slot(1)));
+        assert_eq!(dialog.refusals[0].as_deref(), Some("the project is locked"));
+        assert_eq!(
+            dialog.drafts[0].as_ref().map(|draft| &draft.config),
+            Some(&config(OutputScaling::Fill)),
+            "the refused edit is kept"
+        );
+        // The same answer again changes nothing; Apply can retry.
+        settle(&mut dialog, &live);
+        assert!(dialog.apply(&live, slot(1), false).is_some());
+        assert_eq!(dialog.refusals[0], None);
+    }
+
+    #[test]
+    fn an_accepted_apply_clears_the_draft_once_it_lands() {
+        let mut dialog = DisplayOutputsDialog::default();
+        let before = state(Some(config(OutputScaling::Fit)), 5);
+        dialog.edit(
+            slot(1),
+            Some(&config(OutputScaling::Fit)),
+            config(OutputScaling::Fill),
+        );
+        assert!(dialog.apply(&before, slot(1), false).is_some());
+        // The acceptance can arrive before its echo: the draft stays.
+        let mut accepted = before.clone();
+        accepted.display_output_answers = answer("cmd-1", Ok(6));
+        settle(&mut dialog, &accepted);
+        assert!(dialog.applying(slot(1)));
+        assert!(dialog.drafts[0].is_some());
+        // The echo lands: the draft is done.
+        let mut landed = state(Some(config(OutputScaling::Fill)), 6);
+        landed.display_output_answers = accepted.display_output_answers.clone();
+        settle(&mut dialog, &landed);
+        assert!(!dialog.applying(slot(1)));
+        assert_eq!(dialog.drafts[0], None);
+        assert!(!dialog.changed_elsewhere(slot(1), Some(&config(OutputScaling::Fill))));
+
+        // Accepted, but another client's change replaced it in the same
+        // update: the applied draft is done all the same.
+        let mut dialog = DisplayOutputsDialog::default();
+        dialog.edit(
+            slot(1),
+            Some(&config(OutputScaling::Fit)),
+            config(OutputScaling::Fill),
+        );
+        assert!(dialog.apply(&before, slot(1), false).is_some());
+        let mut replaced = state(Some(config(OutputScaling::Stretch)), 7);
+        replaced.display_output_answers = answer("cmd-2", Ok(6));
+        settle(&mut dialog, &replaced);
+        assert!(!dialog.applying(slot(1)));
+        assert_eq!(dialog.drafts[0], None);
+    }
+
+    #[test]
+    fn a_slot_changed_elsewhere_is_not_clobbered_until_overwrite() {
+        let mut dialog = DisplayOutputsDialog::default();
+        dialog.edit(
+            slot(1),
+            Some(&config(OutputScaling::Fit)),
+            config(OutputScaling::Fill),
+        );
+        // Another client changes the slot meanwhile.
+        let theirs = state(Some(config(OutputScaling::Stretch)), 6);
+        settle(&mut dialog, &theirs);
+        let live = Some(config(OutputScaling::Stretch));
+        assert!(dialog.changed_elsewhere(slot(1), live.as_ref()));
+        assert_eq!(
+            dialog.apply(&theirs, slot(1), false),
+            None,
+            "Apply sends nothing"
+        );
+        assert!(!dialog.applying(slot(1)));
+
+        // Reload discards the draft and follows the live slot.
+        let mut reloaded = dialog.clone();
+        reloaded.discard(slot(1));
+        assert_eq!(reloaded.drafts[0], None);
+        assert!(!reloaded.changed_elsewhere(slot(1), live.as_ref()));
+
+        // Overwrite sends the draft, rebased onto the live slot.
+        let Some(StudioIntent::SetDisplayOutput { config: sent, .. }) =
+            dialog.apply(&theirs, slot(1), true)
+        else {
+            panic!("overwrite sends the draft");
+        };
+        assert_eq!(*sent, config(OutputScaling::Fill));
+        assert_eq!(
+            dialog.drafts[0]
+                .as_ref()
+                .and_then(|draft| draft.base.clone()),
+            live
+        );
+        assert!(dialog.applying(slot(1)));
     }
 
     fn inventory() -> DisplayInventory {

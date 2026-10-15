@@ -1825,6 +1825,83 @@ fn display_output_slots_without_a_presenter_wait_and_survive_restart() {
     assert_eq!(persisted.project().display_output(two), Some(&config));
 }
 
+/// OR-011: Studio supervises its daemon with
+/// `--display-presenter-if-available`. Without a window system (or in a
+/// build without display surfaces) that daemon still serves, and its slots
+/// wait with `no-presenter` instead of the daemon failing to start.
+#[test]
+fn a_daemon_whose_presenter_cannot_open_serves_with_slots_waiting() {
+    let directory = TestDirectory::new("presenter-fallback");
+    let project_path = directory.project_path();
+    create_two_output_project(&project_path);
+    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
+        .arg("serve")
+        .arg(&project_path)
+        .args([
+            "--listen",
+            "127.0.0.1:0",
+            "--display-presenter-if-available",
+        ])
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = read_startup_lines(&mut child, 1);
+    let readiness = match lines[0].parse::<ReadinessRecord>() {
+        Ok(readiness) => readiness,
+        Err(error) => startup_failure(&mut child, &lines, &error.to_string(), None),
+    };
+    let mut daemon = Daemon {
+        child: Some(child),
+        address: readiness.address,
+        project_id: readiness.project_id,
+    };
+
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Admin, None);
+    let _ = client.receive_snapshot();
+    let one = fm_protocol::DisplayOutputSlot::new(1).unwrap();
+    client.send(&command(
+        "display-set",
+        "display-set-key",
+        CommandPayload::SetDisplayOutput {
+            slot: one,
+            config: Box::new("display=index:0,source=preview".parse().unwrap()),
+        },
+    ));
+    let result = client.next_result();
+    assert!(
+        matches!(&result, CommandResult::Accepted { id, .. } if id == "display-set"),
+        "{result:?}"
+    );
+    drop(client);
+
+    let mut observer = daemon.connect();
+    observer.handshake_as(Role::Viewer, None);
+    let snapshot = observer.receive_snapshot();
+    assert_eq!(
+        snapshot.display_output_states,
+        vec![fm_protocol::DisplayOutputStatus {
+            slot: one,
+            state: fm_protocol::WireDisplayOutputState::Waiting(
+                fm_protocol::WaitReason::NoPresenter
+            ),
+        }]
+    );
+    drop(observer);
+
+    let mut child = daemon.child.take().unwrap();
+    assert!(terminate_child(&mut child), "daemon did not stop");
+    let stderr = child_stderr(&mut child);
+    assert_eq!(
+        stderr.contains("FREEMIXD_DISPLAY_PRESENTER\tv=1\tstate=unavailable\terror="),
+        cfg!(feature = "display-surface"),
+        "{stderr}"
+    );
+}
+
 /// AU-001: strip labels and VCA groups are replicated project state; a
 /// muted group is reported for its member strips and survives a restart, as
 /// do the PFL solo mode, a nested group's parent, and a group solo

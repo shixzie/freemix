@@ -268,21 +268,23 @@ impl DisplayOutputSync {
     }
 
     /// Every slot's state as the presenter reports it: configured slots
-    /// from `report` (a slot it has not configured yet waits for it), and
-    /// unconfigured slots waiting for a presenter.
+    /// from `report`, and unconfigured slots waiting for a presenter. A
+    /// configured slot the presenter has not reported yet (the windowed
+    /// presenter applies edits on its event loop) is left out, so its
+    /// previous status stands instead of a spurious `display-absent`.
     pub(crate) fn wire_states(
         &self,
         report: &DisplayReport,
     ) -> Vec<(DisplayOutputSlot, WireDisplayOutputState)> {
         DisplayOutputSlot::ALL
             .into_iter()
-            .map(|slot| {
+            .filter_map(|slot| {
                 let state = match (self.applied.contains_key(&slot), report.states.get(&slot)) {
                     (true, Some(state)) => wire_state(state),
-                    (true, None) => WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent),
+                    (true, None) => return None,
                     (false, _) => WireDisplayOutputState::Waiting(WaitReason::NoPresenter),
                 };
-                (slot, state)
+                Some((slot, state))
             })
             .collect()
     }
@@ -431,6 +433,9 @@ mod headless {
         target: Option<NativeProgramReadback>,
         presented: u64,
         probe_next: bool,
+        /// Whether a poll has reconciled the slot since it was (re)bound;
+        /// until then its state is a placeholder and is not reported.
+        settled: bool,
     }
 
     /// Presents each configured display-output slot into an off-screen
@@ -498,6 +503,7 @@ mod headless {
         fn refresh_states(&mut self) {
             self.report.states = DisplayOutputSlot::ALL
                 .into_iter()
+                .filter(|slot| self.outputs[slot.index()].settled)
                 .filter_map(|slot| {
                     self.tracker
                         .state(slot.index())
@@ -511,11 +517,19 @@ mod headless {
             &self.report
         }
 
-        /// Whether a configured slot shows `source`.
+        /// Whether an active slot shows `source`; a waiting slot presents
+        /// nothing, so its source needs no rendering.
         pub(crate) fn shows(&self, source: DisplayOutputSource) -> bool {
-            (0..MAX_DISPLAY_OUTPUTS)
-                .filter_map(|index| self.tracker.config(index))
-                .any(|config| config.source == source)
+            DisplayOutputSlot::ALL.into_iter().any(|slot| {
+                self.report
+                    .states
+                    .get(&slot)
+                    .is_some_and(|state| state.active().is_some())
+                    && self
+                        .tracker
+                        .config(slot.index())
+                        .is_some_and(|config| config.source == source)
+            })
         }
 
         /// Re-enumerates at most every poll interval and applies changes.
@@ -544,6 +558,9 @@ mod headless {
                     self.tracker.enumeration_failed()
                 }
             };
+            for output in &mut self.outputs {
+                output.settled = true;
+            }
             for change in changes {
                 let Some(config) = self.tracker.config(change.output) else {
                     continue;
@@ -796,6 +813,56 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_slot_the_presenter_has_not_taken_yet_publishes_no_status() {
+        // A newly configured slot the windowed presenter has not applied
+        // yet is absent from its report: no spurious `display-absent` is
+        // published while it catches up, and the slot's real state follows.
+        let mut sync = DisplayOutputSync::default();
+        sync.changes(&[entry(1, "display=index:0")]);
+        assert_eq!(
+            sync.wire_states(&DisplayReport::default()),
+            vec![(
+                slot(2),
+                WireDisplayOutputState::Waiting(WaitReason::NoPresenter)
+            )]
+        );
+        let report = DisplayReport {
+            states: BTreeMap::from([(
+                slot(1),
+                DisplayOutputState::Waiting(WaitReason::DisplayAbsent),
+            )]),
+            ..DisplayReport::default()
+        };
+        assert_eq!(
+            sync.wire_states(&report)[0],
+            (
+                slot(1),
+                WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent)
+            )
+        );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn the_inventory_host_reports_and_shows_only_settled_slots() {
+        use fm_io_api::display::DisplayOutputSource;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("displays.tsv");
+        fs::write(&path, "id=a\tmode=8x8\n").unwrap();
+        let mut host = InventoryDisplayHost::new(InventoryFile::new(path));
+        host.configure(
+            slot(1),
+            Some("display=id:b,source=preview".parse().unwrap()),
+        );
+        // Until the next poll binds it, the new slot is not reported: its
+        // unreconciled state would read as a spurious `display-absent`.
+        assert_eq!(host.report().states.get(&slot(1)), None);
+        // A slot that is not active needs no Preview composite.
+        assert!(!host.shows(DisplayOutputSource::Preview));
     }
 
     #[test]

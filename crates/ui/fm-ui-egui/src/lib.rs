@@ -75,7 +75,8 @@ mod transitions;
 mod workspace;
 
 pub use display_outputs::{
-    display_output_block_reason, display_output_clear_intent, display_output_set_intent,
+    DisplayOutputAnswer, display_output_block_reason, display_output_clear_intent,
+    display_output_set_intent,
 };
 pub use dock::{
     Axis, DockError, DockLayout, DockNode, DropZone, LayoutNameProblem, LayoutPreset, NamedLayout,
@@ -487,6 +488,10 @@ pub struct StudioUiState {
     /// The latest refused title animation save (kept until another one is
     /// refused; the Animation window acts on each command id once).
     pub title_animation_refusal: Option<TitleAnimationRefusal>,
+    /// The server's latest answer per display-output slot to this
+    /// session's set or clear (kept until the next answer for that slot;
+    /// the Fullscreen outputs dialog acts on each command id once).
+    pub display_output_answers: [Option<DisplayOutputAnswer>; fm_protocol::MAX_DISPLAY_OUTPUTS],
     /// Whether this connection carries exact title and scene previews (raw
     /// TCP only).
     pub title_previews: bool,
@@ -528,6 +533,7 @@ impl StudioUiState {
             title_updates: Vec::new(),
             grade_refusal: None,
             title_animation_refusal: None,
+            display_output_answers: [const { None }; fm_protocol::MAX_DISPLAY_OUTPUTS],
             title_previews: false,
             title_preview: None,
             title_preview_failed: None,
@@ -2587,7 +2593,7 @@ mod tests {
         ));
     }
 
-    fn recording_view(recordings: [bool; RECORDER_SLOT_COUNT]) -> ClientView {
+    pub(crate) fn recording_view(recordings: [bool; RECORDER_SLOT_COUNT]) -> ClientView {
         ClientView {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),

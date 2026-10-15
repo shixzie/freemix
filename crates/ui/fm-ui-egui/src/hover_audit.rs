@@ -13,7 +13,8 @@
 //! group assignment, group strips (solo and parent group), the monitor
 //! strip with its solo-mode keys, the Fade-to-Black output menu, the
 //! Fullscreen outputs dialog (with and without a display list or a
-//! presenter, with a draft, for a viewer, and locked), and a
+//! presenter, with a draft, changed elsewhere, refused, applying, for a
+//! viewer, and locked), and a
 //! disconnected console) in English
 //! and Spanish, and inspects what egui itself recorded for the pass, so no
 //! drawing code has to opt in and a widget added without help cannot slip
@@ -1104,8 +1105,9 @@ fn scenes(language: Language) -> Vec<Scene> {
         scenes.push(Scene::console(name, shell(open), state));
     }
     // OR-011: the Fullscreen outputs dialog with the display list, with an
-    // unsaved draft, before the list arrives, on a daemon without a
-    // presenter, for a viewer, and under the padlock.
+    // unsaved draft, with a draft changed elsewhere and a refused change,
+    // while a change is applying, before the list arrives, on a daemon
+    // without a presenter, for a viewer, and under the padlock.
     let fullscreen: Vec<(&str, Configure, StudioUiState)> = vec![
         (
             "dialog/fullscreen-outputs",
@@ -1118,7 +1120,53 @@ fn scenes(language: Language) -> Vec<Scene> {
                 shell.display_outputs.open = true;
                 let mut draft = display_output_entries()[1].config.clone();
                 draft.scaling = fm_types::OutputScaling::OneToOne;
-                shell.display_outputs.drafts[1] = Some(draft);
+                shell.display_outputs.drafts[1] = Some(crate::display_outputs::SlotDraft {
+                    config: draft,
+                    base: Some(display_output_entries()[1].config.clone()),
+                });
+            },
+            with_display_inventory(ready(true, Variant::default()), true),
+        ),
+        (
+            // Slot 2 was changed elsewhere since its draft started (Reload
+            // and Overwrite), and the server refused slot 1's last change.
+            "dialog/fullscreen-outputs-conflict-refused",
+            &|shell| {
+                shell.display_outputs.open = true;
+                let mut draft = display_output_entries()[1].config.clone();
+                draft.scaling = fm_types::OutputScaling::OneToOne;
+                let mut base = display_output_entries()[1].config.clone();
+                base.hdr = fm_protocol::HdrRequest::Auto;
+                shell.display_outputs.drafts[1] = Some(crate::display_outputs::SlotDraft {
+                    config: draft,
+                    base: Some(base),
+                });
+                let mut refused = display_output_entries()[0].config.clone();
+                refused.scaling = fm_types::OutputScaling::Stretch;
+                shell.display_outputs.drafts[0] = Some(crate::display_outputs::SlotDraft {
+                    config: refused,
+                    base: Some(display_output_entries()[0].config.clone()),
+                });
+                shell.display_outputs.refusals[0] = Some(
+                    "Edit refused (project_locked): the project is locked. Unlock the padlock in the top bar to edit; switching still works."
+                        .to_owned(),
+                );
+            },
+            with_display_inventory(ready(true, Variant::default()), true),
+        ),
+        (
+            // Slot 2's change is sent and not answered yet.
+            "dialog/fullscreen-outputs-applying",
+            &|shell| {
+                shell.display_outputs.open = true;
+                let mut draft = display_output_entries()[1].config.clone();
+                draft.scaling = fm_types::OutputScaling::OneToOne;
+                shell.display_outputs.drafts[1] = Some(crate::display_outputs::SlotDraft {
+                    config: draft.clone(),
+                    base: Some(display_output_entries()[1].config.clone()),
+                });
+                shell.display_outputs.awaiting[1] =
+                    Some(crate::display_outputs::Awaiting::Set(draft));
             },
             with_display_inventory(ready(true, Variant::default()), true),
         ),

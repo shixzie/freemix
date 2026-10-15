@@ -918,7 +918,14 @@ fn a_real_presenter_window_follows_live_slot_edits() {
                 .unwrap(),
         ),
     });
+    // The event loop applies the edit after the worker queues it; clients
+    // never see the slot report a spurious `display-absent` meanwhile.
     let state = client.expect_status(one, |state| {
+        assert_ne!(
+            state,
+            &WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent),
+            "spurious display-absent while the presenter catches up"
+        );
         matches!(state, WireDisplayOutputState::Active(_))
     });
     let WireDisplayOutputState::Active(active) = state else {
@@ -967,4 +974,53 @@ fn a_real_presenter_window_follows_live_slot_edits() {
         "{}",
         tail.join("\n")
     );
+}
+
+/// Studio's `--display-presenter-if-available` opens the presenter in a
+/// build with display surfaces and a window system, so a slot goes active
+/// instead of waiting with `no-presenter`. Skipped without a window system
+/// or GPU unless `FM_REQUIRE_DISPLAY_SURFACE=1`.
+#[cfg(feature = "display-surface")]
+#[test]
+fn the_presenter_if_available_opens_with_a_window_system() {
+    let required = std::env::var("FM_REQUIRE_DISPLAY_SURFACE").as_deref() == Ok("1");
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        assert!(
+            !required,
+            "FM_REQUIRE_DISPLAY_SURFACE=1 without a window system"
+        );
+        eprintln!("display presenter integration skipped: no window system");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("presenter-if-available.freemix");
+    save_project(&project);
+    let daemon = spawn(&project, &["--display-presenter-if-available"])
+        .unwrap_or_else(|error| panic!("the fallback always serves: {error}"));
+    let (mut client, _) = WireClient::connect(daemon.address.unwrap());
+    client.send(&WireMessage::DisplayInventoryRequest(
+        DisplayInventoryRequest {
+            request_id: "presenter".into(),
+        },
+    ));
+    let inventory = client.expect("display_inventory", |message| match message {
+        WireMessage::DisplayInventory(reply) if reply.request_id == "presenter" => {
+            Some(reply.inventory.clone())
+        }
+        _ => None,
+    });
+    if !inventory.presenter {
+        // No window or GPU: the daemon fell back to serving headless.
+        assert!(!required, "the presenter did not open");
+        eprintln!("display presenter integration skipped: no presenter");
+        return;
+    }
+    let one = DisplayOutputSlot::new(1).unwrap();
+    client.command(CommandPayload::SetDisplayOutput {
+        slot: one,
+        config: Box::new("display=index:0,source=program".parse().unwrap()),
+    });
+    client.expect_status(one, |state| {
+        matches!(state, WireDisplayOutputState::Active(_))
+    });
 }

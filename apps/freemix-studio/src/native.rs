@@ -1200,7 +1200,10 @@ fn handle_preview_request(
     recovery: &WorkerRecovery,
 ) -> bool {
     if matches!(request, StudioIntent::RequestDisplayInventory) {
-        if !recovery.active() {
+        if recovery.active() {
+            // Asked again once the session is back.
+            runtime.want_display_inventory();
+        } else {
             runtime.request_display_inventory();
         }
         return true;
@@ -1825,6 +1828,9 @@ fn consume_command_sequence(
             "Unexpected command result ID {:?}; expected {command_id:?}",
             result_id(&result)
         )));
+    }
+    if let Some(answer) = display_output_answer(runtime.session().client(), command_id, &result) {
+        runtime.note_display_output_answer(answer);
     }
     let accepted_revision = match &result {
         CommandResult::Accepted { revision, .. } => *revision,
@@ -2571,6 +2577,35 @@ fn catalogue_refusal(
     })
 }
 
+/// The server's answer to a display-output set or clear (OR-011): the
+/// revision it lands at, or why it was refused, for the Fullscreen outputs
+/// dialog to settle that slot's draft.
+fn display_output_answer(
+    client: &Client,
+    command_id: &str,
+    result: &CommandResult,
+) -> Option<fm_ui_egui::DisplayOutputAnswer> {
+    let slot = match &client.command(command_id)?.command.payload {
+        CommandPayload::SetDisplayOutput { slot, .. }
+        | CommandPayload::ClearDisplayOutput { slot } => *slot,
+        _ => return None,
+    };
+    let outcome = match result {
+        CommandResult::Accepted { revision, .. } => Ok(*revision),
+        CommandResult::Rejected {
+            code,
+            message,
+            fields,
+            ..
+        } => Err(fm_ui_egui::command_rejection_message(code, message, fields)),
+    };
+    Some(fm_ui_egui::DisplayOutputAnswer {
+        command_id: command_id.to_owned(),
+        slot,
+        outcome,
+    })
+}
+
 /// The refusal of a grade command, naming the target a refused grade set
 /// addressed, so the Colour window marks that draft as not on air.
 fn grade_refusal(client: &Client, command_id: &str) -> Option<GradeRefusal> {
@@ -2691,6 +2726,9 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     }
     state.title_preview_failed = runtime.preview_failure().map(str::to_owned);
     state.title_animation_refusal = runtime.animation_refusal().cloned();
+    state
+        .display_output_answers
+        .clone_from(runtime.display_output_answers());
     state
 }
 
@@ -4541,6 +4579,107 @@ mod tests {
                 .is_some_and(|error| error.contains("project_locked")),
             "{:?}",
             refused.error
+        );
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    /// A peer that refuses every command as padlocked.
+    fn serve_worker_refusals(listener: &TcpListener) {
+        let mut peer = HeartbeatPeer::accept(listener);
+        peer.handshake_request();
+        peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+        loop {
+            let Some(line) = peer.next_line() else {
+                return;
+            };
+            match decode_line(&line).unwrap() {
+                WireMessage::Heartbeat(heartbeat) => {
+                    if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                        HeartbeatAcknowledgementMessage {
+                            server: heartbeat.server,
+                            heartbeat_sequence: heartbeat.sequence,
+                            received_at_ms: heartbeat.sent_at_ms,
+                        },
+                    )) {
+                        return;
+                    }
+                }
+                WireMessage::Command(command) => {
+                    peer.send(&WireMessage::CommandResult(CommandResult::Rejected {
+                        id: command.id,
+                        code: "conflict".to_owned(),
+                        message: "the project is locked".to_owned(),
+                        fields: vec![fm_protocol::FieldIssue {
+                            field: "project".to_owned(),
+                            code: "project_locked".to_owned(),
+                            message: "the project padlock is engaged".to_owned(),
+                        }],
+                        current_revision: 4,
+                        retryable: false,
+                    }));
+                }
+                other => panic!("unexpected peer message: {other:?}"),
+            }
+        }
+    }
+
+    /// OR-011: a refused display-output set is answered to the Fullscreen
+    /// outputs dialog per slot, with the reason, on every publication.
+    #[test]
+    fn worker_display_output_refusals_are_answered_per_slot() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || serve_worker_refusals(&listener));
+        let (request_sender, updates, worker) = spawn_existing_worker(address, "display-test");
+        receive_state_where(&updates, |state| {
+            state.connection_status == StudioConnectionStatus::Ready
+        });
+        let slot = fm_protocol::DisplayOutputSlot::new(2).unwrap();
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::SetDisplayOutput {
+                slot,
+                config: Box::new(fm_protocol::DisplayOutputConfig::program_on(
+                    fm_protocol::DisplaySelector::Index(1),
+                )),
+            }))
+            .unwrap();
+        let refused =
+            receive_state_where(&updates, |state| state.display_output_answers[1].is_some());
+        assert_eq!(refused.display_output_answers[0], None);
+        let answer = refused.display_output_answers[1].as_ref().unwrap();
+        assert_eq!(answer.slot, slot);
+        assert!(
+            answer
+                .outcome
+                .as_ref()
+                .is_err_and(|reason| reason.contains("project_locked")),
+            "{answer:?}"
+        );
+        // A later answer for the slot replaces it.
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::ClearDisplayOutput {
+                slot,
+            }))
+            .unwrap();
+        let cleared = receive_state_where(&updates, |state| {
+            state.display_output_answers[1]
+                .as_ref()
+                .is_some_and(|next| next.command_id != answer.command_id)
+        });
+        assert!(
+            cleared.display_output_answers[1]
+                .as_ref()
+                .unwrap()
+                .outcome
+                .is_err()
         );
 
         request_sender.send(WorkerRequest::Shutdown).unwrap();

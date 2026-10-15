@@ -4678,14 +4678,18 @@ impl NativeDaemon {
         Ok(())
     }
 
-    /// Whether a configured display output shows Preview, which then needs
-    /// its own composite.
+    /// Whether an active display output shows Preview, which then needs
+    /// its own composite; a slot waiting for its display (or a presenter)
+    /// shows nothing.
     fn display_shows_preview(&self) -> bool {
         #[cfg(feature = "display-surface")]
-        if self
-            .displays
-            .iter()
-            .any(|display| display.source() == Some(DisplayOutputSource::Preview))
+        if let Some(windowed) = &self.windowed
+            && self.displays.iter().enumerate().any(|(index, display)| {
+                display.source() == Some(DisplayOutputSource::Preview)
+                    && DisplayOutputSlot::ALL
+                        .get(index)
+                        .is_some_and(|slot| windowed.active(*slot))
+            })
         {
             return true;
         }
@@ -4730,6 +4734,10 @@ impl NativeDaemon {
     }
 
     /// Presents every display output's own source after the frame.
+    #[cfg_attr(
+        not(feature = "display-surface"),
+        allow(clippy::unnecessary_wraps) // windowed presentation can fail
+    )]
     fn present_display_outputs(&mut self) -> AppResult<()> {
         #[cfg(feature = "display-surface")]
         for display in &mut self.displays {
@@ -7605,6 +7613,10 @@ enum Command {
         display_outputs: Vec<DisplayOutputConfig>,
         /// Diagnostic inventory file presenting display outputs headlessly.
         display_inventory: Option<PathBuf>,
+        /// `--display-presenter-if-available`: a presenter that cannot open
+        /// (no window system or GPU) falls back to headless native serving
+        /// with every slot waiting for a presenter.
+        presenter_fallback: bool,
         camera_helper: Option<PathBuf>,
         record_program: Option<PathBuf>,
         record_output: Option<fm_types::OutputId>,
@@ -7716,6 +7728,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut display_outputs: Vec<DisplayOutputConfig> = Vec::new();
             let mut display_inventory: Option<PathBuf> = None;
             let mut display_presenter = false;
+            let mut presenter_if_available = false;
             let mut camera_helper = None;
             let mut record_program = None;
             let mut record_output = None;
@@ -8031,6 +8044,13 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         );
                     }
                     "--display-presenter" => display_presenter = true,
+                    "--display-presenter-if-available" if presenter_if_available => {
+                        return Err(AppFailure(
+                            "duplicate option `--display-presenter-if-available`".into(),
+                        )
+                        .into());
+                    }
+                    "--display-presenter-if-available" => presenter_if_available = true,
                     "--fullscreen-display" if fullscreen_display.is_some() => {
                         return Err(
                             AppFailure("duplicate option `--fullscreen-display`".into()).into()
@@ -8284,6 +8304,26 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     _ => return Err(AppFailure(format!("unknown option `{option}`")).into()),
                 }
             }
+            // A build with display surfaces opens the presenter (natively)
+            // unless an option the windowed daemon does not serve is given;
+            // otherwise, and when the presenter cannot open, the daemon
+            // serves exactly as without the option (its slots wait with
+            // `no-presenter`).
+            let presenter_fallback = presenter_if_available
+                && cfg!(feature = "display-surface")
+                && !display_presenter
+                && display_outputs.is_empty()
+                && !fullscreen_program
+                && display_inventory.is_none()
+                && web_listen.is_none()
+                && status_listen.is_none()
+                && hls_listen.is_none()
+                && record_fallback_dir.is_none()
+                && diagnostic_stop_after.is_none()
+                && !recover_to_checkpoint;
+            if presenter_fallback {
+                display_presenter = true;
+            }
             if fullscreen_program && !native_media {
                 return Err(
                     AppFailure("--fullscreen-program requires --native-media".into()).into(),
@@ -8296,7 +8336,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 .into());
             }
             let display_outputs = resolve_display_outputs(
-                native_media,
+                native_media || presenter_fallback,
                 fullscreen_program,
                 fullscreen_display,
                 display_presenter,
@@ -8459,6 +8499,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 fullscreen_program,
                 display_outputs,
                 display_inventory,
+                presenter_fallback,
                 camera_helper,
                 record_program,
                 record_output,
@@ -8611,6 +8652,7 @@ fn run(command: Command) -> AppResult<()> {
             fullscreen_program,
             display_outputs,
             display_inventory,
+            presenter_fallback,
             camera_helper,
             record_program,
             record_output,
@@ -8631,15 +8673,15 @@ fn run(command: Command) -> AppResult<()> {
                     .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
             }
             if fullscreen_program {
-                run_fullscreen_program(
-                    project,
+                let result = run_fullscreen_program(
+                    project.clone(),
                     listen,
                     once,
-                    display_outputs,
-                    camera_helper,
-                    record_program,
+                    display_outputs.clone(),
+                    camera_helper.clone(),
+                    record_program.clone(),
                     record_output,
-                    record_program_2,
+                    record_program_2.clone(),
                     record_output_2,
                     record_wav,
                     record_segment_seconds,
@@ -8647,41 +8689,48 @@ fn run(command: Command) -> AppResult<()> {
                     record_bitrate_kbps_2,
                     record_audio_bitrate_kbps,
                     record_audio_bitrate_kbps_2,
-                )
-            } else {
-                serve_inner(
-                    &project,
-                    ServeListeners {
-                        listen,
-                        web_listen,
-                        status_listen,
-                        hls_listen,
-                    },
-                    once,
-                    if native_media {
-                        NativeServeMode::Headless {
-                            camera_helper,
-                            display_inventory,
-                            display_overrides: display_outputs,
-                        }
-                    } else {
-                        NativeServeMode::Disabled
-                    },
-                    record_program,
-                    record_output,
-                    record_program_2,
-                    record_output_2,
-                    record_wav,
-                    record_segment_seconds,
-                    record_bitrate_kbps,
-                    record_bitrate_kbps_2,
-                    record_audio_bitrate_kbps,
-                    record_audio_bitrate_kbps_2,
-                    record_fallback_dir,
-                    diagnostic_stop_after,
-                    recover_to_checkpoint,
-                )
+                );
+                match result {
+                    Err(error) if presenter_fallback && error.is::<PresenterUnavailable>() => {
+                        // Serve headless instead: the slots wait for a
+                        // presenter and the next start retries the windows.
+                        eprintln!("{}", presenter_unavailable_record(&error.to_string()));
+                    }
+                    result => return result,
+                }
             }
+            serve_inner(
+                &project,
+                ServeListeners {
+                    listen,
+                    web_listen,
+                    status_listen,
+                    hls_listen,
+                },
+                once,
+                if native_media {
+                    NativeServeMode::Headless {
+                        camera_helper,
+                        display_inventory,
+                        display_overrides: display_outputs,
+                    }
+                } else {
+                    NativeServeMode::Disabled
+                },
+                record_program,
+                record_output,
+                record_program_2,
+                record_output_2,
+                record_wav,
+                record_segment_seconds,
+                record_bitrate_kbps,
+                record_bitrate_kbps_2,
+                record_audio_bitrate_kbps,
+                record_audio_bitrate_kbps_2,
+                record_fallback_dir,
+                diagnostic_stop_after,
+                recover_to_checkpoint,
+            )
         }
         Command::Help => {
             print_help();
@@ -13399,7 +13448,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter] [--diagnostic-display-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -13410,7 +13459,7 @@ Every program segment is a crash-safe recording session with a <stem>.fmsession 
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 Fullscreen display selection is a zero-based index ordered by desktop position, then name, then platform display id; --fullscreen-program --fullscreen-display N is shorthand for --display-output display=index:N.\n\
---display-output replaces the project's display-output slots (slot 1, then slot 2) and opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display); it requires --native-media plus a build with feature `display-surface`. --display-presenter opens the project's own display-output slots the same way. Slots are project configuration edited live by set_display_output/clear_display_output commands (Protocol 2.42); a daemon without a presenter keeps them waiting with reason no-presenter. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|preview|output:<output-id> (default program; preview is composited only while an output shows it), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
+--display-output replaces the project's display-output slots (slot 1, then slot 2) and opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display); it requires --native-media plus a build with feature `display-surface`. --display-presenter opens the project's own display-output slots the same way. --display-presenter-if-available (what Studio's supervised daemon uses) does so (the presenter always runs native media) in a build with feature `display-surface` unless --web-listen, --status-listen, --hls-listen, --record-fallback-dir, --diagnostic-stop-after, or --recover-to-checkpoint is given; when no window system, window, or GPU is available it emits FREEMIXD_DISPLAY_PRESENTER state=unavailable and serves as without the option, which is also all it does in any other build. Slots are project configuration edited live by set_display_output/clear_display_output commands (Protocol 2.42); a daemon without a presenter keeps them waiting with reason no-presenter. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|preview|output:<output-id> (default program; preview is composited only while an output showing it is active), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
 --diagnostic-display-inventory FILE presents the project's display outputs headlessly to off-screen rasters sized to a tab-separated display inventory re-read from FILE (one display per line: id=, mode=, optional name=, x=, y=, modes=, hdr=; a missing file means no display is connected) and emits sampled FREEMIXD_DISPLAY_FRAME probes. It is a test and diagnostic aid, not an operator output.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
@@ -13459,6 +13508,30 @@ impl fmt::Display for AppFailure {
 }
 
 impl Error for AppFailure {}
+
+/// The display presenter could not open (no window system, window, or GPU)
+/// before it started serving, so the daemon may still serve headless.
+#[derive(Debug)]
+#[cfg_attr(not(feature = "display-surface"), allow(dead_code))]
+struct PresenterUnavailable(String);
+
+impl fmt::Display for PresenterUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "display presenter unavailable: {}", self.0)
+    }
+}
+
+impl Error for PresenterUnavailable {}
+
+/// The `FREEMIXD_DISPLAY_PRESENTER` record a daemon started with
+/// `--display-presenter-if-available` emits when it serves without one.
+fn presenter_unavailable_record(error: &str) -> String {
+    let error = error
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>();
+    format!("FREEMIXD_DISPLAY_PRESENTER\tv=1\tstate=unavailable\terror={error}")
+}
 
 #[cfg(test)]
 mod tests {
@@ -14028,6 +14101,7 @@ mod tests {
                 fullscreen_program: false,
                 display_outputs: Vec::new(),
                 display_inventory: None,
+                presenter_fallback: false,
                 camera_helper: None,
                 record_program: None,
                 record_output: None,
@@ -17221,6 +17295,59 @@ mod tests {
         };
         assert!(!fullscreen_program, "the inventory host is headless");
         assert_eq!(display_inventory, Some(PathBuf::from("displays.tsv")));
+    }
+
+    #[test]
+    fn display_presenter_if_available_follows_the_build() {
+        let Command::Serve {
+            native_media,
+            fullscreen_program,
+            presenter_fallback,
+            display_outputs,
+            ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--display-presenter-if-available",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        let surfaces = cfg!(feature = "display-surface");
+        assert!(!native_media, "without a presenter it serves simulated");
+        assert_eq!(fullscreen_program, surfaces, "the presenter opens windows");
+        assert_eq!(presenter_fallback, surfaces);
+        assert!(display_outputs.is_empty(), "the project's slots are kept");
+
+        // An explicit presenter or diagnostic inventory keeps its own
+        // behavior, and options the windowed daemon does not serve keep the
+        // daemon headless.
+        for options in [
+            &["--native-media", "--diagnostic-display-inventory", "d.tsv"][..],
+            &["--web-listen", "127.0.0.1:0"][..],
+        ] {
+            let mut arguments = vec!["serve", "show.freemix", "--display-presenter-if-available"];
+            arguments.extend(options);
+            let Command::Serve {
+                fullscreen_program,
+                presenter_fallback,
+                ..
+            } = parse_args(strings(&arguments)).unwrap()
+            else {
+                panic!("expected serve");
+            };
+            assert!(!fullscreen_program, "{options:?}");
+            assert!(!presenter_fallback, "{options:?}");
+        }
+        let error = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--display-presenter-if-available",
+            "--display-presenter-if-available",
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate option"), "{error}");
     }
 
     #[test]

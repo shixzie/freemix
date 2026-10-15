@@ -701,8 +701,12 @@ state, or waiting reason) in runtime events and the snapshot, and the
 `display_inventory` query and event (ids, names, origins, modes, HDR
 capability). The native daemon composites Preview through the Program
 compositor path (Preview's cut, live Fade to Black, no overlays or titles)
-only while a slot shows it, after the Program consumers, so `source=preview`
-is accepted. Studio's Output menu opens a Fullscreen outputs dialog (per slot
+only while an active slot shows it, after the Program consumers, so
+`source=preview` is accepted; a slot the windowed presenter has not applied
+yet publishes no status until it has. Studio supervises its daemon with
+`--display-presenter-if-available`, which opens the presenter in a
+`display-surface` build and otherwise (or without a window system or GPU)
+serves as before with the slots waiting. Studio's Output menu opens a Fullscreen outputs dialog (per slot
 display from the inventory, source, mode, scaling, HDR, live status; English
 and Spanish hover help covered by the hover audit), and `freemix-cli`
 provides `display-output-set|clear|list` locally and remotely plus

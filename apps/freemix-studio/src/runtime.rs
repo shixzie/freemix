@@ -6,7 +6,7 @@ use fm_client::{
 use fm_protocol::{
     CommandMessage, CommandPayload, HeartbeatMessage, ScenePreviewRequest, TitlePreviewRequest,
 };
-use fm_ui_egui::{TitleAnimationRefusal, TitleUpdate};
+use fm_ui_egui::{DisplayOutputAnswer, TitleAnimationRefusal, TitleUpdate};
 
 use crate::titles::TitleRelay;
 
@@ -108,6 +108,12 @@ pub struct StudioRuntime {
     preview_failed: Option<String>,
     /// The latest refused title animation save, carried the same way.
     animation_refusal: Option<TitleAnimationRefusal>,
+    /// Whether the UI has asked for the display inventory; once it has (or
+    /// the inventory is known), every (re)connect asks for it again.
+    display_inventory_wanted: bool,
+    /// The latest answer per display-output slot to this session's set or
+    /// clear, carried the same way.
+    display_output_answers: [Option<DisplayOutputAnswer>; fm_protocol::MAX_DISPLAY_OUTPUTS],
 }
 
 impl StudioRuntime {
@@ -161,6 +167,8 @@ impl StudioRuntime {
             titles: TitleRelay::default(),
             preview_failed: None,
             animation_refusal: None,
+            display_inventory_wanted: false,
+            display_output_answers: [const { None }; fm_protocol::MAX_DISPLAY_OUTPUTS],
         })
     }
 
@@ -205,11 +213,19 @@ impl StudioRuntime {
         }
     }
 
+    /// Records that the UI wants the display inventory without asking now
+    /// (the session is recovering); the next (re)connect asks for it.
+    pub(crate) const fn want_display_inventory(&mut self) {
+        self.display_inventory_wanted = true;
+    }
+
     /// Asks the server for its connected displays (Protocol 2.42); the
     /// reply updates the replicated inventory. Returns whether the request
-    /// went out; one that cannot be sent is dropped.
+    /// went out; one that cannot be sent is dropped, and the next
+    /// (re)connect asks again.
     pub(crate) fn request_display_inventory(&mut self) -> bool {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.display_inventory_wanted = true;
         let request_id = format!(
             "studio-displays-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -240,6 +256,19 @@ impl StudioRuntime {
     /// The latest refused title animation save.
     pub(crate) const fn animation_refusal(&self) -> Option<&TitleAnimationRefusal> {
         self.animation_refusal.as_ref()
+    }
+
+    /// Records the answer to a display-output set or clear.
+    pub(crate) fn note_display_output_answer(&mut self, answer: DisplayOutputAnswer) {
+        let index = answer.slot.index();
+        self.display_output_answers[index] = Some(answer);
+    }
+
+    /// The latest answer per display-output slot.
+    pub(crate) const fn display_output_answers(
+        &self,
+    ) -> &[Option<DisplayOutputAnswer>; fm_protocol::MAX_DISPLAY_OUTPUTS] {
+        &self.display_output_answers
     }
 
     pub(crate) const fn titles_mut(&mut self) -> &mut TitleRelay {
@@ -335,7 +364,7 @@ impl StudioRuntime {
         mut cancelled: impl FnMut() -> bool,
         cancellable_tcp: bool,
     ) -> Result<SessionEvent, StudioError> {
-        Ok(match self.transport {
+        let event = match self.transport {
             ControlTransport::Tcp if cancellable_tcp => self.session.connect_cancellable(
                 self.address(),
                 connect_timeout,
@@ -360,7 +389,21 @@ impl StudioRuntime {
                     &mut cancelled,
                 )?
             }
-        })
+        };
+        self.requery_display_inventory();
+        Ok(event)
+    }
+
+    /// Asks for the display inventory again after a (re)connect when the
+    /// UI wanted it or it was known: it is runtime state that neither a
+    /// resumed nor a re-snapshotted session carries, and displays may have
+    /// changed while disconnected.
+    fn requery_display_inventory(&mut self) {
+        if self.display_inventory_wanted
+            || self.session.client().model().display_inventory().is_some()
+        {
+            self.request_display_inventory();
+        }
     }
 
     /// Reconnects only after the caller reports that the client-selected backoff elapsed.

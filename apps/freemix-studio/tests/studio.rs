@@ -526,6 +526,117 @@ fn existing_runtime_handles_status_runtime_heartbeat_eof_and_resume() {
     server_thread.join().unwrap();
 }
 
+fn display_inventory_reply(request_id: &str) -> WireMessage {
+    WireMessage::DisplayInventory(fm_protocol::DisplayInventoryMessage {
+        request_id: request_id.to_owned(),
+        inventory: fm_protocol::DisplayInventory {
+            presenter: false,
+            error: None,
+            displays: Vec::new(),
+        },
+    })
+}
+
+/// OR-011: the display list is runtime state a resumed or re-snapshotted
+/// session does not carry, so once Studio knows it, every reconnect asks
+/// for it again (with the existing `display_inventory_request` query).
+#[test]
+fn reconnect_and_resync_requery_a_known_display_inventory() {
+    let (address, server_thread) = spawn_server(|listener| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut first = Peer::accept(&listener);
+        assert!(matches!(first.receive(), WireMessage::HandshakeRequest(_)));
+        first.send(&WireMessage::HandshakeResponse(handshake(
+            project_id(),
+            4,
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        first.send(&WireMessage::Snapshot(snapshot(4)));
+        first.send(&display_inventory_reply("pushed"));
+        // Nothing asked for the list on the first connect.
+        assert!(matches!(first.receive(), WireMessage::Heartbeat(_)));
+        drop(first);
+
+        // A resumed session asks for the list again.
+        let mut resumed = Peer::accept(&listener);
+        let WireMessage::HandshakeRequest(request) = resumed.receive() else {
+            panic!("expected reconnect handshake request");
+        };
+        let cursor = request.resume_cursor.expect("resume cursor");
+        resumed.send(&WireMessage::HandshakeResponse(handshake(
+            project_id(),
+            4,
+            HandshakeOutcome::Resume { cursor },
+        )));
+        let WireMessage::DisplayInventoryRequest(request) = resumed.receive_until(deadline) else {
+            panic!("expected a display inventory request after resume");
+        };
+        resumed.send(&display_inventory_reply(&request.request_id));
+        drop(resumed);
+
+        // So does a session resynchronized by a fresh snapshot.
+        let mut resynced = Peer::accept(&listener);
+        assert!(matches!(
+            resynced.receive(),
+            WireMessage::HandshakeRequest(_)
+        ));
+        resynced.send(&WireMessage::HandshakeResponse(handshake(
+            project_id(),
+            4,
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::HistoryUnavailable,
+            },
+        )));
+        resynced.send(&WireMessage::Snapshot(snapshot(4)));
+        assert!(matches!(
+            resynced.receive_until(deadline),
+            WireMessage::DisplayInventoryRequest(_)
+        ));
+    });
+
+    let mut runtime = StudioRuntime::new(existing_config(address, project_id())).unwrap();
+    runtime.connect(CONNECT_TIMEOUT).unwrap();
+    assert!(matches!(
+        runtime.receive().unwrap(),
+        SessionEvent::DisplayInventory { .. }
+    ));
+    runtime.send_heartbeat(1).unwrap();
+    assert!(matches!(
+        runtime.receive().unwrap(),
+        SessionEvent::Disconnected { .. }
+    ));
+    let backoff = |runtime: &StudioRuntime| {
+        Duration::from_millis(runtime.session().reconnect_backoff().unwrap().delay_ms)
+    };
+    assert_eq!(
+        runtime
+            .reconnect(backoff(&runtime), CONNECT_TIMEOUT)
+            .unwrap(),
+        SessionEvent::Connected {
+            mode: SyncMode::Resume
+        }
+    );
+    assert!(matches!(
+        runtime.receive().unwrap(),
+        SessionEvent::DisplayInventory { .. }
+    ));
+    assert!(matches!(
+        runtime.receive().unwrap(),
+        SessionEvent::Disconnected { .. }
+    ));
+    assert_eq!(
+        runtime
+            .reconnect(backoff(&runtime), CONNECT_TIMEOUT)
+            .unwrap(),
+        SessionEvent::Connected {
+            mode: SyncMode::Snapshot
+        }
+    );
+    server_thread.join().unwrap();
+}
+
 #[test]
 fn existing_runtime_rejects_wrong_project_handshake() {
     let (address, server_thread) = spawn_server(|listener| {
@@ -1327,7 +1438,10 @@ fn supervisor_launches_exact_arguments_restarts_bounded_and_cleans_up_child() {
     );
     assert_eq!(
         fs::read_to_string(project.with_extension("freemix.args")).unwrap(),
-        format!("serve\n{}\n--listen\n127.0.0.1:0\n", project.display())
+        format!(
+            "serve\n{}\n--listen\n127.0.0.1:0\n--display-presenter-if-available\n",
+            project.display()
+        )
     );
     supervisor.restart().unwrap();
     assert_eq!(supervisor.restart_count(), 1);

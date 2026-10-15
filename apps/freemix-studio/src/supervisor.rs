@@ -340,6 +340,24 @@ impl DaemonSupervisor {
         Ok(())
     }
 
+    /// The supervised `freemixd serve` invocation.
+    fn daemon_command(&self) -> Command {
+        let mut command = Command::new(&self.config.daemon_executable);
+        command
+            .arg("serve")
+            .arg(&self.config.project_bundle)
+            .arg("--listen")
+            .arg(self.config.listen.to_string())
+            // Open the project's fullscreen display outputs (OR-011) when
+            // the daemon build has a presenter; otherwise, or without a
+            // window system or GPU, it serves as before and the slots wait
+            // with `no-presenter`.
+            .arg("--display-presenter-if-available")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        command
+    }
+
     fn spawn_cancellable(
         &mut self,
         poll_interval: Duration,
@@ -349,14 +367,7 @@ impl DaemonSupervisor {
         if cancelled() {
             return Err(SupervisorError::ReadinessCancelled);
         }
-        let mut command = Command::new(&self.config.daemon_executable);
-        command
-            .arg("serve")
-            .arg(&self.config.project_bundle)
-            .arg("--listen")
-            .arg(self.config.listen.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
+        let mut command = self.daemon_command();
         let mut child = spawn_group(&mut command).map_err(SupervisorError::Spawn)?;
         let Some(stdout) = child.inner().stdout.take() else {
             reap_local_child(child);

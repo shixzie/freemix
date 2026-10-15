@@ -269,6 +269,17 @@ impl WindowedDisplays {
         let _ = self.wake.send_event(UserEvent::Wake);
     }
 
+    /// Whether the event loop last saw `slot` active on its display.
+    pub(super) fn active(&self, slot: DisplayOutputSlot) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .report
+            .states
+            .get(&slot)
+            .is_some_and(|state| state.active().is_some())
+    }
+
     /// What the event loop last observed.
     pub(super) fn report(&self) -> DisplayReport {
         self.state
@@ -1213,11 +1224,31 @@ fn platform_display_id(
     format!("desktop:{name}@{x}x{y}")
 }
 
+/// Runs the windowed presenter's event loop on this (main) thread and the
+/// daemon on its worker until both stop.
+///
+/// # Errors
+///
+/// A window system, window, or GPU that is unavailable before the worker
+/// starts serving fails with [`super::PresenterUnavailable`], so the caller
+/// may serve headless instead; later failures are returned as they are.
 pub(super) fn run(options: ProgramWorkerOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
+    let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(|error| super::PresenterUnavailable(error.to_string()))?;
     let proxy = event_loop.create_proxy();
     let mut app = ProgramApp::new(options, proxy);
-    event_loop.run_app(&mut app)?;
+    let ran = event_loop.run_app(&mut app);
+    if app.worker.is_none() {
+        // The worker never started: nothing was loaded or served yet.
+        let error = match (ran, app.result.take()) {
+            (Err(error), _) => error.to_string(),
+            (Ok(()), Some(Err(error))) => error,
+            (Ok(()), _) => "the display event loop exited before it started".to_owned(),
+        };
+        return Err(super::PresenterUnavailable(error).into());
+    }
+    ran?;
     if !app.shutdown_timed_out
         && let Some(worker) = app.worker.take()
     {

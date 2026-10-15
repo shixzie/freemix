@@ -1582,6 +1582,40 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("elija primero una pantalla"),
     ),
     (
+        Msg::DisplayApplying,
+        t("Aplicando: esperando la confirmación del servidor"),
+    ),
+    (
+        Msg::DisplayRefused,
+        t("El servidor rechazó el cambio: {reason}. Sus cambios se conservan."),
+    ),
+    (
+        Msg::DisplayChangedElsewhere,
+        t("La salida {slot} se cambió en otro lugar desde que empezó a editarla"),
+    ),
+    (Msg::DisplayReload, t("Recargar")),
+    (
+        Msg::DisplayReloadHover,
+        t(
+            "Descartar sus cambios en la salida {slot} y empezar de nuevo desde su configuración actual",
+        ),
+    ),
+    (Msg::DisplayOverwrite, t("Sobrescribir igualmente")),
+    (
+        Msg::DisplayOverwriteHover,
+        t(
+            "Guardar de todos modos su versión de la salida {slot}, reemplazando el cambio hecho en otro lugar (se puede deshacer)",
+        ),
+    ),
+    (
+        Msg::ReasonDisplayChangedElsewhere,
+        t("esta salida se cambió en otro lugar; recárguela o sobrescríbala"),
+    ),
+    (
+        Msg::ReasonDisplayApplying,
+        t("el servidor aún no ha respondido al último cambio"),
+    ),
+    (
         Msg::WaitDisplayAbsent,
         t("En espera: la pantalla no está conectada"),
     ),
