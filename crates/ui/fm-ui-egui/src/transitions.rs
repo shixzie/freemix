@@ -27,6 +27,9 @@ const BUTTON_SIZE: Vec2 = Vec2::new(94.0, 36.0);
 /// the column width.
 const FAVORITE_SIZE: Vec2 = Vec2::new((TRANSITION_COLUMN_WIDTH - 3.0 * 4.0) / 4.0, 28.0);
 const _: () = assert!(fm_protocol::TRANSITION_FAVORITE_COUNT == 4);
+/// Label size range of the favourite keys (points).
+const FAVORITE_LABEL_MIN: f32 = 9.0;
+const FAVORITE_LABEL_MAX: f32 = 12.0;
 /// The automatic mixes behind the MORE key: every kind without a key of
 /// its own in the column.
 const MORE_KINDS: [AutoTransitionKind; 8] = [
@@ -40,41 +43,74 @@ const MORE_KINDS: [AutoTransitionKind; 8] = [
     AutoTransitionKind::Merge,
 ];
 
-/// The console key label of an automatic mix.
-pub(crate) const fn mix_label(kind: AutoTransitionKind) -> Msg {
+/// The display names of one transition: `short` on console keys, where
+/// width is scarce, and `name` (the full, localized name) in menus and
+/// tooltips. Every surface takes its words from this one table, so a kind
+/// reads the same in the column, MORE, the favourites' Assign menu, the
+/// overlay picker, the Output menu, and the playlist.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TransitionName {
+    pub(crate) short: Msg,
+    pub(crate) name: Msg,
+}
+
+const fn names(short: Msg, name: Msg) -> TransitionName {
+    TransitionName { short, name }
+}
+
+/// The names of Cut.
+pub(crate) const CUT_NAME: TransitionName = names(Msg::CutKey, Msg::TransitionCut);
+
+/// The names of an automatic mix.
+pub(crate) const fn mix_name(kind: AutoTransitionKind) -> TransitionName {
     match kind {
-        AutoTransitionKind::Fade => Msg::FadeKey,
-        AutoTransitionKind::AlphaFade => Msg::AlphaKey,
-        AutoTransitionKind::Wipe => Msg::WipeKey,
-        AutoTransitionKind::VerticalWipe => Msg::VerticalWipeKey,
-        AutoTransitionKind::Slide => Msg::SlideKey,
-        AutoTransitionKind::VerticalSlide => Msg::VerticalSlideKey,
-        AutoTransitionKind::Zoom => Msg::ZoomKey,
-        AutoTransitionKind::Fly => Msg::FlyKey,
-        AutoTransitionKind::FlyRotate => Msg::FlyRotateKey,
-        AutoTransitionKind::Cube => Msg::CubeKey,
-        AutoTransitionKind::CubeZoom => Msg::CubeZoomKey,
-        AutoTransitionKind::CrossZoom => Msg::CrossZoomKey,
-        AutoTransitionKind::Merge => Msg::MergeKey,
+        AutoTransitionKind::Fade => names(Msg::FadeKey, Msg::TransitionFade),
+        AutoTransitionKind::AlphaFade => names(Msg::AlphaKey, Msg::TransitionAlphaFade),
+        AutoTransitionKind::Wipe => names(Msg::WipeKey, Msg::TransitionWipe),
+        AutoTransitionKind::VerticalWipe => {
+            names(Msg::VerticalWipeKey, Msg::TransitionVerticalWipe)
+        }
+        AutoTransitionKind::Slide => names(Msg::SlideKey, Msg::TransitionSlide),
+        AutoTransitionKind::VerticalSlide => {
+            names(Msg::VerticalSlideKey, Msg::TransitionVerticalSlide)
+        }
+        AutoTransitionKind::Zoom => names(Msg::ZoomKey, Msg::TransitionZoom),
+        AutoTransitionKind::Fly => names(Msg::FlyKey, Msg::TransitionFly),
+        AutoTransitionKind::FlyRotate => names(Msg::FlyRotateKey, Msg::TransitionFlyTurn),
+        AutoTransitionKind::Cube => names(Msg::CubeKey, Msg::TransitionCube),
+        AutoTransitionKind::CubeZoom => names(Msg::CubeZoomKey, Msg::TransitionCubeZoom),
+        AutoTransitionKind::CrossZoom => names(Msg::CrossZoomKey, Msg::TransitionCrossZoom),
+        AutoTransitionKind::Merge => names(Msg::MergeKey, Msg::TransitionMerge),
     }
 }
 
-/// The console key label of an overlay channel transition.
-pub(crate) const fn overlay_label(kind: OverlayTransitionKind) -> Msg {
+/// The names of an overlay channel transition: Cut, or the mix of the
+/// same motion.
+pub(crate) const fn overlay_name(kind: OverlayTransitionKind) -> TransitionName {
     match kind {
-        OverlayTransitionKind::Cut => Msg::CutKey,
-        OverlayTransitionKind::Fade => Msg::FadeKey,
-        OverlayTransitionKind::Wipe => Msg::WipeKey,
-        OverlayTransitionKind::VerticalWipe => Msg::VerticalWipeKey,
-        OverlayTransitionKind::Slide => Msg::SlideKey,
-        OverlayTransitionKind::VerticalSlide => Msg::VerticalSlideKey,
-        OverlayTransitionKind::Zoom => Msg::ZoomKey,
-        OverlayTransitionKind::Fly => Msg::FlyKey,
-        OverlayTransitionKind::FlyRotate => Msg::FlyRotateKey,
-        OverlayTransitionKind::Cube => Msg::CubeKey,
-        OverlayTransitionKind::CubeZoom => Msg::CubeZoomKey,
-        OverlayTransitionKind::CrossZoom => Msg::CrossZoomKey,
-        OverlayTransitionKind::Merge => Msg::MergeKey,
+        OverlayTransitionKind::Cut => CUT_NAME,
+        OverlayTransitionKind::Fade => mix_name(AutoTransitionKind::Fade),
+        OverlayTransitionKind::Wipe => mix_name(AutoTransitionKind::Wipe),
+        OverlayTransitionKind::VerticalWipe => mix_name(AutoTransitionKind::VerticalWipe),
+        OverlayTransitionKind::Slide => mix_name(AutoTransitionKind::Slide),
+        OverlayTransitionKind::VerticalSlide => mix_name(AutoTransitionKind::VerticalSlide),
+        OverlayTransitionKind::Zoom => mix_name(AutoTransitionKind::Zoom),
+        OverlayTransitionKind::Fly => mix_name(AutoTransitionKind::Fly),
+        OverlayTransitionKind::FlyRotate => mix_name(AutoTransitionKind::FlyRotate),
+        OverlayTransitionKind::Cube => mix_name(AutoTransitionKind::Cube),
+        OverlayTransitionKind::CubeZoom => mix_name(AutoTransitionKind::CubeZoom),
+        OverlayTransitionKind::CrossZoom => mix_name(AutoTransitionKind::CrossZoom),
+        OverlayTransitionKind::Merge => mix_name(AutoTransitionKind::Merge),
+    }
+}
+
+/// The names of a manual (T-bar) transition kind.
+pub(crate) const fn manual_name(kind: ManualTransitionKind) -> TransitionName {
+    match kind {
+        ManualTransitionKind::Fade => mix_name(AutoTransitionKind::Fade),
+        ManualTransitionKind::Wipe => mix_name(AutoTransitionKind::Wipe),
+        ManualTransitionKind::AlphaFade => mix_name(AutoTransitionKind::AlphaFade),
+        ManualTransitionKind::Slide => mix_name(AutoTransitionKind::Slide),
     }
 }
 
@@ -90,15 +126,29 @@ pub fn next_overlay_transition(kind: OverlayTransitionKind) -> OverlayTransition
     all[(index + 1) % all.len()]
 }
 
-/// The key label of a favourite's effect.
-pub(crate) fn effect_label(l: Locale, effect: TransitionFavoriteEffect) -> String {
+/// The key label of a favourite's effect (`CUBE ZOOM`, `STING 1`).
+pub(crate) fn effect_short(l: Locale, effect: TransitionFavoriteEffect) -> String {
+    effect_text(l, effect, |names| names.short, Msg::StingerFavoriteKey)
+}
+
+/// The full name of a favourite's effect for menus and tooltips (`Cube
+/// zoom`, `Stinger S1`).
+pub(crate) fn effect_name(l: Locale, effect: TransitionFavoriteEffect) -> String {
+    effect_text(l, effect, |names| names.name, Msg::TransitionStinger)
+}
+
+fn effect_text(
+    l: Locale,
+    effect: TransitionFavoriteEffect,
+    pick: fn(TransitionName) -> Msg,
+    stinger: Msg,
+) -> String {
     match effect {
-        TransitionFavoriteEffect::Cut => l.text(Msg::CutKey).to_owned(),
-        TransitionFavoriteEffect::Mix(kind) => l.text(mix_label(kind)).to_owned(),
-        TransitionFavoriteEffect::Stinger(slot) => l.format(
-            Msg::StingerFavoriteKey,
-            &[("slot", Arg::from(u32::from(slot.number())))],
-        ),
+        TransitionFavoriteEffect::Cut => l.text(pick(CUT_NAME)).to_owned(),
+        TransitionFavoriteEffect::Mix(kind) => l.text(pick(mix_name(kind))).to_owned(),
+        TransitionFavoriteEffect::Stinger(slot) => {
+            l.format(stinger, &[("slot", Arg::from(u32::from(slot.number())))])
+        }
     }
 }
 
@@ -150,9 +200,24 @@ fn draw_favorites(
         .unwrap_or_default();
     let duration_frames = shell.transition_duration_frames;
     ui.label(field_label(l.text(Msg::FavoritesLabel)));
+    let labels = favorites.map(|favorite| effect_short(l, favorite.effect));
+    // One label size for the four keys: the largest at which every label
+    // fits its fixed-width key. A label still too long at the smallest
+    // size ends in an ellipsis; the tooltip names the effect in full.
+    let label_size = labels
+        .iter()
+        .map(|label| {
+            fitted_label_size(
+                ui,
+                label,
+                (FAVORITE_LABEL_MIN, FAVORITE_LABEL_MAX),
+                FAVORITE_SIZE.x - 6.0,
+            )
+        })
+        .fold(FAVORITE_LABEL_MAX, f32::min);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (index, favorite) in favorites.into_iter().enumerate() {
+        for (index, (favorite, label)) in favorites.into_iter().zip(labels).enumerate() {
             let slot = u8::try_from(index + 1).expect("four favourites");
             let enabled = match favorite.effect {
                 TransitionFavoriteEffect::Stinger(_) => availability.stinger(),
@@ -167,7 +232,7 @@ fn draw_favorites(
                     Msg::FavoriteHover,
                     &[
                         ("slot", Arg::from(u32::from(slot))),
-                        ("effect", Arg::Str(&effect_label(l, effect))),
+                        ("effect", Arg::Str(&effect_name(l, effect))),
                         (
                             "frames",
                             Arg::Str(&l10n::frames(l, favorite.duration_frames)),
@@ -176,15 +241,27 @@ fn draw_favorites(
                 ),
             };
             let response = ui
-                .add_enabled(
-                    enabled,
-                    console_button(
-                        &effect_label(l, favorite.effect),
-                        widget_color(),
-                        border_strong_color(),
+                .add_enabled_ui(enabled, |ui| {
+                    ui.spacing_mut().button_padding.x = 3.0;
+                    ui.add_sized(
                         FAVORITE_SIZE,
-                    ),
-                )
+                        egui::Button::new(
+                            RichText::new(label)
+                                .strong()
+                                .size(label_size)
+                                .color(text_color()),
+                        )
+                        .fill(widget_color())
+                        .stroke(Stroke::new(
+                            crate::theme::line_width(),
+                            border_strong_color(),
+                        ))
+                        .corner_radius(CornerRadius::same(crate::theme::RADIUS))
+                        .min_size(FAVORITE_SIZE)
+                        .truncate(),
+                    )
+                })
+                .inner
                 .hint(
                     &with_key(l, &action, crate::favorite_key_name(slot)),
                     reason,
@@ -219,7 +296,7 @@ fn draw_more_transitions(
     )
     .ui(ui, |ui| {
         for kind in MORE_KINDS {
-            let label = l.text(mix_label(kind));
+            let label = l.text(mix_name(kind).name);
             if ui
                 .add_enabled(enabled, egui::Button::new(label))
                 .hint(
@@ -254,7 +331,7 @@ pub(crate) fn draw_overlay_transition_menu(
 ) {
     let l = l10n::locale(ui.ctx());
     for kind in OverlayTransitionKind::ALL {
-        let label = l.text(overlay_label(kind));
+        let label = l.text(overlay_name(kind).name);
         if ui
             .add_enabled(enabled, egui::Button::new(label).selected(kind == current))
             .hint(
@@ -297,7 +374,7 @@ pub(crate) fn draw_assign_menu(
                     .map(TransitionFavoriteEffect::Stinger),
             );
         for effect in effects {
-            let label = effect_label(l, effect);
+            let label = effect_name(l, effect);
             let hover = l.format(
                 Msg::AssignFavoriteItemHover,
                 &[("slot", slot_arg()), ("effect", Arg::Str(&label))],
@@ -330,6 +407,26 @@ pub(crate) fn draw_assign_menu(
         reason,
     );
 }
+/// The largest label size in `min..=max` at which `text` (strong
+/// proportional) fits `width` on one line; `min` when none does.
+fn fitted_label_size(ui: &Ui, text: &str, (min, max): (f32, f32), width: f32) -> f32 {
+    let natural = ui
+        .painter()
+        .layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::proportional(max),
+            text_color(),
+        )
+        .size()
+        .x;
+    if natural <= width || natural <= 0.0 {
+        max
+    } else {
+        // Text width scales with the font size; step down in half points.
+        ((max * width / natural) * 2.0).floor().max(min * 2.0) / 2.0
+    }
+}
+
 const T_BAR_HEIGHT: f32 = 148.0;
 
 pub(crate) fn draw_transition_column(
@@ -948,28 +1045,12 @@ fn draw_manual_start_buttons(
 ) {
     let l = l10n::locale(ui.ctx());
     let mut keys = vec![
-        (
-            Msg::FadeKey,
-            Msg::TransitionFade,
-            ManualTransitionKind::Fade,
-        ),
-        (
-            Msg::WipeKey,
-            Msg::TransitionWipe,
-            ManualTransitionKind::Wipe,
-        ),
-        (
-            Msg::SlideKey,
-            Msg::TransitionSlide,
-            ManualTransitionKind::Slide,
-        ),
+        ManualTransitionKind::Fade,
+        ManualTransitionKind::Wipe,
+        ManualTransitionKind::Slide,
     ];
     if alpha_fade_exposed {
-        keys.push((
-            Msg::AlphaKey,
-            Msg::TransitionAlphaFade,
-            ManualTransitionKind::AlphaFade,
-        ));
+        keys.push(ManualTransitionKind::AlphaFade);
     }
     // Equal-width keys that always fill the column, whatever the language.
     #[allow(clippy::cast_precision_loss)] // three or four keys
@@ -980,10 +1061,11 @@ fn draw_manual_start_buttons(
         22.0,
     );
     ui.spacing_mut().button_padding.x = 2.0;
-    for (label, name, kind) in keys {
+    for kind in keys {
+        let TransitionName { short, name } = manual_name(kind);
         let tooltip = l.format(Msg::ManualStartHover, &[("kind", Arg::Str(l.text(name)))]);
         let response = ui
-            .add_enabled(enabled, start_button(l.text(label), size))
+            .add_enabled(enabled, start_button(l.text(short), size))
             .hint(&tooltip, reason);
         if response.clicked() {
             intents.push(StudioIntent::StartManualTransition { kind });
@@ -1174,7 +1256,8 @@ mod tests {
         );
         // Every key has a label, and every mix is reachable from the column.
         for kind in AutoTransitionKind::ALL {
-            assert_ne!(mix_label(kind).en(), "");
+            assert_ne!(mix_name(kind).short.en(), "");
+            assert_ne!(mix_name(kind).name.en(), "");
         }
         assert!(MORE_KINDS.iter().all(|kind| !matches!(
             kind,

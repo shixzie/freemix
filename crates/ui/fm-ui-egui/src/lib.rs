@@ -1773,7 +1773,7 @@ impl StudioShell {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 draw_bus(ui, monitors::Bus::Preview, monitor_width);
-                ui.vertical(|ui| {
+                fixed_width_column(ui, transitions::TRANSITION_COLUMN_WIDTH, |ui| {
                     transitions::draw_transition_column(ui, self, state, manual, intents);
                 });
                 draw_bus(ui, monitors::Bus::Program, monitor_width);
@@ -1786,7 +1786,7 @@ impl StudioShell {
                 draw_bus(ui, monitors::Bus::Program, monitor_width);
             });
             ui.add_space(gap);
-            ui.vertical(|ui| {
+            fixed_width_column(ui, transitions::TRANSITION_COLUMN_WIDTH, |ui| {
                 transitions::draw_transition_column(ui, self, state, manual, intents);
             });
         }
@@ -1914,6 +1914,32 @@ impl Default for StudioShell {
             designer: scene_designer::DesignerWindow::default(),
         }
     }
+}
+
+/// Lays `add` out top-down in a column exactly `width` wide and advances
+/// the parent past it. Content wider than the column is clipped instead of
+/// widening it, so a long label can never push its neighbours (the
+/// Program monitor beside the transition column) out of place.
+fn fixed_width_column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
+    let top_left = ui.cursor().min;
+    let rect = egui::Rect::from_min_size(top_left, Vec2::new(width, ui.available_height()));
+    let mut column = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    // A little slack keeps focus rings and key outlines whole.
+    let clip = column.clip_rect();
+    column.set_clip_rect(clip.intersect(egui::Rect::from_x_y_ranges(
+        (rect.min.x - 3.0)..=(rect.max.x + 3.0),
+        clip.y_range(),
+    )));
+    add(&mut column);
+    let height = column.min_rect().height();
+    ui.advance_cursor_after_rect(egui::Rect::from_min_size(
+        top_left,
+        Vec2::new(width, height),
+    ));
 }
 
 #[cfg(test)]

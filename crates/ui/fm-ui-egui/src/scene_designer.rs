@@ -79,6 +79,8 @@ const ROTATE_OFFSET: f32 = 26.0;
 const PROJECT_PLACEHOLDER: &str = "<show.freemix>";
 /// Snap guide colour.
 const GUIDE: Color32 = Color32::from_rgb(236, 72, 200);
+/// Dark translucent plate under canvas text (layer names, the picture badge).
+const LABEL_BACKING: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 190);
 /// Mask outline colour.
 const MASK: Color32 = Color32::from_rgb(90, 210, 230);
 /// Anchor mark colour.
@@ -1350,15 +1352,14 @@ fn draw_canvas(
     } else {
         (Msg::DesignBadgeNone, Tone::Idle)
     };
-    crate::theme::status_chip_painted(
-        &painter,
-        Rect::from_min_size(
-            pos2(rect.right() - 158.0, rect.top() + 8.0),
-            Vec2::new(150.0, 18.0),
-        ),
-        l.text(badge),
-        tone,
+    let badge_rect = Rect::from_min_size(
+        pos2(rect.right() - 158.0, rect.top() + 8.0),
+        Vec2::new(150.0, 18.0),
     );
+    // The chip's own fill is a faint tint; a dark plate under it keeps the
+    // badge legible over a light canvas.
+    painter.rect_filled(badge_rect, CornerRadius::same(3), LABEL_BACKING);
+    crate::theme::status_chip_painted(&painter, badge_rect, l.text(badge), tone);
     painter.rect_stroke(
         rect,
         CornerRadius::ZERO,
@@ -1507,13 +1508,20 @@ fn paint_layer(
         .iter()
         .copied()
         .fold(pos2(f32::MAX, f32::MAX), Pos2::min);
-    painter.text(
-        top_left + vec2(5.0, 4.0),
-        Align2::LEFT_TOP,
+    // A dark translucent plate under the name keeps it legible over any
+    // canvas colour, light or dark.
+    let galley = painter.layout_no_wrap(
         crate::theme::ellipsize(&layer_name(l, layer), 24),
         FontId::proportional(crate::theme::legible(10.5)),
         color,
     );
+    let origin = top_left + vec2(5.0, 4.0);
+    painter.rect_filled(
+        Rect::from_min_size(origin - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0)),
+        CornerRadius::same(2),
+        LABEL_BACKING,
+    );
+    painter.galley(origin, galley, color);
 }
 
 /// The selected layer's scale, crop, and rotate handles and its centre.

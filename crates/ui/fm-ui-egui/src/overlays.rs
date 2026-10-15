@@ -310,26 +310,38 @@ fn draw_overlay_details(
             intents.push(StudioIntent::TakeNextOverlay { channel });
         }
         let transition = desired.map_or(OverlayTransitionKind::Cut, |overlay| overlay.transition);
+        let names = crate::transitions::overlay_name(transition);
         let response = ui
-            .add_enabled(
-                enabled,
-                small_button(l.text(crate::transitions::overlay_label(transition))),
-            )
-            .hint(l.text(Msg::OverlayTransitionHover), reason);
+            .add_enabled(enabled, small_button(l.text(names.short)))
+            .hint(
+                &format!(
+                    "{}\n{}",
+                    l.text(names.name),
+                    l.text(Msg::OverlayTransitionHover)
+                ),
+                reason,
+            );
         if response.clicked() {
             intents.push(StudioIntent::CycleOverlayTransition {
                 channel,
                 duration_frames,
             });
         }
-        response.context_menu(|ui| {
-            crate::transitions::draw_overlay_transition_menu(
-                ui,
-                (channel, transition, duration_frames),
-                (enabled, reason),
-                intents,
-            );
-        });
+        // The picker opens below its key (above it when there is no room
+        // below), never at the pointer over the row it edits.
+        egui::Popup::context_menu(&response)
+            .anchor(&response)
+            .align(egui::RectAlign::BOTTOM_START)
+            .align_alternatives(&[egui::RectAlign::TOP_START, egui::RectAlign::LEFT_START])
+            .gap(4.0)
+            .show(|ui| {
+                crate::transitions::draw_overlay_transition_menu(
+                    ui,
+                    (channel, transition, duration_frames),
+                    (enabled, reason),
+                    intents,
+                );
+            });
         let position = desired.map_or(OverlayPositionPreset::FullFrame, |overlay| overlay.position);
         let border = desired.map_or(OverlayBorderPreset::None, |overlay| overlay.border);
         if ui

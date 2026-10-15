@@ -13,7 +13,8 @@
 //! operator label shown on its name plate, and an optional VCA group
 //! (AU-001). Every group with members gets a group strip between the input
 //! strips and Master: its fader adds to each member's gain and its mute
-//! silences them, while each member keeps its own fader.
+//! silences them, while each member keeps its own fader. The group strip's
+//! meter is the loudest of its members' post-fader input meters.
 
 use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Key, Rect, RichText, ScrollArea,
@@ -460,6 +461,9 @@ pub(crate) fn draw_mixer(
     };
     ballistics.retain(|key| match key {
         MeterKey::Master => true,
+        MeterKey::Group(group) => active_groups(view)
+            .iter()
+            .any(|(active, _)| *active == group),
         MeterKey::Input(input) => view
             .input_audio_strips
             .iter()
@@ -514,10 +518,22 @@ pub(crate) fn draw_mixer(
                                 }
                             }
                             for (group, members) in active_groups(view) {
-                                draw_group_strip(
+                                let channels = state
+                                    .audio_meters
+                                    .as_ref()
+                                    .and_then(|meters| group_meter(&meters.inputs, &members));
+                                let key = MeterKey::Group(group);
+                                let holds =
+                                    ballistics.update(key, channels.as_deref(), dt_ms).to_vec();
+                                if draw_group_strip(
                                     ui,
                                     view,
                                     (group, members.len()),
+                                    MeterFeed {
+                                        channels: channels.as_deref(),
+                                        holds: &holds,
+                                        stale: meters_stale,
+                                    },
                                     StripGate {
                                         enabled,
                                         reason: audio_reason,
@@ -525,7 +541,9 @@ pub(crate) fn draw_mixer(
                                     },
                                     fader_height,
                                     intents,
-                                );
+                                ) {
+                                    clear.push(key);
+                                }
                             }
                         });
                     });
@@ -837,16 +855,43 @@ fn group_choice(
     (chosen != status.group).then_some(chosen)
 }
 
-/// Draws one VCA group strip: name plate, fader, mute, and (with details)
-/// the group name.
+/// The meter of a VCA group: per channel, the loudest peak and RMS of its
+/// member strips. The daemon meters each input strip after its fader, pan,
+/// mute, and group gain, so this is the group's post-fader level without a
+/// meter of its own on the wire. `None` while no member has a sample.
+pub(crate) fn group_meter(
+    inputs: &[fm_protocol::InputAudioMeters],
+    members: &[fm_types::InputId],
+) -> Option<Vec<AudioMeterChannel>> {
+    let mut combined: Option<Vec<AudioMeterChannel>> = None;
+    for meter in inputs
+        .iter()
+        .filter(|meter| members.contains(&meter.input.to_domain()))
+    {
+        let combined = combined.get_or_insert_with(Vec::new);
+        if combined.len() < meter.channels.len() {
+            combined.resize(meter.channels.len(), AudioMeterChannel::default());
+        }
+        for (into, channel) in combined.iter_mut().zip(&meter.channels) {
+            into.peak_millionths = into.peak_millionths.max(channel.peak_millionths);
+            into.rms_millionths = into.rms_millionths.max(channel.rms_millionths);
+        }
+    }
+    combined
+}
+
+/// Draws one VCA group strip: name plate, peak readout, the group meter
+/// beside its fader, mute, and (with details) the group name. Returns
+/// `true` when the operator cleared its clip.
 fn draw_group_strip(
     ui: &mut Ui,
     view: &ClientView,
     (group, members): (u8, usize),
+    feed: MeterFeed<'_>,
     gate: StripGate,
     fader_height: f32,
     intents: &mut Vec<StudioIntent>,
-) {
+) -> bool {
     let l = l10n::locale(ui.ctx());
     let StripGate {
         enabled,
@@ -854,11 +899,12 @@ fn draw_group_strip(
         details,
     } = gate;
     let Some(status) = view.audio_mixer.groups.get(usize::from(group) - 1) else {
-        return;
+        return false;
     };
     let mut gain_millidb = status.gain_millidb;
     let mut muted = status.muted;
     let mut level_changed = false;
+    let mut clear_clip = false;
     strip_frame(ui, accent_color(), |ui| {
         #[allow(clippy::cast_possible_truncation)] // at most 256 strips
         let plate_hover = l.format(
@@ -869,19 +915,22 @@ fn draw_group_strip(
             ],
         );
         name_plate(ui, None, &status.name, &plate_hover, TallyState::default());
-        // The group strip has no meter; its fader takes the strip width.
-        let (_, _) =
-            ui.allocate_exact_size(Vec2::new(STRIP_INNER_WIDTH, READOUT_HEIGHT), Sense::hover());
-        level_changed |= fader(
-            ui,
-            &mut gain_millidb,
-            enabled,
-            muted,
-            STRIP_INNER_WIDTH,
-            fader_height,
-        )
-        .hint(l.text(Msg::GroupFaderHover), reason)
-        .changed();
+        clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            clear_clip |= draw_meter(ui, feed, fader_height);
+            let fader_width = ui.available_width();
+            level_changed |= fader(
+                ui,
+                &mut gain_millidb,
+                enabled,
+                muted,
+                fader_width,
+                fader_height,
+            )
+            .hint(l.text(Msg::GroupFaderHover), reason)
+            .changed();
+        });
         let (_, _) = ui.allocate_exact_size(
             Vec2::new(STRIP_INNER_WIDTH, PAN_ROW_HEIGHT - 4.0),
             Sense::hover(),
@@ -919,6 +968,7 @@ fn draw_group_strip(
             muted,
         });
     }
+    clear_clip
 }
 
 /// The peak-hold readout: the held level, or a red `CLIP` while latched.
@@ -1805,6 +1855,35 @@ fn draw_meter_scale(ui: &mut Ui, height: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_meter_is_the_loudest_member_per_channel() {
+        let id = |value: u128| {
+            fm_types::InputId::new(core::num::NonZeroU128::new(value).expect("non-zero"))
+        };
+        let channel = |peak, rms| AudioMeterChannel {
+            peak_millionths: peak,
+            rms_millionths: rms,
+        };
+        let meter = |input: u128, channels: Vec<AudioMeterChannel>| fm_protocol::InputAudioMeters {
+            input: fm_protocol::WireInputId::from_domain(id(input)),
+            channels,
+        };
+        let inputs = [
+            meter(1, vec![channel(500_000, 200_000), channel(100_000, 50_000)]),
+            meter(2, vec![channel(300_000, 250_000)]),
+            meter(
+                3,
+                vec![channel(900_000, 900_000), channel(900_000, 900_000)],
+            ),
+        ];
+        assert_eq!(
+            group_meter(&inputs, &[id(1), id(2)]),
+            Some(vec![channel(500_000, 250_000), channel(100_000, 50_000)])
+        );
+        assert_eq!(group_meter(&inputs, &[id(4)]), None);
+        assert_eq!(group_meter(&[], &[id(1)]), None);
+    }
 
     #[test]
     fn meter_math_maps_full_scale_and_floor() {

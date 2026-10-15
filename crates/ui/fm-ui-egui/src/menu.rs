@@ -1251,6 +1251,11 @@ impl StudioShell {
                         .auto_shrink([false, true])
                         .max_height(max_height)
                         .show(ui, |ui| {
+                            // One key column for every group, as wide as
+                            // the widest cap in any shipped language, so
+                            // the action column lines up across groups
+                            // and does not move when the language changes.
+                            let column = key_cap_column(ui);
                             for group in ShortcutGroup::ALL {
                                 ui.add_space(10.0);
                                 ui.label(section_label(l.tr(group.title())));
@@ -1263,7 +1268,7 @@ impl StudioShell {
                                             .iter()
                                             .filter(|entry| entry.group == group)
                                         {
-                                            key_cap(ui, &l.keys(entry.keys));
+                                            key_cap(ui, &l.keys(entry.keys), column);
                                             ui.label(
                                                 RichText::new(l.tr(entry.action))
                                                     .color(text_color()),
@@ -1412,14 +1417,27 @@ fn key_cap_width(ui: &Ui, keys: &str) -> f32 {
     (text + 16.0).max(28.0)
 }
 
-/// A key cap such as `C` or `1 – 8` in a column at least
-/// [`KEY_CAP_COLUMN`] wide, so the action column aligns.
-fn key_cap(ui: &mut Ui, keys: &str) {
+/// The width of the reference's key column: the widest key cap of every
+/// shortcut in every shipped language, at least [`KEY_CAP_COLUMN`].
+fn key_cap_column(ui: &Ui) -> f32 {
+    fm_ui_model::i18n::Language::ALL
+        .into_iter()
+        .map(l10n::Locale::new)
+        .flat_map(|locale| {
+            STUDIO_SHORTCUTS
+                .iter()
+                .map(move |entry| locale.keys(entry.keys))
+        })
+        .map(|keys| key_cap_width(ui, &keys))
+        .fold(KEY_CAP_COLUMN, f32::max)
+}
+
+/// A key cap such as `C` or `1 – 8` in a `column` wide slot (see
+/// [`key_cap_column`]), so the action column aligns across groups.
+fn key_cap(ui: &mut Ui, keys: &str, column: f32) {
     let width = key_cap_width(ui, keys);
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(width.max(KEY_CAP_COLUMN), 22.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(width.max(column), 22.0), egui::Sense::hover());
     let painter = ui.painter();
     let cap = egui::Rect::from_min_size(rect.min, Vec2::new(width, rect.height()));
     painter.rect_filled(

@@ -106,6 +106,8 @@ impl ChannelBallistics {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MeterKey {
     Input(InputId),
+    /// A VCA group strip (1-4): the loudest of its member strips.
+    Group(u8),
     Master,
 }
 
