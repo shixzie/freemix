@@ -2937,6 +2937,254 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// A 16x8 `.fmtitle` source with one image element at (4, 2) sized 8x4
+/// that stretches image field 1 nearest-neighbor; its default names
+/// `asset://images/logo.png`.
+const IMAGE_TITLE_SOURCE: &str = r##"{
+  "schema_version": 32,
+  "template": {
+    "id": 12,
+    "name": "Logo",
+    "width": 16,
+    "height": 8,
+    "background": "#00000000",
+    "fields": [
+      {"id": 1, "name": "Logo", "default": {"type": "image", "asset_uri": "asset://images/logo.png"}}
+    ],
+    "elements": [
+      {"id": 1, "name": "Logo", "bounds": {"x": 4, "y": 2, "width": 8, "height": 4}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "image", "field": 1, "fit": "stretch", "filter": "nearest"}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
+  },
+  "fonts": [],
+  "clocks": []
+}
+"##;
+
+/// GX-011: `title-render-frame` decodes image assets exactly as `freemixd`
+/// does (the shared `fm-title-render` path): a 2x1 PNG stretched into the
+/// element is drawn pixel-exact, and a missing image keeps the placeholder
+/// and is reported.
+#[test]
+fn title_render_frame_draws_decoded_images() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    // A red-then-blue 2x1 PNG, stretched over 8x4 at (4, 2).
+    let images = context.project.join("assets/images");
+    fs::create_dir_all(&images).unwrap();
+    let mut png = image::RgbaImage::new(2, 1);
+    png.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+    png.put_pixel(1, 0, image::Rgba([0, 0, 255, 255]));
+    png.save(images.join("logo.png")).unwrap();
+    let source = context.root.join("logo.fmtitle");
+    fs::write(&source, IMAGE_TITLE_SOURCE).unwrap();
+    assert_success(&invoke(&[
+        "title-input-add",
+        context.project_path(),
+        "--id",
+        "9",
+        "--name",
+        "Logo",
+        "--template",
+        source.to_str().unwrap(),
+    ]));
+    let render = |name: &str| {
+        let output = context.root.join(name);
+        let rendered = invoke(&[
+            "title-render-frame",
+            context.project_path(),
+            "9",
+            "--phase",
+            "in",
+            "--frame",
+            "0",
+            output.to_str().unwrap(),
+        ]);
+        assert_success(&rendered);
+        (stdout(&rendered), fs::read(output).unwrap())
+    };
+    let (report, drawn) = render("logo.ppm");
+    assert!(!report.contains("placeholder image"), "{report}");
+    assert_eq!(drawn, image_golden());
+
+    // An image that no longer resolves keeps the placeholder and is named.
+    fs::remove_file(images.join("logo.png")).unwrap();
+    let (report, placeholder) = render("missing.ppm");
+    assert!(
+        report.contains("placeholder image: field 1 asset://images/logo.png"),
+        "{report}"
+    );
+    assert_ne!(placeholder, image_golden());
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// The binary PPM golden of the logo title: red over columns 4..8 and blue
+/// over 8..12 of rows 2..6, black elsewhere.
+fn image_golden() -> Vec<u8> {
+    let mut golden = b"P6\n16 8\n255\n".to_vec();
+    for y in 0..8 {
+        for x in 0..16 {
+            golden.extend_from_slice(&match (x, y) {
+                (4..8, 2..6) => [255, 0, 0],
+                (8..12, 2..6) => [0, 0, 255],
+                _ => [0; 3],
+            });
+        }
+    }
+    golden
+}
+
+/// A 200x80 `.fmtitle` source with the countdown `doors` (23:00 UTC) at
+/// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
+/// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
+const CLOCK_RENDER_SOURCE: &str = r##"{
+  "schema_version": 32,
+  "template": {
+    "id": 13,
+    "name": "Clock render",
+    "width": 200,
+    "height": 80,
+    "background": "#000000ff",
+    "fields": [],
+    "elements": [
+      {"id": 1, "name": "Doors", "bounds": {"x": 0, "y": 0, "width": 200, "height": 40}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 28}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "doors", "format": null}},
+      {"id": 2, "name": "On air", "bounds": {"x": 0, "y": 40, "width": 200, "height": 40}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 28}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "on-air", "format": null}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 120, "out_frames": 0, "tracks": []}
+  },
+  "fonts": [],
+  "clocks": [
+    {"name": "doors", "kind": "countdown_to", "target_utc": "2026-10-14T23:00:00Z", "overrun": "continue", "format": {"type": "duration", "preset": "minutes_seconds"}},
+    {"name": "on-air", "kind": "since_take", "format": {"type": "duration", "preset": "minutes_seconds"}}
+  ]
+}
+"##;
+
+/// The oracle of [`CLOCK_RENDER_SOURCE`]: the same layout with plain text
+/// elements showing `doors` and `on_air`.
+fn clock_oracle_source(doors: &str, on_air: &str) -> String {
+    CLOCK_RENDER_SOURCE
+        .replace("\"id\": 13", "\"id\": 14")
+        .replace(
+            "\"fields\": []",
+            &format!(
+                "\"fields\": [{{\"id\": 1, \"name\": \"Doors\", \"default\": {{\"type\": \"text\", \"value\": \"{doors}\"}}}}, {{\"id\": 2, \"name\": \"On air\", \"default\": {{\"type\": \"text\", \"value\": \"{on_air}\"}}}}]"
+            ),
+        )
+        .replace(
+            "{\"type\": \"production_clock\", \"clock\": \"doors\", \"format\": null}",
+            "{\"type\": \"text\", \"field\": 1}",
+        )
+        .replace(
+            "{\"type\": \"production_clock\", \"clock\": \"on-air\", \"format\": null}",
+            "{\"type\": \"text\", \"field\": 2}",
+        )
+        .replace(
+            &CLOCK_RENDER_SOURCE[CLOCK_RENDER_SOURCE.find("\"clocks\": [").unwrap()
+                ..=CLOCK_RENDER_SOURCE.rfind(']').unwrap()],
+            "\"clocks\": []",
+        )
+}
+
+/// GX-011: `title-render-frame` draws production clocks exactly as
+/// `freemixd` does, at a deterministic time: countdowns read `--at`, and
+/// since-take clocks the clip position after a take at the first In frame
+/// (Out after the whole In phase). Each render must equal a plain text
+/// title holding the expected text (needs a real font: skips unless one is
+/// found or `FM_REQUIRE_FONT=1`).
+#[test]
+fn title_render_frame_draws_production_clocks_at_a_deterministic_time() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let render = |input: &str, phase: &str, frame: &str, at: Option<&str>| {
+        let output = context.root.join(format!("{input}-{phase}-{frame}.ppm"));
+        let mut arguments = vec![
+            "title-render-frame",
+            context.project_path(),
+            input,
+            "--phase",
+            phase,
+            "--frame",
+            frame,
+        ];
+        if let Some(at) = at {
+            arguments.extend(["--at", at]);
+        }
+        let output_argument = output.to_str().unwrap().to_owned();
+        arguments.push(&output_argument);
+        let rendered = invoke(&arguments);
+        assert_success(&rendered);
+        fs::read(output).unwrap()
+    };
+    let Some(font) = discover_font_file() else {
+        fs::remove_dir_all(context.root).unwrap();
+        return;
+    };
+    let font_argument = format!("Clock Face={}", font.to_str().unwrap());
+    let add = |id: &str, name: &str, source: &str| {
+        let path = context.root.join(format!("{name}.fmtitle"));
+        fs::write(&path, source).unwrap();
+        assert_success(&invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            id,
+            "--name",
+            name,
+            "--template",
+            path.to_str().unwrap(),
+            "--font",
+            &font_argument,
+        ]));
+    };
+    add("9", "clocks", CLOCK_RENDER_SOURCE);
+    for (index, (doors, on_air)) in [("00:30", "00:03"), ("-01:05", "00:05"), ("00:00", "00:00")]
+        .into_iter()
+        .enumerate()
+    {
+        add(
+            &(20 + index).to_string(),
+            &format!("oracle-{index}"),
+            &clock_oracle_source(doors, on_air),
+        );
+    }
+    let oracle = |index: usize| render(&(20 + index).to_string(), "in", "0", None);
+    assert_ne!(oracle(0), oracle(1), "the font draws the clock text");
+
+    // 30 s before the doors, 90 frames (3 s at 30/1) after the take.
+    assert_eq!(
+        render("9", "in", "90", Some("2026-10-14T22:59:30Z")),
+        oracle(0)
+    );
+    // Out frame 30 is 120 + 30 frames (5 s) after the take; 65 s past the
+    // doors counts negative.
+    assert_eq!(
+        render("9", "out", "30", Some("2026-10-14T23:01:05Z")),
+        oracle(1)
+    );
+    // At the target the countdown shows zero; the take frame shows zero.
+    assert_eq!(
+        render("9", "in", "0", Some("2026-10-14T23:00:00Z")),
+        oracle(2)
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-render-frame",
+            context.project_path(),
+            "9",
+            "--phase",
+            "in",
+            "--frame",
+            "0",
+            "--at",
+            "2026-10-14 23:00:00",
+            context.root.join("never.ppm").to_str().unwrap(),
+        ]),
+        "--at `2026-10-14 23:00:00` is not a YYYY-MM-DDTHH:MM:SSZ UTC time",
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 #[test]
 fn local_media_input_add_persists_offline_asset_contract() {
     let context = ContractContext::new();

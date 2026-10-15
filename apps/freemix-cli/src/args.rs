@@ -230,6 +230,9 @@ pub enum Command {
         input: u128,
         phase: TitlePhase,
         frame: u32,
+        /// `--at`: the UTC instant production clocks read, as
+        /// `YYYY-MM-DDTHH:MM:SSZ`; the Unix epoch when absent.
+        at: Option<String>,
         output: PathBuf,
     },
     AudioBusAdd {
@@ -2407,11 +2410,13 @@ fn parse_title_render_frame(
     let input = number(&required(&mut arguments, "input")?, "input")?;
     let mut phase = None;
     let mut frame = None;
+    let mut at = None;
     let mut output = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--phase" => phase = Some(title_phase(&mut arguments)?),
             "--frame" => frame = Some(number(&required(&mut arguments, "frame")?, "frame")?),
+            "--at" => at = Some(nonblank(&mut arguments, "at")?),
             option if option.starts_with("--") => {
                 return Err(ArgsError::UnknownOption(argument));
             }
@@ -2424,6 +2429,7 @@ fn parse_title_render_frame(
         input,
         phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
         frame: frame.ok_or(ArgsError::MissingValue("--frame"))?,
+        at,
         output: output.ok_or(ArgsError::MissingValue("output path"))?,
     })
 }

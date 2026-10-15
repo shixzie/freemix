@@ -18,10 +18,14 @@ fm-persistence = { path = "../../crates/services/fm-persistence" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-sim = { path = "../../crates/media/fm-sim" }
 fm-switcher = { path = "../../crates/features/fm-switcher" }
+fm-title-render = { path = "../../crates/services/fm-title-render", features = ["images"] }
 fm-titles = { path = "../../crates/features/fm-titles" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-ui-model = { path = "../../crates/ui/fm-ui-model" }
 fm-video = { path = "../../crates/media/fm-video" }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

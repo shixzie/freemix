@@ -1806,14 +1806,66 @@ impl Drop for NativeDecodeWorker {
     }
 }
 
+/// The newest CPU frame each source of one playback decoded, captured, or
+/// retained, kept for read-only consumers off the render loop (exact scene
+/// previews, GX-011).
+///
+/// Storing never copies pixels: the CPU frame the pipeline normalized and
+/// would otherwise drop moves in (the last frame of each decoded window, so
+/// a decoded file is at most its source ring ahead of the frame on air; the
+/// last ingested live frame; the retained frame), replacing the input's
+/// previous one, so each source keeps one extra CPU frame. The lock guards
+/// only a map insert or an `Arc` clone and is never held across pixel work,
+/// so a reader cannot stall the output clock.
+#[derive(Clone, Debug, Default)]
+pub struct NativeLatestFrames {
+    frames: Arc<Mutex<BTreeMap<InputId, Arc<CpuVideoFrame>>>>,
+}
+
+impl NativeLatestFrames {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<InputId, Arc<CpuVideoFrame>>> {
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn store(&self, input: InputId, frame: CpuVideoFrame) {
+        let frame = Arc::new(frame);
+        let previous = self.lock().insert(input, frame);
+        // Freed outside the lock.
+        drop(previous);
+    }
+
+    /// The newest frame of `input`, if its source produced one.
+    #[must_use]
+    pub fn get(&self, input: InputId) -> Option<Arc<CpuVideoFrame>> {
+        self.lock().get(&input).cloned()
+    }
+
+    /// Every source's newest frame as of now; the frames are shared, not
+    /// copied, and later frames do not change the snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> BTreeMap<InputId, Arc<CpuVideoFrame>> {
+        self.lock().clone()
+    }
+}
+
 /// Bounded GPU source rings paired with one CPU-only background decode worker.
 pub struct NativeSourcePlayback {
     registry: NativeSourceRegistry,
     worker: NativeDecodeWorker,
     failed: bool,
+    latest: NativeLatestFrames,
 }
 
 impl NativeSourcePlayback {
+    /// The shared handle to the newest CPU frame of every source of this
+    /// playback (see [`NativeLatestFrames`]).
+    #[must_use]
+    pub fn latest_frames(&self) -> NativeLatestFrames {
+        self.latest.clone()
+    }
+
     /// Returns the immutable registry used by the existing render API.
     #[must_use]
     pub const fn registry(&self) -> &NativeSourceRegistry {
@@ -6227,9 +6279,10 @@ impl NativeMediaRuntime {
         let (dimensions, retained_rgba16f_bytes) = validate_source_layouts(&layouts, limits)?;
 
         let mut registry = BTreeMap::new();
+        let latest = NativeLatestFrames::default();
         for (
             input,
-            frames,
+            mut frames,
             offsets_ns,
             source_pts_origin,
             last_source_pts,
@@ -6247,6 +6300,9 @@ impl NativeMediaRuntime {
                         .await
                         .map_err(|error| NativeSourcePreflightError::Normalize { input, error })?,
                 );
+            }
+            if let Some(newest) = frames.pop() {
+                latest.store(input, newest);
             }
             registry.insert(
                 input,
@@ -6275,6 +6331,7 @@ impl NativeMediaRuntime {
             },
             worker,
             failed: false,
+            latest,
         })
     }
 
@@ -6492,6 +6549,7 @@ impl NativeMediaRuntime {
         prefix.offsets_ns.push(0);
         prefix.last_source_pts = timing.presentation_timestamp().as_nanos();
         prefix.last_sequence = timing.sequence().get();
+        playback.latest.store(input, frame);
         Ok(())
     }
 
@@ -6530,7 +6588,7 @@ impl NativeMediaRuntime {
         for completed in completed {
             let request = completed.request;
             let input = request.input;
-            let window = completed
+            let mut window = completed
                 .window
                 .map_err(|error| NativeSourcePlaybackError::Decode { input, error })?;
             let prefix = playback
@@ -6675,6 +6733,9 @@ impl NativeMediaRuntime {
                 prefix.source_pts_origin = source_pts_origin;
             }
             prefix.frames.append(&mut normalized);
+            if let Some(newest) = window.frames.pop() {
+                playback.latest.store(input, newest);
+            }
             prefix.offsets_ns.extend(offsets_ns);
             prefix.last_source_pts = last_source_pts;
             prefix.last_sequence = last_sequence;
@@ -9645,6 +9706,7 @@ mod tests {
             },
             worker: NativeDecodeWorker::spawn(BTreeMap::new()).unwrap(),
             failed: false,
+            latest: NativeLatestFrames::default(),
         }
     }
 
@@ -12389,5 +12451,253 @@ mod tests {
         assert!(middle_components[1] > 0.0 && middle_components[2] > 0.0);
         assert!(last_components[0] > last_components[2] && last_components[1] > last_components[2]);
         assert_eq!(restarted.bytes, first.bytes);
+    }
+}
+
+/// The newest CPU frame every source of a playback holds (GX-011 exact
+/// scene previews read it off the render loop).
+#[cfg(test)]
+mod latest_frame_tests {
+    use std::num::NonZeroU128;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use fm_frame::{
+        MediaTimestamp, NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber,
+        TimeBase,
+    };
+
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    const BACKEND: NativeBackend = NativeBackend::Metal;
+    #[cfg(target_os = "windows")]
+    const BACKEND: NativeBackend = NativeBackend::Dx12;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    const BACKEND: NativeBackend = NativeBackend::Vulkan;
+
+    fn input(value: u128) -> InputId {
+        InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    /// A native runtime, or `None` (skipping) where no adapter exists
+    /// unless `FM_REQUIRE_NATIVE_MEDIA=1`.
+    fn runtime() -> Option<NativeMediaRuntime> {
+        match NativeMediaRuntime::new_blocking([BACKEND]) {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                assert!(
+                    std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                    "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+                );
+                eprintln!("skipping: no native adapter ({error})");
+                None
+            }
+        }
+    }
+
+    /// Whether `ffmpeg` runs; its absence fails under `FM_REQUIRE_FFMPEG=1`.
+    fn ffmpeg_available() -> bool {
+        let available = Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        assert!(
+            available || std::env::var("FM_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+            "FM_REQUIRE_FFMPEG=1 but ffmpeg is unavailable"
+        );
+        available
+    }
+
+    /// A 2x2 sRGB BGRA FFV1 clip of `frames` frames at 30 fps, frame `n`
+    /// filled with red `n`.
+    fn clip(directory: &Path, frames: u8) -> PathBuf {
+        let raw = directory.join("clip.rgba");
+        let output = directory.join("clip.mkv");
+        let mut bytes = Vec::new();
+        for frame in 0..frames {
+            for _ in 0..4 {
+                bytes.extend_from_slice(&[frame, 0, 0, 255]);
+            }
+        }
+        std::fs::write(&raw, bytes).unwrap();
+        let status = Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgba",
+                "-video_size",
+                "2x2",
+                "-framerate",
+                "30",
+                "-i",
+            ])
+            .arg(&raw)
+            .args([
+                "-frames:v",
+                &frames.to_string(),
+                "-vf",
+                "setsar=1/1,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=full",
+                "-c:v",
+                "ffv1",
+                "-pix_fmt",
+                "bgra",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "iec61966-2-1",
+                "-colorspace",
+                "rgb",
+                "-color_range",
+                "pc",
+            ])
+            .arg(&output)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        output
+    }
+
+    fn sequence(latest: &NativeLatestFrames, input: InputId) -> Option<u64> {
+        latest
+            .get(input)
+            .map(|frame| frame.timing().sequence().get())
+    }
+
+    /// A decoded file keeps the last frame of each decoded window: after
+    /// preflight the end of the initial ring, then each refill's newest
+    /// frame, up to the last frame of the file. The pixels are the decoded
+    /// CPU frame itself.
+    #[test]
+    fn decoded_sources_keep_the_newest_decoded_frame() {
+        if !ffmpeg_available() {
+            return;
+        }
+        let Some(runtime) = runtime() else {
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = clip(directory.path(), 12);
+        let adapter = Adapter::new(fm_codec_ffmpeg::Config {
+            allowed_root: Some(directory.path().to_owned()),
+            ..fm_codec_ffmpeg::Config::default()
+        })
+        .unwrap();
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(78).unwrap());
+        let media = input(3);
+        let mut playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                Some(&adapter),
+                [NativeResolvedSource::LocalVideo { input: media, path }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let latest = playback.latest_frames();
+        let ring = u64::from(NativeSourceLimits::DEFAULT_MAX_VIDEO_FRAMES_PER_SOURCE.get());
+        assert_eq!(sequence(&latest, media), Some(ring - 1));
+        let newest = latest.get(media).unwrap();
+        let plane = newest.payload().plane(0).unwrap();
+        assert_eq!(newest.payload().dimensions().width(), 2);
+        // Frame 7 is red 7 (BGRA or RGBA, the red byte is 7 either way).
+        assert!(plane.bytes()[..4].contains(&7), "{:?}", &plane.bytes()[..4]);
+
+        // Playing on refills the ring; the newest frame follows the decode.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut frame = 0_u64;
+        while sequence(&latest, media) != Some(11) {
+            assert!(Instant::now() < deadline, "the refill never arrived");
+            frame = (frame + 1).min(11);
+            runtime
+                .service_source_playback_blocking(
+                    &mut playback,
+                    ClockTime::from_nanos(frame * 1_000_000_000 / 30),
+                )
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Live and retained sources keep the frame they were seeded or last
+    /// ingested with; a snapshot is unaffected by later frames.
+    #[test]
+    fn live_and_retained_sources_keep_their_newest_frame() {
+        let Some(runtime) = runtime() else {
+            return;
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(5).unwrap());
+        let live_domain = ClockDomainId::new(NonZeroU128::new(6).unwrap());
+        let frame = |domain, sequence: u64, rgba: [u8; 4]| {
+            let pts = i64::try_from(sequence).unwrap() * 40_000_000;
+            let timing = MediaTiming::new(
+                OriginalTimestamp::new(
+                    MediaTimestamp::new(pts),
+                    TimeBase::new(1, 1_000_000_000).unwrap(),
+                ),
+                NormalizedTimestamp::from_nanos(pts),
+                NormalizedDuration::from_nanos(40_000_000).unwrap(),
+                domain,
+                SequenceNumber::new(sequence),
+            )
+            .unwrap();
+            let payload = fm_frame::CpuVideoPayload::new(
+                fm_frame::PixelFormat::Rgba8,
+                fm_frame::VideoDimensions::new(2, 2).unwrap(),
+                vec![fm_frame::CpuVideoPlane::new(8, rgba.repeat(4)).unwrap()],
+            )
+            .unwrap();
+            CpuVideoFrame::new(timing, payload)
+                .with_metadata(fm_frame::VideoFrameMetadata::new(
+                    fm_frame::ColorMetadata {
+                        primaries: fm_frame::ColorPrimaries::Bt709,
+                        transfer: fm_frame::TransferFunction::Srgb,
+                        matrix: fm_frame::MatrixCoefficients::Identity,
+                        range: fm_frame::SignalRange::Full,
+                        chroma_location: fm_frame::ChromaLocation::Center,
+                    },
+                    Some(fm_frame::AlphaMode::Straight),
+                ))
+                .unwrap()
+        };
+        let still = frame(clock_domain, 0, [255, 0, 0, 255]);
+        let seed = frame(live_domain, 1, [0, 0, 255, 255]);
+        let mut playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [
+                    NativeResolvedSource::RetainedFrame {
+                        input: input(1),
+                        frame: still.clone(),
+                    },
+                    NativeResolvedSource::LiveFrame {
+                        input: input(2),
+                        frame: seed.clone(),
+                    },
+                ],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let latest = playback.latest_frames();
+        let before = latest.snapshot();
+        assert_eq!(before.len(), 2);
+        assert_eq!(*before[&input(1)], still);
+        assert_eq!(*before[&input(2)], seed);
+        let next = frame(live_domain, 2, [0, 255, 0, 255]);
+        runtime
+            .ingest_live_video_frame_blocking(&mut playback, input(2), next.clone())
+            .unwrap();
+        assert_eq!(latest.get(input(2)).as_deref(), Some(&next));
+        assert_eq!(*before[&input(2)], seed, "snapshots are unaffected");
+        assert_eq!(latest.get(input(1)).as_deref(), Some(&still));
+        assert!(latest.get(input(9)).is_none());
     }
 }

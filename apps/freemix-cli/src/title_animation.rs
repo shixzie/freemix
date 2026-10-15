@@ -7,18 +7,20 @@
 //! protocol's `MAX_TITLE_ANIMATION_BYTES` wire bound (the bound `fm-control`
 //! holds every daemon edit to) is refused and nothing is saved.
 //!
-//! Rendering is read-only: it draws the input's own field values at the
-//! template's canvas size with the bundle's fonts. Image fields draw the
-//! reference renderer's placeholder (the CLI decodes no images) and
-//! production clocks have no clock source here, so both are reported rather
-//! than drawn.
+//! Rendering is read-only and shares `freemixd`'s title renderer
+//! (`fm-title-render`): it draws the input's own field values at the
+//! template's canvas size with the bundle's fonts, decoded PNG and JPEG
+//! images, and production clocks read at a deterministic time (`--at` for
+//! wall-clock UTC, the clip position for time since the take). Images that
+//! do not load keep the placeholder and are reported.
 
 use std::{fs, path::Path};
 
+use fm_clock::production::UtcInstant;
 use fm_persistence::{ProjectStore, StoredTitleTemplate};
+use fm_title_render::{TitleAssets, TitleTime, render_title_output};
 use fm_titles::{
-    AnimSample, AssetCatalog, ElementId, FieldId, FieldValue, ImageSource, MAX_FONT_BYTES,
-    ReferenceRenderer, TitleId,
+    AnimSample, ElementId, FontFace, MAX_FONT_BYTES,
     fm_animation::{AnimationPreset, ClipPosition, Phase},
 };
 use fm_types::InputId;
@@ -118,33 +120,78 @@ pub fn stretch(path: &Path, uri: &str, title_phase: TitlePhase, frames: u32) -> 
     save("title-animation-stretch", &store, uri, &stored)
 }
 
+/// Parses exactly `YYYY-MM-DDTHH:MM:SSZ`, the form `.fmtitle` clock tables
+/// use for UTC instants.
+fn parse_utc(text: &str) -> AppResult<UtcInstant> {
+    let invalid = || {
+        AppFailure(format!(
+            "--at `{text}` is not a YYYY-MM-DDTHH:MM:SSZ UTC time"
+        ))
+    };
+    let bytes = text.as_bytes();
+    if bytes.len() != 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return Err(invalid().into());
+    }
+    let number = |range: core::ops::Range<usize>| -> Result<u32, AppFailure> {
+        let digits = &text[range];
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        digits.parse().map_err(|_| invalid())
+    };
+    let narrow = |value: u32| u8::try_from(value).map_err(|_| invalid());
+    Ok(UtcInstant::from_utc_civil(
+        i32::try_from(number(0..4)?).map_err(|_| invalid())?,
+        narrow(number(5..7)?)?,
+        narrow(number(8..10)?)?,
+        narrow(number(11..13)?)?,
+        narrow(number(14..16)?)?,
+        narrow(number(17..19)?)?,
+        0,
+    )
+    .map_err(|_| invalid())?)
+}
+
+/// Renders title input `input` at `frame` of `title_phase` to a PPM over
+/// black, through the renderer `freemixd` draws titles with
+/// (`fm-title-render`): the bundle's fonts, decoded PNG and JPEG images,
+/// and production clocks.
+///
+/// The title is taken on air at the first In frame, and Out follows the
+/// whole In phase with no hold: the rendered frame lies `frame` (In) or
+/// `in_frames + frame` (Out) clip frames after the take, on the clip's
+/// timebase. That is the time since-take clocks and scene clocks read;
+/// time-of-day and countdown clocks read `at` (default the Unix epoch), so
+/// every render is deterministic.
 pub fn render_frame(
     path: &Path,
     input: u128,
     title_phase: TitlePhase,
     frame: u32,
+    at: Option<&str>,
     output: &Path,
 ) -> AppResult<()> {
     let id = InputId::new(
         core::num::NonZeroU128::new(input)
             .ok_or_else(|| AppFailure("input id must be nonzero".into()))?,
     );
+    let utc = at.map_or(Ok(UtcInstant::UNIX_EPOCH), parse_utc)?;
     let project = inspect_stored_project(path)?;
-    let title = project
-        .project()
-        .inputs()
-        .iter()
-        .find(|candidate| candidate.id == id)
-        .and_then(|candidate| match &candidate.kind {
-            fm_model::InputKind::Title(title) => Some(title.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| AppFailure(format!("input {input} is not a title input")))?;
+    let title = fm_title_render::title_of_input(project.project(), id)
+        .ok_or_else(|| AppFailure(format!("input {input} is not a title input")))?
+        .clone();
     let store = ProjectStore::new(path)?;
+    // The shared loader leaves out what does not load; name the failure.
     let stored = store
         .load_title_template(&title.template_uri)
         .map_err(|error| AppFailure(format!("title template {}: {error}", title.template_uri)))?;
-    let mut catalog = AssetCatalog::new();
     for font in &stored.fonts {
         let file = store
             .resolve_asset_uri(&font.asset_uri)
@@ -153,30 +200,28 @@ pub fn render_frame(
         if size > u64::try_from(MAX_FONT_BYTES).unwrap_or(u64::MAX) {
             return Err(AppFailure(format!("font {} is too large", font.asset_uri)).into());
         }
-        catalog = catalog
-            .with_font_bytes(font.family.clone(), fs::read(&file)?)
+        FontFace::from_bytes(fs::read(&file)?)
             .map_err(|error| AppFailure(format!("font {}: {error}", font.asset_uri)))?;
     }
-    let mut scene = stored
-        .template
-        .instantiate(TitleId::new(id.get()))
-        .map_err(|error| AppFailure(format!("title template does not instantiate: {error}")))?;
-    let updates = title
-        .fields
-        .iter()
-        .map(|entry| (FieldId::new(entry.id.get()), field_value(&entry.value)))
-        .collect::<Vec<_>>();
-    scene
-        .update_fields(scene.revision(), &updates)
-        .map_err(|error| AppFailure(format!("title fields do not match the template: {error}")))?;
+    let clip = &stored.template.animation.clip;
     let position = ClipPosition::frame(frame);
-    let sample = match title_phase {
-        TitlePhase::In => AnimSample::In(position),
-        TitlePhase::Out => AnimSample::Out(position),
+    let (sample, since_take) = match title_phase {
+        TitlePhase::In => (AnimSample::In(position), u64::from(frame)),
+        TitlePhase::Out => (
+            AnimSample::Out(position),
+            u64::from(clip.in_frames()) + u64::from(frame),
+        ),
     };
-    let rendered = ReferenceRenderer
-        .render_sampled(&scene, 0, &catalog, sample)
-        .map_err(|error| AppFailure(format!("title render failed: {error}")))?;
+    let assets = TitleAssets::load(&store, project.project());
+    let time = TitleTime {
+        frame: since_take,
+        rate: clip.timebase().rate(),
+        utc,
+        taken_frame: Some(0),
+        pose: sample,
+    };
+    let rendered = render_title_output(&assets, id, &title, time)
+        .map_err(|error| AppFailure(error.to_string()))?;
     write_title_ppm(output, &rendered.frame)?;
     println!(
         "title-render-frame: input {input} phase={} frame={frame} {}x{} to {}",
@@ -188,27 +233,22 @@ pub fn render_frame(
     for degraded in &rendered.report.degraded {
         println!("degraded: {degraded}");
     }
+    // An image named by the template or the input but not decoded (absent,
+    // unreadable, or not PNG or JPEG within the bounds) draws the
+    // placeholder.
+    let mut placeholders = assets
+        .placeholder_images(&title)
+        .into_iter()
+        .map(|(field, asset)| format!("field {field} {asset}"))
+        .collect::<Vec<_>>();
     for missing in &rendered.report.missing_images {
-        println!(
-            "placeholder image: field {} {}",
-            missing.field, missing.asset
-        );
-    }
-    Ok(())
-}
-
-fn field_value(value: &fm_model::TitleFieldValue) -> FieldValue {
-    match value {
-        fm_model::TitleFieldValue::Text(text) => FieldValue::Text(text.clone()),
-        fm_model::TitleFieldValue::Number(number) => FieldValue::Number(*number),
-        fm_model::TitleFieldValue::Color(color) => FieldValue::Color(fm_titles::Color::new(
-            color.red,
-            color.green,
-            color.blue,
-            color.alpha,
-        )),
-        fm_model::TitleFieldValue::Image { asset_uri } => {
-            FieldValue::Image(ImageSource::new(asset_uri))
+        let line = format!("field {} {}", missing.field, missing.asset);
+        if !placeholders.contains(&line) {
+            placeholders.push(line);
         }
     }
+    for placeholder in placeholders {
+        println!("placeholder image: {placeholder}");
+    }
+    Ok(())
 }

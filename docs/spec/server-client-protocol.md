@@ -663,8 +663,23 @@ Protocol 2.32 adds exact scene previews (`GX-011`):
 - The server poses the scene the engine holds (with the draft, if any) at
   the sample and composes it with the CPU reference compositor and the same
   project-to-grid mapping its simulated monitor uses, directly at
-  `width` x `height`, from the project's simulated sources at the engine
-  frame cursor, any rotation angle included. The answer is one
+  `width` x `height`, any rotation angle included. A layer showing a
+  nested scene (directly or through a Scene input) draws that scene
+  composed on its own canvas in its Hold pose and then used as the layer's
+  source, at most 16 nesting levels and 64 distinct nested scenes per
+  preview. A simulated daemon draws the project's simulated sources at the
+  engine frame cursor. A native daemon draws, for every source, the newest
+  CPU frame its media pipeline holds, snapshotted when the request is
+  resolved without copying pixels, touching the GPU, or waiting on the
+  output clock: the last frame of the newest decoded window of a media
+  file (at most the source ring, eight frames by default, ahead of
+  Program), the last ingested live frame (titles, cameras), or the retained
+  frame (stills, generators); each is scaled nearest-neighbor to the
+  preview and converted from its labeled colorimetry to sRGB Rec.709 full
+  range, the colorimetry of the native Program readback. The 8-bit CPU
+  composition matches the native GPU composition (linear light, 16-bit
+  float) within the difference of the two pipelines, not bit for bit, and
+  per-input grades are not applied. The answer is one
   four-channel QOI stream of straight RGBA8 split into
   `kind=scene_preview_frame` records with exactly a
   `title_preview_frame`'s fields and limits (`animation_revision` being
@@ -675,8 +690,10 @@ Protocol 2.32 adds exact scene previews (`GX-011`):
   `permission_denied`, `not_found` (not a Scene input), `invalid_request`
   (a frame past the phase or a draft the scene refuses), and
   `render_failed` for a scene the reference compositor cannot compose
-  exactly (a layer showing a nested scene or a non-simulated source, as on
-  a native daemon with real inputs) rather than an approximation. Only raw
+  exactly (a layer whose source has no picture on that daemon, such as a
+  non-simulated input on a simulated daemon or a source a native daemon
+  holds no frame of, nesting past the bounds, or an effect the reference
+  rejects) rather than an approximation. Only raw
   TCP sessions receive previews; WebSocket sessions are refused with
   `unsupported`.
 - 2.31 is refused.
@@ -795,8 +812,10 @@ session loop, and publishes nothing for a picture it cannot render honestly,
 so a client keeps its placeholder instead of seeing invented video:
 
 - A realized Preview or Program simulated input renders its pattern, and a
-  Scene input whose enabled layers all name simulated inputs is composed with
-  the CPU reference compositor at the monitor size.
+  Scene input whose enabled layers all name simulated inputs or nested
+  scenes that do (at most 16 levels, each nested scene composed on its own
+  canvas in its Hold pose) is composed with the CPU reference compositor at
+  the monitor size.
 - A realized Preview or Program title input renders its persisted field
   values: the stored template is instantiated, the input's field values are
   applied, the frame is rendered at the template size by the `fm_titles`

@@ -1052,7 +1052,9 @@ impl Runtime<'_> {
                 Ok(())
             }
             message @ (WireMessage::TitlePreviewRequest(_)
-            | WireMessage::ScenePreviewRequest(_)) => self.exact_preview(peer, message, durable),
+            | WireMessage::ScenePreviewRequest(_)) => {
+                self.exact_preview(peer, message, durable, native.as_deref())
+            }
             _ => {
                 peer.reply(error_message(
                     "unexpected_message",
@@ -1074,12 +1076,14 @@ impl Runtime<'_> {
     /// hands it to the preview worker (see [`crate::title_preview`] and
     /// [`crate::scene_preview`]), which renders it off this loop. A refused
     /// preview is answered with an error naming its `request_id`; only raw
-    /// peers have the lossy slot previews use.
+    /// peers have the lossy slot previews use. A native daemon's scene
+    /// previews compose from a snapshot of its newest source frames.
     fn exact_preview(
         &self,
         peer: &mut Peer,
         message: WireMessage,
         durable: &StoredProject,
+        native: Option<&NativeDaemon>,
     ) -> Result<(), DispatchError> {
         let request = &match message {
             WireMessage::TitlePreviewRequest(request) => PreviewRequest::Title(request),
@@ -1132,6 +1136,7 @@ impl Runtime<'_> {
                         durable.project(),
                         server,
                         request,
+                        native.map(NativeDaemon::live_source_frames),
                     )
                     .map(|job| crate::title_preview::PreviewWork::Scene(Box::new(job))),
                 }

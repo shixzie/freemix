@@ -289,6 +289,173 @@ fn program_frame_showing(
     panic!("timed out waiting for {expected}");
 }
 
+/// Adds to the title project scene 1 (Scene input 3: the solid generator
+/// under the title, both full canvas) and scene 2 (Scene input 4: scene 1
+/// nested full canvas).
+fn add_title_scenes(path: &Path) {
+    use fm_model::{Layer, LayerGeometry, LayerId, Rotation, Scene, SceneAnimation, SourceRef};
+    use fm_types::SceneId;
+
+    let scene = |value: u128| SceneId::new(NonZeroU128::new(value).unwrap());
+    let layer = |id: u32, source: SourceRef| Layer {
+        id: LayerId::new(id).unwrap(),
+        name: format!("Layer {id}"),
+        source,
+        enabled: true,
+        geometry: LayerGeometry::new(0, 0, 320, 180, Rotation::Deg0),
+        crop: None,
+        mask: None,
+        effects: Vec::new(),
+        opacity: u8::MAX,
+        z_order: i32::try_from(id).unwrap(),
+    };
+    let store = ProjectStore::new(path).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    for (id, input_id, layers) in [
+        (
+            1,
+            3,
+            vec![
+                layer(1, SourceRef::Input(input(1))),
+                layer(2, SourceRef::Input(input(2))),
+            ],
+        ),
+        (2, 4, vec![layer(1, SourceRef::Scene(scene(1)))]),
+    ] {
+        project.add_scene(Scene {
+            id: scene(id),
+            name: format!("Scene {id}"),
+            background: Rgba8::OPAQUE_BLACK,
+            layers,
+            animation: SceneAnimation::default(),
+        });
+        project.add_input(Input {
+            id: input(input_id),
+            name: format!("Scene {id}"),
+            kind: InputKind::Scene {
+                scene_id: scene(id),
+                audio_source: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+    }
+    let routing = RuntimeRouting {
+        desired_program_id: Some(input(2)),
+        realized_program_id: Some(input(2)),
+        desired_preview_id: Some(input(1)),
+        realized_preview_id: Some(input(1)),
+    };
+    store
+        .save(
+            &StoredProject::from_project(project, routing, stored.position(), Vec::new()).unwrap(),
+        )
+        .unwrap();
+}
+
+/// Requests a 64x36 Hold preview of Scene input `scene` and assembles the
+/// `scene_preview_frame` parts that answer it, skipping everything else.
+fn scene_preview(client: &mut Client, scene: u128) -> fm_protocol::ScenePreviewImage {
+    let request_id = format!("scene-{scene}");
+    client.send(&WireMessage::ScenePreviewRequest(
+        fm_protocol::ScenePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            input: WireInputId::from_domain(input(scene)),
+            sample: fm_protocol::TitlePreviewSample::Hold,
+            width: 64,
+            height: 36,
+            clip: None,
+        },
+    ));
+    let mut assembler = fm_protocol::TitlePreviewAssembler::new();
+    let deadline = Instant::now() + FRAME_TIMEOUT;
+    loop {
+        assert!(Instant::now() < deadline, "no preview of scene {scene}");
+        match client.receive() {
+            WireMessage::ScenePreviewFrame(part) => {
+                assert_eq!(part.request_id, request_id);
+                if let Some(image) = assembler.push(&part).unwrap() {
+                    return image;
+                }
+            }
+            WireMessage::Error(error) if error.request_id.as_deref() == Some(&request_id) => {
+                panic!("scene {scene} preview refused: {error:?}");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// GX-011: a native daemon's exact scene preview composes the newest frames
+/// its media pipeline holds: here a live title over a generator, directly
+/// and inside a nested scene.
+#[test]
+fn native_daemon_previews_scenes_from_live_source_frames() {
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-title-scenes.freemix");
+    save_title_project(&project_path);
+    add_title_scenes(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native scene preview integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "native-scene-preview-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Admin,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        client.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    // The title is realized once the Program monitor shows it.
+    let mut assembler = MonitorFrameAssembler::new();
+    program_frame_showing(
+        &mut client,
+        &mut assembler,
+        [230, 20, 140],
+        "the title on Program",
+    );
+
+    let direct = scene_preview(&mut client, 3);
+    assert_eq!((direct.width, direct.height), (64, 36));
+    let at = |x: usize, y: usize| {
+        let offset = (y * 64 + x) * 4;
+        [
+            direct.rgba[offset],
+            direct.rgba[offset + 1],
+            direct.rgba[offset + 2],
+            direct.rgba[offset + 3],
+        ]
+    };
+    let close = |actual: [u8; 4], expected: [u8; 4]| {
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 1)
+    };
+    // The title's bar (80, 40)..(240, 100) maps to (16, 8)..(48, 20) of the
+    // 64x36 preview; the generator shows around it.
+    assert!(close(at(30, 14), [230, 20, 140, 255]), "{:?}", at(30, 14));
+    assert!(close(at(4, 30), [12, 34, 56, 255]), "{:?}", at(4, 30));
+    let nested = scene_preview(&mut client, 4);
+    assert_eq!(nested.rgba, direct.rgba);
+    drop(client);
+    drop(daemon);
+}
+
 #[test]
 fn native_daemon_realizes_a_title_input_and_re_renders_it_after_a_field_change() {
     let directory = tempfile::tempdir().unwrap();

@@ -1,0 +1,30 @@
+[package]
+name = "fm-title-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Decodes PNG and JPEG image assets with `fm-codec-image`; without it every
+# image element draws the reference renderer's placeholder.
+images = ["dep:fm-codec-image", "dep:fm-frame"]
+
+[dependencies]
+fm-clock = { path = "../../media/fm-clock" }
+fm-codec-image = { path = "../../io/fm-codec-image", optional = true }
+fm-engine = { path = "../fm-engine" }
+fm-frame = { path = "../../media/fm-frame", optional = true }
+fm-model = { path = "../../foundation/fm-model" }
+fm-persistence = { path = "../fm-persistence" }
+fm-titles = { path = "../../features/fm-titles" }
+fm-types = { path = "../../foundation/fm-types" }
+fm-video = { path = "../../media/fm-video" }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile = "3.20"
+
+[lints]
+workspace = true

@@ -2181,20 +2181,38 @@ draft scene clip; `EditProject`, the shared per-session preview rate, raw
 TCP only) is composed off the session loop by the title preview worker with
 the CPU reference compositor at the requested size from the project's
 simulated sources and answered as QOI `scene_preview_frame` parts through
-the same latest-wins lossy slot; a scene the reference compositor cannot
-compose exactly (nested scenes, non-simulated sources) is refused with
-`render_failed`. `fm-client` assembles scene previews and Studio's
+the same latest-wins lossy slot. Nested scenes (a layer naming a scene
+directly or through a Scene input) are composed on their own canvas in their
+Hold pose, within 16 levels and 64 scenes. A simulated daemon draws its
+simulated sources at the engine frame cursor; a native daemon draws the
+newest CPU frame its media pipeline already holds per source (the last frame
+of each decoded window, the last ingested live title or camera frame, or the
+retained still), snapshotted as shared frames on the session loop without
+GPU work or waiting on the output clock, converted from its labeled
+colorimetry to sRGB Rec.709 full range through the `fm-color` CPU reference.
+Native previews therefore match the GPU composition within the difference
+between the 8-bit CPU and 16-bit float GPU pipelines (not bit for bit), may
+show decoded media up to the source ring (eight frames) ahead of air, and do
+not apply per-input grades. A scene with a layer whose source has no picture
+yet, or nesting past the bounds, is refused with `render_failed`. `fm-client` assembles scene previews and Studio's
 Animation window shows them under the layer outlines like a title's.
 `freemix-cli scene-animation-preset`, `scene-animation-stretch`, and
 `scene-render-frame --phase in|hold|out` author and render scene
 animations locally, and local scene and title animation edits refuse a clip
 without a wire encoding (beyond the 36 KiB bound `fm-control` enforces)
-instead of saving it. Remaining gaps: titles without a loaded template still
-list only elements that already move and apply their presets on the
-server; exact scene previews on a native daemon with real (non-simulated)
-sources are refused rather than composed from live media; and production
-clocks and images are not drawn by the CLI frame render, so `GX-011`
-remains planned.
+instead of saving it. `title-render-frame` renders through
+`fm-title-render`, the renderer freemixd draws titles with: the bundle's
+fonts, PNG and JPEG images decoded by `fm-codec-image` (an image that does
+not load keeps the placeholder and is reported), and production clocks at a
+deterministic time (`--at YYYY-MM-DDTHH:MM:SSZ` for wall-clock UTC, default
+the Unix epoch; since-take clocks read the clip position, the title taken at
+In frame 0). Every title the daemon holds carries its loaded template:
+freemixd refuses to start when any title template in the bundle fails to
+load or validate, title inputs are added only through the bundle (runtime
+`AddInput` creates solid and bars sources), and template URIs are
+bundle-local `asset://` paths, so the layout-less fallback (only already
+animated elements, presets applied on the server) is reached only by an
+`fm-control` host without templates, never by freemixd.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,

@@ -6257,3 +6257,89 @@ fn scene_previews_compose_the_scene_or_a_draft_exactly() {
     drop(viewer);
     daemon.stop();
 }
+
+/// GX-011: an exact scene preview composes a nested scene (here scene 1,
+/// shown full-canvas by scene 2's only layer) on its own canvas, exactly
+/// as the nested scene previews by itself.
+#[test]
+fn scene_previews_compose_nested_scenes() {
+    use fm_protocol::{ScenePreviewRequest, TitlePreviewSample};
+
+    let directory = TestDirectory::new("scene-preview-nested");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let store = ProjectStore::new(&project_path).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    let mut nested = project.scene(scene_id(1)).unwrap().clone();
+    nested.id = scene_id(2);
+    nested.name = "Nesting scene".into();
+    let layer = &mut nested.layers[0];
+    layer.source = SourceRef::Scene(scene_id(1));
+    layer.geometry = LayerGeometry::new(0, 0, 1_920, 1_080, Rotation::Deg0);
+    layer.mask = None;
+    project.add_scene(nested);
+    project.add_input(Input {
+        id: domain_input(5),
+        name: "Nesting scene".into(),
+        kind: InputKind::Scene {
+            scene_id: scene_id(2),
+            audio_source: None,
+        },
+        required_capabilities: Vec::new(),
+    });
+    let routing = RuntimeRouting {
+        desired_program_id: Some(domain_input(4)),
+        realized_program_id: Some(domain_input(4)),
+        desired_preview_id: Some(domain_input(2)),
+        realized_preview_id: Some(domain_input(2)),
+    };
+    store
+        .save(
+            &StoredProject::from_project(project, routing, stored.position(), Vec::new()).unwrap(),
+        )
+        .unwrap();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut graphics = daemon.connect();
+    graphics
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    graphics.handshake_as(Role::Graphics, None);
+    let WireMessage::Snapshot(snapshot) = graphics.receive() else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(snapshot.scenes, [input(4), input(5)]);
+    // Two scene_animation_state and two scene_layout_state records follow.
+    for _ in 0..4 {
+        match graphics.receive() {
+            WireMessage::SceneAnimationState(_) | WireMessage::SceneLayoutState(_) => {}
+            other => panic!("expected scene animation and layout states, got {other:?}"),
+        }
+    }
+    let request = |id: &str, input_id: u128| ScenePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: id.into(),
+        input: input(input_id),
+        sample: TitlePreviewSample::Hold,
+        width: 64,
+        height: 36,
+        clip: None,
+    };
+    let direct = scene_preview(&mut graphics, request("direct", 4)).unwrap();
+    let nesting = scene_preview(&mut graphics, request("nesting", 5)).unwrap();
+    assert_eq!(nesting.input, input(5));
+    assert!(
+        direct
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[0] > 0)
+    );
+    assert_eq!(nesting.rgba, direct.rgba);
+    drop(graphics);
+    daemon.stop();
+}

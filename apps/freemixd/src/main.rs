@@ -4951,6 +4951,13 @@ impl NativeDaemon {
         self.monitor.demand = demand;
     }
 
+    /// A snapshot of the newest CPU frame of every Program source, for an
+    /// exact scene preview composed off the loop (shared frames, no copy,
+    /// no GPU work).
+    fn live_source_frames(&self) -> scene_preview::LiveSourceFrames {
+        scene_preview::LiveSourceFrames::snapshot(&self.playback.latest_frames())
+    }
+
     /// Consumes the latest encoded Program monitor frame group.
     fn take_monitor_frame(&mut self) -> Option<(MonitorTap, Vec<u8>)> {
         self.monitor
@@ -6276,6 +6283,11 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn set_monitor_demand(&mut self, _demand: bool) {}
+
+    #[allow(clippy::unused_self)]
+    fn live_source_frames(&self) -> scene_preview::LiveSourceFrames {
+        scene_preview::LiveSourceFrames::default()
+    }
 
     #[allow(clippy::unused_self)]
     fn take_monitor_frame(&mut self) -> Option<(MonitorTap, Vec<u8>)> {

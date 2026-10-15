@@ -1577,6 +1577,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-title-render"
+version = "0.1.0"
+dependencies = [
+ "fm-clock",
+ "fm-codec-image",
+ "fm-engine",
+ "fm-frame",
+ "fm-model",
+ "fm-persistence",
+ "fm-titles",
+ "fm-types",
+ "fm-video",
+ "image",
+ "tempfile",
+]
+
+[[package]]
 name = "fm-titles"
 version = "0.1.0"
 dependencies = [
@@ -1722,10 +1739,12 @@ dependencies = [
  "fm-protocol",
  "fm-sim",
  "fm-switcher",
+ "fm-title-render",
  "fm-titles",
  "fm-types",
  "fm-ui-model",
  "fm-video",
+ "image",
 ]
 
 [[package]]
@@ -1798,6 +1817,7 @@ dependencies = [
  "fm-server",
  "fm-sim",
  "fm-switcher",
+ "fm-title-render",
  "fm-titles",
  "fm-types",
  "fm-video",

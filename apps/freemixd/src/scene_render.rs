@@ -1,4 +1,5 @@
-//! CPU-reference composition of simulated Scene inputs for the monitor tap.
+//! CPU-reference composition of Scene inputs for the monitor tap and exact
+//! scene previews.
 //!
 //! Adapted from the CLI's scene renderer. Layer geometry, crops, and masks are
 //! authored in project pixels, but a monitor picture is at most 640x360, so
@@ -7,21 +8,76 @@
 //! monitor grid first. Composing at the project size and downscaling cost
 //! roughly the project/monitor area ratio more (9x at 1080p, seconds per
 //! picture in a debug build) for a picture that nearest-neighbor downscaling
-//! then mostly threw away. Every layer must name an enabled simulated input;
-//! nested scenes, non-simulated inputs, effects the CPU reference rejects, or
-//! crops and masks outside the project-size source yield `None` rather than
-//! an invented picture, exactly as at the project size.
+//! then mostly threw away.
+//!
+//! Leaf pictures come from a [`SceneSources`]: the simulated pipeline draws
+//! enabled simulated inputs (the monitor tap and a simulated daemon's
+//! previews), and a native daemon's exact previews draw the latest frames
+//! its media pipeline holds ([`crate::scene_preview`]). A layer naming a
+//! nested scene (directly or through a Scene input) draws that scene
+//! composed on its own canvas at the same grid in its Hold pose, as the
+//! compositor's reference meaning of a nested scene defines it
+//! (`fm_compositor::flatten`): background, layers, clipped to the canvas,
+//! and the premultiplied picture then used as the layer's source. Nesting is
+//! bounded ([`MAX_NESTED_SCENE_DEPTH`] levels, [`MAX_NESTED_SCENES`]
+//! distinct scenes per composition, each composed once). A source the
+//! [`SceneSources`] cannot draw, effects the CPU reference rejects, crops and
+//! masks outside the project-size source, or nesting past those bounds yield
+//! `None` rather than an invented picture, exactly as at the project size.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use fm_compositor::{
-    CompositionPlan, CpuSourceFrame, CropRect, Effect, ImageFrame, OutputTarget, RectMask, Rgba8,
-    Rotation, Scene, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
+    CompositionPlan, CpuSourceFrame, CropRect, Effect, FlattenLimits, ImageFrame, OutputTarget,
+    RectMask, Rgba8, Rotation, Scene, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
 };
 use fm_model::fm_animation::ClipState;
 use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
 use fm_sim::SimulatedPipeline;
 use fm_types::{InputId, SceneId};
+
+/// Deepest chain of nested scenes below the composed scene (the composed
+/// scene alone is depth 0), as the compositor's flatten planner bounds it.
+pub(crate) const MAX_NESTED_SCENE_DEPTH: usize = FlattenLimits::DEFAULT_MAX_DEPTH;
+
+/// Most distinct nested scenes one composition draws, each composed once.
+pub(crate) const MAX_NESTED_SCENES: usize = FlattenLimits::DEFAULT_MAX_SCENES;
+
+/// Where a composed scene's leaf (non-scene) pictures come from.
+pub(crate) trait SceneSources {
+    /// Whether leaf input `input` can be drawn at all. Decided per input,
+    /// independent of the grid, so a layer too thin to cover a pixel still
+    /// refuses a scene whose source cannot be drawn.
+    fn draws(&self, input: &Input) -> bool;
+
+    /// The picture of leaf input `input` at `frame_number`, `width`x`height`
+    /// (the composition grid, the whole project canvas mapped onto it), in
+    /// the straight-alpha RGBA8 a scene layer reads, or `None` when it
+    /// cannot be drawn honestly.
+    fn leaf(&self, input: &Input, frame_number: u64, width: u32, height: u32)
+    -> Option<ImageFrame>;
+}
+
+/// The simulated pipeline draws enabled simulated inputs at its own size.
+impl SceneSources for SimulatedPipeline {
+    fn draws(&self, input: &Input) -> bool {
+        is_simulated(input)
+    }
+
+    fn leaf(
+        &self,
+        input: &Input,
+        frame_number: u64,
+        width: u32,
+        height: u32,
+    ) -> Option<ImageFrame> {
+        if !is_simulated(input) || (self.width(), self.height()) != (width, height) {
+            return None;
+        }
+        self.render_source(input.id, frame_number).ok()
+    }
+}
 
 /// Returns the scene a Scene input depicts, or `None` for any other input.
 pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneId> {
@@ -56,16 +112,25 @@ pub(crate) fn render_scene(
         .scenes()
         .iter()
         .find(|candidate| candidate.id == scene)?;
-    render_scene_model(project, model, pipeline, frame_number, pose)
+    render_scene_model(
+        project,
+        model,
+        pipeline,
+        (pipeline.width(), pipeline.height()),
+        frame_number,
+        pose,
+    )
 }
 
 /// [`render_scene`] of a scene model rather than one of `project`'s (an
 /// exact scene preview renders the engine's scene, possibly with a draft
-/// animation); its layers' sources still come from `project`.
+/// animation) at the `size` grid, its leaves drawn by `sources`; its
+/// layers' inputs and nested scenes still come from `project`.
 pub(crate) fn render_scene_model(
     project: &Project,
     scene: &fm_model::Scene,
-    pipeline: &SimulatedPipeline,
+    sources: &dyn SceneSources,
+    (width, height): (u32, u32),
     frame_number: u64,
     pose: ClipState,
 ) -> Option<ImageFrame> {
@@ -73,12 +138,11 @@ pub(crate) fn render_scene_model(
     let grid = MonitorGrid {
         project_width: dimensions.width(),
         project_height: dimensions.height(),
-        width: pipeline.width(),
-        height: pipeline.height(),
+        width,
+        height,
     };
-    compose(project, scene, pipeline, frame_number, pose, |layer| {
-        grid.layer(layer)
-    })
+    let place = |layer: &fm_model::Layer| grid.layer(layer);
+    Composer::new(project, sources, (width, height), frame_number, &place).compose(scene, pose, 0)
 }
 
 /// Composes at the project size and downscales: the reference the monitor
@@ -97,14 +161,15 @@ pub(crate) fn render_scene_at_project_size(
         .scenes()
         .iter()
         .find(|candidate| candidate.id == scene)?;
-    let composed = compose(
+    let place = |layer: &fm_model::Layer| Some(Placement::Draw(layer.clone()));
+    let composed = Composer::new(
         project,
-        scene,
         project_pipeline,
+        (project_pipeline.width(), project_pipeline.height()),
         frame_number,
-        pose,
-        |layer| Some(Placement::Draw(layer.clone())),
-    )?;
+        &place,
+    )
+    .compose(scene, pose, 0)?;
     if composed.width() == width && composed.height() == height {
         return Some(composed);
     }
@@ -147,77 +212,173 @@ enum Placement {
     Skip,
 }
 
-/// Composes `scene` at the `pipeline` size. `place` maps one project-pixel
-/// layer onto the pipeline grid; `None` refuses the scene.
-fn compose(
-    project: &Project,
-    scene: &fm_model::Scene,
-    pipeline: &SimulatedPipeline,
+/// What one layer draws: a leaf input's picture or a nested scene's.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Feed {
+    Leaf(InputId),
+    Scene(SceneId),
+}
+
+/// Maps one project-pixel layer onto the grid; `None` refuses the scene.
+type Place<'a> = &'a dyn Fn(&fm_model::Layer) -> Option<Placement>;
+
+/// One composition: its grid, its leaf sources, and the nested scenes it
+/// already composed (each at most once, [`MAX_NESTED_SCENES`] at most).
+struct Composer<'a> {
+    project: &'a Project,
+    sources: &'a dyn SceneSources,
+    width: u32,
+    height: u32,
     frame_number: u64,
-    pose: ClipState,
-    place: impl Fn(&fm_model::Layer) -> Option<Placement>,
-) -> Option<ImageFrame> {
-    let dimensions = project.settings().video.dimensions;
-    // The scene as the engine poses it at this frame (GX-011 stage 5).
-    let model = scene.posed(pose, dimensions.width(), dimensions.height());
-    let model = &model;
-    let background = model.background;
-    let mut composition = Scene::new(
-        pipeline.width(),
-        pipeline.height(),
-        Rgba8::new(
-            background.red,
-            background.green,
-            background.blue,
-            background.alpha,
-        ),
-    )
-    .ok()?;
-    let mut sources = BTreeMap::new();
-    let mut enabled = 0_usize;
-    for layer in &model.layers {
-        if !layer.enabled {
-            continue;
+    place: Place<'a>,
+    nested: RefCell<BTreeMap<SceneId, Option<ImageFrame>>>,
+}
+
+impl<'a> Composer<'a> {
+    fn new(
+        project: &'a Project,
+        sources: &'a dyn SceneSources,
+        (width, height): (u32, u32),
+        frame_number: u64,
+        place: Place<'a>,
+    ) -> Self {
+        Self {
+            project,
+            sources,
+            width,
+            height,
+            frame_number,
+            place,
+            nested: RefCell::new(BTreeMap::new()),
         }
-        if enabled == CompositionPlan::MAX_LAYERS {
+    }
+
+    fn input(&self, input: InputId) -> Option<&'a Input> {
+        self.project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input)
+    }
+
+    /// What `source` draws: a nested scene for a scene reference or a
+    /// Scene input, a leaf otherwise; `None` for a missing input.
+    fn feed(&self, source: SourceRef) -> Option<Feed> {
+        match source {
+            SourceRef::Scene(scene) => Some(Feed::Scene(scene)),
+            SourceRef::Input(input) => Some(match self.input(input)?.kind {
+                InputKind::Scene { scene_id, .. } => Feed::Scene(scene_id),
+                _ => Feed::Leaf(input),
+            }),
+        }
+    }
+
+    /// The picture `feed` draws at the grid size, for a scene `depth`
+    /// scenes below the composed one.
+    fn picture(&self, feed: Feed, depth: usize) -> Option<ImageFrame> {
+        let scene = match feed {
+            Feed::Leaf(input) => {
+                return self.sources.leaf(
+                    self.input(input)?,
+                    self.frame_number,
+                    self.width,
+                    self.height,
+                );
+            }
+            Feed::Scene(scene) => scene,
+        };
+        if depth >= MAX_NESTED_SCENE_DEPTH {
             return None;
         }
-        enabled += 1;
-        let input = input_for_layer(project, layer.source)?;
-        // Acceptance is decided in project pixels, independent of the grid.
-        if !is_simulated(input)
-            || !bounds_fit(
+        if let Some(composed) = self.nested.borrow().get(&scene) {
+            return composed.clone();
+        }
+        if self.nested.borrow().len() >= MAX_NESTED_SCENES {
+            return None;
+        }
+        // Reserve the slot first: a scene reached again while it is being
+        // composed (a cycle validation refuses) draws nothing instead of
+        // recursing.
+        self.nested.borrow_mut().insert(scene, None);
+        let model = self
+            .project
+            .scenes()
+            .iter()
+            .find(|candidate| candidate.id == scene)?;
+        // Nested scenes hold: the engine plays In and Out only for the
+        // scene a Scene input shows on Program or Preview.
+        let composed = self.compose(model, ClipState::Hold, depth + 1);
+        self.nested.borrow_mut().insert(scene, composed.clone());
+        composed
+    }
+
+    /// Composes `scene` posed at `pose` on the grid, `depth` scenes below
+    /// the composed one.
+    fn compose(
+        &self,
+        scene: &fm_model::Scene,
+        pose: ClipState,
+        depth: usize,
+    ) -> Option<ImageFrame> {
+        let dimensions = self.project.settings().video.dimensions;
+        // The scene as the engine poses it at this frame (GX-011 stage 5).
+        let model = scene.posed(pose, dimensions.width(), dimensions.height());
+        let model = &model;
+        let background = model.background;
+        let mut composition = Scene::new(
+            self.width,
+            self.height,
+            Rgba8::new(
+                background.red,
+                background.green,
+                background.blue,
+                background.alpha,
+            ),
+        )
+        .ok()?;
+        let mut sources = BTreeMap::new();
+        let mut enabled = 0_usize;
+        for layer in &model.layers {
+            if !layer.enabled {
+                continue;
+            }
+            if enabled == CompositionPlan::MAX_LAYERS {
+                return None;
+            }
+            enabled += 1;
+            let feed = self.feed(layer.source)?;
+            // Acceptance is decided in project pixels, independent of the grid.
+            if let Feed::Leaf(input) = feed
+                && !self.sources.draws(self.input(input)?)
+            {
+                return None;
+            }
+            if !bounds_fit(
                 layer.crop,
                 layer.mask,
                 dimensions.width(),
                 dimensions.height(),
-            )
-        {
-            return None;
+            ) {
+                return None;
+            }
+            let Placement::Draw(placed) = (self.place)(layer)? else {
+                continue;
+            };
+            let next = SourceId::new(u64::try_from(sources.len()).ok()?);
+            let token = *sources.entry(feed).or_insert(next);
+            composition.push_layer(compositor_layer(token, &placed));
         }
-        let Placement::Draw(placed) = place(layer)? else {
-            continue;
-        };
-        let next = SourceId::new(u64::try_from(sources.len()).ok()?);
-        let token = *sources.entry(input.id).or_insert(next);
-        composition.push_layer(compositor_layer(token, &placed));
-    }
 
-    let (plan, _) = compile_scene(&composition, OutputTarget::Program).ok()?;
-    let frames = sources
-        .into_iter()
-        .map(|(input, source)| {
-            pipeline
-                .render_source(input, frame_number)
-                .ok()
-                .map(|frame| (source, frame))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let bindings = frames
-        .iter()
-        .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
-        .collect::<Vec<_>>();
-    execute_cpu(&plan, &bindings).ok()
+        let (plan, _) = compile_scene(&composition, OutputTarget::Program).ok()?;
+        let frames = sources
+            .into_iter()
+            .map(|(feed, source)| self.picture(feed, depth).map(|frame| (source, frame)))
+            .collect::<Option<Vec<_>>>()?;
+        let bindings = frames
+            .iter()
+            .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
+            .collect::<Vec<_>>();
+        execute_cpu(&plan, &bindings).ok()
+    }
 }
 
 /// Maps project-pixel coordinates onto a smaller monitor grid of the same
@@ -360,17 +521,6 @@ fn map_edge(value: i64, to: u32, from: u32) -> Option<i64> {
         return None;
     }
     Some(scaled.div_euclid(from) + i64::from(scaled.rem_euclid(from) != 0))
-}
-
-fn input_for_layer(project: &Project, source: SourceRef) -> Option<&Input> {
-    // Nested scenes are not composed, matching the CLI reference renderer.
-    let SourceRef::Input(input) = source else {
-        return None;
-    };
-    project
-        .inputs()
-        .iter()
-        .find(|candidate| candidate.id == input)
 }
 
 fn is_simulated(input: &Input) -> bool {

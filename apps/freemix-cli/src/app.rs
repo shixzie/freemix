@@ -1429,8 +1429,9 @@ pub fn run(command: Command) -> AppResult<()> {
             input,
             phase,
             frame,
+            at,
             output,
-        } => title_animation::render_frame(&path, input, phase, frame, &output)?,
+        } => title_animation::render_frame(&path, input, phase, frame, at.as_deref(), &output)?,
         Command::SceneAnimationPreset {
             path,
             scene,
@@ -4048,10 +4049,13 @@ Usage:
   freemix-cli title-animation-stretch <show.freemix> <asset://titles/...fmtitle> --phase in|out --frames <n>
       Sets a phase to n frames, scaling every key of the phase
       proportionally (frames rounded half up).
-  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> <out.ppm>
+  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> [--at <YYYY-MM-DDTHH:MM:SSZ>] <out.ppm>
       Renders the title input's field values at frame f of the phase, at
-      the template canvas size, with the bundle's fonts. Image fields draw
-      the placeholder and production clocks are reported, not drawn.
+      the template canvas size, with the bundle's fonts and decoded PNG or
+      JPEG images, exactly as freemixd draws it. Production clocks read the
+      UTC instant --at (the Unix epoch when absent) for time of day and
+      countdowns, and the frames since the take (the title taken at the
+      first In frame, Out following In with no hold) for since-take clocks.
   freemix-cli scene-animation-preset <show.freemix> <scene-id> <layer-id> --phase in|out --preset <id> --frames <n>
       Applies a built-in animation preset (the title presets) to one layer
       of a scene over n frames (30/1 timebase), growing the phase to n
