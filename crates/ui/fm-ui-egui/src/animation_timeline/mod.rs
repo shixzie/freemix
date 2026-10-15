@@ -33,7 +33,7 @@
 use core::time::Duration;
 
 use egui::{CornerRadius, DragValue, Frame, Margin, Rect, Response, RichText, Stroke, Ui, Vec2};
-use fm_animation::{MAX_PHASE_FRAMES, Phase, TrackKey};
+use fm_animation::{MAX_PHASE_FRAMES, Phase, Property, TrackKey};
 use fm_ui_model::animation_editor::{
     AnimDocument, AnimEditorError, EditorMode, MAX_FRAMES_PER_PIXEL, MIN_FRAMES_PER_PIXEL,
 };
@@ -133,6 +133,10 @@ pub struct AnimationTimelineState<T> {
     /// The preset the pointer rests on in an open Simple-mode picker this
     /// frame (previewed by the caller, not applied); `None` otherwise.
     pub preset_hover: Option<PresetRequest<T>>,
+    /// The properties the Advanced-mode "Animate property" menu offers, in
+    /// display order: every property for title elements, all but colour for
+    /// scene layers (GX-011 stage 5).
+    pub properties: &'static [Property],
     pub(crate) notice: Option<Notice>,
     last_time: Option<f64>,
     length_edit: Option<u32>,
@@ -152,6 +156,7 @@ impl<T> Default for AnimationTimelineState<T> {
             outside_presets: None,
             preset_requests: Vec::new(),
             preset_hover: None,
+            properties: &Property::ALL,
             notice: None,
             last_time: None,
             length_edit: None,

@@ -1504,7 +1504,7 @@ fn begin_intent(
     };
     let carries_base_revision = matches!(
         intent,
-        StudioIntent::Title(_) | StudioIntent::TitleAnimation(_)
+        StudioIntent::Title(_) | StudioIntent::TitleAnimation(_) | StudioIntent::SceneAnimation(_)
     );
     let payload = intent_payload(intent, view.as_ref())?;
     let expected_revision = view
@@ -2209,7 +2209,7 @@ fn intent_payload(
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Grade(command) => command.payload(),
-        StudioIntent::TitleAnimation(payload) => payload,
+        StudioIntent::TitleAnimation(payload) | StudioIntent::SceneAnimation(payload) => payload,
         StudioIntent::TitlePreview(_) => {
             return Err("An exact title preview request is not a command".to_owned());
         }
@@ -2808,6 +2808,7 @@ mod tests {
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            scenes: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,

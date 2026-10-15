@@ -736,6 +736,7 @@ fn serve_streams_snapshot_peer(
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            scenes: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
@@ -1289,6 +1290,7 @@ fn write_handshake_version_with_manual(
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            scenes: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
@@ -1368,6 +1370,7 @@ fn write_handshake_version_with_fade_to_black(
             streams: Vec::new(),
             recordings: recording_roster([false, false]),
             titles: Vec::new(),
+            scenes: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
@@ -2261,7 +2264,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 31,
+  "schema_version": 32,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -2468,7 +2471,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 31", "\"schema_version\": 30"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 32", "\"schema_version\": 31"),
     )
     .unwrap();
     assert_failure_contains(
@@ -2482,7 +2485,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 30 is unsupported; expected 31",
+        "title template schema 31 is unsupported; expected 32",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -2500,7 +2503,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 31,
+  "schema_version": 32,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -2708,7 +2711,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 31,
+  "schema_version": 32,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -3859,13 +3862,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        31
+        32
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 31);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 32);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3878,7 +3881,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 31);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 32);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3954,7 +3957,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        31
+        32
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -3962,7 +3965,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 31);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 32);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -3972,7 +3975,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 31);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 32);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -3980,7 +3983,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 31);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 32);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -5423,6 +5426,7 @@ fn local_scene_removal_preserves_runtime_and_rejects_references() {
             name: "Target".into(),
             background: Rgba8::OPAQUE_BLACK,
             layers: Vec::new(),
+            animation: fm_model::SceneAnimation::default(),
         });
         if reference == Some("input") {
             project.add_input(Input {
@@ -5914,6 +5918,7 @@ fn local_scene_layer_rename_persists_exact_name_and_rejects_invalid_target() {
         .add_layer_to_scene(
             SceneId::new(NonZeroU128::new(7).unwrap()),
             Layer {
+                id: fm_model::LayerId::new(1).expect("layer id one is nonzero"),
                 name: "Original".into(),
                 source: SourceRef::Input(InputId::new(NonZeroU128::new(1).unwrap())),
                 enabled: false,
@@ -6082,6 +6087,8 @@ fn local_scene_layer_duplicate_copies_configured_layer() {
     let after_layers = &after.project().scenes()[0].layers;
     let mut expected_duplicate = before_layer.clone();
     expected_duplicate.name = "  Duplicate  ".into();
+    // The duplicate gets the scene's next stable layer id.
+    expected_duplicate.id = fm_model::LayerId::new(2).unwrap();
     assert_eq!(after_layers, &[before_layer.clone(), expected_duplicate]);
 
     let manifest_before = fs::read(context.project.join("project.json")).unwrap();
@@ -6165,6 +6172,8 @@ fn local_scene_layer_copy_preserves_configured_layer_and_rejects_cycle() {
     assert_eq!(&after.project().scenes()[0].layers, source_before);
     let mut copied = source_before[0].clone();
     copied.name = "  Copied  ".into();
+    // The copy gets the target scene's next stable layer id.
+    copied.id = fm_model::LayerId::new(3).unwrap();
     assert_eq!(
         &after.project().scenes()[1].layers,
         &[target_before[0].clone(), target_before[1].clone(), copied]
@@ -8335,7 +8344,7 @@ fn edit_current_configuration(project: &Path) {
     replace_once(
         &mut source,
         r#""scenes": []"#,
-        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0"}, "crop": null, "mask": null, "effects": [], "opacity": 255, "z_order": 0}]}]"#,
+        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"id": 1, "name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0"}, "crop": null, "mask": null, "effects": [], "opacity": 255, "z_order": 0}], "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}]"#,
     );
     replace_once(
         &mut source,
@@ -8951,4 +8960,193 @@ fn unique_test_root() -> PathBuf {
         "freemix-cli-{}-{nonce}-{sequence}",
         std::process::id()
     ))
+}
+
+/// GX-011 stage 5: scene layer animation authored locally and rendered at
+/// exact frames of its phases (the e2e golden).
+#[test]
+#[allow(clippy::too_many_lines)] // one golden: author, render, retime, refuse
+fn scene_animation_presets_retime_and_render_exact_frames() {
+    let root = unique_test_root();
+    let project = root.join("scene-animation.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    let run = |arguments: &[&str]| {
+        let output = invoke_bounded(arguments);
+        assert_success(&output);
+        stdout(&output)
+    };
+    run(&["new", path]);
+    run(&["input-replace-solid", path, "1", "200", "100", "50", "255"]);
+    run(&["scene-input-add", path, "3", "10", "Cam"]);
+    run(&["scene-background", path, "10", "10", "20", "30", "255"]);
+    run(&["scene-layer-add", path, "10", "1", "0", "L1"]);
+    // The top-left quarter of the 1920x1080 canvas; the layer's id is 1.
+    run(&[
+        "scene-layer-geometry",
+        path,
+        "10",
+        "0",
+        "0",
+        "0",
+        "960",
+        "540",
+        "0",
+    ]);
+    let layer = [200, 100, 50];
+    let background = [10, 20, 30];
+    let render = |phase: &str, frame: Option<&str>| {
+        let name = format!("{phase}-{}.ppm", frame.unwrap_or("hold"));
+        let output = root.join(name);
+        let mut arguments = vec!["scene-render-frame", path, "10", "--phase", phase];
+        if let Some(frame) = frame {
+            arguments.extend(["--frame", frame]);
+        }
+        arguments.push(output.to_str().unwrap());
+        let printed = run(&arguments);
+        assert!(
+            printed.starts_with(&format!(
+                "scene-render-frame: scene 10 phase={phase} frame={} 640x360 to ",
+                frame.unwrap_or("0")
+            )),
+            "{printed}"
+        );
+        output
+    };
+    // The layer's right edge, in output pixels, or `None` when hidden.
+    let right_edge = |image: &Path| {
+        (0..640)
+            .rev()
+            .find(|x| ppm_pixel(image, 640, 360, *x, 100) == layer)
+            .map(|x| x + 1)
+    };
+    // Without animation every point of every phase is the static design.
+    assert_eq!(right_edge(&render("in", Some("0"))), Some(320));
+    assert_eq!(right_edge(&render("hold", None)), Some(320));
+
+    assert_eq!(
+        run(&[
+            "scene-animation-preset",
+            path,
+            "10",
+            "1",
+            "--phase",
+            "in",
+            "--preset",
+            "slide-from-left",
+            "--frames",
+            "10",
+        ]),
+        "scene-animation-preset: scene 10 revision=1 in_frames=10 out_frames=0 tracks=1"
+    );
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    let scene = stored
+        .project()
+        .scenes()
+        .iter()
+        .find(|scene| scene.id.get().get() == 10)
+        .unwrap();
+    assert_eq!(scene.animation.revision, 1);
+    assert_eq!(scene.animation.clip.in_frames(), 10);
+
+    // Frame 0 starts fully off the left edge (x = 0 - 960); frame 10 and
+    // the hold are the static design; halfway CubicOut is 0.875 of the way:
+    // -960 + 840 = -120, so the right edge is at 840 / 3 = 280.
+    assert_eq!(right_edge(&render("in", Some("0"))), None);
+    assert_eq!(right_edge(&render("in", Some("5"))), Some(280));
+    assert_eq!(right_edge(&render("in", Some("10"))), Some(320));
+    assert_eq!(right_edge(&render("hold", None)), Some(320));
+    let halfway = render("in", Some("5"));
+    assert_eq!(ppm_pixel(&halfway, 640, 360, 280, 100), background);
+    assert_eq!(ppm_pixel(&halfway, 640, 360, 0, 179), layer);
+    assert_eq!(ppm_pixel(&halfway, 640, 360, 0, 180), background);
+
+    // Stretching the In phase to 20 frames scales its keys: frame 10 is
+    // the old halfway pose.
+    assert_eq!(
+        run(&[
+            "scene-animation-stretch",
+            path,
+            "10",
+            "--phase",
+            "in",
+            "--frames",
+            "20",
+        ]),
+        "scene-animation-stretch: scene 10 revision=2 in_frames=20 out_frames=0 tracks=1"
+    );
+    assert_eq!(
+        fs::read(render("in", Some("10"))).unwrap(),
+        fs::read(&halfway).unwrap()
+    );
+
+    // An Out fade ends fully transparent; its first frame is the design.
+    run(&[
+        "scene-animation-preset",
+        path,
+        "10",
+        "1",
+        "--phase",
+        "out",
+        "--preset",
+        "fade",
+        "--frames",
+        "4",
+    ]);
+    assert_eq!(right_edge(&render("out", Some("0"))), Some(320));
+    assert_eq!(right_edge(&render("out", Some("4"))), None);
+    let fading = render("out", Some("2"));
+    let blended = ppm_pixel(&fading, 640, 360, 0, 0);
+    assert!(
+        blended != layer && blended != background,
+        "halfway through the fade blends: {blended:?}"
+    );
+
+    // Refusals leave the bundle untouched.
+    let before = manifest(&project);
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "scene-animation-preset",
+            path,
+            "10",
+            "9",
+            "--phase",
+            "in",
+            "--preset",
+            "fade",
+            "--frames",
+            "4",
+        ]),
+        "unknown scene layer 9",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "scene-animation-preset",
+            path,
+            "10",
+            "1",
+            "--phase",
+            "in",
+            "--preset",
+            "spin",
+            "--frames",
+            "4",
+        ]),
+        "unknown animation preset `spin`",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "scene-animation-stretch",
+            path,
+            "99",
+            "--phase",
+            "in",
+            "--frames",
+            "4",
+        ]),
+        "scene 99 does not exist",
+    );
+    assert_eq!(manifest(&project), before);
+
+    fs::remove_dir_all(root).unwrap();
 }

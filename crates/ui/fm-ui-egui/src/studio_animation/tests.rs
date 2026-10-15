@@ -131,6 +131,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
             input: wire(TITLE),
             field_revision: 0,
         }],
+        scenes: Vec::new(),
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
@@ -620,4 +621,264 @@ fn the_window_docks_and_remembers_its_sizes_in_the_layout() {
     assert!(!read.apply_preference("layout.animation_size", "900"));
     assert!(!read.apply_preference("layout.animation", "sideways"));
     assert!(!read.apply_preference("layout.animation_dock_height", "100"));
+}
+
+/// GX-011 stage 5: scene layer animation in the same window.
+mod scenes {
+    use core::num::NonZeroU32;
+
+    use fm_protocol::{
+        SceneAnimationStateMessage, SceneLayoutStateMessage, WireSceneClip, WireSceneLayerId,
+        WireSceneLayerOutline, WireSceneLayout,
+    };
+
+    use super::*;
+
+    const SCENE: u128 = 7;
+
+    fn layer(value: u32) -> WireSceneLayerId {
+        WireSceneLayerId::new(NonZeroU32::new(value).unwrap())
+    }
+
+    /// Camera 1, Scene input 7 (layers "Host" and "Guest") whose animation
+    /// is at revision 3, and with `title` also title input 6; `locked`
+    /// engages the project padlock.
+    #[allow(clippy::too_many_lines)] // one fixture: snapshot and its records
+    fn scene_ready(locked: bool, title: bool) -> StudioUiState {
+        let project = ProjectId::new(NonZeroU128::new(1).unwrap());
+        let live = FadeToBlackState {
+            target_active: false,
+            position: FadeToBlackPosition::LIVE,
+        };
+        let strip = |value| fm_protocol::InputAudioStripStatus {
+            input: wire(value),
+            gain_millidb: 0,
+            balance_basis_points: 0,
+            muted: false,
+            soloed: false,
+            follow_video: true,
+            delay_samples: 0,
+        };
+        let mut inputs = vec![(1, "Cam 1")];
+        if title {
+            inputs.push((TITLE, "Lower third"));
+        }
+        inputs.push((SCENE, "Two up"));
+        let snapshot = SnapshotMessage {
+            engine: EngineIdentity {
+                engine_id: "e".into(),
+                state_epoch: 1,
+                log_id: "l".into(),
+            },
+            revision: 10,
+            show_name: "Show".into(),
+            inputs: inputs
+                .iter()
+                .map(|(value, name)| InputStatus {
+                    input: wire(*value),
+                    name: (*name).into(),
+                })
+                .collect(),
+            outputs: Vec::new(),
+            input_audio_strips: inputs.iter().map(|(value, _)| strip(*value)).collect(),
+            desired_program: wire(1),
+            desired_preview: wire(1),
+            realized_program: wire(1),
+            realized_preview: wire(1),
+            desired_manual_transition: ManualTransitionStatus::Inactive,
+            realized_manual_transition: ManualTransitionStatus::Inactive,
+            desired_fade_to_black: live,
+            realized_fade_to_black: live,
+            stingers: Vec::new(),
+            streams: Vec::new(),
+            recordings: [1, 2]
+                .map(|slot| RecordingStatus {
+                    recorder: WireRecorderSlot::new(slot).unwrap(),
+                    desired_active: false,
+                })
+                .to_vec(),
+            desired_overlays: OverlayStatus::empty_channels(),
+            realized_overlays: OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus {
+                project: locked,
+                inputs: Vec::new(),
+            },
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            titles: if title {
+                vec![TitleSummary {
+                    input: wire(TITLE),
+                    field_revision: 0,
+                }]
+            } else {
+                Vec::new()
+            },
+            scenes: vec![wire(SCENE)],
+            frame_rate: FrameRate::new(25, 1).unwrap(),
+            playlist_follows: false,
+            grade_states: 0,
+        };
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(project, snapshot))
+            .unwrap();
+        if title {
+            model
+                .apply_title_animation_state(TitleAnimationStateMessage {
+                    revision: 10,
+                    input: wire(TITLE),
+                    animation_revision: 4,
+                    clip: Box::new(clip()),
+                })
+                .unwrap();
+        }
+        model
+            .apply_scene_animation_state(SceneAnimationStateMessage {
+                revision: 10,
+                input: wire(SCENE),
+                animation_revision: 3,
+                clip: Box::new(
+                    WireSceneClip::new(Timebase::new(FrameRate::new(30, 1).unwrap()), 0, 0)
+                        .unwrap(),
+                ),
+            })
+            .unwrap();
+        let outline = |id: u32, name: &str, x: i32| WireSceneLayerOutline {
+            id: layer(id),
+            name: name.into(),
+            x,
+            y: 270,
+            width: 960,
+            height: 540,
+            quarter_turns: 0,
+            opacity: 255,
+            enabled: true,
+        };
+        model
+            .apply_scene_layout_state(SceneLayoutStateMessage {
+                revision: 10,
+                input: wire(SCENE),
+                layout: Box::new(WireSceneLayout {
+                    width: 1_920,
+                    height: 1_080,
+                    layers: vec![outline(1, "Host", 0), outline(2, "Guest", 960)],
+                }),
+            })
+            .unwrap();
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(model.view().unwrap())
+            .with_switcher_permissions(true, true)
+            .with_edit_project_permission(true);
+        state.project_state = model.state().cloned();
+        state
+    }
+
+    fn scene_saves(intents: &[StudioIntent]) -> Vec<&CommandPayload> {
+        intents
+            .iter()
+            .filter_map(|intent| match intent {
+                StudioIntent::SceneAnimation(payload) => Some(payload),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn without_titles_the_window_opens_on_a_scene_with_its_layers() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let state = scene_ready(false, false);
+        draw(&context, &mut shell, &state);
+        draw_at(&context, &mut shell, &state, 0.1, vec![shortcut()]);
+        assert!(shell.animation_open());
+        assert_eq!(shell.animation_title(), None);
+        assert_eq!(shell.animation_scene(), Some(input(SCENE)));
+        draw_at(&context, &mut shell, &state, 0.2, Vec::new());
+        let binding = shell.scene_animation_binding(input(SCENE)).unwrap();
+        assert!(binding.has_design());
+        let names: Vec<&str> = binding
+            .document()
+            .targets()
+            .iter()
+            .map(|outline| outline.name.as_str())
+            .collect();
+        assert_eq!(names, ["Host", "Guest"]);
+        assert_eq!(binding.document().canvas(), (1_920, 1_080));
+        // Layers have no colour to animate.
+        assert_eq!(
+            shell.animation.scene_timeline.properties,
+            &SCENE_LAYER_PROPERTIES
+        );
+    }
+
+    #[test]
+    fn scene_edits_save_as_scene_animation_set_unless_locked() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let state = scene_ready(false, false);
+        shell.open_scene_animation_window(input(SCENE));
+        assert_eq!(
+            scene_saves(&draw(&context, &mut shell, &state)),
+            Vec::<&CommandPayload>::new()
+        );
+        let binding = shell.scene_animation_binding_mut(input(SCENE)).unwrap();
+        binding
+            .document_mut()
+            .apply_preset(layer(2), Phase::In, AnimationPreset::SlideFromRight, 15)
+            .unwrap();
+        let clip = binding.document().clip().clone();
+        let intents = draw(&context, &mut shell, &state);
+        assert_eq!(
+            scene_saves(&intents),
+            vec![&CommandPayload::SetSceneAnimation {
+                input: wire(SCENE),
+                base_revision: 3,
+                clip: Box::new(clip),
+            }]
+        );
+        assert!(
+            intents
+                .iter()
+                .all(|intent| !matches!(intent, StudioIntent::TitlePreview(_))),
+            "scenes ask for no exact preview"
+        );
+
+        let mut shell = StudioShell::default();
+        let locked = scene_ready(true, false);
+        shell.open_scene_animation_window(input(SCENE));
+        draw(&context, &mut shell, &locked);
+        shell
+            .scene_animation_binding_mut(input(SCENE))
+            .unwrap()
+            .document_mut()
+            .apply_preset(layer(1), Phase::Out, AnimationPreset::Fade, 10)
+            .unwrap();
+        assert_eq!(
+            scene_saves(&draw(&context, &mut shell, &locked)),
+            Vec::<&CommandPayload>::new()
+        );
+        assert_eq!(
+            animation_lock_reason(&locked, input(SCENE)),
+            Some(PROJECT_LOCKED_REASON)
+        );
+    }
+
+    #[test]
+    fn titles_and_scenes_share_the_window() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let state = scene_ready(false, true);
+        // A title is shown first; a scene can be picked instead.
+        draw_at(&context, &mut shell, &state, 0.1, vec![shortcut()]);
+        assert_eq!(shell.animation_title(), Some(input(TITLE)));
+        assert_eq!(shell.animation_scene(), None);
+        shell.open_scene_animation_window(input(SCENE));
+        draw(&context, &mut shell, &state);
+        assert_eq!(shell.animation_scene(), Some(input(SCENE)));
+        assert!(shell.scene_animation_binding(input(SCENE)).is_some());
+        // Opening a title switches back.
+        shell.open_animation_window(input(TITLE));
+        draw(&context, &mut shell, &state);
+        assert_eq!(shell.animation_scene(), None);
+        assert_eq!(shell.animation_title(), Some(input(TITLE)));
+    }
 }

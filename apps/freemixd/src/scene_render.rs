@@ -18,6 +18,7 @@ use fm_compositor::{
     CompositionPlan, CpuSourceFrame, CropRect, Effect, ImageFrame, OutputTarget, RectMask, Rgba8,
     Rotation, Scene, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
 };
+use fm_model::fm_animation::ClipState;
 use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
 use fm_sim::SimulatedPipeline;
 use fm_types::{InputId, SceneId};
@@ -35,7 +36,8 @@ pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneI
 }
 
 /// Composes `scene` at the `pipeline` dimensions (the fitted monitor size),
-/// mapping the scene's project-pixel geometry onto that grid. Returns `None`
+/// mapping the scene's project-pixel geometry onto that grid, with every
+/// layer in the animation `pose` (see [`fm_model::Scene::posed`]). Returns `None`
 /// when the scene cannot be rendered honestly.
 ///
 /// Edges map with the same rule nearest-neighbor downscaling samples by
@@ -48,6 +50,7 @@ pub(crate) fn render_scene(
     scene: SceneId,
     pipeline: &SimulatedPipeline,
     frame_number: u64,
+    pose: ClipState,
 ) -> Option<ImageFrame> {
     let dimensions = project.settings().video.dimensions;
     let grid = MonitorGrid {
@@ -56,7 +59,7 @@ pub(crate) fn render_scene(
         width: pipeline.width(),
         height: pipeline.height(),
     };
-    compose(project, scene, pipeline, frame_number, |layer| {
+    compose(project, scene, pipeline, frame_number, pose, |layer| {
         grid.layer(layer)
     })
 }
@@ -71,10 +74,16 @@ pub(crate) fn render_scene_at_project_size(
     frame_number: u64,
     width: u32,
     height: u32,
+    pose: ClipState,
 ) -> Option<ImageFrame> {
-    let composed = compose(project, scene, project_pipeline, frame_number, |layer| {
-        Some(Placement::Draw(layer.clone()))
-    })?;
+    let composed = compose(
+        project,
+        scene,
+        project_pipeline,
+        frame_number,
+        pose,
+        |layer| Some(Placement::Draw(layer.clone())),
+    )?;
     if composed.width() == width && composed.height() == height {
         return Some(composed);
     }
@@ -95,13 +104,17 @@ fn compose(
     scene: SceneId,
     pipeline: &SimulatedPipeline,
     frame_number: u64,
+    pose: ClipState,
     place: impl Fn(&fm_model::Layer) -> Option<Placement>,
 ) -> Option<ImageFrame> {
     let dimensions = project.settings().video.dimensions;
+    // The scene as the engine poses it at this frame (GX-011 stage 5).
     let model = project
         .scenes()
         .iter()
-        .find(|candidate| candidate.id == scene)?;
+        .find(|candidate| candidate.id == scene)?
+        .posed(pose, dimensions.width(), dimensions.height());
+    let model = &model;
     let background = model.background;
     let mut composition = Scene::new(
         pipeline.width(),

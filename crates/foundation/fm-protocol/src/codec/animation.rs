@@ -1,5 +1,9 @@
-//! Title animation clips, phases, presets, and preview samples (Protocol
-//! 2.29).
+//! Title and scene animation clips, phases, presets, and preview samples
+//! (Protocol 2.29; scene clips 2.31).
+//!
+//! Title clips target elements (`element`, a nonzero `u128`) and scene clips
+//! target layers (`layer`, a nonzero `u32`); otherwise both use exactly the
+//! same encoding (see [`ClipTarget`]).
 //!
 //! A clip travels as one unpadded base64url field holding a compact binary
 //! encoding, so no byte of it is percent-escaped by the record layer and the
@@ -36,10 +40,47 @@ use fm_animation::{
 use fm_types::FrameRate;
 
 use crate::{
-    CodecError, MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_PART_BYTES,
-    MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH, TitlePreviewSample, WireInputId,
-    WireTitleClip, WireTitleElementId,
+    CodecError, MAX_SCENE_ANIMATION_BYTES, MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_PREVIEW_HEIGHT,
+    MAX_TITLE_PREVIEW_PART_BYTES, MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH,
+    TitlePreviewSample, WireInputId, WireSceneClip, WireSceneLayerId, WireTitleClip,
+    WireTitleElementId,
 };
+
+/// What a wire clip animates: its target id's width and the clip's size
+/// bound. Every other part of the encoding is shared.
+pub(crate) trait ClipTarget: Copy + Ord + core::fmt::Debug {
+    /// Significant bits of the target varint.
+    const BITS: u32;
+    /// Largest binary encoding of one clip.
+    const MAX_BYTES: usize;
+    fn to_wire(self) -> u128;
+    fn from_wire(value: u128) -> Option<Self>;
+}
+
+impl ClipTarget for WireTitleElementId {
+    const BITS: u32 = 128;
+    const MAX_BYTES: usize = MAX_TITLE_ANIMATION_BYTES;
+    fn to_wire(self) -> u128 {
+        self.get().get()
+    }
+    fn from_wire(value: u128) -> Option<Self> {
+        NonZeroU128::new(value).map(Self::new)
+    }
+}
+
+impl ClipTarget for WireSceneLayerId {
+    const BITS: u32 = 32;
+    const MAX_BYTES: usize = MAX_SCENE_ANIMATION_BYTES;
+    fn to_wire(self) -> u128 {
+        u128::from(self.get().get())
+    }
+    fn from_wire(value: u128) -> Option<Self> {
+        u32::try_from(value)
+            .ok()
+            .and_then(core::num::NonZeroU32::new)
+            .map(Self::new)
+    }
+}
 
 const CLIP: &str = "clip";
 const BEZIER_TAG: u8 = 8;
@@ -125,7 +166,7 @@ fn push_easing(out: &mut Vec<u8>, easing: Easing) {
 }
 
 /// The binary encoding of `clip` (see the module documentation).
-fn clip_bytes(clip: &WireTitleClip) -> Vec<u8> {
+fn clip_bytes<T: ClipTarget>(clip: &Clip<T>) -> Vec<u8> {
     let mut out = Vec::new();
     let rate = clip.timebase().rate();
     push_varint(&mut out, u128::from(rate.numerator()));
@@ -134,7 +175,7 @@ fn clip_bytes(clip: &WireTitleClip) -> Vec<u8> {
     push_varint(&mut out, u128::from(clip.out_frames()));
     push_varint(&mut out, clip.tracks().len() as u128);
     for track in clip.tracks() {
-        push_varint(&mut out, track.key.target.get().get());
+        push_varint(&mut out, track.key.target.to_wire());
         out.push(match track.key.phase {
             Phase::In => 0,
             Phase::Out => 1,
@@ -160,11 +201,11 @@ fn clip_bytes(clip: &WireTitleClip) -> Vec<u8> {
 /// [`CodecError::InvalidField`] naming `clip` when the clip fails
 /// `fm_animation` validation or its encoding exceeds
 /// [`MAX_TITLE_ANIMATION_BYTES`].
-pub(super) fn encode_clip(clip: &WireTitleClip) -> Result<String, CodecError> {
+pub(super) fn encode_clip<T: ClipTarget>(clip: &Clip<T>) -> Result<String, CodecError> {
     clip.validate()
         .map_err(|error| invalid_clip(error.to_string()))?;
     let bytes = clip_bytes(clip);
-    if bytes.len() > MAX_TITLE_ANIMATION_BYTES {
+    if bytes.len() > T::MAX_BYTES {
         return Err(invalid_clip(format!("{} bytes", bytes.len())));
     }
     Ok(crate::monitor_image::base64url_encode(&bytes))
@@ -174,6 +215,13 @@ pub(super) fn encode_clip(clip: &WireTitleClip) -> Result<String, CodecError> {
 /// exceeds [`MAX_TITLE_ANIMATION_BYTES`] cannot be carried.
 #[must_use]
 pub fn title_clip_wire_bytes(clip: &WireTitleClip) -> usize {
+    clip_bytes(clip).len()
+}
+
+/// The size of a scene clip's binary encoding, in bytes; a clip whose size
+/// exceeds [`MAX_SCENE_ANIMATION_BYTES`] cannot be carried.
+#[must_use]
+pub fn scene_clip_wire_bytes(clip: &WireSceneClip) -> usize {
     clip_bytes(clip).len()
 }
 
@@ -237,8 +285,8 @@ impl Reader<'_> {
         *EASINGS.get(usize::from(tag))?
     }
 
-    fn track(&mut self, total_keys: &mut usize) -> Option<Track<WireTitleElementId>> {
-        let element = WireTitleElementId::new(NonZeroU128::new(self.varint(128)?)?);
+    fn track<T: ClipTarget>(&mut self, total_keys: &mut usize) -> Option<Track<T>> {
+        let element = T::from_wire(self.varint(T::BITS)?)?;
         let phase = match self.byte()? {
             0 => Phase::In,
             1 => Phase::Out,
@@ -264,7 +312,7 @@ impl Reader<'_> {
         Some(Track::new(TrackKey::new(element, phase, property), keys))
     }
 
-    fn clip(&mut self) -> Option<WireTitleClip> {
+    fn clip<T: ClipTarget>(&mut self) -> Option<Clip<T>> {
         let numerator = self.u32()?;
         let denominator = self.u32()?;
         let rate = FrameRate::new(numerator, denominator)
@@ -279,7 +327,7 @@ impl Reader<'_> {
         if count > MAX_CLIP_TRACKS {
             return None;
         }
-        let mut tracks: Vec<Track<WireTitleElementId>> = Vec::with_capacity(count);
+        let mut tracks: Vec<Track<T>> = Vec::with_capacity(count);
         let mut total_keys = 0_usize;
         for _ in 0..count {
             let track = self.track(&mut total_keys)?;
@@ -302,8 +350,8 @@ impl Reader<'_> {
 /// [`CodecError::InvalidField`] naming `clip` for non-canonical base64url,
 /// an oversized, truncated, non-minimal, or trailing encoding, an unordered
 /// track, or a clip `fm_animation` refuses.
-pub(super) fn decode_clip(value: &str) -> Result<WireTitleClip, CodecError> {
-    let encoded_limit = (MAX_TITLE_ANIMATION_BYTES * 4).div_ceil(3);
+pub(super) fn decode_clip<T: ClipTarget>(value: &str) -> Result<Clip<T>, CodecError> {
+    let encoded_limit = (T::MAX_BYTES * 4).div_ceil(3);
     if value.len() > encoded_limit {
         return Err(invalid_clip(format!("{} characters", value.len())));
     }

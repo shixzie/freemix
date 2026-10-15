@@ -13,9 +13,10 @@ use crate::{
     LiveInputSource, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind,
     ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, PlaylistOperation,
     PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
+    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage, ServerIdentity,
+    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StingerStatus, StreamStatusMessage, StructuredError,
+    TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
     TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
 };
 
@@ -31,6 +32,7 @@ use super::playlist::{
     encode_frame_rate, encode_optional_entry, encode_playlist_entries, encode_playlist_start,
     encode_playlist_state, playlist_loop,
 };
+use super::scene_layout::{encode_scene_clip, encode_scene_layers, encode_scene_list};
 use super::title::{
     encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_summaries,
     title_air_requirement, validate_title_name, validate_title_phase,
@@ -92,6 +94,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::TitleLayoutState(message) => {
             encode_title_layout_state(&mut record, message)?;
+        }
+        WireMessage::SceneAnimationState(message) => {
+            encode_scene_animation_state(&mut record, message)?;
+        }
+        WireMessage::SceneLayoutState(message) => {
+            encode_scene_layout_state(&mut record, message)?;
         }
         WireMessage::TitlePreviewRequest(message) => {
             encode_title_preview_request(&mut record, message)?;
@@ -198,6 +206,7 @@ fn encode_cursor(record: &mut Record, cursor: &EventCursor) -> Result<(), CodecE
     record.field("revision", cursor.revision)
 }
 
+#[allow(clippy::too_many_lines)] // one dispatch over every command payload
 fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), CodecError> {
     record.kind("command");
     record.field("protocol", message.protocol)?;
@@ -227,6 +236,11 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }) => {
             encode_title_animation_command(record, payload)?;
+        }
+        payload @ (CommandPayload::SetSceneAnimation { .. }
+        | CommandPayload::ApplySceneAnimationPreset { .. }
+        | CommandPayload::StretchSceneAnimation { .. }) => {
+            encode_scene_animation_command(record, payload)?;
         }
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
@@ -429,6 +443,101 @@ fn encode_title_animation_command(
         }
         _ => unreachable!("only title animation commands are delegated"),
     }
+}
+
+fn encode_scene_animation_command(
+    record: &mut Record,
+    payload: &CommandPayload,
+) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::SetSceneAnimation {
+            input,
+            base_revision,
+            clip,
+        } => {
+            let clip = encode_scene_clip(clip)?;
+            record.field("payload", "scene_animation_set")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field_string("clip", clip)
+        }
+        CommandPayload::ApplySceneAnimationPreset {
+            input,
+            base_revision,
+            layer,
+            phase,
+            preset,
+            frames,
+        } => {
+            validate_phase_frames(*frames)?;
+            record.field("payload", "scene_animation_preset")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("layer", layer)?;
+            record.field("phase", encode_animation_phase(*phase))?;
+            record.field("preset", preset.id())?;
+            record.field("frames", frames)
+        }
+        CommandPayload::StretchSceneAnimation {
+            input,
+            base_revision,
+            phase,
+            frames,
+        } => {
+            validate_phase_frames(*frames)?;
+            record.field("payload", "scene_animation_stretch")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("phase", encode_animation_phase(*phase))?;
+            record.field("frames", frames)
+        }
+        _ => unreachable!("only scene animation commands are delegated"),
+    }
+}
+
+fn encode_scene_animation_changed(
+    record: &mut Record,
+    payload: &EventPayload,
+) -> Result<(), CodecError> {
+    let EventPayload::SceneAnimationChanged {
+        inputs,
+        animation_revision,
+        clip,
+    } = payload
+    else {
+        unreachable!("only scene animation changes are delegated")
+    };
+    validate_animation_inputs(inputs)?;
+    let clip = encode_scene_clip(clip)?;
+    record.field("event", "scene_animation_changed")?;
+    record.field_string("inputs", input_ids(inputs)?)?;
+    record.field("animation_revision", animation_revision)?;
+    record.field_string("clip", clip)
+}
+
+fn encode_scene_animation_state(
+    record: &mut Record,
+    message: &SceneAnimationStateMessage,
+) -> Result<(), CodecError> {
+    let clip = encode_scene_clip(&message.clip)?;
+    record.kind("scene_animation_state");
+    record.field("revision", message.revision)?;
+    record.field("input", message.input)?;
+    record.field("animation_revision", message.animation_revision)?;
+    record.field_string("clip", clip)
+}
+
+fn encode_scene_layout_state(
+    record: &mut Record,
+    message: &SceneLayoutStateMessage,
+) -> Result<(), CodecError> {
+    let layers = encode_scene_layers(&message.layout)?;
+    record.kind("scene_layout_state");
+    record.field("revision", message.revision)?;
+    record.field("input", message.input)?;
+    record.field("width", message.layout.width)?;
+    record.field("height", message.layout.height)?;
+    record.field_string("layers", layers)
 }
 
 fn encode_title_animation_changed(
@@ -918,6 +1027,7 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         .map(|input| input.input)
         .collect::<Vec<_>>();
     record.field_string("titles", encode_title_summaries(&message.titles, &inputs)?)?;
+    record.field_string("scenes", encode_scene_list(&message.scenes, &inputs)?)?;
     record.field_string("frame_rate", encode_frame_rate(message.frame_rate))?;
     record.field("playlist", u8::from(message.playlist_follows))?;
     if message.grade_states > MAX_GRADE_STATES {
@@ -1422,6 +1532,9 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         }
         payload @ EventPayload::TitleAnimationChanged { .. } => {
             encode_title_animation_changed(record, payload)?;
+        }
+        payload @ EventPayload::SceneAnimationChanged { .. } => {
+            encode_scene_animation_changed(record, payload)?;
         }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)

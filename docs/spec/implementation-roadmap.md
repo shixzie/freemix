@@ -2146,10 +2146,36 @@ once and a debounced exact preview of the hovered draft follows); a click
 applies it as one undo step. The window floats resizable or docks along the
 bottom of the console, and its size, dock height, and placement persist in
 `studio.conf` (`layout.animation`, `layout.animation_size`,
-`layout.animation_dock_height`). Remaining gaps: titles without a loaded
-template still list only elements that already move and apply their presets
-on the server; scene layers are not animated; and production clocks and
-images are not drawn by the CLI frame render, so `GX-011` remains planned.
+`layout.animation_dock_height`). Stage 5 animates scene layers with the
+same model and editor: project schema 32 gives every scene layer a stable
+`LayerId` and every scene one `SceneAnimation` clip keyed by it (position,
+scale, rotation, crop, and opacity; colour is refused), validated against
+the scene's layers and stored in `project.json`. `Scene::posed` samples it
+with integer arithmetic (scale about the footprint centre, crop with the
+source cropped in proportion, opacity multiplied, rotation realized at the
+nearest quarter turn because the compositor has no arbitrary rotation).
+The engine plays a scene's In phase when its Scene input reaches Program or
+Preview, holds, and plays Out while a timed or manual transition takes it
+off Program (a cut plays no Out; nested, multiview, and overlay scenes
+hold); phases are runtime state that never blocks a snapshot. The monitor
+tap, the simulated scene render, and native freemixd (recompiling the scene
+composition per frame while a scene is mid-phase) pose every frame.
+Protocol 2.31 adds the snapshot `scenes` list, revision-checked
+`scene_animation_set`, `scene_animation_preset`, and
+`scene_animation_stretch` (undoable `EditProject` edits, 36 KiB clip bound),
+`scene_animation_changed`, and the follow-on `scene_animation_state` and
+`scene_layout_state` records (canvas and per layer id, name, footprint,
+quarter turns, opacity, enabled). Scene previews are proxy-only: the
+Animation window's target picker lists titles and scenes, lists each
+scene's layers by name, applies presets, and draws posed layer outlines
+over the canvas without an exact server render. `freemix-cli
+scene-animation-preset`, `scene-animation-stretch`, and
+`scene-render-frame --phase in|hold|out` author and render scene
+animations locally. Remaining gaps: titles without a loaded template still
+list only elements that already move and apply their presets on the
+server; scene layer rotation snaps to quarter turns and scenes have no
+exact remote preview; and production clocks and images are not drawn by
+the CLI frame render, so `GX-011` remains planned.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,

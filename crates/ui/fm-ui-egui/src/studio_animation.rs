@@ -30,6 +30,14 @@
 //! applies their presets on the server (`title_animation_preset`, sent only
 //! over a clean draft), and draws no outlines.
 //!
+//! Scenes animate the same way (GX-011 stage 5): the window's picker lists
+//! titles and then scenes, and a scene is edited through a
+//! [`SceneAnimationBinding`] keyed by layer, its layers listed by name with
+//! their outlines from the snapshot's `scene_layout_state` (Protocol
+//! 2.31), saved as `scene_animation_set` ([`StudioIntent::SceneAnimation`]).
+//! Scenes have no exact preview: the canvas shows the layer outlines, and
+//! Program plays the exact motion (rotation snapped to quarter turns).
+//!
 //! The window floats over the console, resizable by its edges, or docks
 //! along the bottom of the console with a draggable height; the choice and
 //! sizes live in [`crate::ConsoleLayout`], which the host persists.
@@ -42,10 +50,13 @@ use egui::{
     Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2, pos2,
 };
 use fm_animation::Phase;
-use fm_protocol::{CommandPayload, TitlePreviewImage, WireInputId, WireTitleElementId};
+use fm_protocol::{
+    CommandPayload, TitlePreviewImage, WireInputId, WireSceneLayerId, WireTitleElementId,
+};
 use fm_types::InputId;
 use fm_ui_model::title_animation::{
-    AnimationRefusal, AnimationSaveStatus, PresetHover, TitleAnimationBinding, TitleDesign,
+    AnimationBinding, AnimationRefusal, AnimationSaveStatus, AnimationTarget, PresetHover,
+    SCENE_LAYER_PROPERTIES, SceneAnimationBinding, SceneDesign, TitleAnimationBinding, TitleDesign,
 };
 
 use crate::animation_timeline::text::preset_name;
@@ -77,12 +88,12 @@ const DEFAULT_DOCK_HEIGHT: f32 = 430.0;
 /// The docked panel's id.
 const DOCK_ID: &str = "studio-animation-dock";
 
-/// The refusal of one title animation save, kept by the worker until
-/// another save is refused.
+/// The refusal of one title or scene animation save, kept by the worker
+/// until another save is refused.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleAnimationRefusal {
     pub command_id: String,
-    /// The title input the refused save named.
+    /// The title (or Scene) input the refused save named.
     pub input: InputId,
     /// Whether the save was refused as based on a stale animation
     /// revision (`revision_conflict`).
@@ -125,6 +136,13 @@ pub(crate) struct AnimationWindow {
     resize: Option<ResizeDrag>,
     /// Where the timeline laid out its ruler and rows last frame.
     pub(crate) tracks: Option<crate::animation_timeline::TrackGeometry>,
+    /// The Scene input shown while `editing_scene` (GX-011 stage 5).
+    scene: Option<InputId>,
+    /// Whether the window shows `scene` rather than the title `input`.
+    pub(crate) editing_scene: bool,
+    scene_bindings: BTreeMap<InputId, SceneAnimationBinding>,
+    /// The scene timeline: every property but colour.
+    pub(crate) scene_timeline: AnimationTimelineState<WireSceneLayerId>,
 }
 
 impl Default for AnimationWindow {
@@ -144,6 +162,14 @@ impl Default for AnimationWindow {
             last_size: None,
             resize: None,
             tracks: None,
+            scene: None,
+            editing_scene: false,
+            scene_bindings: BTreeMap::new(),
+            scene_timeline: {
+                let mut timeline = AnimationTimelineState::default();
+                timeline.properties = &SCENE_LAYER_PROPERTIES;
+                timeline
+            },
         }
     }
 }
@@ -155,6 +181,8 @@ impl Clone for AnimationWindow {
         Self {
             open: self.open,
             input: self.input,
+            scene: self.scene,
+            editing_scene: self.editing_scene,
             ..Self::default()
         }
     }
@@ -166,13 +194,18 @@ impl core::fmt::Debug for AnimationWindow {
             .debug_struct("AnimationWindow")
             .field("open", &self.open)
             .field("input", &self.input)
+            .field("scene", &self.scene)
+            .field("editing_scene", &self.editing_scene)
             .finish_non_exhaustive()
     }
 }
 
 impl PartialEq for AnimationWindow {
     fn eq(&self, other: &Self) -> bool {
-        self.open == other.open && self.input == other.input
+        self.open == other.open
+            && self.input == other.input
+            && self.scene == other.scene
+            && self.editing_scene == other.editing_scene
     }
 }
 
@@ -187,12 +220,15 @@ pub(crate) fn animation_lock_reason(state: &StudioUiState, input: InputId) -> Op
     {
         return Some(unavailable_reason(state, Capability::EditProject));
     }
-    let arrived = state
-        .project_state
-        .as_ref()
-        .and_then(|project| project.title(input))
-        .is_some_and(|title| title.animation.is_some());
-    if !arrived {
+    let project = state.project_state.as_ref()?;
+    if let Some(scene) = project.scene(input) {
+        if scene.animation.is_none() {
+            return Some(Msg::AnimReasonScenePending.en());
+        }
+    } else if project
+        .title(input)
+        .is_none_or(|title| title.animation.is_none())
+    {
         return Some(Msg::AnimReasonAnimationPending.en());
     }
     let locks = &state.view.as_ref()?.edit_locks;
@@ -233,6 +269,27 @@ fn animatable_titles(l: Locale, state: &StudioUiState) -> Vec<(InputId, String)>
             (
                 title.input,
                 title_display_name(l, state.view.as_ref(), title.input, &title.name),
+            )
+        })
+        .collect()
+}
+
+/// The Scene inputs whose animation has arrived, in snapshot order, with
+/// their input names.
+fn animatable_scenes(state: &StudioUiState) -> Vec<(InputId, String)> {
+    let Some(project) = &state.project_state else {
+        return Vec::new();
+    };
+    project
+        .scenes()
+        .iter()
+        .filter(|scene| scene.animation.is_some())
+        .map(|scene| {
+            (
+                scene.input,
+                project
+                    .input_name(scene.input)
+                    .map_or_else(|| scene.input.to_string(), str::to_owned),
             )
         })
         .collect()
@@ -364,6 +421,7 @@ impl AnimationWindow {
                 binding.set_design(design);
             }
         }
+        self.sync_scenes(project);
         // A server-side preset is answered by the next animation revision.
         if let Some((input, revision)) = self.preset_pending
             && self
@@ -382,14 +440,21 @@ impl AnimationWindow {
                 .is_some_and(|(input, _)| input == refusal.input)
             {
                 self.preset_pending = None;
-            } else if let Some(binding) = self.bindings.get_mut(&refusal.input)
-                && binding.saving()
-            {
-                binding.refused(if refusal.conflict {
+            } else {
+                let refused = if refusal.conflict {
                     AnimationRefusal::Conflict
                 } else {
                     AnimationRefusal::Other
-                });
+                };
+                if let Some(binding) = self.bindings.get_mut(&refusal.input)
+                    && binding.saving()
+                {
+                    binding.refused(refused);
+                } else if let Some(binding) = self.scene_bindings.get_mut(&refusal.input)
+                    && binding.saving()
+                {
+                    binding.refused(refused);
+                }
             }
         }
         if let Some(failed) = &state.title_preview_failed
@@ -405,6 +470,56 @@ impl AnimationWindow {
         {
             self.seen_image = Some(image.request_id.clone());
             self.receive_image(context, image);
+        }
+    }
+
+    /// Follows the authority for every scene draft, keeps the shown scene
+    /// valid (showing the first scene when there is no title), and gives
+    /// each scene draft its design from the replicated layout.
+    fn sync_scenes(&mut self, project: &fm_ui_model::ProjectState) {
+        self.scene_bindings
+            .retain(|input, _| project.scene(*input).is_some());
+        for (input, binding) in &mut self.scene_bindings {
+            if let Some(status) = project
+                .scene(*input)
+                .and_then(|scene| scene.animation.as_ref())
+            {
+                binding.sync(status);
+            }
+        }
+        let scenes: Vec<InputId> = project
+            .scenes()
+            .iter()
+            .filter(|scene| scene.animation.is_some())
+            .map(|scene| scene.input)
+            .collect();
+        if self.open && !self.scene.is_some_and(|input| scenes.contains(&input)) {
+            self.scene = scenes.first().copied();
+        }
+        if self.scene.is_none() {
+            self.editing_scene = false;
+        } else if self.open && self.input.is_none() {
+            self.editing_scene = true;
+        }
+        if self.open
+            && self.editing_scene
+            && let Some(input) = self.scene
+            && let Some(status) = project
+                .scene(input)
+                .and_then(|scene| scene.animation.as_ref())
+        {
+            self.scene_bindings
+                .entry(input)
+                .or_insert_with(|| SceneAnimationBinding::new(input, status));
+        }
+        for (input, binding) in &mut self.scene_bindings {
+            if !binding.has_design()
+                && let Some(layout) = project
+                    .scene(*input)
+                    .and_then(|scene| scene.layout.as_deref())
+            {
+                binding.set_design(&SceneDesign::from_layout(layout));
+            }
         }
     }
 
@@ -444,7 +559,41 @@ impl StudioShell {
         self.animation.open = true;
         if input.is_some() {
             self.animation.input = input;
+            self.animation.editing_scene = false;
         }
+    }
+
+    /// Opens the Animation window on Scene input `input`'s layers (for
+    /// hosts and tests).
+    pub fn open_scene_animation_window(&mut self, input: InputId) {
+        self.animation.open = true;
+        self.animation.scene = Some(input);
+        self.animation.editing_scene = true;
+    }
+
+    /// The Scene input the Animation window shows, when it shows a scene.
+    #[must_use]
+    pub const fn animation_scene(&self) -> Option<InputId> {
+        if self.animation.editing_scene {
+            self.animation.scene
+        } else {
+            None
+        }
+    }
+
+    /// The draft of Scene input `input`'s animation, if the window made one.
+    #[must_use]
+    pub fn scene_animation_binding(&self, input: InputId) -> Option<&SceneAnimationBinding> {
+        self.animation.scene_bindings.get(&input)
+    }
+
+    /// The draft of Scene input `input`'s animation, for hosts and tests
+    /// that drive the editor directly.
+    pub fn scene_animation_binding_mut(
+        &mut self,
+        input: InputId,
+    ) -> Option<&mut SceneAnimationBinding> {
+        self.animation.scene_bindings.get_mut(&input)
     }
 
     /// Opens the Animation window on title `input` (for hosts and tests).
@@ -512,6 +661,9 @@ impl StudioShell {
     /// stopped or never got them); their drafts stay and are sent again.
     pub fn abandon_animation_requests(&mut self) {
         for binding in self.animation.bindings.values_mut() {
+            binding.abandon_in_flight();
+        }
+        for binding in self.animation.scene_bindings.values_mut() {
             binding.abandon_in_flight();
         }
         self.animation.preset_pending = None;
@@ -635,7 +787,11 @@ impl StudioShell {
         self.animation.open = false;
         self.animation.timeline.keyboard_active = false;
         self.animation.timeline.preset_hover = None;
+        self.animation.scene_timeline.preset_hover = None;
         for binding in self.animation.bindings.values_mut() {
+            binding.set_preset_hover(None, Duration::ZERO);
+        }
+        for binding in self.animation.scene_bindings.values_mut() {
             binding.set_preset_hover(None, Duration::ZERO);
         }
     }
@@ -643,6 +799,7 @@ impl StudioShell {
     /// Draws the floating Animation window when open and not docked, sends
     /// due saves of every draft, and asks for the exact preview of the
     /// shown draft.
+    #[allow(clippy::too_many_lines)] // one window: picker, drafts, conflicts, body
     pub(crate) fn draw_animation_window(
         &mut self,
         context: &egui::Context,
@@ -703,7 +860,11 @@ impl StudioShell {
             }
         }
         let presets = std::mem::take(&mut self.animation.timeline.preset_requests);
-        if let Some(input) = self.animation.input
+        // Scene drafts always know their layers, so their presets apply
+        // locally; nothing asks the server.
+        self.animation.scene_timeline.preset_requests.clear();
+        if !self.animation.editing_scene
+            && let Some(input) = self.animation.input
             && let Some(binding) = self.animation.bindings.get(&input)
             && animation_lock_reason(state, input).is_none()
             && self.animation.preset_pending.is_none()
@@ -729,7 +890,14 @@ impl StudioShell {
                 intents.push(StudioIntent::TitleAnimation(payload));
             }
         }
+        for (input, binding) in &mut self.animation.scene_bindings {
+            let lock = animation_lock_reason(state, *input);
+            if let Some(payload) = binding.poll_save(lock.is_none()) {
+                intents.push(StudioIntent::SceneAnimation(payload));
+            }
+        }
         if self.animation.open
+            && !self.animation.editing_scene
             && let Some(input) = self.animation.input
             && let Some(binding) = self.animation.bindings.get_mut(&input)
         {
@@ -772,100 +940,40 @@ impl StudioShell {
         let l = self.locale;
         let now = Duration::from_secs_f64(ui.input(|input| input.time).max(0.0));
         let titles = animatable_titles(l, state);
+        let scenes = animatable_scenes(state);
         let docked = &mut self.layout.animation_docked;
         let window = &mut self.animation;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            let section_hover = if window.editing_scene {
+                Msg::AnimSceneSectionHover
+            } else {
+                Msg::AnimWinSectionHover
+            };
             ui.label(section_label(l.text(Msg::AnimWinSection)))
-                .on_hover_text(l.text(Msg::AnimWinSectionHover));
-            if !titles.is_empty() {
-                let shown = window
-                    .input
-                    .and_then(|input| titles.iter().find(|(id, _)| *id == input))
-                    .map_or_else(String::new, |(_, name)| name.clone());
-                let mut picked = None;
-                ComboBox::from_id_salt("studio-animation-title")
-                    .selected_text(crate::theme::ellipsize(&shown, 28))
-                    .width(210.0)
-                    .show_ui(ui, |ui| {
-                        for (input, name) in &titles {
-                            if ui
-                                .selectable_label(window.input == Some(*input), name)
-                                .on_hover_text(l.format(
-                                    Msg::AnimWinTitleOptionHover,
-                                    &[("name", Arg::Str(name))],
-                                ))
-                                .clicked()
-                            {
-                                picked = Some(*input);
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text(l.text(Msg::AnimWinTitleHover));
-                if let Some(input) = picked {
-                    if let Some(previous) = window.input
-                        && let Some(binding) = window.bindings.get_mut(&previous)
-                    {
-                        binding.set_preset_hover(None, now);
-                    }
-                    window.input = Some(input);
-                    window.timeline.active_row = None;
-                    window.timeline.clear_notice();
-                }
-            }
-            if let Some(input) = window.input
-                && let Some(binding) = window.bindings.get_mut(&input)
+                .on_hover_text(l.text(section_hover));
+            if (!titles.is_empty() || !scenes.is_empty())
+                && let Some(picked) = target_picker(ui, l, window, &titles, &scenes)
             {
-                let lock = animation_lock_reason(state, input);
-                let status = binding.status();
-                let (text, hover, tone) = status_look(status);
-                status_chip(ui, l.text(text), tone, 92.0).on_hover_text(l.text(hover));
-                let mut auto = binding.auto_save();
-                if ui
-                    .checkbox(&mut auto, l.text(Msg::AnimAutoSave))
-                    .on_hover_text(l.text(Msg::AnimAutoSaveHover))
-                    .changed()
-                {
-                    binding.set_auto_save(auto);
-                }
-                let save_reason = lock.or(match status {
-                    AnimationSaveStatus::Saved => Some(Msg::AnimReasonSaved.en()),
-                    AnimationSaveStatus::Saving => Some(Msg::AnimReasonSaving.en()),
-                    AnimationSaveStatus::Conflict => Some(Msg::AnimReasonConflict.en()),
-                    AnimationSaveStatus::Unsaved | AnimationSaveStatus::Refused => None,
-                });
-                if ui
-                    .add_enabled(
-                        save_reason.is_none(),
-                        small_button(l.text(Msg::TitleOpSave)),
-                    )
-                    .hint(l.text(Msg::AnimSaveHover), save_reason.unwrap_or(""))
-                    .clicked()
-                {
-                    binding.request_save();
-                }
-                let dirty = binding.document().is_dirty() || status != AnimationSaveStatus::Saved;
-                let revert_reason = (!dirty).then_some(Msg::AnimReasonSaved.en()).or_else(|| {
-                    binding
-                        .document()
-                        .drag()
-                        .is_some()
-                        .then_some(Msg::AnimReasonDrag.en())
-                });
-                if ui
-                    .add_enabled(
-                        revert_reason.is_none(),
-                        small_button(l.text(Msg::ColorRevert)),
-                    )
-                    .hint(l.text(Msg::AnimRevertHover), revert_reason.unwrap_or(""))
-                    .clicked()
-                {
-                    binding.reload_theirs();
-                    window.timeline.clear_notice();
-                }
-                ui.checkbox(&mut window.onion, l.text(Msg::AnimOnion))
-                    .on_hover_text(l.text(Msg::AnimOnionHover));
+                window.select(picked, now);
+            }
+            let lock = window
+                .shown()
+                .and_then(|input| animation_lock_reason(state, input));
+            let reverted = if window.editing_scene {
+                window
+                    .scene
+                    .and_then(|input| window.scene_bindings.get_mut(&input))
+                    .is_some_and(|binding| draft_controls(ui, l, binding, lock, &mut window.onion))
+            } else {
+                window
+                    .input
+                    .and_then(|input| window.bindings.get_mut(&input))
+                    .is_some_and(|binding| draft_controls(ui, l, binding, lock, &mut window.onion))
+            };
+            if reverted {
+                window.timeline.clear_notice();
+                window.scene_timeline.clear_notice();
             }
             ui.separator();
             let (dock_text, dock_hover) = if *docked {
@@ -892,6 +1000,41 @@ impl StudioShell {
                 *open = false;
             }
         });
+        if window.editing_scene {
+            let Some(input) = window.scene.filter(|_| !scenes.is_empty()) else {
+                crate::theme::empty_state(
+                    ui,
+                    l.text(Msg::AnimWinNoTitles),
+                    l.text(Msg::AnimWinNoTitlesDetail),
+                );
+                return;
+            };
+            let lock = animation_lock_reason(state, input);
+            if let Some(reason) = lock {
+                ui.label(caption(l10n::unavailable(l, reason)).color(AMBER));
+            }
+            let Some(binding) = window.scene_bindings.get_mut(&input) else {
+                return;
+            };
+            conflict_banner(ui, l, binding, lock);
+            // Scenes have no exact preview: the proxy is the picture.
+            window.tracks = Some(draft_body(
+                ui,
+                l,
+                binding,
+                &mut window.scene_timeline,
+                CanvasLook {
+                    texture: None,
+                    onion: window.onion,
+                    preview_reason: Some(Msg::AnimReasonSceneProxy.en()),
+                    max_height: 0.0,
+                    hover: Msg::AnimSceneCanvasHover,
+                },
+                lock,
+                now,
+            ));
+            return;
+        }
         let Some(input) = window.input.filter(|_| !titles.is_empty()) else {
             crate::theme::empty_state(
                 ui,
@@ -907,44 +1050,7 @@ impl StudioShell {
         let Some(binding) = window.bindings.get_mut(&input) else {
             return;
         };
-        if binding.status() == AnimationSaveStatus::Conflict {
-            Frame::new()
-                .fill(AMBER.gamma_multiply(0.10))
-                .stroke(Stroke::new(1.0, AMBER.gamma_multiply(0.5)))
-                .corner_radius(CornerRadius::same(4))
-                .inner_margin(Margin::symmetric(8, 5))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(l.text(Msg::AnimConflictBanner)).color(AMBER));
-                        let busy = binding
-                            .document()
-                            .drag()
-                            .is_some()
-                            .then_some(Msg::AnimReasonDrag.en());
-                        if ui
-                            .add_enabled(
-                                busy.is_none(),
-                                small_button(l.text(Msg::AnimReloadTheirs)),
-                            )
-                            .hint(l.text(Msg::AnimReloadTheirsHover), busy.unwrap_or(""))
-                            .clicked()
-                        {
-                            binding.reload_theirs();
-                        }
-                        let overwrite = lock.or(busy);
-                        if ui
-                            .add_enabled(
-                                overwrite.is_none(),
-                                small_button(l.text(Msg::AnimOverwrite)),
-                            )
-                            .hint(l.text(Msg::AnimOverwriteHover), overwrite.unwrap_or(""))
-                            .clicked()
-                        {
-                            binding.overwrite();
-                        }
-                    });
-                });
-        }
+        conflict_banner(ui, l, binding, lock);
         window.timeline.outside_presets = if binding.has_design() {
             None
         } else {
@@ -962,67 +1068,301 @@ impl StudioShell {
                 Ok(())
             })
         };
-        let preview_reason = preview_block_reason(state);
         let texture = window
             .texture
             .as_ref()
             .filter(|shown| shown.input == input)
             .map(|shown| shown.texture.id());
-        // The hovered preset's outlines play its motion until its exact
-        // frame arrives, then rest on the frame the exact preview shows.
-        let hover_exact = binding.hover_preview_current();
-        if let Some(document) = binding.preset_hover_document_mut() {
-            let frames = document.phase_frames();
-            if hover_exact {
-                document.set_playhead(frames / 2);
-            } else {
-                let rate = document.clip().timebase().rate();
-                let fps = f64::from(rate.numerator()) / f64::from(rate.denominator().max(1));
-                document.set_playhead(hover_frame(ui.input(|input| input.time), fps, frames));
-                ui.ctx().request_repaint();
-            }
-        }
-        let canvas_height = (ui.available_height()
-            - (ui.available_height() * TIMELINE_SHARE).max(TIMELINE_MIN_HEIGHT))
-        .max(CANVAS_MIN_HEIGHT);
-        draw_canvas(
+        window.tracks = Some(draft_body(
             ui,
             l,
             binding,
-            &CanvasLook {
+            &mut window.timeline,
+            CanvasLook {
                 texture,
                 onion: window.onion,
-                preview_reason,
-                max_height: canvas_height,
+                preview_reason: preview_block_reason(state),
+                max_height: 0.0,
+                hover: Msg::AnimCanvasHover,
             },
-        );
-        ui.add_space(4.0);
-        window.timeline.lock_reason = lock;
-        egui::ScrollArea::vertical()
-            .id_salt("studio-animation-timeline")
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                window.tracks = Some(
-                    AnimationTimelineWidget::new(binding.document_mut(), &mut window.timeline)
-                        .locale(l)
-                        .show(ui)
-                        .tracks,
-                );
-            });
-        // Resting on a preset previews it (only where it would apply
-        // locally); leaving the picker ends the preview.
-        let hover = window
-            .timeline
-            .preset_hover
-            .filter(|hover| binding.document().target(hover.target).is_some())
-            .map(|hover| PresetHover {
-                target: hover.target,
-                phase: hover.phase,
-                preset: hover.preset,
-                frames: hover.frames,
-            });
-        binding.set_preset_hover(hover, now);
+            lock,
+            now,
+        ));
     }
+}
+
+/// What the Animation window shows: a title's template animation or a
+/// scene's layer animation (GX-011 stage 5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Subject {
+    Title(InputId),
+    Scene(InputId),
+}
+
+impl AnimationWindow {
+    /// The input whose animation is shown, title or scene.
+    fn shown(&self) -> Option<InputId> {
+        if self.editing_scene {
+            self.scene
+        } else {
+            self.input
+        }
+    }
+
+    /// Shows `subject`, ending the preset preview of what was shown.
+    fn select(&mut self, subject: Subject, now: Duration) {
+        if let Some(previous) = self.input
+            && let Some(binding) = self.bindings.get_mut(&previous)
+        {
+            binding.set_preset_hover(None, now);
+        }
+        if let Some(previous) = self.scene
+            && let Some(binding) = self.scene_bindings.get_mut(&previous)
+        {
+            binding.set_preset_hover(None, now);
+        }
+        match subject {
+            Subject::Title(input) => {
+                self.input = Some(input);
+                self.editing_scene = false;
+            }
+            Subject::Scene(input) => {
+                self.scene = Some(input);
+                self.editing_scene = true;
+            }
+        }
+        self.timeline.active_row = None;
+        self.timeline.clear_notice();
+        self.scene_timeline.active_row = None;
+        self.scene_timeline.clear_notice();
+    }
+}
+
+/// The title-or-scene picker: titles first, then scenes, each under its
+/// heading. Returns the subject picked this frame.
+fn target_picker(
+    ui: &mut Ui,
+    l: Locale,
+    window: &AnimationWindow,
+    titles: &[(InputId, String)],
+    scenes: &[(InputId, String)],
+) -> Option<Subject> {
+    let shown = if window.editing_scene {
+        window
+            .scene
+            .and_then(|input| scenes.iter().find(|(id, _)| *id == input))
+    } else {
+        window
+            .input
+            .and_then(|input| titles.iter().find(|(id, _)| *id == input))
+    }
+    .map_or_else(String::new, |(_, name)| name.clone());
+    let mut picked = None;
+    ComboBox::from_id_salt("studio-animation-title")
+        .selected_text(crate::theme::ellipsize(&shown, 28))
+        .width(210.0)
+        .show_ui(ui, |ui| {
+            for (group, entries, scene) in [
+                (Msg::TabTitles, titles, false),
+                (Msg::AnimWinGroupScenes, scenes, true),
+            ] {
+                if entries.is_empty() {
+                    continue;
+                }
+                ui.label(caption(l.text(group)).color(muted_color()));
+                for (input, name) in entries {
+                    let selected = if scene {
+                        window.editing_scene && window.scene == Some(*input)
+                    } else {
+                        !window.editing_scene && window.input == Some(*input)
+                    };
+                    let hover = if scene {
+                        Msg::AnimWinSceneOptionHover
+                    } else {
+                        Msg::AnimWinTitleOptionHover
+                    };
+                    if ui
+                        .selectable_label(selected, name)
+                        .on_hover_text(l.format(hover, &[("name", Arg::Str(name))]))
+                        .clicked()
+                    {
+                        picked = Some(if scene {
+                            Subject::Scene(*input)
+                        } else {
+                            Subject::Title(*input)
+                        });
+                    }
+                }
+            }
+        })
+        .response
+        .on_hover_text(l.text(Msg::AnimWinTargetHover));
+    picked
+}
+
+/// The status chip, auto-save, Save, Revert, and onion controls of one
+/// draft. Returns whether Revert discarded the draft.
+fn draft_controls<T: AnimationTarget>(
+    ui: &mut Ui,
+    l: Locale,
+    binding: &mut AnimationBinding<T>,
+    lock: Option<&'static str>,
+    onion: &mut bool,
+) -> bool {
+    let status = binding.status();
+    let (text, hover, tone) = status_look(status);
+    status_chip(ui, l.text(text), tone, 92.0).on_hover_text(l.text(hover));
+    let mut auto = binding.auto_save();
+    if ui
+        .checkbox(&mut auto, l.text(Msg::AnimAutoSave))
+        .on_hover_text(l.text(Msg::AnimAutoSaveHover))
+        .changed()
+    {
+        binding.set_auto_save(auto);
+    }
+    let save_reason = lock.or(match status {
+        AnimationSaveStatus::Saved => Some(Msg::AnimReasonSaved.en()),
+        AnimationSaveStatus::Saving => Some(Msg::AnimReasonSaving.en()),
+        AnimationSaveStatus::Conflict => Some(Msg::AnimReasonConflict.en()),
+        AnimationSaveStatus::Unsaved | AnimationSaveStatus::Refused => None,
+    });
+    if ui
+        .add_enabled(
+            save_reason.is_none(),
+            small_button(l.text(Msg::TitleOpSave)),
+        )
+        .hint(l.text(Msg::AnimSaveHover), save_reason.unwrap_or(""))
+        .clicked()
+    {
+        binding.request_save();
+    }
+    let dirty = binding.document().is_dirty() || status != AnimationSaveStatus::Saved;
+    let revert_reason = (!dirty).then_some(Msg::AnimReasonSaved.en()).or_else(|| {
+        binding
+            .document()
+            .drag()
+            .is_some()
+            .then_some(Msg::AnimReasonDrag.en())
+    });
+    let mut reverted = false;
+    if ui
+        .add_enabled(
+            revert_reason.is_none(),
+            small_button(l.text(Msg::ColorRevert)),
+        )
+        .hint(l.text(Msg::AnimRevertHover), revert_reason.unwrap_or(""))
+        .clicked()
+    {
+        binding.reload_theirs();
+        reverted = true;
+    }
+    ui.checkbox(onion, l.text(Msg::AnimOnion))
+        .on_hover_text(l.text(Msg::AnimOnionHover));
+    reverted
+}
+
+/// The notice that someone else changed the animation under this draft,
+/// with "Reload theirs" and "Overwrite".
+fn conflict_banner<T: AnimationTarget>(
+    ui: &mut Ui,
+    l: Locale,
+    binding: &mut AnimationBinding<T>,
+    lock: Option<&'static str>,
+) {
+    if binding.status() != AnimationSaveStatus::Conflict {
+        return;
+    }
+    Frame::new()
+        .fill(AMBER.gamma_multiply(0.10))
+        .stroke(Stroke::new(1.0, AMBER.gamma_multiply(0.5)))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(l.text(Msg::AnimConflictBanner)).color(AMBER));
+                let busy = binding
+                    .document()
+                    .drag()
+                    .is_some()
+                    .then_some(Msg::AnimReasonDrag.en());
+                if ui
+                    .add_enabled(busy.is_none(), small_button(l.text(Msg::AnimReloadTheirs)))
+                    .hint(l.text(Msg::AnimReloadTheirsHover), busy.unwrap_or(""))
+                    .clicked()
+                {
+                    binding.reload_theirs();
+                }
+                let overwrite = lock.or(busy);
+                if ui
+                    .add_enabled(
+                        overwrite.is_none(),
+                        small_button(l.text(Msg::AnimOverwrite)),
+                    )
+                    .hint(l.text(Msg::AnimOverwriteHover), overwrite.unwrap_or(""))
+                    .clicked()
+                {
+                    binding.overwrite();
+                }
+            });
+        });
+}
+
+/// The canvas over the timeline of one draft, and the preset preview the
+/// timeline's picker asks for. Returns where the timeline laid out its
+/// rows.
+#[allow(clippy::too_many_arguments)] // one editor body: draft, timeline, look, gates, clock
+fn draft_body<T: AnimationTarget>(
+    ui: &mut Ui,
+    l: Locale,
+    binding: &mut AnimationBinding<T>,
+    timeline: &mut AnimationTimelineState<T>,
+    mut canvas: CanvasLook,
+    lock: Option<&'static str>,
+    now: Duration,
+) -> crate::animation_timeline::TrackGeometry {
+    // The hovered preset's outlines play its motion until its exact
+    // frame arrives, then rest on the frame the exact preview shows.
+    let hover_exact = binding.hover_preview_current();
+    if let Some(document) = binding.preset_hover_document_mut() {
+        let frames = document.phase_frames();
+        if hover_exact {
+            document.set_playhead(frames / 2);
+        } else {
+            let rate = document.clip().timebase().rate();
+            let fps = f64::from(rate.numerator()) / f64::from(rate.denominator().max(1));
+            document.set_playhead(hover_frame(ui.input(|input| input.time), fps, frames));
+            ui.ctx().request_repaint();
+        }
+    }
+    canvas.max_height = (ui.available_height()
+        - (ui.available_height() * TIMELINE_SHARE).max(TIMELINE_MIN_HEIGHT))
+    .max(CANVAS_MIN_HEIGHT);
+    draw_canvas(ui, l, binding, &canvas);
+    ui.add_space(4.0);
+    timeline.lock_reason = lock;
+    let tracks = egui::ScrollArea::vertical()
+        .id_salt("studio-animation-timeline")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            AnimationTimelineWidget::new(binding.document_mut(), timeline)
+                .locale(l)
+                .show(ui)
+                .tracks
+        })
+        .inner;
+    // Resting on a preset previews it (only where it would apply
+    // locally); leaving the picker ends the preview.
+    let hover = timeline
+        .preset_hover
+        .filter(|hover| binding.document().target(hover.target).is_some())
+        .map(|hover| PresetHover {
+            target: hover.target,
+            phase: hover.phase,
+            preset: hover.preset,
+            frames: hover.frames,
+        });
+    binding.set_preset_hover(hover, now);
+    tracks
 }
 
 /// What the canvas shows besides the draft.
@@ -1032,20 +1372,29 @@ struct CanvasLook {
     onion: bool,
     preview_reason: Option<&'static str>,
     max_height: f32,
+    /// The canvas's hover text.
+    hover: Msg,
 }
 
 /// The canvas: the exact preview when one exists, the wireframe proxy and
 /// onion skins over it (filled while the exact frame is out of date, a
 /// drag runs, or playback plays; outlines only over an exact frame), a
 /// hovered preset's outlines playing its motion, a badge saying which is
-/// shown, and the phase and frame.
+/// shown, and the phase and frame. A scene has no exact preview, so its
+/// proxy is the picture.
 #[allow(clippy::too_many_lines)] // one canvas: picture, overlay, badge, caption
-fn draw_canvas(ui: &mut Ui, l: Locale, binding: &TitleAnimationBinding, look: &CanvasLook) {
+fn draw_canvas<T: AnimationTarget>(
+    ui: &mut Ui,
+    l: Locale,
+    binding: &AnimationBinding<T>,
+    look: &CanvasLook,
+) {
     let CanvasLook {
         texture,
         onion,
         preview_reason,
         max_height,
+        hover,
     } = *look;
     let document = binding.document();
     let hovered = binding.preset_hover_document();
@@ -1054,7 +1403,7 @@ fn draw_canvas(ui: &mut Ui, l: Locale, binding: &TitleAnimationBinding, look: &C
     let (rect, response) = ui
         .vertical_centered(|ui| ui.allocate_exact_size(size, Sense::hover()))
         .inner;
-    response.on_hover_text(l.text(Msg::AnimCanvasHover));
+    response.on_hover_text(l.text(hover));
     let painter = ui.painter_at(rect);
     paint_checker(&painter, rect);
     let exact = if hovered.is_some() {

@@ -495,6 +495,7 @@ fn append_scenes(
             name,
             background: scene.background,
             layers,
+            animation: scene.animation.clone(),
         });
     }
 

@@ -2998,6 +2998,7 @@ fn create_stream_project(path: &Path) {
         name: "Program scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
             name: "Source".into(),
             source: SourceRef::Input(domain_input(1)),
             enabled: true,
@@ -3008,6 +3009,7 @@ fn create_stream_project(path: &Path) {
             opacity: u8::MAX,
             z_order: 0,
         }],
+        animation: fm_model::SceneAnimation::default(),
     });
     let bus = bus_id(1);
     project.add_audio_bus(AudioBus {
@@ -3117,6 +3119,7 @@ fn canonical_project_at(width: u32, height: u32) -> Project {
         name: "Program scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![Layer {
+            id: fm_model::LayerId::new(2).unwrap(),
             name: "Source".into(),
             source: SourceRef::Input(domain_input(1)),
             enabled: true,
@@ -3127,6 +3130,7 @@ fn canonical_project_at(width: u32, height: u32) -> Project {
             opacity: u8::MAX,
             z_order: 0,
         }],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_audio_bus(AudioBus {
         id: bus_id(1),
@@ -4955,11 +4959,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.30.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 30));
+    // The previous protocol is refused; the current one is 2.31.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 31));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 29),
+        protocol: ProtocolVersion::new(2, 30),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4975,7 +4979,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 30)
+        ProtocolVersion::new(2, 31)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -5847,5 +5851,155 @@ fn title_animation_edits_preview_exactly_and_persist_through_restart() {
         assert_eq!(staged, 0, "{restart}: every staged copy is committed");
         drop(viewer);
         daemon.stop();
+    }
+}
+
+/// Reads the snapshot of the scene project (no titles, playlist, or
+/// grades) and its Protocol 2.31 `scene_animation_state` and
+/// `scene_layout_state` records.
+fn scene_animation_sync(
+    client: &mut Client,
+) -> (
+    fm_protocol::SnapshotMessage,
+    fm_protocol::SceneAnimationStateMessage,
+) {
+    let WireMessage::Snapshot(snapshot) = client.receive() else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(snapshot.titles, []);
+    assert!(!snapshot.playlist_follows);
+    assert_eq!(snapshot.grade_states, 0);
+    assert_eq!(snapshot.scenes, [input(4)]);
+    let WireMessage::SceneAnimationState(state) = client.receive() else {
+        panic!("expected scene_animation_state after the snapshot");
+    };
+    assert_eq!((state.revision, state.input), (snapshot.revision, input(4)));
+    match client.receive() {
+        WireMessage::SceneLayoutState(layout) => {
+            assert_eq!(
+                (layout.revision, layout.input),
+                (snapshot.revision, input(4))
+            );
+            assert_eq!((layout.layout.width, layout.layout.height), (1_920, 1_080));
+            assert_eq!(layout.layout.layers.len(), 1);
+            assert_eq!(layout.layout.layers[0].id.get().get(), 2);
+            assert_eq!(layout.layout.layers[0].name, "Source");
+        }
+        other => panic!("expected scene_layout_state after the animation state, got {other:?}"),
+    }
+    (snapshot, state)
+}
+
+/// GX-011 stage 5, Protocol 2.31: scene animation edits are revision-checked
+/// `EditProject` commands replicated as `scene_animation_changed` and
+/// `scene_animation_state`, a switch to an animated scene is accepted and
+/// realized, and the edited animation persists in the stored project
+/// through a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scene_animation_edits_replicate_and_persist_through_restart() {
+    use fm_model::fm_animation::{AnimationPreset, Phase};
+    use fm_protocol::WireSceneLayerId;
+
+    let directory = TestDirectory::new("scene-animation");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let layer = WireSceneLayerId::new(NonZeroU32::new(2).unwrap());
+    let mut expected = ProjectStore::new(&project_path)
+        .unwrap()
+        .load()
+        .unwrap()
+        .project()
+        .scene(scene_id(1))
+        .unwrap()
+        .clone();
+    expected
+        .apply_animation_preset(
+            fm_model::LayerId::new(2).unwrap(),
+            Phase::In,
+            AnimationPreset::Fade,
+            10,
+            1_920,
+            1_080,
+        )
+        .unwrap();
+    let faded_clip = fm_control::scene_clip_to_wire(&expected.animation.clip);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    let (_, state) = scene_animation_sync(&mut viewer);
+    assert_eq!(state.animation_revision, 0);
+    let preset = CommandPayload::ApplySceneAnimationPreset {
+        input: input(4),
+        base_revision: 0,
+        layer,
+        phase: Phase::In,
+        preset: AnimationPreset::Fade,
+        frames: 10,
+    };
+    permission_denied(&mut viewer, "viewer-preset", preset.clone());
+
+    let mut graphics = daemon.connect();
+    graphics.handshake_as(Role::Graphics, None);
+    scene_animation_sync(&mut graphics);
+    graphics.send(&command("preset", "preset-key", preset));
+    assert_eq!(accepted_revision(&mut graphics, "preset"), 1);
+    let changed = EventPayload::SceneAnimationChanged {
+        inputs: vec![input(4)],
+        animation_revision: 1,
+        clip: Box::new(faded_clip.clone()),
+    };
+    assert_eq!(durable_event_at(&mut graphics, 1).payload, changed);
+    assert_eq!(durable_event_at(&mut viewer, 1).payload, changed);
+
+    // A stale base revision conflicts.
+    graphics.send(&command(
+        "stale",
+        "stale-key",
+        CommandPayload::StretchSceneAnimation {
+            input: input(4),
+            base_revision: 0,
+            phase: Phase::In,
+            frames: 20,
+        },
+    ));
+    match graphics.next_result() {
+        CommandResult::Rejected { id, code, .. } => {
+            assert_eq!((id.as_str(), code.as_str()), ("stale", "conflict"));
+        }
+        other @ CommandResult::Accepted { .. } => panic!("expected a conflict, got {other:?}"),
+    }
+
+    // Switching away and back to the animated scene plays its In phase
+    // within the command.
+    let mut operator = daemon.connect();
+    operator.handshake_as(Role::Operator, None);
+    scene_animation_sync(&mut operator);
+    operator.send(&command("away", "away-key", CommandPayload::Cut));
+    assert_eq!(accepted_revision(&mut operator, "away"), 2);
+    operator.send(&command("back", "back-key", CommandPayload::Cut));
+    assert_eq!(accepted_revision(&mut operator, "back"), 3);
+    drop(operator);
+    drop(graphics);
+    drop(viewer);
+    daemon.stop();
+
+    for restart in ["recovered", "restarted"] {
+        let daemon = Daemon::start_without_once(&project_path);
+        let mut viewer = daemon.connect();
+        viewer.handshake_as(Role::Viewer, None);
+        let (snapshot, state) = scene_animation_sync(&mut viewer);
+        assert_eq!(snapshot.desired_program, input(4), "{restart}");
+        assert_eq!(state.animation_revision, 1, "{restart}");
+        assert_eq!(*state.clip, faded_clip, "{restart}");
+        drop(viewer);
+        daemon.stop();
+        let stored = ProjectStore::new(&project_path).unwrap().load().unwrap();
+        assert_eq!(
+            stored.project().scene(scene_id(1)).unwrap().animation,
+            expected.animation,
+            "{restart}"
+        );
     }
 }

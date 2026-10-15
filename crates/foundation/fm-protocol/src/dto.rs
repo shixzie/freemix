@@ -796,6 +796,116 @@ pub struct TitleLayoutStateMessage {
     pub layout: Box<WireTitleLayout>,
 }
 
+/// Stable identity of one scene layer carried on the wire (Protocol 2.31):
+/// the target of every scene animation track. Unique within its scene.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WireSceneLayerId(core::num::NonZeroU32);
+
+impl WireSceneLayerId {
+    #[must_use]
+    pub const fn new(value: core::num::NonZeroU32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> core::num::NonZeroU32 {
+        self.0
+    }
+}
+
+impl fmt::Display for WireSceneLayerId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A scene's layer animation as carried on the wire (Protocol 2.31): an
+/// [`fm_animation::Clip`] keyed by layer, in the title clip encoding. Scene
+/// clips never animate [`fm_animation::Property::Color`].
+pub type WireSceneClip = Clip<WireSceneLayerId>;
+
+/// Largest binary encoding of one [`WireSceneClip`], in bytes (the title
+/// clip bound, so the field stays within [`crate::MAX_FIELD_VALUE_BYTES`]).
+pub const MAX_SCENE_ANIMATION_BYTES: usize = 36 * 1024;
+
+/// One scene's animation at a snapshot's `revision` (Protocol 2.31).
+///
+/// A session writes exactly one `scene_animation_state` per Scene input of
+/// a snapshot's `scenes` list, in list order, after the snapshot's
+/// `title_layout_state` records and before any event. Scene inputs that
+/// show the same scene report the same clip and revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SceneAnimationStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    /// The scene's animation revision: the `base_revision` the next
+    /// animation edit must name.
+    pub animation_revision: u64,
+    pub clip: Box<WireSceneClip>,
+}
+
+/// Most layers one [`WireSceneLayout`] lists (Protocol 2.31). A scene with
+/// more lists its first layers in scene order; the rest cannot be targeted
+/// by an editor.
+pub const MAX_SCENE_LAYOUT_LAYERS: usize = 256;
+/// Longest layer display name in a [`WireSceneLayout`], in UTF-8 bytes.
+/// Longer names are cut at a character boundary.
+pub const MAX_SCENE_LAYER_NAME_BYTES: usize = 96;
+/// Largest scene canvas side carried in a [`WireSceneLayout`], in pixels
+/// (the project video limit).
+pub const MAX_SCENE_CANVAS_SIDE: u32 = 8_192;
+/// Largest binary encoding of one [`WireSceneLayout`]'s layer list, in
+/// bytes; with the bounds above every layout fits (worst case about 32
+/// KiB).
+pub const MAX_SCENE_LAYOUT_BYTES: usize = 36 * 1024;
+
+/// One scene layer's static design (Protocol 2.31): what an animation
+/// editor needs to list, outline, and apply presets to it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WireSceneLayerOutline {
+    pub id: WireSceneLayerId,
+    /// The layer's display name, at most [`MAX_SCENE_LAYER_NAME_BYTES`]
+    /// bytes with no control characters (may be empty).
+    pub name: String,
+    /// Static box in project canvas pixels: the top-left of its on-screen
+    /// footprint and its size before `quarter_turns`.
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    /// Static clockwise quarter turns, `0..=3`.
+    pub quarter_turns: u8,
+    /// Static opacity, `0..=255`.
+    pub opacity: u8,
+    /// Whether the layer is drawn at all.
+    pub enabled: bool,
+}
+
+/// A scene's static layout (Protocol 2.31): the project canvas and the
+/// scene's layers in scene (stacking list) order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WireSceneLayout {
+    /// Canvas width and height in pixels, each in
+    /// `1..=`[`MAX_SCENE_CANVAS_SIDE`].
+    pub width: u32,
+    pub height: u32,
+    /// At most [`MAX_SCENE_LAYOUT_LAYERS`], ids unique.
+    pub layers: Vec<WireSceneLayerOutline>,
+}
+
+/// One scene's layout at a snapshot's `revision` (Protocol 2.31).
+///
+/// A session writes exactly one `scene_layout_state` per Scene input of a
+/// snapshot's `scenes` list, in list order, after the snapshot's
+/// `scene_animation_state` records and before any event. Scene layers are
+/// edited offline only, so a layout changes only with a new snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SceneLayoutStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    pub layout: Box<WireSceneLayout>,
+}
+
 /// Where an exact title preview samples the animation. Wire encoding:
 /// `phase=static|in|hold|out` with `frame` (zero unless `in` or `out`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1214,6 +1324,33 @@ pub enum CommandPayload {
         phase: Phase,
         frames: u32,
     },
+    /// Replaces a scene's whole layer animation clip through one of its
+    /// Scene inputs (Protocol 2.31). Wire payload `scene_animation_set`.
+    /// Refused as a conflict unless the scene's animation revision is
+    /// `base_revision`.
+    SetSceneAnimation {
+        input: WireInputId,
+        base_revision: u64,
+        clip: Box<WireSceneClip>,
+    },
+    /// Applies a built-in preset to one layer of a scene's animation over
+    /// `frames` frames of `phase`. Wire payload `scene_animation_preset`.
+    ApplySceneAnimationPreset {
+        input: WireInputId,
+        base_revision: u64,
+        layer: WireSceneLayerId,
+        phase: Phase,
+        preset: AnimationPreset,
+        frames: u32,
+    },
+    /// Scales every key of one phase of a scene's animation to a new phase
+    /// length. Wire payload `scene_animation_stretch`.
+    StretchSceneAnimation {
+        input: WireInputId,
+        base_revision: u64,
+        phase: Phase,
+        frames: u32,
+    },
 }
 
 /// Largest `.cube` text one `grade_lut_import` carries, in bytes. The text
@@ -1517,6 +1654,9 @@ pub struct SnapshotMessage {
     pub edit_history: EditHistoryStatus,
     /// Every title input in ascending input order with its field revision.
     pub titles: Vec<TitleSummary>,
+    /// Every Scene input in ascending input order (Protocol 2.31): one
+    /// `scene_animation_state` and one `scene_layout_state` follow for each.
+    pub scenes: Vec<WireInputId>,
     /// The engine's video frame rate: every playlist duration and frame
     /// counts these frames.
     pub frame_rate: FrameRate,
@@ -1627,6 +1767,14 @@ pub enum EventPayload {
         inputs: Vec<WireInputId>,
         animation_revision: u64,
         clip: Box<WireTitleClip>,
+    },
+    /// A scene animation edit (or its undo or redo) was accepted (Protocol
+    /// 2.31): the scene's complete clip and animation revision afterwards,
+    /// and every Scene input (ascending) that shows the scene.
+    SceneAnimationChanged {
+        inputs: Vec<WireInputId>,
+        animation_revision: u64,
+        clip: Box<WireSceneClip>,
     },
 }
 
@@ -1974,6 +2122,8 @@ pub enum WireMessage {
     GradeState(GradeStateMessage),
     TitleAnimationState(TitleAnimationStateMessage),
     TitleLayoutState(TitleLayoutStateMessage),
+    SceneAnimationState(SceneAnimationStateMessage),
+    SceneLayoutState(SceneLayoutStateMessage),
     TitlePreviewRequest(TitlePreviewRequest),
     TitlePreviewFrame(TitlePreviewFrameMessage),
 }

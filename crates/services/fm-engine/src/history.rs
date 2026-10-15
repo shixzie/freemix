@@ -125,7 +125,8 @@ impl EngineCommand {
             | Self::SetOverlayOutputInclusion { .. }
             | Self::SetPlaylist { .. }
             | Self::Grade(_)
-            | Self::TitleAnimation(_) => EngineCommandKind::ProjectEdit,
+            | Self::TitleAnimation(_)
+            | Self::SceneAnimation(_) => EngineCommandKind::ProjectEdit,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -467,6 +468,9 @@ impl EditHistory {
                     EngineCommand::TitleAnimation(edit) => {
                         EngineCommand::TitleAnimation(edit.unchecked())
                     }
+                    EngineCommand::SceneAnimation(edit) => {
+                        EngineCommand::SceneAnimation(edit.unchecked())
+                    }
                     command => command,
                 };
                 self.undo.push_back(EditHistoryEntry {
@@ -567,6 +571,9 @@ fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
         EngineCommand::TitleAnimation(edit) => {
             EngineCommand::TitleAnimation(crate::title_animation::normalized(state, edit))
         }
+        EngineCommand::SceneAnimation(edit) => {
+            EngineCommand::SceneAnimation(crate::scene_animation::normalized(state, edit))
+        }
         command => command.clone(),
     }
 }
@@ -586,6 +593,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::ConfigureStinger { descriptor, .. } => descriptor.media_input == input,
         EngineCommand::Grade(edit) => edit.input() == Some(input),
         EngineCommand::TitleAnimation(edit) => edit.input == input,
+        EngineCommand::SceneAnimation(edit) => edit.input == input,
         _ => false,
     }
 }
@@ -641,6 +649,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::Grade(edit) => grade_inverse(state, edit).map(EngineCommand::Grade),
         EngineCommand::TitleAnimation(edit) => {
             crate::title_animation::inverse(state, edit).map(EngineCommand::TitleAnimation)
+        }
+        EngineCommand::SceneAnimation(edit) => {
+            crate::scene_animation::inverse(state, edit).map(EngineCommand::SceneAnimation)
         }
         _ => None,
     }
@@ -736,6 +747,19 @@ pub(crate) fn check_edit_locks(
         // Every title sharing the animated template shows the edit.
         EngineCommand::TitleAnimation(edit) => {
             match crate::title_animation::title_template_inputs(state, edit.input)
+                .into_iter()
+                .find(|input| state.is_input_locked(*input))
+            {
+                Some(locked) => Err(EditRejection::InputLocked(locked)),
+                None if state.is_input_locked(edit.input) => {
+                    Err(EditRejection::InputLocked(edit.input))
+                }
+                None => Ok(()),
+            }
+        }
+        // Every Scene input showing the animated scene shows the edit.
+        EngineCommand::SceneAnimation(edit) => {
+            match crate::scene_animation::scene_inputs_sharing(state, edit.input)
                 .into_iter()
                 .find(|input| state.is_input_locked(*input))
             {

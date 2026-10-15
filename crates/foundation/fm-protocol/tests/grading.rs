@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.30\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.31\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -95,7 +95,7 @@ fn base64url(bytes: &[u8]) -> String {
 
 #[test]
 fn protocol_version_is_2_29() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 30));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 31));
 }
 
 #[test]
@@ -495,6 +495,7 @@ fn sample_snapshot() -> WireMessage {
         edit_locks: EditLockStatus::default(),
         edit_history: EditHistoryStatus::EMPTY,
         titles: Vec::new(),
+        scenes: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,

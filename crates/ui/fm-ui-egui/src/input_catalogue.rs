@@ -1477,6 +1477,7 @@ mod tests {
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            scenes: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,

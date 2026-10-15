@@ -181,6 +181,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         edit_locks: fm_protocol::EditLockStatus::default(),
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         titles: Vec::new(),
+        scenes: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
@@ -2241,5 +2242,193 @@ mod grading {
             matches!(error, ClientError::ResyncRequired { .. }),
             "{error:?}"
         );
+    }
+}
+
+/// Protocol 2.31 (GX-011 stage 5): a snapshot's Scene inputs complete with
+/// their `scene_animation_state` and then `scene_layout_state`, and
+/// `scene_animation_changed` keeps every Scene input showing the scene
+/// current.
+mod scene_animation {
+    use super::*;
+
+    fn layer(value: u32) -> fm_protocol::WireSceneLayerId {
+        fm_protocol::WireSceneLayerId::new(core::num::NonZeroU32::new(value).unwrap())
+    }
+
+    fn clip(in_frames: u32) -> fm_protocol::WireSceneClip {
+        fm_protocol::WireSceneClip::new(
+            fm_animation::Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+            in_frames,
+            0,
+        )
+        .unwrap()
+    }
+
+    fn scene_snapshot(revision: u64) -> SnapshotMessage {
+        SnapshotMessage {
+            scenes: vec![input(1), input(2)],
+            ..snapshot(revision)
+        }
+    }
+
+    fn animation(revision: u64, scene: u128) -> fm_protocol::SceneAnimationStateMessage {
+        fm_protocol::SceneAnimationStateMessage {
+            revision,
+            input: input(scene),
+            animation_revision: 0,
+            clip: Box::new(clip(0)),
+        }
+    }
+
+    fn layout(revision: u64, scene: u128) -> fm_protocol::SceneLayoutStateMessage {
+        fm_protocol::SceneLayoutStateMessage {
+            revision,
+            input: input(scene),
+            layout: Box::new(fm_protocol::WireSceneLayout {
+                width: 1_920,
+                height: 1_080,
+                layers: vec![fm_protocol::WireSceneLayerOutline {
+                    id: layer(1),
+                    name: "Cam".into(),
+                    x: 0,
+                    y: 0,
+                    width: 960,
+                    height: 540,
+                    quarter_turns: 0,
+                    opacity: 255,
+                    enabled: true,
+                }],
+            }),
+        }
+    }
+
+    fn synchronizing_client() -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(scene_snapshot(4)))
+            .unwrap();
+        client
+    }
+
+    #[test]
+    fn scene_states_complete_the_snapshot_and_changes_replicate() {
+        let mut client = synchronizing_client();
+        for scene in [1, 2] {
+            assert_eq!(
+                client
+                    .intake(WireMessage::SceneAnimationState(animation(4, scene)))
+                    .unwrap(),
+                Intake::SceneAnimationStateApplied
+            );
+        }
+        assert!(client.model().state().unwrap().scene_animations_complete());
+        assert_eq!(
+            client
+                .intake(WireMessage::SceneLayoutState(layout(4, 1)))
+                .unwrap(),
+            Intake::SceneLayoutStateApplied
+        );
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        client
+            .intake(WireMessage::SceneLayoutState(layout(4, 2)))
+            .unwrap();
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let state = client.model().state().unwrap();
+        assert!(state.scene_layouts_complete());
+        assert_eq!(
+            state
+                .scene(input(1).to_domain())
+                .unwrap()
+                .layout
+                .as_ref()
+                .unwrap()
+                .layers[0]
+                .name,
+            "Cam"
+        );
+
+        client
+            .apply_event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 5,
+                },
+                payload: EventPayload::SceneAnimationChanged {
+                    inputs: vec![input(1), input(2)],
+                    animation_revision: 1,
+                    clip: Box::new(clip(12)),
+                },
+            })
+            .unwrap();
+        for scene in client.model().state().unwrap().scenes() {
+            let animation = scene.animation.as_ref().unwrap();
+            assert_eq!(animation.revision, 1);
+            assert_eq!(animation.clip.in_frames(), 12);
+        }
+
+        // A change that does not advance the revision is refused.
+        let error = client
+            .apply_event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 6,
+                },
+                payload: EventPayload::SceneAnimationChanged {
+                    inputs: vec![input(1)],
+                    animation_revision: 1,
+                    clip: Box::new(clip(6)),
+                },
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ClientError::Model(fm_ui_model::ModelError::InvalidSceneChange(_))
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn out_of_order_scene_states_force_a_fresh_snapshot() {
+        // A layout before its animation.
+        let mut client = synchronizing_client();
+        let error = client
+            .intake(WireMessage::SceneLayoutState(layout(4, 1)))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::ResyncRequired { .. }));
+
+        // A scene the snapshot did not announce.
+        let mut client = synchronizing_client();
+        let error = client
+            .intake(WireMessage::SceneAnimationState(animation(4, 3)))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::ResyncRequired { .. }));
+
+        // A record at another revision.
+        let mut client = synchronizing_client();
+        let error = client
+            .intake(WireMessage::SceneAnimationState(animation(3, 1)))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::ResyncRequired { .. }));
+
+        // A scene state once ready.
+        let mut client = ready_client(4);
+        let error = client
+            .intake(WireMessage::SceneAnimationState(animation(4, 1)))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::ResyncRequired { .. }));
     }
 }

@@ -740,6 +740,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
             None,
             0,
         )],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: primary_scene,
@@ -751,6 +752,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
             Some(CropRect::new(1, 0, 2, 2)),
             0,
         )],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: secondary_scene,
@@ -770,6 +772,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
                 1,
             ),
         ],
+        animation: fm_model::SceneAnimation::default(),
     });
     let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default())
         .expect("compile scene routes");
@@ -918,6 +921,7 @@ fn native_metal_project_frames_use_one_completed_in_flight_slot_without_readback
         name: "bounded background".into(),
         background: ModelRgba8::OPAQUE_BLACK,
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
     let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
     assert_eq!(plan.peak_rgba16f_targets(), 4);
@@ -1014,6 +1018,11 @@ fn metal_scene_layer(
     z_order: i32,
 ) -> Layer {
     Layer {
+        id: {
+            // Unique per call, so helper-built layers never share an id.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)).unwrap()
+        },
         name: "Metal geometry".into(),
         source,
         enabled: true,

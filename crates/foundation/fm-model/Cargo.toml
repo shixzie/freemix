@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fm-animation = { path = "../fm-animation" }
 fm-grade = { path = "../fm-grade" }
 fm-types = { path = "../fm-types" }
 

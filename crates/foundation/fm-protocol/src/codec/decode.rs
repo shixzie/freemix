@@ -12,13 +12,14 @@ use crate::{
     MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
     MonitorTap, OverlayStatus, PlaylistOperation, PlaylistStateMessage, ResumeCursor,
-    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
-    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
-    StructuredError, TitleAnimationStateMessage, TitleFieldStatus, TitleLayoutStateMessage,
+    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent,
+    SceneAnimationStateMessage, SceneLayoutStateMessage, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
+    TitleAnimationStateMessage, TitleFieldStatus, TitleLayoutStateMessage,
     TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireInputId,
-    WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
-    WireStreamTargetId, WireTitleElementId,
+    WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireSceneLayerId,
+    WireStingerSlotId, WireStreamTargetId, WireTitleElementId,
 };
 
 use super::animation::{
@@ -34,6 +35,7 @@ use super::playlist::{
     decode_frame_rate, decode_optional_entry, decode_playlist_entries, decode_playlist_start,
     decode_playlist_state, parse_playlist_loop,
 };
+use super::scene_layout::{decode_scene_clip, decode_scene_layout, decode_scene_list};
 use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
     parse_title_air_requirement, validate_title_name, validate_title_phase,
@@ -115,6 +117,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "title_layout_state" => {
             WireMessage::TitleLayoutState(decode_title_layout_state(&mut fields)?)
+        }
+        "scene_animation_state" => {
+            WireMessage::SceneAnimationState(decode_scene_animation_state(&mut fields)?)
+        }
+        "scene_layout_state" => {
+            WireMessage::SceneLayoutState(decode_scene_layout_state(&mut fields)?)
         }
         "title_preview_request" => {
             WireMessage::TitlePreviewRequest(decode_title_preview_request(&mut fields)?)
@@ -416,6 +424,9 @@ fn decode_command_payload(
         name if name.starts_with("title_animation_") => {
             decode_title_animation_command(fields, name)?
         }
+        name if name.starts_with("scene_animation_") => {
+            decode_scene_animation_command(fields, name)?
+        }
         name if name.starts_with("playlist_") => decode_playlist_command(fields, name)?,
         name if name.starts_with("grade_") => decode_grade_command(fields, name)?,
         _ => {
@@ -562,6 +573,88 @@ fn decode_title_animation_command(
                 value: name.to_owned(),
             });
         }
+    })
+}
+
+fn decode_scene_animation_command(
+    fields: &mut Fields,
+    name: &str,
+) -> Result<CommandPayload, CodecError> {
+    let input = fields.canonical_input("input")?;
+    let base_revision = fields.canonical_required("base_revision")?;
+    Ok(match name {
+        "scene_animation_set" => CommandPayload::SetSceneAnimation {
+            input,
+            base_revision,
+            clip: Box::new(decode_scene_clip(&fields.required("clip")?)?),
+        },
+        "scene_animation_preset" => {
+            let layer = {
+                let value = fields.required("layer")?;
+                parse_canonical_u128(&value)
+                    .and_then(|layer| u32::try_from(layer).ok())
+                    .and_then(core::num::NonZeroU32::new)
+                    .map(WireSceneLayerId::new)
+                    .ok_or(CodecError::InvalidField {
+                        field: "layer",
+                        value,
+                    })?
+            };
+            let phase = decode_animation_phase(fields.required("phase")?)?;
+            let preset = decode_animation_preset(fields.required("preset")?)?;
+            let frames = decode_phase_frames(fields)?;
+            CommandPayload::ApplySceneAnimationPreset {
+                input,
+                base_revision,
+                layer,
+                phase,
+                preset,
+                frames,
+            }
+        }
+        "scene_animation_stretch" => CommandPayload::StretchSceneAnimation {
+            input,
+            base_revision,
+            phase: decode_animation_phase(fields.required("phase")?)?,
+            frames: decode_phase_frames(fields)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "payload",
+                value: name.to_owned(),
+            });
+        }
+    })
+}
+
+fn decode_scene_animation_state(
+    fields: &mut Fields,
+) -> Result<SceneAnimationStateMessage, CodecError> {
+    Ok(SceneAnimationStateMessage {
+        revision: fields.canonical_required("revision")?,
+        input: fields.canonical_input("input")?,
+        animation_revision: fields.canonical_required("animation_revision")?,
+        clip: Box::new(decode_scene_clip(&fields.required("clip")?)?),
+    })
+}
+
+fn decode_scene_layout_state(fields: &mut Fields) -> Result<SceneLayoutStateMessage, CodecError> {
+    let revision = fields.canonical_required("revision")?;
+    let input = fields.canonical_input("input")?;
+    let side = |fields: &mut Fields, name: &'static str| {
+        let value = fields.canonical_required(name)?;
+        u32::try_from(value).map_err(|_| CodecError::InvalidField {
+            field: name,
+            value: value.to_string(),
+        })
+    };
+    let width = side(fields, "width")?;
+    let height = side(fields, "height")?;
+    let layout = decode_scene_layout(width, height, &fields.required("layers")?)?;
+    Ok(SceneLayoutStateMessage {
+        revision,
+        input,
+        layout: Box::new(layout),
     })
 }
 
@@ -1057,6 +1150,10 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         &fields.required("titles")?,
         &inputs.iter().map(|input| input.input).collect::<Vec<_>>(),
     )?;
+    let scenes = decode_scene_list(
+        &fields.required("scenes")?,
+        &inputs.iter().map(|input| input.input).collect::<Vec<_>>(),
+    )?;
     let frame_rate = decode_frame_rate(fields.required("frame_rate")?)?;
     let playlist_follows = fields.boolean("playlist")?;
     let grade_states = {
@@ -1095,6 +1192,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         edit_locks,
         edit_history,
         titles,
+        scenes,
         frame_rate,
         playlist_follows,
         grade_states,
@@ -1660,6 +1758,15 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 inputs,
                 animation_revision: fields.canonical_required("animation_revision")?,
                 clip: Box::new(decode_clip(&fields.required("clip")?)?),
+            }
+        }
+        "scene_animation_changed" => {
+            let inputs = parse_input_ids(&fields.required("inputs")?)?;
+            validate_animation_inputs(&inputs)?;
+            EventPayload::SceneAnimationChanged {
+                inputs,
+                animation_revision: fields.canonical_required("animation_revision")?,
+                clip: Box::new(decode_scene_clip(&fields.required("clip")?)?),
             }
         }
         _ => {

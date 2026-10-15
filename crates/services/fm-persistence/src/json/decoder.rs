@@ -527,6 +527,7 @@ fn parse_scene(value: Value) -> Result<Scene, DecodeError> {
         name,
         background,
         layers: parse_array(object.take("layers")?, "layers", parse_layer)?,
+        animation: super::scene_animation::parse_scene_animation(object.take("animation")?)?,
     };
     object.finish()?;
     Ok(scene)
@@ -534,6 +535,8 @@ fn parse_scene(value: Value) -> Result<Scene, DecodeError> {
 
 fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
     let mut object = Object::new(value, "layer")?;
+    let id = fm_model::LayerId::new(object.u32("id")?)
+        .ok_or_else(|| syntax("layer id must be nonzero"))?;
     let name = object.string("name")?;
     let source = parse_source(object.take("source")?)?;
     let enabled = object.boolean("enabled")?;
@@ -544,6 +547,7 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
     let opacity = object.u8("opacity")?;
     let z_order = object.i32("z_order")?;
     let layer = Layer {
+        id,
         name,
         source,
         enabled,

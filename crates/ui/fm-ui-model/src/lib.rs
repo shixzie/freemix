@@ -22,13 +22,13 @@ use fm_protocol::{
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
 use fm_protocol::{
-    GradeChange, GradeStateMessage, TitleAnimationStateMessage, TitleLayoutStateMessage,
-    WireTitleLayout,
+    GradeChange, GradeStateMessage, SceneAnimationStateMessage, SceneLayoutStateMessage,
+    TitleAnimationStateMessage, TitleLayoutStateMessage, WireSceneLayout, WireTitleLayout,
 };
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
-pub use title_animation::TitleAnimationStatus;
+pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 
 pub mod animation_editor;
 pub mod grade_editor;
@@ -231,6 +231,35 @@ impl TitleStatus {
     }
 }
 
+/// One replicated Scene input's animation and layout (Protocol 2.31,
+/// GX-011 stage 5).
+///
+/// A snapshot announces each Scene input in its `scenes` list: `animation`
+/// and `layout` are `None` until the session's `scene_animation_state` and
+/// `scene_layout_state` for it are applied. Scene inputs showing the same
+/// scene report the same animation, and `scene_animation_changed` keeps
+/// all of them current.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SceneStatus {
+    pub input: InputId,
+    pub animation: Option<SceneAnimationStatus>,
+    /// The scene's canvas and layer outlines. No command changes a layout
+    /// between snapshots.
+    pub layout: Option<Arc<WireSceneLayout>>,
+}
+
+impl SceneStatus {
+    /// A Scene input a snapshot announced, awaiting its follow-on records.
+    #[must_use]
+    pub const fn announced(input: InputId) -> Self {
+        Self {
+            input,
+            animation: None,
+            layout: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ActiveManualTransition {
     pub kind: ManualTransitionKind,
@@ -348,6 +377,8 @@ pub struct ProjectSnapshot {
     pub edit_history: EditHistoryStatus,
     /// Every title input, ascending by input, each incomplete.
     pub titles: Vec<TitleStatus>,
+    /// Every Scene input, ascending by input, each incomplete.
+    pub scenes: Vec<SceneStatus>,
     /// The engine's video frame rate; playlist frames count these frames.
     pub frame_rate: FrameRate,
     /// Whether a `playlist_state` completes this snapshot. Otherwise the
@@ -420,6 +451,11 @@ impl ProjectSnapshot {
                 .titles
                 .into_iter()
                 .map(|title| TitleStatus::announced(title.input.to_domain(), title.field_revision))
+                .collect(),
+            scenes: message
+                .scenes
+                .into_iter()
+                .map(|input| SceneStatus::announced(input.to_domain()))
                 .collect(),
             frame_rate: message.frame_rate,
             playlist_follows: message.playlist_follows,
@@ -498,6 +534,13 @@ pub enum DurableChange {
         inputs: Vec<InputId>,
         animation: TitleAnimationStatus,
     },
+    /// A scene's layer animation after an edit, undo, or redo (Protocol
+    /// 2.31): every Scene input showing the scene (ascending) and the
+    /// animation they all show.
+    SceneAnimationChanged {
+        inputs: Vec<InputId>,
+        animation: SceneAnimationStatus,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -552,6 +595,7 @@ pub struct DurableProjectEvent {
 impl DurableProjectEvent {
     /// Adds project identity and converts the current protocol event DTO.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one match over every protocol event
     pub fn from_protocol(project_id: ProjectId, message: EventMessage) -> Self {
         let change = match message.payload {
             EventPayload::InputOrderChanged { inputs } => DurableChange::InputOrderChanged {
@@ -640,6 +684,20 @@ impl DurableProjectEvent {
             },
             EventPayload::GradeChanged(change) => DurableChange::GradeChanged(change),
             payload @ EventPayload::TitleAnimationChanged { .. } => title_animation_change(payload),
+            EventPayload::SceneAnimationChanged {
+                inputs,
+                animation_revision,
+                clip,
+            } => DurableChange::SceneAnimationChanged {
+                inputs: inputs
+                    .into_iter()
+                    .map(fm_protocol::WireInputId::to_domain)
+                    .collect(),
+                animation: SceneAnimationStatus {
+                    revision: animation_revision,
+                    clip: Arc::from(clip),
+                },
+            },
         };
         Self {
             cursor: ProjectCursor {
@@ -707,6 +765,7 @@ pub struct ProjectState {
     edit_locks: EditLocks,
     edit_history: EditHistoryStatus,
     titles: Vec<TitleStatus>,
+    scenes: Vec<SceneStatus>,
     frame_rate: FrameRate,
     /// `None` while the snapshot's announced `playlist_state` is awaited.
     playlist: Option<PlaylistStatus>,
@@ -779,6 +838,31 @@ impl ProjectState {
     #[must_use]
     pub fn title_layouts_complete(&self) -> bool {
         self.titles.iter().all(|title| title.layout.is_some())
+    }
+
+    /// Returns every replicated Scene input, ascending by input.
+    #[must_use]
+    pub fn scenes(&self) -> &[SceneStatus] {
+        &self.scenes
+    }
+
+    #[must_use]
+    pub fn scene(&self, input: InputId) -> Option<&SceneStatus> {
+        self.scenes.iter().find(|scene| scene.input == input)
+    }
+
+    /// Returns whether every Scene input the snapshot announced has its
+    /// `scene_animation_state`.
+    #[must_use]
+    pub fn scene_animations_complete(&self) -> bool {
+        self.scenes.iter().all(|scene| scene.animation.is_some())
+    }
+
+    /// Returns whether every Scene input the snapshot announced has its
+    /// `scene_layout_state`.
+    #[must_use]
+    pub fn scene_layouts_complete(&self) -> bool {
+        self.scenes.iter().all(|scene| scene.layout.is_some())
     }
 
     /// Returns whether `input` is on air in the replicated desired state: on
@@ -1145,6 +1229,13 @@ pub enum ModelError {
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
+    /// Scene inputs are not unique show inputs in ascending order, or a
+    /// `scene_animation_state` or `scene_layout_state` does not complete
+    /// the snapshot's announced Scene input at the applied revision.
+    SceneStateMismatch(InputId),
+    /// A scene animation change names no, unordered, unknown, incomplete,
+    /// or stale Scene inputs.
+    InvalidSceneChange(InputId),
 }
 
 impl fmt::Display for ModelError {
@@ -1252,6 +1343,13 @@ impl fmt::Display for ModelError {
             | Self::GradeStateMismatch
             | Self::InvalidGradeChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
+            Self::SceneStateMismatch(input) => write!(
+                formatter,
+                "scene state for input {input} does not match the snapshot it follows"
+            ),
+            Self::InvalidSceneChange(input) => {
+                write!(formatter, "scene {input} animation change does not apply")
+            }
         }
     }
 }
@@ -1619,6 +1717,7 @@ impl ClientModel {
             edit_locks: snapshot.edit_locks,
             edit_history: snapshot.edit_history,
             titles: snapshot.titles,
+            scenes: snapshot.scenes,
             frame_rate: snapshot.frame_rate,
             playlist: (!snapshot.playlist_follows).then(PlaylistStatus::empty),
             grading: GradingStatus::default(),
@@ -1916,6 +2015,85 @@ impl ClientModel {
             return Err(mismatch);
         }
         title.layout = Some(Arc::from(message.layout));
+        Ok(())
+    }
+
+    /// Adds the animation of one Scene input the installed snapshot
+    /// announced, from its `scene_animation_state` (Protocol 2.31).
+    ///
+    /// `message` must be at the applied revision and name an announced
+    /// Scene input whose animation has not arrived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::SceneStateMismatch`] otherwise; the model is then
+    /// unchanged and the caller must resynchronize.
+    pub fn apply_scene_animation_state(
+        &mut self,
+        message: SceneAnimationStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        let mismatch = ModelError::SceneStateMismatch(input);
+        if Revision::new(message.revision) != revision {
+            return Err(mismatch);
+        }
+        let scene = state
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.input == input)
+            .ok_or(mismatch.clone())?;
+        if scene.animation.is_some() {
+            return Err(mismatch);
+        }
+        scene.animation = Some(SceneAnimationStatus {
+            revision: message.animation_revision,
+            clip: Arc::from(message.clip),
+        });
+        Ok(())
+    }
+
+    /// Adds the layout of one Scene input the installed snapshot announced,
+    /// from its `scene_layout_state` (Protocol 2.31).
+    ///
+    /// `message` must be at the applied revision and name an announced
+    /// Scene input whose animation has arrived and whose layout has not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::SceneStateMismatch`] otherwise; the model is then
+    /// unchanged and the caller must resynchronize.
+    pub fn apply_scene_layout_state(
+        &mut self,
+        message: SceneLayoutStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        let mismatch = ModelError::SceneStateMismatch(input);
+        if Revision::new(message.revision) != revision {
+            return Err(mismatch);
+        }
+        let scene = state
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.input == input)
+            .ok_or(mismatch.clone())?;
+        if scene.animation.is_none() || scene.layout.is_some() {
+            return Err(mismatch);
+        }
+        scene.layout = Some(Arc::from(message.layout));
         Ok(())
     }
 
@@ -2241,6 +2419,21 @@ fn validate_snapshot_inputs(snapshot: &ProjectSnapshot) -> Result<(), ModelError
     {
         return Err(ModelError::InvalidTitles);
     }
+    if let Some(scene) = snapshot
+        .scenes
+        .windows(2)
+        .find(|pair| pair[0].input >= pair[1].input)
+        .map(|pair| pair[1].input)
+        .or_else(|| {
+            snapshot
+                .scenes
+                .iter()
+                .find(|scene| !inputs.contains(&scene.input))
+                .map(|scene| scene.input)
+        })
+    {
+        return Err(ModelError::SceneStateMismatch(scene));
+    }
     validate_streams(&snapshot.streams)?;
     validate_recordings(&snapshot.recordings)?;
     validate_input_audio_strips(&snapshot.input_audio_strips, &inputs)?;
@@ -2488,6 +2681,31 @@ fn validate_animation_change(
     Ok(())
 }
 
+/// A scene animation change names ascending Scene inputs whose animations
+/// have arrived, each advanced past its current revision.
+fn validate_scene_animation_change(
+    inputs: &[InputId],
+    animation: &SceneAnimationStatus,
+    state: &ProjectState,
+) -> Result<(), ModelError> {
+    let Some(first) = inputs.first() else {
+        return Err(ModelError::InvalidTitles);
+    };
+    if !inputs.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(ModelError::InvalidSceneChange(*first));
+    }
+    for input in inputs {
+        let current = state
+            .scene(*input)
+            .and_then(|scene| scene.animation.as_ref())
+            .ok_or(ModelError::InvalidSceneChange(*input))?;
+        if animation.revision <= current.revision {
+            return Err(ModelError::InvalidSceneChange(*input));
+        }
+    }
+    Ok(())
+}
+
 fn validate_grade_change(change: &GradeChange, state: &ProjectState) -> Result<(), ModelError> {
     if state.grading_complete() && state.grading.accepts(change, &state.inputs) {
         Ok(())
@@ -2534,6 +2752,9 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
         DurableChange::TitleAnimationChanged { .. } => {
             return validate_animation_change(change, state);
+        }
+        DurableChange::SceneAnimationChanged { inputs, animation } => {
+            return validate_scene_animation_change(inputs, animation, state);
         }
         DurableChange::PlaylistChanged {
             selection,
@@ -2700,6 +2921,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
         .retain(|strip| strip.input != input);
     state.edit_locks.set(EditLockTarget::Input(input), false);
     state.titles.retain(|title| title.input != input);
+    state.scenes.retain(|scene| scene.input != input);
     state.grading.inputs.remove(&input);
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
@@ -2713,6 +2935,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one match over every durable change
 fn apply_change(state: &mut ProjectState, change: DurableChange) {
     match change {
         DurableChange::InputOrderChanged { inputs } => {
@@ -2809,6 +3032,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             for title in &mut state.titles {
                 if inputs.contains(&title.input) {
                     title.animation = Some(animation.clone());
+                }
+            }
+        }
+        DurableChange::SceneAnimationChanged { inputs, animation } => {
+            for scene in &mut state.scenes {
+                if inputs.contains(&scene.input) {
+                    scene.animation = Some(animation.clone());
                 }
             }
         }

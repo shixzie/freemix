@@ -17,13 +17,21 @@
 //! hovering), and takes the template's [`TitleDesign`] (canvas and element
 //! outlines), built from the replicated `title_layout_state` (Protocol 2.30)
 //! with [`TitleDesign::from_layout`].
+//!
+//! Scene layer animations (GX-011 stage 5, Protocol 2.31) reuse all of it:
+//! the binding, document, and status are generic over the clip target
+//! ([`AnimationTarget`]), so a scene editor is an
+//! [`AnimationBinding`]`<`[`WireSceneLayerId`]`>` ([`SceneAnimationBinding`])
+//! saving `scene_animation_set` and designed from the replicated
+//! `scene_layout_state` ([`SceneDesign::from_layout`]). Scenes have no exact
+//! preview; their editor shows the wireframe proxy only.
 
 use std::sync::Arc;
 
-use fm_animation::Phase;
+use fm_animation::{Clip, Phase, Property};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandPayload, TitlePreviewRequest, TitlePreviewSample, WireInputId,
-    WireTitleClip, WireTitleElementId,
+    WireSceneLayerId, WireTitleElementId,
 };
 use fm_types::InputId;
 
@@ -32,21 +40,79 @@ use crate::animation_editor::{AnimDocument, ExactPreviewRequest, PreviewRequestI
 mod binding;
 
 pub use binding::{
-    AnimationRefusal, AnimationSaveStatus, DEFAULT_CANVAS, PRESET_HOVER_SETTLE,
-    PREVIEW_MIN_INTERVAL, PREVIEW_TIMEOUT, PresetHover, TitleAnimationBinding, TitleDesign,
-    preview_size,
+    AnimationBinding, AnimationDesign, AnimationRefusal, AnimationSaveStatus, DEFAULT_CANVAS,
+    PRESET_HOVER_SETTLE, PREVIEW_MIN_INTERVAL, PREVIEW_TIMEOUT, PresetHover, SceneAnimationBinding,
+    SceneDesign, TitleAnimationBinding, TitleDesign, preview_size,
 };
+
+/// What an animation editor can target: a title element or a scene layer.
+/// The target decides the edit command a save sends and which properties
+/// may be animated.
+pub trait AnimationTarget: Copy + Ord + core::fmt::Debug {
+    /// The properties a target of this kind animates, in display order.
+    const PROPERTIES: &'static [Property];
+
+    /// The revision-checked whole-clip save of `clip` through `input`.
+    fn set_payload(input: InputId, base_revision: u64, clip: Clip<Self>) -> CommandPayload;
+}
+
+impl AnimationTarget for WireTitleElementId {
+    const PROPERTIES: &'static [Property] = &Property::ALL;
+
+    fn set_payload(input: InputId, base_revision: u64, clip: Clip<Self>) -> CommandPayload {
+        CommandPayload::SetTitleAnimation {
+            input: WireInputId::from_domain(input),
+            base_revision,
+            clip: Box::new(clip),
+        }
+    }
+}
+
+/// Every property a scene layer animates: all but
+/// [`Property::Color`] (layers have no fill colour).
+pub const SCENE_LAYER_PROPERTIES: [Property; 10] = [
+    Property::PositionX,
+    Property::PositionY,
+    Property::ScaleX,
+    Property::ScaleY,
+    Property::Rotation,
+    Property::Opacity,
+    Property::CropLeft,
+    Property::CropTop,
+    Property::CropRight,
+    Property::CropBottom,
+];
+
+impl AnimationTarget for WireSceneLayerId {
+    const PROPERTIES: &'static [Property] = &SCENE_LAYER_PROPERTIES;
+
+    fn set_payload(input: InputId, base_revision: u64, clip: Clip<Self>) -> CommandPayload {
+        CommandPayload::SetSceneAnimation {
+            input: WireInputId::from_domain(input),
+            base_revision,
+            clip: Box::new(clip),
+        }
+    }
+}
 
 /// The document type an editor of one title template uses.
 pub type TitleAnimDocument = AnimDocument<WireTitleElementId>;
+/// The document type an editor of one scene uses.
+pub type SceneAnimDocument = AnimDocument<WireSceneLayerId>;
 
-/// One title template's animation as the authority last reported it.
+/// One animation as the authority last reported it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TitleAnimationStatus {
+pub struct AnimationStatus<T> {
     /// The `base_revision` the next edit must name.
     pub revision: u64,
-    pub clip: Arc<WireTitleClip>,
+    pub clip: Arc<Clip<T>>,
 }
+
+/// One title template's animation as the authority last reported it.
+pub type TitleAnimationStatus = AnimationStatus<WireTitleElementId>;
+/// One scene's layer animation as the authority last reported it
+/// (Protocol 2.31).
+pub type SceneAnimationStatus = AnimationStatus<WireSceneLayerId>;
 
 /// What [`sync_document`] did with an authority report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,9 +132,9 @@ pub enum AuthoritySync {
 }
 
 /// Brings `document` in step with the authority's `status`.
-pub fn sync_document(
-    document: &mut TitleAnimDocument,
-    status: &TitleAnimationStatus,
+pub fn sync_document<T: Copy + Ord>(
+    document: &mut AnimDocument<T>,
+    status: &AnimationStatus<T>,
 ) -> AuthoritySync {
     if document.base_revision() == status.revision {
         return AuthoritySync::Unchanged;
@@ -84,17 +150,17 @@ pub fn sync_document(
     AuthoritySync::Conflict
 }
 
-/// The `title_animation_set` that saves `document`'s draft to `input`'s
-/// template, or `None` when there is nothing to save.
+/// The `title_animation_set` (or, for a scene, `scene_animation_set`) that
+/// saves `document`'s draft through `input`, or `None` when there is
+/// nothing to save.
 #[must_use]
-pub fn save_payload(document: &TitleAnimDocument, input: InputId) -> Option<CommandPayload> {
+pub fn save_payload<T: AnimationTarget>(
+    document: &AnimDocument<T>,
+    input: InputId,
+) -> Option<CommandPayload> {
     document
         .is_dirty()
-        .then(|| CommandPayload::SetTitleAnimation {
-            input: WireInputId::from_domain(input),
-            base_revision: document.base_revision(),
-            clip: Box::new(document.clip().clone()),
-        })
+        .then(|| T::set_payload(input, document.base_revision(), document.clip().clone()))
 }
 
 /// The wire `request_id` of exact preview `id`.

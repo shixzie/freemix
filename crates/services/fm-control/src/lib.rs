@@ -18,8 +18,12 @@ use std::{
 mod automation;
 mod grade;
 mod playlist;
+mod scene_animation;
 mod title_animation;
 mod title_layout;
+pub use scene_animation::{
+    scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
+};
 pub use title_animation::{title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
 
@@ -341,6 +345,36 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 project_engine(&self.control.engine, ticks).map_err(ControlError::from)
             }
         }
+    }
+
+    /// Returns `ticks` extended until no scene is mid In or Out phase
+    /// (GX-011 stage 5): the frames a command must realize so the scenes it
+    /// takes to Program or Preview (or off Program) finish their phases, as
+    /// a title take realizes its whole In phase. A staged engine without
+    /// Scene inputs, or one that cannot tick, needs exactly `ticks`.
+    #[must_use]
+    pub fn scene_settle_ticks(&self, ticks: u64) -> u64 {
+        let engine = match &self.kind {
+            PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
+            PreparedSubmissionKind::AuthorizationDenial { .. } => &self.control.engine,
+        };
+        if engine.show().scene_inputs().is_empty() {
+            return ticks;
+        }
+        let mut projected = engine.clone();
+        for _ in 0..ticks {
+            if projected.tick().is_err() {
+                return ticks;
+            }
+        }
+        let mut settled = ticks;
+        while projected.scenes_in_motion() {
+            if projected.tick().is_err() {
+                break;
+            }
+            settled += 1;
+        }
+        settled
     }
 
     /// Returns the number of frames needed for the staged overlay channel to
@@ -725,6 +759,7 @@ impl<A: AuthorizationHook> ControlService<A> {
         // Every animation an edit leaves must be carried by its event and
         // by later snapshots' `title_animation_state` records.
         engine.set_title_clip_bound(title_animation::title_clip_fits_wire);
+        engine.set_scene_clip_bound(scene_animation::scene_clip_fits_wire);
         let runtime_sequence_generation = engine.runtime_generation().get();
         let identity = EngineIdentity {
             engine_id: engine_id.into(),
@@ -826,6 +861,47 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn title_layout_states(&self) -> Vec<fm_protocol::TitleLayoutStateMessage> {
         title_layout::title_layout_states(&self.engine)
+    }
+
+    /// Returns the `scene_animation_state` records a session writes after
+    /// [`Self::title_layout_states`]: one per Scene input [`Self::snapshot`]
+    /// announces in its `scenes` list, in the same order (Protocol 2.31).
+    #[must_use]
+    pub fn scene_animation_states(&self) -> Vec<fm_protocol::SceneAnimationStateMessage> {
+        scene_animation::scene_animation_states(&self.engine)
+    }
+
+    /// Returns the `scene_layout_state` records a session writes after
+    /// [`Self::scene_animation_states`]: one per announced Scene input, in
+    /// the same order (Protocol 2.31).
+    #[must_use]
+    pub fn scene_layout_states(&self) -> Vec<fm_protocol::SceneLayoutStateMessage> {
+        scene_animation::scene_layout_states(&self.engine)
+    }
+
+    /// The scene Scene input `input` shows, when it is one.
+    #[must_use]
+    pub fn scene_input(&self, input: InputId) -> Option<&fm_engine::EngineScene> {
+        self.engine.show().scene_input(input)
+    }
+
+    /// Every Scene input whose scene is mid In or Out phase (or holding the
+    /// end of an Out phase) at the frame cursor, with its pose.
+    #[must_use]
+    pub fn scenes_on_air(&self) -> Vec<fm_engine::EngineSceneAir> {
+        self.engine.scenes_on_air()
+    }
+
+    /// The pose Scene input `input` shows at the frame cursor.
+    #[must_use]
+    pub fn scene_pose(&self, input: InputId) -> fm_model::fm_animation::ClipState {
+        self.engine.scene_pose(input)
+    }
+
+    /// Whether some scene is still mid In or Out phase at the frame cursor.
+    #[must_use]
+    pub fn scenes_in_motion(&self) -> bool {
+        self.engine.scenes_in_motion()
     }
 
     /// Returns the `playlist_state` a session writes after [`Self::snapshot`]
@@ -1381,7 +1457,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetTitleFields { .. }
         | EngineCommand::SetPlaylist { .. }
         | EngineCommand::Grade(_)
-        | EngineCommand::TitleAnimation(_) => "project",
+        | EngineCommand::TitleAnimation(_)
+        | EngineCommand::SceneAnimation(_) => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1411,6 +1488,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
+        | CommandPayload::SetSceneAnimation { .. }
+        | CommandPayload::ApplySceneAnimationPreset { .. }
+        | CommandPayload::StretchSceneAnimation { .. }
         | CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
@@ -1594,6 +1674,11 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }) => {
             title_animation::title_animation_engine_command(payload)
+        }
+        payload @ (CommandPayload::SetSceneAnimation { .. }
+        | CommandPayload::ApplySceneAnimationPreset { .. }
+        | CommandPayload::StretchSceneAnimation { .. }) => {
+            scene_animation::scene_animation_engine_command(payload)
         }
     }
 }
@@ -1843,7 +1928,8 @@ fn history_target(engine: &Engine, payload: &CommandPayload) -> Option<EngineCom
             .map(|entry| entry.forward().clone()),
         _ => None,
     }?;
-    Some(title_animation::checked_history_target(engine, target))
+    let target = title_animation::checked_history_target(engine, target);
+    Some(scene_animation::checked_history_target(engine, target))
 }
 
 /// Maps an undoable engine project edit back to its exact wire payload.
@@ -1927,6 +2013,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
         EngineCommand::TitleAnimation(edit) => {
             return title_animation::wire_title_animation_payload(edit);
+        }
+        EngineCommand::SceneAnimation(edit) => {
+            return scene_animation::wire_scene_animation_payload(edit);
         }
         _ => return None,
     })
@@ -2227,6 +2316,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     }) {
         return title_animation::title_animation_changed(engine, input);
     }
+    if let Some(input) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::SceneAnimationChanged { input } = &event.payload else {
+            return None;
+        };
+        Some(*input)
+    }) {
+        return scene_animation::scene_animation_changed(engine, input);
+    }
     if let Some(frame) = outcome.events.iter().find_map(|event| {
         let EngineEvent::PlaylistChanged { frame, .. } = &event.payload else {
             return None;
@@ -2407,6 +2504,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
                 field_revision: title.fields.revision(),
             })
             .collect(),
+        scenes: scene_animation::snapshot_scenes(engine),
         frame_rate: engine.frame_rate(),
         playlist_follows: playlist::playlist_follows(engine),
         grade_states: grade::grade_state_count(engine),

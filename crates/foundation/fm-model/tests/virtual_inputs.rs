@@ -69,6 +69,7 @@ fn alias(target: u128, crop: Option<CropRect>) -> InputKind {
 
 fn layer(source: SourceRef) -> Layer {
     Layer {
+        id: next_layer_id(),
         name: "Layer".into(),
         source,
         enabled: true,
@@ -324,6 +325,7 @@ fn an_alias_closing_a_scene_loop_is_a_scene_cycle() {
             layer(SourceRef::Input(input_id(1))),
             layer(SourceRef::Input(input_id(11))),
         ],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_input(input(
         10,
@@ -366,6 +368,7 @@ fn an_alias_closing_an_audio_loop_is_an_audio_cycle_and_mix_feeds_are_silent() {
         name: "Scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer(SourceRef::Input(input_id(1)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     // Scene input 10 takes its audio from alias 11, which re-presents 10.
     project.add_input(input(
@@ -493,4 +496,11 @@ fn long_alias_chains_and_cycles_are_handled_iteratively() {
         .filter(|error| error.kind == ValidationErrorKind::Cycle)
         .count();
     assert_eq!(cycles, usize::try_from(LENGTH).unwrap());
+}
+
+/// A process-unique layer id, so layers built by helpers never collide.
+fn next_layer_id() -> fm_model::LayerId {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        .expect("layer ids start at one")
 }

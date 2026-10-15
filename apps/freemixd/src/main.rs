@@ -9345,6 +9345,7 @@ fn restore_engine_with_titles(
     restore_overlays(&mut show, &mut realized, project.runtime_overlays())?;
     restore_edit_locks(&mut show, canonical)?;
     restore_titles(&mut show, canonical, &bundle_assets.titles)?;
+    restore_scenes(&mut show, canonical)?;
     show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
@@ -9368,6 +9369,66 @@ fn restore_engine_with_titles(
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?)
+}
+
+/// Seeds every Scene input's scene (layers and animation) into the restored
+/// show, so scene animation edits and on-air phases are engine state
+/// (GX-011 stage 5). Every snapshot carries each scene's animation in a
+/// `scene_animation_state` record, so a scene whose clip has no wire
+/// encoding fails closed rather than locking out every session.
+fn restore_scenes(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
+    let dimensions = project.settings().video.dimensions;
+    for input in project.inputs() {
+        let fm_model::InputKind::Scene { scene_id, .. } = &input.kind else {
+            continue;
+        };
+        let scene = project.scene(*scene_id).ok_or_else(|| {
+            AppFailure(format!(
+                "scene input {} names missing scene {scene_id}",
+                input.id
+            ))
+        })?;
+        let animation_bytes = fm_protocol::scene_clip_wire_bytes(&fm_control::scene_clip_to_wire(
+            &scene.animation.clip,
+        ));
+        if animation_bytes > fm_protocol::MAX_SCENE_ANIMATION_BYTES {
+            return Err(AppFailure(format!(
+                "scene {scene_id} animation encodes to {animation_bytes} bytes, more than the \
+                 {} a scene_animation_state record carries",
+                fm_protocol::MAX_SCENE_ANIMATION_BYTES
+            ))
+            .into());
+        }
+        show.set_scene_input(
+            input.id,
+            scene.clone(),
+            dimensions.width(),
+            dimensions.height(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Persists every engine scene's animation (the only scene state the
+/// engine edits) back into the project.
+fn sync_project_scenes(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
+    for scene in show.scenes().values() {
+        let unchanged = project
+            .scene(scene.id())
+            .is_some_and(|stored| stored.animation == *scene.animation());
+        if unchanged {
+            continue;
+        }
+        project
+            .set_scene_animation(scene.id(), scene.animation().clone())
+            .map_err(|error| {
+                AppFailure(format!(
+                    "scene {} animation could not be persisted: {error}",
+                    scene.id()
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 /// Seeds the persisted edit padlock into the restored show, so a checkpoint
@@ -9555,6 +9616,20 @@ fn handle_client(
                     &mut writer,
                     &mut session,
                     &WireMessage::TitleLayoutState(state),
+                )?;
+            }
+            for state in control.borrow().scene_animation_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::SceneAnimationState(state),
+                )?;
+            }
+            for state in control.borrow().scene_layout_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::SceneLayoutState(state),
                 )?;
             }
         }
@@ -10860,7 +10935,18 @@ fn staged_title_animations(
         .collect()
 }
 
+/// The frames an accepted command realizes: its own (see
+/// [`command_base_ticks`]), extended until every scene phase it started
+/// has played (GX-011 stage 5), as a title take realizes its whole In
+/// phase.
 fn command_ticks(
+    command: &CommandMessage,
+    prepared: &fm_control::PreparedSubmission<'_, Policy>,
+) -> u64 {
+    prepared.scene_settle_ticks(command_base_ticks(command, prepared))
+}
+
+fn command_base_ticks(
     command: &CommandMessage,
     prepared: &fm_control::PreparedSubmission<'_, Policy>,
 ) -> u64 {
@@ -10939,6 +11025,9 @@ fn command_ticks(
         | CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
+        | CommandPayload::SetSceneAnimation { .. }
+        | CommandPayload::ApplySceneAnimationPreset { .. }
+        | CommandPayload::StretchSceneAnimation { .. }
         | CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
@@ -11076,6 +11165,7 @@ fn stored_project_with_receipts(
     sync_project_recording(&mut project, desired);
     sync_project_edit_locks(&mut project, show)?;
     sync_project_titles(&mut project, show)?;
+    sync_project_scenes(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_grading(show.grading().clone());
     StoredProject::from_project_with_complete_runtime_state(
@@ -17768,6 +17858,7 @@ mod tests {
             name: "Program".into(),
             background: ModelRgba8::OPAQUE_BLACK,
             layers: Vec::new(),
+            animation: fm_model::SceneAnimation::default(),
         });
         project.set_main_mix(MainMix::new(test_input_id(1), test_input_id(2)));
         StoredProject::from_project(
@@ -18086,6 +18177,7 @@ mod tests {
             name: "Program".into(),
             background: TestRgba8::OPAQUE_BLACK,
             layers: Vec::new(),
+            animation: fm_model::SceneAnimation::default(),
         });
         project.add_audio_bus(AudioBus {
             id: bus_id,

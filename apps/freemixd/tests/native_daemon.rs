@@ -4760,12 +4760,14 @@ fn save_scene_generator_project(path: &Path) {
         name: "Leaf scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![scene_layer(SourceRef::Input(input(1)), 0)],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: scene_id(20),
         name: "Nested scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![scene_layer(SourceRef::Scene(scene_id(10)), 0)],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: scene_id(30),
@@ -4778,6 +4780,7 @@ fn save_scene_generator_project(path: &Path) {
                 ..scene_layer(SourceRef::Input(input(2)), 1)
             },
         ],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.set_main_mix(MainMix::new(input(3), input(4)));
     let stored = StoredProject::from_project(
@@ -4798,6 +4801,11 @@ fn save_scene_generator_project(path: &Path) {
 #[cfg(target_os = "macos")]
 fn scene_layer(source: SourceRef, z_order: i32) -> Layer {
     Layer {
+        id: {
+            // Unique per call, so helper-built layers never share an id.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)).unwrap()
+        },
         name: "layer".into(),
         source,
         enabled: true,

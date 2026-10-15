@@ -1417,6 +1417,7 @@ dependencies = [
 name = "fm-model"
 version = "0.1.0"
 dependencies = [
+ "fm-animation",
  "fm-grade",
  "fm-types",
 ]

@@ -151,6 +151,7 @@ fn create_project(path: &Path) {
         name: "Program scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
             name: "Source".into(),
             source: SourceRef::Input(domain_input(1)),
             enabled: true,
@@ -161,6 +162,7 @@ fn create_project(path: &Path) {
             opacity: u8::MAX,
             z_order: 0,
         }],
+        animation: fm_model::SceneAnimation::default(),
     });
     let bus = BusId::new(NonZeroU128::new(ID_BASE + 200).unwrap());
     project.add_audio_bus(AudioBus {

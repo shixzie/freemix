@@ -131,10 +131,125 @@ struct NativeScenePlan {
     id: SceneId,
     output: SourceId,
     composition: CompositionPlan,
+    /// The scene as authored, posed per frame while it animates.
+    model: Arc<fm_model::Scene>,
+    /// Each layer's source token, in scene order.
+    layer_tokens: Vec<SourceId>,
+    /// Every Scene input showing this scene, ascending.
+    inputs: Vec<InputId>,
     sources: Vec<(SourceId, NativeSceneSource)>,
 }
 
+/// Compiles one scene's layers into its native composition, each enabled
+/// layer bound to its source token (`layer_tokens`, one per layer in scene
+/// order). The plan compiles every scene in its static pose; a frame that
+/// shows a scene mid In or Out phase recompiles it posed (GX-011 stage 5).
+fn native_scene_composition(
+    scene_id: SceneId,
+    model: &fm_model::Scene,
+    layer_tokens: &[SourceId],
+    width: u32,
+    height: u32,
+) -> Result<CompositionPlan, NativeProjectPlanError> {
+    let mut scene = CompositorScene::new(
+        width,
+        height,
+        CompositorRgba8::new(
+            model.background.red,
+            model.background.green,
+            model.background.blue,
+            model.background.alpha,
+        ),
+    )
+    .map_err(|error| NativeProjectPlanError::Scene {
+        scene: scene_id,
+        error,
+    })?;
+    for (layer, &token) in model.layers.iter().zip(layer_tokens) {
+        let geometry = layer.geometry;
+        let rotation = match geometry.rotation {
+            Rotation::Deg0 => CompositorRotation::Deg0,
+            Rotation::Deg90 => CompositorRotation::Deg90,
+            Rotation::Deg180 => CompositorRotation::Deg180,
+            Rotation::Deg270 => CompositorRotation::Deg270,
+        };
+        let mut native_layer = SourceLayer::new(
+            token,
+            layer.z_order,
+            Transform::new(
+                geometry.translation_x,
+                geometry.translation_y,
+                geometry.width,
+                geometry.height,
+                rotation,
+            ),
+        )
+        .with_enabled(layer.enabled)
+        .with_opacity(layer.opacity);
+        if let Some(crop) = layer.crop {
+            native_layer = native_layer.with_crop(fm_compositor::CropRect::new(
+                crop.x,
+                crop.y,
+                crop.width,
+                crop.height,
+            ));
+        }
+        if let Some(mask) = layer.mask {
+            native_layer = native_layer.with_mask(
+                CompositorRectMask::new(mask.x, mask.y, mask.width, mask.height)
+                    .inverted(mask.invert),
+            );
+        }
+        for effect in &layer.effects {
+            native_layer = native_layer.with_effect(CompositorEffect::new(
+                effect.name.clone(),
+                effect.parameters.clone(),
+            ));
+        }
+        scene.push_layer(native_layer);
+    }
+    let (composition, _) = compile_scene(&scene, OutputTarget::Program).map_err(|error| {
+        NativeProjectPlanError::Composition {
+            scene: scene_id,
+            error,
+        }
+    })?;
+    Ok(composition)
+}
+
 impl NativeScenePlan {
+    /// The composition this frame draws: the static plan, or the scene
+    /// recompiled in the pose the engine reports for the Scene input
+    /// showing it (the Program input's pose first when several inputs
+    /// show the scene in different poses).
+    fn frame_composition(
+        &self,
+        frame: &FrameResult,
+        width: u32,
+        height: u32,
+    ) -> std::borrow::Cow<'_, CompositionPlan> {
+        let candidates = frame
+            .scenes
+            .iter()
+            .filter(|scene| self.inputs.contains(&scene.input))
+            .filter(|scene| scene.frame.sample != fm_model::fm_animation::ClipState::Hold);
+        let pose = candidates
+            .clone()
+            .find(|scene| scene.input == frame.program.primary)
+            .or_else(|| candidates.clone().next());
+        let Some(pose) = pose else {
+            return std::borrow::Cow::Borrowed(&self.composition);
+        };
+        let posed = self.model.posed(pose.frame.sample, width, height);
+        // Posing keeps every layer's source and only shrinks crops and
+        // masks, so the posed scene compiles whenever the static one did;
+        // should it not, the frame shows the static pose.
+        native_scene_composition(self.id, &posed, &self.layer_tokens, width, height).map_or(
+            std::borrow::Cow::Borrowed(&self.composition),
+            std::borrow::Cow::Owned,
+        )
+    }
+
     fn scene_dependencies(&self) -> impl Iterator<Item = SceneId> + '_ {
         self.sources.iter().filter_map(|(_, source)| match source {
             NativeSceneSource::Scene(scene) => Some(*scene),
@@ -429,21 +544,8 @@ impl NativeProjectPlan {
             let model = scene_models
                 .get(&scene_id)
                 .ok_or(NativeProjectPlanError::MissingScene(scene_id))?;
-            let mut scene = CompositorScene::new(
-                dimensions.width(),
-                dimensions.height(),
-                CompositorRgba8::new(
-                    model.background.red,
-                    model.background.green,
-                    model.background.blue,
-                    model.background.alpha,
-                ),
-            )
-            .map_err(|error| NativeProjectPlanError::Scene {
-                scene: scene_id,
-                error,
-            })?;
             let mut tokens = BTreeMap::new();
+            let mut layer_tokens = Vec::with_capacity(model.layers.len());
             for (layer_index, layer) in model.layers.iter().enumerate() {
                 let (source_width, source_height) = layer
                     .crop
@@ -482,55 +584,15 @@ impl NativeProjectPlan {
                 } else {
                     SourceId::new(0)
                 };
-                let geometry = layer.geometry;
-                let rotation = match geometry.rotation {
-                    Rotation::Deg0 => CompositorRotation::Deg0,
-                    Rotation::Deg90 => CompositorRotation::Deg90,
-                    Rotation::Deg180 => CompositorRotation::Deg180,
-                    Rotation::Deg270 => CompositorRotation::Deg270,
-                };
-                let mut native_layer = SourceLayer::new(
-                    token,
-                    layer.z_order,
-                    Transform::new(
-                        geometry.translation_x,
-                        geometry.translation_y,
-                        geometry.width,
-                        geometry.height,
-                        rotation,
-                    ),
-                )
-                .with_enabled(layer.enabled)
-                .with_opacity(layer.opacity);
-                if let Some(crop) = layer.crop {
-                    native_layer = native_layer.with_crop(fm_compositor::CropRect::new(
-                        crop.x,
-                        crop.y,
-                        crop.width,
-                        crop.height,
-                    ));
-                }
-                if let Some(mask) = layer.mask {
-                    native_layer = native_layer.with_mask(
-                        CompositorRectMask::new(mask.x, mask.y, mask.width, mask.height)
-                            .inverted(mask.invert),
-                    );
-                }
-                for effect in &layer.effects {
-                    native_layer = native_layer.with_effect(CompositorEffect::new(
-                        effect.name.clone(),
-                        effect.parameters.clone(),
-                    ));
-                }
-                scene.push_layer(native_layer);
+                layer_tokens.push(token);
             }
-            let (composition, _) =
-                compile_scene(&scene, OutputTarget::Program).map_err(|error| {
-                    NativeProjectPlanError::Composition {
-                        scene: scene_id,
-                        error,
-                    }
-                })?;
+            let composition = native_scene_composition(
+                scene_id,
+                model,
+                &layer_tokens,
+                dimensions.width(),
+                dimensions.height(),
+            )?;
             let output = SourceId::new(next_source);
             next_source = next_source
                 .checked_add(1)
@@ -539,6 +601,13 @@ impl NativeProjectPlan {
                 id: scene_id,
                 output,
                 composition,
+                model: Arc::new((*model).clone()),
+                layer_tokens,
+                inputs: video_routes
+                    .iter()
+                    .filter(|(_, route)| **route == NativeVideoRoute::Scene(scene_id))
+                    .map(|(input, _)| *input)
+                    .collect(),
                 sources: tokens
                     .into_iter()
                     .map(|(source, token)| (token, source))
@@ -6891,9 +6960,14 @@ impl NativeMediaRuntime {
                     Ok(NativeSourceFrame::new(*token, texture))
                 })
                 .collect::<Result<Vec<_>, NativeSourceRenderError>>()?;
+            let composition = scene.frame_composition(
+                frame,
+                project.dimensions.width(),
+                project.dimensions.height(),
+            );
             let output = self
                 .composition_renderer
-                .render(&self.context, &scene.composition, &sources)
+                .render(&self.context, &composition, &sources)
                 .await
                 .map_err(NativeSourceRenderError::SceneCompositor)?;
             drop(sources);
@@ -7538,6 +7612,12 @@ mod tests {
 
     fn layer(source: SourceRef, z_order: i32) -> Layer {
         Layer {
+            id: {
+                // Unique per call, so helper-built layers never share an id.
+                static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+                fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                    .unwrap()
+            },
             name: "layer".into(),
             source,
             enabled: true,
@@ -7556,6 +7636,7 @@ mod tests {
             name: format!("scene {id}"),
             background: ModelRgba8::OPAQUE_BLACK,
             layers,
+            animation: fm_model::SceneAnimation::default(),
         });
     }
 
@@ -7904,6 +7985,7 @@ mod tests {
             overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
             input_audio_strip_updates: Vec::new(),
             titles: Vec::new(),
+            scenes: Vec::new(),
             frame: FrameNumber::new(frame),
             deadline: ClockTime::ZERO,
             program: ProgramFrame {
@@ -8275,6 +8357,7 @@ mod tests {
             name: "mapped".into(),
             background: ModelRgba8::new(12, 24, 36, 48),
             layers: vec![Layer {
+                id: fm_model::LayerId::new(2).unwrap(),
                 name: "mapped layer".into(),
                 source: SourceRef::Input(input(1)),
                 enabled: true,
@@ -8288,6 +8371,7 @@ mod tests {
                 opacity: 123,
                 z_order: -4,
             }],
+            animation: fm_model::SceneAnimation::default(),
         });
 
         let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
@@ -8330,6 +8414,7 @@ mod tests {
                 name: "mask admission".into(),
                 background: ModelRgba8::OPAQUE_BLACK,
                 layers: vec![Layer {
+                    id: fm_model::LayerId::new(3).unwrap(),
                     name: "masked".into(),
                     source: SourceRef::Input(input(1)),
                     enabled: true,
@@ -8340,6 +8425,7 @@ mod tests {
                     opacity: u8::MAX,
                     z_order: 0,
                 }],
+                animation: fm_model::SceneAnimation::default(),
             });
             project
         };

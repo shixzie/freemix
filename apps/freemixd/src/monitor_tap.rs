@@ -12,7 +12,10 @@
 //! reference compositor directly at the fitted monitor size (see
 //! [`scene_render::render_scene`]); each composition is cached per realized
 //! revision, frame cursor, and input so the steady cadence never recomposes
-//! an unchanged picture. Title inputs render their persisted field values
+//! an unchanged picture. A scene is composed in the animation pose the
+//! engine reports for its input at the frame cursor (GX-011 stage 5); a
+//! simulated command realizes every scene phase it starts, so between
+//! commands a simulated scene holds. Title inputs render their persisted field values
 //! through the `fm_titles` reference renderer over black (see
 //! [`title_render`]) in the animation pose the engine reports for the frame
 //! cursor, cached per title state and pose and, only for clock or ticker
@@ -209,6 +212,10 @@ pub(crate) struct RealizedMonitorState {
     /// The animation pose of every title a title take put on air, ascending
     /// by input; any other title renders its Hold pose.
     pub(crate) titles: Vec<(InputId, AnimSample)>,
+    /// The animation pose of every Scene input mid or after an In or Out
+    /// phase on Program or Preview (GX-011 stage 5), ascending by input;
+    /// any other scene renders its Hold pose.
+    pub(crate) scenes: Vec<(InputId, AnimSample)>,
 }
 
 /// The realized fields whose change publishes a frame immediately.
@@ -217,6 +224,7 @@ type ChangeKey = (
     InputId,
     InputId,
     Vec<RealizedOverlay>,
+    Vec<(InputId, AnimSample)>,
     Vec<(InputId, AnimSample)>,
 );
 
@@ -238,6 +246,11 @@ impl RealizedMonitorState {
                 .into_iter()
                 .map(|title| (title.input, title.frame.sample))
                 .collect(),
+            scenes: control
+                .scenes_on_air()
+                .into_iter()
+                .map(|scene| (scene.input, scene.frame.sample))
+                .collect(),
         }
     }
 
@@ -246,6 +259,13 @@ impl RealizedMonitorState {
         self.titles
             .iter()
             .find(|(title, _)| *title == input)
+            .map_or(AnimSample::Hold, |(_, pose)| *pose)
+    }
+
+    fn scene_pose(&self, input: InputId) -> AnimSample {
+        self.scenes
+            .iter()
+            .find(|(scene, _)| *scene == input)
             .map_or(AnimSample::Hold, |(_, pose)| *pose)
     }
 
@@ -265,6 +285,7 @@ impl RealizedMonitorState {
             self.preview,
             self.overlays.clone(),
             self.titles.clone(),
+            self.scenes.clone(),
         )
     }
 }
@@ -531,7 +552,13 @@ impl SimulatedMonitorTap {
         }
         let image = scene_render::scene_of_input(project, input)
             .and_then(|scene| {
-                scene_render::render_scene(project, scene, self.pipeline.as_ref()?, state.frame)
+                scene_render::render_scene(
+                    project,
+                    scene,
+                    self.pipeline.as_ref()?,
+                    state.frame,
+                    state.scene_pose(input),
+                )
             })
             .map(Arc::new);
         self.composed.push(ComposedScene {
@@ -1075,6 +1102,12 @@ mod tests {
 
     fn layer(source: SourceRef, x: i32, y: i32, width: u32, height: u32) -> Layer {
         Layer {
+            id: {
+                // Unique per call, so helper-built layers never share an id.
+                static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+                fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                    .unwrap()
+            },
             name: "Layer".into(),
             source,
             enabled: true,
@@ -1095,6 +1128,7 @@ mod tests {
             name: format!("Scene {scene}"),
             background: fm_model::Rgba8::new(20, 30, 40, 255),
             layers,
+            animation: fm_model::SceneAnimation::default(),
         });
         project.add_input(Input {
             id: input_id(input),
@@ -1115,6 +1149,7 @@ mod tests {
             preview: input_id(preview),
             overlays: Vec::new(),
             titles: Vec::new(),
+            scenes: Vec::new(),
         }
     }
 
@@ -2131,7 +2166,9 @@ mod tests {
             let full = simulated_pipeline_at(&project, width, height).unwrap();
             for input in scenes {
                 let scene = scene_render::scene_of_input(&project, input_id(input)).unwrap();
-                let fast = scene_render::render_scene(&project, scene, &monitor, 4).unwrap();
+                let fast =
+                    scene_render::render_scene(&project, scene, &monitor, 4, AnimSample::Hold)
+                        .unwrap();
                 let reference = scene_render::render_scene_at_project_size(
                     &project,
                     scene,
@@ -2139,6 +2176,7 @@ mod tests {
                     4,
                     monitor_width,
                     monitor_height,
+                    AnimSample::Hold,
                 )
                 .unwrap();
                 assert_eq!(
@@ -2188,10 +2226,19 @@ mod tests {
         let monitor = simulated_pipeline(&project).unwrap();
         let full = simulated_pipeline_at(&project, 1_920, 1_080).unwrap();
         let started = Instant::now();
-        scene_render::render_scene(&project, scene, &monitor, 4).unwrap();
+        scene_render::render_scene(&project, scene, &monitor, 4, AnimSample::Hold).unwrap();
         let fast = started.elapsed();
         let started = Instant::now();
-        scene_render::render_scene_at_project_size(&project, scene, &full, 4, 640, 360).unwrap();
+        scene_render::render_scene_at_project_size(
+            &project,
+            scene,
+            &full,
+            4,
+            640,
+            360,
+            AnimSample::Hold,
+        )
+        .unwrap();
         let reference = started.elapsed();
         // The pixel work is ~9x smaller; demand a conservative 3x.
         assert!(

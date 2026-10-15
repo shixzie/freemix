@@ -1,4 +1,4 @@
-//! Project grading at schema 31: strict `project.json` encoding of the grade
+//! Project grading at schema 32: strict `project.json` encoding of the grade
 //! library, imported LUTs, and per-input and program grades; `.cube` import
 //! into `assets/luts/<id>.cube`; and LUT loading.
 
@@ -189,13 +189,13 @@ fn graded_project() -> Project {
 const FULL_GRADE_JSON: &str = "{\"enabled\": true, \"white_balance\": {\"temperature\": -120, \"tint\": 45}, \"exposure_millistops\": -750, \"contrast\": {\"amount\": 200, \"pivot_bp\": 4500}, \"saturation_permille\": 1300, \"wheels\": {\"lift\": {\"x\": 10, \"y\": -20, \"master\": 30}, \"gamma\": {\"x\": -40, \"y\": 50, \"master\": -60}, \"gain\": {\"x\": 70, \"y\": 80, \"master\": 90}, \"offset\": {\"x\": 0, \"y\": 0, \"master\": -100}}, \"curves\": {\"master\": [{\"x\": 0, \"y\": 500}, {\"x\": 5000, \"y\": 5200}, {\"x\": 10000, \"y\": 9500}], \"red\": [{\"x\": 0, \"y\": 0}, {\"x\": 10000, \"y\": 10000}], \"green\": [{\"x\": 0, \"y\": 0}, {\"x\": 10000, \"y\": 10000}], \"blue\": [{\"x\": 0, \"y\": 0}, {\"x\": 10000, \"y\": 9000}]}, \"hue_curves\": {\"hue_vs_hue\": [{\"position\": 1200, \"value\": -300}], \"hue_vs_saturation\": [], \"luma_vs_saturation\": [{\"position\": 0, \"value\": -500}, {\"position\": 10000, \"value\": 200}]}, \"lut\": {\"asset_uri\": \"asset://luts/3.cube\", \"strength_permille\": 600}}";
 
 #[test]
-fn grading_round_trips_exactly_and_is_strict_at_schema_31() {
+fn grading_round_trips_exactly_and_is_strict_at_schema_32() {
     let temp = TestDirectory::new("round-trip");
     let store = temp.store("show.freemix");
     let expected = stored(graded_project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 31,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 32,\n"));
     let grading = format!(
         "\n    \"luts\": [{{\"id\": 3, \"name\": \"Film\", \"kind\": \"3d\", \"size\": 33}}],\
          \n    \"grades\": [{{\"id\": 9, \"name\": \"Night \\\"blue\\\"\", \"grade\": {FULL_GRADE_JSON}}}],\
@@ -287,27 +287,33 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_31() {
 }
 
 #[test]
-fn a_schema_30_manifest_is_refused() {
-    let temp = TestDirectory::new("schema-30");
+fn schema_31_and_33_manifests_are_refused() {
+    let temp = TestDirectory::new("schema-31-33");
     let store = temp.store("show.freemix");
     store.save(&stored(graded_project())).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
 
     // The previous schema is refused outright; there is no migration path.
-    fs::write(
-        store.manifest_path(),
-        encoded.replacen("\"schema_version\": 31", "\"schema_version\": 30", 1),
-    )
-    .unwrap();
-    assert!(matches!(
-        store.load(),
-        Err(StoreError::Validation(
-            ProjectValidationError::UnsupportedSchema {
-                found: 30,
-                supported: 31
-            }
-        ))
-    ));
+    for found in [31, 33] {
+        fs::write(
+            store.manifest_path(),
+            encoded.replacen(
+                "\"schema_version\": 32",
+                &format!("\"schema_version\": {found}"),
+                1,
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(StoreError::Validation(
+                ProjectValidationError::UnsupportedSchema {
+                    found: f,
+                    supported: 32
+                }
+            )) if f == found
+        ));
+    }
 }
 
 #[test]

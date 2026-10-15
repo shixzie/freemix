@@ -4291,3 +4291,318 @@ fn title_layout_states_match_each_template() {
         encode_line(&WireMessage::TitleLayoutState(state)).unwrap();
     }
 }
+
+/// A scene with a named, turned layer and a plain one, shown by Scene
+/// inputs 4 and 5 (GX-011 stage 5).
+fn scene_control() -> (ControlService, fm_model::Scene) {
+    use fm_model::{
+        Layer, LayerGeometry, LayerId, Rgba8, Rotation, Scene, SceneAnimation, SourceRef,
+    };
+    use fm_types::SceneId;
+
+    let layer = |id: u32, name: &str, rotation| Layer {
+        id: LayerId::new(id).unwrap(),
+        name: name.into(),
+        source: SourceRef::Input(input(1)),
+        enabled: true,
+        geometry: LayerGeometry::new(100, 50, 640, 360, rotation),
+        crop: None,
+        mask: None,
+        effects: Vec::new(),
+        opacity: 200,
+        z_order: 0,
+    };
+    let scene = Scene {
+        id: SceneId::new(NonZeroU128::new(40).unwrap()),
+        name: "Two up".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![
+            layer(3, "Guest\tcam", Rotation::Deg90),
+            layer(9, "Host", Rotation::Deg0),
+        ],
+        animation: SceneAnimation::default(),
+    };
+    let mut show = ShowState::new(
+        "show",
+        named_inputs([input(1), input(2), input(4), input(5)]),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    show.set_scene_input(input(4), scene.clone(), 1_920, 1_080)
+        .unwrap();
+    show.set_scene_input(input(5), scene.clone(), 1_920, 1_080)
+        .unwrap();
+    let control = ControlService::new(
+        Engine::new(
+            show,
+            FrameRate::new(60, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        ),
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 8,
+            max_subscribers: 4,
+            subscriber_queue: 8,
+        },
+    );
+    (control, scene)
+}
+
+/// GX-011 stage 5, Protocol 2.31: a snapshot lists its Scene inputs and is
+/// followed by one `scene_animation_state` and one `scene_layout_state` per
+/// Scene input; scene animation edits are revision-checked `EditProject`
+/// commands shared by every Scene input showing the scene, and undo
+/// journals the restored clip as a revision-checked set.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo() {
+    use fm_model::fm_animation::{AnimationPreset, Phase};
+    use fm_protocol::{
+        SceneAnimationStateMessage, WireSceneLayerId, WireSceneLayerOutline, encode_line,
+    };
+
+    let (mut control, scene) = scene_control();
+    let scenes = [
+        WireInputId::from_domain(input(4)),
+        WireInputId::from_domain(input(5)),
+    ];
+    assert_eq!(control.snapshot().snapshot.scenes, scenes);
+    let revision = control.snapshot().snapshot.revision;
+    let initial = control.scene_animation_states();
+    assert_eq!(
+        initial,
+        scenes
+            .iter()
+            .map(|input| SceneAnimationStateMessage {
+                revision,
+                input: *input,
+                animation_revision: 0,
+                clip: Box::new(scene_clip_to_wire(&scene.animation.clip)),
+            })
+            .collect::<Vec<_>>()
+    );
+    let layouts = control.scene_layout_states();
+    assert_eq!(layouts.len(), 2);
+    let layout = &layouts[0].layout;
+    assert_eq!((layout.width, layout.height), (1_920, 1_080));
+    assert_eq!(
+        layout.layers[0],
+        WireSceneLayerOutline {
+            id: WireSceneLayerId::new(core::num::NonZeroU32::new(3).unwrap()),
+            name: "Guest cam".into(),
+            x: 100,
+            y: 50,
+            width: 640,
+            height: 360,
+            quarter_turns: 1,
+            opacity: 200,
+            enabled: true,
+        }
+    );
+    assert_eq!(layouts[1].layout, layouts[0].layout);
+    for message in layouts.into_iter().map(WireMessage::SceneLayoutState) {
+        encode_line(&message).unwrap();
+    }
+
+    let scene_input = scenes[0];
+    let layer = WireSceneLayerId::new(core::num::NonZeroU32::new(9).unwrap());
+    let preset = CommandPayload::ApplySceneAnimationPreset {
+        input: scene_input,
+        base_revision: 0,
+        layer,
+        phase: Phase::In,
+        preset: AnimationPreset::SlideFromLeft,
+        frames: 12,
+    };
+    assert_eq!(
+        control.required_classes(&preset).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            command("o", "o", preset.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    let applied = control
+        .submit(&principal(Role::Graphics), command("p", "p", preset), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    let mut expected = scene.clone();
+    expected
+        .apply_animation_preset(
+            fm_model::LayerId::new(9).unwrap(),
+            Phase::In,
+            AnimationPreset::SlideFromLeft,
+            12,
+            1_920,
+            1_080,
+        )
+        .unwrap();
+    let edited_clip = Box::new(scene_clip_to_wire(&expected.animation.clip));
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::SceneAnimationChanged {
+            inputs: scenes.to_vec(),
+            animation_revision: 1,
+            clip: edited_clip.clone(),
+        }
+    );
+    assert_wire_exact(&control, &applied);
+    let states = control.scene_animation_states();
+    assert!(states.iter().all(|state| state.clip == edited_clip));
+
+    // A stale base revision is a conflict, through either Scene input.
+    let stale = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "s",
+                "s",
+                CommandPayload::StretchSceneAnimation {
+                    input: scenes[1],
+                    base_revision: 0,
+                    phase: Phase::In,
+                    frames: 24,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&stale), Some("conflict"));
+    assert_eq!(rejection_field_code(&stale), Some("revision_conflict"));
+
+    // An unknown layer is refused.
+    let unknown = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "u",
+                "u",
+                CommandPayload::ApplySceneAnimationPreset {
+                    input: scene_input,
+                    base_revision: 1,
+                    layer: WireSceneLayerId::new(core::num::NonZeroU32::new(5).unwrap()),
+                    phase: Phase::Out,
+                    preset: AnimationPreset::Fade,
+                    frames: 6,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
+
+    // Undo journals the restored clip as a revision-checked set.
+    let message = undo("undo", None);
+    let prepared = prepared(
+        control
+            .prepare_submit(&principal(Role::Graphics), message.clone(), 0)
+            .unwrap(),
+    );
+    assert_eq!(
+        prepared.replay_command(&message).payload,
+        CommandPayload::SetSceneAnimation {
+            input: scene_input,
+            base_revision: 1,
+            clip: Box::new(scene_clip_to_wire(&scene.animation.clip)),
+        }
+    );
+    let undone = prepared.commit().unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        undone.output.events[0].payload,
+        EventPayload::SceneAnimationChanged {
+            inputs: scenes.to_vec(),
+            animation_revision: 2,
+            clip: Box::new(scene_clip_to_wire(&scene.animation.clip)),
+        }
+    );
+    let redone = control
+        .submit(&principal(Role::Graphics), redo("redo", None), 0)
+        .unwrap();
+    assert!(redone.is_accepted(), "{:?}", redone.output.result);
+    let states = control.scene_animation_states();
+    assert_eq!(states[0].animation_revision, 3);
+    assert_eq!(states[0].clip, edited_clip);
+}
+
+/// GX-011 stage 5: a switch that takes an animated scene to Preview or
+/// Program needs exactly the frames that play its phase out
+/// ([`PreparedSubmission::scene_settle_ticks`]); a switch without scenes in
+/// motion needs only its own frames.
+#[test]
+fn scene_settle_ticks_cover_exactly_the_phases_a_switch_starts() {
+    use fm_model::fm_animation::{AnimationPreset, Phase};
+    use fm_protocol::WireSceneLayerId;
+
+    let (mut control, _) = scene_control();
+    let server = server_identity();
+    let edited = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "p",
+                "p",
+                CommandPayload::ApplySceneAnimationPreset {
+                    input: WireInputId::from_domain(input(4)),
+                    base_revision: 0,
+                    layer: WireSceneLayerId::new(core::num::NonZeroU32::new(9).unwrap()),
+                    phase: Phase::In,
+                    preset: AnimationPreset::Fade,
+                    frames: 12,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(edited.is_accepted());
+    control.tick(&server).unwrap();
+    // 12 frames of the 30/1 clip are 24 frames at 60 fps.
+    assert_eq!(control.engine.scene_phase_frames(input(4), Phase::In), 24);
+
+    let select = command(
+        "v",
+        "v",
+        CommandPayload::SelectPreview {
+            input: WireInputId::from_domain(input(4)),
+        },
+    );
+    let ticks = {
+        let prepared = prepared(
+            control
+                .prepare_submit(&principal(Role::Operator), select, 0)
+                .unwrap(),
+        );
+        let ticks = prepared.scene_settle_ticks(1);
+        prepared.commit().unwrap();
+        ticks
+    };
+    assert!(ticks > 1, "{ticks}");
+    for _ in 1..ticks {
+        control.tick(&server).unwrap();
+    }
+    assert!(control.scenes_in_motion());
+    control.tick(&server).unwrap();
+    assert!(!control.scenes_in_motion());
+
+    // Nothing animates: a switch needs only its own frame.
+    let back = command(
+        "b",
+        "b",
+        CommandPayload::SelectPreview {
+            input: WireInputId::from_domain(input(2)),
+        },
+    );
+    let prepared = prepared(
+        control
+            .prepare_submit(&principal(Role::Operator), back, 0)
+            .unwrap(),
+    );
+    assert_eq!(prepared.scene_settle_ticks(1), 1);
+}

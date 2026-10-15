@@ -9,9 +9,10 @@ use fm_switcher::{
 };
 use fm_titles::{TitleAirTiming, TitleAnimation, TitleFieldSet, TitleTemplate};
 
-use crate::EngineTitleTemplate;
+use crate::{EngineScene, EngineTitleTemplate};
 use fm_types::{
-    InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, validate_input_name,
+    InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, SceneId,
+    validate_input_name,
 };
 
 use crate::{
@@ -133,6 +134,10 @@ pub struct ShowState {
     project_locked: bool,
     locked_inputs: BTreeSet<InputId>,
     titles: BTreeMap<InputId, EngineTitle>,
+    /// Every Scene input and the scene it shows (GX-011 stage 5).
+    scene_inputs: BTreeMap<InputId, SceneId>,
+    /// Every scene a Scene input shows, with its animation.
+    scenes: BTreeMap<SceneId, EngineScene>,
     playlist: Playlist,
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
@@ -196,6 +201,8 @@ impl ShowState {
             project_locked: false,
             locked_inputs: BTreeSet::new(),
             titles: BTreeMap::new(),
+            scene_inputs: BTreeMap::new(),
+            scenes: BTreeMap::new(),
             playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
                 .expect("an empty playlist is valid"),
             grading: ProjectGrading::default(),
@@ -435,6 +442,7 @@ impl ShowState {
         self.input_audio_strips.remove(&input);
         self.locked_inputs.remove(&input);
         self.titles.remove(&input);
+        self.scene_inputs.remove(&input);
         self.grading.inputs.remove(&input);
         Ok(())
     }
@@ -593,6 +601,60 @@ impl ShowState {
 
     pub(crate) fn title_mut(&mut self, input: InputId) -> Option<&mut EngineTitle> {
         self.titles.get_mut(&input)
+    }
+
+    /// Makes `input` a Scene input showing `scene`, registering (or
+    /// replacing) the scene, its animation, and the `canvas_width` x
+    /// `canvas_height` project canvas its presets measure against. Every
+    /// Scene input naming the same scene shares it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when the input is outside this show.
+    pub fn set_scene_input(
+        &mut self,
+        input: InputId,
+        scene: fm_model::Scene,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        self.scene_inputs.insert(input, scene.id);
+        self.scenes.insert(
+            scene.id,
+            EngineScene::new(scene, canvas_width, canvas_height),
+        );
+        Ok(())
+    }
+
+    /// The scene Scene input `input` shows.
+    #[must_use]
+    pub fn scene_input(&self, input: InputId) -> Option<&EngineScene> {
+        self.scenes.get(self.scene_inputs.get(&input)?)
+    }
+
+    /// Every Scene input and the scene it shows, in identifier order.
+    #[must_use]
+    pub const fn scene_inputs(&self) -> &BTreeMap<InputId, SceneId> {
+        &self.scene_inputs
+    }
+
+    /// Every scene a Scene input shows, in identifier order.
+    #[must_use]
+    pub const fn scenes(&self) -> &BTreeMap<SceneId, EngineScene> {
+        &self.scenes
+    }
+
+    /// One scene by id.
+    #[must_use]
+    pub fn scene(&self, scene: SceneId) -> Option<&EngineScene> {
+        self.scenes.get(&scene)
+    }
+
+    pub(crate) fn scene_mut(&mut self, scene: SceneId) -> Option<&mut EngineScene> {
+        self.scenes.get_mut(&scene)
     }
 
     /// Returns the playlist definition and its automation state. Playlist

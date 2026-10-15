@@ -2,6 +2,7 @@ mod decoder;
 mod encoder;
 mod grade;
 mod reader;
+mod scene_animation;
 
 use crate::ProjectValidationError;
 

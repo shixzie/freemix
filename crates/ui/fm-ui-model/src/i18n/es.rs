@@ -3342,10 +3342,43 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::AnimWinTitleHover, t("Qué título animar")),
     (Msg::AnimWinTitleOptionHover, t("Animar {name}")),
-    (Msg::AnimWinNoTitles, t("Ningún título que animar")),
+    (
+        Msg::AnimWinNoTitles,
+        t("Ningún título ni escena que animar"),
+    ),
     (
         Msg::AnimWinNoTitlesDetail,
-        t("Añada una entrada de título al show y elija Animar… en su fila de la pestaña Títulos."),
+        t(
+            "Añada una entrada de título o de escena al show y elija Animar… en la fila de un título de la pestaña Títulos o elija aquí una escena.",
+        ),
+    ),
+    (Msg::AnimWinTargetHover, t("Qué título o escena animar")),
+    (Msg::AnimWinGroupScenes, t("Escenas")),
+    (
+        Msg::AnimWinSceneOptionHover,
+        t("Animar las capas de la escena {name}"),
+    ),
+    (
+        Msg::AnimSceneSectionHover,
+        t(
+            "La animación de entrada y salida de las capas de una escena. Se guarda en el proyecto, así que la reproduce cada entrada que muestra la escena: la entrada cuando la escena llega a Programa o Vista previa, la salida mientras una transición la saca de Programa (un corte no tiene salida)",
+        ),
+    ),
+    (
+        Msg::AnimSceneCanvasHover,
+        t(
+            "Las capas de la escena en el cabezal. Desplácese por la regla de la línea de tiempo; arrastre claves o barras para reajustar el tiempo",
+        ),
+    ),
+    (
+        Msg::AnimReasonSceneProxy,
+        t(
+            "las escenas solo muestran los contornos de las capas; Programa reproduce el movimiento exacto (la rotación se ajusta a cuartos de vuelta)",
+        ),
+    ),
+    (
+        Msg::AnimReasonScenePending,
+        t("la animación de la escena aún se está sincronizando"),
     ),
     (Msg::AnimStatusSaved, t("GUARDADO")),
     (

@@ -3,13 +3,14 @@ use core::num::NonZeroU128;
 use fm_animation::{
     AnimationPreset, Easing, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value,
 };
-use fm_protocol::{TitlePreviewSample, WireInputId};
+use fm_protocol::{TitlePreviewSample, WireInputId, WireTitleClip};
 use fm_types::FrameRate;
 
 use super::*;
 use crate::animation_editor::{
     DragStart, Modifiers, Pointer, PreviewCompletion, RetimeHandle, TargetBounds, TargetKind,
 };
+use crate::title_animation::TitleAnimationStatus;
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
 
@@ -434,4 +435,79 @@ fn hovered_presets_preview_without_applying_and_apply_as_one_step() {
     let mut unoutlined = TitleAnimationBinding::new(input(), &status(4, clip(20)));
     unoutlined.set_preset_hover(Some(hover), MS(0));
     assert_eq!(unoutlined.preset_hover(), None);
+}
+
+/// GX-011 stage 5: a scene editor is the same binding keyed by layer: its
+/// design comes from the replicated `scene_layout_state` (a quarter turn
+/// swaps the footprint), a local preset measures the same footprint the
+/// authority does, and a save is a revision-checked `scene_animation_set`.
+#[test]
+fn scene_bindings_design_from_layouts_and_save_scene_clips() {
+    use core::num::NonZeroU32;
+
+    use fm_protocol::{WireSceneClip, WireSceneLayerId, WireSceneLayerOutline, WireSceneLayout};
+
+    use crate::title_animation::{SCENE_LAYER_PROPERTIES, SceneAnimationStatus};
+
+    let layer = |value: u32| WireSceneLayerId::new(NonZeroU32::new(value).unwrap());
+    let outline = |id: u32, quarter_turns: u8, enabled: bool| WireSceneLayerOutline {
+        id: layer(id),
+        name: format!("Layer {id}"),
+        x: 100,
+        y: 40,
+        width: 640,
+        height: 360,
+        quarter_turns,
+        opacity: 200,
+        enabled,
+    };
+    let design = SceneDesign::from_layout(&WireSceneLayout {
+        width: 1_920,
+        height: 1_080,
+        layers: vec![outline(3, 1, true), outline(4, 2, false)],
+    });
+    assert_eq!(design.canvas, (1_920, 1_080));
+    assert_eq!(
+        design.elements[0].bounds,
+        TargetBounds::new(100, 40, 360, 640)
+    );
+    assert_eq!(design.elements[0].kind, TargetKind::Video);
+    assert_eq!(design.elements[0].opacity, 200);
+    assert_eq!(
+        design.elements[1].bounds,
+        TargetBounds::new(100, 40, 640, 360)
+    );
+    assert_eq!(design.elements[1].opacity, 0);
+    assert!(!SCENE_LAYER_PROPERTIES.contains(&Property::Color));
+
+    let status = SceneAnimationStatus {
+        revision: 4,
+        clip: Arc::new(
+            WireSceneClip::new(Timebase::new(FrameRate::new(30, 1).unwrap()), 0, 0).unwrap(),
+        ),
+    };
+    let mut binding = SceneAnimationBinding::new(input(), &status);
+    binding.set_design(&design);
+    binding
+        .document_mut()
+        .apply_preset(layer(3), Phase::In, AnimationPreset::SlideFromLeft, 15)
+        .unwrap();
+    let Some(CommandPayload::SetSceneAnimation {
+        input: saved,
+        base_revision,
+        clip,
+    }) = binding.poll_save(true)
+    else {
+        panic!("a dirty scene draft saves as scene_animation_set");
+    };
+    assert_eq!(saved, WireInputId::from_domain(input()));
+    assert_eq!(base_revision, 4);
+    assert_eq!(&*clip, binding.document().clip());
+    assert_eq!(binding.status(), AnimationSaveStatus::Saving);
+    // The authority reporting the save back marks the draft saved.
+    binding.sync(&SceneAnimationStatus {
+        revision: 5,
+        clip: Arc::from(clip),
+    });
+    assert_eq!(binding.status(), AnimationSaveStatus::Saved);
 }

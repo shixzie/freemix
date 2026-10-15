@@ -551,7 +551,12 @@ fn write_scenes(output: &mut String, project: &fm_model::Project) {
         .expect("writing to a string cannot fail");
         for (layer_index, layer) in scene.layers.iter().enumerate() {
             item_prefix(output, layer_index, 10);
-            output.push_str("{\n            \"name\": \"");
+            write!(
+                output,
+                "{{\n            \"id\": {},\n            \"name\": \"",
+                layer.id
+            )
+            .expect("writing to a string cannot fail");
             escape_string(output, &layer.name);
             output.push_str("\",\n            \"source\": ");
             match layer.source {
@@ -615,6 +620,8 @@ fn write_scenes(output: &mut String, project: &fm_model::Project) {
             .expect("writing to a string cannot fail");
         }
         array_end(output, scene.layers.is_empty(), 8);
+        output.push_str(",\n");
+        super::scene_animation::write_scene_animation(output, &scene.animation, 8);
         output.push_str("\n      }");
     }
     array_end(output, project.scenes().is_empty(), 4);

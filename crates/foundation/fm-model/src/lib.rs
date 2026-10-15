@@ -3,10 +3,12 @@ mod grade;
 mod playlist;
 mod project;
 mod resolve;
+mod scene_animation;
 mod stream;
 mod title;
 mod validation;
 
+pub use fm_animation;
 pub use grade::{
     GradeEditError, GradeId, GradeSource, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_FILE_BYTES,
     MAX_LUT_NAME_BYTES, MAX_PROJECT_GRADES, MAX_PROJECT_LUTS, ProjectGrade, ProjectGrading,
@@ -30,14 +32,18 @@ pub use project::{
     RemoveStreamTargetError, RenameAudioBusError, RenameOutputError, RenameProjectError,
     RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene,
     SceneInputAudioSourceError, SceneLayerError, SchemaVersion, SetInputLockError,
-    SetOutputRouteError, SetOutputStartupError, SetSceneBackgroundError, SetStingerError,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    UpdateStreamTargetError,
+    SetOutputRouteError, SetOutputStartupError, SetSceneAnimationError, SetSceneBackgroundError,
+    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, UpdateStreamTargetError,
 };
 pub use resolve::{
     AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,
     ResolveError, ResolvedInput, ResolvedLayer, ResolvedScene, SourceResolver,
+};
+pub use scene_animation::{
+    LayerId, LayerPose, SCENE_ANIMATION_PROPERTIES, SceneAnimation, SceneAnimationError, SceneClip,
+    apply_pose, default_scene_timebase, footprint, pose_layer, scene_animates,
 };
 pub use stream::{
     DEFAULT_VIDEO_BITRATE_KBPS, MAX_STREAM_ENDPOINT_BYTES, MAX_STREAM_KEY_BYTES,

@@ -72,6 +72,7 @@ fn simulated() -> InputKind {
 
 fn layer(source: SourceRef, enabled: bool) -> Layer {
     Layer {
+        id: next_layer_id(),
         name: "Cell".into(),
         source,
         enabled,
@@ -121,6 +122,7 @@ fn feed_project() -> Project {
             layer(SourceRef::Input(input_id(PREVIEW_FEED)), true),
             layer(SourceRef::Input(input_id(PROGRAM_ALIAS)), true),
         ],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_input(input(
         MULTIVIEW,
@@ -138,6 +140,7 @@ fn feed_project() -> Project {
             layer(SourceRef::Input(input_id(GRAPHIC)), true),
             layer(SourceRef::Input(input_id(MULTIVIEW)), true),
         ],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_input(input(
         NESTED,
@@ -461,4 +464,11 @@ fn feedback_over_ticks_is_a_deterministic_one_frame_recurrence() {
     // Preview feed on Preview repeats the previous Preview frame.
     assert_eq!(first[4].1, first[3].1);
     assert_eq!(first[5].0, first[4].1);
+}
+
+/// A process-unique layer id, so layers built by helpers never collide.
+fn next_layer_id() -> fm_model::LayerId {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        .expect("layer ids start at one")
 }

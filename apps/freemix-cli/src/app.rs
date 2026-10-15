@@ -54,7 +54,7 @@ use crate::{
         StingerAudioPolicy as CliStingerAudioPolicy, StingerFallback as CliStingerFallback,
         StreamSpec, TBarAction,
     },
-    project_bundle, remote, title_animation,
+    project_bundle, remote, scene_animation, title_animation,
 };
 
 pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -1431,6 +1431,29 @@ pub fn run(command: Command) -> AppResult<()> {
             frame,
             output,
         } => title_animation::render_frame(&path, input, phase, frame, &output)?,
+        Command::SceneAnimationPreset {
+            path,
+            scene,
+            layer,
+            phase,
+            preset,
+            frames,
+        } => scene_animation::preset(&path, scene, layer, phase, &preset, frames)?,
+        Command::SceneAnimationStretch {
+            path,
+            scene,
+            phase,
+            frames,
+        } => scene_animation::stretch(&path, scene, phase, frames)?,
+        Command::SceneRenderFrame {
+            path,
+            scene,
+            phase,
+            frame,
+            output,
+            width,
+            height,
+        } => scene_animation::render_frame(&path, scene, phase, frame, &output, width, height)?,
         Command::GradeSet {
             path,
             target,
@@ -2330,6 +2353,8 @@ fn add_scene_layer(
             .add_layer_to_scene(
                 scene,
                 Layer {
+                    // Replaced by a free id when the scene already uses it.
+                    id: fm_model::LayerId::new(1).expect("layer id one is nonzero"),
                     name,
                     source,
                     enabled: true,
@@ -3376,7 +3401,11 @@ fn reject_unapplied_journal_batches(count: usize) -> AppResult<()> {
     .into())
 }
 
-fn simulated_pipeline(project: &Project, width: u32, height: u32) -> AppResult<SimulatedPipeline> {
+pub(crate) fn simulated_pipeline(
+    project: &Project,
+    width: u32,
+    height: u32,
+) -> AppResult<SimulatedPipeline> {
     let mut pipeline = SimulatedPipeline::new(width, height)?;
     for input in project.inputs() {
         if matches!(input.kind, InputKind::Simulated(_)) {
@@ -3420,9 +3449,13 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
         let dimensions = project.project.settings().video.dimensions;
         let scene_pipeline =
             simulated_pipeline(&project.project, dimensions.width(), dimensions.height())?;
+        // The engine's on-air scene phases are runtime state a local command
+        // does not replay: `render` draws the scene's static design and
+        // `scene-render-frame` draws any point of its animation.
         crate::scene_render::render_scene(
             &project.project,
             scene,
+            fm_model::fm_animation::ClipState::Static,
             &scene_pipeline,
             &grades,
             engine.frame_cursor().get(),
@@ -4019,6 +4052,22 @@ Usage:
       Renders the title input's field values at frame f of the phase, at
       the template canvas size, with the bundle's fonts. Image fields draw
       the placeholder and production clocks are reported, not drawn.
+  freemix-cli scene-animation-preset <show.freemix> <scene-id> <layer-id> --phase in|out --preset <id> --frames <n>
+      Applies a built-in animation preset (the title presets) to one layer
+      of a scene over n frames (30/1 timebase), growing the phase to n
+      frames when shorter. Off-canvas distances come from the layer's
+      footprint and the project canvas. Layers animate position, scale,
+      rotation (realized at the nearest quarter turn), crop, and opacity.
+      The scene plays In when it reaches Program or Preview, holds, and
+      plays Out while a transition takes it off Program (a cut plays no
+      Out); nested and multiview scenes hold.
+  freemix-cli scene-animation-stretch <show.freemix> <scene-id> --phase in|out --frames <n>
+      Sets a scene animation phase to n frames, scaling every key of the
+      phase proportionally (frames rounded half up).
+  freemix-cli scene-render-frame <show.freemix> <scene-id> --phase in|hold|out [--frame <f>] <out.ppm> [--width <px>] [--height <px>]
+      Renders the scene posed at frame f of the In or Out phase (or held
+      at the In end, which takes no --frame) from the simulated sources,
+      composed at the project canvas and scaled like render.
   freemix-cli grade-set <show.freemix> <input-id|program> [--preset <id>] [--exposure <millistops>] [--temperature <t>] [--tint <t>] [--contrast <amount>] [--saturation <permille>] [--lut <lut-id> [--lut-strength <permille>]] [--save-as <name>]
   freemix-cli grade-set <show.freemix> <input-id|program> --grade <grade-id>
       Grades an input (before its scene-layer transform) or the program

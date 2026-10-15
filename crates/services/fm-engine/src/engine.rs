@@ -294,6 +294,9 @@ pub enum EngineCommand {
     /// Edits a title template's animation (see
     /// [`crate::EngineTitleAnimationEdit`]). A project edit.
     TitleAnimation(crate::EngineTitleAnimationEdit),
+    /// Edits a scene's layer animation (see
+    /// [`crate::EngineSceneAnimationEdit`]). A project edit.
+    SceneAnimation(crate::EngineSceneAnimationEdit),
 }
 
 /// What an accepted title command does on air.
@@ -382,6 +385,12 @@ pub enum EngineEvent {
     /// `input`'s template; the animation afterwards is read from
     /// [`ShowState::title`].
     TitleAnimationChanged {
+        input: InputId,
+    },
+    /// A scene animation edit (or its undo or redo) was accepted for
+    /// `input`'s scene; the animation afterwards is read from
+    /// [`ShowState::scene_input`].
+    SceneAnimationChanged {
         input: InputId,
     },
 }
@@ -502,6 +511,10 @@ pub struct FrameResult {
     /// render it in. A title on air any other way (Program, a transition, a
     /// plain overlay take) is absent and shows its Hold pose.
     pub titles: Vec<EngineTitleAir>,
+    /// Every Scene input on Program or Preview this frame, ascending by
+    /// input, with the pose to render it in (GX-011 stage 5). A scene
+    /// absent here (shown any other way, or restored) holds.
+    pub scenes: Vec<crate::EngineSceneAir>,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -627,6 +640,13 @@ pub struct Engine {
     /// Whether a title clip can be carried to clients (see
     /// [`Self::set_title_clip_bound`]); `None` bounds nothing.
     title_clip_bound: Option<crate::TitleClipBound>,
+    /// Realized scene animations: every Scene input on Program or Preview
+    /// (see [`crate::EngineSceneAnimationEdit`]). Runtime state: never
+    /// snapshotted, so a restored scene holds.
+    scene_air: BTreeMap<InputId, crate::scene_animation::SceneAir>,
+    /// Whether a scene clip can be carried to clients (see
+    /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
+    scene_clip_bound: Option<crate::SceneClipBound>,
 }
 
 impl Engine {
@@ -647,6 +667,8 @@ impl Engine {
             playlist_hold: None,
             title_air: BTreeMap::new(),
             title_clip_bound: None,
+            scene_air: BTreeMap::new(),
+            scene_clip_bound: None,
         }
     }
 
@@ -655,6 +677,49 @@ impl Engine {
     /// would make every event and snapshot record naming it unencodable.
     pub fn set_title_clip_bound(&mut self, bound: crate::TitleClipBound) {
         self.title_clip_bound = Some(bound);
+    }
+
+    /// Refuses every scene animation edit (undo and redo included) whose
+    /// resulting clip `bound` rejects, like [`Self::set_title_clip_bound`].
+    pub fn set_scene_clip_bound(&mut self, bound: crate::SceneClipBound) {
+        self.scene_clip_bound = Some(bound);
+    }
+
+    /// Every Scene input on Program or Preview as the next frame (the frame
+    /// cursor) shows it absent new commands, ascending by input. A scene
+    /// not listed holds.
+    #[must_use]
+    pub fn scenes_on_air(&self) -> Vec<crate::EngineSceneAir> {
+        crate::scene_animation::scene_air_frames(&self.scene_air, self.frame_cursor().get())
+    }
+
+    /// The pose Scene input `input` shows on the next frame: its In or Out
+    /// phase position while one plays on Program or Preview, otherwise
+    /// [`fm_model::fm_animation::ClipState::Hold`].
+    #[must_use]
+    pub fn scene_pose(&self, input: InputId) -> fm_model::fm_animation::ClipState {
+        self.scenes_on_air()
+            .into_iter()
+            .find(|scene| scene.input == input)
+            .map_or(fm_model::fm_animation::ClipState::Hold, |scene| {
+                scene.frame.sample
+            })
+    }
+
+    /// Whether any Scene input is playing an In or Out phase on the next
+    /// frame: the picture changes every frame until it settles.
+    #[must_use]
+    pub fn scenes_in_motion(&self) -> bool {
+        crate::scene_animation::scenes_in_motion(&self.scene_air, self.frame_cursor().get())
+    }
+
+    /// The length of `phase` of Scene input `input`'s animation in frames of
+    /// this engine, or zero when `input` is not a Scene input.
+    #[must_use]
+    pub fn scene_phase_frames(&self, input: InputId, phase: Phase) -> u64 {
+        self.show().scene_input(input).map_or(0, |scene| {
+            scene.timing().output_frames(phase, self.frame_rate)
+        })
     }
 
     #[must_use]
@@ -970,6 +1035,7 @@ impl Engine {
         };
         let staged_resolution = resolution.clone();
         let title_clip_bound = self.title_clip_bound;
+        let scene_clip_bound = self.scene_clip_bound;
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
             let ResolvedCommand { command, .. } = staged_resolution?;
             if let Some(frame) = held_until {
@@ -992,6 +1058,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::SetEditLock { .. })
                 && !matches!(&command, EngineCommand::Grade(_))
                 && !matches!(&command, EngineCommand::TitleAnimation(_))
+                && !matches!(&command, EngineCommand::SceneAnimation(_))
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1022,6 +1089,7 @@ impl Engine {
                 realized_on_air,
                 playlist,
                 title_clip_bound,
+                scene_clip_bound,
             })
         });
 
@@ -1142,6 +1210,15 @@ impl Engine {
                 .any(|shown_on| shown_on == *channel)
         });
         let titles = title_air_frames(&self.title_air, frame);
+        crate::scene_animation::step_scene_air(
+            &mut self.scene_air,
+            self.commands.state(),
+            &program,
+            self.realized_switcher.preview(),
+            frame,
+            self.frame_rate,
+        );
+        let scenes = crate::scene_animation::scene_air_frames(&self.scene_air, frame);
         for event in self.realized_switcher.advance_frame_events() {
             if matches!(event, SwitcherEvent::ProgramChanged { .. }) {
                 self.transition_in_flight = None;
@@ -1176,6 +1253,7 @@ impl Engine {
             events,
             input_audio_strip_updates,
             titles,
+            scenes,
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
@@ -1294,6 +1372,8 @@ impl Engine {
             playlist_hold: None,
             title_air: BTreeMap::new(),
             title_clip_bound: None,
+            scene_air: BTreeMap::new(),
+            scene_clip_bound: None,
         })
     }
 }
@@ -1406,6 +1486,8 @@ struct EngineMutation {
     playlist: Option<Result<PlaylistStep, Rejection>>,
     /// The engine's title clip bound, for an animation edit.
     title_clip_bound: Option<crate::TitleClipBound>,
+    /// The engine's scene clip bound, for a scene animation edit.
+    scene_clip_bound: Option<crate::SceneClipBound>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -1445,6 +1527,13 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
         if let EngineCommand::TitleAnimation(edit) = &self.command {
             crate::title_animation::apply(state, edit, self.title_clip_bound)?;
             events.push(EngineEvent::TitleAnimationChanged { input: edit.input });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::SceneAnimation(edit) = &self.command {
+            crate::scene_animation::apply(state, edit, self.scene_clip_bound)?;
+            events.push(EngineEvent::SceneAnimationChanged { input: edit.input });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });
@@ -1699,7 +1788,9 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::RealizePlaylistCue(_) => {
                 unreachable!("playlist mutations return before switcher command mapping")
             }
-            EngineCommand::Grade(_) | EngineCommand::TitleAnimation(_) => {
+            EngineCommand::Grade(_)
+            | EngineCommand::TitleAnimation(_)
+            | EngineCommand::SceneAnimation(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
         };
@@ -2040,6 +2131,7 @@ fn apply_runtime(
             | EngineCommand::SetTitleFields { .. }
             | EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
+            | EngineCommand::SceneAnimation(_)
     ) {
         return Ok(Vec::new());
     }
@@ -2179,7 +2271,9 @@ fn apply_runtime(
         | EngineCommand::RealizePlaylistCue(_) => {
             unreachable!("playlist commands are scheduled as playlist cues")
         }
-        EngineCommand::Grade(_) | EngineCommand::TitleAnimation(_) => {
+        EngineCommand::Grade(_)
+        | EngineCommand::TitleAnimation(_)
+        | EngineCommand::SceneAnimation(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
     })
@@ -2310,7 +2404,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RealizePlaylistCue(_)
         | EngineCommand::RealizeTitle(_)
         | EngineCommand::Grade(_)
-        | EngineCommand::TitleAnimation(_) => None,
+        | EngineCommand::TitleAnimation(_)
+        | EngineCommand::SceneAnimation(_) => None,
     }
 }
 

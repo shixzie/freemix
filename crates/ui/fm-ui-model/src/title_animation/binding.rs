@@ -21,19 +21,26 @@
 //! issues are at least [`PREVIEW_MIN_INTERVAL`] apart (under the server's
 //! ten per second), and an unanswered request is given up after
 //! [`PREVIEW_TIMEOUT`] so a lost answer never stalls previews.
+//!
+//! The binding is generic over the clip target: [`TitleAnimationBinding`]
+//! edits a title template, [`SceneAnimationBinding`] a scene's layers
+//! (GX-011 stage 5). Only titles have exact previews
+//! ([`AnimationBinding::poll_preview`]); a scene editor never asks for one
+//! and shows the proxy.
 
 use core::time::Duration;
 use std::sync::Arc;
 
+use fm_animation::Clip;
 use fm_animation::{AnimationPreset, Phase};
 use fm_protocol::{
     CommandPayload, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_WIDTH, TitlePreviewRequest,
-    WireTitleClip, WireTitleElementId, WireTitleElementKind, WireTitleLayout,
+    WireSceneLayerId, WireSceneLayout, WireTitleElementId, WireTitleElementKind, WireTitleLayout,
 };
 use fm_types::InputId;
 
 use super::{
-    AuthoritySync, TitleAnimDocument, TitleAnimationStatus, preview_request, preview_request_id,
+    AnimationStatus, AnimationTarget, AuthoritySync, preview_request, preview_request_id,
     save_payload, sync_document,
 };
 use crate::animation_editor::{
@@ -56,16 +63,55 @@ const HOVER_GENERATION_BASE: u64 = u64::MAX / 2;
 /// The canvas assumed until the template's design is known.
 pub const DEFAULT_CANVAS: (u32, u32) = (1_920, 1_080);
 
-/// A title template's static design as the editor needs it: the canvas
-/// size and one outline per element (name, kind, placement, opacity, and
-/// fill), in design order.
+/// A template's or scene's static design as the editor needs it: the
+/// canvas size and one outline per target (name, kind, placement, opacity,
+/// and fill), in design order.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TitleDesign {
+pub struct AnimationDesign<T> {
     pub canvas: (u32, u32),
-    pub elements: Vec<TargetOutline<WireTitleElementId>>,
+    pub elements: Vec<TargetOutline<T>>,
 }
 
-impl TitleDesign {
+/// A title template's design.
+pub type TitleDesign = AnimationDesign<WireTitleElementId>;
+/// A scene's design (GX-011 stage 5).
+pub type SceneDesign = AnimationDesign<WireSceneLayerId>;
+
+impl AnimationDesign<WireSceneLayerId> {
+    /// The design a replicated `scene_layout_state` describes: one video
+    /// outline per layer at its static on-screen footprint (a quarter turn
+    /// swaps the box's sides), named as sent. A disabled layer keeps its
+    /// outline at zero opacity. Presets measure the same footprint the
+    /// authority's `scene_animation_preset` does.
+    #[must_use]
+    pub fn from_layout(layout: &WireSceneLayout) -> Self {
+        let elements = layout
+            .layers
+            .iter()
+            .map(|layer| {
+                let (width, height) = if layer.quarter_turns % 2 == 1 {
+                    (layer.height, layer.width)
+                } else {
+                    (layer.width, layer.height)
+                };
+                let mut outline = TargetOutline::new(
+                    layer.id,
+                    layer.name.clone(),
+                    TargetKind::Video,
+                    TargetBounds::new(layer.x, layer.y, width, height),
+                );
+                outline.opacity = if layer.enabled { layer.opacity } else { 0 };
+                outline
+            })
+            .collect();
+        Self {
+            canvas: (layout.width.max(1), layout.height.max(1)),
+            elements,
+        }
+    }
+}
+
+impl AnimationDesign<WireTitleElementId> {
     /// The design a replicated `title_layout_state` describes, or `None` for
     /// a title without a loaded template (a zero canvas). Element kinds map
     /// to outline kinds (clocks and tickers draw text); a hidden element
@@ -122,8 +168,8 @@ pub fn preview_size(canvas: (u32, u32)) -> (u16, u16) {
 /// A preset the operator rests on in the Simple-mode picker: previewed,
 /// not applied.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PresetHover {
-    pub target: WireTitleElementId,
+pub struct PresetHover<T = WireTitleElementId> {
+    pub target: T,
     pub phase: Phase,
     pub preset: AnimationPreset,
     /// The preset's length in frames.
@@ -132,9 +178,9 @@ pub struct PresetHover {
 
 /// The draft with a hovered preset applied, for previews only.
 #[derive(Clone, Debug)]
-struct HoverPreview {
-    hover: PresetHover,
-    document: TitleAnimDocument,
+struct HoverPreview<T> {
+    hover: PresetHover<T>,
+    document: AnimDocument<T>,
     key: PreviewKey,
     since: Duration,
     /// The draft generation the preview was built from.
@@ -170,21 +216,21 @@ pub enum AnimationRefusal {
 
 /// A save on its way to the server.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct SentDraft {
-    clip: Arc<WireTitleClip>,
+struct SentDraft<T> {
+    clip: Arc<Clip<T>>,
     base_revision: u64,
     generation: u64,
 }
 
-/// One title template's draft animation bound to its replicated authority.
+/// One draft animation bound to its replicated authority.
 #[derive(Clone, Debug)]
 #[allow(clippy::struct_excessive_bools)] // each flag is a distinct, independent draft fact
-pub struct TitleAnimationBinding {
+pub struct AnimationBinding<T> {
     input: InputId,
-    document: TitleAnimDocument,
-    authority: TitleAnimationStatus,
+    document: AnimDocument<T>,
+    authority: AnimationStatus<T>,
     design: bool,
-    sent: Option<SentDraft>,
+    sent: Option<SentDraft<T>>,
     conflict: bool,
     /// The draft generation the server refused; a later edit clears it.
     refused: Option<u64>,
@@ -194,16 +240,21 @@ pub struct TitleAnimationBinding {
     preview_sent_at: Option<Duration>,
     last_preview_issue: Option<Duration>,
     shown: Option<PreviewKey>,
-    hover: Option<HoverPreview>,
+    hover: Option<HoverPreview<T>>,
     hover_serial: u64,
 }
 
-impl TitleAnimationBinding {
-    /// A clean draft of `input`'s template animation as the authority
-    /// reports it, on [`DEFAULT_CANVAS`] until [`Self::set_design`]. Auto-save
-    /// is on.
+/// One title template's draft animation bound to its replicated authority.
+pub type TitleAnimationBinding = AnimationBinding<WireTitleElementId>;
+/// One scene's draft layer animation bound to its replicated authority
+/// (GX-011 stage 5); proxy previews only.
+pub type SceneAnimationBinding = AnimationBinding<WireSceneLayerId>;
+
+impl<T: AnimationTarget> AnimationBinding<T> {
+    /// A clean draft of `input`'s animation as the authority reports it, on
+    /// [`DEFAULT_CANVAS`] until [`Self::set_design`]. Auto-save is on.
     #[must_use]
-    pub fn new(input: InputId, status: &TitleAnimationStatus) -> Self {
+    pub fn new(input: InputId, status: &AnimationStatus<T>) -> Self {
         let document = AnimDocument::new(
             (*status.clip).clone(),
             status.revision,
@@ -229,32 +280,32 @@ impl TitleAnimationBinding {
         }
     }
 
-    /// The title input whose template this draft edits.
+    /// The title (or Scene) input whose animation this draft edits.
     #[must_use]
     pub const fn input(&self) -> InputId {
         self.input
     }
 
     #[must_use]
-    pub const fn document(&self) -> &TitleAnimDocument {
+    pub const fn document(&self) -> &AnimDocument<T> {
         &self.document
     }
 
     /// The draft, for the editor widgets. Saves leave through
     /// [`Self::poll_save`].
-    pub const fn document_mut(&mut self) -> &mut TitleAnimDocument {
+    pub const fn document_mut(&mut self) -> &mut AnimDocument<T> {
         &mut self.document
     }
 
     /// The authority's animation as last seen by [`Self::sync`].
     #[must_use]
-    pub const fn authority(&self) -> &TitleAnimationStatus {
+    pub const fn authority(&self) -> &AnimationStatus<T> {
         &self.authority
     }
 
-    /// Gives the editor the template's canvas and element outlines, so
-    /// presets and the wireframe proxy know where each element sits.
-    pub fn set_design(&mut self, design: &TitleDesign) {
+    /// Gives the editor the canvas and target outlines, so presets and the
+    /// wireframe proxy know where each target sits.
+    pub fn set_design(&mut self, design: &AnimationDesign<T>) {
         self.document.set_canvas(design.canvas.0, design.canvas.1);
         self.document.set_targets(design.elements.iter().cloned());
         self.design = true;
@@ -271,7 +322,7 @@ impl TitleAnimationBinding {
     /// (the draft stays dirty if the operator kept editing), and another
     /// editor's change under a dirty draft is a conflict. Nothing changes
     /// during a drag; the next call after it catches up.
-    pub fn sync(&mut self, status: &TitleAnimationStatus) -> AuthoritySync {
+    pub fn sync(&mut self, status: &AnimationStatus<T>) -> AuthoritySync {
         self.authority = status.clone();
         if let Some(sent) = &self.sent
             && *status.clip == *sent.clip
@@ -454,7 +505,7 @@ impl TitleAnimationBinding {
     /// preset that cannot apply (no outline for the element, a limit, a
     /// drag) previews nothing. Repeating the current hover over an
     /// unchanged draft is free.
-    pub fn set_preset_hover(&mut self, hover: Option<PresetHover>, now: Duration) {
+    pub fn set_preset_hover(&mut self, hover: Option<PresetHover<T>>, now: Duration) {
         let generation = self.document.generation();
         if self
             .hover
@@ -500,18 +551,18 @@ impl TitleAnimationBinding {
 
     /// The preset being previewed, if any.
     #[must_use]
-    pub fn preset_hover(&self) -> Option<PresetHover> {
+    pub fn preset_hover(&self) -> Option<PresetHover<T>> {
         self.hover.as_ref().map(|preview| preview.hover)
     }
 
     /// The draft with the hovered preset applied (for the fast proxy).
     #[must_use]
-    pub fn preset_hover_document(&self) -> Option<&TitleAnimDocument> {
+    pub fn preset_hover_document(&self) -> Option<&AnimDocument<T>> {
         self.hover.as_ref().map(|preview| &preview.document)
     }
 
     /// The hovered draft, to move its playhead for the fast proxy.
-    pub fn preset_hover_document_mut(&mut self) -> Option<&mut TitleAnimDocument> {
+    pub fn preset_hover_document_mut(&mut self) -> Option<&mut AnimDocument<T>> {
         self.hover.as_mut().map(|preview| &mut preview.document)
     }
 
@@ -529,46 +580,6 @@ impl TitleAnimationBinding {
     pub fn shown_preview_is_hover(&self) -> bool {
         self.shown
             .is_some_and(|key| key.generation >= HOVER_GENERATION_BASE)
-    }
-
-    /// The `title_preview_request` to send now, if the debounce elapsed,
-    /// nothing is in flight, the last request is [`PREVIEW_MIN_INTERVAL`]
-    /// old, and `can_request` holds. An answer missing for
-    /// [`PREVIEW_TIMEOUT`] is given up first.
-    pub fn poll_preview(
-        &mut self,
-        now: Duration,
-        can_request: bool,
-    ) -> Option<TitlePreviewRequest> {
-        if let (Some(request), Some(sent)) = (self.previews.in_flight(), self.preview_sent_at)
-            && now.saturating_sub(sent) >= PREVIEW_TIMEOUT
-        {
-            self.previews.fail(request.id);
-            self.preview_sent_at = None;
-        }
-        if !can_request
-            || self
-                .last_preview_issue
-                .is_some_and(|last| now.saturating_sub(last) < PREVIEW_MIN_INTERVAL)
-        {
-            return None;
-        }
-        let request = self.previews.poll(now)?;
-        self.last_preview_issue = Some(now);
-        self.preview_sent_at = Some(now);
-        let (width, height) = preview_size(self.document.canvas());
-        let mut wire = preview_request(&self.document, self.input, request, width, height);
-        let hovered = self
-            .hover
-            .as_ref()
-            .filter(|preview| preview.key == request.key)
-            .map(|preview| preview.document.clip());
-        // A hovered preset, or a draft that differs from the saved
-        // animation (a drag changes it before it is marked dirty), travels
-        // along.
-        let draft = hovered.unwrap_or_else(|| self.document.clip());
-        wire.clip = (draft != &*self.authority.clip).then(|| Box::new(draft.clone()));
-        Some(wire)
     }
 
     /// When the next preview could go out or the one in flight times out,
@@ -651,6 +662,49 @@ impl TitleAnimationBinding {
         self.last_preview_issue = None;
         self.shown = None;
         self.hover = None;
+    }
+}
+
+impl AnimationBinding<WireTitleElementId> {
+    /// The `title_preview_request` to send now, if the debounce elapsed,
+    /// nothing is in flight, the last request is [`PREVIEW_MIN_INTERVAL`]
+    /// old, and `can_request` holds. An answer missing for
+    /// [`PREVIEW_TIMEOUT`] is given up first. Titles only: scenes have no
+    /// exact preview.
+    pub fn poll_preview(
+        &mut self,
+        now: Duration,
+        can_request: bool,
+    ) -> Option<TitlePreviewRequest> {
+        if let (Some(request), Some(sent)) = (self.previews.in_flight(), self.preview_sent_at)
+            && now.saturating_sub(sent) >= PREVIEW_TIMEOUT
+        {
+            self.previews.fail(request.id);
+            self.preview_sent_at = None;
+        }
+        if !can_request
+            || self
+                .last_preview_issue
+                .is_some_and(|last| now.saturating_sub(last) < PREVIEW_MIN_INTERVAL)
+        {
+            return None;
+        }
+        let request = self.previews.poll(now)?;
+        self.last_preview_issue = Some(now);
+        self.preview_sent_at = Some(now);
+        let (width, height) = preview_size(self.document.canvas());
+        let mut wire = preview_request(&self.document, self.input, request, width, height);
+        let hovered = self
+            .hover
+            .as_ref()
+            .filter(|preview| preview.key == request.key)
+            .map(|preview| preview.document.clip());
+        // A hovered preset, or a draft that differs from the saved
+        // animation (a drag changes it before it is marked dirty), travels
+        // along.
+        let draft = hovered.unwrap_or_else(|| self.document.clip());
+        wire.clip = (draft != &*self.authority.clip).then(|| Box::new(draft.clone()));
+        Some(wire)
     }
 }
 

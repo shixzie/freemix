@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.30 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.31 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -569,6 +569,81 @@ element, animated or not:
   characters replaced by spaces and are cut at a character boundary, and a
   template with more elements lists its first 192 in template order.
 - 2.29 is refused.
+
+Protocol 2.31 animates scene layers with the title animation model
+(`GX-011` stage 5, project schema 32): every scene carries one
+`fm_animation` clip keyed by stable layer id (`fm_model::LayerId`, unique
+within its scene and kept by every layer edit), with the same In and Out
+phases, presets, and animation revision as a title template:
+
+- The snapshot gains `scenes` after `titles`: the Scene inputs, strictly
+  ascending, each also in `inputs`, at most `MAX_LIST_ITEMS`, comma-joined
+  (empty when there are none).
+- Commands (each needs `EditProject`, is a project edit with undo and redo,
+  and is refused as a conflict unless the scene's animation revision is
+  `base_revision`; `input` is any Scene input showing the scene):
+  - `scene_animation_set` (`input`, `base_revision`, `clip`): replaces the
+    whole clip.
+  - `scene_animation_preset` (`layer`, `phase=in|out`, `preset`, `frames`):
+    `fm_model::Scene::apply_animation_preset` with the title presets.
+    Off-canvas distances and the wipe extent come from the layer's static
+    on-screen footprint and the project canvas.
+  - `scene_animation_stretch` (`phase`, `frames`): scales every key of the
+    phase.
+  An edit whose clip names a layer the scene lacks or animates `color`
+  (layers have no fill) is refused with `invalid_command`; one whose clip
+  would not fit `MAX_SCENE_ANIMATION_BYTES` is refused with field code
+  `too_large`, and a daemon refuses to start on a stored scene beyond it.
+  Undo and redo restore the whole previous clip. The animation lives in
+  `project.json` and is journaled like every project edit.
+- `clip` uses the title clip encoding with `layer` (a nonzero varint, at
+  most `u32::MAX`) in place of `element`, at most **36 KiB** raw
+  (`MAX_SCENE_ANIMATION_BYTES`); decoding refuses any `color` track.
+- Every accepted scene animation command publishes
+  `event=scene_animation_changed` with `inputs` (every Scene input showing
+  the scene, ascending), `animation_revision`, and the resulting `clip`.
+- After the `title_layout_state` records, a snapshot sends one
+  `kind=scene_animation_state` record per announced scene input (in the
+  order of `scenes`; `revision`, `input`, `animation_revision`, `clip`),
+  then one `kind=scene_layout_state` per announced scene input (`revision`,
+  `input`, the project canvas `width` and `height`, and `layers`). A record
+  at another revision, for an unannounced input, twice, or out of order
+  forces a fresh snapshot; clients stay synchronizing until every scene's
+  animation and layout has arrived. Scene layers are edited offline only,
+  so a layout changes only with a new snapshot; there is no layout event.
+- `layers` is one unpadded base64url field (the clip codec's varints), at
+  most **36 KiB** raw (`MAX_SCENE_LAYOUT_BYTES`): `layers = count layer*`;
+  `layer = id(nonzero u32) flags(byte: bit 0 enabled, other bits zero)
+  quarter_turns(byte 0..=3) name_len name(UTF-8) x(zigzag) y(zigzag) width
+  height opacity(byte)`. Layers keep scene order, at most **256**
+  (`MAX_SCENE_LAYOUT_LAYERS`) with unique ids; names are at most **96**
+  UTF-8 bytes without control characters (the server replaces control
+  characters by spaces and cuts at a character boundary). `x`/`y` are the
+  top-left of the layer's on-screen footprint and `width`/`height` its box
+  before the quarter turns, in project canvas pixels.
+- Posing (`fm_model::Scene::posed`, integer arithmetic rounded once, half
+  up, identical in every renderer): position moves the footprint; scale
+  scales the box about the footprint's centre; rotation is added to the
+  static quarter turn and realized at the **nearest quarter turn** (the
+  compositor transform has no arbitrary rotation); crop hides pixels of
+  the scaled box with the source cropped in proportion; opacity multiplies
+  the static opacity. A layer scaled or cropped to nothing is not drawn.
+- On air the engine plays a scene's In phase when its Scene input reaches
+  Program (a cut or the first frame of a transition) or Preview, holds the
+  In end afterwards, and plays the Out phase while a timed or manual
+  transition takes it off Program. **A cut plays no Out**: there is no
+  frame to play it on. A scene shown any other way (nested in another
+  scene, a multiview tile, an overlay) holds. Phase playback is runtime
+  state: it is not persisted, does not block snapshots, and a snapshot
+  replicates no phase. The simulated daemon realizes a command's scene
+  phases within that command's ticks; the native daemon recompiles the
+  scene composition every frame while a scene is mid-phase.
+- Scene previews are **proxy-only**: there is no exact scene preview
+  request. Editors draw the replicated layout as outlines posed by the
+  draft clip (Studio's Animation window); `title_preview_request` stays
+  title-only. `freemix-cli scene-render-frame` renders any point of a
+  scene's animation locally.
+- 2.30 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

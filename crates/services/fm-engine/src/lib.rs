@@ -6,6 +6,7 @@ mod grade;
 mod grade_edit;
 mod history;
 mod playlist;
+mod scene_animation;
 mod state;
 mod title_animation;
 
@@ -30,6 +31,10 @@ pub use history::{
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
     PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,
+};
+pub use scene_animation::{
+    EngineScene, EngineSceneAir, EngineSceneAnimationEdit, SceneAnimationChange, SceneClipBound,
+    scene_inputs_sharing,
 };
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,

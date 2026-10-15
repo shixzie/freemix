@@ -1113,6 +1113,18 @@ impl Runtime<'_> {
                     .into_iter()
                     .map(WireMessage::TitleLayoutState),
             );
+            peer.initial_sync.extend(
+                control
+                    .scene_animation_states()
+                    .into_iter()
+                    .map(WireMessage::SceneAnimationState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .scene_layout_states()
+                    .into_iter()
+                    .map(WireMessage::SceneLayoutState),
+            );
         }
     }
 

@@ -254,7 +254,7 @@ fn add_property_menu<T: Copy + Ord>(
             ui.menu_button(l.text(Msg::AnimAnimateProperty), |ui| {
                 for (target, name) in &targets {
                     let submenu = ui.menu_button(name.as_str(), |ui| {
-                        for property in Property::ALL {
+                        for &property in state.properties {
                             let animated = document
                                 .clip()
                                 .track(TrackKey::new(*target, phase, property))

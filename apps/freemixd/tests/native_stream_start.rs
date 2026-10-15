@@ -103,6 +103,7 @@ fn save_streaming_project(path: &Path) {
         name: "Program scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
             name: "Source".into(),
             source: SourceRef::Input(input(1)),
             enabled: true,
@@ -113,6 +114,7 @@ fn save_streaming_project(path: &Path) {
             opacity: u8::MAX,
             z_order: 0,
         }],
+        animation: fm_model::SceneAnimation::default(),
     });
     let bus = BusId::new(id(8_111));
     project.add_audio_bus(AudioBus {

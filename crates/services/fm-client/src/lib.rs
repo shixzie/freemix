@@ -19,8 +19,9 @@ use fm_protocol::{
     DurableGap, EngineIdentity, EventMessage, GradeStateMessage, HandshakeOutcome,
     HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
     PlaylistStateMessage, ProtocolVersion, ResumeCursor, Role, RuntimeEventMessage,
-    RuntimeLifecycleEvent, ServerHello, ServerIdentity, SnapshotMessage, StructuredError,
-    TitleAnimationStateMessage, TitleLayoutStateMessage, TitleStateMessage, WireMessage,
+    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage, ServerHello,
+    ServerIdentity, SnapshotMessage, StructuredError, TitleAnimationStateMessage,
+    TitleLayoutStateMessage, TitleStateMessage, WireMessage,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{
@@ -176,6 +177,12 @@ pub enum Intake {
     /// A `title_layout_state` completed one title's layout the snapshot
     /// announced.
     TitleLayoutStateApplied,
+    /// A `scene_animation_state` completed one Scene input's animation the
+    /// snapshot announced (Protocol 2.31).
+    SceneAnimationStateApplied,
+    /// A `scene_layout_state` completed one Scene input's layout the
+    /// snapshot announced (Protocol 2.31).
+    SceneLayoutStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -582,6 +589,14 @@ impl Client {
                 self.apply_title_layout_state(state)?;
                 Ok(Intake::TitleLayoutStateApplied)
             }
+            WireMessage::SceneAnimationState(state) => {
+                self.apply_scene_animation_state(state)?;
+                Ok(Intake::SceneAnimationStateApplied)
+            }
+            WireMessage::SceneLayoutState(state) => {
+                self.apply_scene_layout_state(state)?;
+                Ok(Intake::SceneLayoutStateApplied)
+            }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -951,6 +966,109 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one Scene input's animation the snapshot announced with
+    /// its `scene_animation_state` (Protocol 2.31).
+    ///
+    /// Scene animation states arrive only while synchronizing from a
+    /// snapshot, one per announced Scene input after every
+    /// `title_layout_state` and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A scene animation state in any other state, at another revision, for
+    /// a Scene input the snapshot did not announce or already completed, or
+    /// before the earlier follow-on records forces a fresh-snapshot
+    /// reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_scene_animation_state(
+        &mut self,
+        state: SceneAnimationStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_scene_animation_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
+    /// Completes one Scene input's layout the snapshot announced with its
+    /// `scene_layout_state` (Protocol 2.31).
+    ///
+    /// Scene layout states arrive only while synchronizing from a
+    /// snapshot, one per announced Scene input after every
+    /// `scene_animation_state` and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A scene layout state in any other state, at another revision, for a
+    /// Scene input the snapshot did not announce or already completed, or
+    /// before the earlier follow-on records forces a fresh-snapshot
+    /// reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_scene_layout_state(
+        &mut self,
+        state: SceneLayoutStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_scene_layout_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -958,7 +1076,8 @@ impl Client {
     }
 
     /// Whether the installed snapshot has every title, playlist, grade,
-    /// title animation, and title layout state it announced.
+    /// title animation, title layout, scene animation, and scene layout
+    /// state it announced.
     fn snapshot_complete(&self) -> bool {
         self.model.state().is_none_or(|state| {
             state.titles_complete()
@@ -966,6 +1085,8 @@ impl Client {
                 && state.grading_complete()
                 && state.title_animations_complete()
                 && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
         })
     }
 
@@ -1140,6 +1261,7 @@ impl Client {
     /// # Errors
     ///
     /// Requires ready state, queue space, and a unique nonblank idempotency key.
+    #[allow(clippy::too_many_lines)] // one optimistic arm per command payload
     pub fn queue_command(
         &mut self,
         payload: CommandPayload,
@@ -1230,7 +1352,10 @@ impl Client {
             | CommandPayload::RemoveGradeLut { .. }
             | CommandPayload::SetTitleAnimation { .. }
             | CommandPayload::ApplyTitleAnimationPreset { .. }
-            | CommandPayload::StretchTitleAnimation { .. } => None,
+            | CommandPayload::StretchTitleAnimation { .. }
+            | CommandPayload::SetSceneAnimation { .. }
+            | CommandPayload::ApplySceneAnimationPreset { .. }
+            | CommandPayload::StretchSceneAnimation { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

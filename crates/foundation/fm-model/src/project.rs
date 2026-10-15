@@ -11,6 +11,7 @@ use crate::{
         GradeEditError, GradeId, GradeSource, LutId, ProjectGrade, ProjectGrading, ProjectLut,
     },
     playlist::Playlist,
+    scene_animation::{LayerId, SceneAnimation, SceneAnimationError},
     stream::{StreamTarget, StreamTargetId},
     title::{SetTitleFieldsError, TitleFieldEntry, TitleInput, validate_title_fields},
     validation::validate_project,
@@ -390,6 +391,24 @@ pub enum AddSceneLayerError {
     MissingScene(SceneId),
     SourceCycle,
 }
+
+/// Why [`Project::set_scene_animation`] refused an animation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetSceneAnimationError {
+    UnknownScene(SceneId),
+    Invalid(SceneAnimationError),
+}
+
+impl std::fmt::Display for SetSceneAnimationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownScene(scene) => write!(formatter, "unknown scene {scene}"),
+            Self::Invalid(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SetSceneAnimationError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetSceneBackgroundError {
@@ -786,7 +805,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(31);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(32);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1483,6 +1502,7 @@ impl Project {
             name: scene_name,
             background: Rgba8::OPAQUE_BLACK,
             layers: Vec::new(),
+            animation: SceneAnimation::default(),
         });
         candidate.add_input(Input {
             id: input,
@@ -1646,6 +1666,36 @@ impl Project {
         Ok(())
     }
 
+    /// The scene with id `scene`.
+    #[must_use]
+    pub fn scene(&self, scene: SceneId) -> Option<&Scene> {
+        self.scenes.iter().find(|candidate| candidate.id == scene)
+    }
+
+    /// Replaces one scene's animation after checking it animates only that
+    /// scene's layers with scene properties.
+    ///
+    /// # Errors
+    ///
+    /// [`SetSceneAnimationError::UnknownScene`] or
+    /// [`SetSceneAnimationError::Invalid`]; nothing changes on error.
+    pub fn set_scene_animation(
+        &mut self,
+        scene: SceneId,
+        animation: SceneAnimation,
+    ) -> Result<(), SetSceneAnimationError> {
+        let target = self
+            .scenes
+            .iter_mut()
+            .find(|candidate| candidate.id == scene)
+            .ok_or(SetSceneAnimationError::UnknownScene(scene))?;
+        target
+            .check_animation_clip(&animation.clip)
+            .map_err(SetSceneAnimationError::Invalid)?;
+        target.animation = animation;
+        Ok(())
+    }
+
     /// Appends a layer to a scene after checking the scene, name, and source.
     ///
     /// # Errors
@@ -1685,6 +1735,14 @@ impl Project {
                 return Err(AddSceneLayerError::MissingScene(source_scene));
             }
             SourceRef::Input(_) | SourceRef::Scene(_) => {}
+        }
+        let mut layer = layer;
+        // A layer keeps its id unless the scene already uses it (a duplicate
+        // or a copy); then it takes the scene's next free id.
+        if self.scenes[scene_index].layer_by_id(layer.id).is_some()
+            && let Some(id) = self.scenes[scene_index].next_layer_id()
+        {
+            layer.id = id;
         }
         let mut candidate = self.clone();
         candidate.scenes[scene_index].layers.push(layer);
@@ -1728,7 +1786,29 @@ impl Project {
                 length: target.layers.len(),
             });
         }
-        Ok(target.layers.remove(index))
+        let layer = target.layers.remove(index);
+        // The removed layer's tracks go with it.
+        let animated = target
+            .animation
+            .clip
+            .tracks()
+            .iter()
+            .any(|track| track.key.target == layer.id);
+        if animated {
+            let keys = target
+                .animation
+                .clip
+                .tracks()
+                .iter()
+                .filter(|track| track.key.target == layer.id)
+                .map(|track| track.key)
+                .collect::<Vec<_>>();
+            for key in keys {
+                target.animation.clip.remove_track(key);
+            }
+            target.animation.revision = target.animation.revision.saturating_add(1);
+        }
+        Ok(layer)
     }
 
     /// Moves one layer within a scene to a new stacking position.
@@ -3306,6 +3386,8 @@ pub struct Scene {
     pub name: String,
     pub background: Rgba8,
     pub layers: Vec<Layer>,
+    /// The scene's layer animation (GX-011), keyed by [`Layer::id`].
+    pub animation: SceneAnimation,
 }
 
 impl Scene {
@@ -3319,6 +3401,8 @@ impl Scene {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Layer {
+    /// Stable identity within the scene (see [`LayerId`]).
+    pub id: LayerId,
     pub name: String,
     pub source: SourceRef,
     pub enabled: bool,

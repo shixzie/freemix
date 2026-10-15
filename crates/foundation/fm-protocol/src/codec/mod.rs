@@ -4,10 +4,11 @@ mod encode;
 mod grade;
 mod layout;
 mod playlist;
+mod scene_layout;
 mod title;
 mod value;
 
-pub use animation::title_clip_wire_bytes;
+pub use animation::{scene_clip_wire_bytes, title_clip_wire_bytes};
 pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
 

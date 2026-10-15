@@ -127,6 +127,7 @@ fn stored(project: Project) -> StoredProject {
 
 fn layer(name: &str, source: SourceRef) -> Layer {
     Layer {
+        id: next_layer_id(),
         name: name.into(),
         source,
         enabled: true,
@@ -541,6 +542,7 @@ fn append_remaps_ids_resolves_name_clashes_and_carries_media() {
         name: "Lower".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("clip", SourceRef::Input(input_id(11)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     source.add_scene(Scene {
         id: scene_id(5),
@@ -550,6 +552,7 @@ fn append_remaps_ids_resolves_name_clashes_and_carries_media() {
             layer("cam", SourceRef::Input(input_id(10))),
             layer("lower", SourceRef::Scene(scene_id(7))),
         ],
+        animation: fm_model::SceneAnimation::default(),
     });
     source.add_input(Input {
         id: input_id(14),
@@ -1361,4 +1364,11 @@ fn relink_never_proposes_an_in_bundle_symlink_that_escapes_the_assets() {
     let outcome = store.apply_media_relink(&project, &plan).unwrap();
     assert_eq!(outcome.relinked, [input_id(2)]);
     assert_eq!(outcome.unresolved, [input_id(1)]);
+}
+
+/// A process-unique layer id, so layers built by helpers never collide.
+fn next_layer_id() -> fm_model::LayerId {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        .expect("layer ids start at one")
 }

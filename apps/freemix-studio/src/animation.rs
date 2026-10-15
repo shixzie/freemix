@@ -1,14 +1,15 @@
 //! Host side of the Studio Animation window: replicated title layouts as
-//! window designs, and title animation save refusals and exact preview
-//! errors mapped for the UI.
+//! window designs, and title and scene animation save refusals and exact
+//! preview errors mapped for the UI. Scene designs need no host step: the
+//! window reads each replicated `scene_layout_state` itself.
 
 use fm_client::Client;
 use fm_protocol::{CommandPayload, CommandResult, ErrorMessage};
 use fm_ui_egui::{StudioShell, StudioUiState, TitleAnimationRefusal};
 use fm_ui_model::title_animation::{TitleDesign, preview_request_id};
 
-/// The refusal of a title animation edit, naming its title and whether it
-/// was refused as based on a stale animation revision.
+/// The refusal of a title or scene animation edit, naming its input and
+/// whether it was refused as based on a stale animation revision.
 pub(crate) fn animation_refusal(
     client: &Client,
     command_id: &str,
@@ -20,7 +21,10 @@ pub(crate) fn animation_refusal(
     let input = match &client.command(command_id)?.command.payload {
         CommandPayload::SetTitleAnimation { input, .. }
         | CommandPayload::ApplyTitleAnimationPreset { input, .. }
-        | CommandPayload::StretchTitleAnimation { input, .. } => input.to_domain(),
+        | CommandPayload::StretchTitleAnimation { input, .. }
+        | CommandPayload::SetSceneAnimation { input, .. }
+        | CommandPayload::ApplySceneAnimationPreset { input, .. }
+        | CommandPayload::StretchSceneAnimation { input, .. } => input.to_domain(),
         _ => return None,
     };
     Some(TitleAnimationRefusal {

@@ -69,6 +69,7 @@ fn identity_geometry() -> LayerGeometry {
 
 fn layer(name: &str, source: SourceRef) -> Layer {
     Layer {
+        id: next_layer_id(),
         name: name.into(),
         source,
         enabled: true,
@@ -96,6 +97,7 @@ fn valid_project() -> Project {
         name: "Wide".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("Camera", SourceRef::Input(input_id(1)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_audio_bus(AudioBus {
         id: bus_id(1),
@@ -351,6 +353,7 @@ fn add_scene_layer_rejects_missing_sources_and_cycles_without_mutation() {
         name: "Nested".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("back", SourceRef::Scene(scene_id(1)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_input(Input {
         id: input_id(2),
@@ -383,12 +386,14 @@ fn rename_scene_preserves_exact_text_and_rejects_invalid_names_without_mutation(
         name: "Wide".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: scene_id(2),
         name: "Close".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
     project
         .rename_scene(scene_id(1), "  Exact scene  ".into())
@@ -433,6 +438,7 @@ fn duplicate_scene_input_is_atomic_and_preserves_layer_fields() {
         name: "Source".into(),
         background: Rgba8::new(8, 4, 2, 16),
         layers: vec![source_layer],
+        animation: fm_model::SceneAnimation::default(),
     });
     project
         .duplicate_scene_input_checked(
@@ -660,6 +666,7 @@ fn remove_input_removes_pair_and_rejects_domain_references() {
                 name: "Scene".into(),
                 background: Rgba8::OPAQUE_BLACK,
                 layers: vec![layer("Input", SourceRef::Input(input_id(3)))],
+                animation: fm_model::SceneAnimation::default(),
             });
         }),
         Box::new(|project| {
@@ -932,6 +939,7 @@ fn canvas_project(width: u32, height: u32, pixel_format: PixelFormat) -> Project
         name: "Vertical".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![full, turned],
+        animation: fm_model::SceneAnimation::default(),
     });
     project
 }
@@ -1985,6 +1993,7 @@ fn rectangular_masks_use_half_open_post_crop_source_bounds() {
             name: "Masked scene".into(),
             background: Rgba8::OPAQUE_BLACK,
             layers: vec![masked],
+            animation: fm_model::SceneAnimation::default(),
         });
         project
     };
@@ -2036,6 +2045,7 @@ fn layer_effects_persist_ordered_bounded_descriptors() {
         name: "Effects scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layered],
+        animation: fm_model::SceneAnimation::default(),
     });
 
     assert_eq!(project.validate(), Ok(()));
@@ -2066,6 +2076,7 @@ fn layer_effects_are_bounded_and_names_stay_unrestricted() {
             name: "Effects scene".into(),
             background: Rgba8::OPAQUE_BLACK,
             layers: vec![layered],
+            animation: fm_model::SceneAnimation::default(),
         });
         project
     };
@@ -2139,6 +2150,7 @@ fn scene_layer_effect_mutations_are_bounded_and_atomic() {
         name: "Effects scene".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layered],
+        animation: fm_model::SceneAnimation::default(),
     });
     let scene = scene_id(99);
 
@@ -2296,12 +2308,14 @@ fn nested_scene_cycles_are_rejected() {
         name: "Nested A".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("B", SourceRef::Scene(scene_id(3)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: scene_id(3),
         name: "Nested B".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("A", SourceRef::Scene(scene_id(2)))],
+        animation: fm_model::SceneAnimation::default(),
     });
 
     let errors = project.validate().unwrap_err();
@@ -2338,6 +2352,7 @@ fn scene_inputs_validate_full_width_scene_and_audio_references() {
         name: "Scene".into(),
         background: Rgba8::new(8, 4, 2, 16),
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
 
     assert_eq!(project.validate(), Ok(()));
@@ -2373,12 +2388,14 @@ fn scene_removal_checks_references_in_order_without_mutation() {
         name: "Close".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: scene_id(3),
         name: "Wide 2".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("Close", SourceRef::Scene(scene_id(2)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_input(Input {
         id: input_id(2),
@@ -2453,6 +2470,7 @@ fn checked_output_creation_and_route_validate_references_without_mutation() {
         name: "Close".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
     project
         .add_audio_bus_checked(AudioBus {
@@ -2560,6 +2578,7 @@ fn scene_composition_value_bounds_and_premultiplication_are_validated() {
         name: "Invalid".into(),
         background: Rgba8::new(2, 0, 0, 1),
         layers: vec![invalid_layer],
+        animation: fm_model::SceneAnimation::default(),
     });
 
     let errors = project.validate().unwrap_err();
@@ -2585,6 +2604,7 @@ fn persisted_scenes_can_exceed_the_renderer_execution_limit() {
         name: "Preserved".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers,
+        animation: fm_model::SceneAnimation::default(),
     });
 
     assert_eq!(project.validate(), Ok(()));
@@ -2616,12 +2636,14 @@ fn scene_input_video_and_audio_cycles_are_rejected() {
         name: "A".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("B", SourceRef::Input(input_id(21)))],
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_scene(Scene {
         id: scene_id(21),
         name: "B".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: vec![layer("A", SourceRef::Input(input_id(20)))],
+        animation: fm_model::SceneAnimation::default(),
     });
 
     let errors = project.validate().unwrap_err();
@@ -2683,6 +2705,7 @@ fn acyclic_scene_and_bus_graphs_with_shared_descendants_validate_promptly() {
             name: format!("Scene {index}"),
             background: Rgba8::OPAQUE_BLACK,
             layers,
+            animation: fm_model::SceneAnimation::default(),
         });
         project.add_audio_bus(AudioBus {
             id: bus_id(index),
@@ -2714,6 +2737,7 @@ fn long_reference_chains_validate_without_deep_recursion() {
             name: format!("Scene {index}"),
             background: Rgba8::OPAQUE_BLACK,
             layers: vec![layer("Next", SourceRef::Scene(scene_id(next)))],
+            animation: fm_model::SceneAnimation::default(),
         });
         project.add_input(Input {
             id: input_id(index),
@@ -3059,4 +3083,11 @@ fn set_title_fields_replaces_values_atomically() {
         Err(SetTitleFieldsError::NotTitleInput(input_id(1)))
     );
     assert_eq!(project, before);
+}
+
+/// A process-unique layer id, so layers built by helpers never collide.
+fn next_layer_id() -> fm_model::LayerId {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        .expect("layer ids start at one")
 }

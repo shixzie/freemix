@@ -253,6 +253,9 @@ fn model(variant: Variant) -> ClientModel {
             input: wire(TITLE_INPUT),
             field_revision: 2,
         }],
+        // The slides input is announced as a Scene input for the scene
+        // editor of the Animation window (GX-011 stage 5).
+        scenes: vec![wire(SCENE_INPUT)],
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: true,
         grade_states: 3,
@@ -309,6 +312,22 @@ fn model(variant: Variant) -> ClientModel {
             input: wire(TITLE_INPUT),
             animation_revision: 4,
             clip: Box::new(title_clip()),
+        })
+        .unwrap();
+    // The scene's animation and layers for the Animation window.
+    model
+        .apply_scene_animation_state(fm_protocol::SceneAnimationStateMessage {
+            revision: 10,
+            input: wire(SCENE_INPUT),
+            animation_revision: 2,
+            clip: Box::new(scene_clip()),
+        })
+        .unwrap();
+    model
+        .apply_scene_layout_state(fm_protocol::SceneLayoutStateMessage {
+            revision: 10,
+            input: wire(SCENE_INPUT),
+            layout: Box::new(scene_layout()),
         })
         .unwrap();
     // A LUT, a library grade, and a graded camera for the Colour window.
@@ -444,6 +463,60 @@ fn title_clip() -> fm_protocol::WireTitleClip {
 }
 
 /// The lower third's design: its bar and name.
+/// The Scene input of the audit (the slides input).
+const SCENE_INPUT: u128 = 3;
+
+fn scene_layer(value: u32) -> fm_protocol::WireSceneLayerId {
+    fm_protocol::WireSceneLayerId::new(core::num::NonZeroU32::new(value).unwrap())
+}
+
+/// The scene's animation: the host layer slides in from the left.
+fn scene_clip() -> fm_protocol::WireSceneClip {
+    let mut clip = fm_protocol::WireSceneClip::new(
+        fm_animation::Timebase::new(FrameRate::new(30, 1).unwrap()),
+        0,
+        0,
+    )
+    .unwrap();
+    clip.set_phase_frames_keeping_keys(Phase::In, 15).unwrap();
+    clip.apply_preset(
+        scene_layer(1),
+        Phase::In,
+        fm_animation::AnimationPreset::SlideFromLeft,
+        15,
+        fm_animation::PresetGeometry {
+            x: 0,
+            y: 270,
+            width: 960,
+            height: 540,
+            canvas_width: 1_920,
+            canvas_height: 1_080,
+        },
+    )
+    .unwrap();
+    clip
+}
+
+/// Two side-by-side layers on a 1080p canvas.
+fn scene_layout() -> fm_protocol::WireSceneLayout {
+    let outline = |id: u32, name: &str, x: i32| fm_protocol::WireSceneLayerOutline {
+        id: scene_layer(id),
+        name: name.into(),
+        x,
+        y: 270,
+        width: 960,
+        height: 540,
+        quarter_turns: 0,
+        opacity: 255,
+        enabled: true,
+    };
+    fm_protocol::WireSceneLayout {
+        width: 1_920,
+        height: 1_080,
+        layers: vec![outline(1, "Host", 0), outline(2, "Guest", 960)],
+    }
+}
+
 fn title_design() -> fm_ui_model::title_animation::TitleDesign {
     fm_ui_model::title_animation::TitleDesign {
         canvas: (1_920, 1_080),
@@ -724,8 +797,31 @@ fn animation_scenes(locale: Locale) -> Vec<Scene> {
         binding.document_mut().extend_phase(Phase::In, 30).unwrap();
         binding.refused(fm_ui_model::title_animation::AnimationRefusal::Conflict);
     };
+    let scene_input = input(SCENE_INPUT);
+    let scene_simple = |shell: &mut StudioShell| {
+        shell.open_scene_animation_window(scene_input);
+        shell.animation.sync(&egui::Context::default(), &operator());
+    };
+    let scene_advanced = |shell: &mut StudioShell| {
+        scene_simple(shell);
+        let host = TrackKey::new(scene_layer(1), Phase::In, Property::PositionX);
+        let binding = shell.scene_animation_binding_mut(scene_input).unwrap();
+        let document = binding.document_mut();
+        document.set_mode(EditorMode::Advanced);
+        document.set_selection(&KeySelection::from_iter([KeyRef {
+            track: host,
+            frame: 0,
+        }]));
+        shell.animation.scene_timeline.active_row = Some(host);
+    };
     let scenes: Vec<(&str, Configure, StudioUiState)> = vec![
         ("operator/animation", &unchanged, operator()),
+        ("operator/animation-scene", &scene_simple, operator()),
+        (
+            "operator/animation-scene-advanced",
+            &scene_advanced,
+            operator(),
+        ),
         ("operator/animation-design", &simple_design, operator()),
         ("operator/animation-docked", &docked, operator()),
         ("operator/animation-advanced", &advanced, operator()),

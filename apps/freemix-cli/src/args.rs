@@ -196,6 +196,34 @@ pub enum Command {
     GradeList {
         path: PathBuf,
     },
+    /// Applies a built-in animation preset to one layer of a scene.
+    SceneAnimationPreset {
+        path: PathBuf,
+        scene: u128,
+        layer: u32,
+        phase: TitlePhase,
+        /// A stable `fm_animation` preset id, checked when applied.
+        preset: String,
+        frames: u32,
+    },
+    /// Scales every key of one phase of a scene's animation.
+    SceneAnimationStretch {
+        path: PathBuf,
+        scene: u128,
+        phase: TitlePhase,
+        frames: u32,
+    },
+    /// Renders one scene posed at one frame of its animation.
+    SceneRenderFrame {
+        path: PathBuf,
+        scene: u128,
+        phase: ScenePhase,
+        /// The frame of an In or Out phase; zero for the hold.
+        frame: u32,
+        output: PathBuf,
+        width: u32,
+        height: u32,
+    },
     /// Renders one title input at one frame of one animation phase.
     TitleRenderFrame {
         path: PathBuf,
@@ -1072,6 +1100,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "title-animation-preset" => parse_title_animation_preset(arguments),
         "title-animation-stretch" => parse_title_animation_stretch(arguments),
         "title-render-frame" => parse_title_render_frame(arguments),
+        "scene-animation-preset" => parse_scene_animation_preset(arguments),
+        "scene-animation-stretch" => parse_scene_animation_stretch(arguments),
+        "scene-render-frame" => parse_scene_render_frame(arguments),
         "grade-set" => parse_grade_set(arguments),
         "grade-clear" => parse_grade_clear(arguments),
         "grade-import-lut" => parse_grade_import_lut(arguments),
@@ -2394,6 +2425,121 @@ fn parse_title_render_frame(
         phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
         frame: frame.ok_or(ArgsError::MissingValue("--frame"))?,
         output: output.ok_or(ArgsError::MissingValue("output path"))?,
+    })
+}
+
+/// The point of a scene's animation `scene-render-frame` poses: a frame of
+/// the In or Out phase, or the In phase held at its end (on air).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScenePhase {
+    In,
+    Hold,
+    Out,
+}
+
+fn parse_scene_animation_preset(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let layer = number(&required(&mut arguments, "layer")?, "layer")?;
+    let mut phase = None;
+    let mut preset = None;
+    let mut frames = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--phase" => phase = Some(title_phase(&mut arguments)?),
+            "--preset" => preset = Some(nonblank(&mut arguments, "preset")?),
+            "--frames" => frames = Some(number(&required(&mut arguments, "frames")?, "frames")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::SceneAnimationPreset {
+        path,
+        scene,
+        layer,
+        phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
+        preset: preset.ok_or(ArgsError::MissingValue("--preset"))?,
+        frames: frames.ok_or(ArgsError::MissingValue("--frames"))?,
+    })
+}
+
+fn parse_scene_animation_stretch(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let mut phase = None;
+    let mut frames = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--phase" => phase = Some(title_phase(&mut arguments)?),
+            "--frames" => frames = Some(number(&required(&mut arguments, "frames")?, "frames")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::SceneAnimationStretch {
+        path,
+        scene,
+        phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
+        frames: frames.ok_or(ArgsError::MissingValue("--frames"))?,
+    })
+}
+
+fn parse_scene_render_frame(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let mut phase = None;
+    let mut frame = None;
+    let mut output = None;
+    let mut width = 640;
+    let mut height = 360;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--phase" => {
+                let value = required(&mut arguments, "phase")?;
+                phase = Some(match value.as_str() {
+                    "in" => ScenePhase::In,
+                    "hold" => ScenePhase::Hold,
+                    "out" => ScenePhase::Out,
+                    _ => {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "phase (expected in, hold, or out)",
+                            value,
+                        });
+                    }
+                });
+            }
+            "--frame" => frame = Some(number(&required(&mut arguments, "frame")?, "frame")?),
+            "--width" => width = number(&required(&mut arguments, "width")?, "width")?,
+            "--height" => height = number(&required(&mut arguments, "height")?, "height")?,
+            option if option.starts_with("--") => {
+                return Err(ArgsError::UnknownOption(argument));
+            }
+            _ if output.is_none() => output = Some(PathBuf::from(argument)),
+            _ => return Err(ArgsError::UnexpectedArgument(argument)),
+        }
+    }
+    let phase = phase.ok_or(ArgsError::MissingValue("--phase"))?;
+    let frame = match (phase, frame) {
+        (ScenePhase::Hold, None) => 0,
+        (ScenePhase::Hold, Some(_)) => {
+            return Err(ArgsError::UnknownOption(
+                "--frame (the hold has no frames)".into(),
+            ));
+        }
+        (_, frame) => frame.ok_or(ArgsError::MissingValue("--frame"))?,
+    };
+    Ok(Command::SceneRenderFrame {
+        path,
+        scene,
+        phase,
+        frame,
+        output: output.ok_or(ArgsError::MissingValue("output path"))?,
+        width,
+        height,
     })
 }
 

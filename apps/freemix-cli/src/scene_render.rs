@@ -103,9 +103,14 @@ impl std::error::Error for SceneRenderError {}
 /// Each layer carries its input's grade (applied by the compositor after
 /// the layer's effects and before its transform), and the program grade
 /// colours the composed picture before it is scaled.
+///
+/// `pose` is the point of the scene's animation drawn
+/// ([`fm_model::Scene::posed`] with the pipeline size as the canvas).
+#[allow(clippy::too_many_arguments)] // one render: scene, pose, sources, size
 pub(crate) fn render_scene(
     project: &Project,
     scene: SceneId,
+    pose: fm_model::fm_animation::ClipState,
     pipeline: &fm_sim::SimulatedPipeline,
     grades: &CompiledProjectGrades,
     frame_number: u64,
@@ -116,7 +121,9 @@ pub(crate) fn render_scene(
         .scenes()
         .iter()
         .find(|candidate| candidate.id == scene)
-        .ok_or(SceneRenderError::UnknownScene(scene))?;
+        .ok_or(SceneRenderError::UnknownScene(scene))?
+        .posed(pose, pipeline.width(), pipeline.height());
+    let model = &model;
     let mut composition = Scene::new(
         pipeline.width(),
         pipeline.height(),

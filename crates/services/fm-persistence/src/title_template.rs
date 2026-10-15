@@ -6,7 +6,7 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 31,
+//! {"schema_version": 32,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
 //!               "background": "#00000000", "fields": [...], "elements": [...],
 //!               "animation": {"timebase": "30/1", "revision": 3,
@@ -1376,7 +1376,7 @@ fn write_animation(
     Ok(())
 }
 
-fn write_easing(output: &mut String, easing: Easing) -> Result<(), TitleTemplateError> {
+pub(crate) fn write_easing(output: &mut String, easing: Easing) -> Result<(), TitleTemplateError> {
     match easing {
         Easing::CubicBezier(curve) => {
             let (x1, y1, x2, y2) = curve.control_points();
@@ -1400,14 +1400,14 @@ fn write_easing(output: &mut String, easing: Easing) -> Result<(), TitleTemplate
     Ok(())
 }
 
-const fn phase_name(phase: Phase) -> &'static str {
+pub(crate) const fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::In => "in",
         Phase::Out => "out",
     }
 }
 
-const fn property_name(property: Property) -> &'static str {
+pub(crate) const fn property_name(property: Property) -> &'static str {
     match property {
         Property::PositionX => "position_x",
         Property::PositionY => "position_y",
@@ -1992,7 +1992,7 @@ fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
 }
 
 /// Parses exactly `numerator/denominator` in lowest terms.
-fn parse_timebase(text: &str) -> Result<Timebase, DecodeError> {
+pub(crate) fn parse_timebase(text: &str) -> Result<Timebase, DecodeError> {
     let invalid = || {
         syntax(format!(
             "timebase `{text}` is not a lowest-terms `N/D` rate"
@@ -2052,7 +2052,7 @@ fn parse_key(value: Value, property: Property) -> Result<Keyframe, DecodeError> 
     Ok(Keyframe::new(frame, value, easing))
 }
 
-fn parse_easing(value: Value) -> Result<Easing, DecodeError> {
+pub(crate) fn parse_easing(value: Value) -> Result<Easing, DecodeError> {
     match value {
         Value::String(id) => EasingPreset::from_id(&id)
             .map(EasingPreset::easing)

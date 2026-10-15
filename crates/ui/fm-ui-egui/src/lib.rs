@@ -247,6 +247,10 @@ pub enum StudioIntent {
     /// `title_animation_stretch` payload that carries its own base
     /// revision.
     TitleAnimation(CommandPayload),
+    /// Saves a scene's layer animation from the Animation window (GX-011
+    /// stage 5): a `scene_animation_set` payload that carries its own base
+    /// revision.
+    SceneAnimation(CommandPayload),
     /// Asks for an exact title preview. Not a command: the worker sends it
     /// as a `title_preview_request` (latest wins) and the answer arrives as
     /// [`StudioUiState::title_preview`] or

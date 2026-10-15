@@ -610,6 +610,7 @@ fn validate_main_mix(project: &Project, errors: &mut Vec<ValidationError>) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one pass over every scene rule, layer ids and animation included
 fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
     for scene in project.scenes() {
         let entity = Some(EntityRef::Scene(scene.id));
@@ -619,6 +620,30 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
                 entity,
                 field: "background",
                 kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+        for (index, layer) in scene.layers.iter().enumerate() {
+            if scene.layers[..index]
+                .iter()
+                .any(|previous| previous.id == layer.id)
+            {
+                errors.push(ValidationError {
+                    entity,
+                    field: "layers.id",
+                    kind: ValidationErrorKind::DuplicateId,
+                });
+            }
+        }
+        if let Err(error) = scene.check_animation_clip(&scene.animation.clip) {
+            errors.push(ValidationError {
+                entity,
+                field: "animation",
+                kind: match error {
+                    crate::SceneAnimationError::UnknownLayer(_) => {
+                        ValidationErrorKind::MissingReference(EntityRef::Scene(scene.id))
+                    }
+                    _ => ValidationErrorKind::OutOfRange,
+                },
             });
         }
         for layer in &scene.layers {

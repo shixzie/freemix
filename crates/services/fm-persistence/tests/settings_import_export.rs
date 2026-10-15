@@ -62,6 +62,7 @@ fn project() -> Project {
         name: "Main".into(),
         background: Rgba8::OPAQUE_BLACK,
         layers: Vec::new(),
+        animation: fm_model::SceneAnimation::default(),
     });
     project.add_audio_bus(AudioBus {
         id: BusId::new(nz(20)),
