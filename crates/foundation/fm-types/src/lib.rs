@@ -2,6 +2,7 @@
 
 mod audio;
 mod color;
+pub mod display;
 mod id;
 mod memory;
 mod scaling;

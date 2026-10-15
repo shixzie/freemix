@@ -1,6 +1,7 @@
 mod animation_preset;
 mod audio_mixer;
 mod cycles;
+mod display_output;
 mod grade;
 mod input_lifecycle;
 mod media_playback;
@@ -21,6 +22,9 @@ pub use animation_preset::{
 pub use audio_mixer::{
     AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioLabelError,
     MAX_AUDIO_LABEL_BYTES, validate_audio_group_name, validate_audio_strip_label,
+};
+pub use display_output::{
+    MAX_DISPLAY_OUTPUTS, SetDisplayOutputError, check_display_output, display_selector_is_valid,
 };
 pub use fm_animation;
 pub use grade::{

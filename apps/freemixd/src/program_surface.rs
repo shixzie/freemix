@@ -1,13 +1,18 @@
 //! Borderless fullscreen display outputs (OR-011) and their platform-neutral
 //! presentation policies.
 //!
-//! One winit event loop owns up to two borderless, cursor-hidden windows,
-//! one per configured display output. A shared
-//! [`DisplayOutputTracker`] matches each output to its display (stable id,
-//! then name), parks the window while its display is absent, and reattaches
-//! it when the display returns. Each window's surface is presented by its own
-//! [`ProgramPresentation`] on the daemon worker with the output's own source
-//! and [`fm_types::OutputScaling`].
+//! One winit event loop owns one borderless, cursor-hidden window per
+//! display-output slot (hidden while the slot is empty). A shared
+//! [`DisplayOutputTracker`] matches each configured slot to its display
+//! (stable id, then name), parks the window while its display is absent, and
+//! reattaches it when the display returns. Each window's surface is
+//! presented by its own [`ProgramPresentation`] on the daemon worker with
+//! the slot's own source and [`fm_types::OutputScaling`].
+//!
+//! The worker configures slots live through [`WindowedDisplays`]: it
+//! queues each slot edit and wakes the event loop, which applies it to the
+//! tracker and publishes every slot's state and the monitor inventory back
+//! as a [`DisplayReport`].
 
 use std::{
     future::Future,
@@ -25,7 +30,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{RECORDER_SLOTS, display_outputs::status_record};
+use super::{
+    RECORDER_SLOTS,
+    display_outputs::{DisplayReport, cleared_record, status_record},
+};
 use fm_color::NativeSdrOutputTransform;
 use fm_gpu::{
     FrameDecision, FrameGeneration, NativeContext, NativeGpuError, NativeSurface,
@@ -34,8 +42,8 @@ use fm_gpu::{
     SurfaceAcquisition,
 };
 use fm_io_api::display::{
-    DisplayId, DisplayInfo, DisplayMode, DisplayOutputConfig, DisplayOutputSet,
-    DisplayOutputSource, DisplayOutputTracker,
+    DisplayId, DisplayInfo, DisplayMode, DisplayOutputConfig, DisplayOutputReconfiguration,
+    DisplayOutputSlot, DisplayOutputSource, DisplayOutputTracker, MAX_DISPLAY_OUTPUTS,
 };
 use fm_types::OutputScaling;
 
@@ -229,16 +237,45 @@ fn replacement_disposition(
     }
 }
 
-/// One display output's worker-side surface, channels, and configuration.
+/// One display-output slot's worker-side surface and channels.
 pub(super) struct DisplayPresentationSetup {
-    config: DisplayOutputConfig,
     surface: NativeSurface,
     channels: ProgramWorkerChannels,
 }
 
-impl DisplayPresentationSetup {
-    pub(super) const fn config(&self) -> &DisplayOutputConfig {
-        &self.config
+/// The event loop's side of live display-output configuration: slot edits
+/// queued by the worker and what the event loop last observed.
+#[derive(Default)]
+struct WindowedDisplayState {
+    pending: Vec<(DisplayOutputSlot, Option<DisplayOutputConfig>)>,
+    report: DisplayReport,
+}
+
+/// The worker's handle on the windowed presenter: queues live slot edits
+/// and reads the latest [`DisplayReport`].
+pub(super) struct WindowedDisplays {
+    state: Arc<Mutex<WindowedDisplayState>>,
+    wake: winit::event_loop::EventLoopProxy<UserEvent>,
+}
+
+impl WindowedDisplays {
+    /// Queues one slot edit for the event loop and wakes it.
+    pub(super) fn configure(&self, slot: DisplayOutputSlot, config: Option<DisplayOutputConfig>) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
+            .push((slot, config));
+        let _ = self.wake.send_event(UserEvent::Wake);
+    }
+
+    /// What the event loop last observed.
+    pub(super) fn report(&self) -> DisplayReport {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .report
+            .clone()
     }
 }
 
@@ -248,8 +285,8 @@ pub(super) struct ProgramPresentation {
     lifecycle: PresentationLifecycle,
     frame_generation: u64,
     channels: ProgramWorkerChannels,
-    source: DisplayOutputSource,
-    scaling: OutputScaling,
+    /// The slot's source and scaling, or `None` while the slot is empty.
+    config: Option<(DisplayOutputSource, OutputScaling)>,
 }
 
 impl ProgramPresentation {
@@ -260,14 +297,19 @@ impl ProgramPresentation {
             lifecycle: PresentationLifecycle::new(),
             frame_generation: 0,
             channels: setup.channels,
-            source: setup.config.source,
-            scaling: setup.config.scaling,
+            config: None,
         }
     }
 
-    /// The picture this output shows.
-    pub(super) const fn source(&self) -> DisplayOutputSource {
-        self.source
+    /// The picture this slot shows, or `None` while it is empty.
+    pub(super) fn source(&self) -> Option<DisplayOutputSource> {
+        self.config.map(|(source, _)| source)
+    }
+
+    /// Takes a slot edit's source and scaling at once; the event loop moves
+    /// the window when the display changes.
+    pub(super) fn set_config(&mut self, config: Option<&DisplayOutputConfig>) {
+        self.config = config.map(|config| (config.source, config.scaling));
     }
 
     pub(super) fn shutdown_requested(&self) -> bool {
@@ -335,6 +377,9 @@ impl ProgramPresentation {
         let Some(surface) = self.surface.as_mut() else {
             return Ok(());
         };
+        let Some((_, scaling)) = self.config else {
+            return Ok(());
+        };
         let follow_up =
             match block_on(surface.acquire(context)).map_err(|error| surface_error(&error))? {
                 NativeSurfaceAcquire::Success(surface_frame) => {
@@ -346,7 +391,7 @@ impl ProgramPresentation {
                         &mut self.lifecycle,
                         self.transform.as_ref(),
                         texture,
-                        self.scaling,
+                        scaling,
                         surface_frame,
                         action,
                     )?;
@@ -361,7 +406,7 @@ impl ProgramPresentation {
                         &mut self.lifecycle,
                         self.transform.as_ref(),
                         texture,
-                        self.scaling,
+                        scaling,
                         surface_frame,
                         action,
                     )?;
@@ -665,6 +710,8 @@ pub(super) struct ProgramWorkerOptions {
     pub(super) project: PathBuf,
     pub(super) listen: SocketAddr,
     pub(super) once: bool,
+    /// `--display-output` slots replacing the project's on load.
+    pub(super) display_overrides: Vec<DisplayOutputConfig>,
     pub(super) camera_helper: Option<PathBuf>,
     pub(super) record_program: Option<PathBuf>,
     pub(super) record_output: Option<fm_types::OutputId>,
@@ -681,6 +728,7 @@ pub(super) struct ProgramWorkerOptions {
 struct ProgramApp {
     options: Option<ProgramWorkerOptions>,
     tracker: DisplayOutputTracker,
+    displays: Arc<Mutex<WindowedDisplayState>>,
     outputs: Vec<OutputWindow>,
     factory: Option<NativeSurfaceFactory>,
     started: bool,
@@ -697,22 +745,21 @@ struct ProgramApp {
 impl ProgramApp {
     fn new(
         options: ProgramWorkerOptions,
-        displays: DisplayOutputSet,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     ) -> Self {
         let recorder_requested =
             options.record_program.is_some() || options.record_program_2.is_some();
         let shutdown_timeout = program_shutdown_timeout(recorder_requested);
-        let outputs = displays
-            .outputs()
-            .iter()
+        let outputs = (0..MAX_DISPLAY_OUTPUTS)
             .map(|_| OutputWindow::new())
             .collect();
         Self {
             options: Some(options),
             // The presenter is SDR-only, so an HDR request reports why it
-            // presents SDR instead of claiming HDR.
-            tracker: DisplayOutputTracker::new(displays, false),
+            // presents SDR instead of claiming HDR. The worker fills the
+            // slots from the project once it has loaded it.
+            tracker: DisplayOutputTracker::empty(false),
+            displays: Arc::new(Mutex::new(WindowedDisplayState::default())),
             outputs,
             factory: None,
             started: false,
@@ -751,7 +798,48 @@ impl ProgramApp {
         ));
     }
 
+    /// Applies the worker's queued slot edits: an emptied or rebinding
+    /// slot hides its window until the next reconcile attaches it.
+    fn apply_pending_configuration(&mut self) {
+        let pending = std::mem::take(
+            &mut self
+                .displays
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pending,
+        );
+        for (slot, config) in pending {
+            let index = slot.index();
+            match self.tracker.configure(index, config) {
+                DisplayOutputReconfiguration::Unchanged
+                | DisplayOutputReconfiguration::Retargeted => {}
+                DisplayOutputReconfiguration::Rebinding => {
+                    if let (Some(config), Some(state)) =
+                        (self.tracker.config(index), self.tracker.state(index))
+                    {
+                        eprintln!("{}", status_record(index, config, state));
+                    }
+                    self.detach(index);
+                }
+                DisplayOutputReconfiguration::Cleared => {
+                    eprintln!("{}", cleared_record(index));
+                    self.detach(index);
+                }
+            }
+        }
+    }
+
+    fn detach(&mut self, index: usize) {
+        let Some(output) = self.outputs.get_mut(index) else {
+            return;
+        };
+        output.target = None;
+        output.exclusive = None;
+        output.suspend();
+    }
+
     fn poll_monitors(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.apply_pending_configuration();
         let monitors = enumerate_monitors(event_loop);
         let inventory = monitors
             .iter()
@@ -790,6 +878,23 @@ impl ProgramApp {
             output.synchronize();
         }
         self.recreate_if_pending();
+        let states = DisplayOutputSlot::ALL
+            .into_iter()
+            .filter_map(|slot| {
+                self.tracker
+                    .state(slot.index())
+                    .map(|state| (slot, state.clone()))
+            })
+            .collect();
+        let mut displays = self
+            .displays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        displays.report = DisplayReport {
+            states,
+            displays: inventory,
+            error: None,
+        };
     }
 
     fn receive_recreation_requests(&mut self) {
@@ -843,24 +948,11 @@ impl ProgramApp {
             output.window = Some(window);
         }
         self.factory = Some(factory);
-        for index in 0..self.tracker.len() {
-            if let (Some(config), Some(state)) =
-                (self.tracker.config(index), self.tracker.state(index))
-            {
-                eprintln!("{}", status_record(index, config, state));
-            }
-        }
         self.poll_monitors(event_loop);
 
         let mut setups = Vec::with_capacity(self.outputs.len());
-        for (index, (output, surface)) in self.outputs.iter_mut().zip(surfaces).enumerate() {
-            let config = self
-                .tracker
-                .config(index)
-                .cloned()
-                .ok_or_else(|| "display output configuration is missing".to_owned())?;
+        for (output, surface) in self.outputs.iter_mut().zip(surfaces) {
             setups.push(DisplayPresentationSetup {
-                config,
                 surface,
                 channels: ProgramWorkerChannels {
                     sizes: output.size_receiver.take().expect("worker starts once"),
@@ -876,6 +968,10 @@ impl ProgramApp {
         }
         let options = self.options.take().expect("worker starts once");
         let proxy = self.proxy.clone();
+        let displays = WindowedDisplays {
+            state: Arc::clone(&self.displays),
+            wake: self.proxy.clone(),
+        };
         self.worker = Some(
             thread::Builder::new()
                 .name("freemixd-program-worker".to_owned())
@@ -886,6 +982,8 @@ impl ProgramApp {
                         options.once,
                         context,
                         setups,
+                        displays,
+                        options.display_overrides,
                         options.camera_helper,
                         options.record_program,
                         options.record_output,
@@ -1115,13 +1213,10 @@ fn platform_display_id(
     format!("desktop:{name}@{x}x{y}")
 }
 
-pub(super) fn run(
-    options: ProgramWorkerOptions,
-    displays: DisplayOutputSet,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn run(options: ProgramWorkerOptions) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let mut app = ProgramApp::new(options, displays, proxy);
+    let mut app = ProgramApp::new(options, proxy);
     event_loop.run_app(&mut app)?;
     if !app.shutdown_timed_out
         && let Some(worker) = app.worker.take()

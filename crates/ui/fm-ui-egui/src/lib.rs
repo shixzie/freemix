@@ -40,6 +40,7 @@ pub mod animation_timeline;
 mod chrome;
 pub mod color_panel;
 mod connection_overlay;
+mod display_outputs;
 mod edit_history;
 mod fade_to_black;
 mod gating;
@@ -74,6 +75,9 @@ mod titles;
 mod toasts;
 mod transitions;
 
+pub use display_outputs::{
+    display_output_block_reason, display_output_clear_intent, display_output_set_intent,
+};
 pub use edit_history::{
     EditHistoryAvailability, EditLockSummary, HistoryActionAvailability, HistoryVerb,
     PadlockToggle, REDO_SHORTCUT, UNDO_SHORTCUT, command_rejection_message,
@@ -169,6 +173,18 @@ pub enum StudioIntent {
     },
     /// Chooses whether Fade to Black fades one output (SW-004).
     SetFadeToBlackOutput { output: OutputId, affected: bool },
+    /// Saves one fullscreen display-output slot (OR-011, Protocol 2.42).
+    SetDisplayOutput {
+        slot: fm_protocol::DisplayOutputSlot,
+        config: Box<fm_protocol::DisplayOutputConfig>,
+    },
+    /// Clears one fullscreen display-output slot (OR-011, Protocol 2.42).
+    ClearDisplayOutput {
+        slot: fm_protocol::DisplayOutputSlot,
+    },
+    /// Asks the server for its connected displays (Protocol 2.42); the
+    /// reply updates [`fm_ui_model::ClientView::display_inventory`].
+    RequestDisplayInventory,
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -1269,6 +1285,8 @@ pub struct StudioShell {
     animation: studio_animation::AnimationWindow,
     /// The layer designer and its scene layout drafts (SW-006).
     designer: scene_designer::DesignerWindow,
+    /// The Fullscreen outputs dialog and its slot drafts (OR-011).
+    display_outputs: display_outputs::DisplayOutputsDialog,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1636,6 +1654,7 @@ impl StudioShell {
         self.draw_toasts(ui.ctx(), central.response.rect);
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
+        self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
         self.draw_tool_windows(ui.ctx(), state, &mut intents);
@@ -1912,6 +1931,7 @@ impl Default for StudioShell {
             color: studio_color::ColorWindow::default(),
             animation: studio_animation::AnimationWindow::default(),
             designer: scene_designer::DesignerWindow::default(),
+            display_outputs: display_outputs::DisplayOutputsDialog::default(),
         }
     }
 }
@@ -2786,6 +2806,9 @@ mod tests {
         ClientView {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            display_outputs: Vec::new(),
+            display_output_states: Vec::new(),
+            display_inventory: None,
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {

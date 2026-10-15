@@ -1,6 +1,7 @@
 mod animation_preset;
 mod audio_mixer;
 mod decoder;
+mod display_output;
 mod encoder;
 mod grade;
 mod input_lifecycle;

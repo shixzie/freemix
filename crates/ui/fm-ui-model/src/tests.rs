@@ -82,6 +82,8 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
     ProjectSnapshot {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         cursor: ProjectCursor {
             project_id,
             engine: engine("engine-a", 1, "log-a"),
@@ -1403,6 +1405,8 @@ mod titles {
         fm_protocol::SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            display_outputs: Vec::new(),
+            display_output_states: Vec::new(),
             engine: engine("engine-a", 1, "log-a"),
             revision: 10,
             show_name: "Show".into(),

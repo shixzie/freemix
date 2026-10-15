@@ -189,6 +189,9 @@ pub enum Intake {
     /// A `media_state` completed one media input the snapshot announced
     /// (Protocol 2.37).
     MediaStateApplied,
+    /// A `display_inventory` reply updated the replicated display inventory
+    /// (Protocol 2.42).
+    DisplayInventoryApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -611,7 +614,12 @@ impl Client {
                 self.apply_media_state(state)?;
                 Ok(Intake::MediaStateApplied)
             }
-            WireMessage::Command(_)
+            WireMessage::DisplayInventory(message) => {
+                self.model.apply_display_inventory(message.inventory);
+                Ok(Intake::DisplayInventoryApplied)
+            }
+            WireMessage::DisplayInventoryRequest(_)
+            | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
             | WireMessage::Heartbeat(_)
@@ -1378,6 +1386,13 @@ impl Client {
             self.model
                 .apply_runtime_input_availability(input.to_domain(), *offline)?;
         }
+        if let RuntimeLifecycleEvent::DisplayOutputStatus(status) = &event.event {
+            self.model
+                .apply_runtime_display_output_status(status.clone())?;
+        }
+        if let RuntimeLifecycleEvent::DisplayInventory(inventory) = &event.event {
+            self.model.apply_display_inventory(inventory.clone());
+        }
         self.runtime_server = Some(event.server);
         self.runtime_sequence = Some((event.generation, event.sequence));
         Ok(())
@@ -1452,6 +1467,8 @@ impl Client {
             | CommandPayload::SceneLayer(_)
             | CommandPayload::AudioMixer(_)
             | CommandPayload::SetFadeToBlackOutput { .. }
+            | CommandPayload::SetDisplayOutput { .. }
+            | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

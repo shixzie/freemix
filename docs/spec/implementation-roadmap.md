@@ -688,15 +688,33 @@ the same outputs headlessly into off-screen rasters sized to a file-described
 inventory, which the native daemon test uses to prove two independent sources
 (Program with an overlay, and a clean-feed project output) and unplug, replug,
 and renumbered-display recovery on a software Vulkan adapter; a real Xvfb
-window test covers the windowed path where a window system exists. Remaining
-gaps: presentation is SDR-only and winit exposes no HDR capability, so `hdr=auto`
-reports `sdr-capability-unknown` or `sdr-presenter-limited` rather than driving
-HDR; the native daemon does not composite Preview, so `source=preview` is refused
-there; display outputs cannot be configured or retargeted through the protocol
-or project file; window placement happens on one event-loop thread polled every
-500 ms rather than on platform hot-plug notifications; and no multi-monitor
-hardware, Windows, or macOS evidence has been recorded. `OR-011` remains
-planned.
+window test covers the windowed path where a window system exists. The slots
+are project configuration (schema 40 `display_outputs`: at most two, one
+display per slot, source outputs that exist and cannot be removed while
+shown); `--display-output` replaces the project's slots on load, and
+`--display-presenter` opens windows for the project's own slots. Protocol 2.42
+adds the padlocked, undoable `set_display_output`/`clear_display_output`
+project edits, applied live (a source, mode, scaling, or HDR change keeps the
+binding; a different display rebinds), the `display_output_changed` event,
+per-slot `display_output_status` (active display, mode, mode fallback, HDR
+state, or waiting reason) in runtime events and the snapshot, and the
+`display_inventory` query and event (ids, names, origins, modes, HDR
+capability). The native daemon composites Preview through the Program
+compositor path (Preview's cut, live Fade to Black, no overlays or titles)
+only while a slot shows it, after the Program consumers, so `source=preview`
+is accepted. Studio's Output menu opens a Fullscreen outputs dialog (per slot
+display from the inventory, source, mode, scaling, HDR, live status; English
+and Spanish hover help covered by the hover audit), and `freemix-cli`
+provides `display-output-set|clear|list` locally and remotely plus
+`remote-display-inventory`. A daemon without a presenter (simulated or
+headless) keeps the slots as configuration that waits with `no-presenter`.
+Remaining gaps: presentation is SDR-only and winit exposes no HDR capability,
+so `hdr=auto` reports `sdr-capability-unknown` or `sdr-presenter-limited`
+rather than driving HDR; window placement happens on one event-loop thread
+polled every 500 ms rather than on platform hot-plug notifications; the
+Preview composite is rendered on the realization thread rather than off the
+Program critical path; and no multi-monitor hardware, Windows, or macOS
+evidence has been recorded. `OR-011` remains planned.
 
 Exit: a useful offline/file-based switcher, with no engine dependency on UI
 lifecycle.

@@ -62,6 +62,121 @@ pub fn diagnostics(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Lists the daemon's display-output slots with their presenter state
+/// (OR-011).
+pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    print_display_outputs(
+        state
+            .display_outputs()
+            .iter()
+            .map(|(slot, config)| (*slot, config, state.display_output_state(*slot))),
+    );
+    Ok(())
+}
+
+/// Prints one `DisplayOutput(...)` line per configured slot, or
+/// `DisplayOutputs=none`.
+pub(crate) fn print_display_outputs<'a>(
+    outputs: impl IntoIterator<
+        Item = (
+            fm_protocol::DisplayOutputSlot,
+            &'a fm_protocol::DisplayOutputConfig,
+            fm_protocol::WireDisplayOutputState,
+        ),
+    >,
+) {
+    let mut any = false;
+    for (slot, config, state) in outputs {
+        any = true;
+        println!("{}", format_display_output(slot, config, &state));
+    }
+    if !any {
+        println!("DisplayOutputs=none");
+    }
+}
+
+fn format_display_output(
+    slot: fm_protocol::DisplayOutputSlot,
+    config: &fm_protocol::DisplayOutputConfig,
+    state: &fm_protocol::WireDisplayOutputState,
+) -> String {
+    let state = match state {
+        fm_protocol::WireDisplayOutputState::Waiting(reason) => {
+            format!("state=waiting, reason={}", reason.as_str())
+        }
+        fm_protocol::WireDisplayOutputState::Active(active) => format!(
+            "state=active, on={:?}, name={:?}, active_mode={}, mode_fallback={}, hdr_state={}",
+            active.id.as_str(),
+            active.name,
+            active.mode,
+            active.mode_fallback,
+            active.hdr.as_str()
+        ),
+    };
+    format!(
+        "DisplayOutput(slot={slot}, display={}, source={}, mode={}, scaling={}, hdr={}, {state})",
+        config.display, config.source, config.mode, config.scaling, config.hdr
+    )
+}
+
+/// Lists the displays the daemon's presenter sees (Protocol 2.42).
+pub fn display_inventory(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-displays-{}", unique_client_id()?);
+    remote.write(&WireMessage::DisplayInventoryRequest(
+        fm_protocol::DisplayInventoryRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    let reply = loop {
+        match remote.read_until(deadline)? {
+            WireMessage::DisplayInventory(reply) if reply.request_id == request_id => break reply,
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(RemoteFailure("expected display_inventory from daemon".into()).into());
+            }
+        }
+    };
+    let inventory = reply.inventory;
+    println!(
+        "DisplayInventory(presenter={}, displays={}, error={})",
+        inventory.presenter,
+        inventory.displays.len(),
+        inventory
+            .error
+            .as_deref()
+            .map_or_else(|| "none".to_owned(), |error| format!("{error:?}"))
+    );
+    for display in &inventory.displays {
+        println!(
+            "Display(id={:?}, name={:?}, position={},{}, mode={}, modes={}, hdr={})",
+            display.id.as_str(),
+            display.name,
+            display.x,
+            display.y,
+            display.current_mode,
+            display
+                .modes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(";"),
+            display.hdr.as_str()
+        );
+    }
+    Ok(())
+}
+
 fn print_diagnostics(response: &DiagnosticsResponse) {
     println!(
         "diagnostics=v1 engine_id={} state_epoch={} revision={} retained_oldest={} retained_newest={} subscribers={}/{} retained_limit={} subscriber_queue={}",
@@ -234,7 +349,9 @@ impl CommandCompletion {
             | CommandPayload::AddInput { .. }
             | CommandPayload::RemoveInput { .. }
             | CommandPayload::InputLifecycle(_)
-            | CommandPayload::SetTitleFields { .. } => Self::Project,
+            | CommandPayload::SetTitleFields { .. }
+            | CommandPayload::SetDisplayOutput { .. }
+            | CommandPayload::ClearDisplayOutput { .. } => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
                 live: operation.is_live(),
@@ -491,7 +608,8 @@ impl Remote {
                         | EventPayload::AnimationPresetChanged(_)
                         | EventPayload::TitleAnimationChanged { .. }
                         | EventPayload::SceneAnimationChanged { .. }
-                        | EventPayload::SceneLayoutChanged { .. } => matches!(
+                        | EventPayload::SceneLayoutChanged { .. }
+                        | EventPayload::DisplayOutputChanged { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),
@@ -613,6 +731,12 @@ impl Remote {
         }
         for status in state.media().values() {
             println!("{}", format_media_status(status));
+        }
+        for (slot, config) in state.display_outputs() {
+            println!(
+                "{}",
+                format_display_output(*slot, config, &state.display_output_state(*slot))
+            );
         }
         if let Some(status) = &self.latest_stream_status {
             for sample in &status.samples {

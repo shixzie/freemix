@@ -2101,6 +2101,8 @@ mod tests {
         let snapshot = SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            display_outputs: Vec::new(),
+            display_output_states: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,

@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.41\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.42\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -95,7 +95,7 @@ fn base64url(bytes: &[u8]) -> String {
 
 #[test]
 fn protocol_version_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 41));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
 }
 
 #[test]
@@ -437,7 +437,7 @@ fn snapshot_grade_state_count_is_bounded() {
 
     let line = encode_line(&sample_snapshot()).unwrap();
     assert!(
-        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%2CGroup%25202%7E0%7E0%2CGroup%25203%7E0%7E0%2CGroup%25204%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\n"),
+        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%2CGroup%25202%7E0%7E0%2CGroup%25203%7E0%7E0%2CGroup%25204%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\n"),
         "{line}"
     );
     let over = line.replace(
@@ -457,6 +457,8 @@ fn sample_snapshot() -> WireMessage {
     WireMessage::Snapshot(SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         engine: cursor().engine,
         revision: 12,
         show_name: "Show".to_owned(),

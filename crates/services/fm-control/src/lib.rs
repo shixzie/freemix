@@ -18,6 +18,7 @@ use std::{
 mod animation_preset;
 mod audio_mixer;
 mod automation;
+mod display_output;
 mod grade;
 mod input_lifecycle;
 mod media;
@@ -513,8 +514,12 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 control
                     .input_offline
                     .retain(|input, _| control.engine.show().inputs().contains(input));
-                control.snapshot =
-                    snapshot_record(&control.engine, &control.identity, &control.input_offline);
+                control.snapshot = snapshot_record(
+                    &control.engine,
+                    &control.identity,
+                    &control.input_offline,
+                    &control.display_states,
+                );
 
                 let live_events = submission
                     .output
@@ -779,6 +784,11 @@ pub struct ControlService<A = Policy> {
     /// Inputs whose source is unavailable, and why (IN-026): runtime state
     /// reported by media faults and by the media plane.
     input_offline: BTreeMap<InputId, fm_protocol::InputOfflineReason>,
+    /// Each display-output slot's runtime state as the presenter last
+    /// reported it (OR-011). Slots it never reported wait for a presenter.
+    display_states: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
+    /// The connected displays as the presenter last reported them (OR-011).
+    display_inventory: fm_protocol::DisplayInventory,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -812,7 +822,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             state_epoch: engine.state_epoch().get(),
             log_id: log_id.into(),
         };
-        let snapshot = snapshot_record(&engine, &identity, &BTreeMap::new());
+        let snapshot = snapshot_record(&engine, &identity, &BTreeMap::new(), &BTreeMap::new());
         Self {
             engine,
             authorizer,
@@ -832,6 +842,8 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: HashMap::new(),
             media_end_triggers: Vec::new(),
             input_offline: BTreeMap::new(),
+            display_states: BTreeMap::new(),
+            display_inventory: fm_protocol::DisplayInventory::default(),
         }
     }
 
@@ -868,7 +880,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             return Ok(None);
         }
         let event = self.availability_event(server, input, offline)?;
-        self.snapshot = snapshot_record(&self.engine, &self.identity, &self.input_offline);
+        self.refresh_snapshot();
         let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
         Ok(Some(event))
     }
@@ -894,6 +906,99 @@ impl<A: AuthorizationHook> ControlService<A> {
                 offline,
             },
         )
+    }
+
+    /// Each display-output slot's runtime state as last reported (OR-011).
+    #[must_use]
+    pub const fn display_output_states(
+        &self,
+    ) -> &BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState> {
+        &self.display_states
+    }
+
+    /// The connected displays as last reported (OR-011).
+    #[must_use]
+    pub const fn display_inventory(&self) -> &fm_protocol::DisplayInventory {
+        &self.display_inventory
+    }
+
+    /// Records display-output slot `slot`'s runtime state as the presenter
+    /// observes it (OR-011). A change refreshes the snapshot and returns
+    /// the published `display_output_status` runtime event; an unchanged
+    /// state returns `None`. A state is kept for an unconfigured slot too,
+    /// so configuring it later reports the presenter's view at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_display_output_status(
+        &mut self,
+        server: &ServerIdentity,
+        slot: fm_protocol::DisplayOutputSlot,
+        state: fm_protocol::WireDisplayOutputState,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        if self.display_states.get(&slot) == Some(&state) {
+            return Ok(None);
+        }
+        self.display_states.insert(slot, state.clone());
+        self.refresh_snapshot();
+        if self.engine.show().display_output(slot).is_none() {
+            return Ok(None);
+        }
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::DisplayOutputStatus(fm_protocol::DisplayOutputStatus {
+                slot,
+                state,
+            }),
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// Records the connected displays as the presenter enumerates them
+    /// (OR-011). A change returns the published `display_inventory` runtime
+    /// event; an unchanged inventory returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch, an inventory the wire cannot
+    /// carry, or an exhausted runtime sequence.
+    pub fn set_display_inventory(
+        &mut self,
+        server: &ServerIdentity,
+        inventory: fm_protocol::DisplayInventory,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        if self.display_inventory == inventory {
+            return Ok(None);
+        }
+        self.display_inventory = inventory.clone();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::DisplayInventory(inventory),
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    fn check_server(&self, server: &ServerIdentity) -> Result<(), ControlError> {
+        if server.engine_id != self.identity.engine_id
+            || server.state_epoch != self.identity.state_epoch
+            || server.log_id != self.identity.log_id
+        {
+            return Err(ControlError::ServerIdentityMismatch);
+        }
+        Ok(())
     }
 
     /// Takes the media end triggers fired since the last call, oldest first.
@@ -1535,6 +1640,16 @@ impl<A: AuthorizationHook> ControlService<A> {
         Ok(events)
     }
 
+    /// Rebuilds the cached snapshot from the engine and runtime state.
+    fn refresh_snapshot(&mut self) {
+        self.snapshot = snapshot_record(
+            &self.engine,
+            &self.identity,
+            &self.input_offline,
+            &self.display_states,
+        );
+    }
+
     fn tick_with_realizer_inner<E>(
         &mut self,
         server: &ServerIdentity,
@@ -1632,7 +1747,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             .map_err(TickWithRealizerError::Tick)?,
         );
 
-        self.snapshot = snapshot_record(&self.engine, &self.identity, &self.input_offline);
+        self.refresh_snapshot();
         let live_events = runtime_events
             .iter()
             .cloned()
@@ -1763,7 +1878,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SceneLayer(_)
-        | EngineCommand::SetFadeToBlackOutput { .. } => "project",
+        | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetDisplayOutput { .. } => "project",
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::Media(_) => "media",
@@ -1833,7 +1949,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetTitleFields { .. }
         | CommandPayload::SetPlaylist { .. }
         | CommandPayload::InputLifecycle(_)
-        | CommandPayload::SceneLayer(_) => CommandClass::EditProject,
+        | CommandPayload::SceneLayer(_)
+        | CommandPayload::SetDisplayOutput { .. }
+        | CommandPayload::ClearDisplayOutput { .. } => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -1968,6 +2086,10 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
                 output: output.to_domain(),
                 affected: *affected,
             }
+        }
+        payload @ (CommandPayload::SetDisplayOutput { .. }
+        | CommandPayload::ClearDisplayOutput { .. }) => {
+            display_output::engine_command(payload).expect("a display-output payload")
         }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
@@ -2403,6 +2525,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ (EngineCommand::AudioMixer(_) | EngineCommand::SetFadeToBlackOutput { .. }) => {
             return audio_mixer::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetDisplayOutput { .. } => {
+            return display_output::wire_edit_payload(command);
+        }
         _ => return None,
     })
 }
@@ -2733,6 +2858,13 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     {
         return payload;
     }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| display_output::changed(&event.payload))
+    {
+        return payload;
+    }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
             return None;
@@ -2893,6 +3025,7 @@ fn snapshot_record(
     engine: &Engine,
     identity: &EngineIdentity,
     offline: &BTreeMap<InputId, fm_protocol::InputOfflineReason>,
+    display_states: &BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
@@ -2961,6 +3094,8 @@ fn snapshot_record(
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),
+        display_outputs: display_output::wire_entries(engine.show()),
+        display_output_states: display_output::wire_states(engine.show(), display_states),
     };
     SnapshotRecord {
         cursor: EventCursor {

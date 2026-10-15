@@ -159,6 +159,8 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             *current_muted = muted;
             true
         }
+        // One queued display inventory request answers every later one.
+        (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory) => true,
         // Exact previews (title or scene) are latest-wins: a newer request
         // replaces a queued one.
         (
@@ -1059,7 +1061,9 @@ fn run_worker(
         match requests.try_recv() {
             Ok(WorkerRequest::Shutdown) | Err(TryRecvError::Disconnected) => break,
             Ok(WorkerRequest::Intent(
-                request @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+                request @ (StudioIntent::TitlePreview(_)
+                | StudioIntent::ScenePreview(_)
+                | StudioIntent::RequestDisplayInventory),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
@@ -1084,7 +1088,8 @@ fn run_worker(
                     SessionEvent::Event { .. }
                     | SessionEvent::RuntimeEvent { .. }
                     | SessionEvent::AudioMeters { .. }
-                    | SessionEvent::StreamStatus { .. },
+                    | SessionEvent::StreamStatus { .. }
+                    | SessionEvent::DisplayInventory { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1137,7 +1142,9 @@ fn run_worker(
         match requests.recv_timeout(timeout) {
             Ok(WorkerRequest::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(WorkerRequest::Intent(
-                request @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+                request @ (StudioIntent::TitlePreview(_)
+                | StudioIntent::ScenePreview(_)
+                | StudioIntent::RequestDisplayInventory),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
@@ -1180,12 +1187,21 @@ fn run_worker(
 /// Sends an exact title or scene preview request at once: previews are
 /// lossy and latest-wins, so they never queue behind commands. One that
 /// cannot be sent now is reported failed so the window asks again later.
+/// A display inventory request (Protocol 2.42) goes out the same way; its
+/// reply updates the replicated inventory, and one that cannot be sent is
+/// dropped (the dialog's Refresh asks again).
 fn handle_preview_request(
     runtime: &mut StudioRuntime,
     request: StudioIntent,
     publisher: &StatePublisher,
     recovery: &WorkerRecovery,
 ) -> bool {
+    if matches!(request, StudioIntent::RequestDisplayInventory) {
+        if !recovery.active() {
+            runtime.request_display_inventory();
+        }
+        return true;
+    }
     let request_id = match &request {
         StudioIntent::TitlePreview(request) => request.request_id.clone(),
         StudioIntent::ScenePreview(request) => request.request_id.clone(),
@@ -1216,7 +1232,9 @@ fn handle_worker_intent(
 ) -> bool {
     // A preview deferred behind a command goes out as soon as it is next.
     let intent = match intent {
-        request @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)) => {
+        request @ (StudioIntent::TitlePreview(_)
+        | StudioIntent::ScenePreview(_)
+        | StudioIntent::RequestDisplayInventory) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
         intent => intent,
@@ -1513,7 +1531,8 @@ fn handle_heartbeat_timeout(
                         SessionEvent::AudioMeters { .. }
                         | SessionEvent::RuntimeEvent { .. }
                         | SessionEvent::Event { .. }
-                        | SessionEvent::StreamStatus { .. } => Some(true),
+                        | SessionEvent::StreamStatus { .. }
+                        | SessionEvent::DisplayInventory { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -1981,7 +2000,9 @@ fn receive_command_event(
         let event = result.map_err(|error| worker_error("Command response failed", &error))?;
         if matches!(
             event,
-            SessionEvent::AudioMeters { .. } | SessionEvent::StreamStatus { .. }
+            SessionEvent::AudioMeters { .. }
+                | SessionEvent::StreamStatus { .. }
+                | SessionEvent::DisplayInventory { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2420,6 +2441,13 @@ fn intent_payload(
         StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_) => {
             return Err("An exact preview request is not a command".to_owned());
         }
+        StudioIntent::RequestDisplayInventory => {
+            return Err("A display inventory request is not a command".to_owned());
+        }
+        StudioIntent::SetDisplayOutput { slot, config } => {
+            CommandPayload::SetDisplayOutput { slot, config }
+        }
+        StudioIntent::ClearDisplayOutput { slot } => CommandPayload::ClearDisplayOutput { slot },
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -3013,6 +3041,8 @@ mod tests {
         SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            display_outputs: Vec::new(),
+            display_output_states: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -5441,6 +5471,43 @@ mod tests {
                 affected: false,
             })
         );
+    }
+
+    /// OR-011: the Fullscreen outputs dialog's intents become the
+    /// Protocol 2.42 slot commands; an inventory request is no command and
+    /// one queued request answers every later one.
+    #[test]
+    fn display_output_intents_map_to_slot_commands() {
+        let slot = fm_protocol::DisplayOutputSlot::new(2).unwrap();
+        let config: fm_protocol::DisplayOutputConfig =
+            "display=name:Wall,source=preview,hdr=auto".parse().unwrap();
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetDisplayOutput {
+                    slot,
+                    config: Box::new(config.clone()),
+                },
+                None
+            ),
+            Ok(CommandPayload::SetDisplayOutput {
+                slot,
+                config: Box::new(config),
+            })
+        );
+        assert_eq!(
+            intent_payload(StudioIntent::ClearDisplayOutput { slot }, None),
+            Ok(CommandPayload::ClearDisplayOutput { slot })
+        );
+        assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
+        let mut queued = StudioIntent::RequestDisplayInventory;
+        assert!(coalesce_adjacent_intent(
+            &mut queued,
+            StudioIntent::RequestDisplayInventory
+        ));
+        assert!(!coalesce_adjacent_intent(
+            &mut queued,
+            StudioIntent::ClearDisplayOutput { slot }
+        ));
     }
 
     #[test]

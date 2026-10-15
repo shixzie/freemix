@@ -449,6 +449,10 @@ pub struct ProjectSnapshot {
     pub audio_mixer: fm_protocol::AudioMixerStatus,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     pub fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// Every configured display-output slot, ascending (Protocol 2.42).
+    pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
+    /// Every configured slot's runtime state, ascending (Protocol 2.42).
+    pub display_output_states: Vec<fm_protocol::DisplayOutputStatus>,
 }
 
 impl ProjectSnapshot {
@@ -540,6 +544,8 @@ impl ProjectSnapshot {
                 .into_iter()
                 .map(fm_protocol::WireOutputId::to_domain)
                 .collect(),
+            display_outputs: message.display_outputs,
+            display_output_states: message.display_output_states,
         }
     }
 }
@@ -655,6 +661,11 @@ pub enum DurableChange {
     FadeToBlackOutputChanged {
         output: OutputId,
         affected: bool,
+    },
+    /// A display-output slot was configured or cleared (Protocol 2.42).
+    DisplayOutputChanged {
+        slot: fm_protocol::DisplayOutputSlot,
+        config: Option<Box<fm_protocol::DisplayOutputConfig>>,
     },
 }
 
@@ -845,6 +856,9 @@ impl DurableProjectEvent {
                     affected,
                 }
             }
+            EventPayload::DisplayOutputChanged { slot, config } => {
+                DurableChange::DisplayOutputChanged { slot, config }
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -938,9 +952,35 @@ pub struct ProjectState {
     audio_mixer: fm_protocol::AudioMixerStatus,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// Every configured display-output slot (Protocol 2.42).
+    display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
+    /// Each slot's runtime state as last reported (Protocol 2.42); kept for
+    /// unconfigured slots too.
+    display_output_states:
+        BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
 }
 
 impl ProjectState {
+    /// Returns every configured display-output slot (Protocol 2.42).
+    #[must_use]
+    pub const fn display_outputs(
+        &self,
+    ) -> &BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig> {
+        &self.display_outputs
+    }
+
+    /// Returns slot `slot`'s last reported runtime state; a configured slot
+    /// nothing reported on waits for a presenter (Protocol 2.42).
+    #[must_use]
+    pub fn display_output_state(
+        &self,
+        slot: fm_protocol::DisplayOutputSlot,
+    ) -> fm_protocol::WireDisplayOutputState {
+        self.display_output_states.get(&slot).cloned().unwrap_or(
+            fm_protocol::WireDisplayOutputState::Waiting(fm_protocol::WaitReason::NoPresenter),
+        )
+    }
+
     /// Returns the replicated strip labels and groups (Protocol 2.40).
     #[must_use]
     pub const fn audio_mixer(&self) -> &fm_protocol::AudioMixerStatus {
@@ -1239,9 +1279,40 @@ pub struct ClientView {
     pub audio_mixer: fm_protocol::AudioMixerStatus,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     pub fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// Every configured display-output slot, ascending (Protocol 2.42).
+    pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
+    /// Every configured slot's runtime state, ascending (Protocol 2.42).
+    pub display_output_states: Vec<fm_protocol::DisplayOutputStatus>,
+    /// The connected displays as the daemon last reported them (Protocol
+    /// 2.42); `None` until a `display_inventory` arrives.
+    pub display_inventory: Option<fm_protocol::DisplayInventory>,
 }
 
 impl ClientView {
+    /// Slot `slot`'s configuration, if it is configured.
+    #[must_use]
+    pub fn display_output(
+        &self,
+        slot: fm_protocol::DisplayOutputSlot,
+    ) -> Option<&fm_protocol::DisplayOutputConfig> {
+        self.display_outputs
+            .iter()
+            .find(|entry| entry.slot == slot)
+            .map(|entry| &entry.config)
+    }
+
+    /// Slot `slot`'s runtime state, if it is configured.
+    #[must_use]
+    pub fn display_output_state(
+        &self,
+        slot: fm_protocol::DisplayOutputSlot,
+    ) -> Option<&fm_protocol::WireDisplayOutputState> {
+        self.display_output_states
+            .iter()
+            .find(|status| status.slot == slot)
+            .map(|status| &status.state)
+    }
+
     /// The operator label of `input`'s strip; empty when unlabelled.
     #[must_use]
     pub fn audio_label(&self, input: InputId) -> &str {
@@ -1537,6 +1608,8 @@ pub enum ModelError {
     /// A mixer or Fade-to-Black output change names an unknown input,
     /// group, or output, or carries an unusable label (Protocol 2.40).
     InvalidAudioMixerChange,
+    /// A display-output change shows an unknown output (Protocol 2.42).
+    InvalidDisplayOutputChange,
 }
 
 impl fmt::Display for ModelError {
@@ -1667,6 +1740,9 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidAudioMixerChange => {
                 formatter.write_str("mixer or Fade to Black output change does not apply")
+            }
+            Self::InvalidDisplayOutputChange => {
+                formatter.write_str("display-output change shows an unknown output")
             }
         }
     }
@@ -1802,6 +1878,9 @@ pub struct ClientModel {
     last_rejection: Option<RejectedCommand>,
     sync_status: SyncStatus,
     known_revision: Option<Revision>,
+    /// The connected displays as last reported (Protocol 2.42). Runtime
+    /// state that survives resynchronization.
+    display_inventory: Option<fm_protocol::DisplayInventory>,
 }
 
 impl ClientModel {
@@ -1819,7 +1898,38 @@ impl ClientModel {
             last_rejection: None,
             sync_status: SyncStatus::AwaitingSnapshot,
             known_revision: None,
+            display_inventory: None,
         }
+    }
+
+    /// Records the connected displays from a `display_inventory` runtime
+    /// event or reply (Protocol 2.42).
+    pub fn apply_display_inventory(&mut self, inventory: fm_protocol::DisplayInventory) {
+        self.display_inventory = Some(inventory);
+    }
+
+    /// Returns the connected displays as last reported (Protocol 2.42).
+    #[must_use]
+    pub const fn display_inventory(&self) -> Option<&fm_protocol::DisplayInventory> {
+        self.display_inventory.as_ref()
+    }
+
+    /// Records a display-output slot's runtime state from a
+    /// `display_output_status` runtime event (Protocol 2.42). Runtime
+    /// events never move the durable cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_display_output_status(
+        &mut self,
+        status: fm_protocol::DisplayOutputStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        state
+            .display_output_states
+            .insert(status.slot, status.state);
+        Ok(())
     }
 
     #[must_use]
@@ -1868,6 +1978,23 @@ impl ClientModel {
             input_categories: state.input_categories.clone(),
             audio_mixer: state.audio_mixer.clone(),
             fade_to_black_excluded_outputs: state.fade_to_black_excluded_outputs.clone(),
+            display_outputs: state
+                .display_outputs
+                .iter()
+                .map(|(slot, config)| fm_protocol::DisplayOutputEntry {
+                    slot: *slot,
+                    config: config.clone(),
+                })
+                .collect(),
+            display_output_states: state
+                .display_outputs
+                .keys()
+                .map(|slot| fm_protocol::DisplayOutputStatus {
+                    slot: *slot,
+                    state: state.display_output_state(*slot),
+                })
+                .collect(),
+            display_inventory: self.display_inventory.clone(),
         })
     }
 
@@ -2080,6 +2207,16 @@ impl ClientModel {
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
+            display_outputs: snapshot
+                .display_outputs
+                .into_iter()
+                .map(|entry| (entry.slot, entry.config))
+                .collect(),
+            display_output_states: snapshot
+                .display_output_states
+                .into_iter()
+                .map(|status| (status.slot, status.state))
+                .collect(),
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -3251,6 +3388,16 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidAudioMixerChange)
             };
         }
+        DurableChange::DisplayOutputChanged { config, .. } => {
+            return match config.as_deref().map(|config| config.source) {
+                Some(fm_protocol::DisplayOutputSource::Output(output))
+                    if !state.outputs.iter().any(|status| status.output == output) =>
+                {
+                    Err(ModelError::InvalidDisplayOutputChange)
+                }
+                _ => Ok(()),
+            };
+        }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
         DurableChange::AnimationPresetChanged(change) => {
@@ -3524,6 +3671,14 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             }
             state.audio_mixer.apply(&operation);
         }
+        DurableChange::DisplayOutputChanged { slot, config } => match config {
+            Some(config) => {
+                state.display_outputs.insert(slot, *config);
+            }
+            None => {
+                state.display_outputs.remove(&slot);
+            }
+        },
         DurableChange::FadeToBlackOutputChanged { output, affected } => {
             state
                 .fade_to_black_excluded_outputs

@@ -127,6 +127,19 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::AnimationPresetState(message) => {
             encode_animation_preset_state(&mut record, message)?;
         }
+        WireMessage::DisplayInventoryRequest(message) => {
+            record.kind("display_inventory_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+        }
+        WireMessage::DisplayInventory(message) => {
+            record.kind("display_inventory");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::display_output::encode_inventory(&message.inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::MediaState(message) => {
             record.kind("media_state");
             record.field("revision", message.revision)?;
@@ -320,6 +333,17 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "fade_to_black_output")?;
             record.field("output", output)?;
             record.field("affected", u8::from(*affected))?;
+        }
+        CommandPayload::SetDisplayOutput { slot, config } => {
+            record.field("payload", "set_display_output")?;
+            record.field("slot", slot)?;
+            super::display_output::encode_config(config, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::ClearDisplayOutput { slot } => {
+            record.field("payload", "clear_display_output")?;
+            record.field("slot", slot)?;
         }
         CommandPayload::SceneLayer(edit) => {
             record.field("payload", edit.operation.payload())?;
@@ -1328,6 +1352,14 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "fade_to_black_excluded_outputs",
         super::audio_mixer::encode_excluded_outputs(&message.fade_to_black_excluded_outputs)?,
+    )?;
+    record.field_string(
+        "display_outputs",
+        super::display_output::encode_entries(&message.display_outputs)?,
+    )?;
+    record.field_string(
+        "display_output_states",
+        super::display_output::encode_states(&message.display_output_states)?,
     )
 }
 
@@ -1875,6 +1907,12 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("output", output)?;
             record.field("affected", u8::from(*affected))?;
         }
+        EventPayload::DisplayOutputChanged { slot, config } => {
+            record.field("event", "display_output_changed")?;
+            super::display_output::encode_changed(*slot, config.as_deref(), &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         EventPayload::SceneLayoutChanged { edit, layout } => {
             let layers = encode_scene_layers(layout)?;
             record.field("event", "scene_layout_changed")?;
@@ -2111,6 +2149,18 @@ fn encode_runtime_event(
                 "offline",
                 offline.map_or("-", crate::InputOfflineReason::token),
             )?;
+        }
+        RuntimeLifecycleEvent::DisplayOutputStatus(status) => {
+            record.field("event", "display_output_status")?;
+            super::display_output::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::DisplayInventory(inventory) => {
+            record.field("event", "display_inventory")?;
+            super::display_output::encode_inventory(inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
         }
         RuntimeLifecycleEvent::Media {
             frame,

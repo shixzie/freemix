@@ -185,6 +185,9 @@ pub struct ShowState {
     input_audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
     /// The strip groups, group 1 first (AU-001).
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
+    /// The configured fullscreen display outputs by slot (OR-011).
+    display_outputs:
+        BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
 }
 
 impl ShowState {
@@ -261,6 +264,7 @@ impl ShowState {
             input_audio_labels: BTreeMap::new(),
             input_audio_groups: BTreeMap::new(),
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
+            display_outputs: BTreeMap::new(),
         })
     }
 
@@ -643,6 +647,59 @@ impl ShowState {
         crate::audio_mixer::validate_group_state(value.state)
             .map_err(|_| ShowError::InvalidAudioGroupGain(value.state.gain_millidb))?;
         self.audio_groups[group.index()] = value;
+        Ok(())
+    }
+
+    /// The configured fullscreen display outputs by slot (OR-011).
+    #[must_use]
+    pub const fn display_outputs(
+        &self,
+    ) -> &BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>
+    {
+        &self.display_outputs
+    }
+
+    /// One slot's display output, if configured.
+    #[must_use]
+    pub fn display_output(
+        &self,
+        slot: fm_types::display::DisplayOutputSlot,
+    ) -> Option<&fm_types::display::DisplayOutputConfig> {
+        self.display_outputs.get(&slot)
+    }
+
+    /// Configures (`Some`) or clears (`None`) one display output slot,
+    /// checked against the show's outputs and the other slot exactly as
+    /// [`fm_model::Project::set_display_output`] checks it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidDisplayOutput`] with the refusal code.
+    /// Nothing changes on error.
+    pub fn set_display_output(
+        &mut self,
+        slot: fm_types::display::DisplayOutputSlot,
+        config: Option<fm_types::display::DisplayOutputConfig>,
+    ) -> Result<(), ShowError> {
+        let Some(config) = config else {
+            self.display_outputs.remove(&slot);
+            return Ok(());
+        };
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|(output, _)| *output)
+            .collect::<Vec<_>>();
+        fm_model::check_display_output(
+            slot,
+            &config,
+            &outputs,
+            self.display_outputs
+                .iter()
+                .map(|(slot, config)| (*slot, config)),
+        )
+        .map_err(|error| ShowError::InvalidDisplayOutput(slot, error.code()))?;
+        self.display_outputs.insert(slot, config);
         Ok(())
     }
 

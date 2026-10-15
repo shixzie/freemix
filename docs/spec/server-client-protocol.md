@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.41 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.42 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1101,6 +1101,56 @@ Protocol 2.41 tracks live layer gestures (`SW-006`).
 - Undo and redo journal the exact inverse or forward edit with
   `continues=false` and `gesture=0`.
 - 2.40 is refused.
+
+Protocol 2.42 makes fullscreen display outputs project configuration
+(`OR-011`).
+
+- A display-output configuration is the fields `display` (`id:<id>`,
+  `id:<id>|name:<name>` — the id, falling back to a unique display with
+  the name — `name:<name>`, or `index:<n>` in desktop order), `source`
+  (`program`, `preview`, or `output:<output id>`), `mode` (`current` or
+  `<w>x<h>@<millihertz>`), `scaling` (`fit`, `fill`, `stretch`, `1:1`), and
+  `hdr` (`off`, `auto`). Display ids and names are non-empty, at most 256
+  bytes, and contain no control characters or commas.
+- `set_display_output` (`slot`: `1|2`, then the configuration) and
+  `clear_display_output` (`slot`) are project edits (`EditProject`:
+  Graphics, Admin): undoable with an exact inverse, journaled, realized on
+  the `project` domain, and refused under the project padlock. An unknown
+  source output is `not_found`, a display the other slot already claims is
+  `conflict`, and an unusable selector or mode is `invalid_command`. A
+  project output shown by a slot cannot be removed. The daemon applies an
+  accepted edit live: a source, mode, scaling, or HDR change on the same
+  display keeps the window bound; a different display rebinds it.
+- `event=display_output_changed` (`slot`, `configured` `0|1`, then the
+  configuration fields when configured) announces each accepted edit and
+  its undo or redo.
+- Runtime events: `display_output_status` (`slot`, `state=active` with the
+  bound display's `id`, `name`, `mode`, `mode_fallback` (`0|1`: an exact
+  mode the display does not offer runs at its current mode) and HDR state
+  (`sdr`, `hdr`, `sdr-display-not-capable`, `sdr-capability-unknown`,
+  `sdr-presenter-limited`), or `state=waiting` with `reason`
+  `display-absent|display-in-use|ambiguous-name|enumeration-failed|no-presenter`)
+  is published when a configured slot's state changes, including hot-plug;
+  `display_inventory` (`presenter` `0|1`, optional `error` of at most 256
+  bytes, and up to 16 `displays`, each
+  `<id>~<name>~<x>~<y>~<current mode>~<modes ;-separated, at most 128>~<hdr capability unknown|sdr|hdr>`)
+  is published when the connected displays change.
+- `display_inventory_request` (`request_id`) is a read-only query like
+  `diagnostics_request`; any role may send it, and the server answers
+  `display_inventory` with the same `request_id` and the inventory fields.
+  A daemon without a display presenter answers `presenter=0` and no
+  displays, and its configured slots wait with `no-presenter`.
+- The snapshot appends, after `fade_to_black_excluded_outputs`:
+  `display_outputs` (comma-separated
+  `<slot>~<display>~<source>~<mode>~<scaling>~<hdr>`, strictly ascending
+  by slot) and `display_output_states` (comma-separated
+  `<slot>~waiting~<reason>` or
+  `<slot>~active~<id>~<name>~<mode>~<fallback>~<hdr state>` for every
+  configured slot, strictly ascending). List text is percent-escaped.
+- Durability: the slots are project state (schema 40, `display_outputs`
+  in `project.json`). `freemixd serve --display-output <spec>` (up to two)
+  replaces the project's slots when the project loads.
+- 2.41 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

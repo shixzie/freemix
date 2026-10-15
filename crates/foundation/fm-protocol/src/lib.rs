@@ -2,6 +2,7 @@
 
 mod audio_mixer;
 mod codec;
+mod display_output;
 mod dto;
 mod input_lifecycle;
 mod media;
@@ -19,6 +20,14 @@ pub use codec::{
     MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
     decode_line, encode_line, motion_wire_bytes, scene_clip_wire_bytes, scene_layout_wire_bytes,
     title_clip_wire_bytes,
+};
+pub use display_output::{
+    DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage,
+    DisplayInventoryRequest, DisplayMode, DisplayOutputConfig, DisplayOutputEntry,
+    DisplayOutputSlot, DisplayOutputSource, DisplayOutputStatus, DisplaySelector, HdrCapability,
+    HdrRequest, HdrState, MAX_DISPLAY_INVENTORY_ERROR_BYTES, MAX_DISPLAY_OUTPUTS,
+    MAX_INVENTORY_DISPLAY_MODES, MAX_INVENTORY_DISPLAYS, ModeRequest, WaitReason,
+    WireActiveDisplay, WireDisplayOutputState, display_source_is_known,
 };
 pub use dto::{
     AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage,

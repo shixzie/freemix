@@ -123,6 +123,8 @@ fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Show".to_owned(),
@@ -1456,6 +1458,51 @@ fn monitor_frame_with_invalid_qoi_disconnects() {
     session.receive().unwrap();
     assert!(session.latest_monitor_frame(MonitorTap::Program).is_some());
     assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+}
+
+/// Protocol 2.42: a display inventory request goes out on the session and
+/// its reply arrives as a session event that updates the replicated view.
+#[test]
+fn display_inventory_request_round_trips_into_the_view() {
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        let WireMessage::DisplayInventoryRequest(request) = peer.receive() else {
+            panic!("expected a display inventory request");
+        };
+        assert_eq!(request.request_id, "displays-1");
+        peer.send_all(&[WireMessage::DisplayInventory(
+            fm_protocol::DisplayInventoryMessage {
+                request_id: request.request_id,
+                inventory: fm_protocol::DisplayInventory {
+                    presenter: false,
+                    error: None,
+                    displays: Vec::new(),
+                },
+            },
+        )]);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session
+        .send_display_inventory_request(fm_protocol::DisplayInventoryRequest {
+            request_id: "displays-1".into(),
+        })
+        .unwrap();
+    let event = session.receive().unwrap();
+    let SessionEvent::DisplayInventory { message } = event else {
+        panic!("expected the display inventory, got {event:?}");
+    };
+    assert_eq!(message.request_id, "displays-1");
+    let inventory = session
+        .client()
+        .model()
+        .view()
+        .unwrap()
+        .display_inventory
+        .unwrap();
+    assert!(!inventory.presenter);
     server_thread.join().unwrap();
 }
 

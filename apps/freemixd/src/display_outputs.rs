@@ -1,14 +1,25 @@
-//! Fullscreen display outputs (OR-011): daemon status records, startup
-//! validation, the diagnostic inventory-file display provider, and the
-//! headless presenter that exercises the same scaled placement off-screen.
+//! Fullscreen display outputs (OR-011): daemon status records, the
+//! project-to-presenter synchronization, the wire projection of presenter
+//! state, the diagnostic inventory-file display provider, and the headless
+//! presenter that exercises the same scaled placement off-screen.
+//!
+//! The project's display-output slots (schema 40) are engine state edited
+//! by `set_display_output` / `clear_display_output` (Protocol 2.42). After
+//! every command and frame the daemon diffs them against what its presenter
+//! shows ([`DisplayOutputSync`]) and applies the difference live: a source,
+//! scaling, mode, or HDR change keeps the output on its display, and a new
+//! display rebinds it. The presenter's per-slot state and display inventory
+//! flow back as `display_output_status` / `display_inventory` runtime
+//! events. A daemon without a presenter leaves every slot waiting with
+//! [`fm_io_api::display::WaitReason::NoPresenter`].
 //!
 //! Real borderless windows are driven by `program_surface` (feature
-//! `display-surface`); both paths share the portable
+//! `display-surface`); both presenters share the portable
 //! [`fm_io_api::display::DisplayOutputTracker`] hot-plug state machine and
 //! emit one `FREEMIXD_DISPLAY_OUTPUT` record per state change.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -16,7 +27,12 @@ use std::{
 
 use fm_io_api::display::{
     DisplayEnumerationError, DisplayId, DisplayInfo, DisplayMode, DisplayOutputConfig,
-    DisplayOutputSet, DisplayOutputSource, DisplayOutputState, DisplayProvider, HdrCapability,
+    DisplayOutputSlot, DisplayOutputState, DisplayProvider, HdrCapability, MAX_DISPLAY_TEXT_BYTES,
+};
+use fm_protocol::{
+    DisplayInventory, DisplayInventoryEntry, DisplayOutputEntry, MAX_DISPLAY_INVENTORY_ERROR_BYTES,
+    MAX_INVENTORY_DISPLAY_MODES, MAX_INVENTORY_DISPLAYS, WaitReason, WireActiveDisplay,
+    WireDisplayOutputState,
 };
 
 pub(crate) const DISPLAY_OUTPUT_PREFIX: &str = "FREEMIXD_DISPLAY_OUTPUT";
@@ -32,7 +48,8 @@ fn record_text(value: &str) -> String {
         .collect()
 }
 
-/// One `FREEMIXD_DISPLAY_OUTPUT` record for output `index` (zero-based).
+/// One `FREEMIXD_DISPLAY_OUTPUT` record for output `index` (zero-based slot
+/// position).
 pub(crate) fn status_record(
     index: usize,
     config: &DisplayOutputConfig,
@@ -58,35 +75,164 @@ pub(crate) fn status_record(
     }
 }
 
-/// Validates each output's source against what the native daemon renders:
-/// Program and declared project outputs. Preview is not composited by the
-/// native daemon.
-pub(crate) fn validate_sources(
-    set: &DisplayOutputSet,
-    project_outputs: &[fm_types::OutputId],
-) -> Result<(), String> {
-    for (index, config) in set.outputs().iter().enumerate() {
-        match config.source {
-            DisplayOutputSource::Program => {}
-            DisplayOutputSource::Preview => {
-                return Err(format!(
-                    "display output {} selects source=preview, which the native daemon does not \
-                     composite; select program or output:<id>",
-                    index + 1
-                ));
+/// The `FREEMIXD_DISPLAY_OUTPUT` record of a slot that was cleared live.
+pub(crate) fn cleared_record(index: usize) -> String {
+    format!(
+        "{DISPLAY_OUTPUT_PREFIX}\tv=1\toutput={}\tstate=cleared",
+        index + 1
+    )
+}
+
+/// What a display presenter last observed: each configured slot's state
+/// and the connected displays.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DisplayReport {
+    pub(crate) states: BTreeMap<DisplayOutputSlot, DisplayOutputState>,
+    pub(crate) displays: Vec<DisplayInfo>,
+    /// Why the last enumeration failed, if it did.
+    pub(crate) error: Option<String>,
+}
+
+/// The longest prefix of `value` with at most `maximum` UTF-8 bytes.
+fn bounded(value: &str, maximum: usize) -> &str {
+    let mut end = maximum.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+/// Platform display text as the wire carries it: commas and control
+/// characters replaced and the length bounded; `fallback` when empty.
+fn wire_display_text(value: &str, fallback: &DisplayId) -> String {
+    let cleaned = value
+        .chars()
+        .map(|c| if c.is_control() || c == ',' { '_' } else { c })
+        .collect::<String>();
+    let text = bounded(&cleaned, MAX_DISPLAY_TEXT_BYTES);
+    if text.is_empty() {
+        fallback.to_string()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// One slot's presenter state on the wire.
+pub(crate) fn wire_state(state: &DisplayOutputState) -> WireDisplayOutputState {
+    match state {
+        DisplayOutputState::Waiting(reason) => WireDisplayOutputState::Waiting(*reason),
+        DisplayOutputState::Active(active) => WireDisplayOutputState::Active(WireActiveDisplay {
+            id: active.id.clone(),
+            name: wire_display_text(&active.name, &active.id),
+            mode: active.mode,
+            mode_fallback: active.mode_fallback,
+            hdr: active.hdr,
+        }),
+    }
+}
+
+/// The presenter's inventory on the wire, bounded to what the protocol
+/// carries: at most [`MAX_INVENTORY_DISPLAYS`] displays with valid modes, at
+/// most [`MAX_INVENTORY_DISPLAY_MODES`] modes each (largest first).
+pub(crate) fn wire_inventory(report: &DisplayReport) -> DisplayInventory {
+    let displays = report
+        .displays
+        .iter()
+        .filter(|display| display.current_mode.is_valid())
+        .take(MAX_INVENTORY_DISPLAYS)
+        .map(|display| {
+            let mut modes = display
+                .modes
+                .iter()
+                .copied()
+                .filter(|mode| mode.is_valid())
+                .collect::<Vec<_>>();
+            modes.sort_unstable_by(|left, right| right.cmp(left));
+            modes.dedup();
+            modes.truncate(MAX_INVENTORY_DISPLAY_MODES);
+            DisplayInventoryEntry {
+                id: display.id.clone(),
+                name: wire_display_text(&display.name, &display.id),
+                x: display.x,
+                y: display.y,
+                current_mode: display.current_mode,
+                modes,
+                hdr: display.hdr,
             }
-            DisplayOutputSource::Output(output) => {
-                if !project_outputs.contains(&output) {
-                    return Err(format!(
-                        "display output {} selects source=output:{output}, which the project does \
-                         not declare",
-                        index + 1
-                    ));
+        })
+        .collect();
+    let error = report
+        .error
+        .as_deref()
+        .map(|error| record_text(bounded(error, MAX_DISPLAY_INVENTORY_ERROR_BYTES)))
+        .filter(|error| !error.is_empty());
+    DisplayInventory {
+        presenter: true,
+        error,
+        displays,
+    }
+}
+
+/// Keeps a presenter showing the project's display-output slots and the
+/// control service told about the presenter's state.
+#[derive(Debug, Default)]
+pub(crate) struct DisplayOutputSync {
+    applied: BTreeMap<DisplayOutputSlot, DisplayOutputConfig>,
+}
+
+impl DisplayOutputSync {
+    /// The slot edits that bring the presenter from what it was last told to
+    /// `desired` (the snapshot's configured slots), recording them as
+    /// applied.
+    pub(crate) fn changes(
+        &mut self,
+        desired: &[DisplayOutputEntry],
+    ) -> Vec<(DisplayOutputSlot, Option<DisplayOutputConfig>)> {
+        let desired = desired
+            .iter()
+            .map(|entry| (entry.slot, &entry.config))
+            .collect::<BTreeMap<_, _>>();
+        let mut changes = Vec::new();
+        for slot in DisplayOutputSlot::ALL {
+            let wanted = desired.get(&slot).copied();
+            if self.applied.get(&slot) == wanted {
+                continue;
+            }
+            match wanted {
+                Some(config) => {
+                    self.applied.insert(slot, config.clone());
+                }
+                None => {
+                    self.applied.remove(&slot);
                 }
             }
+            changes.push((slot, wanted.cloned()));
         }
+        // A display moving between slots is cleared from its old slot first
+        // so the presenter never sees it claimed twice.
+        changes.sort_by_key(|(_, config)| config.is_some());
+        changes
     }
-    Ok(())
+
+    /// Every slot's state as the presenter reports it: configured slots
+    /// from `report` (a slot it has not configured yet waits for it), and
+    /// unconfigured slots waiting for a presenter.
+    pub(crate) fn wire_states(
+        &self,
+        report: &DisplayReport,
+    ) -> Vec<(DisplayOutputSlot, WireDisplayOutputState)> {
+        DisplayOutputSlot::ALL
+            .into_iter()
+            .map(|slot| {
+                let state = match (self.applied.contains_key(&slot), report.states.get(&slot)) {
+                    (true, Some(state)) => wire_state(state),
+                    (true, None) => WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent),
+                    (false, _) => WireDisplayOutputState::Waiting(WaitReason::NoPresenter),
+                };
+                (slot, state)
+            })
+            .collect()
+    }
 }
 
 /// A diagnostic display inventory read from a text file on every poll.
@@ -174,12 +320,9 @@ pub(crate) fn parse_inventory(text: &str) -> Result<Vec<DisplayInfo>, DisplayEnu
                     );
                 }
                 "hdr" => {
-                    hdr = match value {
-                        "hdr" => HdrCapability::Hdr,
-                        "sdr" => HdrCapability::Sdr,
-                        "unknown" => HdrCapability::Unknown,
-                        _ => return Err(fail("hdr must be hdr, sdr, or unknown")),
-                    };
+                    hdr = value
+                        .parse::<HdrCapability>()
+                        .map_err(|_| fail("hdr must be hdr, sdr, or unknown"))?;
                 }
                 _ => return Err(fail(&format!("unknown key `{key}`"))),
             }
@@ -213,11 +356,15 @@ mod headless {
 
     use fm_gpu::NativeTexture;
     use fm_io_api::display::{
-        DisplayOutputSet, DisplayOutputSource, DisplayOutputTracker, DisplayProvider,
+        DisplayOutputConfig, DisplayOutputReconfiguration, DisplayOutputSlot, DisplayOutputSource,
+        DisplayOutputTracker, DisplayProvider, MAX_DISPLAY_OUTPUTS,
     };
     use freemixd::native_media::{NativeMediaRuntime, NativeProgramReadback};
 
-    use super::{DISPLAY_FRAME_PREFIX, InventoryFile, record_text, status_record};
+    use super::{
+        DISPLAY_FRAME_PREFIX, DisplayReport, InventoryFile, cleared_record, record_text,
+        status_record,
+    };
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
     /// Every this many presented frames an output publishes one probe record.
@@ -226,47 +373,96 @@ mod headless {
     /// probed; this keeps the synchronous readback bounded.
     const MAX_PROBE_PIXELS: u64 = 4096 * 2160;
 
+    #[derive(Default)]
     struct HostOutput {
         target: Option<NativeProgramReadback>,
         presented: u64,
         probe_next: bool,
     }
 
-    /// Presents each configured display output into an off-screen raster
-    /// sized to its attached diagnostic display, with the output's own
-    /// source and scaling, and follows inventory hot-plug through the shared
-    /// tracker. Used with `--diagnostic-display-inventory` to verify
-    /// independent sources and recovery without a window system.
+    /// Presents each configured display-output slot into an off-screen
+    /// raster sized to its attached diagnostic display, with the slot's own
+    /// source and scaling, and follows inventory hot-plug through the
+    /// shared tracker. Used with `--diagnostic-display-inventory` to verify
+    /// independent sources, live reconfiguration, and recovery without a
+    /// window system.
     pub(crate) struct InventoryDisplayHost {
         tracker: DisplayOutputTracker,
         provider: InventoryFile,
         outputs: Vec<HostOutput>,
         polled_at: Option<Instant>,
         failures: u64,
+        report: DisplayReport,
     }
 
     impl InventoryDisplayHost {
-        pub(crate) fn new(set: DisplayOutputSet, provider: InventoryFile) -> Self {
-            let count = set.outputs().len();
-            let tracker = DisplayOutputTracker::new(set, false);
-            for index in 0..count {
-                if let (Some(config), Some(state)) = (tracker.config(index), tracker.state(index)) {
-                    eprintln!("{}", status_record(index, config, state));
-                }
-            }
+        /// A host with every slot empty; [`Self::configure`] fills them.
+        pub(crate) fn new(provider: InventoryFile) -> Self {
             Self {
-                tracker,
+                // The headless presenter is SDR-only, like the windowed one.
+                tracker: DisplayOutputTracker::empty(false),
                 provider,
-                outputs: (0..count)
-                    .map(|_| HostOutput {
-                        target: None,
-                        presented: 0,
-                        probe_next: false,
-                    })
+                outputs: (0..MAX_DISPLAY_OUTPUTS)
+                    .map(|_| HostOutput::default())
                     .collect(),
                 polled_at: None,
                 failures: 0,
+                report: DisplayReport::default(),
             }
+        }
+
+        /// Fills, retargets, or clears one slot live; the next poll binds
+        /// a slot that waits for its display.
+        pub(crate) fn configure(
+            &mut self,
+            slot: DisplayOutputSlot,
+            config: Option<DisplayOutputConfig>,
+        ) {
+            let index = slot.index();
+            match self.tracker.configure(index, config) {
+                DisplayOutputReconfiguration::Unchanged => return,
+                DisplayOutputReconfiguration::Retargeted => {
+                    self.outputs[index].probe_next = true;
+                }
+                DisplayOutputReconfiguration::Rebinding => {
+                    self.outputs[index] = HostOutput::default();
+                    if let (Some(config), Some(state)) =
+                        (self.tracker.config(index), self.tracker.state(index))
+                    {
+                        eprintln!("{}", status_record(index, config, state));
+                    }
+                }
+                DisplayOutputReconfiguration::Cleared => {
+                    self.outputs[index] = HostOutput::default();
+                    eprintln!("{}", cleared_record(index));
+                }
+            }
+            // Re-enumerate at once so the slot binds on this frame.
+            self.polled_at = None;
+            self.refresh_states();
+        }
+
+        fn refresh_states(&mut self) {
+            self.report.states = DisplayOutputSlot::ALL
+                .into_iter()
+                .filter_map(|slot| {
+                    self.tracker
+                        .state(slot.index())
+                        .map(|state| (slot, state.clone()))
+                })
+                .collect();
+        }
+
+        /// What the host last observed.
+        pub(crate) const fn report(&self) -> &DisplayReport {
+            &self.report
+        }
+
+        /// Whether a configured slot shows `source`.
+        pub(crate) fn shows(&self, source: DisplayOutputSource) -> bool {
+            (0..MAX_DISPLAY_OUTPUTS)
+                .filter_map(|index| self.tracker.config(index))
+                .any(|config| config.source == source)
         }
 
         /// Re-enumerates at most every poll interval and applies changes.
@@ -279,12 +475,19 @@ mod headless {
             }
             self.polled_at = Some(now);
             let changes = match self.provider.displays() {
-                Ok(displays) => self.tracker.reconcile(&displays),
+                Ok(displays) => {
+                    let changes = self.tracker.reconcile(&displays);
+                    self.report.displays = displays;
+                    self.report.error = None;
+                    changes
+                }
                 Err(error) => {
                     eprintln!(
                         "FREEMIXD_DISPLAY_INVENTORY\tv=1\terror={}",
                         record_text(&error.0)
                     );
+                    self.report.displays.clear();
+                    self.report.error = Some(error.0);
                     self.tracker.enumeration_failed()
                 }
             };
@@ -326,6 +529,7 @@ mod headless {
                     _ => None,
                 };
             }
+            self.refresh_states();
         }
 
         /// Presents every attached output's own source with its own scaling.
@@ -410,16 +614,25 @@ mod headless {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU128;
-
     use fm_io_api::display::{
-        ActiveDisplay, DisplayOutputTracker, DisplayProvider, HdrState, WaitReason,
+        ActiveDisplay, DisplayOutputSet, DisplayOutputTracker, DisplayProvider, HdrState,
     };
 
     use super::*;
 
     fn set(specs: &[&str]) -> DisplayOutputSet {
         DisplayOutputSet::new(specs.iter().map(|spec| spec.parse().unwrap()).collect()).unwrap()
+    }
+
+    fn slot(slot: u8) -> DisplayOutputSlot {
+        DisplayOutputSlot::new(slot).unwrap()
+    }
+
+    fn entry(number: u8, spec: &str) -> DisplayOutputEntry {
+        DisplayOutputEntry {
+            slot: slot(number),
+            config: spec.parse().unwrap(),
+        }
     }
 
     #[test]
@@ -461,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn status_records_describe_active_and_waiting_outputs() {
+    fn status_records_describe_active_waiting_and_cleared_outputs() {
         let set = set(&["display=name:Left,source=output:2,scaling=fill"]);
         let config = &set.outputs()[0];
         let active = DisplayOutputState::Active(ActiveDisplay {
@@ -488,19 +701,98 @@ mod tests {
             "FREEMIXD_DISPLAY_OUTPUT\tv=1\toutput=2\tstate=waiting\treason=display-absent\t\
              source=output:2\tscaling=fill\tborderless=true\tcursor=hidden"
         );
+        assert_eq!(
+            cleared_record(1),
+            "FREEMIXD_DISPLAY_OUTPUT\tv=1\toutput=2\tstate=cleared"
+        );
     }
 
     #[test]
-    fn sources_must_be_program_or_a_declared_output() {
-        let declared = [fm_types::OutputId::new(NonZeroU128::new(2).unwrap())];
-        assert!(
-            validate_sources(&set(&["display=0", "display=1,source=output:2"]), &declared).is_ok()
+    fn sync_applies_only_changed_slots_and_clears_before_it_fills() {
+        let mut sync = DisplayOutputSync::default();
+        let changes = sync.changes(&[entry(1, "display=index:0"), entry(2, "display=index:1")]);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(
+            sync.changes(&[entry(1, "display=index:0"), entry(2, "display=index:1")]),
+            Vec::new()
         );
-        let preview = validate_sources(&set(&["display=0,source=preview"]), &declared).unwrap_err();
-        assert!(preview.contains("source=preview"));
-        let unknown =
-            validate_sources(&set(&["display=0,source=output:9"]), &declared).unwrap_err();
-        assert!(unknown.contains("output:9"));
+        // Swapping the displays clears nothing but changes both; moving one
+        // display from slot 2 to slot 1 clears slot 2 first.
+        let changes = sync.changes(&[entry(1, "display=index:1")]);
+        assert_eq!(changes[0], (slot(2), None));
+        assert_eq!(changes[1].0, slot(1));
+        assert!(changes[1].1.is_some());
+
+        let report = DisplayReport {
+            states: BTreeMap::from([(
+                slot(1),
+                DisplayOutputState::Waiting(WaitReason::DisplayInUse),
+            )]),
+            ..DisplayReport::default()
+        };
+        assert_eq!(
+            sync.wire_states(&report),
+            vec![
+                (
+                    slot(1),
+                    WireDisplayOutputState::Waiting(WaitReason::DisplayInUse)
+                ),
+                (
+                    slot(2),
+                    WireDisplayOutputState::Waiting(WaitReason::NoPresenter)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_wire_inventory_is_bounded_and_sanitized() {
+        let id = DisplayId::new("x:1").unwrap();
+        let mut display =
+            DisplayInfo::new(id.clone(), "Left, Panel\n", DisplayMode::new(64, 36, 0));
+        display.modes = (1..=200)
+            .map(|width| DisplayMode::new(width, 36, 0))
+            .collect();
+        display.modes.push(DisplayMode::new(0, 0, 0));
+        let mut unnamed = DisplayInfo::new(
+            DisplayId::new("x:2").unwrap(),
+            "",
+            DisplayMode::new(32, 32, 0),
+        );
+        unnamed.hdr = HdrCapability::Hdr;
+        let report = DisplayReport {
+            states: BTreeMap::new(),
+            displays: std::iter::repeat_n(display, 20)
+                .chain(std::iter::once(unnamed))
+                .collect(),
+            error: Some("x".repeat(400)),
+        };
+        let inventory = wire_inventory(&report);
+        assert!(inventory.presenter);
+        assert_eq!(inventory.displays.len(), MAX_INVENTORY_DISPLAYS);
+        assert_eq!(inventory.displays[0].name, "Left_ Panel_");
+        assert_eq!(
+            inventory.displays[0].modes.len(),
+            MAX_INVENTORY_DISPLAY_MODES
+        );
+        assert_eq!(inventory.displays[0].modes[0], DisplayMode::new(200, 36, 0));
+        assert_eq!(
+            inventory.error.as_deref().map(str::len),
+            Some(MAX_DISPLAY_INVENTORY_ERROR_BYTES)
+        );
+        let line = fm_protocol::encode_line(&fm_protocol::WireMessage::DisplayInventory(
+            fm_protocol::DisplayInventoryMessage {
+                request_id: "r".into(),
+                inventory: inventory.clone(),
+            },
+        ))
+        .unwrap();
+        assert!(line.len() < 64 * 1024);
+        assert_eq!(
+            wire_display_text("", &id),
+            "x:1",
+            "an unnamed display shows its id"
+        );
     }
 
     #[test]

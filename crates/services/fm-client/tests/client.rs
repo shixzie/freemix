@@ -162,6 +162,8 @@ fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Show".to_owned(),
@@ -2985,4 +2987,145 @@ mod media {
                 .is_err()
         );
     }
+}
+
+/// OR-011, Protocol 2.42: slot edits replicate through the durable event,
+/// runtime status and inventory events update the view, and a
+/// `display_inventory` reply is applied to the model.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn display_output_slots_status_and_inventory_replicate() {
+    use fm_protocol::{
+        DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage, DisplayMode,
+        DisplayOutputSlot, DisplayOutputStatus, HdrCapability, HdrState, WaitReason,
+        WireActiveDisplay, WireDisplayOutputState,
+    };
+    let mut client = ready_client(4);
+    let slot = DisplayOutputSlot::new(2).unwrap();
+    let config: fm_protocol::DisplayOutputConfig = "display=name:Wall,source=preview,scaling=fill"
+        .parse()
+        .unwrap();
+    let changed = |revision, config: Option<fm_protocol::DisplayOutputConfig>| {
+        WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            payload: EventPayload::DisplayOutputChanged {
+                slot,
+                config: config.map(Box::new),
+            },
+        })
+    };
+    assert_eq!(
+        client.intake(changed(5, Some(config.clone()))).unwrap(),
+        Intake::EventApplied
+    );
+    let view = client.model().view().unwrap();
+    assert_eq!(view.display_output(slot), Some(&config));
+    // A configured slot waits until the server reports it.
+    assert_eq!(
+        view.display_output_state(slot),
+        Some(&WireDisplayOutputState::Waiting(WaitReason::NoPresenter))
+    );
+
+    let waiting = WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent);
+    client
+        .apply_runtime_event(runtime_event(
+            5,
+            7,
+            1,
+            RuntimeLifecycleEvent::DisplayOutputStatus(DisplayOutputStatus {
+                slot,
+                state: waiting.clone(),
+            }),
+        ))
+        .unwrap();
+    assert_eq!(
+        client.model().view().unwrap().display_output_state(slot),
+        Some(&waiting)
+    );
+    let active = WireDisplayOutputState::Active(WireActiveDisplay {
+        id: DisplayId::new("edid:wall").unwrap(),
+        name: "Wall".into(),
+        mode: DisplayMode::new(1280, 720, 50_000),
+        mode_fallback: false,
+        hdr: HdrState::Sdr,
+    });
+    client
+        .apply_runtime_event(runtime_event(
+            5,
+            7,
+            2,
+            RuntimeLifecycleEvent::DisplayOutputStatus(DisplayOutputStatus {
+                slot,
+                state: active.clone(),
+            }),
+        ))
+        .unwrap();
+    assert_eq!(
+        client.model().view().unwrap().display_output_state(slot),
+        Some(&active)
+    );
+
+    let inventory = DisplayInventory {
+        presenter: true,
+        error: None,
+        displays: vec![DisplayInventoryEntry {
+            id: DisplayId::new("edid:wall").unwrap(),
+            name: "Wall".into(),
+            x: 0,
+            y: 0,
+            current_mode: DisplayMode::new(1280, 720, 50_000),
+            modes: vec![DisplayMode::new(1280, 720, 50_000)],
+            hdr: HdrCapability::Sdr,
+        }],
+    };
+    assert_eq!(client.model().view().unwrap().display_inventory, None);
+    client
+        .apply_runtime_event(runtime_event(
+            5,
+            7,
+            3,
+            RuntimeLifecycleEvent::DisplayInventory(inventory.clone()),
+        ))
+        .unwrap();
+    assert_eq!(
+        client.model().view().unwrap().display_inventory.as_ref(),
+        Some(&inventory)
+    );
+    let unplugged = DisplayInventory {
+        displays: Vec::new(),
+        ..inventory
+    };
+    assert_eq!(
+        client
+            .intake(WireMessage::DisplayInventory(DisplayInventoryMessage {
+                request_id: "q".into(),
+                inventory: unplugged.clone(),
+            }))
+            .unwrap(),
+        Intake::DisplayInventoryApplied
+    );
+    assert_eq!(
+        client.model().view().unwrap().display_inventory.as_ref(),
+        Some(&unplugged)
+    );
+    // A client never receives the request.
+    assert!(
+        client
+            .intake(WireMessage::DisplayInventoryRequest(
+                fm_protocol::DisplayInventoryRequest {
+                    request_id: "q".into(),
+                }
+            ))
+            .is_err()
+    );
+
+    // Clearing the slot removes it and its state.
+    client.intake(changed(6, None)).unwrap();
+    let view = client.model().view().unwrap();
+    assert_eq!(view.display_output(slot), None);
+    assert_eq!(view.display_outputs, Vec::new());
 }

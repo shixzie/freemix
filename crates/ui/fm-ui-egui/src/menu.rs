@@ -1102,6 +1102,15 @@ impl StudioShell {
         ui.separator();
         heading(ui, l.text(Msg::TabStingers));
         self.stinger_menu(ui, state, intents);
+        ui.separator();
+        if ui
+            .button(l.text(Msg::MenuFullscreenOutputs))
+            .on_hover_text(l.text(Msg::MenuFullscreenOutputsHover))
+            .clicked()
+        {
+            self.open_display_outputs(intents);
+            ui.close();
+        }
     }
 
     /// Output ▸ Stingers: assign the Preview input to a slot, or clear a slot.

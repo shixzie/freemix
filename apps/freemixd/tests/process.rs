@@ -1706,6 +1706,125 @@ fn fade_to_black_excludes_an_unselected_output_and_survives_restart() {
     assert!(persisted.project().fade_to_black_affects(output_id(1)));
 }
 
+/// OR-011, Protocol 2.42: a daemon without a display presenter keeps
+/// display-output slots as replicated, validated project configuration;
+/// every configured slot waits with `no-presenter`, the inventory says
+/// there is no presenter, and the slots survive a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn display_output_slots_without_a_presenter_wait_and_survive_restart() {
+    let directory = TestDirectory::new("display-outputs");
+    let project_path = directory.project_path();
+    create_two_output_project(&project_path);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Admin, None);
+    let snapshot = client.receive_snapshot();
+    assert_eq!(snapshot.display_outputs, Vec::new());
+    assert_eq!(snapshot.display_output_states, Vec::new());
+
+    client.send(&WireMessage::DisplayInventoryRequest(
+        fm_protocol::DisplayInventoryRequest {
+            request_id: "inventory".into(),
+        },
+    ));
+    let inventory = loop {
+        if let WireMessage::DisplayInventory(reply) = client.receive() {
+            assert_eq!(reply.request_id, "inventory");
+            break reply.inventory;
+        }
+    };
+    assert!(!inventory.presenter);
+    assert_eq!(inventory.displays, Vec::new());
+
+    let two = fm_protocol::DisplayOutputSlot::new(2).unwrap();
+    let config: fm_protocol::DisplayOutputConfig = format!(
+        "display=name:Studio Left,source=output:{},mode=1920x1080@59940,scaling=fill,hdr=auto",
+        output_id(2)
+    )
+    .parse()
+    .unwrap();
+    client.send(&command(
+        "display-set",
+        "display-set-key",
+        CommandPayload::SetDisplayOutput {
+            slot: two,
+            config: Box::new(config.clone()),
+        },
+    ));
+    let result = client.next_result();
+    assert!(
+        matches!(&result, CommandResult::Accepted { id, revision: 1, .. } if id == "display-set"),
+        "{result:?}"
+    );
+    assert_eq!(
+        next_event_payload(&mut client),
+        EventPayload::DisplayOutputChanged {
+            slot: two,
+            config: Some(Box::new(config.clone())),
+        }
+    );
+
+    // The same display in slot 1 and an unknown output are refused.
+    for (id, spec, code) in [
+        ("display-dup", "display=name:Studio Left", "conflict"),
+        (
+            "display-unknown",
+            "display=index:3,source=output:9",
+            "not_found",
+        ),
+    ] {
+        client.send(&command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::SetDisplayOutput {
+                slot: fm_protocol::DisplayOutputSlot::new(1).unwrap(),
+                config: Box::new(spec.parse().unwrap()),
+            },
+        ));
+        assert!(matches!(
+            client.next_result(),
+            CommandResult::Rejected { code: rejected, current_revision: 1, .. } if rejected == code
+        ));
+    }
+    drop(client);
+
+    let mut observer = daemon.connect();
+    observer.handshake_as(Role::Viewer, None);
+    let snapshot = observer.receive_snapshot();
+    assert_eq!(
+        snapshot.display_outputs,
+        vec![fm_protocol::DisplayOutputEntry {
+            slot: two,
+            config: config.clone(),
+        }]
+    );
+    assert_eq!(
+        snapshot.display_output_states,
+        vec![fm_protocol::DisplayOutputStatus {
+            slot: two,
+            state: fm_protocol::WireDisplayOutputState::Waiting(
+                fm_protocol::WaitReason::NoPresenter
+            ),
+        }]
+    );
+    drop(observer);
+    daemon.stop();
+
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    restarted.handshake_as(Role::Viewer, None);
+    let snapshot = restarted.receive_snapshot();
+    assert_eq!(snapshot.display_outputs.len(), 1);
+    assert_eq!(snapshot.display_outputs[0].config, config);
+    drop(restarted);
+    daemon.wait_success();
+
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(persisted.project().display_output(two), Some(&config));
+}
+
 /// AU-001: strip labels and VCA groups are replicated project state; a
 /// muted group is reported for its member strips and survives a restart.
 #[test]
@@ -3104,6 +3223,8 @@ fn help_documents_program_output_and_fullscreen_selection() {
     assert!(stdout.contains("--fullscreen-program"));
     assert!(stdout.contains("--fullscreen-display 0"));
     assert!(stdout.contains("--display-output <spec>"));
+    assert!(stdout.contains("--display-presenter"));
+    assert!(stdout.contains("source=program|preview|output:<output-id>"));
     assert!(stdout.contains("scaling=fit|fill|stretch|1:1"));
     assert!(stdout.contains("--record-program output.mp4"));
     assert!(stdout.contains("--camera-helper PATH"));
@@ -5639,11 +5760,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.41.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 41));
+    // The previous protocol is refused; the current one is 2.42.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 40),
+        protocol: ProtocolVersion::new(2, 41),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5659,7 +5780,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 41)
+        ProtocolVersion::new(2, 42)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

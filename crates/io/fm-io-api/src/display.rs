@@ -23,162 +23,17 @@
 //! claimed waits with [`WaitReason::DisplayInUse`].
 
 use std::{
-    collections::BTreeSet,
     fmt,
-    num::NonZeroU128,
-    str::FromStr,
     sync::{Arc, Mutex, PoisonError},
 };
 
-use fm_types::{OutputId, OutputScaling};
-
-/// The maximum number of simultaneous display outputs.
-pub const MAX_DISPLAY_OUTPUTS: usize = 2;
-
-const MAX_DISPLAY_TEXT_BYTES: usize = 256;
-
-/// A platform-stable display identity (for example a `CGDirectDisplayID`
-/// UUID, a `RandR` output id, or a Windows device path).
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DisplayId(String);
-
-impl DisplayId {
-    /// Creates an identity from nonempty bounded text without control
-    /// characters or commas.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DisplayConfigError::InvalidText`] otherwise.
-    pub fn new(value: impl Into<String>) -> Result<Self, DisplayConfigError> {
-        let value = value.into();
-        validate_text(&value)?;
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for DisplayId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-fn validate_text(value: &str) -> Result<(), DisplayConfigError> {
-    if value.is_empty()
-        || value.len() > MAX_DISPLAY_TEXT_BYTES
-        || value.chars().any(|c| c.is_control() || c == ',')
-    {
-        return Err(DisplayConfigError::InvalidText(value.to_owned()));
-    }
-    Ok(())
-}
-
-/// One display timing: active pixels and refresh rate in millihertz.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DisplayMode {
-    pub width: u32,
-    pub height: u32,
-    /// Refresh rate in millihertz, or zero when the platform does not report it.
-    pub refresh_millihertz: u32,
-}
-
-impl DisplayMode {
-    #[must_use]
-    pub const fn new(width: u32, height: u32, refresh_millihertz: u32) -> Self {
-        Self {
-            width,
-            height,
-            refresh_millihertz,
-        }
-    }
-
-    /// True when `other` has the same raster and either refresh is unknown or
-    /// both refreshes agree within one hertz (59.94 matches 60).
-    #[must_use]
-    pub const fn matches(self, other: Self) -> bool {
-        self.width == other.width
-            && self.height == other.height
-            && (self.refresh_millihertz == 0
-                || other.refresh_millihertz == 0
-                || self.refresh_millihertz.abs_diff(other.refresh_millihertz) < 1_000)
-    }
-}
-
-impl fmt::Display for DisplayMode {
-    /// Formats as `WIDTHxHEIGHT@MILLIHERTZ` (`@0` when unknown).
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}x{}@{}",
-            self.width, self.height, self.refresh_millihertz
-        )
-    }
-}
-
-impl FromStr for DisplayMode {
-    type Err = DisplayConfigError;
-
-    /// Parses `WxH`, `WxH@HZ` (`60`, `59.94`), or `WxH@MILLIHERTZ` (`60000`).
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || DisplayConfigError::InvalidMode(value.to_owned());
-        let (raster, refresh) = value
-            .split_once('@')
-            .map_or((value, None), |(raster, hz)| (raster, Some(hz)));
-        let (width, height) = raster.split_once('x').ok_or_else(invalid)?;
-        let width = width.parse::<u32>().map_err(|_| invalid())?;
-        let height = height.parse::<u32>().map_err(|_| invalid())?;
-        if width == 0 || height == 0 {
-            return Err(invalid());
-        }
-        let refresh_millihertz = match refresh {
-            None => 0,
-            Some(text) => parse_refresh(text).ok_or_else(invalid)?,
-        };
-        Ok(Self::new(width, height, refresh_millihertz))
-    }
-}
-
-fn parse_refresh(text: &str) -> Option<u32> {
-    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
-    if whole.is_empty() || fraction.len() > 3 {
-        return None;
-    }
-    let whole = whole.parse::<u32>().ok()?;
-    if fraction.is_empty() && whole >= 1_000 {
-        return Some(whole);
-    }
-    let mut millis = 0_u32;
-    for (index, digit) in fraction.chars().enumerate() {
-        let digit = digit.to_digit(10)?;
-        millis += digit * 10_u32.pow(2 - u32::try_from(index).ok()?);
-    }
-    whole.checked_mul(1_000)?.checked_add(millis)
-}
-
-/// Whether a display can show HDR, as far as the platform reports.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum HdrCapability {
-    /// The platform API in use does not expose HDR capability.
-    #[default]
-    Unknown,
-    Sdr,
-    Hdr,
-}
-
-impl HdrCapability {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Sdr => "sdr",
-            Self::Hdr => "hdr",
-        }
-    }
-}
+pub use fm_types::OutputScaling;
+pub use fm_types::display::{
+    DisplayConfigError, DisplayId, DisplayMode, DisplayOutputConfig, DisplayOutputSlot,
+    DisplayOutputSource, DisplaySelector, HdrCapability, HdrRequest, HdrState, MAX_DISPLAY_INDEX,
+    MAX_DISPLAY_MODE_SIDE, MAX_DISPLAY_OUTPUTS, MAX_DISPLAY_REFRESH_MILLIHERTZ,
+    MAX_DISPLAY_TEXT_BYTES, ModeRequest, WaitReason,
+};
 
 /// One connected display.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,295 +102,13 @@ pub trait DisplayProvider {
     fn displays(&mut self) -> Result<Vec<DisplayInfo>, DisplayEnumerationError>;
 }
 
-/// How a configured output chooses its display before it is first bound.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum DisplaySelector {
-    Id(DisplayId),
-    Name(String),
-    /// Zero-based position in [`sort_displays`] order at first binding.
-    Index(usize),
-}
-
-impl fmt::Display for DisplaySelector {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Id(id) => write!(formatter, "id:{id}"),
-            Self::Name(name) => write!(formatter, "name:{name}"),
-            Self::Index(index) => write!(formatter, "index:{index}"),
-        }
-    }
-}
-
-impl FromStr for DisplaySelector {
-    type Err = DisplayConfigError;
-
-    /// Parses `id:<id>`, `name:<name>`, `index:<n>`, or a bare index.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if let Some(id) = value.strip_prefix("id:") {
-            return DisplayId::new(id).map(Self::Id);
-        }
-        if let Some(name) = value.strip_prefix("name:") {
-            validate_text(name)?;
-            return Ok(Self::Name(name.to_owned()));
-        }
-        let index = value.strip_prefix("index:").unwrap_or(value);
-        index
-            .parse::<usize>()
-            .map(Self::Index)
-            .map_err(|_| DisplayConfigError::InvalidSelector(value.to_owned()))
-    }
-}
-
-/// What a display output shows.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum DisplayOutputSource {
-    Program,
-    Preview,
-    /// A configured project output by id.
-    Output(OutputId),
-}
-
-impl fmt::Display for DisplayOutputSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Program => formatter.write_str("program"),
-            Self::Preview => formatter.write_str("preview"),
-            Self::Output(output) => write!(formatter, "output:{output}"),
-        }
-    }
-}
-
-impl FromStr for DisplayOutputSource {
-    type Err = DisplayConfigError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "program" => Ok(Self::Program),
-            "preview" => Ok(Self::Preview),
-            other => other
-                .strip_prefix("output:")
-                .and_then(|id| id.parse::<u128>().ok())
-                .and_then(NonZeroU128::new)
-                .map(|id| Self::Output(OutputId::new(id)))
-                .ok_or_else(|| DisplayConfigError::InvalidSource(other.to_owned())),
-        }
-    }
-}
-
-/// The display mode an output asks for.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum ModeRequest {
-    /// Use whatever mode the display is currently driven at.
-    #[default]
-    Current,
-    /// Prefer this mode; fall back to the current mode when unsupported.
-    Exact(DisplayMode),
-}
-
-impl fmt::Display for ModeRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Current => formatter.write_str("current"),
-            Self::Exact(mode) => mode.fmt(formatter),
-        }
-    }
-}
-
-impl FromStr for ModeRequest {
-    type Err = DisplayConfigError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value == "current" {
-            Ok(Self::Current)
-        } else {
-            value.parse().map(Self::Exact)
-        }
-    }
-}
-
-/// The HDR policy an output asks for.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum HdrRequest {
-    /// Always present SDR.
-    #[default]
-    Off,
-    /// Present HDR when both the display and the presenter support it.
-    Auto,
-}
-
-impl FromStr for HdrRequest {
-    type Err = DisplayConfigError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "off" | "sdr" => Ok(Self::Off),
-            "auto" => Ok(Self::Auto),
-            other => Err(DisplayConfigError::InvalidHdr(other.to_owned())),
-        }
-    }
-}
-
-impl fmt::Display for HdrRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Off => "off",
-            Self::Auto => "auto",
-        })
-    }
-}
-
-/// One fullscreen display output's desired configuration.
-///
-/// Every display output is a borderless fullscreen surface with the cursor
-/// hidden; those properties are not configurable.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisplayOutputConfig {
-    pub display: DisplaySelector,
-    pub source: DisplayOutputSource,
-    pub mode: ModeRequest,
-    pub scaling: OutputScaling,
-    pub hdr: HdrRequest,
-}
-
-impl DisplayOutputConfig {
-    /// Program on `display`, current mode, Fit, SDR.
-    #[must_use]
-    pub fn program_on(display: DisplaySelector) -> Self {
-        Self {
-            display,
-            source: DisplayOutputSource::Program,
-            mode: ModeRequest::Current,
-            scaling: OutputScaling::Fit,
-            hdr: HdrRequest::Off,
-        }
-    }
-}
-
-impl fmt::Display for DisplayOutputConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "display={},source={},mode={},scaling={},hdr={}",
-            self.display, self.source, self.mode, self.scaling, self.hdr
-        )
-    }
-}
-
-impl FromStr for DisplayOutputConfig {
-    type Err = DisplayConfigError;
-
-    /// Parses comma-separated `key=value` fields: required `display`, and
-    /// optional `source` (default `program`), `mode` (`current`), `scaling`
-    /// (`fit`), and `hdr` (`off`). Each key may appear once.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut display = None;
-        let mut source = None;
-        let mut mode = None;
-        let mut scaling = None;
-        let mut hdr = None;
-        for field in value.split(',') {
-            let (key, text) = field
-                .split_once('=')
-                .ok_or_else(|| DisplayConfigError::InvalidField(field.to_owned()))?;
-            let duplicate = match key {
-                "display" => display.replace(text.parse()?).is_some(),
-                "source" => source.replace(text.parse()?).is_some(),
-                "mode" => mode.replace(text.parse()?).is_some(),
-                "scaling" => scaling
-                    .replace(
-                        text.parse::<OutputScaling>()
-                            .map_err(|_| DisplayConfigError::InvalidScaling(text.to_owned()))?,
-                    )
-                    .is_some(),
-                "hdr" => hdr.replace(text.parse()?).is_some(),
-                _ => return Err(DisplayConfigError::InvalidField(field.to_owned())),
-            };
-            if duplicate {
-                return Err(DisplayConfigError::DuplicateField(key.to_owned()));
-            }
-        }
-        Ok(Self {
-            display: display.ok_or(DisplayConfigError::MissingDisplay)?,
-            source: source.unwrap_or(DisplayOutputSource::Program),
-            mode: mode.unwrap_or_default(),
-            scaling: scaling.unwrap_or_default(),
-            hdr: hdr.unwrap_or_default(),
-        })
-    }
-}
-
-/// An invalid display-output configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DisplayConfigError {
-    InvalidText(String),
-    InvalidMode(String),
-    InvalidSelector(String),
-    InvalidSource(String),
-    InvalidScaling(String),
-    InvalidHdr(String),
-    InvalidField(String),
-    DuplicateField(String),
-    MissingDisplay,
-    Empty,
-    TooMany { maximum: usize, actual: usize },
-    DuplicateSelector(DisplaySelector),
-}
-
-impl fmt::Display for DisplayConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidText(text) => write!(
-                formatter,
-                "display text `{text}` must be 1..={MAX_DISPLAY_TEXT_BYTES} bytes without commas or control characters"
-            ),
-            Self::InvalidMode(text) => write!(
-                formatter,
-                "invalid display mode `{text}`; expected WIDTHxHEIGHT[@HZ]"
-            ),
-            Self::InvalidSelector(text) => write!(
-                formatter,
-                "invalid display selector `{text}`; expected id:<id>, name:<name>, or index:<n>"
-            ),
-            Self::InvalidSource(text) => write!(
-                formatter,
-                "invalid display source `{text}`; expected program, preview, or output:<id>"
-            ),
-            Self::InvalidScaling(text) => write!(
-                formatter,
-                "invalid scaling `{text}`; expected fit, fill, stretch, or 1:1"
-            ),
-            Self::InvalidHdr(text) => {
-                write!(formatter, "invalid hdr `{text}`; expected off or auto")
-            }
-            Self::InvalidField(text) => write!(
-                formatter,
-                "invalid display output field `{text}`; expected display=, source=, mode=, scaling=, or hdr="
-            ),
-            Self::DuplicateField(key) => {
-                write!(formatter, "display output field `{key}` is repeated")
-            }
-            Self::MissingDisplay => formatter.write_str("display output requires display="),
-            Self::Empty => formatter.write_str("no display outputs are configured"),
-            Self::TooMany { maximum, actual } => write!(
-                formatter,
-                "{actual} display outputs configured; at most {maximum} are supported"
-            ),
-            Self::DuplicateSelector(selector) => write!(
-                formatter,
-                "two display outputs select the same display `{selector}`"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for DisplayConfigError {}
-
 /// A validated, ordered set of one through [`MAX_DISPLAY_OUTPUTS`] outputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisplayOutputSet(Vec<DisplayOutputConfig>);
 
 impl DisplayOutputSet {
-    /// Validates count and rejects two outputs with the same selector.
+    /// Validates count and rejects two outputs that claim the same display
+    /// (see [`DisplaySelector::conflicts_with`]).
     ///
     /// # Errors
     ///
@@ -551,9 +124,11 @@ impl DisplayOutputSet {
                 actual: outputs.len(),
             });
         }
-        let mut selectors = BTreeSet::new();
-        for output in &outputs {
-            if !selectors.insert(output.display.to_string()) {
+        for (index, output) in outputs.iter().enumerate() {
+            if outputs[..index]
+                .iter()
+                .any(|earlier| earlier.display.conflicts_with(&output.display))
+            {
                 return Err(DisplayConfigError::DuplicateSelector(
                     output.display.clone(),
                 ));
@@ -565,74 +140,6 @@ impl DisplayOutputSet {
     #[must_use]
     pub fn outputs(&self) -> &[DisplayOutputConfig] {
         &self.0
-    }
-}
-
-/// Why an output is not currently showing on a display.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum WaitReason {
-    /// No connected display matches the output.
-    DisplayAbsent,
-    /// The matching display is claimed by an earlier output.
-    DisplayInUse,
-    /// More than one connected display has the output's name and none has its id.
-    AmbiguousName,
-    /// The last enumeration failed; the output keeps waiting until it succeeds.
-    EnumerationFailed,
-}
-
-impl WaitReason {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::DisplayAbsent => "display-absent",
-            Self::DisplayInUse => "display-in-use",
-            Self::AmbiguousName => "ambiguous-name",
-            Self::EnumerationFailed => "enumeration-failed",
-        }
-    }
-}
-
-/// Why an output presents SDR.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum HdrState {
-    /// SDR was requested.
-    Sdr,
-    /// HDR was requested but the display reports no HDR capability.
-    SdrDisplayNotCapable,
-    /// HDR was requested but the platform does not report HDR capability.
-    SdrCapabilityUnknown,
-    /// HDR was requested and the display is capable, but the presenter is SDR-only.
-    SdrPresenterLimited,
-    /// HDR is presented.
-    Hdr,
-}
-
-impl HdrState {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Sdr => "sdr",
-            Self::SdrDisplayNotCapable => "sdr-display-not-capable",
-            Self::SdrCapabilityUnknown => "sdr-capability-unknown",
-            Self::SdrPresenterLimited => "sdr-presenter-limited",
-            Self::Hdr => "hdr",
-        }
-    }
-
-    #[must_use]
-    pub const fn resolve(
-        request: HdrRequest,
-        display: HdrCapability,
-        presenter_supports_hdr: bool,
-    ) -> Self {
-        match (request, display) {
-            (HdrRequest::Off, _) => Self::Sdr,
-            (HdrRequest::Auto, HdrCapability::Sdr) => Self::SdrDisplayNotCapable,
-            (HdrRequest::Auto, HdrCapability::Unknown) => Self::SdrCapabilityUnknown,
-            (HdrRequest::Auto, HdrCapability::Hdr) if presenter_supports_hdr => Self::Hdr,
-            (HdrRequest::Auto, HdrCapability::Hdr) => Self::SdrPresenterLimited,
-        }
     }
 }
 
@@ -670,7 +177,7 @@ impl DisplayOutputState {
 /// A state transition reported by [`DisplayOutputTracker::reconcile`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisplayOutputChange {
-    /// Zero-based output position in the [`DisplayOutputSet`].
+    /// Zero-based output position (the slot index).
     pub output: usize,
     pub previous: DisplayOutputState,
     pub current: DisplayOutputState,
@@ -703,16 +210,55 @@ struct TrackedOutput {
     state: DisplayOutputState,
 }
 
+impl TrackedOutput {
+    fn new(config: DisplayOutputConfig) -> Self {
+        // An id remembered with its name follows the display exactly as a
+        // bound output does: by id, then by unique name.
+        let binding = match &config.display {
+            DisplaySelector::IdOrName { id, name } => Some(Binding {
+                id: id.clone(),
+                name: name.clone(),
+            }),
+            _ => None,
+        };
+        Self {
+            config,
+            binding,
+            state: DisplayOutputState::Waiting(WaitReason::DisplayAbsent),
+        }
+    }
+}
+
 enum Match {
     Found(usize),
     Absent,
     Ambiguous,
 }
 
-/// The hot-plug and display-matching state machine for a [`DisplayOutputSet`].
+/// What [`DisplayOutputTracker::configure`] did to one slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisplayOutputReconfiguration {
+    /// Nothing changed.
+    Unchanged,
+    /// Only the source, scaling, mode, or HDR request changed; the output
+    /// keeps its display binding. Mode and HDR are re-resolved on the next
+    /// [`DisplayOutputTracker::reconcile`].
+    Retargeted,
+    /// The slot was empty or chose another display: it waits for its
+    /// display, which the next reconcile binds.
+    Rebinding,
+    /// The slot was cleared.
+    Cleared,
+}
+
+/// The hot-plug and display-matching state machine for up to
+/// [`MAX_DISPLAY_OUTPUTS`] output slots.
+///
+/// Slot `n` is output `n` of the [`DisplayOutputSet`] the tracker starts
+/// with; [`Self::configure`] fills, retargets, or clears a slot live.
 #[derive(Clone, Debug)]
 pub struct DisplayOutputTracker {
-    outputs: Vec<TrackedOutput>,
+    outputs: Vec<Option<TrackedOutput>>,
     presenter_supports_hdr: bool,
 }
 
@@ -724,16 +270,22 @@ impl DisplayOutputTracker {
             outputs: set
                 .0
                 .into_iter()
-                .map(|config| TrackedOutput {
-                    config,
-                    binding: None,
-                    state: DisplayOutputState::Waiting(WaitReason::DisplayAbsent),
-                })
+                .map(|config| Some(TrackedOutput::new(config)))
                 .collect(),
             presenter_supports_hdr,
         }
     }
 
+    /// A tracker with every slot empty.
+    #[must_use]
+    pub const fn empty(presenter_supports_hdr: bool) -> Self {
+        Self {
+            outputs: Vec::new(),
+            presenter_supports_hdr,
+        }
+    }
+
+    /// The number of slot positions, configured or not.
     #[must_use]
     pub fn len(&self) -> usize {
         self.outputs.len()
@@ -741,24 +293,32 @@ impl DisplayOutputTracker {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.outputs.is_empty()
+        self.outputs.iter().all(Option::is_none)
     }
 
     #[must_use]
     pub fn config(&self, output: usize) -> Option<&DisplayOutputConfig> {
-        self.outputs.get(output).map(|tracked| &tracked.config)
+        self.outputs
+            .get(output)
+            .and_then(Option::as_ref)
+            .map(|tracked| &tracked.config)
     }
 
     #[must_use]
     pub fn state(&self, output: usize) -> Option<&DisplayOutputState> {
-        self.outputs.get(output).map(|tracked| &tracked.state)
+        self.outputs
+            .get(output)
+            .and_then(Option::as_ref)
+            .map(|tracked| &tracked.state)
     }
 
-    /// True once the output has been attached at least once.
+    /// True once the output has been attached at least once (or was
+    /// configured with a remembered id and name).
     #[must_use]
     pub fn is_bound(&self, output: usize) -> bool {
         self.outputs
             .get(output)
+            .and_then(Option::as_ref)
             .is_some_and(|tracked| tracked.binding.is_some())
     }
 
@@ -766,14 +326,58 @@ impl DisplayOutputTracker {
     pub fn set_source(&mut self, output: usize, source: DisplayOutputSource) -> bool {
         self.outputs
             .get_mut(output)
+            .and_then(Option::as_mut)
             .map(|tracked| tracked.config.source = source)
             .is_some()
+    }
+
+    /// Fills, retargets, or clears slot `output` (zero-based, below
+    /// [`MAX_DISPLAY_OUTPUTS`]) live.
+    ///
+    /// A configuration that chooses the same display keeps the binding, so
+    /// a source or scaling change never moves the output; another display
+    /// (or a newly filled slot) starts waiting and binds on the next
+    /// [`Self::reconcile`]. Out-of-range slots are ignored.
+    pub fn configure(
+        &mut self,
+        output: usize,
+        config: Option<DisplayOutputConfig>,
+    ) -> DisplayOutputReconfiguration {
+        if output >= MAX_DISPLAY_OUTPUTS {
+            return DisplayOutputReconfiguration::Unchanged;
+        }
+        if self.outputs.len() <= output {
+            self.outputs.resize_with(output + 1, || None);
+        }
+        let slot = &mut self.outputs[output];
+        match (slot.as_mut(), config) {
+            (None, None) => DisplayOutputReconfiguration::Unchanged,
+            (Some(_), None) => {
+                *slot = None;
+                DisplayOutputReconfiguration::Cleared
+            }
+            (Some(tracked), Some(config)) if tracked.config.display == config.display => {
+                if tracked.config == config {
+                    DisplayOutputReconfiguration::Unchanged
+                } else {
+                    tracked.config = config;
+                    DisplayOutputReconfiguration::Retargeted
+                }
+            }
+            (_, Some(config)) => {
+                *slot = Some(TrackedOutput::new(config));
+                DisplayOutputReconfiguration::Rebinding
+            }
+        }
     }
 
     /// Moves every active output to waiting after a failed enumeration.
     pub fn enumeration_failed(&mut self) -> Vec<DisplayOutputChange> {
         let mut changes = Vec::new();
-        for (index, tracked) in self.outputs.iter_mut().enumerate() {
+        for (index, slot) in self.outputs.iter_mut().enumerate() {
+            let Some(tracked) = slot else {
+                continue;
+            };
             let next = DisplayOutputState::Waiting(WaitReason::EnumerationFailed);
             if tracked.state != next {
                 changes.push(DisplayOutputChange {
@@ -801,7 +405,10 @@ impl DisplayOutputTracker {
         let bindings: Vec<Option<DisplayId>> = self
             .outputs
             .iter()
-            .map(|tracked| tracked.binding.as_ref().map(|binding| binding.id.clone()))
+            .map(|slot| {
+                slot.as_ref()
+                    .and_then(|tracked| tracked.binding.as_ref().map(|binding| binding.id.clone()))
+            })
             .collect();
         let mut order: Vec<usize> = (0..self.outputs.len()).collect();
         order.sort_by_key(|&index| bindings[index].is_none());
@@ -812,7 +419,9 @@ impl DisplayOutputTracker {
                 .filter(|&(other, _)| other != index)
                 .filter_map(|(_, binding)| binding.as_ref())
                 .collect();
-            let tracked = &mut self.outputs[index];
+            let Some(tracked) = self.outputs[index].as_mut() else {
+                continue;
+            };
             let next = match find_display(tracked, &inventory, &reserved) {
                 Match::Absent => DisplayOutputState::Waiting(WaitReason::DisplayAbsent),
                 Match::Ambiguous => DisplayOutputState::Waiting(WaitReason::AmbiguousName),
@@ -887,6 +496,9 @@ fn find_display(
     match &tracked.config.display {
         DisplaySelector::Id(id) => by_id(id).map_or(Match::Absent, Match::Found),
         DisplaySelector::Name(name) => by_name(name, &[]),
+        DisplaySelector::IdOrName { id, name } => {
+            by_id(id).map_or_else(|| by_name(name, &[]), Match::Found)
+        }
         DisplaySelector::Index(index) => {
             if *index < inventory.len() {
                 Match::Found(*index)

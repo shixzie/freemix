@@ -406,3 +406,64 @@ fn a_hot_plugged_display_never_takes_a_bound_output_away_by_index() {
     assert_eq!(waiting(&outputs, 0), Some(WaitReason::DisplayInUse));
     assert!(!outputs.is_bound(0));
 }
+
+#[test]
+fn slots_configure_live_keeping_the_binding_unless_the_display_changes() {
+    use fm_io_api::display::DisplayOutputReconfiguration as Change;
+    let displays = [display("a", "A", 0), display("b", "B", 1920)];
+    let mut outputs = DisplayOutputTracker::empty(false);
+    assert!(outputs.is_empty());
+    assert_eq!(outputs.configure(1, None), Change::Unchanged);
+    assert_eq!(
+        outputs.configure(1, Some(config("display=id:b,source=preview"))),
+        Change::Rebinding
+    );
+    assert_eq!(waiting(&outputs, 1), Some(WaitReason::DisplayAbsent));
+    outputs.reconcile(&displays);
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("b"));
+    assert_eq!(outputs.config(0), None);
+
+    // Same display, other fields: retargeted in place, still bound.
+    assert_eq!(
+        outputs.configure(1, Some(config("display=id:b,source=program,scaling=fill"))),
+        Change::Retargeted
+    );
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("b"));
+    assert_eq!(outputs.reconcile(&displays), Vec::new());
+    assert_eq!(
+        outputs.configure(1, Some(config("display=id:b,source=program,scaling=fill"))),
+        Change::Unchanged
+    );
+    // Another display rebinds on the next reconcile.
+    assert_eq!(
+        outputs.configure(1, Some(config("display=id:a"))),
+        Change::Rebinding
+    );
+    outputs.reconcile(&displays);
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("a"));
+    assert_eq!(outputs.configure(1, None), Change::Cleared);
+    assert!(outputs.is_empty());
+    assert_eq!(
+        outputs.configure(MAX_DISPLAY_OUTPUTS, Some(config("display=id:a"))),
+        Change::Unchanged
+    );
+}
+
+#[test]
+fn an_id_with_a_name_binds_by_id_then_falls_back_to_the_unique_name() {
+    let remembered = DisplayOutputConfig::program_on(DisplaySelector::IdOrName {
+        id: id("old-id"),
+        name: "Wall".into(),
+    });
+    let mut outputs = DisplayOutputTracker::empty(false);
+    outputs.configure(0, Some(remembered.clone()));
+    // The id is gone (a renumbered platform id): the unique name binds.
+    outputs.reconcile(&[display("a", "Desk", 0), display("new-id", "Wall", 1920)]);
+    assert_eq!(active_id(&outputs, 0).as_deref(), Some("new-id"));
+
+    let mut outputs = DisplayOutputTracker::empty(false);
+    outputs.configure(0, Some(remembered));
+    // The id wins over another display that has the name.
+    outputs.reconcile(&[display("x", "Wall", 0), display("old-id", "Renamed", 1920)]);
+    assert_eq!(active_id(&outputs, 0).as_deref(), Some("old-id"));
+}

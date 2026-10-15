@@ -205,6 +205,23 @@ impl StudioRuntime {
         }
     }
 
+    /// Asks the server for its connected displays (Protocol 2.42); the
+    /// reply updates the replicated inventory. Returns whether the request
+    /// went out; one that cannot be sent is dropped.
+    pub(crate) fn request_display_inventory(&mut self) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let request_id = format!(
+            "studio-displays-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_display_inventory_request(fm_protocol::DisplayInventoryRequest { request_id })
+                .is_ok()
+    }
+
     /// Records that the server refused or dropped preview `request_id`.
     pub(crate) fn note_preview_failure(&mut self, request_id: &str) {
         self.preview_failed = Some(request_id.to_owned());

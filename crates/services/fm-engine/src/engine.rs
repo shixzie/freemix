@@ -334,6 +334,13 @@ pub enum EngineCommand {
         output: OutputId,
         affected: bool,
     },
+    /// Configures (`Some`) or clears (`None`) one fullscreen display output
+    /// slot (OR-011). A project edit, undone by restoring the slot's
+    /// previous configuration; the daemon realizes it live.
+    SetDisplayOutput {
+        slot: fm_types::display::DisplayOutputSlot,
+        config: Option<Box<fm_types::display::DisplayOutputConfig>>,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -472,6 +479,13 @@ pub enum EngineEvent {
     FadeToBlackOutputChanged {
         output: OutputId,
         affected: bool,
+    },
+    /// A display output slot was configured or cleared (or the edit was
+    /// undone or redone) (OR-011); the slot afterwards is read from
+    /// [`ShowState::display_output`].
+    DisplayOutputChanged {
+        slot: fm_types::display::DisplayOutputSlot,
+        config: Option<Box<fm_types::display::DisplayOutputConfig>>,
     },
 }
 
@@ -1312,6 +1326,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::SceneLayer(_))
                 && !matches!(&command, EngineCommand::AudioMixer(_))
                 && !matches!(&command, EngineCommand::SetFadeToBlackOutput { .. })
+                && !matches!(&command, EngineCommand::SetDisplayOutput { .. })
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(&command, EngineCommand::Media(_))
@@ -1921,6 +1936,23 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetDisplayOutput { slot, config } = self.command {
+            state
+                .set_display_output(slot, config.as_deref().cloned())
+                .map_err(|error| match error {
+                    crate::ShowError::InvalidDisplayOutput(_, code @ "unknown_output") => {
+                        Rejection::new(RejectionCode::NotFound, format!("{error} ({code})"))
+                    }
+                    crate::ShowError::InvalidDisplayOutput(_, code @ "display_in_use") => {
+                        Rejection::new(RejectionCode::Conflict, format!("{error} ({code})"))
+                    }
+                    error => Rejection::new(RejectionCode::InvalidCommand, error.to_string()),
+                })?;
+            events.push(EngineEvent::DisplayOutputChanged { slot, config });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::AnimationPreset(edit) = self.command {
             crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
             events.push(EngineEvent::AnimationPresetsChanged(edit));
@@ -2233,6 +2265,7 @@ impl EngineMutation {
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetFadeToBlackOutput { .. }
+            | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2583,6 +2616,7 @@ fn apply_runtime(
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
+            | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2744,6 +2778,7 @@ fn apply_runtime(
         | EngineCommand::SceneLayer(_)
         | EngineCommand::AudioMixer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
@@ -2913,6 +2948,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SceneLayer(_)
         | EngineCommand::AudioMixer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)

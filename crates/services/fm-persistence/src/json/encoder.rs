@@ -116,6 +116,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::transition_favorite::write_transition_favorites(output, project.transition_favorites());
     super::input_lifecycle::write_input_lifecycle(output, project);
     super::audio_mixer::write_audio_mixer(output, project);
+    super::display_output::write_display_outputs(output, project);
     output.push_str("\n  },");
 }
 

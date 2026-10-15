@@ -1090,6 +1090,74 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::RemoteStatus { address } => remote::status(address)?,
         Command::RemoteDiagnostics { address } => remote::diagnostics(address)?,
+        Command::DisplayOutputSet {
+            path,
+            slot,
+            config,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetDisplayOutput {
+                slot,
+                config: Some(config),
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::DisplayOutputClear {
+            path,
+            slot,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetDisplayOutput { slot, config: None },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::DisplayOutputList { path } => {
+            let project = inspect_engine(&path)?;
+            // A local project has no presenter: every slot waits for one.
+            remote::print_display_outputs(project.engine.show().display_outputs().iter().map(
+                |(slot, config)| {
+                    (
+                        *slot,
+                        config,
+                        fm_protocol::WireDisplayOutputState::Waiting(
+                            fm_protocol::WaitReason::NoPresenter,
+                        ),
+                    )
+                },
+            ));
+        }
+        Command::RemoteDisplayOutputSet {
+            address,
+            slot,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetDisplayOutput { slot, config },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteDisplayOutputClear {
+            address,
+            slot,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::ClearDisplayOutput { slot },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteDisplayOutputList { address } => remote::display_outputs(address)?,
+        Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
         Command::RemoteAudioStrip {
             address,
             input,
@@ -1833,6 +1901,7 @@ fn engine_from_project(project: Project) -> AppResult<ProjectEngine> {
         )
     }))?;
     restore_input_audio_strips(&mut show, &project)?;
+    restore_display_outputs(&mut show, &project)?;
     let engine = Engine::new(show, project.settings().frame_rate, clock_domain());
     Ok(ProjectEngine { project, engine })
 }
@@ -2057,6 +2126,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_input_names(&mut project, snapshot.show())?;
     sync_input_audio_strips(&mut project, snapshot.show())?;
     sync_audio_mixer(&mut project, snapshot.show())?;
+    sync_display_outputs(&mut project, snapshot.show())?;
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
     sync_input_lifecycle(&mut project, snapshot.show());
@@ -3288,6 +3358,7 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     let project = stored.project().clone();
     let inputs = project
@@ -3327,6 +3398,7 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
         show.set_stream_running(switcher_stream_target(target.id()), true)?;
     }
     restore_input_audio_strips(&mut show, &project)?;
+    restore_display_outputs(&mut show, &project)?;
     let mut realized = SwitcherState::new(input_ids, realized_program, realized_preview)?
         .with_streams(project.stream_targets().iter().map(|target| {
             (
@@ -3523,6 +3595,32 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
+    Ok(())
+}
+
+/// Seeds the show's display-output slots from the project (OR-011).
+fn restore_display_outputs(show: &mut ShowState, project: &Project) -> AppResult<()> {
+    for (&slot, config) in project.display_outputs() {
+        show.set_display_output(slot, Some(config.clone()))?;
+    }
+    Ok(())
+}
+
+/// Folds the show's display-output slots (OR-011) into the project. Every
+/// slot is cleared first, so a display moving between slots is never
+/// claimed twice.
+fn sync_display_outputs(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    if project.display_outputs() == show.display_outputs() {
+        return Ok(());
+    }
+    for slot in fm_types::display::DisplayOutputSlot::ALL {
+        project.clear_display_output(slot);
+    }
+    for (&slot, config) in show.display_outputs() {
+        project
+            .set_display_output(slot, config.clone())
+            .map_err(|error| format!("project cannot take display output {slot}: {error}"))?;
+    }
     Ok(())
 }
 
@@ -4657,6 +4755,9 @@ Usage:
   freemix-cli tbar-cancel <show.freemix> [--key <key>] [--expect <revision>]
   freemix-cli ftb <show.freemix> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli ftb-output <show.freemix> <output> <affected:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli display-output-set <show.freemix> <slot:1|2> <display=index:N|name:NAME|id:ID[,source=program|preview|output:ID][,mode=current|WxH[@HZ]][,scaling=fit|fill|stretch|1:1][,hdr=off|auto]> [--key <key>] [--expect <revision>]
+  freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
+  freemix-cli display-output-list <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
@@ -4709,6 +4810,10 @@ Usage:
   freemix-cli remote-tbar-cancel <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb <127.0.0.1:port> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb-output <127.0.0.1:port> <output> <affected:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli remote-display-output-set <127.0.0.1:port> <slot:1|2> <spec as above> [--key <key>] [--expect <revision>]
+  freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
+  freemix-cli remote-display-output-list <127.0.0.1:port>
+  freemix-cli remote-display-inventory <127.0.0.1:port>
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-record-start <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]

@@ -141,6 +141,7 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
             });
         }
     }
+    validate_display_outputs(project, errors);
     for &output in project.fade_to_black_excluded_outputs() {
         if !project
             .outputs()
@@ -1134,5 +1135,47 @@ fn validate_capabilities<'a>(
                 kind: ValidationErrorKind::MalformedCapabilityKey,
             });
         }
+    }
+}
+
+/// Display outputs (OR-011): usable selectors and modes, existing source
+/// outputs, and no display claimed by both slots.
+fn validate_display_outputs(project: &Project, errors: &mut Vec<ValidationError>) {
+    let outputs = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .collect::<Vec<_>>();
+    for (slot, config) in project.display_outputs() {
+        let others = project
+            .display_outputs()
+            .iter()
+            .filter(|(other, _)| *other < slot)
+            .map(|(other, config)| (*other, config));
+        let Err(error) = crate::check_display_output(*slot, config, &outputs, others) else {
+            continue;
+        };
+        errors.push(match error {
+            crate::SetDisplayOutputError::UnknownOutput(output) => ValidationError {
+                entity: None,
+                field: "display_outputs.source",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
+            },
+            crate::SetDisplayOutputError::DisplayInUse { .. } => ValidationError {
+                entity: None,
+                field: "display_outputs.display",
+                kind: ValidationErrorKind::DuplicateReference,
+            },
+            crate::SetDisplayOutputError::InvalidDisplay(_) => ValidationError {
+                entity: None,
+                field: "display_outputs.display",
+                kind: ValidationErrorKind::OutOfRange,
+            },
+            crate::SetDisplayOutputError::InvalidMode => ValidationError {
+                entity: None,
+                field: "display_outputs.mode",
+                kind: ValidationErrorKind::OutOfRange,
+            },
+        });
     }
 }

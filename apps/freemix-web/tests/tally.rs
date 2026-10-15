@@ -150,6 +150,8 @@ fn snapshot_locked(
     on_wire(WireMessage::Snapshot(SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Morning Show".to_owned(),

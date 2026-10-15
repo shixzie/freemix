@@ -46,7 +46,11 @@ use fm_engine::{
     Engine, EngineAcceptance, EngineInputAudioStripState, EngineRestoreState, EngineSnapshot,
     EngineTitle, ShowState,
 };
-use fm_io_api::display::{DisplayOutputConfig, DisplayOutputSet, DisplaySelector};
+#[cfg(feature = "native-media")]
+use fm_io_api::display::DisplayOutputSource;
+use fm_io_api::display::{
+    DisplayOutputConfig, DisplayOutputSet, DisplayOutputSlot, DisplaySelector,
+};
 use fm_model::{
     InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, MainMix,
     RecorderSlot as ModelRecorderSlot, StingerAudioPolicy as ModelStingerAudioPolicy,
@@ -682,11 +686,23 @@ struct NativeDaemon {
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
     camera_telemetry_frozen: bool,
-    /// Borderless fullscreen display outputs, one presentation per window.
+    /// Borderless fullscreen display outputs, one presentation per slot
+    /// window (empty without the windowed presenter).
     #[cfg(feature = "display-surface")]
     displays: Vec<program_surface::ProgramPresentation>,
+    /// The windowed presenter's live configuration and report channel.
+    #[cfg(feature = "display-surface")]
+    windowed: Option<program_surface::WindowedDisplays>,
     /// Display outputs presented to the diagnostic inventory host.
     display_inventory: Option<display_outputs::InventoryDisplayHost>,
+    /// What the presenter was last told to show (OR-011).
+    display_sync: display_outputs::DisplayOutputSync,
+    /// The Preview composite, rendered only while a display output shows
+    /// Preview.
+    latest_preview: Option<NativeTexture>,
+    /// Whether the last Preview composite failed (reported once per run of
+    /// failures).
+    preview_failed: bool,
 }
 
 #[cfg(feature = "native-media")]
@@ -3617,23 +3633,47 @@ fn resolve_project_output_texture<'a>(
 
 /// Resolves a display output's source to the realized texture for the
 /// current frame. Program is the first realized project output (or the
-/// unbound output); Preview is not composited by the native daemon and is
-/// refused when display outputs are configured.
+/// unbound output); Preview is the Preview composite rendered for display
+/// outputs.
 #[cfg(feature = "native-media")]
 fn resolve_display_source_texture<'a>(
-    source: fm_io_api::display::DisplayOutputSource,
+    source: DisplayOutputSource,
     project_outputs: &'a [NativeOutputFrame],
     unbound_output: Option<&'a NativeTexture>,
+    preview: Option<&'a NativeTexture>,
 ) -> Option<&'a NativeTexture> {
     match source {
-        fm_io_api::display::DisplayOutputSource::Program => {
+        DisplayOutputSource::Program => {
             resolve_project_output_texture(None, project_outputs, unbound_output)
         }
-        fm_io_api::display::DisplayOutputSource::Output(output) => {
+        DisplayOutputSource::Output(output) => {
             resolve_project_output_texture(Some(output), project_outputs, unbound_output)
         }
-        fm_io_api::display::DisplayOutputSource::Preview => None,
+        DisplayOutputSource::Preview => preview,
     }
+}
+
+/// `frame` as Preview shows it: the realized Preview input cut in, with no
+/// transition, Stinger, overlay, title, or Fade to Black. Scenes and media
+/// keep the frame's poses and transport positions.
+#[cfg(feature = "native-media")]
+fn preview_frame(mut frame: FrameResult, preview: InputId) -> FrameResult {
+    frame.program = fm_switcher::ProgramFrame {
+        primary: preview,
+        secondary: None,
+        transition_kind: None,
+        mix_numerator: 0,
+        mix_denominator: 1,
+        mix_start_numerator: 0,
+        mix_end_numerator: 0,
+    };
+    frame.fade_to_black = fm_switcher::FadeToBlackFrame::LIVE;
+    frame.overlays = std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty());
+    frame.titles.clear();
+    frame.events.clear();
+    frame.input_audio_strip_updates.clear();
+    frame.audio_mixer_updates.clear();
+    frame
 }
 
 #[cfg(feature = "native-media")]
@@ -4552,7 +4592,12 @@ impl NativeDaemon {
             camera_telemetry_frozen: false,
             #[cfg(feature = "display-surface")]
             displays: Vec::new(),
+            #[cfg(feature = "display-surface")]
+            windowed: None,
             display_inventory: None,
+            display_sync: display_outputs::DisplayOutputSync::default(),
+            latest_preview: None,
+            preview_failed: false,
         })
     }
 
@@ -4562,40 +4607,156 @@ impl NativeDaemon {
         stored: &StoredProject,
         context: NativeContext,
         outputs: Vec<program_surface::DisplayPresentationSetup>,
+        windowed: program_surface::WindowedDisplays,
         camera_helper: Option<&Path>,
     ) -> AppResult<Self> {
-        let set = DisplayOutputSet::new(
-            outputs
-                .iter()
-                .map(program_surface::DisplayPresentationSetup::config)
-                .cloned()
-                .collect(),
-        )
-        .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
         let mut native =
             Self::start_with_optional_context(store, stored, Some(context), camera_helper)?;
-        display_outputs::validate_sources(&set, native.project_plan.output_ids())
-            .map_err(AppFailure)?;
         native.displays = outputs
             .into_iter()
             .map(program_surface::ProgramPresentation::new)
             .collect();
+        native.windowed = Some(windowed);
         Ok(native)
     }
 
-    /// Presents `set` to the diagnostic display inventory read from
-    /// `inventory` instead of real windows.
-    fn attach_display_inventory(
-        &mut self,
-        set: DisplayOutputSet,
-        inventory: PathBuf,
-    ) -> AppResult<()> {
-        display_outputs::validate_sources(&set, self.project_plan.output_ids())
-            .map_err(AppFailure)?;
+    /// Presents the project's display outputs to the diagnostic display
+    /// inventory read from `inventory` instead of real windows.
+    #[allow(clippy::unnecessary_wraps)] // matches the non-native stub
+    fn attach_display_inventory(&mut self, inventory: PathBuf) -> AppResult<()> {
         self.display_inventory = Some(display_outputs::InventoryDisplayHost::new(
-            set,
             display_outputs::InventoryFile::new(inventory),
         ));
+        Ok(())
+    }
+
+    /// What the presenter last observed, or `None` without a presenter.
+    fn display_report(&self) -> Option<display_outputs::DisplayReport> {
+        #[cfg(feature = "display-surface")]
+        if let Some(windowed) = &self.windowed {
+            return Some(windowed.report());
+        }
+        self.display_inventory
+            .as_ref()
+            .map(|host| host.report().clone())
+    }
+
+    /// Brings the presenter to the project's display-output slots and tells
+    /// the control service what it shows (OR-011). Without a presenter every
+    /// slot keeps waiting with `no-presenter`.
+    fn sync_display_outputs(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+    ) -> AppResult<()> {
+        let desired = control.snapshot().snapshot.display_outputs.clone();
+        for (slot, config) in self.display_sync.changes(&desired) {
+            #[cfg(feature = "display-surface")]
+            if let Some(windowed) = &self.windowed {
+                if let Some(display) = self.displays.get_mut(slot.index()) {
+                    display.set_config(config.as_ref());
+                }
+                windowed.configure(slot, config.clone());
+            }
+            if let Some(host) = &mut self.display_inventory {
+                host.configure(slot, config);
+            }
+        }
+        let Some(report) = self.display_report() else {
+            return Ok(());
+        };
+        for (slot, state) in self.display_sync.wire_states(&report) {
+            control
+                .set_display_output_status(server, slot, state)
+                .map_err(|error| AppFailure(format!("display output {slot} status: {error}")))?;
+        }
+        control
+            .set_display_inventory(server, display_outputs::wire_inventory(&report))
+            .map_err(|error| AppFailure(format!("display inventory: {error}")))?;
+        Ok(())
+    }
+
+    /// Whether a configured display output shows Preview, which then needs
+    /// its own composite.
+    fn display_shows_preview(&self) -> bool {
+        #[cfg(feature = "display-surface")]
+        if self
+            .displays
+            .iter()
+            .any(|display| display.source() == Some(DisplayOutputSource::Preview))
+        {
+            return true;
+        }
+        self.display_inventory
+            .as_ref()
+            .is_some_and(|host| host.shows(DisplayOutputSource::Preview))
+    }
+
+    /// Composites Preview for display outputs: `frame` with the realized
+    /// Preview input cut in, without transitions, overlays, titles, or
+    /// Fade to Black, through the same compositor path Program uses. It runs
+    /// after Program reached its recorders, streams, and monitor.
+    fn render_display_preview(&mut self, frame: Option<FrameResult>, preview: InputId) {
+        let Some(frame) = frame else {
+            self.latest_preview = None;
+            return;
+        };
+        let frame = preview_frame(frame, preview);
+        match self
+            .runtime
+            .render_project_frame_result_with_stingers_blocking(
+                self.playback.registry(),
+                self.stingers.registry(),
+                &self.project_plan,
+                &frame,
+            ) {
+            Ok(texture) => {
+                self.latest_preview = Some(texture);
+                self.preview_failed = false;
+            }
+            Err(error) => {
+                if !self.preview_failed {
+                    eprintln!(
+                        "FREEMIXD_DISPLAY_PREVIEW\tv=1\terror={}",
+                        error.to_string().replace(['\t', '\n', '\r'], "_")
+                    );
+                }
+                self.preview_failed = true;
+                self.latest_preview = None;
+            }
+        }
+    }
+
+    /// Presents every display output's own source after the frame.
+    fn present_display_outputs(&mut self) -> AppResult<()> {
+        #[cfg(feature = "display-surface")]
+        for display in &mut self.displays {
+            // An empty slot's window stays hidden; its surface is still
+            // serviced every pass by `tick_if_due_collect`.
+            let Some(source) = display.source() else {
+                continue;
+            };
+            let Some(texture) = resolve_display_source_texture(
+                source,
+                &self.latest_project_outputs,
+                self.latest_output.as_ref(),
+                self.latest_preview.as_ref(),
+            ) else {
+                continue;
+            };
+            display
+                .present_latest(self.runtime.context(), texture)
+                .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
+        }
+        if let Some(host) = &mut self.display_inventory {
+            host.poll(&self.runtime, Instant::now());
+            let project_outputs = &self.latest_project_outputs;
+            let unbound = self.latest_output.as_ref();
+            let preview = self.latest_preview.as_ref();
+            host.present(&self.runtime, |source| {
+                resolve_display_source_texture(source, project_outputs, unbound, preview)
+            });
+        }
         Ok(())
     }
 
@@ -5863,6 +6024,7 @@ impl NativeDaemon {
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
         self.refresh_grades(control)?;
+        let shows_preview = self.display_shows_preview();
         self.project_plan
             .refresh_scene_models(|scene| control.scene_model(scene));
         let runtime = &self.runtime;
@@ -5877,9 +6039,13 @@ impl NativeDaemon {
         let mut live_audio = None;
         let mut fade_to_black_excluded = Vec::new();
         let mut monitor_frame = None;
+        let mut preview_source = None;
         let outcome = control.tick_with_realizer(server, |frame| {
             debug_assert_eq!(projected_frame, Some(frame));
             monitor_frame = Some((frame.frame.get(), frame.program.primary));
+            if shows_preview {
+                preview_source = Some(frame.clone());
+            }
             for &(input, state) in &frame.input_audio_strip_updates {
                 let strip = model_audio_strip_state(state);
                 master
@@ -5944,27 +6110,6 @@ impl NativeDaemon {
         self.install_stinger_mutation()?;
         self.projected_frame = None;
         self.pacer.advance()?;
-        #[cfg(feature = "display-surface")]
-        for display in &mut self.displays {
-            let Some(texture) = resolve_display_source_texture(
-                display.source(),
-                &self.latest_project_outputs,
-                self.latest_output.as_ref(),
-            ) else {
-                continue;
-            };
-            display
-                .present_latest(self.runtime.context(), texture)
-                .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
-        }
-        if let Some(host) = &mut self.display_inventory {
-            host.poll(&self.runtime, Instant::now());
-            let project_outputs = &self.latest_project_outputs;
-            let unbound = self.latest_output.as_ref();
-            host.present(&self.runtime, |source| {
-                resolve_display_source_texture(source, project_outputs, unbound)
-            });
-        }
         let stream_audio = if self.streams.is_empty() {
             None
         } else {
@@ -6014,6 +6159,11 @@ impl NativeDaemon {
                 &mut self.telemetry,
             );
         }
+        // Display outputs follow Program's own consumers, so a Preview
+        // composite never delays them.
+        let preview = control.snapshot().snapshot.realized_preview.to_domain();
+        self.render_display_preview(preview_source, preview);
+        self.present_display_outputs()?;
         let now = Instant::now();
         self.sample_local_output_status(now);
         self.advance_stream_routes(server)?;
@@ -6635,12 +6785,17 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    fn attach_display_inventory(
-        &mut self,
-        _set: DisplayOutputSet,
-        _inventory: PathBuf,
-    ) -> AppResult<()> {
+    fn attach_display_inventory(&mut self, _inventory: PathBuf) -> AppResult<()> {
         Err(AppFailure("native-media support was not compiled in".into()).into())
+    }
+
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    fn sync_display_outputs(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _server: &ServerIdentity,
+    ) -> AppResult<()> {
+        Ok(())
     }
 
     #[allow(clippy::unused_self)]
@@ -7425,7 +7580,8 @@ enum Command {
         /// True when display outputs open real borderless windows.
         fullscreen_program: bool,
         /// One or two display outputs, from `--display-output` or the
-        /// `--fullscreen-program [--fullscreen-display N]` shorthand.
+        /// `--fullscreen-program [--fullscreen-display N]` shorthand. They
+        /// replace the project's display-output slots on load.
         display_outputs: Vec<DisplayOutputConfig>,
         /// Diagnostic inventory file presenting display outputs headlessly.
         display_inventory: Option<PathBuf>,
@@ -7465,17 +7621,27 @@ fn main() -> ExitCode {
 }
 
 /// Resolves `--display-output`, the `--fullscreen-program
-/// [--fullscreen-display N]` shorthand, and `--diagnostic-display-inventory`
-/// into a validated list of at most two display outputs.
+/// [--fullscreen-display N]` shorthand, `--display-presenter`, and
+/// `--diagnostic-display-inventory` into a validated list of at most two
+/// display outputs.
 fn resolve_display_outputs(
     native_media: bool,
     fullscreen_program: bool,
     fullscreen_display: Option<usize>,
+    display_presenter: bool,
     mut display_outputs: Vec<DisplayOutputConfig>,
     display_inventory: Option<&Path>,
 ) -> AppResult<Vec<DisplayOutputConfig>> {
     if !display_outputs.is_empty() && !native_media {
         return Err(AppFailure("--display-output requires --native-media".into()).into());
+    }
+    if display_presenter && !native_media {
+        return Err(AppFailure("--display-presenter requires --native-media".into()).into());
+    }
+    if display_inventory.is_some() && !native_media {
+        return Err(
+            AppFailure("--diagnostic-display-inventory requires --native-media".into()).into(),
+        );
     }
     if !display_outputs.is_empty() && (fullscreen_program || fullscreen_display.is_some()) {
         return Err(AppFailure(
@@ -7490,21 +7656,13 @@ fn resolve_display_outputs(
             fullscreen_display.unwrap_or(0),
         )));
     }
-    if display_inventory.is_some() {
-        if fullscreen_program {
-            return Err(AppFailure(
-                "--diagnostic-display-inventory presents headlessly and cannot be combined \
-                 with --fullscreen-program"
-                    .into(),
-            )
-            .into());
-        }
-        if display_outputs.is_empty() {
-            return Err(AppFailure(
-                "--diagnostic-display-inventory requires --display-output".into(),
-            )
-            .into());
-        }
+    if display_inventory.is_some() && (fullscreen_program || display_presenter) {
+        return Err(AppFailure(
+            "--diagnostic-display-inventory presents headlessly and cannot be combined \
+             with --fullscreen-program or --display-presenter"
+                .into(),
+        )
+        .into());
     }
     if display_outputs.is_empty() {
         return Ok(display_outputs);
@@ -7537,6 +7695,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut fullscreen_display = None;
             let mut display_outputs: Vec<DisplayOutputConfig> = Vec::new();
             let mut display_inventory: Option<PathBuf> = None;
+            let mut display_presenter = false;
             let mut camera_helper = None;
             let mut record_program = None;
             let mut record_output = None;
@@ -7846,6 +8005,12 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         );
                     }
                     "--fullscreen-program" => fullscreen_program = true,
+                    "--display-presenter" if display_presenter => {
+                        return Err(
+                            AppFailure("duplicate option `--display-presenter`".into()).into()
+                        );
+                    }
+                    "--display-presenter" => display_presenter = true,
                     "--fullscreen-display" if fullscreen_display.is_some() => {
                         return Err(
                             AppFailure("duplicate option `--fullscreen-display`".into()).into()
@@ -8114,12 +8279,15 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 native_media,
                 fullscreen_program,
                 fullscreen_display,
+                display_presenter,
                 display_outputs,
                 display_inventory.as_deref(),
             )?;
-            // Real borderless windows open unless the outputs are presented
-            // to the diagnostic inventory host.
-            let fullscreen_program = !display_outputs.is_empty() && display_inventory.is_none();
+            // Real borderless windows open for `--display-output` and
+            // `--display-presenter` unless the outputs are presented to the
+            // diagnostic inventory host.
+            let fullscreen_program =
+                (!display_outputs.is_empty() || display_presenter) && display_inventory.is_none();
             if record_program.is_some() && !native_media {
                 return Err(AppFailure("--record-program requires --native-media".into()).into());
             }
@@ -8438,19 +8606,16 @@ fn run(command: Command) -> AppResult<()> {
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
-            let display_set = (!display_outputs.is_empty())
-                .then(|| DisplayOutputSet::new(display_outputs))
-                .transpose()
-                .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
+            if !display_outputs.is_empty() {
+                DisplayOutputSet::new(display_outputs.clone())
+                    .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
+            }
             if fullscreen_program {
-                let display_set = display_set.ok_or_else(|| {
-                    AppFailure("--fullscreen-program requires a display output".into())
-                })?;
                 run_fullscreen_program(
                     project,
                     listen,
                     once,
-                    display_set,
+                    display_outputs,
                     camera_helper,
                     record_program,
                     record_output,
@@ -8476,7 +8641,8 @@ fn run(command: Command) -> AppResult<()> {
                     if native_media {
                         NativeServeMode::Headless {
                             camera_helper,
-                            displays: display_set.zip(display_inventory),
+                            display_inventory,
+                            display_overrides: display_outputs,
                         }
                     } else {
                         NativeServeMode::Disabled
@@ -8514,7 +8680,7 @@ fn run_fullscreen_program(
     project: PathBuf,
     listen: SocketAddr,
     once: bool,
-    displays: DisplayOutputSet,
+    display_overrides: Vec<DisplayOutputConfig>,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
     record_output: Option<fm_types::OutputId>,
@@ -8527,25 +8693,23 @@ fn run_fullscreen_program(
     record_audio_bitrate_kbps: Option<u32>,
     record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
-    program_surface::run(
-        program_surface::ProgramWorkerOptions {
-            project,
-            listen,
-            once,
-            camera_helper,
-            record_program,
-            record_output,
-            record_program_2,
-            record_output_2,
-            record_wav,
-            record_segment_seconds,
-            record_bitrate_kbps,
-            record_bitrate_kbps_2,
-            record_audio_bitrate_kbps,
-            record_audio_bitrate_kbps_2,
-        },
-        displays,
-    )
+    program_surface::run(program_surface::ProgramWorkerOptions {
+        project,
+        listen,
+        once,
+        display_overrides,
+        camera_helper,
+        record_program,
+        record_output,
+        record_program_2,
+        record_output_2,
+        record_wav,
+        record_segment_seconds,
+        record_bitrate_kbps,
+        record_bitrate_kbps_2,
+        record_audio_bitrate_kbps,
+        record_audio_bitrate_kbps_2,
+    })
 }
 
 #[cfg(not(feature = "display-surface"))]
@@ -8554,7 +8718,7 @@ fn run_fullscreen_program(
     _project: PathBuf,
     _listen: SocketAddr,
     _once: bool,
-    _displays: DisplayOutputSet,
+    _display_overrides: Vec<DisplayOutputConfig>,
     _camera_helper: Option<PathBuf>,
     _record_program: Option<PathBuf>,
     _record_output: Option<fm_types::OutputId>,
@@ -8568,7 +8732,8 @@ fn run_fullscreen_program(
     _record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
     Err(AppFailure(
-        "--fullscreen-program and --display-output require a build with feature `display-surface`"
+        "--fullscreen-program, --display-output, and --display-presenter require a build with \
+         feature `display-surface`"
             .into(),
     )
     .into())
@@ -8578,17 +8743,35 @@ enum NativeServeMode {
     Disabled,
     Headless {
         camera_helper: Option<PathBuf>,
-        /// Display outputs presented to a diagnostic inventory host.
-        displays: Option<(DisplayOutputSet, PathBuf)>,
+        /// Presents the display outputs to a diagnostic inventory host.
+        display_inventory: Option<PathBuf>,
+        /// `--display-output` slots replacing the project's on load.
+        display_overrides: Vec<DisplayOutputConfig>,
     },
     #[cfg(feature = "display-surface")]
     Program(Box<ProgramServeSetup>),
+}
+
+impl NativeServeMode {
+    /// The `--display-output` slots replacing the project's on load.
+    fn display_overrides(&self) -> &[DisplayOutputConfig] {
+        match self {
+            Self::Disabled => &[],
+            Self::Headless {
+                display_overrides, ..
+            } => display_overrides,
+            #[cfg(feature = "display-surface")]
+            Self::Program(setup) => &setup.display_overrides,
+        }
+    }
 }
 
 #[cfg(feature = "display-surface")]
 struct ProgramServeSetup {
     context: NativeContext,
     outputs: Vec<program_surface::DisplayPresentationSetup>,
+    windowed: program_surface::WindowedDisplays,
+    display_overrides: Vec<DisplayOutputConfig>,
     camera_helper: Option<PathBuf>,
 }
 
@@ -8610,6 +8793,8 @@ fn serve_program_worker(
     once: bool,
     context: NativeContext,
     outputs: Vec<program_surface::DisplayPresentationSetup>,
+    windowed: program_surface::WindowedDisplays,
+    display_overrides: Vec<DisplayOutputConfig>,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
     record_output: Option<fm_types::OutputId>,
@@ -8634,6 +8819,8 @@ fn serve_program_worker(
         NativeServeMode::Program(Box::new(ProgramServeSetup {
             context,
             outputs,
+            windowed,
+            display_overrides,
             camera_helper,
         })),
         record_program,
@@ -8652,6 +8839,35 @@ fn serve_program_worker(
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,
     )
+}
+
+/// Replaces the project's display-output slots with the `--display-output`
+/// overrides, slot 1 first, when any are given (OR-011). The engine then
+/// starts with them and the next save keeps them.
+///
+/// # Errors
+///
+/// Returns an [`AppFailure`] when an override shows an output the project
+/// does not declare or shares a display with another.
+fn apply_display_output_overrides(
+    stored: StoredProject,
+    overrides: &[DisplayOutputConfig],
+) -> AppResult<StoredProject> {
+    if overrides.is_empty() {
+        return Ok(stored);
+    }
+    let mut project = stored.project().clone();
+    for slot in DisplayOutputSlot::ALL {
+        project.clear_display_output(slot);
+    }
+    for (slot, config) in DisplayOutputSlot::ALL.into_iter().zip(overrides) {
+        project
+            .set_display_output(slot, config.clone())
+            .map_err(|error| AppFailure(format!("--display-output {slot}: {error}")))?;
+    }
+    Ok(stored
+        .with_project(project)
+        .map_err(|error| AppFailure(format!("--display-output: {error}")))?)
 }
 
 /// Validates that every configured recorder slot's output selection names an
@@ -8833,6 +9049,7 @@ fn serve_inner(
 
     let store = ProjectStore::new(path)?;
     let project = load_and_recover(&store, recover_to_checkpoint)?;
+    let project = apply_display_output_overrides(project, mode.display_overrides())?;
     let bundle_assets = load_bundle_assets(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command
@@ -8859,11 +9076,12 @@ fn serve_inner(
         NativeServeMode::Disabled => None,
         NativeServeMode::Headless {
             camera_helper,
-            displays,
+            display_inventory,
+            display_overrides: _,
         } => {
             let mut native = NativeDaemon::start(&store, &project, camera_helper.as_deref())?;
-            if let Some((set, inventory)) = displays {
-                native.attach_display_inventory(set, inventory)?;
+            if let Some(inventory) = display_inventory {
+                native.attach_display_inventory(inventory)?;
             }
             Some(native)
         }
@@ -8872,6 +9090,8 @@ fn serve_inner(
             let ProgramServeSetup {
                 context,
                 outputs,
+                windowed,
+                display_overrides: _,
                 camera_helper,
             } = *setup;
             Some(NativeDaemon::start_with_program(
@@ -8879,6 +9099,7 @@ fn serve_inner(
                 &project,
                 context,
                 outputs,
+                windowed,
                 camera_helper.as_deref(),
             )?)
         }
@@ -9862,6 +10083,7 @@ fn restore_presets_favorites_and_media(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn restore_engine_with_titles(
     project: &StoredProject,
     bundle_assets: &BundleAssets,
@@ -9908,6 +10130,7 @@ fn restore_engine_with_titles(
     )?
     .with_streams(stream_inventory.clone())?;
     restore_input_audio_strips(&mut show, canonical)?;
+    restore_display_outputs(&mut show, canonical)?;
     let mut realized = SwitcherState::new(input_ids, realized_program, realized_preview)?
         .with_streams(stream_inventory)?;
     // The Fade-to-Black output selection is project configuration, seeded
@@ -10146,6 +10369,39 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
+    Ok(())
+}
+
+/// Seeds the show's display-output slots from the project (OR-011).
+fn restore_display_outputs(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
+    for (&slot, config) in project.display_outputs() {
+        show.set_display_output(slot, Some(config.clone()))?;
+    }
+    Ok(())
+}
+
+/// Folds the show's display-output slots (OR-011) into the stored project.
+/// Every slot is cleared first, so a display moving between slots is never
+/// claimed twice.
+fn sync_project_display_outputs(
+    project: &mut fm_model::Project,
+    show: &ShowState,
+) -> AppResult<()> {
+    if project.display_outputs() == show.display_outputs() {
+        return Ok(());
+    }
+    for slot in DisplayOutputSlot::ALL {
+        project.clear_display_output(slot);
+    }
+    for (&slot, config) in show.display_outputs() {
+        project
+            .set_display_output(slot, config.clone())
+            .map_err(|error| {
+                AppFailure(format!(
+                    "project cannot take display output {slot}: {error}"
+                ))
+            })?;
+    }
     Ok(())
 }
 
@@ -11915,6 +12171,8 @@ fn command_base_ticks(
         | CommandPayload::SceneLayer(_)
         | CommandPayload::AudioMixer(_)
         | CommandPayload::SetFadeToBlackOutput { .. }
+        | CommandPayload::SetDisplayOutput { .. }
+        | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -12088,6 +12346,7 @@ fn stored_project_with_receipts(
     sync_project_scenes(&mut project, show)?;
     sync_project_input_lifecycle(&mut project, show)?;
     sync_project_audio_mixer(&mut project, show)?;
+    sync_project_display_outputs(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
@@ -13032,7 +13291,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>] [--diagnostic-display-inventory FILE]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter] [--diagnostic-display-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -13043,8 +13302,8 @@ Every program segment is a crash-safe recording session with a <stem>.fmsession 
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 Fullscreen display selection is a zero-based index ordered by desktop position, then name, then platform display id; --fullscreen-program --fullscreen-display N is shorthand for --display-output display=index:N.\n\
---display-output opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display) and requires --native-media plus a build with feature `display-surface`. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|output:<output-id> (default program), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
---diagnostic-display-inventory FILE presents every --display-output headlessly to off-screen rasters sized to a tab-separated display inventory re-read from FILE (one display per line: id=, mode=, optional name=, x=, y=, modes=, hdr=; a missing file means no display is connected) and emits sampled FREEMIXD_DISPLAY_FRAME probes. It is a test and diagnostic aid, not an operator output.\n\
+--display-output replaces the project's display-output slots (slot 1, then slot 2) and opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display); it requires --native-media plus a build with feature `display-surface`. --display-presenter opens the project's own display-output slots the same way. Slots are project configuration edited live by set_display_output/clear_display_output commands (Protocol 2.42); a daemon without a presenter keeps them waiting with reason no-presenter. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|preview|output:<output-id> (default program; preview is composited only while an output shows it), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
+--diagnostic-display-inventory FILE presents the project's display outputs headlessly to off-screen rasters sized to a tab-separated display inventory re-read from FILE (one display per line: id=, mode=, optional name=, x=, y=, modes=, hdr=; a missing file means no display is connected) and emits sampled FREEMIXD_DISPLAY_FRAME probes. It is a test and diagnostic aid, not an operator output.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
 --web-listen enables the loopback-only `/v1/control` WebSocket listener and requires FREEMIXD_WEB_TOKEN.\n\
@@ -16857,6 +17116,78 @@ mod tests {
     }
 
     #[test]
+    fn display_presenter_opens_the_project_slots_in_windows() {
+        let Command::Serve {
+            fullscreen_program,
+            display_outputs,
+            display_inventory,
+            ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--native-media",
+            "--display-presenter",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        assert!(fullscreen_program, "the presenter opens real windows");
+        assert!(display_outputs.is_empty(), "the project's slots are kept");
+        assert_eq!(display_inventory, None);
+
+        // The diagnostic inventory host presents the project's slots alone.
+        let Command::Serve {
+            fullscreen_program,
+            display_outputs,
+            ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--native-media",
+            "--diagnostic-display-inventory",
+            "displays.tsv",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        assert!(!fullscreen_program);
+        assert_eq!(display_outputs, Vec::new());
+    }
+
+    #[test]
+    fn display_output_overrides_replace_the_project_slots_on_load() {
+        let slot = |number| DisplayOutputSlot::new(number).unwrap();
+        let stored = test_project();
+        let mut project = stored.project().clone();
+        project
+            .set_display_output(slot(2), "display=index:4".parse().unwrap())
+            .unwrap();
+        let stored = stored.with_project(project).unwrap();
+        let unchanged = apply_display_output_overrides(stored.clone(), &[]).unwrap();
+        assert_eq!(unchanged.project().display_outputs().len(), 1);
+
+        let overrides = ["display=index:0,source=preview"
+            .parse::<DisplayOutputConfig>()
+            .unwrap()];
+        let replaced = apply_display_output_overrides(stored.clone(), &overrides).unwrap();
+        assert_eq!(replaced.project().display_outputs().len(), 1);
+        assert_eq!(
+            replaced.project().display_output(slot(1)),
+            Some(&overrides[0])
+        );
+        assert_eq!(replaced.project().display_output(slot(2)), None);
+
+        let unknown = ["display=index:0,source=output:4242".parse().unwrap()];
+        let error = apply_display_output_overrides(stored, &unknown).unwrap_err();
+        assert!(
+            error.to_string().contains("output 4242 does not exist"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_invalid_display_output_combinations() {
         for (arguments, expected) in [
             (
@@ -16903,8 +17234,21 @@ mod tests {
                 "--display-output replaces --fullscreen-program",
             ),
             (
-                vec!["--native-media", "--diagnostic-display-inventory", "d.tsv"],
-                "--diagnostic-display-inventory requires --display-output",
+                vec!["--diagnostic-display-inventory", "d.tsv"],
+                "--diagnostic-display-inventory requires --native-media",
+            ),
+            (
+                vec!["--display-presenter"],
+                "--display-presenter requires --native-media",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--display-presenter",
+                    "--diagnostic-display-inventory",
+                    "d.tsv",
+                ],
+                "cannot be combined with --fullscreen-program or --display-presenter",
             ),
             (
                 vec![

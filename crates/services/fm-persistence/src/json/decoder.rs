@@ -77,6 +77,10 @@ struct ProjectDto {
     input_lifecycle: super::input_lifecycle::ParsedInputLifecycle,
     audio_groups: fm_model::AudioGroups,
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
+    display_outputs: Vec<(
+        fm_types::display::DisplayOutputSlot,
+        fm_types::display::DisplayOutputConfig,
+    )>,
 }
 
 struct EditLocks {
@@ -124,6 +128,7 @@ impl ProjectDto {
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
             fade_to_black_excluded_outputs:
                 super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
+            display_outputs: super::display_output::parse_display_outputs(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -215,6 +220,11 @@ impl ProjectDto {
         // Unknown outputs are reported by project validation.
         for output in self.fade_to_black_excluded_outputs {
             project.set_fade_to_black_output(output, false);
+        }
+        // Unknown source outputs and displays both slots claim are reported
+        // by project validation.
+        for (slot, config) in self.display_outputs {
+            project.restore_display_output(slot, config);
         }
         project
     }

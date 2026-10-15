@@ -378,6 +378,11 @@ pub enum SessionEvent {
     DiagnosticsResponse {
         response: DiagnosticsResponse,
     },
+    /// The daemon answered a display inventory request (Protocol 2.42).
+    /// The inventory is also in the replicated model.
+    DisplayInventory {
+        message: fm_protocol::DisplayInventoryMessage,
+    },
     /// One valid `title_preview_frame` part arrived for `request_id`. When
     /// `complete` is `true` it finished its group and the decoded image is
     /// available from [`TcpSession::latest_title_preview`].
@@ -693,6 +698,25 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::ScenePreviewRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for the connected displays (Protocol 2.42). The answer arrives
+    /// later as [`SessionEvent::DisplayInventory`] naming the same
+    /// `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_display_inventory_request(
+        &mut self,
+        request: fm_protocol::DisplayInventoryRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::DisplayInventoryRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1176,6 +1200,23 @@ impl TcpSession {
         result
     }
 
+    /// A durable gap the client cannot bridge disconnects so the next
+    /// connection takes a fresh snapshot.
+    fn durable_gap(
+        &mut self,
+        gap: fm_protocol::DurableGap,
+    ) -> Result<SessionEvent, TcpSessionError> {
+        let result = self.client.intake(WireMessage::DurableGap(gap.clone()));
+        if let Err(error) = result {
+            if matches!(error, ClientError::ResyncRequired { .. }) {
+                self.transition_disconnect();
+                return Ok(SessionEvent::DurableGap { gap });
+            }
+            return Err(self.client_error(error));
+        }
+        Ok(SessionEvent::DurableGap { gap })
+    }
+
     fn handle_received(
         &mut self,
         message: Option<WireMessage>,
@@ -1230,17 +1271,7 @@ impl TcpSession {
             }
             WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, false),
             WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, true),
-            WireMessage::DurableGap(gap) => {
-                let result = self.client.intake(WireMessage::DurableGap(gap.clone()));
-                if let Err(error) = result {
-                    if matches!(error, ClientError::ResyncRequired { .. }) {
-                        self.transition_disconnect();
-                        return Ok(SessionEvent::DurableGap { gap });
-                    }
-                    return Err(self.client_error(error));
-                }
-                Ok(SessionEvent::DurableGap { gap })
-            }
+            WireMessage::DurableGap(gap) => self.durable_gap(gap),
             WireMessage::Error(error)
                 if error.error.code == "server_shutting_down" && error.error.retryable =>
             {
@@ -1251,6 +1282,10 @@ impl TcpSession {
                 })
             }
             WireMessage::Error(error) => Ok(SessionEvent::ServerError(error)),
+            WireMessage::DisplayInventory(message) => {
+                self.intake(WireMessage::DisplayInventory(message.clone()))?;
+                Ok(SessionEvent::DisplayInventory { message })
+            }
             // Title, playlist, grade, title animation, title layout, scene
             // animation, scene layout, and animation preset states complete a
             // snapshot while
@@ -1279,7 +1314,8 @@ impl TcpSession {
             | WireMessage::Heartbeat(_)
             | WireMessage::CapabilityReport(_)
             | WireMessage::DiagnosticsRequest(_)
-            | WireMessage::DiagnosticsResponse(_) => {
+            | WireMessage::DiagnosticsResponse(_)
+            | WireMessage::DisplayInventoryRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

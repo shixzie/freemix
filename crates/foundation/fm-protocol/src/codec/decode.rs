@@ -152,6 +152,19 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "animation_preset_state" => {
             WireMessage::AnimationPresetState(decode_animation_preset_state(&mut fields)?)
         }
+        "display_inventory_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::DisplayInventoryRequest(crate::DisplayInventoryRequest { request_id })
+        }
+        "display_inventory" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::DisplayInventory(crate::DisplayInventoryMessage {
+                request_id,
+                inventory: super::display_output::decode_inventory(&mut fields)?,
+            })
+        }
         "media_state" => WireMessage::MediaState(MediaStateMessage {
             revision: fields.canonical_required("revision")?,
             frame: fields.canonical_required("frame")?,
@@ -455,6 +468,13 @@ fn decode_command_payload(
         "fade_to_black_output" => CommandPayload::SetFadeToBlackOutput {
             output: decode_output(fields, "output")?,
             affected: fields.boolean("affected")?,
+        },
+        "set_display_output" => CommandPayload::SetDisplayOutput {
+            slot: super::display_output::decode_slot(fields)?,
+            config: Box::new(super::display_output::decode_config(fields)?),
+        },
+        "clear_display_output" => CommandPayload::ClearDisplayOutput {
+            slot: super::display_output::decode_slot(fields)?,
         },
         layer if layer.starts_with("scene_layer_") => CommandPayload::SceneLayer(
             super::scene_layer::decode_scene_layer_edit(layer, fields)?.ok_or_else(|| {
@@ -1497,6 +1517,12 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         fade_to_black_excluded_outputs: super::audio_mixer::decode_excluded_outputs(
             &fields.required("fade_to_black_excluded_outputs")?,
         )?,
+        display_outputs: super::display_output::decode_entries(
+            &fields.required("display_outputs")?,
+        )?,
+        display_output_states: super::display_output::decode_states(
+            &fields.required("display_output_states")?,
+        )?,
     })
 }
 
@@ -2100,6 +2126,13 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             output: decode_output(fields, "output")?,
             affected: fields.boolean("affected")?,
         },
+        "display_output_changed" => {
+            let (slot, config) = super::display_output::decode_changed(fields)?;
+            EventPayload::DisplayOutputChanged {
+                slot,
+                config: config.map(Box::new),
+            }
+        }
         "scene_layout_changed" => {
             let operation = fields.required("operation")?;
             let edit = super::scene_layer::decode_scene_layer_edit(&operation, fields)?.ok_or(
@@ -2414,6 +2447,12 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         "superseded" => RuntimeLifecycleEvent::Superseded {
             by_revision: fields.parse_required("by_revision")?,
         },
+        "display_output_status" => RuntimeLifecycleEvent::DisplayOutputStatus(
+            super::display_output::decode_status(fields)?,
+        ),
+        "display_inventory" => RuntimeLifecycleEvent::DisplayInventory(
+            super::display_output::decode_inventory(fields)?,
+        ),
         "media" => RuntimeLifecycleEvent::Media {
             frame: fields.canonical_required("frame")?,
             events: decode_media_events(&fields.required("media_events")?)?,

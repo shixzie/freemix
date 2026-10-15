@@ -155,6 +155,7 @@ impl EngineCommand {
             | Self::AnimationPreset(_)
             | Self::SetTransitionFavorite { .. }
             | Self::SetFadeToBlackOutput { .. }
+            | Self::SetDisplayOutput { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
                 if edit.is_live() {
@@ -811,6 +812,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                 output: *output,
                 affected: switcher.fade_to_black_affects(*output),
             }),
+        EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
+            slot: *slot,
+            config: state.display_output(*slot).cloned().map(Box::new),
+        }),
         EngineCommand::SetTransitionFavorite { slot, .. } => state
             .transition_favorites()
             .get(*slot)

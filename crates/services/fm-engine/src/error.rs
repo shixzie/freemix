@@ -27,6 +27,9 @@ pub enum ShowError {
     InvalidAudioMixer(fm_model::AudioLabelError),
     /// A group fader is outside the strip gain range (AU-001).
     InvalidAudioGroupGain(i32),
+    /// A display output slot's configuration is refused (OR-011); carries
+    /// the [`fm_model::SetDisplayOutputError::code`].
+    InvalidDisplayOutput(fm_types::display::DisplayOutputSlot, &'static str),
     /// An output is not part of the show's output roster.
     UnknownOutput(OutputId),
     Switcher(SwitcherError),
@@ -60,6 +63,9 @@ impl fmt::Display for ShowError {
                 )
             }
             Self::InvalidAudioMixer(error) => error.fmt(formatter),
+            Self::InvalidDisplayOutput(slot, code) => {
+                write!(formatter, "display output {slot} is refused: {code}")
+            }
             Self::InvalidAudioGroupGain(gain) => {
                 write!(formatter, "audio group gain {gain} millidB is out of range")
             }

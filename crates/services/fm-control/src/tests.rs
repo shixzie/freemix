@@ -5914,3 +5914,219 @@ fn fade_to_black_output_selection_is_operator_controlled_and_undoable() {
         Vec::new()
     );
 }
+
+#[allow(clippy::unnecessary_box_returns)] // every caller wants the box
+fn display_config(text: &str) -> Box<fm_protocol::DisplayOutputConfig> {
+    Box::new(text.parse().unwrap())
+}
+
+fn display_slot(slot: u8) -> fm_protocol::DisplayOutputSlot {
+    fm_protocol::DisplayOutputSlot::new(slot).unwrap()
+}
+
+/// Protocol 2.42 (OR-011): display-output slots are padlocked, undoable
+/// project edits replicated in the snapshot, and the presenter's per-slot
+/// state and inventory are runtime events.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario from edit to runtime state
+fn display_outputs_are_undoable_project_edits_with_runtime_state() {
+    let mut control = mixer_service();
+    let set = |id: &str, slot: u8, text: &str| {
+        command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::SetDisplayOutput {
+                slot: display_slot(slot),
+                config: display_config(text),
+            },
+        )
+    };
+    let payload = CommandPayload::ClearDisplayOutput {
+        slot: display_slot(1),
+    };
+    assert_eq!(
+        control.required_classes(&payload).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            set("op", 1, "display=index:1,source=program"),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+
+    let admin = principal(Role::Admin);
+    let applied = control
+        .submit(&admin, set("one", 1, "display=index:1,source=output:8"), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::DisplayOutputChanged {
+            slot: display_slot(1),
+            config: Some(display_config("display=index:1,source=output:8")),
+        }
+    );
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(
+        snapshot.display_outputs,
+        vec![fm_protocol::DisplayOutputEntry {
+            slot: display_slot(1),
+            config: *display_config("display=index:1,source=output:8"),
+        }]
+    );
+    // No presenter has reported yet.
+    assert_eq!(
+        snapshot.display_output_states,
+        vec![fm_protocol::DisplayOutputStatus {
+            slot: display_slot(1),
+            state: fm_protocol::WireDisplayOutputState::Waiting(
+                fm_protocol::WaitReason::NoPresenter
+            ),
+        }]
+    );
+
+    // The same display in another slot, and an unknown output, are refused.
+    let in_use = control
+        .submit(&admin, set("two", 2, "display=index:1,source=program"), 0)
+        .unwrap();
+    assert_eq!(rejection_code(&in_use), Some("conflict"));
+    let unknown = control
+        .submit(
+            &admin,
+            set("three", 2, "display=index:2,source=output:9"),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
+
+    // The presenter reports the slot active, once.
+    let active = fm_protocol::WireDisplayOutputState::Active(fm_protocol::WireActiveDisplay {
+        id: fm_protocol::DisplayId::new("fake-1").unwrap(),
+        name: "Fake 1".to_owned(),
+        mode: "1920x1080@60000".parse().unwrap(),
+        mode_fallback: false,
+        hdr: fm_protocol::HdrState::Sdr,
+    });
+    let event = control
+        .set_display_output_status(&server_identity(), display_slot(1), active.clone())
+        .unwrap()
+        .expect("a changed state is published");
+    assert!(matches!(
+        &event.event,
+        RuntimeLifecycleEvent::DisplayOutputStatus(status)
+            if status.slot == display_slot(1) && status.state == active
+    ));
+    let line = fm_protocol::encode_line(&WireMessage::RuntimeEvent(event.clone())).unwrap();
+    assert_eq!(
+        fm_protocol::decode_line(&line).unwrap(),
+        WireMessage::RuntimeEvent(event)
+    );
+    assert!(
+        control
+            .set_display_output_status(&server_identity(), display_slot(1), active.clone())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        control.snapshot().snapshot.display_output_states[0].state,
+        active
+    );
+    // An unconfigured slot's state is kept but not published.
+    assert!(
+        control
+            .set_display_output_status(
+                &server_identity(),
+                display_slot(2),
+                fm_protocol::WireDisplayOutputState::Waiting(
+                    fm_protocol::WaitReason::DisplayAbsent
+                ),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(control.snapshot().snapshot.display_output_states.len(), 1);
+
+    let inventory = fm_protocol::DisplayInventory {
+        presenter: true,
+        error: None,
+        displays: Vec::new(),
+    };
+    assert!(
+        control
+            .set_display_inventory(&server_identity(), inventory.clone())
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        control
+            .set_display_inventory(&server_identity(), inventory.clone())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(control.display_inventory(), &inventory);
+
+    // The project padlock refuses the edit; undo restores the slot.
+    let locked = control
+        .submit(
+            &admin,
+            lock("lock", fm_protocol::EditLockScope::Project, true),
+            0,
+        )
+        .unwrap();
+    assert!(locked.is_accepted(), "{:?}", locked.output.result);
+    let refused = control
+        .submit(&admin, command("clear", "clear-key", payload.clone()), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("project_locked"));
+    let unlocked = control
+        .submit(
+            &admin,
+            lock("unlock", fm_protocol::EditLockScope::Project, false),
+            0,
+        )
+        .unwrap();
+    assert!(unlocked.is_accepted(), "{:?}", unlocked.output.result);
+    let cleared = control
+        .submit(&admin, command("clear2", "clear2-key", payload), 0)
+        .unwrap();
+    assert!(cleared.is_accepted(), "{:?}", cleared.output.result);
+    assert_eq!(
+        cleared.output.events[0].payload,
+        EventPayload::DisplayOutputChanged {
+            slot: display_slot(1),
+            config: None,
+        }
+    );
+    assert_eq!(control.snapshot().snapshot.display_outputs, Vec::new());
+    let undo = control
+        .submit(
+            &admin,
+            command(
+                "u",
+                "u",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undo.is_accepted(), "{:?}", undo.output.result);
+    assert_wire_exact(&control, &undo);
+    assert_eq!(
+        undo.output.events[0].payload,
+        EventPayload::DisplayOutputChanged {
+            slot: display_slot(1),
+            config: Some(display_config("display=index:1,source=output:8")),
+        }
+    );
+    // The configured slot keeps the presenter's last report.
+    assert_eq!(
+        control.snapshot().snapshot.display_output_states[0].state,
+        active
+    );
+}

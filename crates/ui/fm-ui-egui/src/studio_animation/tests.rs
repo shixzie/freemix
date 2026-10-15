@@ -90,6 +90,8 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
     let snapshot = SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -688,6 +690,8 @@ mod scenes {
         let snapshot = SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            display_outputs: Vec::new(),
+            display_output_states: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,

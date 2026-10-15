@@ -74,6 +74,8 @@ fn control() -> FakeControl {
     let snapshot = SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
         engine: engine.clone(),
         revision: 4,
         show_name: "show".into(),

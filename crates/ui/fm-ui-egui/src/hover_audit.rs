@@ -10,7 +10,9 @@
 //! lifecycle (colour labels, badges, the category filter, the tile menu's
 //! Category and Colour label submenus, and the Replace source, Import
 //! files, and Categories dialogs), the mixer's strip labels, pan knobs,
-//! group assignment and group strips, the Fade-to-Black output menu, and a
+//! group assignment and group strips, the Fade-to-Black output menu, the
+//! Fullscreen outputs dialog (with and without a display list or a
+//! presenter, with a draft, for a viewer, and locked), and a
 //! disconnected console) in English
 //! and Spanish, and inspects what egui itself recorded for the pass, so no
 //! drawing code has to opt in and a widget added without help cannot slip
@@ -238,6 +240,8 @@ fn model(variant: Variant) -> ClientModel {
             mixer
         },
         fade_to_black_excluded_outputs: vec![output(2)],
+        display_outputs: display_output_entries(),
+        display_output_states: display_output_states(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -581,6 +585,102 @@ struct Variant {
     locked: bool,
     black: bool,
     playing: bool,
+}
+
+/// OR-011: slot 1 shows Clean Feed on a connected display (remembered by
+/// id and name, at an exact mode, filled, HDR auto) and is active; slot 2
+/// shows Preview on a display named `Projector` that is unplugged.
+fn display_output_entries() -> Vec<fm_protocol::DisplayOutputEntry> {
+    use fm_protocol::{
+        DisplayId, DisplayMode, DisplayOutputConfig, DisplayOutputEntry, DisplayOutputSlot,
+        DisplayOutputSource, DisplaySelector, HdrRequest, ModeRequest,
+    };
+    vec![
+        DisplayOutputEntry {
+            slot: DisplayOutputSlot::new(1).unwrap(),
+            config: DisplayOutputConfig {
+                display: DisplaySelector::IdOrName {
+                    id: DisplayId::new("edid:left").unwrap(),
+                    name: "Studio Left".into(),
+                },
+                source: DisplayOutputSource::Output(output(2).to_domain()),
+                mode: ModeRequest::Exact(DisplayMode::new(1920, 1080, 59_940)),
+                scaling: fm_types::OutputScaling::Fill,
+                hdr: HdrRequest::Auto,
+            },
+        },
+        DisplayOutputEntry {
+            slot: DisplayOutputSlot::new(2).unwrap(),
+            config: DisplayOutputConfig {
+                source: DisplayOutputSource::Preview,
+                ..DisplayOutputConfig::program_on(DisplaySelector::Name("Projector".into()))
+            },
+        },
+    ]
+}
+
+fn display_output_states() -> Vec<fm_protocol::DisplayOutputStatus> {
+    use fm_protocol::{
+        DisplayId, DisplayMode, DisplayOutputSlot, DisplayOutputStatus, HdrState, WaitReason,
+        WireActiveDisplay, WireDisplayOutputState,
+    };
+    vec![
+        DisplayOutputStatus {
+            slot: DisplayOutputSlot::new(1).unwrap(),
+            state: WireDisplayOutputState::Active(WireActiveDisplay {
+                id: DisplayId::new("edid:left").unwrap(),
+                name: "Studio Left".into(),
+                mode: DisplayMode::new(1920, 1080, 59_940),
+                mode_fallback: false,
+                hdr: HdrState::Hdr,
+            }),
+        },
+        DisplayOutputStatus {
+            slot: DisplayOutputSlot::new(2).unwrap(),
+            state: WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent),
+        },
+    ]
+}
+
+/// `state` with the daemon's display inventory: two displays, or a daemon
+/// without a presenter.
+fn with_display_inventory(mut state: StudioUiState, presenter: bool) -> StudioUiState {
+    use fm_protocol::{
+        DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayMode, HdrCapability,
+    };
+    let mode = DisplayMode::new;
+    let displays = if presenter {
+        vec![
+            DisplayInventoryEntry {
+                id: DisplayId::new("edid:left").unwrap(),
+                name: "Studio Left".into(),
+                x: 0,
+                y: 0,
+                current_mode: mode(1920, 1080, 59_940),
+                modes: vec![mode(3840, 2160, 60_000), mode(1920, 1080, 59_940)],
+                hdr: HdrCapability::Hdr,
+            },
+            DisplayInventoryEntry {
+                id: DisplayId::new("edid:wall").unwrap(),
+                name: "Wall".into(),
+                x: 1920,
+                y: 0,
+                current_mode: mode(1280, 720, 50_000),
+                modes: vec![mode(1280, 720, 50_000)],
+                hdr: HdrCapability::Sdr,
+            },
+        ]
+    } else {
+        Vec::new()
+    };
+    if let Some(view) = state.view.as_mut() {
+        view.display_inventory = Some(DisplayInventory {
+            presenter,
+            error: None,
+            displays,
+        });
+    }
+    state
 }
 
 fn meters() -> AudioMetersMessage {
@@ -975,6 +1075,58 @@ fn scenes(language: Language) -> Vec<Scene> {
         ),
     ];
     for (name, open, state) in colour {
+        scenes.push(Scene::console(name, shell(open), state));
+    }
+    // OR-011: the Fullscreen outputs dialog with the display list, with an
+    // unsaved draft, before the list arrives, on a daemon without a
+    // presenter, for a viewer, and under the padlock.
+    let fullscreen: Vec<(&str, Configure, StudioUiState)> = vec![
+        (
+            "dialog/fullscreen-outputs",
+            &|shell| shell.display_outputs.open = true,
+            with_display_inventory(ready(true, Variant::default()), true),
+        ),
+        (
+            "dialog/fullscreen-outputs-draft",
+            &|shell| {
+                shell.display_outputs.open = true;
+                let mut draft = display_output_entries()[1].config.clone();
+                draft.scaling = fm_types::OutputScaling::OneToOne;
+                shell.display_outputs.drafts[1] = Some(draft);
+            },
+            with_display_inventory(ready(true, Variant::default()), true),
+        ),
+        (
+            "dialog/fullscreen-outputs-unlisted",
+            &|shell| shell.display_outputs.open = true,
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/fullscreen-outputs-no-presenter",
+            &|shell| shell.display_outputs.open = true,
+            with_display_inventory(ready(true, Variant::default()), false),
+        ),
+        (
+            "viewer/fullscreen-outputs",
+            &|shell| shell.display_outputs.open = true,
+            with_display_inventory(ready(false, Variant::default()), true),
+        ),
+        (
+            "operator/fullscreen-outputs-locked",
+            &|shell| shell.display_outputs.open = true,
+            with_display_inventory(
+                ready(
+                    true,
+                    Variant {
+                        locked: true,
+                        ..Variant::default()
+                    },
+                ),
+                true,
+            ),
+        ),
+    ];
+    for (name, open, state) in fullscreen {
         scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.extend(animation_scenes(locale));

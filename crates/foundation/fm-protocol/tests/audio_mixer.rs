@@ -12,7 +12,7 @@ use fm_protocol::{
     decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.41\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.42\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -129,6 +129,8 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer,
         fade_to_black_excluded_outputs: excluded,
+        display_outputs: Vec::new(),
+        display_output_states: Vec::new(),
     })
 }
 
@@ -154,7 +156,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_is_2_40() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 41));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
 }
 
 #[test]
@@ -305,7 +307,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%2CMics%252C%2520wireless%7E-12000%7E1%2CGroup%25203%7E0%7E0%2CGroup%25204%7E0%7E0\tinput_audio_labels=1%7EHost%257Emic%2C2%7EGuest\tfade_to_black_excluded_outputs=8\n"
+            "\taudio_groups=Group%25201%7E0%7E0%2CMics%252C%2520wireless%7E-12000%7E1%2CGroup%25203%7E0%7E0%2CGroup%25204%7E0%7E0\tinput_audio_labels=1%7EHost%257Emic%2C2%7EGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\n"
         ),
         "{line}"
     );
@@ -316,12 +318,13 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
         vec![output(8), output(wide)],
     ));
     assert!(
-        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\n")),
+        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tdisplay_outputs=\tdisplay_output_states=\n"
+        )),
         "{line}"
     );
     let line = round_trip(&snapshot(AudioMixerStatus::default(), Vec::new()));
     assert!(
-        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\n"),
+        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\n"),
         "{line}"
     );
 

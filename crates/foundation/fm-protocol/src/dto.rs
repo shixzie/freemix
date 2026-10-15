@@ -1738,6 +1738,18 @@ pub enum CommandPayload {
         output: WireOutputId,
         affected: bool,
     },
+    /// Configures one fullscreen display-output slot (Protocol 2.42,
+    /// OR-011; see [`crate::DisplayOutputConfig`]). A padlocked, undoable
+    /// project edit applied live.
+    SetDisplayOutput {
+        slot: crate::DisplayOutputSlot,
+        config: Box<crate::DisplayOutputConfig>,
+    },
+    /// Clears one fullscreen display-output slot (Protocol 2.42). A
+    /// padlocked, undoable project edit applied live.
+    ClearDisplayOutput {
+        slot: crate::DisplayOutputSlot,
+    },
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2145,6 +2157,10 @@ pub struct SnapshotMessage {
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40);
     /// empty when it fades every output.
     pub fade_to_black_excluded_outputs: Vec<WireOutputId>,
+    /// Every configured display-output slot, ascending (Protocol 2.42).
+    pub display_outputs: Vec<crate::DisplayOutputEntry>,
+    /// Every configured slot's runtime state, ascending (Protocol 2.42).
+    pub display_output_states: Vec<crate::DisplayOutputStatus>,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2269,6 +2285,12 @@ pub enum EventPayload {
         output: WireOutputId,
         affected: bool,
     },
+    /// A display-output slot was configured (`Some`) or cleared (`None`),
+    /// or that edit was undone or redone (Protocol 2.42).
+    DisplayOutputChanged {
+        slot: crate::DisplayOutputSlot,
+        config: Option<Box<crate::DisplayOutputConfig>>,
+    },
     /// An animation preset library edit (or its undo or redo) was accepted
     /// (Protocol 2.34).
     AnimationPresetChanged(AnimationPresetChange),
@@ -2379,6 +2401,10 @@ pub enum RuntimeLifecycleEvent {
         input: WireInputId,
         offline: Option<crate::InputOfflineReason>,
     },
+    /// A display-output slot's runtime state changed (Protocol 2.42).
+    DisplayOutputStatus(crate::DisplayOutputStatus),
+    /// The connected displays changed (Protocol 2.42).
+    DisplayInventory(crate::DisplayInventory),
 }
 
 /// Runtime progress references durable state but has an independent sequence.
@@ -2662,4 +2688,8 @@ pub enum WireMessage {
     ScenePreviewFrame(ScenePreviewFrameMessage),
     AnimationPresetState(AnimationPresetStateMessage),
     MediaState(crate::MediaStateMessage),
+    /// Asks for the current display inventory (Protocol 2.42).
+    DisplayInventoryRequest(crate::DisplayInventoryRequest),
+    /// Answers a [`crate::DisplayInventoryRequest`] (Protocol 2.42).
+    DisplayInventory(crate::DisplayInventoryMessage),
 }

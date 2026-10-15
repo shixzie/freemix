@@ -1193,6 +1193,202 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("{output} sigue en directo durante el fundido a negro; márquela para fundirla también"),
     ),
     (Msg::FtbOutputsMenu, t("Salidas del fundido a negro")),
+    (
+        Msg::MenuFullscreenOutputs,
+        t("Salidas a pantalla completa…"),
+    ),
+    (
+        Msg::MenuFullscreenOutputsHover,
+        t(
+            "Elija hasta dos pantallas que muestren Programa, Vista previa o una salida a pantalla completa, con modo, escalado y HDR",
+        ),
+    ),
+    (Msg::DisplayOutputsTitle, t("Salidas a pantalla completa")),
+    (
+        Msg::DisplayOutputsIntro,
+        t(
+            "Cada ranura muestra una fuente a pantalla completa en una pantalla. Las ranuras se guardan con el proyecto y vuelven cuando se reconecta una pantalla.",
+        ),
+    ),
+    (
+        Msg::DisplayInventoryCount,
+        plural("{count} pantalla conectada", "{count} pantallas conectadas"),
+    ),
+    (
+        Msg::DisplayInventoryNoPresenter,
+        t(
+            "Este servidor no abre ventanas a pantalla completa; las ranuras se guardan y esperan a un presentador",
+        ),
+    ),
+    (Msg::DisplayInventoryUnknown, t("Pantallas aún sin listar")),
+    (
+        Msg::DisplayInventoryError,
+        t("La lista de pantallas falló: {error}"),
+    ),
+    (Msg::DisplayRefresh, t("Actualizar pantallas")),
+    (
+        Msg::DisplayRefreshHover,
+        t("Volver a pedir al servidor sus pantallas conectadas"),
+    ),
+    (Msg::DisplaySlotHeading, t("Salida {slot}")),
+    (Msg::DisplayStatusOff, t("SIN USO")),
+    (Msg::DisplayStatusActive, t("ACTIVA")),
+    (Msg::DisplayStatusWaiting, t("EN ESPERA")),
+    (
+        Msg::DisplayStatusHover,
+        t("El estado en vivo de la salida {slot} según el servidor"),
+    ),
+    (Msg::DisplayNotConfigured, t("Sin configurar")),
+    (Msg::DisplayActiveDetail, t("En {name} a {mode}; {hdr}")),
+    (
+        Msg::DisplayModeFallback,
+        t("El modo pedido no está disponible, así que se usa el modo actual"),
+    ),
+    (Msg::DisplayUnsaved, t("Cambios sin guardar")),
+    (Msg::DisplayPick, t("Pantalla de destino")),
+    (
+        Msg::DisplayPickHover,
+        t(
+            "Elija la pantalla que ocupa esta salida; se recuerda por el identificador estable de la pantalla",
+        ),
+    ),
+    (Msg::DisplayNone, t("Elija una pantalla…")),
+    (Msg::DisplayEntry, t("{name} · {mode}")),
+    (
+        Msg::DisplayOptionHover,
+        t("{name} en {x}, {y}: ahora {mode}, {hdr}"),
+    ),
+    (Msg::DisplayNotConnected, t("{display} (no conectada)")),
+    (
+        Msg::DisplayNotConnectedHover,
+        t("Conservar la pantalla guardada {display}; la salida espera hasta que se conecte"),
+    ),
+    (Msg::HdrCapHdr, t("admite HDR")),
+    (Msg::HdrCapSdr, t("solo SDR")),
+    (Msg::HdrCapUnknown, t("capacidad HDR desconocida")),
+    (Msg::DisplaySource, t("Fuente")),
+    (
+        Msg::DisplaySourceHover,
+        t(
+            "Elija la imagen que muestra esta salida: Programa, Vista previa o la mezcla de una salida",
+        ),
+    ),
+    (Msg::DisplaySourceProgram, t("Bus de programa")),
+    (Msg::DisplaySourcePreview, t("Bus de vista previa")),
+    (
+        Msg::DisplaySourceOptionHover,
+        t("Mostrar {source} en esta pantalla"),
+    ),
+    (Msg::DisplayModeLabel, t("Modo")),
+    (
+        Msg::DisplayModeHover,
+        t(
+            "Mantener el modo actual de la pantalla o cambiarlo a un modo exacto; un modo que la pantalla no ofrece vuelve al actual",
+        ),
+    ),
+    (Msg::DisplayModeCurrent, t("Modo actual")),
+    (
+        Msg::DisplayModeCurrentHover,
+        t("Dejar la pantalla en el modo que ya usa"),
+    ),
+    (
+        Msg::DisplayModeOptionHover,
+        t("Cambiar la pantalla a {mode} mientras se muestra esta salida"),
+    ),
+    (Msg::DisplayScaling, t("Escalado")),
+    (
+        Msg::DisplayScalingHover,
+        t("Cómo se ajusta la imagen a la pantalla"),
+    ),
+    (Msg::ScalingFit, t("Ajustar dentro")),
+    (Msg::ScalingFill, t("Rellenar")),
+    (Msg::ScalingStretch, t("Estirar")),
+    (Msg::ScalingOneToOne, t("Píxeles 1:1")),
+    (
+        Msg::ScalingFitHover,
+        t("Mostrar toda la imagen con barras negras donde las formas difieren"),
+    ),
+    (
+        Msg::ScalingFillHover,
+        t("Cubrir toda la pantalla, recortando lo que sobra de la imagen"),
+    ),
+    (
+        Msg::ScalingStretchHover,
+        t("Estirar cada eje para cubrir la pantalla exactamente"),
+    ),
+    (
+        Msg::ScalingOneToOneHover,
+        t("Un píxel de imagen por píxel de pantalla, centrado; recorta o añade bordes"),
+    ),
+    (Msg::DisplayHdr, t("Alto rango (HDR)")),
+    (
+        Msg::DisplayHdrHover,
+        t(
+            "Desactivado mantiene SDR; Automático usa HDR cuando la pantalla y el presentador lo admiten ({capability})",
+        ),
+    ),
+    (Msg::HdrOff, t("Desactivado (SDR)")),
+    (Msg::HdrAuto, t("Automático")),
+    (Msg::HdrOffHover, t("Presentar siempre esta salida en SDR")),
+    (
+        Msg::HdrAutoHover,
+        t("Presentar en HDR cuando la pantalla y el presentador lo admiten; si no, en SDR"),
+    ),
+    (Msg::DisplayApply, t("Guardar y aplicar")),
+    (
+        Msg::DisplayApplyHover,
+        t("Guardar la salida {slot} en el proyecto y aplicarla en vivo (se puede deshacer)"),
+    ),
+    (Msg::DisplayRevert, t("Descartar cambios")),
+    (
+        Msg::DisplayRevertHover,
+        t("Descartar los cambios sin guardar de la salida {slot}"),
+    ),
+    (Msg::DisplayClear, t("Quitar")),
+    (
+        Msg::DisplayClearHover,
+        t("Quitar la salida {slot} del proyecto y cerrar su ventana (se puede deshacer)"),
+    ),
+    (
+        Msg::ReasonDisplayNoChanges,
+        t("esta salida no tiene cambios sin guardar"),
+    ),
+    (
+        Msg::ReasonDisplayNotConfigured,
+        t("esta salida no está configurada"),
+    ),
+    (
+        Msg::ReasonDisplayChooseDisplay,
+        t("elija primero una pantalla"),
+    ),
+    (
+        Msg::WaitDisplayAbsent,
+        t("En espera: la pantalla no está conectada"),
+    ),
+    (
+        Msg::WaitDisplayInUse,
+        t("En espera: otra salida usa esta pantalla"),
+    ),
+    (
+        Msg::WaitAmbiguousName,
+        t("En espera: varias pantallas comparten este nombre"),
+    ),
+    (
+        Msg::WaitEnumerationFailed,
+        t("En espera: no se pudo leer la lista de pantallas"),
+    ),
+    (
+        Msg::WaitNoPresenter,
+        t("En espera: este servidor no abre ventanas a pantalla completa"),
+    ),
+    (Msg::HdrStateSdr, t("rango estándar (SDR)")),
+    (Msg::HdrStateHdr, t("HDR activo")),
+    (Msg::HdrStateNotCapable, t("SDR, la pantalla no admite HDR")),
+    (Msg::HdrStateUnknown, t("SDR, capacidad HDR desconocida")),
+    (
+        Msg::HdrStatePresenterLimited,
+        t("SDR, el presentador aún no puede mostrar HDR"),
+    ),
     (Msg::DelayPrefix, t("RET")),
     (
         Msg::DelayHover,

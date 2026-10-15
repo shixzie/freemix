@@ -710,6 +710,16 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
+        // Display outputs follow the project's slots after every command
+        // and frame, and their presenter's state flows back as runtime
+        // events (OR-011).
+        let synced = native
+            .as_deref_mut()
+            .map(|native| native.sync_display_outputs(&mut control.borrow_mut(), authority));
+        if let Some(Err(error)) = synced {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
         if let Some(native) = native.as_deref_mut() {
             if let Some(progress) = progress.as_mut() {
                 progress.poll(control, store, durable);
@@ -1087,6 +1097,18 @@ impl Runtime<'_> {
             message @ (WireMessage::TitlePreviewRequest(_)
             | WireMessage::ScenePreviewRequest(_)) => {
                 self.exact_preview(peer, message, durable, native.as_deref())
+            }
+            // The presenter's last inventory (OR-011); a daemon without one
+            // answers that it has no presenter.
+            WireMessage::DisplayInventoryRequest(request) => {
+                let inventory = self.control.borrow().display_inventory().clone();
+                peer.reply(WireMessage::DisplayInventory(
+                    fm_protocol::DisplayInventoryMessage {
+                        request_id: request.request_id,
+                        inventory,
+                    },
+                ))?;
+                Ok(())
             }
             _ => {
                 peer.reply(error_message(

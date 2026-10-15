@@ -14,7 +14,7 @@ use fm_protocol::{
     WireSceneLayerSource, WireSceneLayerSpec, WireSceneLayout, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.41\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.42\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -144,7 +144,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 41));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
 }
 
 #[test]

@@ -902,6 +902,45 @@ pub enum Command {
     RemoteDiagnostics {
         address: SocketAddr,
     },
+    /// Configures one fullscreen display-output slot (OR-011).
+    DisplayOutputSet {
+        path: PathBuf,
+        slot: fm_types::display::DisplayOutputSlot,
+        config: Box<fm_types::display::DisplayOutputConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteDisplayOutputSet {
+        address: SocketAddr,
+        slot: fm_types::display::DisplayOutputSlot,
+        config: Box<fm_types::display::DisplayOutputConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Clears one fullscreen display-output slot (OR-011).
+    DisplayOutputClear {
+        path: PathBuf,
+        slot: fm_types::display::DisplayOutputSlot,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteDisplayOutputClear {
+        address: SocketAddr,
+        slot: fm_types::display::DisplayOutputSlot,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists the configured display-output slots and their state.
+    DisplayOutputList {
+        path: PathBuf,
+    },
+    RemoteDisplayOutputList {
+        address: SocketAddr,
+    },
+    /// Lists the displays a daemon's presenter sees (Protocol 2.42).
+    RemoteDisplayInventory {
+        address: SocketAddr,
+    },
     RemoteAudioStrip {
         address: SocketAddr,
         input: u128,
@@ -1229,6 +1268,8 @@ pub enum ArgsError {
         option: &'static str,
         conflicts: &'static str,
     },
+    /// A display-output spec does not parse (OR-011).
+    InvalidDisplayOutput(String),
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1244,6 +1285,9 @@ impl core::fmt::Display for ArgsError {
                 formatter.write_str("only hls:// stream destinations support --rung")
             }
             Self::InvalidLadder(error) => write!(formatter, "{error}"),
+            Self::InvalidDisplayOutput(error) => {
+                write!(formatter, "invalid display-output spec: {error}")
+            }
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -1523,6 +1567,13 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "ftb" => parse_local_fade_to_black(arguments),
         "remote-status" => parse_remote_status(arguments),
         "remote-diagnostics" => parse_remote_diagnostics(arguments),
+        display @ ("display-output-set"
+        | "display-output-clear"
+        | "display-output-list"
+        | "remote-display-output-set"
+        | "remote-display-output-clear"
+        | "remote-display-output-list"
+        | "remote-display-inventory") => parse_display_output(display, arguments),
         "remote-audio-strip" => parse_remote_audio_strip(arguments),
         "remote-rename" => parse_remote_rename(arguments),
         "remote-input-reorder" => parse_reorder(arguments, true),
@@ -3909,6 +3960,98 @@ fn parse_remote_status(mut arguments: impl Iterator<Item = String>) -> Result<Co
     let address = socket_address(&required(&mut arguments, "address")?)?;
     reject_extra(&mut arguments)?;
     Ok(Command::RemoteStatus { address })
+}
+
+fn display_output_slot(value: &str) -> Result<fm_types::display::DisplayOutputSlot, ArgsError> {
+    let slot = number::<u8>(value, "slot")?;
+    fm_types::display::DisplayOutputSlot::new(slot).ok_or(ArgsError::OutOfRange {
+        field: "slot",
+        minimum: 1,
+        maximum: 2,
+        value: u16::from(slot),
+    })
+}
+
+/// `display-output-set|clear|list` and their `remote-` forms, plus
+/// `remote-display-inventory` (OR-011, Protocol 2.42).
+fn parse_display_output(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command
+        .strip_prefix("remote-")
+        .unwrap_or(command)
+        .strip_prefix("display-")
+        .unwrap_or(command);
+    Ok(match (action, path, address) {
+        ("output-list", Some(path), _) => {
+            reject_extra(&mut arguments)?;
+            Command::DisplayOutputList { path }
+        }
+        ("output-list", None, Some(address)) => {
+            reject_extra(&mut arguments)?;
+            Command::RemoteDisplayOutputList { address }
+        }
+        ("inventory", None, Some(address)) => {
+            reject_extra(&mut arguments)?;
+            Command::RemoteDisplayInventory { address }
+        }
+        ("output-set", path, address) => {
+            let slot = display_output_slot(&required(&mut arguments, "slot")?)?;
+            let spec = required(&mut arguments, "display-output spec")?;
+            let config = Box::new(
+                spec.parse::<fm_types::display::DisplayOutputConfig>()
+                    .map_err(|error| ArgsError::InvalidDisplayOutput(error.to_string()))?,
+            );
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::DisplayOutputSet {
+                    path,
+                    slot,
+                    config,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteDisplayOutputSet {
+                    address,
+                    slot,
+                    config,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a display-output command names a target"),
+            }
+        }
+        ("output-clear", path, address) => {
+            let slot = display_output_slot(&required(&mut arguments, "slot")?)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            match (path, address) {
+                (Some(path), _) => Command::DisplayOutputClear {
+                    path,
+                    slot,
+                    key,
+                    expected_revision,
+                },
+                (None, Some(address)) => Command::RemoteDisplayOutputClear {
+                    address,
+                    slot,
+                    key,
+                    expected_revision,
+                },
+                (None, None) => unreachable!("a display-output command names a target"),
+            }
+        }
+        _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+    })
 }
 
 fn parse_remote_diagnostics(

@@ -429,6 +429,8 @@ mod tests {
         let mut snapshot = fm_protocol::SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            display_outputs: Vec::new(),
+            display_output_states: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,

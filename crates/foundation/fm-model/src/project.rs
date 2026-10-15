@@ -373,6 +373,11 @@ pub enum RemoveOutputError {
         output: OutputId,
         stream_target: StreamTargetId,
     },
+    /// A fullscreen display output shows the output (OR-011).
+    DisplayOutputReference {
+        output: OutputId,
+        slot: fm_types::display::DisplayOutputSlot,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -744,6 +749,10 @@ impl std::fmt::Display for RemoveOutputError {
                 formatter,
                 "output {output} is used by stream destination {stream_target}"
             ),
+            Self::DisplayOutputReference { output, slot } => write!(
+                formatter,
+                "output {output} is shown by display output {slot}"
+            ),
         }
     }
 }
@@ -864,7 +873,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(39);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(40);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -907,6 +916,8 @@ pub struct Project {
     input_lifecycle: BTreeMap<InputId, crate::InputLifecycle>,
     audio_groups: crate::AudioGroups,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
+    display_outputs:
+        BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
 }
 
 impl Project {
@@ -937,6 +948,7 @@ impl Project {
             input_lifecycle: BTreeMap::new(),
             audio_groups: crate::AudioGroups::default(),
             fade_to_black_excluded_outputs: BTreeSet::new(),
+            display_outputs: BTreeMap::new(),
         }
     }
 
@@ -1109,6 +1121,71 @@ impl Project {
     #[must_use]
     pub fn fade_to_black_affects(&self, output: OutputId) -> bool {
         !self.fade_to_black_excluded_outputs.contains(&output)
+    }
+
+    /// The configured fullscreen display outputs by slot (OR-011, schema
+    /// 40).
+    #[must_use]
+    pub const fn display_outputs(
+        &self,
+    ) -> &BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>
+    {
+        &self.display_outputs
+    }
+
+    /// One slot's display output, if configured.
+    #[must_use]
+    pub fn display_output(
+        &self,
+        slot: fm_types::display::DisplayOutputSlot,
+    ) -> Option<&fm_types::display::DisplayOutputConfig> {
+        self.display_outputs.get(&slot)
+    }
+
+    /// Configures `slot` and returns its previous configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::SetDisplayOutputError`] for an unknown source
+    /// output, a display the other slot claims, or an unusable display or
+    /// mode. Nothing changes on error.
+    pub fn set_display_output(
+        &mut self,
+        slot: fm_types::display::DisplayOutputSlot,
+        config: fm_types::display::DisplayOutputConfig,
+    ) -> Result<Option<fm_types::display::DisplayOutputConfig>, crate::SetDisplayOutputError> {
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.id)
+            .collect::<Vec<_>>();
+        crate::check_display_output(
+            slot,
+            &config,
+            &outputs,
+            self.display_outputs
+                .iter()
+                .map(|(slot, config)| (*slot, config)),
+        )?;
+        Ok(self.display_outputs.insert(slot, config))
+    }
+
+    /// Restores a persisted slot without checking it; problems are reported
+    /// by [`Self::validate`].
+    pub fn restore_display_output(
+        &mut self,
+        slot: fm_types::display::DisplayOutputSlot,
+        config: fm_types::display::DisplayOutputConfig,
+    ) {
+        self.display_outputs.insert(slot, config);
+    }
+
+    /// Clears `slot` and returns what it held.
+    pub fn clear_display_output(
+        &mut self,
+        slot: fm_types::display::DisplayOutputSlot,
+    ) -> Option<fm_types::display::DisplayOutputConfig> {
+        self.display_outputs.remove(&slot)
     }
 
     /// Chooses whether Fade to Black fades `output`. Unknown outputs are
@@ -3202,6 +3279,14 @@ impl Project {
             return Err(RemoveOutputError::StreamTargetReference {
                 output,
                 stream_target: target.id(),
+            });
+        }
+        if let Some((slot, _)) = self.display_outputs.iter().find(|(_, config)| {
+            config.source == fm_types::display::DisplayOutputSource::Output(output)
+        }) {
+            return Err(RemoveOutputError::DisplayOutputReference {
+                output,
+                slot: *slot,
             });
         }
         self.outputs.retain(|candidate| candidate.id != output);
