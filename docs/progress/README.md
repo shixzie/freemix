@@ -3,9 +3,10 @@
 Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
 supervised daemon runs in simulated mode and sends no audio meters, so a
-normal build reports `METERS UNAVAILABLE` with unlit meter wells. The UI
-round 7 captures were taken with a synthetic meter feed (see Reproducing):
-those meter levels are a Studio-side test signal, not daemon audio. The
+normal build reports `METERS UNAVAILABLE` with unlit meter wells. Every
+console capture (all of them regenerated on 2026-10-15, see below) was taken
+with a synthetic meter feed (see Reproducing): those meter levels are a
+Studio-side test signal, not daemon audio. The
 Preview/Program monitors show
 the daemon's encoded-fallback `monitor_frame` images (Protocol 2.21, at most
 640x360) letterboxed into each 16:9 well: in simulated mode each frame is a
@@ -264,9 +265,10 @@ the counts and lock chips.
 |---|---|
 | `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click, hovering the Program well: both wells show `SIMULATED` frames (Camera 1 Wide on Preview, Camera 2 Close on Program) under the solid `PREVIEW`/`PROGRAM` tally chips, the two tiles borrow those frames, and the tooltip states that Fade to Black is not composited. |
 | `studio-console-monitors-scene.png` | 1920x1080, the demo show as launched: Main Scene on Program (the simulated composite of its layers), Camera 2 Close on Preview, the neutral `CUT` and `FTB` keys, neutral `START` keys on both stopped recorders, the HLS ladder `NOT LIVE` with an amber-outlined `STOP`, and the lit meter bridge with Guest Remote's latched `CLIP` and `RESET CLIP` in the mixer header. |
+| `studio-console-production.png` | 1920x1080 `--role admin`, a realistic production state (2026-10-15): the looping playlist running on the Playlist tab (`PLAYING`, red `REMAINING -00:09:47:45` of `00:10:00:00`, entry 01 Guest Remote `ON AIR`, entry 02 `NEXT`) has cut Guest Remote to Program, where it airs with the saved library grade "Guest warm" (Warm look, saturation 110 %, applied by freemixd: the white and grey bars read beige); the animated Lower Third title (input 8, Bar/Accent/Name/Role In phase of 150 frames) was taken to O1 and sits composited over it (`O1` badge on the Program header); REC 2 is `RECORDING` (red `REC` badge, `1 / 2 RECORDING`); the HLS ladder stays `NOT LIVE`. The simulated Program tap showed the title already at its final pose 0.4 s after `TAKE` even with a five-second In phase, so this is the held state rather than a mid-In frame. |
 | `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, lit red `STOP` key, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` with its `TAKE OFF` key (composited into the Program frame and badged on the Program header), the HLS ladder `NOT LIVE` with its amber `STOP`, the stopped RTMP target with a neutral `START`. The manual transition block and the mixer strips show their simpler default: the `▸ DETAILS` and `▸ GAIN · BAL · DLY` disclosure keys keep the manual position/commit/cancel controls and the per-strip gain, balance, and delay fields out of view. |
 | `studio-console-hover-help.png` | The same session hovering `FADE`: the tooltip says what the key does in operator language and names its shortcut (`Fade Preview to Program over the shared duration  [F]`). Every interactive control carries help like this (RC-018). |
-| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the amber `T-BAR 46%` header, the amber status card naming the transition, sources, and position, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
+| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the amber `T-BAR 58%` header, and, although `▸ DETAILS` is still collapsed, the position field (`5833 bp`), the active `COMMIT`/`CANCEL` keys, and the amber status card naming the transition, sources (`Camera 2 Close ▶ Camera 1 Wide`), and position appear on their own while the transition is in flight; the automatic transition keys are dimmed. |
 | `studio-console-fade-to-black.png` | 1920x1080 after `FTB` (with REC 2 recording and O1 on air): the lit red `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with amber `NOT LIVE` chips and amber-outlined `STOP` keys, and the Output menu with `NOT LIVE` beside both Stop items and `RECORDING` beside Stop recorder 2. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
@@ -276,17 +278,17 @@ the counts and lock chips.
 | `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned, its short scale dropping the crowded `-48` label. |
 | `studio-console-compact-720.png` | 1280x720: the same compact layout at the smallest supported height; the console scrolls to reach the lower row. |
 | `studio-console-recording.png` | 1920x1080 with REC 2 `RECORDING` / lit `STOP`, both streams `NOT LIVE`, and the Stingers tab: eight empty slot cards (S1 outlined), the shared duration line, and the Configure card listing the defaults `ASSIGN` would apply. |
-| `studio-console-menu.png` | 1920x1080 with the Output menu open: transitions with their keys, Fade to black `B`, the disabled manual T-bar Commit/Cancel, recorder items with `STOPPED`, stream items with `NOT LIVE`/`OFF`, and the Stingers submenus. |
+| `studio-console-menu.png` | 1920x1080 with the Output menu open: transitions with their keys, Fade to black `B`, the disabled manual T-bar Commit/Cancel, recorder items with `STOPPED`, stream items with `NOT LIVE`/`OFF`, the Stingers submenus, and `Stinger slots…`. |
 | `studio-console-edit-menu.png` | 1920x1080, admin session after two renames and an undo, with Host Laptop's own padlock engaged: Edit › History with `Undo edit at REV 10  Ctrl+Z` and `Redo edit at REV 11  Ctrl+Shift+Z`, `Lock project edits` with `UNLOCKED` in the state column, and under Preview input (Camera 2 Close) `Move later` disabled with an amber `LOCKED` (its neighbour is locked). The enabled Undo/Redo keys sit beside the padlock in the top bar. |
 | `studio-console-locked.png` | The same session after `remote-lock on`: the amber `LOCKED` padlock with disabled Undo/Redo keys, `EDITS LOCKED` in the status bar and the input bank header (with a padlock badge), a padlock badge on every tile's name bar, and on the Stingers tab the Configure card's padlock badge with `ASSIGN`/`CLEAR` disabled. Switching, audio, and output keys stay live. |
-| `studio-console-mixer.png` | Mixer crop at 1920x1080 (admin) with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf, on the synthetic meter feed: expanded-scale meters with green/amber/red zones, bright RMS and dim peak segments, held-peak markers, Guest Remote's latched clip lamps and red `CLIP` readout, `RESET CLIP`, and the signed Master scale `0 … -60`. The synthetic levels ignore strip gain and mute. |
+| `studio-console-mixer.png` | Mixer crop at 1920x1080 (admin) after opening the header's `▾ GAIN · BAL · DLY` disclosure, with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf, on the synthetic meter feed: expanded-scale meters with green/amber/red zones, bright RMS and dim peak segments, held-peak markers, Guest Remote's latched clip lamps and red `CLIP` readout, `RESET CLIP`, and the signed Master scale `0 … -60`. The synthetic levels ignore strip gain and mute. |
 | `studio-console-2560.png` | 2560x1440: larger monitors, input tiles of about 290 px in four columns, mixer faders with the full 620 px travel, and 120-segment meters; the side panel stops at 560 px. |
 | `studio-console-portrait.png` | 1920x1080 with the demo project's video settings changed to 1080x1920 (Main Scene layers refitted): both wells grow to half the console height and pillarbox the 202x360 portrait frames; the tiles borrowing the frames pillarbox them too. |
-| `studio-console-shortcuts.png` | The keyboard reference opened with `?`: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z) and the new Console group (`? · F1`, `Esc`). |
+| `studio-console-shortcuts.png` | The keyboard reference opened with `?`: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z) and the Console group (`? · F1`, `Esc`, `Ctrl+,`, `Ctrl+G` for the Colour window, `Ctrl+Shift+A` for the Animation window, the scale keys). |
 | `studio-console-spanish-shortcuts.png` | The same reference in Spanish, opened with F1 during the `--lang es` session (REC 2 recording, O1 on air and open): `Atajos de teclado`, `Teclas activas`, the `Consola` group. |
 | `studio-console-health-strip.png` | 1920x1080 demo show hovering the `TX —` lamp: the status bar's health strip (`PGM FEED` and `METERS` green, `TX —` amber because the HLS ladder is desired but not live and the simulated daemon sends no transport samples) and its tooltip `Streams: 0 of 2 live · no recent transport samples to measure the rate · 0 A/V pairs dropped`. The key hints end in `? ALL SHORTCUTS`. |
-| `studio-console-layout-restored.png` | Studio restarted on a `studio.conf` saved after dragging the side panel edge to 480 px and hiding the mixer from View: the restored layout (input bank across the full width, 480 px side panel) with View open, the enabled `Reset layout` item and its tooltip, and the layout note. |
-| `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, Rename, Move, and Remove disabled, and the footer note that the operator session lacks `edit_project`. |
+| `studio-console-layout-restored.png` | Studio restarted on a `studio.conf` saved after dragging the side panel edge to 480 px and hiding the mixer from View: the restored layout (input bank across the full width, 480 px side panel) with View open (`Colour grade…  Ctrl+G`, `Animate title…  Ctrl+Shift+A`, the Panels checkboxes, the Advanced controls toggles, the Side panel tab choice, Language, 12-hour clock), and the enabled `Reset layout` item with its tooltip. |
+| `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program / `Grade…` enabled, Rename, Move, and Remove disabled, and the footer note that the operator session lacks `edit_project`. |
 | `studio-console-add-input.png` | 1920x1080 admin session after clicking the `+` tile: the Add input dialog with `SOLID COLOUR` selected, the suggested name "Solid Colour 1", the amber preset chosen (`#f0a828`), and the preview swatch tagged `INPUT 8` / `SILENT`. |
 | `studio-console-add-input-bars.png` | The same dialog for a second add with `COLOUR BARS`: the suggestion "Colour Bars 1", the bars preview tagged `INPUT 9`, no colour row. |
 | `studio-console-input-added.png` | After both adds and selecting Solid Colour 1 on Preview: tiles 8 (Solid Colour 1, `PVW`) and 9 (Colour Bars 1), the `+` tile with `9 / 256`, `9 SOURCES`, and a mixer strip for the new solid input. |
@@ -299,10 +301,10 @@ the counts and lock chips.
 | `studio-console-spanish-menu.png` | The same session with `Salida` open: every transition, Fade to black, T-bar, recorder (`Detener grabador 2` / `GRABANDO`), stream, and Stinger item worded in Spanish. |
 | `studio-console-spanish-input-refused.png` | 1920x1080 `--lang es --role admin` after asking to remove Camera 1 Wide: the localized refusal toast `Baja rechazada (conflict): «Camera 1 Wide» está en uso: a layer source of scene 100. Quite esa referencia sin conexión primero.` (the daemon's own reference detail is quoted as sent). |
 | `studio-console-overlay-details.png` | 1920x1080 with O1 on air and its card open: `TAKE` / `TAKE OFF`, the UPDATE/queue/transition/position/border keys, OUTPUTS, and the localized diagnostic line `O1 · desired: Camera 2 Close, active, opacity 255, queue 0, full, no border · confirmed: …` naming the source instead of its raw id. |
-| `studio-console-spanish-transition.png` | 1920x1080 `--lang es` after manual `FUNDIDO` and a T-bar drag: the Spanish status card, `COMPLETAR`/`CANCELAR`, and the hover tooltip with requested/realized position. |
-| `studio-console-spanish-stingers.png` | 1920x1080 `--lang es` with Fade to Black on (`PROGRAMA EN NEGRO`) and the Stingers tab: the slot cards, the Configure card (`ASIGNAR`/`VACIAR`, cut point in `fr`, preload, audio, fallback), and the S4 card tooltip. |
-| `studio-console-spanish-titles.png` | 1920x1080 `--lang es --role admin`, Titles tab after a second Studio (`--connect`) sent `UPDATE LIVE` with Name "M. Ruiz" while this console held the draft "Marta Ruiz López": the `CONFLICTO` banner, the `MÍO`/`SUYO` comparison for Name, `REBASAR` and `DESCARTAR TODO`, and the disabled `ACTUALIZAR EN VIVO` tooltip naming the server-side change. |
-| `studio-console-spanish-playlist.png` | 1920x1080 `--lang es --role admin`, the Lista tab after `remote-playlist … pause` and a Studio restart: `EN PAUSA`, the amber `RESTANTE` countdown held, `REANUDAR` lit amber in place of Pausa, `AL AIRE`/`SIGUIENTE`/`OMITIDO` row badges, and the Spanish editor and unavailable reason. |
+| `studio-console-spanish-transition.png` | 1920x1080 `--lang es` (REC 2 recording, O1 on air) after manual `FUNDIDO` and a T-bar drag: `T-BAR 54 %`, the Spanish status card (`Main Scene ▶ Camera 2 Close`), `COMPLETAR`/`CANCELAR`, and the T-bar's Spanish hover help (`T-bar manual: arrastre la palanca … y luego COMPLETAR o CANCELAR  [Esc]`). |
+| `studio-console-spanish-stingers.png` | 1920x1080 `--lang es` (REC 2 recording, O1 on air) with Fade to Black on (`PROGRAMA EN NEGRO`) and the Stingers tab: the slot cards, the Configure card (`ASIGNAR`/`VACIAR`, cut point in `fr`, preload, audio, fallback), and the S4 card tooltip. |
+| `studio-console-spanish-titles.png` | 1920x1080 `--lang es --role admin`, Titles tab after a second Studio (`--connect`) sent `UPDATE LIVE` with Name "M. Ruiz" while this console held the draft "Marta Ruiz Torres": the `CONFLICTO` banner, the `MÍO`/`SUYO` comparison for Name, `REBASAR` and `DESCARTAR TODO`, and the disabled `ACTUALIZAR EN VIVO` tooltip naming the server-side change. |
+| `studio-console-spanish-playlist.png` | 1920x1080 `--lang es --role admin`, the Lista tab after `remote-playlist … pause` and a Studio restart: `EN PAUSA`, the amber `RESTANTE` countdown held at `-00:00:44:36` (signed, like the on-air row), `REANUDAR` lit amber in place of Pausa, `AL AIRE`/`SIGUIENTE`/`OMITIDO` row badges, and the Spanish editor and unavailable reason. |
 | `studio-console-spanish-compact.png` | 1280x800 `--lang es` with the Stingers tab: long Spanish labels and details ellipsize inside fixed-width keys and chips instead of overflowing; tooltips carry the full text. |
 | `studio-console-spanish-add-input.png` | 1920x1080 `--lang es --role admin`: the Añadir entrada dialog with `COLOR SÓLIDO`, the suggested name "Color sólido 1", the amber preset, and the preview tagged `ENTRADA 8` / `SIN AUDIO`. |
 | `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
@@ -312,8 +314,26 @@ the counts and lock chips.
 | `studio-console-spanish-high-contrast.png` | The same high-contrast session with `--lang es`: the longer Spanish keys (`FUNDIDO`, `CORTINA`, `DETENER`, `RETIRAR`) fit their outlined keys at the larger label size. |
 | `studio-console-spanish-hover-help.png` | `--lang es`, REC 2 recording and O1 taken (`TOMAR`), hovering `FUNDIDO`: the Spanish help line with its shortcut (`Fundir Previo a Programa con la duración compartida  [F]`); the `▸ DETALLES` and `▸ GAN · BAL · RET` disclosure keys stand in for the hidden advanced controls. |
 | `color-panel.png` | The standalone colour grading panel (SW-019), rendered offscreen from the real widget by `cargo test -p fm-ui-egui write_color_panel_screenshot -- --ignored` (CPU rasterizer, no window). Top, Simple mode with the Warm look plus contrast: live look thumbnails of the preview picture, the gradient sliders, auto balance, the graded preview, and the RGB parade. Bottom, Advanced mode: the basic sliders with pivot, Lift/Gamma/Gain/Offset wheels with masters and reset keys, the master curve, the LUT slot (the LUT asset is not loaded, so previews say so), the wipe compare with its handle, and the vectorscope with 75% bar targets. |
-| `studio-color.png` | 1920x1080 `--role admin`, Guest Remote (colour bars) cut to Program, its tile menu `Grade…` (also View › Colour… or Ctrl+G) opening the Studio Colour window bound to input 4, then the Warm look clicked: the grade went to freemixd as a `grade_input_set` command (REV 8 to 9), the target now reads `04 · Guest Remote · graded` with the `ON AIR` status, the Program monitor shows the server-applied warm grade, and the panel preview (held last ungraded frame, so the grade is not applied twice) shows the draft applied locally on CPU. Above the panel: the Library combo/Apply, Save to library, LUT import path with its 32 KiB limit caption pointing to `freemix-cli grade-import-lut`. |
+| `studio-color.png` | 1920x1080 `--role admin` on the demo show, Guest Remote (colour bars) cut to Program, its tile menu `Grade…` (also View › Colour grade… or Ctrl+G) opening the Studio Colour window bound to input 4, then the Warm look clicked: the grade went to freemixd as a `grade_input_set` command (REV 10 to 11), the target now reads `04 · Guest Remote · graded` with the `ON AIR` status, the Program monitor shows the server-applied warm grade, and the panel preview (held last ungraded frame, so the grade is not applied twice) shows the draft applied locally on CPU. Above the panel: the Library combo/Apply, Save to library, LUT import path with its 32 KiB limit caption pointing to `freemix-cli grade-import-lut`. |
 | `studio-animation.png` | 1920x1080 `--role admin` (GX-011), the demo show plus title input 8 "Lower Third" imported from a four-element `lower-third.fmtitle` (Bar, Accent, Name, Role) whose In phase was built with `freemix-cli title-animation-preset` (slide-from-left, wipe, fade on Bar, Accent, Name; Role left unanimated) and `title-animation-stretch` to 30 frames: Titles tab, the row's `Animate…` (also its context menu, View › Animate title…, or Ctrl+Shift+A) opening the Studio Animation window bound to the replicated `title_animation_state` and `title_layout_state` (Protocol 2.30), resized by its corner (remembered as `layout.animation_size` in `studio.conf`; `Dock` moves it under the monitors). Simple mode lists the elements by their template names with kind icons (rectangle, text), Role reading `No animation · pick a preset`; the ruler was clicked at frame 10, then Role's `Preset…` picker opened and the pointer rested on `Slide from bottom`: the canvas shows `PRESET PREVIEW`, the server's exact preview of the hovered preset at mid-phase (frame 15) with Role sliding up, the element outlines and onion skins drawn over it, and the item's hover help. Nothing is applied until the item is clicked, which sends one `title_animation_preset` (one undo step). |
+
+Recapture of 2026-10-15 (Protocol 2.30, after UI round 11 and the
+Protocol 2.27-2.30 title phases, grading, Colour window, and Animation window
+work). Every `studio-console-*.png` capture was regenerated from one build
+of the current tree on the synthetic meter feed, so they all show the
+collapsed `▸ DETAILS` manual block and `▸ GAIN · BAL · DLY` mixer header
+(the manual and mixer captures show them expanded, as they are in use), the
+View menu's `Colour grade…` / `Animate title…` items and Advanced controls
+group, the tile menu's `Grade…` item, the Output menu's `Stinger slots…`
+item, the `Animate…` key on each Titles row, and the `Ctrl+G` /
+`Ctrl+Shift+A` rows of the keyboard reference. `-spanish-playlist` now shows
+the signed `RESTANTE` countdown. `studio-color.png` was recaptured on the
+demo show (with its stream targets) and `studio-console-production.png` was
+added: a graded input on air from a running playlist, an animated lower
+third on O1, and REC 2 recording. `color-panel.png` (re-rendered by its
+test, byte-identical) and `studio-animation.png` (captured at Protocol 2.30)
+were already current. The titles captures now import schema 31 templates
+(see Reproducing).
 
 UI round 11 (RC-018, discoverable operator UI) gave every interactive
 control hover help in every shipped language: one line saying what it does
@@ -340,8 +360,8 @@ flight). Both start hidden, are also offered under View › Advanced controls,
 and persist in `studio.conf` as `layout.mixer_details` and
 `layout.manual_details`. Overlay channel rows already open their detail
 cards on demand. This round regenerated `-overview` and added `-hover-help`
-and `-spanish-hover-help`; the other captures predate the disclosure keys and
-still show the mixer entry rows and the always-open manual block.
+and `-spanish-hover-help`; the 2026-10-15 recapture below brought every other
+console capture up to the disclosure keys.
 
 UI round 10 made the high-contrast theme a distinct accessibility mode. It
 now draws every surface pure black and separates panels, cards, keys, and
@@ -473,7 +493,10 @@ Preview.
 ## Reproducing
 
 ```sh
-cargo build -p freemix-cli -p freemixd -p freemix-studio
+# The 2026-10-15 captures used a separate target dir (CARGO_TARGET_DIR=/tmp/shots-target)
+# and the synthetic meter feed (see below).
+cargo build -p freemix-cli -p freemixd -p freemix-studio \
+    --features freemix-studio/capture-meter-signal
 
 # A show with inputs, a scene, an output, and stream targets.
 freemix-cli demo demo.freemix program.ppm
@@ -541,7 +564,8 @@ The edit-menu, locked, and mixer captures run Studio with `--role admin`
 back, `remote-rename … 3 "Host Laptop 2"`, `remote-undo`, `remote-lock … on
 --input 3`, click `Edit`; then `remote-lock … on` and click the `STINGERS`
 tab; then `remote-lock … off` and `remote-audio-strip` for inputs 1, 2, 4,
-5, and 6 before cropping the mixer. The 2560 capture sizes the screen and
+5, and 6, click the mixer header's `▸ GAIN · BAL · DLY` key, and crop the
+mixer (760x555 at +785+488). The 2560 capture sizes the screen and
 window to 2560x1440. The portrait capture edits the demo project's
 `project.settings.video` to 1080x1920 (and the Main Scene layer geometry to
 fit) in `project.json` before launching Studio.
@@ -587,7 +611,11 @@ confirms with `QUITAR`; the overlay-details capture clicks O1 `TAKE` and
 then O1's disclosure triangle.
 
 The titles captures use the demo show with input 5 renamed "Colour Fill"
-and two title inputs imported from `.fmtitle` sources (schema 28) drawn with
+and two title inputs imported from `.fmtitle` sources (schema 31: the document
+carries `"clocks": []` beside `template` and `fonts`, the template an
+`animation` block such as `{"timebase": "30/1", "revision": 0,
+"in_frames": 0, "out_frames": 0, "tracks": []}`, and elements no
+`animations` key) drawn with
 DejaVu Sans: `lower-third.fmtitle` (fields Name, Role, Bar colour, Score; a
 bar whose fill follows Bar colour, with the Name and Role text on it) and
 `score-bug.fmtitle` (Home, Away, Home score, Away score):
@@ -605,7 +633,8 @@ freemix-cli title-input-add demo.freemix --id 9 --name "Score Bug" \
 Both run Studio with `--role admin`. The English capture clicks `TITLES`,
 `PREVIEW TITLE`, and `TAKE`, types a new Role and Bar colour, previews again,
 and hovers `TAKE`. The Spanish capture takes the title the same way, types a
-Name draft, then starts a second Studio with `--connect 127.0.0.1:7000
+Name draft (ASCII: `xdotool type` drops characters such as `ó` that the Xvfb
+keymap lacks), then starts a second Studio with `--connect 127.0.0.1:7000
 --project-id <the project id in project.json> --role admin` (with its own
 `FREEMIX_STUDIO_PREFS`), changes Name there, clicks `UPDATE LIVE`, closes it,
 and hovers `ACTUALIZAR EN VIVO` in the first. The Preferences capture presses
@@ -641,6 +670,26 @@ Role's `Preset…` (x 710, y 789), rests the pointer on `Slide from bottom`
 (x 730, y 931, nudged by a pixel), and waits about four seconds for the
 exact preview and the hover help.
 
+The production capture (`studio-console-production.png`) builds the demo
+show with input 5 renamed "Colour Fill", the animation capture's template
+imported as input 8 with a Role In preset added and a longer In phase, and a
+library grade on Guest Remote:
+
+```sh
+T=asset://titles/lower-third.fmtitle
+freemix-cli title-animation-preset demo.freemix $T 4 --phase in --preset slide-from-bottom --frames 24
+freemix-cli title-animation-stretch demo.freemix $T --phase in --frames 150
+freemix-cli grade-set demo.freemix 4 --preset warm --saturation 1100 --save-as "Guest warm"
+```
+
+It runs Studio with `--role admin`, sets and starts a looping playlist whose
+first entry airs Guest Remote for ten minutes
+(`remote-playlist … set all 1:4:36000:cut:0:1,2:2:1200:fade:30:1,3:7:1800:fade:45:1,4:1:1500:wipe:20:1`,
+then `start`), starts REC 2, clicks `TITLES`, `PREVIEW TITLE`, and `TAKE`
+(O1), then clicks the `PLAYLIST` tab. Frames grabbed every 0.4 s after
+`TAKE` all showed the title at its final pose, so the capture holds the
+taken state.
+
 The hover-help captures take O1, move the pointer onto the `FADE` (or
 `FUNDIDO`) key with `xdotool mousemove`, nudge it by a pixel so egui sees a
 hover, and wait about three seconds for the tooltip before `import`.
@@ -657,7 +706,10 @@ shortcuts, and input-menu captures click `Output`, `Help` › `Keyboard
 shortcuts`, and right-click the third tile (`xdotool click 3`); keyboard input
 such as `Escape` needs `xdotool windowfocus "$WIN"` first because Xvfb runs
 without a window manager. The reconnecting capture runs
-`freemix-studio --connect 127.0.0.1:7399 --project-id 1` with nothing listening.
+`freemix-studio --connect 127.0.0.1:7399 --project-id 1` with nothing listening
+(add `--lang es` for the Spanish one). The Spanish transition capture hovers
+the T-bar handle after the drag; the Spanish Stingers capture clicks `FTB`,
+the `STINGERS` tab, and hovers the S4 card.
 The monitors captures start from the demo show (Main Scene on Program) for
 `-monitors-scene.png`, then click `CUT` and the Camera 1 Wide tile and hover
 the Program well for `-monitors.png`. The manual-transition capture clicks
