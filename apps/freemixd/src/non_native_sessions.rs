@@ -44,6 +44,13 @@ const OUTBOUND_CAPACITY: usize = 32;
 /// of waiting behind a queue filled with events.
 const REPLY_RESERVE: usize = 1;
 const LIVE_EVENTS_PER_PASS: usize = 8;
+/// The most bytes one raw peer is written per loop pass. A pass writes
+/// records until the socket would block or this budget is spent, so session
+/// throughput never depends on how long the native frame realized in the
+/// same pass took: a slow frame (a loaded GPU, display outputs) must not
+/// starve command results, heartbeat acknowledgements, or the lossy meter
+/// and monitor slots.
+const WRITE_BUDGET_PER_PASS: u64 = 1024 * 1024;
 /// The handshake permission that makes a Studio peer monitor-frame eligible.
 const VIEW_STATUS_PERMISSION: &str = "view_status";
 
@@ -139,6 +146,29 @@ struct Peer {
     /// A live event taken from the subscription that met transient
     /// backpressure; it is queued first on a later pass.
     deferred_live: Option<WireMessage>,
+    /// Bytes written to the raw socket so far, so a pass can tell whether
+    /// the last write made progress.
+    written: u64,
+}
+
+/// Counts the bytes a raw peer's socket accepts.
+struct Counted<'a, W> {
+    inner: &'a mut W,
+    written: &'a mut u64,
+}
+
+impl<W: Write> Write for Counted<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        *self.written = self
+            .written
+            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// A reply waiting to be queued.
@@ -282,6 +312,7 @@ impl Peer {
             lossy: LossyRecords::default(),
             held_result: None,
             deferred_live: None,
+            written: 0,
         })
     }
 
@@ -772,7 +803,7 @@ pub(super) fn run(
                 close[index] = dropping(peer.id, "initial_sync_refused");
                 continue;
             }
-            match write_peer(peer) {
+            match write_peer_pass(peer) {
                 WriteOutcome::Pending => {}
                 WriteOutcome::HandshakeResponseWritten => {
                     if once && once_peer.is_none() {
@@ -1538,8 +1569,12 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
         let Transport::Raw(stream) = &mut peer.transport else {
             unreachable!("raw transport checked above")
         };
+        let mut stream = Counted {
+            inner: stream,
+            written: &mut peer.written,
+        };
         let complete = match &mut record.write {
-            OutboundWrite::Raw(write) => write.write_once(stream),
+            OutboundWrite::Raw(write) => write.write_once(&mut stream),
             OutboundWrite::Web(_) => unreachable!("raw peers only queue raw writes"),
         };
         match complete {
@@ -1554,6 +1589,31 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
                 WriteOutcome::Pending
             }
             Err(_) => WriteOutcome::Failed,
+        }
+    }
+}
+
+/// Writes `peer` for one loop pass: a web peer one step, as before; a raw
+/// peer record after record (queued records first, then the lossy slots,
+/// each started record finished before another starts) until its socket
+/// would block, nothing is left, or [`WRITE_BUDGET_PER_PASS`] is spent.
+fn write_peer_pass(peer: &mut Peer) -> WriteOutcome {
+    let started = peer.written;
+    let mut outcome = WriteOutcome::Pending;
+    loop {
+        let before = peer.written;
+        match write_peer(peer) {
+            WriteOutcome::Pending => {}
+            WriteOutcome::HandshakeResponseWritten => {
+                outcome = WriteOutcome::HandshakeResponseWritten;
+            }
+            WriteOutcome::Failed => return WriteOutcome::Failed,
+        }
+        if peer.transport.is_web()
+            || peer.written == before
+            || peer.written - started >= WRITE_BUDGET_PER_PASS
+        {
+            return outcome;
         }
     }
 }
@@ -1583,7 +1643,11 @@ fn write_lossy(peer: &mut Peer) -> WriteOutcome {
     let Transport::Raw(stream) = &mut peer.transport else {
         return WriteOutcome::Failed;
     };
-    match peer.lossy.write_once(stream) {
+    let mut stream = Counted {
+        inner: stream,
+        written: &mut peer.written,
+    };
+    match peer.lossy.write_once(&mut stream) {
         Ok(()) => WriteOutcome::Pending,
         Err(error)
             if matches!(
@@ -2048,6 +2112,66 @@ mod tests {
         );
         records.write_once(&mut writer).unwrap();
         assert!(writer.ends_with(&meters));
+    }
+
+    /// Regression: a raw peer was written one record per loop pass, and a
+    /// pass also realizes a native frame. With frames slow (display outputs
+    /// on a software GPU) heartbeat acknowledgements waited behind capture
+    /// and stream status events until Studio gave up on the daemon, and the
+    /// lossy meter and monitor slots, written only once the queue was idle,
+    /// never reached it.
+    #[test]
+    fn one_pass_writes_every_queued_record_and_then_the_lossy_slots() {
+        let (mut peer, mut client) = active_eligible_peer();
+        for index in 0..5 {
+            peer.queue(&filler(index), Accounting::Raw).unwrap();
+        }
+        publish_audio_meters(std::slice::from_mut(&mut peer), meters_message());
+        publish_monitor_frame(
+            std::slice::from_mut(&mut peer),
+            MonitorTap::Program,
+            &monitor_group(MonitorTap::Program, 4),
+        );
+        assert!(matches!(write_peer_pass(&mut peer), WriteOutcome::Pending));
+        assert!(peer.outbound.is_empty());
+        assert!(peer.lossy.is_empty());
+        let expected = (0..5)
+            .map(|index| encode_line(&filler(index)).unwrap().into_bytes())
+            .chain([
+                encode_line(&WireMessage::AudioMeters(meters_message()))
+                    .unwrap()
+                    .into_bytes(),
+                monitor_group(MonitorTap::Program, 4),
+            ])
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(read_exact(&mut client, expected.len()), expected);
+    }
+
+    #[test]
+    fn a_pass_stops_at_its_write_budget_and_the_next_pass_continues() {
+        let (mut peer, mut client) = active_eligible_peer();
+        let large =
+            |index: usize| error_message("filler", &format!("{index}:{}", "x".repeat(40_000)));
+        let count = 32;
+        for index in 0..count {
+            peer.queue(&large(index), Accounting::Raw).unwrap();
+        }
+        let expected = (0..count)
+            .map(|index| encode_line(&large(index)).unwrap().into_bytes())
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(expected.len() as u64 > WRITE_BUDGET_PER_PASS);
+        let reader = thread::spawn(move || read_exact(&mut client, expected.len()) == expected);
+        assert!(matches!(write_peer_pass(&mut peer), WriteOutcome::Pending));
+        let longest = u64::try_from(fm_protocol::MAX_LINE_BYTES).unwrap();
+        assert!(peer.written <= WRITE_BUDGET_PER_PASS + longest);
+        assert!(!peer.outbound.is_empty(), "one pass wrote past its budget");
+        while !peer.outbound.is_empty() {
+            assert!(matches!(write_peer_pass(&mut peer), WriteOutcome::Pending));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(reader.join().unwrap());
     }
 
     #[test]

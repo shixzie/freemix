@@ -759,13 +759,13 @@ fn a_reopened_media_file_that_no_longer_plays_stays_offline() {
     close(&mut client, true);
     fs::rename(&parked, &clip_path).unwrap();
     close(&mut client, false);
-    let seeked = client.media(MediaOperation::Seek(MediaSeekTarget::Frame(10)));
-    assert!(seeked.transport.available, "{:?}", seeked.transport);
-    assert_eq!(seeked.transport.fault, None);
     assert_eq!(
         next_availability(&mut client, "the input back online"),
         None
     );
+    let seeked = client.media(MediaOperation::Seek(MediaSeekTarget::Frame(10)));
+    assert!(seeked.transport.available, "{:?}", seeked.transport);
+    assert_eq!(seeked.transport.fault, None);
     drop(client);
     drop(daemon);
 }

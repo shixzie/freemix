@@ -126,6 +126,10 @@ struct WorkerState {
     /// The input is closed (IN-026): the worker releases its decoder, and
     /// reopens the file once this clears.
     closed: bool,
+    /// How many times the input reopened. A close and reopen the worker did
+    /// not wake for in between (it was presenting a tick) still reopens
+    /// the file, which may have changed meanwhile.
+    reopened: u64,
     shutdown: bool,
 }
 
@@ -779,6 +783,9 @@ impl NativeMediaFiles {
         let mut state = worker.shared.lock();
         if state.closed != closed {
             state.closed = closed;
+            if !closed {
+                state.reopened = state.reopened.wrapping_add(1);
+            }
             state.request = None;
             drop(state);
             worker.shared.wake.notify_one();
@@ -880,6 +887,7 @@ fn run_worker(
     // without a player: the file did not open, and the input is offline.
     // Added live: the file opens first, as on reopening.
     let mut released = shared.lock().closed || open_live;
+    let mut reopened = shared.lock().reopened;
     let mut faulted = opened.is_none() && !released;
     let mut last_picture: Option<Arc<CpuVideoFrame>> = None;
     loop {
@@ -889,7 +897,7 @@ fn run_worker(
                 if state.shutdown {
                     return;
                 }
-                if state.closed != released {
+                if state.closed != released || state.reopened != reopened {
                     break;
                 }
                 if state.closed {
@@ -919,8 +927,9 @@ fn run_worker(
                         .unwrap_or_else(PoisonError::into_inner)
                 };
             }
-            if state.closed != released {
+            if state.closed != released || state.reopened != reopened {
                 released = state.closed;
+                reopened = state.reopened;
                 state.request = None;
                 state.completed = None;
                 if released {
@@ -933,6 +942,8 @@ fn run_worker(
                 // Reopening opens the file again; a file that no longer
                 // opens takes the input offline through its fault.
                 drop(state);
+                opened = None;
+                last_picture = None;
                 match reopen() {
                     Ok(player) => {
                         shared

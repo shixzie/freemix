@@ -47,9 +47,11 @@ use fm_persistence::{
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     DisplayInventoryRequest, DisplayOutputConfig, DisplayOutputSlot, EventPayload,
-    HandshakeRequest, Role, RuntimeLifecycleEvent, SnapshotMessage, WaitReason,
-    WireDisplayOutputState, WireInputId, WireMessage, decode_line, encode_line,
+    HandshakeRequest, HeartbeatMessage, MonitorFrameAssembler, MonitorTap, Role,
+    RuntimeLifecycleEvent, SnapshotMessage, WaitReason, WireDisplayOutputState, WireInputId,
+    WireMessage, decode_line, encode_line,
 };
+use fm_types::capture::CaptureSettings;
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
     ProjectId, SampleFormat, SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
@@ -75,16 +77,22 @@ fn input(value: u128) -> InputId {
 /// A 64x36 show with red input 1 on Program and two project outputs. A
 /// full-frame overlay of blue input 2 is on air and included only in output
 /// 9101 (Program, the first output), so output 9102 is a red clean feed.
-#[allow(clippy::too_many_lines)]
 fn save_project(path: &Path) {
-    let rate = FrameRate::new(25, 1).unwrap();
+    save_project_sized(path, 64, 36, 25, &[]);
+}
+
+/// [`save_project`]'s show at `width`x`height` and `fps`; every layer fills
+/// the picture.
+#[allow(clippy::too_many_lines)]
+fn save_project_sized(path: &Path, width: u32, height: u32, fps: u32, captures: &[&str]) {
+    let rate = FrameRate::new(fps, 1).unwrap();
     let mut project = Project::new(
         ProjectId::new(id(9_100)),
         "Native display outputs",
         ProjectSettings {
             frame_rate: rate,
             video: VideoFormat {
-                dimensions: VideoDimensions::new(64, 36).unwrap(),
+                dimensions: VideoDimensions::new(width, height).unwrap(),
                 frame_rate: rate,
                 pixel_format: PixelFormat::Rgba8,
                 scan: ScanMode::Progressive,
@@ -123,7 +131,7 @@ fn save_project(path: &Path) {
                 name: "Source".into(),
                 source: SourceRef::Input(input(index)),
                 enabled: true,
-                geometry: LayerGeometry::new(0, 0, 64, 36, Rotation::Deg0),
+                geometry: LayerGeometry::new(0, 0, width, height, Rotation::Deg0),
                 crop: None,
                 mask: None,
                 key: None,
@@ -156,6 +164,18 @@ fn save_project(path: &Path) {
         )),
         required_capabilities: Vec::new(),
     });
+    // Capture inputs (inputs 4 onwards) on the given device keys.
+    for (index, key) in (4..).zip(captures) {
+        project.add_input(Input {
+            id: input(index),
+            name: format!("Capture {index}"),
+            kind: InputKind::Device {
+                stable_key: (*key).into(),
+                capture: CaptureSettings::default(),
+            },
+            required_capabilities: Vec::new(),
+        });
+    }
     project.set_main_mix(MainMix::new(input(1), input(2)));
     let mut overlays = RuntimeOverlays::default();
     let channel = RuntimeOverlayChannel {
@@ -1034,4 +1054,283 @@ fn the_presenter_if_available_opens_with_a_window_system() {
     client.expect_status(one, |state| {
         matches!(state, WireDisplayOutputState::Active(_))
     });
+}
+
+/// How long a Studio-like session is held while display outputs present;
+/// the longest a heartbeat may wait for its acknowledgement and the longest
+/// gap between audio meter records or between Program monitor frames (Studio
+/// gives up on a daemon that leaves a heartbeat unacknowledged for five
+/// seconds); and the most realized frames one received meter record may
+/// stand for on average. The daemon meters every realized frame and a
+/// session that is written every loop pass receives nearly every one,
+/// however slow the host: the bound is the regression check that the
+/// session is not starved down to a record now and then.
+const HEALTH_HOLD: Duration = Duration::from_secs(30);
+const HEALTH_MAX_WAIT: Duration = Duration::from_secs(5);
+const HEALTH_HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
+const HEALTH_MAX_FRAMES_PER_METER: f64 = 2.0;
+const FULL_HD_LEFT: &str = "id=left\tname=Left\tx=0\ty=0\tmode=1920x1080@60";
+const FULL_HD_RIGHT: &str = "id=right\tname=Right\tx=1920\ty=0\tmode=1920x1080@50";
+
+/// What a held Studio session received.
+#[derive(Debug, Default)]
+struct HeldSession {
+    monitor_frames: u64,
+    meters: u64,
+    /// The realized frames of the first and last meter record received.
+    metered_frames: Option<(u64, u64)>,
+    heartbeats: u64,
+    slowest_ack: Duration,
+    longest_monitor_gap: Duration,
+    longest_meter_gap: Duration,
+}
+
+impl HeldSession {
+    /// Realized frames per received meter record.
+    #[allow(clippy::cast_precision_loss)] // counts far below 2^52
+    fn frames_per_meter(&self) -> f64 {
+        let (first, last) = self.metered_frames.unwrap_or_default();
+        (last - first) as f64 / self.meters.saturating_sub(1).max(1) as f64
+    }
+}
+
+/// Holds a Studio session open for [`HEALTH_HOLD`] and heartbeats the way
+/// Studio does, checking that every heartbeat is acknowledged, that Program
+/// monitor frames and audio meters keep arriving, that nearly every realized
+/// frame's meters arrive, and that the daemon never drops the session.
+#[allow(clippy::too_many_lines)] // one Studio-like read loop
+fn hold_studio_session(address: SocketAddr) -> HeldSession {
+    let (mut client, _) = WireClient::connect(address);
+    let server = client.expect("handshake response", |message| match message {
+        WireMessage::HandshakeResponse(response) => Some(response.server.clone()),
+        _ => None,
+    });
+    client
+        .reader
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let mut assembler = MonitorFrameAssembler::new();
+    let mut held = HeldSession::default();
+    let started = Instant::now();
+    let mut last_heartbeat = started;
+    let mut unacknowledged = BTreeMap::<u64, Instant>::new();
+    let (mut last_monitor, mut last_meters) = (started, started);
+    // Lines may arrive split across read timeouts; `pending` keeps the part
+    // read so far.
+    let mut pending = Vec::new();
+    while started.elapsed() < HEALTH_HOLD {
+        if last_heartbeat.elapsed() >= HEALTH_HEARTBEAT_EVERY {
+            held.heartbeats += 1;
+            client.send(&WireMessage::Heartbeat(HeartbeatMessage {
+                server: server.clone(),
+                sequence: held.heartbeats,
+                sent_at_ms: held.heartbeats,
+                last_applied: None,
+            }));
+            unacknowledged.insert(held.heartbeats, Instant::now());
+            last_heartbeat = Instant::now();
+        }
+        match client.reader.read_until(b'\n', &mut pending) {
+            Ok(0) => panic!(
+                "the daemon dropped the session after {:?}: {held:?}",
+                started.elapsed()
+            ),
+            Ok(_) if pending.ends_with(b"\n") => {
+                let line = std::str::from_utf8(&pending).unwrap();
+                match decode_line(line).unwrap() {
+                    WireMessage::MonitorFrame(part) => {
+                        if let Some(image) = assembler.push(&part).unwrap()
+                            && image.tap == MonitorTap::Program
+                        {
+                            held.monitor_frames += 1;
+                            held.longest_monitor_gap =
+                                held.longest_monitor_gap.max(last_monitor.elapsed());
+                            last_monitor = Instant::now();
+                        }
+                    }
+                    WireMessage::AudioMeters(meters) => {
+                        held.meters += 1;
+                        held.longest_meter_gap = held.longest_meter_gap.max(last_meters.elapsed());
+                        last_meters = Instant::now();
+                        let first = held.metered_frames.map_or(meters.frame, |(first, _)| first);
+                        held.metered_frames = Some((first, meters.frame));
+                    }
+                    WireMessage::HeartbeatAcknowledgement(ack) => {
+                        let sent = unacknowledged
+                            .remove(&ack.heartbeat_sequence)
+                            .expect("an acknowledgement of a sent heartbeat");
+                        held.slowest_ack = held.slowest_ack.max(sent.elapsed());
+                    }
+                    WireMessage::Error(error) => panic!("protocol error: {error:?}"),
+                    _ => {}
+                }
+                pending.clear();
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("the session failed after {:?}: {error}", started.elapsed()),
+        }
+        let oldest = unacknowledged
+            .values()
+            .map(Instant::elapsed)
+            .max()
+            .unwrap_or_default();
+        assert!(
+            oldest < HEALTH_MAX_WAIT,
+            "a heartbeat waited {oldest:?} for its acknowledgement after {:?}: {held:?}",
+            started.elapsed()
+        );
+        assert!(
+            last_monitor.elapsed() < HEALTH_MAX_WAIT,
+            "no Program monitor frame for {:?} after {:?}: {held:?}",
+            last_monitor.elapsed(),
+            started.elapsed()
+        );
+        assert!(
+            last_meters.elapsed() < HEALTH_MAX_WAIT,
+            "no audio meters for {:?} after {:?}: {held:?}",
+            last_meters.elapsed(),
+            started.elapsed()
+        );
+    }
+    assert!(
+        held.frames_per_meter() <= HEALTH_MAX_FRAMES_PER_METER,
+        "the session received meters for only one realized frame in {:.1}: {held:?}",
+        held.frames_per_meter()
+    );
+    held
+}
+
+/// Two fake capture devices: their inputs report a capture status every
+/// second, a steady stream of runtime events like a busy show's.
+const CAPTURE_KEYS: [&str; 2] = [
+    "v4l2:usb-0000:00:14.0-1#Fake Cam",
+    "v4l2:usb-0000:00:14.0-2#Spare Cam",
+];
+const CAPTURE_DEVICES: [&str; 2] = [
+    "key=v4l2:usb-0000:00:14.0-1#Fake Cam\tname=Fake Cam\tpath=/dev/video0\tformats=1920x1080@30/1:mjpeg:p\trgba=c83c3cff",
+    "key=v4l2:usb-0000:00:14.0-2#Spare Cam\tname=Spare Cam\tpath=/dev/video2\tformats=1280x720@60/1:mjpeg:p\trgba=3cb450ff",
+];
+
+/// Two active Full HD display outputs, one showing Preview (which needs its
+/// own composite), on a Full HD show with live capture inputs never starve
+/// the session the same frame loop serves: a Studio session keeps prompt
+/// heartbeat acknowledgements, Program monitor frames, meters, and its
+/// connection for [`HEALTH_HOLD`] while both outputs keep presenting. A
+/// loop that falls behind drops display frames and still writes every
+/// session record it can each pass, however long the frame took.
+#[test]
+fn two_active_display_outputs_keep_a_studio_session_healthy() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("display-health.freemix");
+    save_project_sized(&project, 1920, 1080, 30, &CAPTURE_KEYS);
+    let inventory = directory.path().join("displays.tsv");
+    write_inventory(&inventory, &[FULL_HD_LEFT, FULL_HD_RIGHT]);
+    let captures = directory.path().join("captures.tsv");
+    write_inventory(&captures, &CAPTURE_DEVICES);
+    let daemon = match start_with(
+        &project,
+        &inventory,
+        &[
+            "--diagnostic-capture-inventory",
+            captures.to_str().unwrap(),
+            "--display-output",
+            "display=id:left,source=preview,scaling=fit",
+            "--display-output",
+            "display=id:right,source=program,scaling=fill",
+        ],
+    ) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native display output health integration skipped: {error}");
+            return;
+        }
+    };
+    for output in ["1", "2"] {
+        daemon.expect(
+            "FREEMIXD_DISPLAY_FRAME\t",
+            &[("output", output), ("width", "1920"), ("height", "1080")],
+        );
+    }
+    let held = hold_studio_session(daemon.address.unwrap());
+    eprintln!("held Studio session: {held:?}");
+
+    let tail = daemon.terminate();
+    let totals = tail
+        .iter()
+        .find(|line| line.starts_with("FREEMIXD_DISPLAY_OUTPUTS\t"))
+        .unwrap_or_else(|| panic!("no display totals in:\n{}", tail.join("\n")));
+    eprintln!("{totals}");
+    let totals = fields(totals);
+    assert!(totals["frames_presented"].parse::<u64>().unwrap() > 0);
+    assert!(totals.contains_key("frames_dropped"));
+    assert_eq!(totals["failures"], "0");
+}
+
+/// The windowed presenter keeps a Studio session as healthy as the
+/// diagnostic host does: a real borderless window showing Preview (its own
+/// composite) on a Full HD show with live capture inputs, for example under
+/// Xvfb with a software Vulkan driver, never delays the session the frame
+/// loop serves. Skipped without a window system or GPU unless
+/// `FM_REQUIRE_DISPLAY_SURFACE=1`.
+#[cfg(feature = "display-surface")]
+#[test]
+fn a_real_display_output_window_keeps_a_studio_session_healthy() {
+    let required = std::env::var("FM_REQUIRE_DISPLAY_SURFACE").as_deref() == Ok("1");
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        assert!(
+            !required,
+            "FM_REQUIRE_DISPLAY_SURFACE=1 without a window system"
+        );
+        eprintln!("display surface health integration skipped: no window system");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("display-window-health.freemix");
+    save_project_sized(&project, 1920, 1080, 30, &CAPTURE_KEYS);
+    let captures = directory.path().join("captures.tsv");
+    write_inventory(&captures, &CAPTURE_DEVICES);
+    let daemon = match spawn(
+        &project,
+        &[
+            "--diagnostic-capture-inventory",
+            captures.to_str().unwrap(),
+            "--display-output",
+            "display=index:0,source=preview,scaling=fit",
+        ],
+    ) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(!required, "{error}");
+            eprintln!("display surface health integration skipped: {error}");
+            return;
+        }
+    };
+    daemon.expect(
+        "FREEMIXD_DISPLAY_OUTPUT\t",
+        &[("output", "1"), ("state", "active")],
+    );
+    let held = hold_studio_session(daemon.address.unwrap());
+    eprintln!("held Studio session: {held:?}");
+
+    let tail = daemon.terminate();
+    let totals = tail
+        .iter()
+        .find(|line| line.starts_with("FREEMIXD_DISPLAY_OUTPUTS\t"))
+        .unwrap_or_else(|| panic!("no display totals in:\n{}", tail.join("\n")));
+    eprintln!("{totals}");
+    assert!(
+        fields(totals)["frames_presented"].parse::<u64>().unwrap() > 0,
+        "{}",
+        tail.join("\n")
+    );
 }

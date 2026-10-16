@@ -732,6 +732,8 @@ struct NativeDaemon {
     display_inventory: Option<display_outputs::InventoryDisplayHost>,
     /// What the presenter was last told to show (OR-011).
     display_sync: display_outputs::DisplayOutputSync,
+    /// Which realized frames the display outputs present.
+    display_pacing: display_outputs::PresentationPacing,
     /// The Preview composite, rendered only while a display output shows
     /// Preview.
     latest_preview: Option<NativeTexture>,
@@ -4657,6 +4659,7 @@ impl NativeDaemon {
             windowed: None,
             display_inventory: None,
             display_sync: display_outputs::DisplayOutputSync::default(),
+            display_pacing: display_outputs::PresentationPacing::default(),
             latest_preview: None,
             preview_failed: false,
         })
@@ -4863,9 +4866,11 @@ impl NativeDaemon {
         Ok(())
     }
 
-    /// Frames presented by every display output and failed display GPU
-    /// operations, or `None` without display outputs.
-    fn display_output_totals(&self) -> Option<(u64, u64)> {
+    /// Frames presented by every display output, failed display GPU
+    /// operations, and realized frames the display outputs dropped because
+    /// the frame loop was behind, or `None` without display outputs.
+    fn display_output_totals(&self) -> Option<(u64, u64, u64)> {
+        let dropped = self.display_pacing.dropped();
         #[cfg(feature = "display-surface")]
         if !self.displays.is_empty() {
             return Some((
@@ -4874,11 +4879,31 @@ impl NativeDaemon {
                     .map(|display| display.telemetry().frames_presented)
                     .fold(0, u64::saturating_add),
                 0,
+                dropped,
             ));
+        }
+        self.display_inventory.as_ref().map(|host| {
+            let (presented, failures) = host.totals();
+            (presented, failures, dropped)
+        })
+    }
+
+    /// Whether any display output is active and so presents frames.
+    fn display_presenting(&self) -> bool {
+        #[cfg(feature = "display-surface")]
+        if let Some(windowed) = &self.windowed
+            && self.displays.iter().enumerate().any(|(index, display)| {
+                display.source().is_some()
+                    && DisplayOutputSlot::ALL
+                        .get(index)
+                        .is_some_and(|slot| windowed.active(*slot))
+            })
+        {
+            return true;
         }
         self.display_inventory
             .as_ref()
-            .map(display_outputs::InventoryDisplayHost::totals)
+            .is_some_and(display_outputs::InventoryDisplayHost::presenting)
     }
 
     /// Opens one slot's next segment for a configured output.
@@ -6290,10 +6315,23 @@ impl NativeDaemon {
             );
         }
         // Display outputs follow Program's own consumers, so a Preview
-        // composite never delays them.
-        let preview = control.snapshot().snapshot.realized_preview.to_domain();
-        self.render_display_preview(preview_source, preview);
-        self.present_display_outputs()?;
+        // composite never delays them. A loop that is behind its frame
+        // deadlines drops display frames rather than delaying the next
+        // Program frame and the sessions served between frames.
+        let started = Instant::now();
+        if !self.display_presenting()
+            || self
+                .display_pacing
+                .due(started, started >= self.next_deadline()?)
+        {
+            let preview = control.snapshot().snapshot.realized_preview.to_domain();
+            self.render_display_preview(preview_source, preview);
+            self.present_display_outputs()?;
+            self.display_pacing.presented(started, Instant::now());
+        } else if let Some(host) = &mut self.display_inventory {
+            // Hot-plug is still followed on a dropped frame.
+            host.poll(&self.runtime, started);
+        }
         let now = Instant::now();
         self.sample_local_output_status(now);
         self.advance_stream_routes(server)?;
@@ -9765,12 +9803,12 @@ fn serve_inner(
         eprintln!("FREEMIXD_PROGRAM\tv=1\tframes_presented={frames_presented}");
     }
     #[cfg(feature = "native-media")]
-    if let Some((frames_presented, failures)) = native
+    if let Some((frames_presented, failures, frames_dropped)) = native
         .as_ref()
         .and_then(NativeDaemon::display_output_totals)
     {
         eprintln!(
-            "FREEMIXD_DISPLAY_OUTPUTS\tv=1\tframes_presented={frames_presented}\tfailures={failures}"
+            "FREEMIXD_DISPLAY_OUTPUTS\tv=1\tframes_presented={frames_presented}\tfailures={failures}\tframes_dropped={frames_dropped}"
         );
     }
     if let Some(native) = &mut native {

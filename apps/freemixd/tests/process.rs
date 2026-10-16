@@ -1059,8 +1059,16 @@ fn malformed_post_handshake_record_does_not_stop_daemon() {
         .unwrap();
     malformed_client.writer.flush().unwrap();
 
+    // The rest of the initial sync may already be on the wire; the daemon
+    // then closes the connection.
     let mut closed = String::new();
-    assert_eq!(malformed_client.reader.read_line(&mut closed).unwrap(), 0);
+    while malformed_client.reader.read_line(&mut closed).unwrap() != 0 {
+        assert!(
+            !matches!(decode_line(&closed), Ok(WireMessage::Error(_))),
+            "a malformed record is dropped, not answered: {closed}"
+        );
+        closed.clear();
+    }
 
     let mut next_client = daemon.connect();
     next_client

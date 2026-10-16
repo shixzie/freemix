@@ -402,6 +402,59 @@ pub(crate) fn parse_inventory(text: &str) -> Result<Vec<DisplayInfo>, DisplayEnu
 #[cfg(feature = "native-media")]
 pub(crate) use headless::InventoryDisplayHost;
 
+/// While the frame loop is behind, display presentation may take at most
+/// one part in `1 + PRESENTATION_YIELD` of the loop's time: after a
+/// presentation pass that took `cost`, the next one waits
+/// `cost * PRESENTATION_YIELD`.
+#[cfg(feature = "native-media")]
+const PRESENTATION_YIELD: u32 = 4;
+
+/// Decides which realized frames the display outputs present.
+///
+/// Presentation (and the Preview composite it may need) runs on the frame
+/// loop after Program reached its recorders, streams, and monitor, and the
+/// same loop serves every session. While the loop keeps up with its frame
+/// deadlines every frame is presented. Once it falls behind, display frames
+/// are dropped instead of delaying the next Program frame and the sessions:
+/// the next presentation waits until the loop has spent
+/// [`PRESENTATION_YIELD`] times the last presentation's cost on everything
+/// else, so a slow GPU, a blocking present, or a costly readback lowers the
+/// display frame rate rather than the Program frame rate.
+#[cfg(feature = "native-media")]
+#[derive(Debug, Default)]
+pub(crate) struct PresentationPacing {
+    /// The earliest a late loop may present again.
+    resume_at: Option<std::time::Instant>,
+    dropped: u64,
+}
+
+#[cfg(feature = "native-media")]
+impl PresentationPacing {
+    /// Whether the frame realized at `now` is presented; `behind` is whether
+    /// the loop's next frame is already due. A frame not presented is
+    /// counted as dropped.
+    pub(crate) fn due(&mut self, now: std::time::Instant, behind: bool) -> bool {
+        if !behind || self.resume_at.is_none_or(|resume| now >= resume) {
+            return true;
+        }
+        self.dropped = self.dropped.saturating_add(1);
+        false
+    }
+
+    /// Records a presentation pass that ran from `started` to `finished`.
+    pub(crate) fn presented(&mut self, started: std::time::Instant, finished: std::time::Instant) {
+        let cost = finished.saturating_duration_since(started);
+        self.resume_at = cost
+            .checked_mul(PRESENTATION_YIELD)
+            .and_then(|wait| finished.checked_add(wait));
+    }
+
+    /// Frames the display outputs dropped so far.
+    pub(crate) const fn dropped(&self) -> u64 {
+        self.dropped
+    }
+}
+
 #[cfg(feature = "native-media")]
 mod headless {
     use std::{
@@ -667,6 +720,17 @@ mod headless {
                     pixel(readback.width / 2, readback.height / 2),
                 );
             }
+        }
+
+        /// Whether any output is attached to its display and so presents.
+        pub(crate) fn presenting(&self) -> bool {
+            self.outputs.iter().enumerate().any(|(index, output)| {
+                output.target.is_some()
+                    && self
+                        .tracker
+                        .state(index)
+                        .is_some_and(|state| state.active().is_some())
+            })
         }
 
         /// Total frames presented by every output and failed GPU operations.
@@ -1019,5 +1083,33 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].output, 0);
         assert!(changes[0].current.active().is_some());
+    }
+
+    /// A loop that keeps up presents every frame; one that is behind drops
+    /// display frames until it has spent `PRESENTATION_YIELD` times the last
+    /// presentation's cost on everything else.
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn presentation_pacing_drops_display_frames_only_while_the_loop_is_behind() {
+        use std::time::{Duration, Instant};
+
+        let mut pacing = PresentationPacing::default();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        // The first frame always presents, behind or not.
+        assert!(pacing.due(at(0), true));
+        pacing.presented(at(0), at(50));
+        // On time: every frame presents, however costly presentation was.
+        assert!(pacing.due(at(60), false));
+        pacing.presented(at(60), at(110));
+        // Behind: frames are dropped until 4 x 50 ms after the last pass.
+        assert!(!pacing.due(at(120), true));
+        assert!(!pacing.due(at(300), true));
+        assert!(pacing.due(at(310), true));
+        pacing.presented(at(310), at(320));
+        // A cheaper pass shortens the wait.
+        assert!(!pacing.due(at(350), true));
+        assert!(pacing.due(at(360), true));
+        assert_eq!(pacing.dropped(), 3);
     }
 }
