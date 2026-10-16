@@ -92,6 +92,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         fade_to_black_excluded_outputs: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
+        network_streams: Vec::new(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -692,6 +693,7 @@ mod scenes {
             fade_to_black_excluded_outputs: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
+            network_streams: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,

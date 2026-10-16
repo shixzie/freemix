@@ -713,9 +713,12 @@ pub(super) fn run(
         // Display outputs follow the project's slots after every command
         // and frame, and their presenter's state flows back as runtime
         // events (OR-011).
-        let synced = native
-            .as_deref_mut()
-            .map(|native| native.sync_display_outputs(&mut control.borrow_mut(), authority));
+        let synced = native.as_deref_mut().map(|native| {
+            native.sync_display_outputs(&mut control.borrow_mut(), authority)?;
+            // Network stream receive status flows back the same way
+            // (IN-015).
+            native.report_network_streams(&mut control.borrow_mut(), authority)
+        });
         if let Some(Err(error)) = synced {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);

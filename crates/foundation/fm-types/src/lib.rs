@@ -5,6 +5,7 @@ mod color;
 pub mod display;
 mod id;
 mod memory;
+pub mod network_stream;
 mod scaling;
 mod time;
 mod video;

@@ -98,7 +98,7 @@ fn animation_preset_files_are_exact_and_strict() {
     assert_eq!(
         encoded,
         format!(
-            "{{\"schema_version\": 42, \"kind\": \"animation_preset\", \"name\": \"Swoosh\", \
+            "{{\"schema_version\": 43, \"kind\": \"animation_preset\", \"name\": \"Swoosh\", \
              {MOTION_BODY}}}\n"
         )
     );
@@ -107,9 +107,9 @@ fn animation_preset_files_are_exact_and_strict() {
     write_animation_preset_file(&path, &file).unwrap();
     assert_eq!(read_animation_preset_file(&path).unwrap(), file);
 
-    for schema in [41, 43] {
+    for schema in [42, 44] {
         let other = encoded.replacen(
-            "\"schema_version\": 42",
+            "\"schema_version\": 43",
             &format!("\"schema_version\": {schema}"),
             1,
         );
@@ -117,7 +117,7 @@ fn animation_preset_files_are_exact_and_strict() {
             decode_animation_preset_file(&other),
             Err(PresetFileError::UnsupportedSchema {
                 found,
-                supported: 42
+                supported: 43
             }) if found == schema
         ));
     }
@@ -183,7 +183,7 @@ fn grade_files_embed_small_luts_and_place_large_ones_beside() {
     .unwrap();
     assert_eq!(exported, Some(ExportedGradeLut::Embedded));
     let text = fs::read_to_string(&path).unwrap();
-    assert!(text.starts_with("{\"schema_version\": 42, \"kind\": \"grade\", \"name\": \"Warm\""));
+    assert!(text.starts_with("{\"schema_version\": 43, \"kind\": \"grade\", \"name\": \"Warm\""));
     let decoded = decode_grade_preset_file(&text).unwrap();
     assert_eq!(
         decoded,
@@ -288,8 +288,8 @@ fn grade_files_embed_small_luts_and_place_large_ones_beside() {
         ("\"cube\": \"", "\"file\": \"x.cube\", \"cube\": \""),
         ("LUT_3D_SIZE 2", "LUT_3D_SIZE 9"),
         ("\"kind\": \"grade\"", "\"kind\": \"animation_preset\""),
-        ("\"schema_version\": 42", "\"schema_version\": 41"),
-        ("\"schema_version\": 42", "\"schema_version\": 43"),
+        ("\"schema_version\": 43", "\"schema_version\": 42"),
+        ("\"schema_version\": 43", "\"schema_version\": 44"),
     ] {
         assert!(
             decode_grade_preset_file(&text.replacen(from, to, 1)).is_err(),

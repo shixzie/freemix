@@ -2783,7 +2783,7 @@ fn input_add_and_remove_project_events_snapshots_history_and_journal() {
     assert!(matches!(
         added.output.events.as_slice(),
         [EventMessage {
-            payload: EventPayload::InputAdded { input: added, name },
+            payload: EventPayload::InputAdded { input: added, name, network_stream: None },
             edit_history: EditHistoryStatus {
                 undo_depth: 1,
                 next_undo: Some(1),
@@ -6274,5 +6274,151 @@ fn display_outputs_are_undoable_project_edits_with_runtime_state() {
     assert_eq!(
         control.snapshot().snapshot.display_output_states[0].state,
         active
+    );
+}
+
+/// IN-015: a network stream input added live replicates its redacted
+/// configuration; `input_stream_set` edits replicate redacted; the media
+/// plane's status becomes a `network_stream_status` runtime event and the
+/// snapshot's entry (without the error text).
+#[test]
+#[allow(clippy::too_many_lines)] // one add, edit, and status round trip
+fn network_stream_inputs_replicate_redacted_with_their_status() {
+    use fm_types::network_stream::{
+        NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus, StreamUrl,
+    };
+
+    let mut control = service(16, 16);
+    let admin = principal(Role::Admin);
+    let added = control
+        .submit(
+            &admin,
+            command(
+                "add",
+                "add-key",
+                CommandPayload::AddInput {
+                    input: WireInputId::from_domain(input(5)),
+                    name: "Camera".to_owned(),
+                    source: LiveInputSource::NetworkStream(Box::new(NetworkStreamConfig::new(
+                        "rtsp://admin:hunter2@cam.test/live",
+                    ))),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        added.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputAdded { network_stream: Some(config), .. },
+            ..
+        }] if config.url == "rtsp://***@cam.test/live"
+    ));
+    assert_wire_exact(&control, &added);
+    // The engine keeps the full URL for the media plane.
+    assert_eq!(
+        control.network_stream_configs(),
+        [(
+            input(5),
+            NetworkStreamConfig::new("rtsp://admin:hunter2@cam.test/live")
+        )]
+    );
+
+    let mut settings = fm_types::network_stream::NetworkStreamSettings {
+        jitter_buffer_ms: 1_000,
+        ..fm_types::network_stream::NetworkStreamSettings::default()
+    };
+    let edited = control
+        .submit(
+            &admin,
+            command(
+                "set",
+                "set-key",
+                CommandPayload::SetNetworkStream {
+                    input: WireInputId::from_domain(input(5)),
+                    url: Some(StreamUrl::new("https://cdn.test/live.m3u8?token=abc")),
+                    settings,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        edited.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::NetworkStreamChanged { config, .. },
+            ..
+        }] if config.url == "https://cdn.test/live.m3u8?token=***"
+            && config.settings.jitter_buffer_ms == 1_000
+    ));
+    assert_wire_exact(&control, &edited);
+
+    // Keeping the URL: only the settings change.
+    settings.jitter_buffer_ms = 2_000;
+    control
+        .submit(
+            &admin,
+            command(
+                "keep",
+                "keep-key",
+                CommandPayload::SetNetworkStream {
+                    input: WireInputId::from_domain(input(5)),
+                    url: None,
+                    settings,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        control.network_stream_configs()[0].1.url,
+        "https://cdn.test/live.m3u8?token=abc"
+    );
+
+    let entries = &control.snapshot().snapshot.network_streams;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].config.url,
+        "https://cdn.test/live.m3u8?token=***"
+    );
+    assert_eq!(entries[0].status.state, NetworkStreamState::Idle);
+
+    let status = NetworkStreamStatus {
+        state: NetworkStreamState::Reconnecting {
+            attempt: 2,
+            next_in_ms: 900,
+        },
+        reconnects: 2,
+        last_error: Some("Connection refused".into()),
+        ..NetworkStreamStatus::default()
+    };
+    let event = control
+        .set_network_stream_status(&server_identity(), input(5), status.clone())
+        .unwrap()
+        .expect("a changed status is published");
+    assert!(matches!(
+        &event.event,
+        RuntimeLifecycleEvent::NetworkStreamStatus { status: published, .. }
+            if **published == status
+    ));
+    // Unchanged, or not a network input: nothing.
+    assert!(
+        control
+            .set_network_stream_status(&server_identity(), input(5), status.clone())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        control
+            .set_network_stream_status(&server_identity(), input(1), status.clone())
+            .unwrap()
+            .is_none()
+    );
+    let entry = &control.snapshot().snapshot.network_streams[0];
+    assert_eq!(entry.status.state, status.state);
+    assert_eq!(entry.status.reconnects, 2);
+    assert_eq!(
+        entry.status.last_error, None,
+        "a snapshot carries no error text"
     );
 }

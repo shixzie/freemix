@@ -345,6 +345,19 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "clear_display_output")?;
             record.field("slot", slot)?;
         }
+        CommandPayload::SetNetworkStream {
+            input,
+            url,
+            settings,
+        } => {
+            record.field("payload", "input_stream_set")?;
+            super::network_stream::encode_set(
+                *input,
+                url.as_ref(),
+                settings,
+                &mut |name, value| record.field_string(name, value),
+            )?;
+        }
         CommandPayload::SceneLayer(edit) => {
             record.field("payload", edit.operation.payload())?;
             super::scene_layer::encode_scene_layer_edit(edit, &mut |name, value| {
@@ -442,7 +455,7 @@ fn encode_input_catalogue_command(
             record.field("payload", "input_add")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
-            match *source {
+            match source {
                 LiveInputSource::Solid {
                     red,
                     green,
@@ -450,9 +463,15 @@ fn encode_input_catalogue_command(
                     alpha,
                 } => {
                     record.field("kind", "solid")?;
-                    record.field_string("color", encode_rgba(red, green, blue, alpha))
+                    record.field_string("color", encode_rgba(*red, *green, *blue, *alpha))
                 }
                 LiveInputSource::Bars => record.field("kind", "bars"),
+                LiveInputSource::NetworkStream(config) => {
+                    record.field("kind", "network_stream")?;
+                    super::network_stream::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })
+                }
             }
         }
         CommandPayload::RemoveInput { input } => {
@@ -1364,6 +1383,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "display_output_states",
         super::display_output::encode_states(&message.display_output_states)?,
+    )?;
+    record.field_string(
+        "network_streams",
+        super::network_stream::encode_entries(&message.network_streams)?,
     )
 }
 
@@ -1800,11 +1823,21 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("input", input)?;
             record.field_str("name", name)?;
         }
-        EventPayload::InputAdded { input, name } => {
+        EventPayload::InputAdded {
+            input,
+            name,
+            network_stream,
+        } => {
             validate_new_input_name(name)?;
             record.field("event", "input_added")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
+            if let Some(config) = network_stream {
+                record.field("kind", "network_stream")?;
+                super::network_stream::encode_config(config, &mut |name, value| {
+                    record.field_string(name, value)
+                })?;
+            }
         }
         EventPayload::InputRemoved { input } => {
             record.field("event", "input_removed")?;
@@ -1914,6 +1947,13 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::DisplayOutputChanged { slot, config } => {
             record.field("event", "display_output_changed")?;
             super::display_output::encode_changed(*slot, config.as_deref(), &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::NetworkStreamChanged { input, config } => {
+            record.field("event", "network_stream_changed")?;
+            record.field("input", input)?;
+            super::network_stream::encode_config(config, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }
@@ -2157,6 +2197,12 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::DisplayOutputStatus(status) => {
             record.field("event", "display_output_status")?;
             super::display_output::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::NetworkStreamStatus { input, status } => {
+            record.field("event", "network_stream_status")?;
+            super::network_stream::encode_status(*input, status, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

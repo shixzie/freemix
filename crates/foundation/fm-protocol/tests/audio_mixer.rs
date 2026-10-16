@@ -13,7 +13,7 @@ use fm_protocol::{
     WireRecorderSlot, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.45\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.46\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -132,6 +132,7 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         fade_to_black_excluded_outputs: excluded,
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
+        network_streams: Vec::new(),
     })
 }
 
@@ -160,7 +161,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_is_2_45() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 45));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 46));
 }
 
 #[test]
@@ -390,7 +391,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\n"
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\n"
         ),
         "{line}"
     );
@@ -401,13 +402,13 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
         vec![output(8), output(wide)],
     ));
     assert!(
-        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tdisplay_outputs=\tdisplay_output_states=\n"
+        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\n"
         )),
         "{line}"
     );
     let line = round_trip(&snapshot(AudioMixerStatus::default(), Vec::new()));
     assert!(
-        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\n"),
+        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\n"),
         "{line}"
     );
 

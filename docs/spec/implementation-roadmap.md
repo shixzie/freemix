@@ -1857,6 +1857,51 @@ handshake, encryption, statistics, or reconnect over a network, no listener or
 rendezvous output, and no input-side MPEG-TS/AAC demux or multichannel audio
 mapping, so `IN-017` remains planned.
 
+Current implementation boundary for network stream inputs (`IN-015`): a
+`network_stream` input kind (schema 43, at most 16 per show) holds an RTSP,
+RTP, UDP, TCP, HTTP(S) MPEG-TS, or HLS URL with an RTSP transport hint, a
+40–5000 ms jitter buffer, a reconnect backoff with an optional give-up count,
+a timeout, and a freeze or black stall slate. URL credentials and secret query
+values are stored only in the project and redacted in every snapshot, event,
+status, CLI listing, and log line. Protocol 2.46 adds it to `add_input`,
+edits it with `input_stream_set`, and reports per-input receive state
+(connecting, buffering, live, stalled, reconnecting with attempt and next
+delay, failed) with bitrate, buffer depth, dropped and late frames,
+reconnects, and the last error. `fm-codec-ffmpeg` receives each stream
+through an `ffmpeg` child that decodes RGBA video scaled to the program
+format and f32 stereo audio, into a jitter buffer that holds the configured
+latency and never more than twice it (dropping the oldest frame and its
+audio). One frame is pulled per engine frame, so the audio follows the engine
+clock. On a stall the input holds its last frame or shows black and its audio
+fades to silence. The worker reconnects with backoff after a timeout or EOF and
+fails once the give-up count is reached. None of this blocks the Program
+render thread. A native `freemixd` opens the project's stream inputs at
+startup, restarts a receiver when its settings change, and publishes status.
+The Studio Add input dialog has a validated stream form, and input tiles show
+a LIVE/BUFFERING/RECONNECTING n/FAILED badge. `freemix-cli` has
+`input-add-stream`, `input-stream-set`, and `input-stream-status` with
+`remote-` forms. Verified with loopback UDP, TCP, HTTP, and HLS sources, sender
+kill and recovery, and the jitter bound.
+
+Remaining gaps:
+- A native daemon refuses live `add_input`, so stream inputs must exist when
+  it starts.
+- Any settings edit reconnects the stream.
+- The simulated daemon reports every stream idle.
+- `ffmpeg` is required at runtime. Without it the input stays reconnecting
+  with "ffmpeg unavailable".
+- Audio is received as stereo.
+- A stream found without audio is treated as video-only until its input
+  reopens.
+- The decoded-byte cap (256 MiB) can shorten the jitter target at large
+  formats.
+- Pictures are stretched to the program format.
+- There is no hardware decode, and RTSP authentication is limited to URL
+  credentials.
+- Not verified on Windows or macOS hardware or at the profile-a-hd load.
+
+`IN-015` therefore remains planned.
+
 Current implementation boundary for item 3: the authored model now carries a
 local HLS destination and an optional multi-bitrate HLS ladder.
 `StreamProtocol::Hls` is a keyless protocol whose endpoint is one absolute

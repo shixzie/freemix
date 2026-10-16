@@ -7,6 +7,7 @@ mod grade;
 mod input_lifecycle;
 mod layout;
 mod media;
+mod network_stream;
 mod playlist;
 mod refusal;
 mod scene_layer;

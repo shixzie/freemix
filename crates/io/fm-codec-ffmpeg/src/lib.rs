@@ -27,6 +27,7 @@ mod audio_seek;
 mod config;
 mod decode;
 mod error;
+pub mod network_input;
 mod playback;
 mod probe;
 mod process;

@@ -7,6 +7,7 @@ mod dto;
 mod input_lifecycle;
 mod media;
 mod monitor_image;
+mod network_stream;
 mod scene_layer;
 mod version;
 
@@ -102,6 +103,12 @@ pub use media::{
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,
     decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, monitor_frame_parts, title_preview_parts,
+};
+pub use network_stream::{
+    GiveUp, MAX_NETWORK_STREAM_INPUTS, MAX_STREAM_ERROR_BYTES, MAX_STREAM_URL_BYTES,
+    NetworkStreamConfig, NetworkStreamEntry, NetworkStreamError, NetworkStreamSettings,
+    NetworkStreamState, NetworkStreamStatus, ReconnectPolicy, RtspTransport, StallSlate,
+    StreamProtocol, StreamUrl, redact_stream_url, validate_stream_url,
 };
 pub use scene_layer::{
     MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,

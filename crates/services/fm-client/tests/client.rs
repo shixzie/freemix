@@ -164,6 +164,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         fade_to_black_excluded_outputs: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
+        network_streams: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Show".to_owned(),
@@ -1507,6 +1508,7 @@ fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
                 EventPayload::InputAdded {
                     input: input(3),
                     name: "Red".to_owned(),
+                    network_stream: None,
                 },
             ),
         ),
@@ -3168,4 +3170,93 @@ fn display_output_slots_status_and_inventory_replicate() {
     let view = client.model().view().unwrap();
     assert_eq!(view.display_output(slot), None);
     assert_eq!(view.display_outputs, Vec::new());
+}
+
+/// IN-015, Protocol 2.46: a network stream input added live carries its
+/// redacted configuration into the view, `network_stream_changed` replaces
+/// it, and `network_stream_status` runtime events update its status.
+#[test]
+fn network_stream_inputs_and_status_replicate() {
+    use fm_protocol::{NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus};
+    let mut client = ready_client(4);
+    let event = |revision, payload| {
+        WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            payload,
+        })
+    };
+    let config = NetworkStreamConfig::new("rtsp://***@cam.test/live");
+    assert_eq!(
+        client
+            .intake(event(
+                5,
+                EventPayload::InputAdded {
+                    input: input(5),
+                    name: "Remote camera".into(),
+                    network_stream: Some(Box::new(config.clone())),
+                },
+            ))
+            .unwrap(),
+        Intake::EventApplied
+    );
+    let view = client.model().view().unwrap();
+    let entry = view
+        .network_stream(input(5).to_domain())
+        .expect("the added stream");
+    assert_eq!(entry.config, config);
+    assert_eq!(entry.status, NetworkStreamStatus::default());
+    assert!(view.network_stream(input(1).to_domain()).is_none());
+
+    let mut edited = config.clone();
+    edited.settings.jitter_buffer_ms = 1_200;
+    client
+        .intake(event(
+            6,
+            EventPayload::NetworkStreamChanged {
+                input: input(5),
+                config: Box::new(edited.clone()),
+            },
+        ))
+        .unwrap();
+    let status = NetworkStreamStatus {
+        state: NetworkStreamState::Live,
+        bitrate_bps: 3_000_000,
+        buffer_ms: 1_160,
+        dropped_frames: 1,
+        late_frames: 2,
+        reconnects: 0,
+        last_error: None,
+    };
+    client
+        .apply_runtime_event(runtime_event(
+            6,
+            7,
+            1,
+            RuntimeLifecycleEvent::NetworkStreamStatus {
+                input: input(5),
+                status: Box::new(status.clone()),
+            },
+        ))
+        .unwrap();
+    let view = client.model().view().unwrap();
+    let entry = view.network_stream(input(5).to_domain()).unwrap();
+    assert_eq!(entry.config, edited);
+    assert_eq!(entry.status, status);
+
+    // Removing the input removes its stream.
+    client
+        .intake(event(7, EventPayload::InputRemoved { input: input(5) }))
+        .unwrap();
+    assert!(
+        client
+            .model()
+            .view()
+            .unwrap()
+            .network_stream(input(5).to_domain())
+            .is_none()
+    );
 }

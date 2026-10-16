@@ -214,12 +214,20 @@ pub(crate) fn engine_fault(error: &FilePlaybackError) -> EngineMediaFault {
 /// The output-timeline timing of the picture shown on engine frame `frame`
 /// (see [`timing_at`]): sequence `frame + 1`, so the startup picture is
 /// sequence zero.
-fn output_timing(frame: u64, rate: FrameRate, clock_domain: ClockDomainId) -> Option<MediaTiming> {
+pub(crate) fn output_timing(
+    frame: u64,
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+) -> Option<MediaTiming> {
     timing_at(frame.checked_add(1)?, rate, clock_domain)
 }
 
 /// Sequence `sequence` on the program frame grid, one frame long.
-fn timing_at(sequence: u64, rate: FrameRate, clock_domain: ClockDomainId) -> Option<MediaTiming> {
+pub(crate) fn timing_at(
+    sequence: u64,
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+) -> Option<MediaTiming> {
     let duration = u64::try_from(
         u128::from(rate.denominator()) * 1_000_000_000 / u128::from(rate.numerator()).max(1),
     )
@@ -241,7 +249,7 @@ fn timing_at(sequence: u64, rate: FrameRate, clock_domain: ClockDomainId) -> Opt
 
 /// The picture of an input that shows none (closed, or offline at
 /// startup): transparent black at `dimensions`, dated `timing`.
-fn blank_picture(dimensions: (u32, u32), timing: MediaTiming) -> Option<CpuVideoFrame> {
+pub(crate) fn blank_picture(dimensions: (u32, u32), timing: MediaTiming) -> Option<CpuVideoFrame> {
     let size = VideoDimensions::new(dimensions.0, dimensions.1)?;
     let payload = CpuVideoPayload::allocate(PixelFormat::Rgba8, size).ok()?;
     CpuVideoFrame::new(timing, payload)

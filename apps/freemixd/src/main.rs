@@ -106,6 +106,8 @@ mod monitor_tap;
 #[cfg(feature = "native-media")]
 mod native_files;
 #[cfg(feature = "native-media")]
+mod native_streams;
+#[cfg(feature = "native-media")]
 mod native_titles;
 // The inventory host and status records are wired into native daemons only;
 // the parser and validation compile (and are unit-tested) in every build.
@@ -682,6 +684,8 @@ struct NativeDaemon {
     /// Transport-controlled media-file inputs decoded off the loop; see
     /// [`native_files`].
     files: native_files::NativeMediaFiles,
+    /// Network stream inputs and their receivers (IN-015).
+    network: native_streams::NativeNetworkStreams,
     #[cfg(target_os = "macos")]
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
@@ -4515,6 +4519,10 @@ impl NativeDaemon {
         for input in file_inputs {
             master.attach_pushed_audio(input)?;
         }
+        let network = start_native_network_streams(stored);
+        for input in network.inputs() {
+            master.attach_pushed_audio(input)?;
+        }
         let (playback, stingers) = preflight_native_video(
             &runtime,
             adapter.as_ref(),
@@ -4586,6 +4594,7 @@ impl NativeDaemon {
             monitor: NativeMonitorTap::new(stored.project().settings()),
             titles,
             files,
+            network,
             #[cfg(target_os = "macos")]
             cameras: resolution.cameras,
             #[cfg(target_os = "macos")]
@@ -4674,6 +4683,22 @@ impl NativeDaemon {
             control
                 .set_display_inventory(server, inventory)
                 .map_err(|error| AppFailure(format!("display inventory: {error}")))?;
+        }
+        Ok(())
+    }
+
+    /// Reports each network stream input's receive status as it changes
+    /// (IN-015): a state change at once, other changes at most once a
+    /// second.
+    fn report_network_streams(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+    ) -> AppResult<()> {
+        for (input, status) in self.network.statuses(Instant::now()) {
+            control
+                .set_network_stream_status(server, input, status)
+                .map_err(|error| AppFailure(format!("network input {input} status: {error}")))?;
         }
         Ok(())
     }
@@ -5926,6 +5951,10 @@ impl NativeDaemon {
     /// reopens its transport once its worker reports the file open, and an
     /// input whose worker failed stays offline.
     fn sync_input_lifecycle(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
+        self.network
+            .sync(&control.network_stream_configs(), |input| {
+                control.input_lifecycle(input).closed
+            });
         for input in self.files.inputs() {
             let closed = control.input_lifecycle(input).closed;
             let reopened = self.files.is_closed(input) && !closed;
@@ -5978,6 +6007,21 @@ impl NativeDaemon {
             .projected_frame
             .as_ref()
             .expect("next frame projection was initialized");
+        // Network streams hand over the projected frame's picture and audio
+        // from their jitter buffers, once per frame; they never wait.
+        for pulled in self.network.pull(projected.frame.get()) {
+            if let Some(frame) = pulled.video {
+                self.runtime.ingest_live_video_frame_blocking(
+                    &mut self.playback,
+                    pulled.input,
+                    frame,
+                )?;
+            }
+            if let Some(audio) = &pulled.audio {
+                self.master
+                    .push_frame_audio(pulled.input, projected.frame.get(), audio)?;
+            }
+        }
         self.titles.observe_frame(projected);
         self.files.observe_frame(projected);
         // An animating title holds the frame until its projected pose is
@@ -6456,6 +6500,35 @@ fn preflight_native_video(
     Ok((playback, stingers))
 }
 
+/// Starts a receiver for every open network stream input of `stored`
+/// (IN-015). A receiver that cannot reach its stream keeps reconnecting;
+/// none stops the daemon.
+#[cfg(feature = "native-media")]
+fn start_native_network_streams(stored: &StoredProject) -> native_streams::NativeNetworkStreams {
+    let project = stored.project();
+    let settings = project.settings();
+    let inputs = project
+        .inputs()
+        .iter()
+        .filter_map(|input| match &input.kind {
+            InputKind::NetworkStream(config) => Some(native_streams::NetworkStreamInput {
+                input: input.id,
+                config: config.clone(),
+                closed: project.input_lifecycle(input.id).closed,
+            }),
+            _ => None,
+        })
+        .collect();
+    let dimensions = settings.video.dimensions;
+    native_streams::NativeNetworkStreams::start(
+        inputs,
+        settings.frame_rate,
+        native_clock_domain(),
+        (dimensions.width(), dimensions.height()),
+        settings.audio.sample_rate,
+    )
+}
+
 /// Starts the media-file inputs of `stored` that play through their engine
 /// transport (every local-video media input no Stinger names) and swaps each
 /// one's resolved source for a live source seeded with its startup picture.
@@ -6826,6 +6899,15 @@ impl NativeDaemon {
         Ok(())
     }
 
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    fn report_network_streams(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _server: &ServerIdentity,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     #[allow(clippy::unused_self)]
     fn tick_if_due(
         &mut self,
@@ -7013,11 +7095,23 @@ fn resolve_native_sources(
             .into()),
             // Title inputs are rendered by [`resolve_native_title_sources`].
             InputKind::Device { .. } | InputKind::Scene { .. } | InputKind::Title(_) => continue,
-            InputKind::Network { .. } => Err(AppFailure(format!(
-                "native network input {} is not supported by this playback mode",
-                input.id
-            ))
-            .into()),
+            // A network stream starts on a blank picture; its receiver
+            // ingests every picture after it (IN-015).
+            InputKind::NetworkStream(_) => {
+                let dimensions = settings.video.dimensions;
+                native_streams::startup_picture(
+                    (dimensions.width(), dimensions.height()),
+                    settings.frame_rate,
+                    native_clock_domain(),
+                )
+                .map(|frame| NativeResolvedSource::LiveFrame {
+                    input: input.id,
+                    frame,
+                })
+                .ok_or_else(|| {
+                    AppFailure(format!("native network input {} cannot be timed", input.id)).into()
+                })
+            }
             // Model-only so far: refuse rather than play some other picture.
             InputKind::Alias { .. } | InputKind::MixFeed(_) => Err(AppFailure(format!(
                 "native alias or program/preview feed input {} is not yet realized",
@@ -12280,6 +12374,7 @@ fn command_base_ticks(
         | CommandPayload::SetFadeToBlackOutput { .. }
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
+        | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -12538,6 +12633,7 @@ fn input_in_use_refusal(input: InputId, reference: fm_model::InputReference) -> 
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per added input source
 fn sync_project_inputs(
     project: &mut fm_model::Project,
     show: &ShowState,
@@ -12570,7 +12666,7 @@ fn sync_project_inputs(
                 input: added,
                 source,
                 ..
-            }) if added.to_domain() == input => *source,
+            }) if added.to_domain() == input => source.clone(),
             Some(CommandPayload::InputLifecycle(
                 fm_protocol::InputLifecycleOperation::Duplicate {
                     source,
@@ -12621,6 +12717,19 @@ fn sync_project_inputs(
                 fm_model::SimulatedVideo::Solid(fm_model::SolidColor::new(red, green, blue, alpha))
             }
             fm_protocol::LiveInputSource::Bars => fm_model::SimulatedVideo::Bars,
+            fm_protocol::LiveInputSource::NetworkStream(config) => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::NetworkStream(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
         };
         project
             .add_input_checked(fm_model::Input {

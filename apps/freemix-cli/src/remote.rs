@@ -80,6 +80,99 @@ pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Prints every network stream input of the daemon at `address` with its
+/// redacted configuration and latest receive status (IN-015).
+pub fn network_streams(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let view = remote
+        .client
+        .model()
+        .view()
+        .ok_or_else(|| RemoteFailure("remote project view is unavailable".into()))?;
+    print_network_streams(view.network_streams.iter().cloned());
+    Ok(())
+}
+
+/// Edits network stream input `input` of the daemon at `address`: the
+/// options given replace the input's current settings, and a URL given
+/// replaces its URL (IN-015).
+pub fn set_network_stream(
+    address: SocketAddr,
+    input: fm_types::InputId,
+    options: &crate::args::NetworkStreamOptions,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let current = remote
+        .client
+        .model()
+        .view()
+        .and_then(|view| {
+            view.network_stream(input)
+                .map(|entry| entry.config.settings)
+        })
+        .ok_or_else(|| RemoteFailure(format!("input {input} is not a network stream")))?;
+    let payload = CommandPayload::SetNetworkStream {
+        input: fm_protocol::WireInputId::from_domain(input),
+        url: options.url.clone(),
+        settings: options.apply(current),
+    };
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.execute(payload, key, expected_revision, CommandCompletion::Project)
+}
+
+/// Prints one `NetworkStream(...)` line per network stream input, or
+/// `NetworkStreams=none`. The URL is the redacted one.
+pub(crate) fn print_network_streams(
+    entries: impl IntoIterator<Item = fm_protocol::NetworkStreamEntry>,
+) {
+    let mut any = false;
+    for entry in entries {
+        any = true;
+        println!("{}", format_network_stream(&entry));
+    }
+    if !any {
+        println!("NetworkStreams=none");
+    }
+}
+
+fn format_network_stream(entry: &fm_protocol::NetworkStreamEntry) -> String {
+    let settings = &entry.config.settings;
+    let status = &entry.status;
+    let state = match status.state {
+        fm_protocol::NetworkStreamState::Reconnecting {
+            attempt,
+            next_in_ms,
+        } => format!("reconnecting(attempt={attempt}, next_in_ms={next_in_ms})"),
+        state => state.token().to_owned(),
+    };
+    format!(
+        "NetworkStream(input={}, url={:?}, transport={}, jitter_ms={}, backoff_ms={}..{}, give_up={}, timeout_ms={}, stall={}, state={state}, bitrate_bps={}, buffer_ms={}, dropped_frames={}, late_frames={}, reconnects={}, last_error={})",
+        entry.input,
+        entry.config.url,
+        settings.transport.token(),
+        settings.jitter_buffer_ms,
+        settings.reconnect.backoff_min_ms,
+        settings.reconnect.backoff_max_ms,
+        settings.reconnect.give_up.token(),
+        settings.timeout_ms,
+        settings.stall.token(),
+        status.bitrate_bps,
+        status.buffer_ms,
+        status.dropped_frames,
+        status.late_frames,
+        status.reconnects,
+        status
+            .last_error
+            .as_deref()
+            .map_or_else(|| "none".to_owned(), |error| format!("{error:?}")),
+    )
+}
+
 /// Prints one `DisplayOutput(...)` line per configured slot, or
 /// `DisplayOutputs=none`.
 pub(crate) fn print_display_outputs<'a>(
@@ -352,6 +445,7 @@ impl CommandCompletion {
             | CommandPayload::SetTitleFields { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
+            | CommandPayload::SetNetworkStream { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
@@ -613,7 +707,8 @@ impl Remote {
                         | EventPayload::TitleAnimationChanged { .. }
                         | EventPayload::SceneAnimationChanged { .. }
                         | EventPayload::SceneLayoutChanged { .. }
-                        | EventPayload::DisplayOutputChanged { .. } => matches!(
+                        | EventPayload::DisplayOutputChanged { .. }
+                        | EventPayload::NetworkStreamChanged { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),

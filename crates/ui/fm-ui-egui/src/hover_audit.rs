@@ -250,6 +250,33 @@ fn model(variant: Variant) -> ClientModel {
         fade_to_black_excluded_outputs: vec![output(2)],
         display_outputs: display_output_entries(),
         display_output_states: display_output_states(),
+        // IN-015: a live stream and a reconnecting one, so the tile badges
+        // and their details are audited (Protocol 2.46).
+        network_streams: vec![
+            fm_protocol::NetworkStreamEntry {
+                input: wire(1),
+                config: fm_protocol::NetworkStreamConfig::new("rtsp://***@cam1.local/live"),
+                status: fm_protocol::NetworkStreamStatus {
+                    state: fm_protocol::NetworkStreamState::Live,
+                    bitrate_bps: 4_000_000,
+                    buffer_ms: 280,
+                    ..fm_protocol::NetworkStreamStatus::default()
+                },
+            },
+            fm_protocol::NetworkStreamEntry {
+                input: wire(2),
+                config: fm_protocol::NetworkStreamConfig::new("udp://@:9000"),
+                status: fm_protocol::NetworkStreamStatus {
+                    state: fm_protocol::NetworkStreamState::Reconnecting {
+                        attempt: 3,
+                        next_in_ms: 2_000,
+                    },
+                    reconnects: 3,
+                    last_error: Some("Connection refused".into()),
+                    ..fm_protocol::NetworkStreamStatus::default()
+                },
+            },
+        ],
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -994,11 +1021,20 @@ fn scenes(language: Language) -> Vec<Scene> {
         state
     }));
     let operator = ready(true, Variant::default());
-    let dialogs: [(&str, Configure); 11] = [
+    let dialogs: [(&str, Configure); 12] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
         ("about", &|shell| shell.show_about = true),
         ("preferences", &|shell| shell.show_preferences = true),
         ("add-input", &|shell| shell.open_add_input(&operator)),
+        // IN-015: the network stream form with an RTSP URL, so the
+        // transport keys are enabled.
+        ("add-input-network", &|shell| {
+            shell.open_add_input(&operator);
+            if let Some(draft) = shell.add_input.as_mut() {
+                draft.kind = crate::input_catalogue::NewInputKind::Network;
+                draft.stream.url = "rtsp://cam.local/live".into();
+            }
+        }),
         ("remove-input", &|shell| {
             shell.open_remove_input(input(4), "Guest");
         }),

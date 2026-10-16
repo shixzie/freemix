@@ -26,12 +26,13 @@ use crate::{
 /// inputs or audio strips stays encodable.
 pub const MAX_SHOW_INPUTS: usize = 256;
 
-/// The generator an input is added with while the show is live.
+/// The source an input is added with while the show is live.
 ///
-/// These are exactly the sources the simulated daemon renders: a solid
-/// RGBA color and color bars, both with silent audio. The engine carries the
-/// source opaquely so an undone add can be redone exactly.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The generators are exactly the sources the simulated daemon renders: a
+/// solid RGBA color and color bars, both with silent audio. A network
+/// stream (IN-015) is received by URL. The engine carries the source
+/// opaquely so an undone add can be redone exactly.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineInputSource {
     Solid {
         red: u8,
@@ -40,24 +41,29 @@ pub enum EngineInputSource {
         alpha: u8,
     },
     Bars,
+    NetworkStream(Box<fm_types::network_stream::NetworkStreamConfig>),
 }
 
 impl EngineInputSource {
-    /// The replaceable source this generator is (IN-026).
+    /// The replaceable source this is (IN-026).
     #[must_use]
-    pub const fn spec(self) -> fm_model::InputSourceSpec {
-        fm_model::InputSourceSpec::Generator {
-            video: match self {
-                Self::Solid {
-                    red,
-                    green,
-                    blue,
-                    alpha,
-                } => fm_model::GeneratorVideo::Solid {
-                    rgba: [red, green, blue, alpha],
-                },
-                Self::Bars => fm_model::GeneratorVideo::Bars,
+    pub fn spec(&self) -> fm_model::InputSourceSpec {
+        let video = match self {
+            Self::Solid {
+                red,
+                green,
+                blue,
+                alpha,
+            } => fm_model::GeneratorVideo::Solid {
+                rgba: [*red, *green, *blue, *alpha],
             },
+            Self::Bars => fm_model::GeneratorVideo::Bars,
+            Self::NetworkStream(config) => {
+                return fm_model::InputSourceSpec::Network((**config).clone());
+            }
+        };
+        fm_model::InputSourceSpec::Generator {
+            video,
             tone_hz: None,
         }
     }
@@ -1227,6 +1233,32 @@ impl ShowState {
     #[must_use]
     pub const fn input_sources(&self) -> &BTreeMap<InputId, fm_model::InputSourceSpec> {
         &self.input_sources
+    }
+
+    /// Network stream input `input`'s configuration (IN-015), or `None`
+    /// when `input` is not a network stream.
+    #[must_use]
+    pub fn network_stream(
+        &self,
+        input: InputId,
+    ) -> Option<&fm_types::network_stream::NetworkStreamConfig> {
+        match self.input_sources.get(&input) {
+            Some(fm_model::InputSourceSpec::Network(config)) => Some(config),
+            _ => None,
+        }
+    }
+
+    /// Every network stream input and its configuration, ascending by
+    /// input (IN-015).
+    pub fn network_streams(
+        &self,
+    ) -> impl Iterator<Item = (InputId, &fm_types::network_stream::NetworkStreamConfig)> {
+        self.input_sources
+            .iter()
+            .filter_map(|(input, source)| match source {
+                fm_model::InputSourceSpec::Network(config) => Some((*input, config)),
+                _ => None,
+            })
     }
 
     pub(crate) fn set_input_source_unchecked(

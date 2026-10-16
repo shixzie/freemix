@@ -125,6 +125,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         fade_to_black_excluded_outputs: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
+        network_streams: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Show".to_owned(),

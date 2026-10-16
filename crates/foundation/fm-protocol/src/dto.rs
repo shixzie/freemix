@@ -793,12 +793,13 @@ impl EditHistoryStatus {
 
 /// The source an input may be added with while the show is live.
 ///
-/// These are exactly the generators the simulated daemon renders; every other
-/// input kind (media files, capture devices, network sources, Scenes,
-/// aliases, mix feeds) is added offline. Wire encoding: `kind=solid` plus
-/// `color=<rrggbbaa>` (eight lowercase hex digits), or `kind=bars`. Audio is
-/// always silent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// These are the generators the simulated daemon renders and network
+/// streams (Protocol 2.46); every other input kind (media files, capture
+/// devices, Scenes, aliases, mix feeds) is added offline. Wire encoding:
+/// `kind=solid` plus `color=<rrggbbaa>` (eight lowercase hex digits),
+/// `kind=bars`, or `kind=network_stream` plus the config fields (see
+/// [`crate::NetworkStreamConfig`]). Generator audio is always silent.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiveInputSource {
     Solid {
         red: u8,
@@ -807,6 +808,8 @@ pub enum LiveInputSource {
         alpha: u8,
     },
     Bars,
+    /// A network stream (IN-015). `Debug` shows only the redacted URL.
+    NetworkStream(Box<crate::NetworkStreamConfig>),
 }
 
 /// Most fields one title carries; equals the title domain bound.
@@ -1756,6 +1759,14 @@ pub enum CommandPayload {
     ClearDisplayOutput {
         slot: crate::DisplayOutputSlot,
     },
+    /// Reconfigures network stream input `input` (Protocol 2.46, IN-015):
+    /// a new URL (`None` keeps the current one) and settings. A padlocked,
+    /// undoable project edit applied live.
+    SetNetworkStream {
+        input: WireInputId,
+        url: Option<crate::StreamUrl>,
+        settings: crate::NetworkStreamSettings,
+    },
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2170,6 +2181,9 @@ pub struct SnapshotMessage {
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
     pub display_output_states: Vec<crate::DisplayOutputStatus>,
+    /// Every network stream input, ascending, with its redacted config and
+    /// latest status (Protocol 2.46).
+    pub network_streams: Vec<crate::NetworkStreamEntry>,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2206,6 +2220,9 @@ pub enum EventPayload {
     InputAdded {
         input: WireInputId,
         name: String,
+        /// The redacted configuration of an added network stream (Protocol
+        /// 2.46); `None` for a generator.
+        network_stream: Option<Box<crate::NetworkStreamConfig>>,
     },
     /// An input left the show together with its Master strip and padlock.
     /// It was neither Program nor Preview nor otherwise on air; a settled-off
@@ -2299,6 +2316,12 @@ pub enum EventPayload {
     DisplayOutputChanged {
         slot: crate::DisplayOutputSlot,
         config: Option<Box<crate::DisplayOutputConfig>>,
+    },
+    /// A network stream input was reconfigured, or that edit was undone or
+    /// redone (Protocol 2.46). The URL is redacted.
+    NetworkStreamChanged {
+        input: WireInputId,
+        config: Box<crate::NetworkStreamConfig>,
     },
     /// An animation preset library edit (or its undo or redo) was accepted
     /// (Protocol 2.34).
@@ -2414,6 +2437,11 @@ pub enum RuntimeLifecycleEvent {
     DisplayOutputStatus(crate::DisplayOutputStatus),
     /// The connected displays changed (Protocol 2.42).
     DisplayInventory(crate::DisplayInventory),
+    /// A network stream input's receive status changed (Protocol 2.46).
+    NetworkStreamStatus {
+        input: WireInputId,
+        status: Box<crate::NetworkStreamStatus>,
+    },
 }
 
 /// Runtime progress references durable state but has an independent sequence.

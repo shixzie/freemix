@@ -1393,6 +1393,10 @@ impl Client {
         if let RuntimeLifecycleEvent::DisplayInventory(inventory) = &event.event {
             self.model.apply_display_inventory(inventory.clone());
         }
+        if let RuntimeLifecycleEvent::NetworkStreamStatus { input, status } = &event.event {
+            self.model
+                .apply_runtime_network_stream_status(input.to_domain(), (**status).clone())?;
+        }
         self.runtime_server = Some(event.server);
         self.runtime_sequence = Some((event.generation, event.sequence));
         Ok(())
@@ -1469,6 +1473,7 @@ impl Client {
             | CommandPayload::SetFadeToBlackOutput { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
+            | CommandPayload::SetNetworkStream { .. }
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

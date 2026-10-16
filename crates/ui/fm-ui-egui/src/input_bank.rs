@@ -411,6 +411,21 @@ impl StudioShell {
                 },
             );
         }
+        // A network stream input's receive state (IN-015).
+        let stream = state
+            .view
+            .as_ref()
+            .and_then(|view| view.network_stream(input));
+        if let Some(entry) = stream
+            && ui.is_rect_visible(rect)
+        {
+            crate::network_stream_ui::paint_stream_badge(
+                ui.painter(),
+                Rect::from_min_size(rect.min, Vec2::new(width, thumb_height)),
+                l,
+                &entry.status,
+            );
+        }
         let shortcut = if index < 8 {
             format!("  [{}]", index + 1)
         } else {
@@ -420,7 +435,11 @@ impl StudioShell {
             MonitorTap::Program => Msg::ThumbnailProgram,
             MonitorTap::Preview => Msg::ThumbnailPreview,
         }));
-        let status = tile_status_line(l, name, tile.lifecycle, tile.categories);
+        let mut status = tile_status_line(l, name, tile.lifecycle, tile.categories);
+        if let Some(entry) = stream {
+            status.push_str(" · ");
+            status.push_str(&crate::network_stream_ui::stream_details(l, entry));
+        }
         let hover = format!(
             "{status}\n{}\n{source}\n{}",
             tally.operator_label(l),

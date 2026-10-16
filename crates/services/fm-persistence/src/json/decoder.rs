@@ -489,9 +489,9 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
         "device" => InputKind::Device {
             stable_key: object.string("stable_key")?,
         },
-        "network" => InputKind::Network {
-            endpoint: object.string("endpoint")?,
-        },
+        "network_stream" => {
+            InputKind::NetworkStream(super::network_stream::parse_network_stream(&mut object)?)
+        }
         "scene" => InputKind::Scene {
             scene_id: SceneId::new(object.nonzero_u128("scene_id")?),
             audio_source: object.optional_input_id("audio_source")?,

@@ -689,8 +689,8 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
         InputKind::Device { stable_key } => {
             write_string_variant(output, "device", "stable_key", stable_key);
         }
-        InputKind::Network { endpoint } => {
-            write_string_variant(output, "network", "endpoint", endpoint);
+        InputKind::NetworkStream(config) => {
+            super::network_stream::write_network_stream(output, config);
         }
         InputKind::Scene {
             scene_id,

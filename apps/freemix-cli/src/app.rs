@@ -1204,6 +1204,89 @@ pub fn run(command: Command) -> AppResult<()> {
             expected_revision,
         )?,
         Command::RemoteDisplayOutputList { address } => remote::display_outputs(address)?,
+        Command::NetworkStreamInputAdd {
+            path,
+            input,
+            name,
+            config,
+        } => add_input_with_kind(
+            &path,
+            input_id(input)?,
+            name,
+            InputKind::NetworkStream(*config),
+        )?,
+        Command::RemoteNetworkStreamInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::NetworkStream(config),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::NetworkStreamSet {
+            path,
+            input,
+            options,
+            key,
+            expected_revision,
+        } => {
+            let input = input_id(input)?;
+            let current = inspect_engine(&path)?
+                .engine
+                .show()
+                .network_stream(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a network stream")))?;
+            let config = options
+                .configure(&current)
+                .map_err(|error| AppFailure(format!("invalid network stream: {error}")))?;
+            mutate(
+                &path,
+                EngineCommand::SetNetworkStream {
+                    input,
+                    config: Box::new(config),
+                },
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::RemoteNetworkStreamSet {
+            address,
+            input,
+            options,
+            key,
+            expected_revision,
+        } => {
+            remote::set_network_stream(
+                address,
+                input_id(input)?,
+                &options,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::NetworkStreamStatus { path } => {
+            let project = inspect_engine(&path)?;
+            // Nothing receives a project's streams: every one is idle.
+            remote::print_network_streams(project.engine.show().network_streams().map(
+                |(input, config)| fm_protocol::NetworkStreamEntry {
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    config: config.redacted(),
+                    status: fm_protocol::NetworkStreamStatus::default(),
+                },
+            ));
+        }
+        Command::RemoteNetworkStreamStatus { address } => remote::network_streams(address)?,
         Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
         Command::RemoteAudioStrip {
             address,
@@ -2186,6 +2269,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
     sync_input_lifecycle(&mut project, snapshot.show());
+    sync_network_streams(&mut project, snapshot.show())?;
     project.set_transition_favorites(*snapshot.show().transition_favorites());
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
@@ -2229,6 +2313,36 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
             .collect::<AppResult<Vec<_>>>()?,
     )?;
     ProjectStore::new(path)?.save(&stored)?;
+    Ok(())
+}
+
+/// Copies each network stream input's configuration the engine edited into
+/// the project (IN-015).
+fn sync_network_streams(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    for (input, config) in show.network_streams() {
+        let Some(current) = project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input)
+        else {
+            continue;
+        };
+        if matches!(&current.kind, InputKind::NetworkStream(stored) if stored == config) {
+            continue;
+        }
+        let capabilities = current.required_capabilities.clone();
+        project
+            .replace_input_source(
+                input,
+                InputKind::NetworkStream(config.clone()),
+                capabilities,
+            )
+            .map_err(|error| {
+                AppFailure(format!(
+                    "input {input}'s network stream could not be stored: {error}"
+                ))
+            })?;
+    }
     Ok(())
 }
 
@@ -4571,7 +4685,7 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::Color => "color",
         InputKind::Media { .. } => "media",
         InputKind::Device { .. } => "device",
-        InputKind::Network { .. } => "network",
+        InputKind::NetworkStream(_) => "network-stream",
         InputKind::Scene { .. } => "scene",
         InputKind::Simulated(_) => "simulated",
         InputKind::Alias { .. } => "alias",
@@ -4912,6 +5026,10 @@ Usage:
   freemix-cli display-output-set <show.freemix> <slot:1|2> <display=index:N|name:NAME|id:ID[,source=program|preview|output:ID][,mode=current|WxH[@HZ]][,scaling=fit|fill|stretch|1:1][,hdr=off|auto]> [--key <key>] [--expect <revision>]
   freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli display-output-list <show.freemix>
+  freemix-cli input-add-stream <show.freemix> <nonzero-input-id> <name> <rtsp|rtp|udp|tcp|http|https URL or .m3u8> [stream options]
+  freemix-cli input-stream-set <show.freemix> <input> [--url <url>] [stream options] [--key <key>] [--expect <revision>]
+  freemix-cli input-stream-status <show.freemix>
+    stream options: [--transport auto|tcp|udp] [--jitter-ms <40..=5000>] [--backoff-min-ms <100..=60000>] [--backoff-max-ms <100..=60000>] [--give-up never|<1..=10000>] [--timeout-ms <500..=60000>] [--stall freeze|black]
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
@@ -4919,6 +5037,9 @@ Usage:
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-add-stream <127.0.0.1:port> <input> <name> <url> [stream options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-stream-set <127.0.0.1:port> <input> [--url <url>] [stream options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-stream-status <127.0.0.1:port>
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>> [--key <key>] [--expect <revision>]

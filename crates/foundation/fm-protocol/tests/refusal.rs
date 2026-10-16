@@ -111,7 +111,7 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
 
 #[test]
 fn the_current_protocol_is_2_45() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 45));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 46));
 }
 
 #[test]

@@ -11,7 +11,7 @@ use fm_protocol::{
     WireMessage, WireOverlayChannelId, WireStingerSlotId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.45\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.46\tid=a\tidempotency_key=k";
 
 fn command(payload: CommandPayload) -> WireMessage {
     WireMessage::Command(CommandMessage {
@@ -32,7 +32,7 @@ fn round_trip(message: &WireMessage) -> String {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 45));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 46));
 }
 
 #[test]

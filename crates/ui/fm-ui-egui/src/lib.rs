@@ -54,6 +54,7 @@ mod menu;
 mod meter_ballistics;
 mod mixer;
 mod monitors;
+mod network_stream_ui;
 #[cfg(test)]
 mod offscreen;
 mod outputs;
@@ -2603,6 +2604,7 @@ mod tests {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             display_inventory: None,
+            network_streams: Vec::new(),
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {

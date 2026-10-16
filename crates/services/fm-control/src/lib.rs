@@ -22,6 +22,7 @@ mod display_output;
 mod grade;
 mod input_lifecycle;
 mod media;
+mod network_stream;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
@@ -514,11 +515,15 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 control
                     .input_offline
                     .retain(|input, _| control.engine.show().inputs().contains(input));
+                control
+                    .network_states
+                    .retain(|input, _| control.engine.show().network_stream(*input).is_some());
                 control.snapshot = snapshot_record(
                     &control.engine,
                     &control.identity,
                     &control.input_offline,
                     &control.display_states,
+                    &control.network_states,
                 );
 
                 let live_events = submission
@@ -789,6 +794,9 @@ pub struct ControlService<A = Policy> {
     display_states: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
     /// The connected displays as the presenter last reported them (OR-011).
     display_inventory: fm_protocol::DisplayInventory,
+    /// Each network stream input's receive status as the media plane last
+    /// reported it (IN-015).
+    network_states: BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -822,7 +830,13 @@ impl<A: AuthorizationHook> ControlService<A> {
             state_epoch: engine.state_epoch().get(),
             log_id: log_id.into(),
         };
-        let snapshot = snapshot_record(&engine, &identity, &BTreeMap::new(), &BTreeMap::new());
+        let snapshot = snapshot_record(
+            &engine,
+            &identity,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         Self {
             engine,
             authorizer,
@@ -844,6 +858,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             input_offline: BTreeMap::new(),
             display_states: BTreeMap::new(),
             display_inventory: fm_protocol::DisplayInventory::default(),
+            network_states: BTreeMap::new(),
         }
     }
 
@@ -956,6 +971,67 @@ impl<A: AuthorizationHook> ControlService<A> {
                 slot,
                 state,
             }),
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// Every network stream input's configuration, URL credentials
+    /// included, for the media plane that receives it (IN-015). Never put
+    /// these on the wire or in logs unredacted.
+    #[must_use]
+    pub fn network_stream_configs(
+        &self,
+    ) -> Vec<(InputId, fm_types::network_stream::NetworkStreamConfig)> {
+        self.engine
+            .show()
+            .network_streams()
+            .map(|(input, config)| (input, config.clone()))
+            .collect()
+    }
+
+    /// Each network stream input's receive status as last reported
+    /// (IN-015).
+    #[must_use]
+    pub const fn network_stream_states(
+        &self,
+    ) -> &BTreeMap<InputId, fm_protocol::NetworkStreamStatus> {
+        &self.network_states
+    }
+
+    /// Records network stream input `input`'s receive status as the media
+    /// plane observes it (IN-015). A change refreshes the snapshot and
+    /// returns the published `network_stream_status` runtime event; an
+    /// unchanged status, or an input that is not a network stream, returns
+    /// `None`. The status's error text must already be redacted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_network_stream_status(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        status: fm_protocol::NetworkStreamStatus,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        if self.engine.show().network_stream(input).is_none()
+            || self.network_states.get(&input) == Some(&status)
+        {
+            return Ok(None);
+        }
+        self.network_states.insert(input, status.clone());
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::NetworkStreamStatus {
+                input: WireInputId::from_domain(input),
+                status: Box::new(status),
+            },
         )?;
         let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
         Ok(Some(event))
@@ -1449,7 +1525,14 @@ impl<A: AuthorizationHook> ControlService<A> {
             }));
         }
 
-        let command = engine_command(&message.payload);
+        let command = match &message.payload {
+            CommandPayload::SetNetworkStream {
+                input,
+                url,
+                settings,
+            } => network_stream::engine_command(self.engine.show(), *input, url.as_ref(), settings),
+            payload => engine_command(payload),
+        };
         let replay_payload = history_target
             .as_ref()
             .and_then(wire_edit_payload)
@@ -1648,6 +1731,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &self.identity,
             &self.input_offline,
             &self.display_states,
+            &self.network_states,
         );
     }
 
@@ -1880,7 +1964,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SceneLayer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
-        | EngineCommand::SetDisplayOutput { .. } => "project",
+        | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetNetworkStream { .. } => "project",
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::Media(_) => "media",
@@ -1952,7 +2037,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::SetDisplayOutput { .. }
-        | CommandPayload::ClearDisplayOutput { .. } => CommandClass::EditProject,
+        | CommandPayload::ClearDisplayOutput { .. }
+        | CommandPayload::SetNetworkStream { .. } => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -2091,6 +2177,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }) => {
             display_output::engine_command(payload).expect("a display-output payload")
+        }
+        CommandPayload::SetNetworkStream { .. } => {
+            unreachable!("network stream edits resolve their URL against the show")
         }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
@@ -2341,7 +2430,7 @@ fn input_catalogue_engine_command(payload: &CommandPayload) -> EngineCommand {
         } => EngineCommand::AddInput {
             input: input.to_domain(),
             name: name.clone(),
-            source: engine_input_source(*source),
+            source: engine_input_source(source),
         },
         CommandPayload::RemoveInput { input } => EngineCommand::RemoveInput {
             input: input.to_domain(),
@@ -2350,7 +2439,7 @@ fn input_catalogue_engine_command(payload: &CommandPayload) -> EngineCommand {
     }
 }
 
-const fn engine_input_source(source: LiveInputSource) -> EngineInputSource {
+fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
     match source {
         LiveInputSource::Solid {
             red,
@@ -2358,16 +2447,17 @@ const fn engine_input_source(source: LiveInputSource) -> EngineInputSource {
             blue,
             alpha,
         } => EngineInputSource::Solid {
-            red,
-            green,
-            blue,
-            alpha,
+            red: *red,
+            green: *green,
+            blue: *blue,
+            alpha: *alpha,
         },
         LiveInputSource::Bars => EngineInputSource::Bars,
+        LiveInputSource::NetworkStream(config) => EngineInputSource::NetworkStream(config.clone()),
     }
 }
 
-const fn wire_input_source(source: EngineInputSource) -> LiveInputSource {
+fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
     match source {
         EngineInputSource::Solid {
             red,
@@ -2375,12 +2465,13 @@ const fn wire_input_source(source: EngineInputSource) -> LiveInputSource {
             blue,
             alpha,
         } => LiveInputSource::Solid {
-            red,
-            green,
-            blue,
-            alpha,
+            red: *red,
+            green: *green,
+            blue: *blue,
+            alpha: *alpha,
         },
         EngineInputSource::Bars => LiveInputSource::Bars,
+        EngineInputSource::NetworkStream(config) => LiveInputSource::NetworkStream(config.clone()),
     }
 }
 
@@ -2430,6 +2521,7 @@ fn history_target(engine: &Engine, payload: &CommandPayload) -> Option<EngineCom
 ///
 /// Returns `None` for commands that are not project edits; history entries
 /// only ever hold project edits.
+#[allow(clippy::too_many_lines)] // one flat arm per undoable edit
 fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
     Some(match command {
         EngineCommand::RenameInput { input, name } => CommandPayload::RenameInput {
@@ -2450,7 +2542,7 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         } => CommandPayload::AddInput {
             input: WireInputId::from_domain(*input),
             name: name.clone(),
-            source: wire_input_source(*source),
+            source: wire_input_source(source),
         },
         EngineCommand::RemoveInput { input } => CommandPayload::RemoveInput {
             input: WireInputId::from_domain(*input),
@@ -2528,6 +2620,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         }
         command @ EngineCommand::SetDisplayOutput { .. } => {
             return display_output::wire_edit_payload(command);
+        }
+        command @ EngineCommand::SetNetworkStream { .. } => {
+            return network_stream::wire_edit_payload(command);
         }
         _ => return None,
     })
@@ -2867,6 +2962,13 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     {
         return payload;
     }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| network_stream::changed(&event.payload))
+    {
+        return payload;
+    }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
             return None;
@@ -2953,9 +3055,18 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         .events
         .iter()
         .find_map(|event| match &event.payload {
-            EngineEvent::InputAdded { input, name, .. } => Some(EventPayload::InputAdded {
+            EngineEvent::InputAdded {
+                input,
+                name,
+                source,
+            } => Some(EventPayload::InputAdded {
                 input: WireInputId::from_domain(*input),
                 name: name.clone(),
+                // The event reports a network stream's URL redacted.
+                network_stream: match source {
+                    EngineInputSource::NetworkStream(config) => Some(Box::new(config.redacted())),
+                    _ => None,
+                },
             }),
             EngineEvent::InputRemoved { input } => Some(EventPayload::InputRemoved {
                 input: WireInputId::from_domain(*input),
@@ -3028,6 +3139,7 @@ fn snapshot_record(
     identity: &EngineIdentity,
     offline: &BTreeMap<InputId, fm_protocol::InputOfflineReason>,
     display_states: &BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
+    network_states: &BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
@@ -3098,6 +3210,7 @@ fn snapshot_record(
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
+        network_streams: network_stream::wire_entries(engine.show(), network_states),
     };
     SnapshotRecord {
         cursor: EventCursor {

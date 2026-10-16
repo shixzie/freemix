@@ -1990,7 +1990,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AddInputIntro,
         t(
-            "Añade al final del banco una entrada generada en vivo, con audio en silencio y un canal de mezclador predeterminado. Las entradas de medios, captura y red se añaden sin conexión.",
+            "Añade al final del banco una entrada generada en vivo o un flujo de red, con un canal de mezclador predeterminado. Las entradas de medios y captura se añaden sin conexión.",
         ),
     ),
     (Msg::AddInputKind, t("Tipo")),
@@ -2003,6 +2003,109 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Un color sólido a pantalla completa"),
     ),
     (Msg::KindBarsHover, t("Señal de prueba de barras de color")),
+    (Msg::NameNetworkStream, t("Flujo de red")),
+    (Msg::KindNetworkKey, t("FLUJO DE RED")),
+    (
+        Msg::KindNetworkHover,
+        t(
+            "Recibe un flujo RTSP, RTP, UDP, TCP o HTTP MPEG-TS, o una lista HLS, con un búfer de fluctuación acotado y reconexión automática",
+        ),
+    ),
+    (Msg::NsUrl, t("URL del flujo")),
+    (
+        Msg::NsUrlHover,
+        t(
+            "Dirección rtsp://, rtp://, udp://, tcp://, http:// o https:// del flujo (una dirección .m3u8 es HLS). Las credenciales de la URL se guardan con el proyecto pero no se vuelven a mostrar",
+        ),
+    ),
+    (Msg::NsTransport, t("Transporte RTSP")),
+    (Msg::NsTransportAuto, t("AUTO")),
+    (Msg::NsTransportTcp, t("TCP")),
+    (Msg::NsTransportUdp, t("UDP")),
+    (
+        Msg::NsTransportHover,
+        t(
+            "Cómo transporta su contenido un flujo RTSP: Auto deja elegir al servidor, TCP lo intercala en la conexión de control (atraviesa cortafuegos), UDP tiene la menor latencia",
+        ),
+    ),
+    (Msg::NsJitter, t("Búfer de fluctuación (ms)")),
+    (
+        Msg::NsJitterHover,
+        t(
+            "Latencia que la entrada retiene para absorber la fluctuación de red, de 40 a 5000 ms; el búfer nunca guarda más del doble",
+        ),
+    ),
+    (Msg::NsBackoffMin, t("Primer reintento tras (ms)")),
+    (
+        Msg::NsBackoffMinHover,
+        t(
+            "Espera antes del primer intento de reconexión; cada intento siguiente la duplica hasta el máximo",
+        ),
+    ),
+    (Msg::NsBackoffMax, t("Espera máxima entre reintentos (ms)")),
+    (
+        Msg::NsBackoffMaxHover,
+        t("La espera más larga entre intentos de reconexión, de 100 a 60000 ms"),
+    ),
+    (Msg::NsGiveUp, t("Abandonar tras (intentos)")),
+    (
+        Msg::NsGiveUpHover,
+        t(
+            "Intentos de reconexión seguidos antes de que la entrada muestre FALLIDO; 0 reintenta mientras la entrada esté abierta",
+        ),
+    ),
+    (Msg::NsTimeout, t("Tiempo de espera (ms)")),
+    (
+        Msg::NsTimeoutHover,
+        t(
+            "Cuánto tiempo sin datos antes de dar el flujo por perdido y reconectar, de 500 a 60000 ms",
+        ),
+    ),
+    (Msg::NsStall, t("Durante un corte")),
+    (Msg::NsStallFreeze, t("MANTENER ÚLTIMO CUADRO")),
+    (
+        Msg::NsStallFreezeHover,
+        t(
+            "Mientras el flujo se corta o reconecta, la entrada mantiene su última imagen y su audio se desvanece a silencio",
+        ),
+    ),
+    (
+        Msg::NsStallBlackHover,
+        t(
+            "Mientras el flujo se corta o reconecta, la entrada muestra negro y su audio se desvanece a silencio",
+        ),
+    ),
+    (Msg::NsReasonUrlEmpty, t("escribe la URL del flujo")),
+    (
+        Msg::NsReasonUrlInvalid,
+        t("la URL no es una dirección de flujo rtsp, rtp, udp, tcp, http o https"),
+    ),
+    (
+        Msg::NsReasonTransport,
+        t("el transporte solo se aplica a flujos rtsp://"),
+    ),
+    (
+        Msg::NsReasonBackoff,
+        t("la primera espera no puede superar la máxima"),
+    ),
+    (
+        Msg::NsReasonSettings,
+        t("un ajuste del flujo está fuera de rango"),
+    ),
+    (Msg::NsBadgeIdle, t("INACTIVO")),
+    (Msg::NsBadgeBuffering, t("ALMACENANDO")),
+    (Msg::NsBadgeStalled, t("CORTADO")),
+    (Msg::NsBadgeReconnecting, t("RECONECTANDO {attempt}")),
+    (Msg::NsDetailStream, t("Flujo de red {url}: {state}")),
+    (Msg::NsDetailRates, t("{kbps} kb/s, {buffer} ms en búfer")),
+    (
+        Msg::NsDetailCounters,
+        t("{dropped} cuadros descartados, {late} tardíos, {reconnects} reconexiones"),
+    ),
+    (
+        Msg::NsDetailNextAttempt,
+        t("Próximo intento en {seconds} s"),
+    ),
     (Msg::AddInputName, t("Nombre")),
     (Msg::NameSuggested, t("Nombre único sugerido")),
     (Msg::NameFree, t("El nombre está libre")),

@@ -92,6 +92,8 @@ pub struct CatalogueRefusal {
 pub enum NewInputKind {
     Solid,
     Bars,
+    /// A network stream input (IN-015).
+    Network,
 }
 
 impl NewInputKind {
@@ -105,6 +107,7 @@ impl NewInputKind {
         match self {
             Self::Solid => Msg::NameSolidColour,
             Self::Bars => Msg::NameColourBars,
+            Self::Network => Msg::NameNetworkStream,
         }
     }
 
@@ -112,6 +115,7 @@ impl NewInputKind {
         match self {
             Self::Solid => Msg::KindSolidKey,
             Self::Bars => Msg::KindBarsKey,
+            Self::Network => Msg::KindNetworkKey,
         }
     }
 
@@ -119,6 +123,7 @@ impl NewInputKind {
         match self {
             Self::Solid => Msg::KindSolidHover,
             Self::Bars => Msg::KindBarsHover,
+            Self::Network => Msg::KindNetworkHover,
         }
     }
 }
@@ -407,7 +412,7 @@ pub(crate) fn add_input_intent(
     Ok(StudioIntent::AddInput {
         input,
         name: draft.name.trim().to_owned(),
-        source: draft.source(),
+        source: draft.source()?,
     })
 }
 
@@ -419,6 +424,8 @@ pub(crate) struct AddInputDraft {
     /// The operator typed a name; kind changes no longer re-suggest one.
     pub(crate) name_edited: bool,
     pub(crate) color: Color32,
+    /// The stream form of a network stream input (IN-015).
+    pub(crate) stream: crate::network_stream_ui::NetworkStreamDraft,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -445,6 +452,7 @@ impl AddInputDraft {
             name: localized_input_name(tracker.locale, kind, &tracker.taken_names(state)),
             name_edited: false,
             color: COLOUR_PRESETS[5].1,
+            stream: crate::network_stream_ui::NetworkStreamDraft::default(),
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -458,8 +466,9 @@ impl AddInputDraft {
         }
     }
 
-    pub(crate) const fn source(&self) -> LiveInputSource {
-        match self.kind {
+    /// The new input's source, or why the stream form is unusable.
+    pub(crate) fn source(&self) -> Result<LiveInputSource, &'static str> {
+        Ok(match self.kind {
             NewInputKind::Solid => LiveInputSource::Solid {
                 red: self.color.r(),
                 green: self.color.g(),
@@ -467,7 +476,10 @@ impl AddInputDraft {
                 alpha: 255,
             },
             NewInputKind::Bars => LiveInputSource::Bars,
-        }
+            NewInputKind::Network => {
+                LiveInputSource::NetworkStream(Box::new(self.stream.config()?))
+            }
+        })
     }
 }
 
@@ -900,7 +912,11 @@ impl StudioShell {
                 ui.label(section_label(l.text(Msg::AddInputKind)));
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    for kind in [NewInputKind::Solid, NewInputKind::Bars] {
+                    for kind in [
+                        NewInputKind::Solid,
+                        NewInputKind::Bars,
+                        NewInputKind::Network,
+                    ] {
                         let selected = draft.kind == kind;
                         let response = ui
                             .add(kind_key(l.text(kind.key_label()), selected))
@@ -954,6 +970,10 @@ impl StudioShell {
                                 .color(muted_color()),
                         );
                     }
+                }
+                if draft.kind == NewInputKind::Network {
+                    ui.add_space(6.0);
+                    crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
                 }
                 ui.add_space(6.0);
                 ui.horizontal_top(|ui| {
@@ -1324,6 +1344,16 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 );
             }
         }
+        // A stream shows nothing until it connects.
+        NewInputKind::Network => {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                l.text(Msg::ConnConnecting),
+                FontId::new(10.0, FontFamily::Proportional),
+                muted_color(),
+            );
+        }
     }
     if let Some(input) = next_id {
         let tag = painter.layout_no_wrap(
@@ -1386,6 +1416,7 @@ mod tests {
             fade_to_black_excluded_outputs: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
+            network_streams: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -2054,7 +2085,7 @@ mod tests {
         let mut draft = AddInputDraft::new(&state, &CatalogueTracker::default());
         draft.color = Color32::from_rgb(0xAB, 0x0C, 0xFF);
         assert_eq!(
-            draft.source(),
+            draft.source().unwrap(),
             LiveInputSource::Solid {
                 red: 0xab,
                 green: 0x0c,

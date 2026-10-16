@@ -76,6 +76,7 @@ fn control() -> FakeControl {
         fade_to_black_excluded_outputs: Vec::new(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
+        network_streams: Vec::new(),
         engine: engine.clone(),
         revision: 4,
         show_name: "show".into(),

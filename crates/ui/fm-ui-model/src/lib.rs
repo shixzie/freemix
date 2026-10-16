@@ -453,6 +453,9 @@ pub struct ProjectSnapshot {
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
     pub display_output_states: Vec<fm_protocol::DisplayOutputStatus>,
+    /// Every network stream input, ascending, with its redacted config and
+    /// status (Protocol 2.46).
+    pub network_streams: Vec<fm_protocol::NetworkStreamEntry>,
 }
 
 impl ProjectSnapshot {
@@ -546,6 +549,7 @@ impl ProjectSnapshot {
                 .collect(),
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
+            network_streams: message.network_streams,
         }
     }
 }
@@ -565,6 +569,9 @@ pub enum DurableChange {
     InputAdded {
         input: InputId,
         name: String,
+        /// The redacted configuration of an added network stream (Protocol
+        /// 2.46).
+        network_stream: Option<Box<fm_protocol::NetworkStreamConfig>>,
     },
     /// An input removed with its strip and padlock.
     InputRemoved {
@@ -667,6 +674,12 @@ pub enum DurableChange {
         slot: fm_protocol::DisplayOutputSlot,
         config: Option<Box<fm_protocol::DisplayOutputConfig>>,
     },
+    /// A network stream input was reconfigured (Protocol 2.46); the URL is
+    /// redacted.
+    NetworkStreamChanged {
+        input: InputId,
+        config: Box<fm_protocol::NetworkStreamConfig>,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -734,10 +747,21 @@ impl DurableProjectEvent {
                 input: input.to_domain(),
                 name,
             },
-            EventPayload::InputAdded { input, name } => DurableChange::InputAdded {
+            EventPayload::InputAdded {
+                input,
+                name,
+                network_stream,
+            } => DurableChange::InputAdded {
                 input: input.to_domain(),
                 name,
+                network_stream,
             },
+            EventPayload::NetworkStreamChanged { input, config } => {
+                DurableChange::NetworkStreamChanged {
+                    input: input.to_domain(),
+                    config,
+                }
+            }
             EventPayload::InputRemoved { input } => DurableChange::InputRemoved {
                 input: input.to_domain(),
             },
@@ -958,9 +982,19 @@ pub struct ProjectState {
     /// unconfigured slots too.
     display_output_states:
         BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
+    /// Every network stream input's redacted config and latest status
+    /// (Protocol 2.46).
+    network_streams: BTreeMap<InputId, fm_protocol::NetworkStreamEntry>,
 }
 
 impl ProjectState {
+    /// Network stream input `input`'s redacted config and latest status
+    /// (Protocol 2.46).
+    #[must_use]
+    pub fn network_stream(&self, input: InputId) -> Option<&fm_protocol::NetworkStreamEntry> {
+        self.network_streams.get(&input)
+    }
+
     /// Returns every configured display-output slot (Protocol 2.42).
     #[must_use]
     pub const fn display_outputs(
@@ -1286,9 +1320,21 @@ pub struct ClientView {
     /// The connected displays as the daemon last reported them (Protocol
     /// 2.42); `None` until a `display_inventory` arrives.
     pub display_inventory: Option<fm_protocol::DisplayInventory>,
+    /// Every network stream input, ascending, with its redacted config and
+    /// latest status (Protocol 2.46).
+    pub network_streams: Vec<fm_protocol::NetworkStreamEntry>,
 }
 
 impl ClientView {
+    /// Network stream input `input`'s redacted config and latest status,
+    /// if it is a network stream (Protocol 2.46).
+    #[must_use]
+    pub fn network_stream(&self, input: InputId) -> Option<&fm_protocol::NetworkStreamEntry> {
+        self.network_streams
+            .iter()
+            .find(|entry| entry.input.to_domain() == input)
+    }
+
     /// Slot `slot`'s configuration, if it is configured.
     #[must_use]
     pub fn display_output(
@@ -1917,9 +1963,28 @@ impl ClientModel {
         self.display_inventory.as_ref()
     }
 
+    /// Records a network stream input's receive status from a
+    /// `network_stream_status` runtime event (Protocol 2.46). Runtime events
+    /// never move the durable cursor; a status for an input the model does
+    /// not know as a network stream is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_network_stream_status(
+        &mut self,
+        input: InputId,
+        status: fm_protocol::NetworkStreamStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if let Some(entry) = state.network_streams.get_mut(&input) {
+            entry.status = status;
+        }
+        Ok(())
+    }
+
     /// Records a display-output slot's runtime state from a
-    /// `display_output_status` runtime event (Protocol 2.42). Runtime
-    /// events never move the durable cursor.
+    /// `display_output_status` runtime event (Protocol 2.42).
     ///
     /// # Errors
     ///
@@ -1998,6 +2063,12 @@ impl ClientModel {
                 })
                 .collect(),
             display_inventory: self.display_inventory.clone(),
+            network_streams: state
+                .network_streams
+                .values()
+                .filter(|entry| state.inputs.contains(&entry.input.to_domain()))
+                .cloned()
+                .collect(),
         })
     }
 
@@ -2219,6 +2290,11 @@ impl ClientModel {
                 .display_output_states
                 .into_iter()
                 .map(|status| (status.slot, status.state))
+                .collect(),
+            network_streams: snapshot
+                .network_streams
+                .into_iter()
+                .map(|entry| (entry.input.to_domain(), entry))
                 .collect(),
         });
         self.applied_events.clear();
@@ -3485,7 +3561,8 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidTransitionFavorite(*slot))
             };
         }
-        DurableChange::EditLockChanged {
+        DurableChange::NetworkStreamChanged { input, .. }
+        | DurableChange::EditLockChanged {
             target: EditLockTarget::Input(input),
             ..
         } => {
@@ -3552,7 +3629,7 @@ fn validate_input_catalogue_change(
     state: &ProjectState,
 ) -> Result<(), ModelError> {
     match change {
-        DurableChange::InputAdded { input, name } => {
+        DurableChange::InputAdded { input, name, .. } => {
             if state.inputs.contains(input) {
                 return Err(ModelError::DuplicateInput(*input));
             }
@@ -3660,9 +3737,58 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 .expect("validated rename input must exist");
             state.input_names[index] = name;
         }
-        DurableChange::InputAdded { input, name } => apply_input_added(state, input, name),
-        DurableChange::InputRemoved { input } => apply_input_removed(state, input),
+        DurableChange::InputAdded {
+            input,
+            name,
+            network_stream,
+        } => {
+            if let Some(config) = network_stream {
+                state.network_streams.insert(
+                    input,
+                    fm_protocol::NetworkStreamEntry {
+                        input: fm_protocol::WireInputId::from_domain(input),
+                        config: *config,
+                        status: fm_protocol::NetworkStreamStatus::default(),
+                    },
+                );
+            }
+            apply_input_added(state, input, name);
+        }
+        DurableChange::InputRemoved { input } => {
+            state.network_streams.remove(&input);
+            apply_input_removed(state, input);
+        }
+        DurableChange::NetworkStreamChanged { input, config } => {
+            let entry = state.network_streams.entry(input).or_insert_with(|| {
+                fm_protocol::NetworkStreamEntry {
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    config: (*config).clone(),
+                    status: fm_protocol::NetworkStreamStatus::default(),
+                }
+            });
+            entry.config = *config;
+        }
         DurableChange::InputLifecycleChanged { operation, added } => {
+            if let fm_protocol::InputLifecycleOperation::ReplaceSource { input, source } =
+                &operation
+            {
+                let input = input.to_domain();
+                match source {
+                    fm_protocol::WireInputSource::Network { endpoint } => {
+                        state.network_streams.insert(
+                            input,
+                            fm_protocol::NetworkStreamEntry {
+                                input: fm_protocol::WireInputId::from_domain(input),
+                                config: fm_protocol::NetworkStreamConfig::new(endpoint.clone()),
+                                status: fm_protocol::NetworkStreamStatus::default(),
+                            },
+                        );
+                    }
+                    _ => {
+                        state.network_streams.remove(&input);
+                    }
+                }
+            }
             input_lifecycle::apply(state, operation, added);
         }
         DurableChange::AudioMixerChanged(operation) => {

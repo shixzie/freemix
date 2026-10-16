@@ -61,8 +61,8 @@ pub fn wire_source(source: &InputSourceSpec) -> WireInputSource {
         InputSourceSpec::Device { stable_key } => WireInputSource::Device {
             stable_key: stable_key.clone(),
         },
-        InputSourceSpec::Network { endpoint } => WireInputSource::Network {
-            endpoint: endpoint.clone(),
+        InputSourceSpec::Network(config) => WireInputSource::Network {
+            endpoint: config.url.clone(),
         },
     }
 }
@@ -84,9 +84,11 @@ pub fn model_source(source: &WireInputSource) -> InputSourceSpec {
         WireInputSource::Device { stable_key } => InputSourceSpec::Device {
             stable_key: stable_key.clone(),
         },
-        WireInputSource::Network { endpoint } => InputSourceSpec::Network {
-            endpoint: endpoint.clone(),
-        },
+        // A replaced network source takes the new URL with default
+        // settings; `input_stream_set` edits them (IN-015).
+        WireInputSource::Network { endpoint } => InputSourceSpec::Network(
+            fm_types::network_stream::NetworkStreamConfig::new(endpoint.clone()),
+        ),
     }
 }
 
@@ -296,8 +298,17 @@ pub fn lifecycle_changed(
     added: &[(InputId, String)],
     refused: &[(usize, BatchImportRefusal)],
 ) -> EventPayload {
+    let mut operation = wire_operation(edit);
+    // The event reports a network URL redacted (IN-015).
+    if let InputLifecycleOperation::ReplaceSource {
+        source: WireInputSource::Network { endpoint },
+        ..
+    } = &mut operation
+    {
+        *endpoint = fm_types::network_stream::redact_stream_url(endpoint);
+    }
     EventPayload::InputLifecycleChanged {
-        operation: wire_operation(edit),
+        operation,
         added: added
             .iter()
             .map(|(input, name)| AddedInput {

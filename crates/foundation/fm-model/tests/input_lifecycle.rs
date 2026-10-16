@@ -269,9 +269,9 @@ fn replaceable_sources_map_to_and_from_input_kinds() {
         InputSourceSpec::Device {
             stable_key: "usb:cam".into(),
         },
-        InputSourceSpec::Network {
-            endpoint: "srt://host:9000".into(),
-        },
+        InputSourceSpec::Network(fm_types::network_stream::NetworkStreamConfig::new(
+            "udp://@:9000",
+        )),
     ] {
         assert_eq!(source.validate(), Ok(()));
         let kind = source.to_kind(playback);

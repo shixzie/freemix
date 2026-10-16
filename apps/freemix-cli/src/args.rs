@@ -1,6 +1,10 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use fm_model::{DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy, StreamLadder, StreamLadderRung};
+use fm_types::network_stream::{
+    GiveUp, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings, RtspTransport,
+    StallSlate, StreamUrl,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManualTransitionKind {
@@ -1001,6 +1005,48 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Adds a network stream input to a project (IN-015).
+    NetworkStreamInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        config: Box<NetworkStreamConfig>,
+    },
+    /// Adds a network stream input to a running daemon (IN-015).
+    RemoteNetworkStreamInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        config: Box<NetworkStreamConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Edits a project's network stream input; omitted options keep the
+    /// input's current values.
+    NetworkStreamSet {
+        path: PathBuf,
+        input: u128,
+        options: NetworkStreamOptions,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Edits a running daemon's network stream input; omitted options keep
+    /// the input's current values.
+    RemoteNetworkStreamSet {
+        address: SocketAddr,
+        input: u128,
+        options: NetworkStreamOptions,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists a project's network stream inputs (idle: nothing receives).
+    NetworkStreamStatus {
+        path: PathBuf,
+    },
+    /// Lists a running daemon's network stream inputs with their status.
+    RemoteNetworkStreamStatus {
+        address: SocketAddr,
+    },
     RemoteInputRemove {
         address: SocketAddr,
         input: u128,
@@ -1302,6 +1348,9 @@ pub enum ArgsError {
     },
     /// A display-output spec does not parse (OR-011).
     InvalidDisplayOutput(String),
+    /// A network stream URL or setting is unusable (IN-015). Never names
+    /// the URL, which may carry credentials.
+    InvalidNetworkStream(NetworkStreamError),
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1319,6 +1368,9 @@ impl core::fmt::Display for ArgsError {
             Self::InvalidLadder(error) => write!(formatter, "{error}"),
             Self::InvalidDisplayOutput(error) => {
                 write!(formatter, "invalid display-output spec: {error}")
+            }
+            Self::InvalidNetworkStream(error) => {
+                write!(formatter, "invalid network stream: {error}")
             }
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
@@ -1619,6 +1671,12 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-rename" => parse_remote_rename(arguments),
         "remote-input-reorder" => parse_reorder(arguments, true),
         "remote-input-add" => parse_remote_input_add(arguments),
+        stream @ ("input-add-stream"
+        | "remote-input-add-stream"
+        | "input-stream-set"
+        | "remote-input-stream-set"
+        | "input-stream-status"
+        | "remote-input-stream-status") => parse_network_stream(stream, arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -4341,6 +4399,239 @@ fn parse_remote_input_add(
         source,
         key,
         expected_revision,
+    })
+}
+
+/// Changes to a network stream input's configuration; `None` keeps the
+/// current value (IN-015).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NetworkStreamOptions {
+    /// A new URL; its `Debug` output is redacted.
+    pub url: Option<StreamUrl>,
+    pub transport: Option<RtspTransport>,
+    pub jitter_buffer_ms: Option<u32>,
+    pub backoff_min_ms: Option<u32>,
+    pub backoff_max_ms: Option<u32>,
+    pub give_up: Option<GiveUp>,
+    pub timeout_ms: Option<u32>,
+    pub stall: Option<StallSlate>,
+}
+
+impl NetworkStreamOptions {
+    /// `settings` with every given option applied.
+    #[must_use]
+    pub fn apply(&self, mut settings: NetworkStreamSettings) -> NetworkStreamSettings {
+        if let Some(transport) = self.transport {
+            settings.transport = transport;
+        }
+        if let Some(jitter) = self.jitter_buffer_ms {
+            settings.jitter_buffer_ms = jitter;
+        }
+        if let Some(minimum) = self.backoff_min_ms {
+            settings.reconnect.backoff_min_ms = minimum;
+        }
+        if let Some(maximum) = self.backoff_max_ms {
+            settings.reconnect.backoff_max_ms = maximum;
+        }
+        if let Some(give_up) = self.give_up {
+            settings.reconnect.give_up = give_up;
+        }
+        if let Some(timeout) = self.timeout_ms {
+            settings.timeout_ms = timeout;
+        }
+        if let Some(stall) = self.stall {
+            settings.stall = stall;
+        }
+        settings
+    }
+
+    /// `config` with every given option applied, validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first problem with the result.
+    pub fn configure(
+        &self,
+        config: &NetworkStreamConfig,
+    ) -> Result<NetworkStreamConfig, NetworkStreamError> {
+        let configured = NetworkStreamConfig {
+            url: self
+                .url
+                .as_ref()
+                .map_or_else(|| config.url.clone(), |url| url.as_str().to_owned()),
+            settings: self.apply(config.settings),
+        };
+        configured.validate()?;
+        Ok(configured)
+    }
+}
+
+/// Parses the network stream options and `--key`/`--expect`:
+/// `[--url <url>] [--transport auto|tcp|udp] [--jitter-ms <ms>]
+/// [--backoff-min-ms <ms>] [--backoff-max-ms <ms>] [--give-up never|<n>]
+/// [--timeout-ms <ms>] [--stall freeze|black]`.
+fn network_stream_options(
+    mut arguments: impl Iterator<Item = String>,
+    allow_url: bool,
+) -> Result<(NetworkStreamOptions, Option<String>, Option<u64>), ArgsError> {
+    let mut options = NetworkStreamOptions::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--url" if allow_url => {
+                options.url = Some(StreamUrl::new(nonblank(&mut arguments, "stream URL")?));
+            }
+            "--transport" => {
+                let value = required(&mut arguments, "transport")?;
+                options.transport = Some(RtspTransport::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "transport",
+                        value,
+                    },
+                )?);
+            }
+            "--jitter-ms" => {
+                options.jitter_buffer_ms =
+                    Some(number(&required(&mut arguments, "jitter")?, "jitter")?);
+            }
+            "--backoff-min-ms" => {
+                options.backoff_min_ms = Some(number(
+                    &required(&mut arguments, "minimum backoff")?,
+                    "minimum backoff",
+                )?);
+            }
+            "--backoff-max-ms" => {
+                options.backoff_max_ms = Some(number(
+                    &required(&mut arguments, "maximum backoff")?,
+                    "maximum backoff",
+                )?);
+            }
+            "--give-up" => {
+                let value = required(&mut arguments, "give-up policy")?;
+                options.give_up =
+                    Some(GiveUp::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                        field: "give-up policy",
+                        value,
+                    })?);
+            }
+            "--timeout-ms" => {
+                options.timeout_ms =
+                    Some(number(&required(&mut arguments, "timeout")?, "timeout")?);
+            }
+            "--stall" => {
+                let value = required(&mut arguments, "stall slate")?;
+                options.stall = Some(StallSlate::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "stall slate",
+                        value,
+                    },
+                )?);
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok((options, key, expected_revision))
+}
+
+/// Parses the network stream input commands (IN-015):
+/// `input-add-stream <project> <input> <name> <url> [options]`,
+/// `remote-input-add-stream <address> <input> <name> <url> [options]
+/// [--key <key>] [--expect <revision>]`,
+/// `input-stream-set <project> <input> [--url <url>] [options]
+/// [--key <key>] [--expect <revision>]`, its `remote-` form, and
+/// `input-stream-status <project>` / `remote-input-stream-status <address>`.
+fn parse_network_stream(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command.strip_prefix("remote-").unwrap_or(command);
+    if action == "input-stream-status" {
+        reject_extra(&mut arguments)?;
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::NetworkStreamStatus { path },
+            (None, Some(address)) => Command::RemoteNetworkStreamStatus { address },
+            (None, None) => unreachable!("a network stream command names a target"),
+        });
+    }
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    if action == "input-add-stream" {
+        let name = nonblank(&mut arguments, "input name")?;
+        let url = nonblank(&mut arguments, "stream URL")?;
+        let (options, key, expected_revision) = network_stream_options(arguments, false)?;
+        let config = Box::new(
+            options
+                .configure(&NetworkStreamConfig::new(url))
+                .map_err(ArgsError::InvalidNetworkStream)?,
+        );
+        return match (path, address) {
+            (Some(path), _) => {
+                if key.is_some() || expected_revision.is_some() {
+                    return Err(ArgsError::UnknownOption(
+                        if key.is_some() { "--key" } else { "--expect" }.into(),
+                    ));
+                }
+                Ok(Command::NetworkStreamInputAdd {
+                    path,
+                    input,
+                    name,
+                    config,
+                })
+            }
+            (None, Some(address)) => Ok(Command::RemoteNetworkStreamInputAdd {
+                address,
+                input,
+                name,
+                config,
+                key,
+                expected_revision,
+            }),
+            (None, None) => unreachable!("a network stream command names a target"),
+        };
+    }
+    let (options, key, expected_revision) = network_stream_options(arguments, true)?;
+    if let Some(url) = &options.url {
+        fm_types::network_stream::validate_stream_url(url.as_str())
+            .map_err(ArgsError::InvalidNetworkStream)?;
+    }
+    Ok(match (path, address) {
+        (Some(path), _) => Command::NetworkStreamSet {
+            path,
+            input,
+            options,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteNetworkStreamSet {
+            address,
+            input,
+            options,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a network stream command names a target"),
     })
 }
 

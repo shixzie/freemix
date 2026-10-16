@@ -83,6 +83,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
         display_outputs: Vec::new(),
+        network_streams: Vec::new(),
         display_output_states: Vec::new(),
         cursor: ProjectCursor {
             project_id,
@@ -1144,6 +1145,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             DurableChange::InputAdded {
                 input: input(9),
                 name: "Red".into(),
+                network_stream: None,
             },
         ))
         .unwrap();
@@ -1192,6 +1194,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             DurableChange::InputAdded {
                 input: input(2),
                 name: "Twin".into(),
+                network_stream: None,
             },
             ModelError::DuplicateInput(input(2)),
         ),
@@ -1199,6 +1202,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             DurableChange::InputAdded {
                 input: input(10),
                 name: "Camera".into(),
+                network_stream: None,
             },
             ModelError::InvalidInputNames,
         ),
@@ -1206,6 +1210,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             DurableChange::InputAdded {
                 input: input(10),
                 name: " ".into(),
+                network_stream: None,
             },
             ModelError::InvalidInputNames,
         ),
@@ -1249,6 +1254,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             payload: EventPayload::InputAdded {
                 input: fm_protocol::WireInputId::from_domain(input(11)),
                 name: "Bars".into(),
+                network_stream: None,
             },
             edit_history: EditHistoryStatus::EMPTY,
         },
@@ -1258,6 +1264,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
         DurableChange::InputAdded {
             input: input(11),
             name: "Bars".into(),
+            network_stream: None,
         }
     );
     model.apply_event(added).unwrap();
@@ -1408,6 +1415,7 @@ mod titles {
             fade_to_black_excluded_outputs: Vec::new(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
+            network_streams: Vec::new(),
             engine: engine("engine-a", 1, "log-a"),
             revision: 10,
             show_name: "Show".into(),

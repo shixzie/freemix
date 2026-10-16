@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.45 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.46 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1286,6 +1286,45 @@ Protocol 2.45 adds typed refusal reasons and encodes mixer labels once.
   bar, and input add/remove refusals); `freemix-cli` prints
   `<code>: <message> (reason: <reason>)`.
 - 2.44 is refused.
+
+Protocol 2.46 adds network stream inputs (IN-015).
+
+- A network stream configuration is `url`, `transport` (`auto`, `tcp`,
+  `udp`; anything but `auto` only for `rtsp://`), `jitter_ms`
+  (40..=5000), `backoff_min_ms` and `backoff_max_ms` (100..=60000, minimum
+  not above maximum), `give_up` (`never` or a canonical 1..=10000
+  attempt count), `timeout_ms` (500..=60000), and `stall` (`freeze` holds
+  the last picture, `black` shows black; audio fades to silence either
+  way). The URL is at most 512 bytes of printable ASCII with a host, and its
+  scheme is `rtsp`, `rtp`, `udp`, `tcp`, `http`, or `https` (a `.m3u8`
+  path is HLS). Both sides validate every field; the engine also refuses a
+  transport hint on a non-RTSP URL.
+- `add_input` takes `kind=network_stream` with the configuration fields and
+  the full URL. `payload=input_stream_set` with `input`, an optional `url`,
+  and every setting edits a network stream input; without `url` the input
+  keeps its URL. Editing an input that is not a network stream is refused
+  `invalid_command`, and an unknown input `not_found`.
+- Secrets never leave the daemon: every snapshot, event, status, and log
+  carries the URL redacted, its user information and the values of secret
+  query parameters (`password`, `token`, `key`, `signature`, ...) replaced
+  by `***`. Only the project file keeps the full URL.
+- `input_added` for a network stream appends `kind=network_stream` and its
+  redacted configuration; `event=network_stream_changed` carries `input`
+  and the edited redacted configuration.
+- The runtime event `event=network_stream_status` carries `input`,
+  `state` (`idle`, `connecting`, `buffering`, `live`, `stalled`,
+  `reconnecting`, `failed`), `attempt` and `next_in_ms` only while
+  `reconnecting`, `bitrate_bps`, `buffer_ms`, `dropped_frames`,
+  `late_frames`, `reconnects`, and an optional `last_error` (at most 160
+  bytes, redacted). `freemixd` sends a state change at once and other
+  changes at most once a second.
+- The snapshot's `network_streams` lists every network stream input in
+  ascending input order as
+  `<input>~<transport>~<jitter_ms>~<backoff_min_ms>~<backoff_max_ms>~<give_up>~<timeout_ms>~<stall>~<state>~<attempt>~<next_in_ms>~<bitrate_bps>~<buffer_ms>~<dropped>~<late>~<reconnects>~<length>:<url>`,
+  the redacted URL written raw after its canonical byte length.
+- Durability: a network stream input is an input kind of the project
+  (schema 43, `kind.network_stream`), at most 16 per show.
+- 2.45 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

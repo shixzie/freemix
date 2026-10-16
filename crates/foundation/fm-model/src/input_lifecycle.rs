@@ -309,8 +309,8 @@ pub enum InputSourceSpec {
     Media { asset_uri: String },
     /// A capture device by its adapter-qualified stable key.
     Device { stable_key: String },
-    /// A network source by its endpoint.
-    Network { endpoint: String },
+    /// A network stream (IN-015): its URL and receive settings.
+    Network(fm_types::network_stream::NetworkStreamConfig),
 }
 
 /// Why a source specification is unusable.
@@ -324,6 +324,8 @@ pub enum InputSourceError {
     UnsupportedMediaType,
     /// A sine tone outside the simulated frequency range.
     InvalidTone,
+    /// A network stream's URL or settings are unusable (IN-015).
+    InvalidNetworkStream,
 }
 
 impl InputSourceError {
@@ -335,6 +337,7 @@ impl InputSourceError {
             Self::InvalidAssetUri => "invalid_uri",
             Self::UnsupportedMediaType => "unsupported_type",
             Self::InvalidTone => "invalid_tone",
+            Self::InvalidNetworkStream => "invalid_network_stream",
         }
     }
 }
@@ -348,6 +351,7 @@ impl fmt::Display for InputSourceError {
             Self::InvalidAssetUri => "a media source must be a project asset:// URI",
             Self::UnsupportedMediaType => "the file type is not a supported media type",
             Self::InvalidTone => "the tone frequency is outside the simulated range",
+            Self::InvalidNetworkStream => "the network stream URL or settings are unusable",
         })
     }
 }
@@ -474,7 +478,10 @@ impl InputSourceSpec {
                 }
             }
             Self::Device { stable_key } => validate_locator(stable_key),
-            Self::Network { endpoint } => validate_locator(endpoint),
+            Self::Network(config) => config
+                .validate()
+                .map(|_| ())
+                .map_err(|_| InputSourceError::InvalidNetworkStream),
         }
     }
 
@@ -501,9 +508,7 @@ impl InputSourceSpec {
             InputKind::Device { stable_key } => Some(Self::Device {
                 stable_key: stable_key.clone(),
             }),
-            InputKind::Network { endpoint } => Some(Self::Network {
-                endpoint: endpoint.clone(),
-            }),
+            InputKind::NetworkStream(config) => Some(Self::Network(config.clone())),
             InputKind::Color
             | InputKind::Scene { .. }
             | InputKind::Alias { .. }
@@ -534,9 +539,7 @@ impl InputSourceSpec {
             Self::Device { stable_key } => InputKind::Device {
                 stable_key: stable_key.clone(),
             },
-            Self::Network { endpoint } => InputKind::Network {
-                endpoint: endpoint.clone(),
-            },
+            Self::Network(config) => InputKind::NetworkStream(config.clone()),
         }
     }
 

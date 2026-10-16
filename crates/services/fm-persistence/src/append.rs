@@ -589,7 +589,7 @@ fn append_inputs(
             // Title assets keep their exact keys (see `append_title_assets`).
             InputKind::Color
             | InputKind::Device { .. }
-            | InputKind::Network { .. }
+            | InputKind::NetworkStream(_)
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
             | InputKind::Title(_) => input.kind.clone(),

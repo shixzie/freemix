@@ -132,9 +132,9 @@ fn project_asset_audit_reports_all_failures_in_stable_order() {
         inputs,
         (
             60,
-            InputKind::Network {
-                endpoint: "asset://missing-network.mov".into(),
-            },
+            InputKind::NetworkStream(fm_types::network_stream::NetworkStreamConfig::new(
+                "http://missing-network.test/live.ts",
+            )),
         ),
     );
 

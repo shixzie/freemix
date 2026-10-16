@@ -477,6 +477,15 @@ fn decode_command_payload(
         "clear_display_output" => CommandPayload::ClearDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
         },
+        "input_stream_set" => {
+            let input = fields.canonical_input("input")?;
+            let (url, settings) = super::network_stream::decode_set(fields)?;
+            CommandPayload::SetNetworkStream {
+                input,
+                url,
+                settings,
+            }
+        }
         layer if layer.starts_with("scene_layer_") => CommandPayload::SceneLayer(
             super::scene_layer::decode_scene_layer_edit(layer, fields)?.ok_or_else(|| {
                 CodecError::InvalidField {
@@ -1132,6 +1141,9 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
             })
         }
         "bars" => Ok(LiveInputSource::Bars),
+        "network_stream" => Ok(LiveInputSource::NetworkStream(Box::new(
+            super::network_stream::decode_config(fields)?,
+        ))),
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,
@@ -1527,6 +1539,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         )?,
         display_output_states: super::display_output::decode_states(
             &fields.required("display_output_states")?,
+        )?,
+        network_streams: super::network_stream::decode_entries(
+            &fields.required("network_streams")?,
         )?,
     })
 }
@@ -2087,6 +2102,18 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_added" => EventPayload::InputAdded {
             input: fields.canonical_input("input")?,
             name: decode_new_input_name(fields)?,
+            network_stream: match fields.optional("kind").as_deref() {
+                None => None,
+                Some("network_stream") => {
+                    Some(Box::new(super::network_stream::decode_config(fields)?))
+                }
+                Some(other) => {
+                    return Err(CodecError::InvalidField {
+                        field: "kind",
+                        value: other.to_owned(),
+                    });
+                }
+            },
         },
         "input_removed" => EventPayload::InputRemoved {
             input: fields.canonical_input("input")?,
@@ -2130,6 +2157,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "fade_to_black_output_changed" => EventPayload::FadeToBlackOutputChanged {
             output: decode_output(fields, "output")?,
             affected: fields.boolean("affected")?,
+        },
+        "network_stream_changed" => EventPayload::NetworkStreamChanged {
+            input: fields.canonical_input("input")?,
+            config: Box::new(super::network_stream::decode_config(fields)?),
         },
         "display_output_changed" => {
             let (slot, config) = super::display_output::decode_changed(fields)?;
@@ -2458,6 +2489,13 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         "display_inventory" => RuntimeLifecycleEvent::DisplayInventory(
             super::display_output::decode_inventory(fields)?,
         ),
+        "network_stream_status" => {
+            let (input, status) = super::network_stream::decode_status(fields)?;
+            RuntimeLifecycleEvent::NetworkStreamStatus {
+                input,
+                status: Box::new(status),
+            }
+        }
         "media" => RuntimeLifecycleEvent::Media {
             frame: fields.canonical_required("frame")?,
             events: decode_media_events(&fields.required("media_events")?)?,

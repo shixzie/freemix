@@ -690,9 +690,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             InputKind::Device { stable_key } => {
                 require_name(errors, entity, "stable_key", stable_key);
             }
-            InputKind::Network { endpoint } => {
-                require_name(errors, entity, "endpoint", endpoint);
-            }
+            InputKind::NetworkStream(config) => validate_network_stream(entity, config, errors),
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -757,6 +755,46 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             entity,
             input.required_capabilities.iter().map(String::as_str),
         );
+    }
+    validate_network_stream_count(project, errors);
+}
+
+/// A network stream input's configuration is usable (IN-015).
+fn validate_network_stream(
+    entity: Option<EntityRef>,
+    config: &fm_types::network_stream::NetworkStreamConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Err(error) = config.validate() {
+        errors.push(ValidationError {
+            entity,
+            field: match error.field() {
+                "url" => "kind.network_stream.url",
+                "transport" => "kind.network_stream.transport",
+                "jitter_ms" => "kind.network_stream.jitter_ms",
+                "backoff" => "kind.network_stream.backoff",
+                "give_up" => "kind.network_stream.give_up",
+                _ => "kind.network_stream.timeout_ms",
+            },
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+/// IN-015: a bounded number of network streams keeps every snapshot that
+/// carries them inside one line.
+fn validate_network_stream_count(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(input) = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::NetworkStream(_)))
+        .nth(fm_types::network_stream::MAX_NETWORK_STREAM_INPUTS)
+    {
+        errors.push(ValidationError {
+            entity: Some(EntityRef::Input(input.id)),
+            field: "kind.network_stream",
+            kind: ValidationErrorKind::OutOfRange,
+        });
     }
 }
 

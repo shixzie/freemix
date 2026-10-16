@@ -887,7 +887,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(42);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(43);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1605,7 +1605,7 @@ impl Project {
                 | InputKind::Color
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
-                | InputKind::Network { .. }
+                | InputKind::NetworkStream(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
@@ -3882,9 +3882,10 @@ pub enum InputKind {
     Device {
         stable_key: String,
     },
-    Network {
-        endpoint: String,
-    },
+    /// A network stream received by URL (schema 43, IN-015): RTSP, RTP,
+    /// UDP, TCP, or HTTP(S) MPEG-TS, or an HLS playlist, with its jitter
+    /// buffer, reconnect policy, timeout, and stall slate.
+    NetworkStream(fm_types::network_stream::NetworkStreamConfig),
     Scene {
         scene_id: SceneId,
         audio_source: Option<InputId>,

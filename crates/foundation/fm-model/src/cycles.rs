@@ -40,7 +40,7 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
                             InputKind::Color
                             | InputKind::Media { .. }
                             | InputKind::Device { .. }
-                            | InputKind::Network { .. }
+                            | InputKind::NetworkStream(_)
                             | InputKind::Simulated(_)
                             | InputKind::MixFeed(_)
                             | InputKind::Title(_)
@@ -88,7 +88,7 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
                 | InputKind::Color
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
-                | InputKind::Network { .. }
+                | InputKind::NetworkStream(_)
                 | InputKind::Simulated(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_) => Vec::new(),
@@ -150,7 +150,7 @@ fn alias_target(kind: &InputKind) -> Option<InputId> {
         InputKind::Color
         | InputKind::Media { .. }
         | InputKind::Device { .. }
-        | InputKind::Network { .. }
+        | InputKind::NetworkStream(_)
         | InputKind::Scene { .. }
         | InputKind::Simulated(_)
         | InputKind::MixFeed(_)

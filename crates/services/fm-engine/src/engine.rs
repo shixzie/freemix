@@ -342,6 +342,13 @@ pub enum EngineCommand {
         slot: fm_types::display::DisplayOutputSlot,
         config: Option<Box<fm_types::display::DisplayOutputConfig>>,
     },
+    /// Reconfigures network stream input `input` (IN-015). A project edit
+    /// that honours the input's padlock, undone by restoring the previous
+    /// configuration; the daemon reconnects the stream live.
+    SetNetworkStream {
+        input: InputId,
+        config: Box<fm_types::network_stream::NetworkStreamConfig>,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -487,6 +494,12 @@ pub enum EngineEvent {
     DisplayOutputChanged {
         slot: fm_types::display::DisplayOutputSlot,
         config: Option<Box<fm_types::display::DisplayOutputConfig>>,
+    },
+    /// A network stream input was reconfigured (or the edit was undone or
+    /// redone) (IN-015).
+    NetworkStreamChanged {
+        input: InputId,
+        config: Box<fm_types::network_stream::NetworkStreamConfig>,
     },
 }
 
@@ -1329,6 +1342,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::AudioMixer(_))
                 && !matches!(&command, EngineCommand::SetFadeToBlackOutput { .. })
                 && !matches!(&command, EngineCommand::SetDisplayOutput { .. })
+                && !matches!(&command, EngineCommand::SetNetworkStream { .. })
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(&command, EngineCommand::Media(_))
@@ -1971,6 +1985,36 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetNetworkStream { input, config } = self.command {
+            if state.network_stream(input).is_none() {
+                return Err(if state.inputs().contains(&input) {
+                    Rejection::new(
+                        RejectionCode::InvalidCommand,
+                        format!("input {input} is not a network stream"),
+                    )
+                    .with_field(FieldIssue::new(
+                        "input",
+                        "not_network_stream",
+                        "the input is not a network stream",
+                    ))
+                } else {
+                    Rejection::new(
+                        RejectionCode::NotFound,
+                        format!("show does not contain input {input}"),
+                    )
+                    .with_reason(crate::error::unknown_input_reason(input))
+                });
+            }
+            config.validate().map_err(network_stream_rejection)?;
+            state.set_input_source_unchecked(
+                input,
+                fm_model::InputSourceSpec::Network((*config).clone()),
+            );
+            events.push(EngineEvent::NetworkStreamChanged { input, config });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::AnimationPreset(edit) = self.command {
             crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
             events.push(EngineEvent::AnimationPresetsChanged(edit));
@@ -2285,6 +2329,7 @@ impl EngineMutation {
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetFadeToBlackOutput { .. }
             | EngineCommand::SetDisplayOutput { .. }
+            | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2347,6 +2392,17 @@ fn apply_input_catalogue_mutation(
             name,
             source,
         } => {
+            if let EngineInputSource::NetworkStream(config) = &source {
+                config.validate().map_err(network_stream_rejection)?;
+                let count = state.network_streams().count();
+                if count >= fm_types::network_stream::MAX_NETWORK_STREAM_INPUTS {
+                    let message = format!(
+                        "the show already has {count} network streams, the most it may hold"
+                    );
+                    return Err(Rejection::new(RejectionCode::Conflict, message.clone())
+                        .with_field(FieldIssue::new("kind", "too_many_network_streams", message)));
+                }
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
@@ -2368,6 +2424,17 @@ fn apply_input_catalogue_mutation(
         _ => unreachable!("only input catalogue commands are delegated"),
     }
     Ok(EngineAcceptance { target_frame })
+}
+
+/// Refuses an unusable network stream configuration (IN-015), naming its
+/// field and error code.
+fn network_stream_rejection(error: fm_types::network_stream::NetworkStreamError) -> Rejection {
+    let message = error.to_string();
+    Rejection::new(RejectionCode::InvalidCommand, message.clone()).with_field(FieldIssue::new(
+        error.field(),
+        error.code(),
+        message,
+    ))
 }
 
 fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
@@ -2639,6 +2706,7 @@ fn apply_runtime(
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
+            | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2801,6 +2869,7 @@ fn apply_runtime(
         | EngineCommand::AudioMixer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
@@ -2971,6 +3040,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::AudioMixer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
