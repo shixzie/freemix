@@ -765,6 +765,8 @@ pub(crate) enum KeyIcon {
     Down,
     /// Remove the row: a diagonal cross.
     Remove,
+    /// Put the row on standby: a filled dot.
+    Dot,
 }
 
 /// Paints `icon` centred in `rect`, about `extent` points across.
@@ -786,6 +788,9 @@ pub(crate) fn paint_key_icon(
                 centre + Vec2::new(0.0, -sign * half * 0.75),
             ];
             painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+        }
+        KeyIcon::Dot => {
+            painter.circle_filled(centre, half * 0.55, color);
         }
         KeyIcon::Remove => {
             let stroke = Stroke::new(1.6, color);

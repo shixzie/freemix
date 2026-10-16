@@ -32,8 +32,8 @@ use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::playlist::key_button;
 use crate::theme::{
-    ERROR, PREVIEW, PROGRAM, Tone, border_color, caption, empty_state, field_label, legible,
-    raised_color, small_button, status_chip,
+    ERROR, KeyIcon, PREVIEW, PROGRAM, Tone, add_icon_button, border_color, caption, empty_state,
+    field_label, legible, raised_color, small_button, status_chip,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -162,7 +162,7 @@ impl CueRole {
         match self {
             Self::Idle => None,
             Self::Live => Some((Msg::Live, Tone::OnAir)),
-            Self::Standby => Some((Msg::DisplayStatusWaiting, Tone::Ready)),
+            Self::Standby => Some((Msg::CueStateStandby, Tone::Ready)),
             Self::Waiting => Some((Msg::MediaStateWaiting, Tone::Pending)),
             Self::Played => Some((Msg::CueStatePlayed, Tone::Idle)),
             Self::Fault => Some((Msg::CueStateFault, Tone::Fault)),
@@ -687,53 +687,72 @@ fn draw_cue_row(
                     if follow.changed() {
                         result = Some(RowEdit::Change(Change::Commit));
                     }
-                    let operations = [
-                        ("●", Msg::CueJumpHover, CueOperation::Standby { cue: id }),
-                        ("▶", Msg::CueFireHover, CueOperation::Go { cue: Some(id) }),
-                    ];
-                    for (glyph, hover, operation) in operations {
-                        if ui
-                            .add_enabled(control.is_none(), key_button(glyph, None, 28.0))
-                            .hint(l.text(hover), control.unwrap_or(""))
-                            .clicked()
-                        {
-                            intents.push(StudioIntent::Cue(CueIntent::Control {
-                                list: list.id,
-                                operation,
-                            }));
-                        }
+                    if add_icon_button(
+                        ui,
+                        control.is_none(),
+                        key_button("", None, 28.0),
+                        KeyIcon::Dot,
+                        l.text(Msg::CueJumpHover),
+                    )
+                    .hint(l.text(Msg::CueJumpHover), control.unwrap_or(""))
+                    .clicked()
+                    {
+                        intents.push(StudioIntent::Cue(CueIntent::Control {
+                            list: list.id,
+                            operation: CueOperation::Standby { cue: id },
+                        }));
+                    }
+                    if ui
+                        .add_enabled(control.is_none(), key_button("▶", None, 28.0))
+                        .hint(l.text(Msg::CueFireHover), control.unwrap_or(""))
+                        .clicked()
+                    {
+                        intents.push(StudioIntent::Cue(CueIntent::Control {
+                            list: list.id,
+                            operation: CueOperation::Go { cue: Some(id) },
+                        }));
                     }
                     let moves = [
                         (
-                            "▲",
+                            KeyIcon::Up,
                             Msg::CueUpHover,
                             index > 0,
                             index.wrapping_sub(1),
                             Msg::CueReasonFirst,
                         ),
                         (
-                            "▼",
+                            KeyIcon::Down,
                             Msg::CueDownHover,
                             index + 1 < cues.len(),
                             index + 1,
                             Msg::CueReasonLast,
                         ),
                     ];
-                    for (glyph, hover, possible, other, end) in moves {
+                    for (icon, hover, possible, other, end) in moves {
                         let reason = edit.unwrap_or(end.en());
-                        if ui
-                            .add_enabled(edit.is_none() && possible, key_button(glyph, None, 28.0))
-                            .hint(l.text(hover), reason)
-                            .clicked()
+                        if add_icon_button(
+                            ui,
+                            edit.is_none() && possible,
+                            key_button("", None, 28.0),
+                            icon,
+                            l.text(hover),
+                        )
+                        .hint(l.text(hover), reason)
+                        .clicked()
                         {
                             cues.swap(index, other);
                             result = Some(RowEdit::Change(Change::Commit));
                         }
                     }
-                    if ui
-                        .add_enabled(edit.is_none(), key_button("✕", Some(ERROR), 28.0))
-                        .hint(l.text(Msg::CueRemoveHover), edit.unwrap_or(""))
-                        .clicked()
+                    if add_icon_button(
+                        ui,
+                        edit.is_none(),
+                        key_button("", Some(ERROR), 28.0),
+                        KeyIcon::Remove,
+                        l.text(Msg::CueRemoveHover),
+                    )
+                    .hint(l.text(Msg::CueRemoveHover), edit.unwrap_or(""))
+                    .clicked()
                     {
                         cues.remove(index);
                         result = Some(RowEdit::Change(Change::Commit));
@@ -764,6 +783,7 @@ fn draw_cue_row(
 
 /// A cue's actions, each with its kind picker, parameters, and move and
 /// remove keys, then the Add action key.
+#[allow(clippy::too_many_lines)]
 fn draw_actions(
     ui: &mut Ui,
     names: &Names<'_>,
@@ -814,33 +834,45 @@ fn draw_actions(
                 if let Some(param) = draw_params(ui, names, &mut cue.actions[index], edit) {
                     change = Some(param);
                 }
-                if ui
-                    .add_enabled(edit.is_none() && index > 0, key_button("▲", None, 24.0))
-                    .hint(
-                        l.text(Msg::CueActionUpHover),
-                        edit.unwrap_or(Msg::CueReasonFirst.en()),
-                    )
-                    .clicked()
+                if add_icon_button(
+                    ui,
+                    edit.is_none() && index > 0,
+                    key_button("", None, 24.0),
+                    KeyIcon::Up,
+                    l.text(Msg::CueActionUpHover),
+                )
+                .hint(
+                    l.text(Msg::CueActionUpHover),
+                    edit.unwrap_or(Msg::CueReasonFirst.en()),
+                )
+                .clicked()
                 {
                     swap = Some((index, index - 1));
                 }
-                if ui
-                    .add_enabled(
-                        edit.is_none() && index + 1 < count,
-                        key_button("▼", None, 24.0),
-                    )
-                    .hint(
-                        l.text(Msg::CueActionDownHover),
-                        edit.unwrap_or(Msg::CueReasonLast.en()),
-                    )
-                    .clicked()
+                if add_icon_button(
+                    ui,
+                    edit.is_none() && index + 1 < count,
+                    key_button("", None, 24.0),
+                    KeyIcon::Down,
+                    l.text(Msg::CueActionDownHover),
+                )
+                .hint(
+                    l.text(Msg::CueActionDownHover),
+                    edit.unwrap_or(Msg::CueReasonLast.en()),
+                )
+                .clicked()
                 {
                     swap = Some((index, index + 1));
                 }
-                if ui
-                    .add_enabled(edit.is_none(), key_button("✕", Some(ERROR), 24.0))
-                    .hint(l.text(Msg::CueActionRemoveHover), edit.unwrap_or(""))
-                    .clicked()
+                if add_icon_button(
+                    ui,
+                    edit.is_none(),
+                    key_button("", Some(ERROR), 24.0),
+                    KeyIcon::Remove,
+                    l.text(Msg::CueActionRemoveHover),
+                )
+                .hint(l.text(Msg::CueActionRemoveHover), edit.unwrap_or(""))
+                .clicked()
                 {
                     remove = Some(index);
                 }

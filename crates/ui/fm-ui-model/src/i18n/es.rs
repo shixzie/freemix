@@ -6010,6 +6010,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::CueGoNothing, t("Nada en espera")),
     (Msg::CueStandbyLabel, t("En espera: {name}")),
+    (Msg::CueStateStandby, t("EN ESPERA")),
     (Msg::CueBack, t("Retroceder")),
     (Msg::CueBackHover, t("Mover la espera al cue anterior")),
     (Msg::CueSkip, t("Saltar")),

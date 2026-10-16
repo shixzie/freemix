@@ -2258,6 +2258,7 @@ messages! {
     CueGoHover => t("Fire the cue on standby: its actions up to the first wait run on one frame [G]"),
     CueGoNothing => t("Nothing on standby"),
     CueStandbyLabel => t("Standby: {name}"),
+    CueStateStandby => t("STANDBY"),
     CueBack => t("Step back"),
     CueBackHover => t("Move standby to the previous cue"),
     CueSkip => t("Skip"),
