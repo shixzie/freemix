@@ -2380,10 +2380,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RsnDisplayInUse,
         t("Esa pantalla ya la usa la salida de pantalla {slot}."),
     ),
-    (
-        Msg::RsnBoundsExceeded,
-        t("{field} supera su límite de {max}."),
-    ),
+    (Msg::RsnBoundsExceeded, t("{field}: el límite es {max}.")),
     (Msg::RsnNothingToUndo, t("No queda nada que deshacer.")),
     (Msg::RsnNothingToRedo, t("No queda nada que rehacer.")),
     (
@@ -2424,6 +2421,27 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::IdKindPreset, t("Preset de animación {id}")),
     (Msg::IdKindTitle, t("Título {id}")),
     (Msg::IdKindPlaylistEntry, t("Entrada de lista {id}")),
+    (Msg::IdKindTitleNamed, t("Título «{name}»")),
+    (
+        Msg::RsnUnsupportedScheme,
+        t("esquema no admitido (admitidos: rtsp, rtp, udp, tcp, http, https, hls)"),
+    ),
+    (Msg::BoundsFieldInputs, t("Entradas del proyecto")),
+    (Msg::BoundsFieldPlaylistEntries, t("Entradas de lista")),
+    (Msg::BoundsFieldGrades, t("Correcciones de color")),
+    (Msg::BoundsFieldLuts, t("LUT")),
+    (Msg::BoundsFieldLayerGrades, t("Correcciones de capa")),
+    (Msg::BoundsFieldSceneLayers, t("Capas de escena")),
+    (Msg::BoundsFieldLayerEffects, t("Efectos de capa")),
+    (Msg::BoundsFieldPresets, t("Presets de animación")),
+    (
+        Msg::BoundsFieldTitleContentBytes,
+        t("Bytes de contenido del título"),
+    ),
+    (
+        Msg::BoundsFieldTitleTextChars,
+        t("Caracteres de texto del título"),
+    ),
     // Titles tab.
     (
         Msg::TitlesIntro,

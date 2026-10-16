@@ -78,6 +78,8 @@ fn every_supported_protocol_validates_and_others_are_refused() {
             "file://host/etc/passwd",
             NetworkStreamError::UnsupportedScheme,
         ),
+        // No host either, but the scheme is what is wrong.
+        ("file:///etc/passwd", NetworkStreamError::UnsupportedScheme),
         ("udp://host", NetworkStreamError::InvalidUrl),
         ("tcp://:9000", NetworkStreamError::InvalidUrl),
         ("http://host/with space", NetworkStreamError::InvalidUrl),

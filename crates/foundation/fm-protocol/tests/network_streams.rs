@@ -89,7 +89,7 @@ fn settings() -> NetworkStreamSettings {
 const SETTINGS: &str = "transport=tcp\tjitter_ms=500\tbackoff_min_ms=250\tbackoff_max_ms=8000\tgive_up=5\ttimeout_ms=3000\tstall=black";
 
 #[test]
-fn the_current_protocol_is_2_46() {
+fn the_current_protocol_version_is_pinned() {
     assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 46));
 }
 

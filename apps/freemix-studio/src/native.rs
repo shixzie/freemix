@@ -664,6 +664,9 @@ fn reconcile_finished_worker(
     }
 }
 
+/// Most command refusals one unread state carries to the UI.
+const MAX_QUEUED_REFUSALS: usize = 32;
+
 struct StatePublisher {
     latest: Arc<Mutex<Option<StudioUiState>>>,
     sender: SyncSender<()>,
@@ -691,9 +694,11 @@ fn state_mailbox(repaint_context: egui::Context) -> (StatePublisher, StateUpdate
 impl StatePublisher {
     /// Replaces the latest state. One-shot facts are delivered exactly once:
     /// a state the UI has not taken yet hands its title updates, its input
-    /// and grade refusals, and (on the same connection state) its error on
-    /// to this one, so a meter or monitor publication landing before the
-    /// UI's next frame cannot swallow a command's refusal.
+    /// and grade refusals, its command refusals (queued in arrival order, so
+    /// a second refusal cannot replace the first), and (on the same
+    /// connection state) its error on to this one, so a meter or monitor
+    /// publication landing before the UI's next frame cannot swallow a
+    /// command's refusal.
     fn publish(&self, mut state: StudioUiState) -> bool {
         let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(previous) = latest.take() {
@@ -705,8 +710,13 @@ impl StatePublisher {
             if state.catalogue_refusal.is_none() {
                 state.catalogue_refusal = previous.catalogue_refusal;
             }
-            if state.command_refusal.is_none() {
-                state.command_refusal = previous.command_refusal;
+            if !previous.command_refusals.is_empty() {
+                let mut refusals = previous.command_refusals;
+                refusals.append(&mut state.command_refusals);
+                // Bounded: a flood of refusals keeps its newest.
+                let excess = refusals.len().saturating_sub(MAX_QUEUED_REFUSALS);
+                refusals.drain(..excess);
+                state.command_refusals = refusals;
             }
             if state.grade_refusal.is_none() {
                 state.grade_refusal = previous.grade_refusal;
@@ -2046,7 +2056,7 @@ impl CommandPublication<'_> {
             state.terminal_uncertainties = self.terminal_uncertainties.to_vec();
             state.catalogue_refusal = catalogue_refusal;
             state.grade_refusal = grade_refusal;
-            state.command_refusal = command_refusal;
+            state.command_refusals = command_refusal.into_iter().collect();
             self.publisher.publish(state);
         }
     }
@@ -3501,8 +3511,10 @@ mod tests {
                 input: 1,
                 usage: fm_protocol::InputUse::Program,
             }),
+            issue: None,
+            error: "Command rejected (conflict): input 1 is on Program".to_owned(),
         };
-        refused.command_refusal = Some(notice.clone());
+        refused.command_refusals = vec![notice.clone()];
         refused.error = Some("Command rejected (conflict): input 1 is on Program".to_owned());
         assert!(publisher.publish(refused));
         // A meter update lands before the frame reads the mailbox.
@@ -3510,7 +3522,7 @@ mod tests {
         let seen = updates.try_recv().unwrap();
         assert_eq!(seen.catalogue_refusal, Some(refusal));
         assert_eq!(seen.grade_refusal, Some(grade));
-        assert_eq!(seen.command_refusal, Some(notice));
+        assert_eq!(seen.command_refusals, [notice]);
         assert_eq!(
             seen.error.as_deref(),
             Some("Command rejected (conflict): input 1 is on Program")
@@ -3520,7 +3532,7 @@ mod tests {
         let next = updates.try_recv().unwrap();
         assert_eq!(next.catalogue_refusal, None);
         assert_eq!(next.grade_refusal, None);
-        assert_eq!(next.command_refusal, None);
+        assert_eq!(next.command_refusals, []);
         assert_eq!(next.error, None);
         // A connection change does not carry an older error into the new
         // connection state.
@@ -3529,6 +3541,50 @@ mod tests {
         assert!(publisher.publish(lost));
         assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Ready)));
         assert_eq!(updates.try_recv().unwrap().error, None);
+    }
+
+    #[test]
+    fn two_refusals_before_one_frame_both_reach_the_ui_in_order() {
+        // Two commands are refused before the UI's next frame: the second
+        // publication used to replace the first refusal, or (when it carried
+        // no refusal) keep the first refusal's wording over the second
+        // error.
+        let (publisher, updates) = state_mailbox(egui::Context::default());
+        let rejected = |id: &str, reason: Option<fm_protocol::RefusalReason>| {
+            CommandRefusalNotice::from_result(&CommandResult::Rejected {
+                id: id.to_owned(),
+                code: "conflict".to_owned(),
+                message: format!("{id} refused"),
+                fields: Vec::new(),
+                current_revision: 3,
+                retryable: false,
+                reason,
+            })
+            .unwrap()
+        };
+        let first = rejected("c-1", Some(fm_protocol::RefusalReason::ProjectLocked));
+        let second = rejected("c-2", None);
+        for notice in [&first, &second] {
+            let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+            state.error = Some(notice.error.clone());
+            state.command_refusals = vec![notice.clone()];
+            assert!(publisher.publish(state));
+        }
+        // A meter update lands too.
+        assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Ready)));
+        let seen = updates.try_recv().unwrap();
+        assert_eq!(seen.command_refusals, [first, second.clone()]);
+        assert_eq!(seen.error.as_deref(), Some(second.error.as_str()));
+
+        // A flood keeps its newest refusals, bounded.
+        for index in 0..(MAX_QUEUED_REFUSALS + 5) {
+            let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+            state.command_refusals = vec![rejected(&format!("f-{index}"), None)];
+            assert!(publisher.publish(state));
+        }
+        let flood = updates.try_recv().unwrap().command_refusals;
+        assert_eq!(flood.len(), MAX_QUEUED_REFUSALS);
+        assert_eq!(flood[0].command_id, "f-5");
     }
 
     #[test]

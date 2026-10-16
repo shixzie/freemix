@@ -23,6 +23,8 @@ pub(crate) const UNCERTAIN_TOAST_MS: u32 = 10_000;
 pub(crate) const PENDING_TOAST_MS: u32 = 20_000;
 /// Lifetime of a confirmed-outcome toast.
 pub(crate) const SUCCESS_TOAST_MS: u32 = 5_000;
+/// Most refused command ids remembered as already announced.
+const SEEN_REFUSALS: usize = 64;
 /// Toast key shared by every "Queued N command(s)" notice, so rapid clicks
 /// update one toast instead of stacking one per count.
 pub(crate) const QUEUED_COMMANDS_KEY: &str = "queued-commands";
@@ -78,8 +80,11 @@ pub(crate) struct Toast {
 pub(crate) struct ToastQueue {
     toasts: VecDeque<Toast>,
     seen_error: Option<String>,
-    /// The command id of the last refusal announced from its typed reason.
-    seen_refusal: Option<String>,
+    /// Command ids of the refusals already announced, oldest first.
+    seen_refusals: VecDeque<String>,
+    /// Command ids whose refusal another toast (the input catalogue's)
+    /// already words.
+    acknowledged_refusals: VecDeque<String>,
     seen_notice: Option<String>,
     seen_external_notice: Option<String>,
     seen_uncertainties: Vec<TerminalUncertaintyNotice>,
@@ -119,11 +124,12 @@ impl ToastQueue {
         self.seen_error = error.cloned();
     }
 
-    /// Marks a command refusal as already announced (by the input
-    /// catalogue's own refusal toast).
-    pub(crate) fn acknowledge_refusal(&mut self, refusal: Option<&crate::CommandRefusalNotice>) {
-        if let Some(refusal) = refusal {
-            self.seen_refusal = Some(refusal.command_id.clone());
+    /// Marks the refusal of `command_id` as already worded (by the input
+    /// catalogue's own refusal toast); error text joined onto it is still
+    /// announced.
+    pub(crate) fn acknowledge_refusal(&mut self, command_id: Option<&str>) {
+        if let Some(command_id) = command_id {
+            remember(&mut self.acknowledged_refusals, command_id);
         }
     }
 
@@ -152,25 +158,7 @@ impl ToastQueue {
     /// per reconnect attempt would bury the console.
     pub(crate) fn observe(&mut self, state: &StudioUiState) {
         let ready = state.connection_status.controls_enabled();
-        if let Some(refusal) = state
-            .command_refusal
-            .as_ref()
-            .filter(|refusal| self.seen_refusal.as_deref() != Some(refusal.command_id.as_str()))
-        {
-            self.seen_refusal = Some(refusal.command_id.clone());
-            // A typed reason is worded in the console language and replaces
-            // the worker's English error text; without one, that text is the
-            // toast.
-            if refusal.reason.is_some() {
-                self.seen_error.clone_from(&state.error);
-                if ready {
-                    self.push(
-                        ToastKind::Error,
-                        refusal.text(self.locale, state.view.as_ref()),
-                    );
-                }
-            }
-        }
+        self.observe_refusals(state, ready);
         if let Some(error) = announce(&mut self.seen_error, state.error.as_ref())
             && ready
         {
@@ -210,6 +198,41 @@ impl ToastQueue {
                     ],
                 ),
             );
+        }
+    }
+
+    /// Announces each new command refusal with its own text, in arrival
+    /// order: worded in the console language when it can be, else the
+    /// worker's English line. The refusal whose line the current error
+    /// holds also carries whatever else that error says, and the error is
+    /// then announced.
+    fn observe_refusals(&mut self, state: &StudioUiState, ready: bool) {
+        let error = state.error.as_deref();
+        let error_is_new = self.seen_error.as_deref() != error;
+        let mut explained = false;
+        for refusal in &state.command_refusals {
+            if self.seen_refusals.contains(&refusal.command_id) {
+                continue;
+            }
+            remember(&mut self.seen_refusals, &refusal.command_id);
+            let remainder = error.and_then(|error| refusal.remainder_of(error));
+            explained |= remainder.is_some();
+            if !ready {
+                continue;
+            }
+            let own = (!self.acknowledged_refusals.contains(&refusal.command_id))
+                .then(|| refusal.toast_text(self.locale, state.view.as_ref()));
+            let rest = remainder.flatten().filter(|_| error_is_new);
+            let message = match (own, rest) {
+                (Some(own), Some(rest)) => Some(format!("{own}; {rest}")),
+                (own, rest) => own.or(rest),
+            };
+            if let Some(message) = message {
+                self.push(ToastKind::Error, message);
+            }
+        }
+        if explained {
+            self.seen_error.clone_from(&state.error);
         }
     }
 
@@ -261,6 +284,17 @@ pub(crate) fn localize_notice(locale: Locale, notice: &str) -> String {
     }
 }
 
+/// Remembers `id` in a bounded most-recent list.
+fn remember(seen: &mut VecDeque<String>, id: &str) {
+    if seen.iter().any(|seen| seen == id) {
+        return;
+    }
+    if seen.len() == SEEN_REFUSALS {
+        seen.pop_front();
+    }
+    seen.push_back(id.to_owned());
+}
+
 /// Returns the current message when it differs from the last announced one.
 fn announce(seen: &mut Option<String>, current: Option<&String>) -> Option<String> {
     if seen.as_ref() == current {
@@ -298,56 +332,224 @@ mod tests {
         assert_eq!(queue.iter().count(), 2);
     }
 
-    #[test]
-    fn typed_refusals_toast_in_the_console_language_instead_of_daemon_english() {
+    /// The notice of a rejected command, as the worker builds it.
+    fn refused(
+        id: &str,
+        code: &str,
+        message: &str,
+        issue: Option<&str>,
+        reason: Option<fm_protocol::RefusalReason>,
+    ) -> crate::CommandRefusalNotice {
+        crate::CommandRefusalNotice::from_result(&fm_protocol::CommandResult::Rejected {
+            id: id.to_owned(),
+            code: code.to_owned(),
+            message: message.to_owned(),
+            fields: issue
+                .map(|issue| fm_protocol::FieldIssue {
+                    field: "url".to_owned(),
+                    code: issue.to_owned(),
+                    message: message.to_owned(),
+                })
+                .into_iter()
+                .collect(),
+            current_revision: 1,
+            retryable: false,
+            reason,
+        })
+        .unwrap()
+    }
+
+    fn scene_layer_refusal(id: &str) -> crate::CommandRefusalNotice {
         use fm_protocol::{InputUse, RefusalReason};
-        let mut queue = ToastQueue {
-            locale: Locale::new(fm_ui_model::i18n::Language::Spanish),
-            ..ToastQueue::default()
-        };
-        let mut state = state();
-        state.error = Some(
-            "Command rejected (conflict): input 1 cannot be removed: it is a layer source of \
-             scene 100"
-                .to_owned(),
-        );
-        state.command_refusal = Some(crate::CommandRefusalNotice {
-            command_id: "c-1".to_owned(),
-            code: "conflict".to_owned(),
-            message: "input 1 cannot be removed: it is a layer source of scene 100".to_owned(),
-            reason: Some(RefusalReason::InputInUse {
+        refused(
+            id,
+            "conflict",
+            "input 1 cannot be removed: it is a layer source of scene 100",
+            None,
+            Some(RefusalReason::InputInUse {
                 input: 1,
                 usage: InputUse::SceneLayer { scene: 100 },
             }),
-        });
+        )
+    }
+
+    const SCENE_LAYER_ES: &str = "Comando rechazado (input_in_use): «Entrada 1» es una fuente \
+                                  de capa de la escena 100. Quite esa capa de la escena primero.";
+
+    fn spanish_queue() -> ToastQueue {
+        ToastQueue {
+            locale: Locale::new(fm_ui_model::i18n::Language::Spanish),
+            ..ToastQueue::default()
+        }
+    }
+
+    #[test]
+    fn typed_refusals_toast_in_the_console_language_instead_of_daemon_english() {
+        let mut queue = spanish_queue();
+        let mut state = state();
+        let refusal = scene_layer_refusal("c-1");
+        state.error = Some(refusal.error.clone());
+        state.command_refusals = vec![refusal];
         queue.observe(&state);
         queue.observe(&state);
         let toasts = queue.iter().collect::<Vec<_>>();
         assert_eq!(toasts.len(), 1, "{toasts:?}");
         assert_eq!(toasts[0].kind, ToastKind::Error);
-        assert_eq!(
-            toasts[0].message,
-            "Comando rechazado (input_in_use): «Entrada 1» es una fuente de capa de la escena \
-             100. Quite esa capa de la escena primero."
-        );
+        assert_eq!(toasts[0].message, SCENE_LAYER_ES);
         // The status bar words it the same way.
         let (status, _) = crate::chrome::status_message(queue.locale, &state);
         assert!(status.contains("es una fuente de capa"), "{status}");
         assert!(!status.contains("layer source"), "{status}");
 
         // A refusal without a typed reason falls back to the daemon's text.
-        state.error = Some("Command rejected (internal): boom".to_owned());
-        state.command_refusal = Some(crate::CommandRefusalNotice {
-            command_id: "c-2".to_owned(),
-            code: "internal".to_owned(),
-            message: "boom".to_owned(),
-            reason: None,
-        });
+        let boom = refused("c-2", "internal", "boom", None, None);
+        state.error = Some(boom.error.clone());
+        state.command_refusals = vec![boom];
         queue.observe(&state);
+        assert_eq!(queue.iter().count(), 2);
         assert_eq!(
             queue.iter().last().unwrap().message,
             "Command rejected (internal): boom"
         );
+    }
+
+    #[test]
+    fn two_refusals_before_one_frame_each_show_their_own_text() {
+        // The worker published a typed refusal and then an untyped one
+        // before the UI's next frame: the mailbox queues both, and the
+        // error is the second's.
+        let mut queue = spanish_queue();
+        let mut state = state();
+        let first = scene_layer_refusal("c-1");
+        let second = refused("c-2", "internal", "disk full", None, None);
+        state.error = Some(second.error.clone());
+        state.command_refusals = vec![first, second];
+        queue.observe(&state);
+        let messages = queue
+            .iter()
+            .map(|toast| toast.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            [SCENE_LAYER_ES, "Command rejected (internal): disk full"]
+        );
+        // The status bar shows the current (second) error, not the first
+        // refusal's wording.
+        let (status, _) = crate::chrome::status_message(queue.locale, &state);
+        assert!(status.contains("disk full"), "{status}");
+        assert!(!status.contains("fuente de capa"), "{status}");
+
+        // Two typed refusals: both worded, in order.
+        let mut queue = spanish_queue();
+        let third = scene_layer_refusal("c-3");
+        let fourth = refused(
+            "c-4",
+            "conflict",
+            "too many grades",
+            None,
+            Some(fm_protocol::RefusalReason::bounds("grades", 64)),
+        );
+        state.error = Some(fourth.error.clone());
+        state.command_refusals = vec![third, fourth];
+        queue.observe(&state);
+        let messages = queue
+            .iter()
+            .map(|toast| toast.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            [
+                SCENE_LAYER_ES,
+                "Comando rechazado (bounds_exceeded): Correcciones de color: el límite es 64."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_typed_refusal_keeps_the_text_joined_onto_its_error() {
+        let mut queue = spanish_queue();
+        let mut state = state();
+        let refusal = scene_layer_refusal("c-1");
+        state.error = Some(format!(
+            "{}; Recording to /media/a failed; Rejected 2 command(s): Studio deferred command \
+             queue reached capacity 64",
+            refusal.error
+        ));
+        state.command_refusals = vec![refusal];
+        queue.observe(&state);
+        queue.observe(&state);
+        let toasts = queue.iter().collect::<Vec<_>>();
+        assert_eq!(toasts.len(), 1, "{toasts:?}");
+        assert_eq!(
+            toasts[0].message,
+            format!(
+                "{SCENE_LAYER_ES}; Recording to /media/a failed; Rejected 2 command(s): Studio \
+                 deferred command queue reached capacity 64"
+            )
+        );
+        let (status, _) = crate::chrome::status_message(queue.locale, &state);
+        assert!(status.contains("es una fuente de capa"), "{status}");
+        assert!(status.contains("Recording to /media/a failed"), "{status}");
+        assert!(status.contains("Rejected 2 command(s)"), "{status}");
+        assert!(!status.contains("layer source"), "{status}");
+    }
+
+    #[test]
+    fn an_acknowledged_refusal_still_shows_the_rest_of_its_error() {
+        let mut queue = spanish_queue();
+        let mut state = state();
+        let refusal = scene_layer_refusal("c-1");
+        state.error = Some(format!("{}; Recording to /media/a failed", refusal.error));
+        state.command_refusals = vec![refusal];
+        queue.acknowledge_refusal(Some("c-1"));
+        queue.observe(&state);
+        let messages = queue
+            .iter()
+            .map(|toast| toast.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages, ["Recording to /media/a failed"]);
+    }
+
+    #[test]
+    fn an_unsupported_scheme_is_named_in_the_console_language() {
+        let mut queue = spanish_queue();
+        let mut state = state();
+        let refusal = refused(
+            "c-1",
+            "invalid_command",
+            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)",
+            Some("unsupported_scheme"),
+            None,
+        );
+        state.error = Some(refusal.error.clone());
+        state.command_refusals = vec![refusal.clone()];
+        queue.observe(&state);
+        assert_eq!(
+            queue.iter().next().unwrap().message,
+            "Comando rechazado (unsupported_scheme): esquema no admitido (admitidos: rtsp, rtp, \
+             udp, tcp, http, https, hls)"
+        );
+        assert_eq!(
+            refusal.text(Locale::ENGLISH, None),
+            "Command refused (unsupported_scheme): unsupported scheme (allowed: rtsp, rtp, udp, \
+             tcp, http, https, hls)"
+        );
+    }
+
+    #[test]
+    fn a_refusal_line_is_found_anywhere_in_a_joined_error() {
+        let refusal = refused("c-1", "internal", "a; b", None, None);
+        let line = refusal.error.clone();
+        assert_eq!(refusal.remainder_of(&line), Some(None));
+        assert_eq!(
+            refusal.remainder_of(&format!("{line}; tail")),
+            Some(Some("tail".to_owned()))
+        );
+        assert_eq!(
+            refusal.remainder_of(&format!("head; {line}; tail")),
+            Some(Some("head; tail".to_owned()))
+        );
+        assert_eq!(refusal.remainder_of("something else"), None);
     }
 
     #[test]

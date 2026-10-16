@@ -39,6 +39,26 @@ const fn id_kind_msg(kind: IdKind) -> Msg {
     }
 }
 
+/// The localized name of a [`RefusalReason::BoundsExceeded`] field token;
+/// a token this console does not know passes through as sent.
+#[must_use]
+pub fn bounds_field_name(l: Locale, field: &str) -> String {
+    let msg = match field {
+        "inputs" => Msg::BoundsFieldInputs,
+        "entries" => Msg::BoundsFieldPlaylistEntries,
+        "grades" => Msg::BoundsFieldGrades,
+        "luts" => Msg::BoundsFieldLuts,
+        "layer_grades" => Msg::BoundsFieldLayerGrades,
+        "layers" => Msg::BoundsFieldSceneLayers,
+        "effects" => Msg::BoundsFieldLayerEffects,
+        "presets" => Msg::BoundsFieldPresets,
+        "title_content_bytes" => Msg::BoundsFieldTitleContentBytes,
+        "title_text_chars" => Msg::BoundsFieldTitleTextChars,
+        other => return other.to_owned(),
+    };
+    l.text(msg).to_owned()
+}
+
 /// What an operator does about one input usage.
 #[must_use]
 pub const fn input_use_advice(usage: InputUse) -> Msg {
@@ -123,13 +143,14 @@ pub fn refusal_reason_text(l: Locale, reason: &RefusalReason, names: InputNames<
             } else {
                 Msg::RsnDuplicateId
             };
-            l.format(
-                msg,
-                &[(
-                    "what",
-                    Arg::Str(&l.format(id_kind_msg(*kind), &[("id", Arg::Str(&id.to_string()))])),
-                )],
-            )
+            // A title is a title input: name it by its input's name.
+            let what = match (kind, names(*id)) {
+                (IdKind::Title, Some(name)) => {
+                    l.format(Msg::IdKindTitleNamed, &[("name", Arg::Str(&name))])
+                }
+                _ => l.format(id_kind_msg(*kind), &[("id", Arg::Str(&id.to_string()))]),
+            };
+            l.format(msg, &[("what", Arg::Str(&what))])
         }
         RefusalReason::DuplicateName => plain(Msg::RsnDuplicateName),
         RefusalReason::InvalidName { max_bytes } => {
@@ -153,7 +174,10 @@ pub fn refusal_reason_text(l: Locale, reason: &RefusalReason, names: InputNames<
         }
         RefusalReason::BoundsExceeded { field, max } => l.format(
             Msg::RsnBoundsExceeded,
-            &[("field", Arg::Str(field)), ("max", Arg::Count(*max))],
+            &[
+                ("field", Arg::Str(&bounds_field_name(l, field))),
+                ("max", Arg::Count(*max)),
+            ],
         ),
         RefusalReason::NothingToUndo => plain(Msg::RsnNothingToUndo),
         RefusalReason::NothingToRedo => plain(Msg::RsnNothingToRedo),
@@ -300,6 +324,70 @@ mod tests {
             refusal_reason_text(ES, &alias, &names),
             "«Entrada 2» es el destino del alias «Entrada 9». \
              Quite esa referencia sin conexión primero."
+        );
+    }
+
+    #[test]
+    fn bounds_fields_are_named_in_the_console_language() {
+        for field in [
+            "inputs",
+            "entries",
+            "grades",
+            "luts",
+            "layer_grades",
+            "layers",
+            "effects",
+            "presets",
+            "title_content_bytes",
+            "title_text_chars",
+        ] {
+            let english = bounds_field_name(Locale::ENGLISH, field);
+            let spanish = bounds_field_name(ES, field);
+            assert_ne!(english, field, "{field} has no English name");
+            assert_ne!(spanish, field, "{field} has no Spanish name");
+            assert_ne!(english, spanish, "{field} is untranslated");
+        }
+        let reason = RefusalReason::bounds("layer_grades", 16);
+        assert_eq!(
+            refusal_reason_text(Locale::ENGLISH, &reason, &names),
+            "Layer grades: the limit is 16."
+        );
+        assert_eq!(
+            refusal_reason_text(ES, &reason, &names),
+            "Correcciones de capa: el límite es 16."
+        );
+        // A field this console does not know yet passes through.
+        assert_eq!(
+            refusal_reason_text(
+                Locale::ENGLISH,
+                &RefusalReason::bounds("widgets", 3),
+                &names
+            ),
+            "widgets: the limit is 3."
+        );
+    }
+
+    #[test]
+    fn a_title_refusal_names_the_title_when_it_can() {
+        let named = RefusalReason::UnknownId {
+            kind: IdKind::Title,
+            id: 1,
+        };
+        assert_eq!(
+            refusal_reason_text(Locale::ENGLISH, &named, &names),
+            "Title \"Camera 1 Wide\" no longer exists."
+        );
+        assert_eq!(
+            refusal_reason_text(ES, &named, &names),
+            "Título «Camera 1 Wide» ya no existe."
+        );
+        let unnamed = RefusalReason::DuplicateId {
+            kind: IdKind::Title,
+            id: 7,
+        };
+        assert_eq!(
+            refusal_reason_text(Locale::ENGLISH, &unnamed, &names),
+            "Title 7 already exists."
         );
     }
 

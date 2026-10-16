@@ -555,3 +555,309 @@ fn a_stream_without_audio_plays_its_pictures_in_silence() {
     );
     assert_eq!(observed.loud_frames, 0);
 }
+
+#[test]
+fn a_stream_that_gains_audio_is_heard_after_it_reconnects() {
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    let port = free_udp_port();
+    let url = format!("udp://127.0.0.1:{port}?pkt_size=1316");
+    let receiver = receiver(&stream(&format!("udp://127.0.0.1:{port}")));
+    let sender = Sender::start(&["-map", "0:v", "-f", "mpegts", &url]);
+    let mut observed = Observed::default();
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(25),
+            &mut observed,
+            |status, seen| { is_live(status) && seen.pictures >= 25 }
+        ),
+        "video-only never played: {:?}",
+        receiver.status()
+    );
+    assert_eq!(observed.loud_frames, 0);
+
+    drop(sender);
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(10),
+            &mut observed,
+            |status, _| { is_reconnecting(status) }
+        ),
+        "no reconnect after the video-only sender died: {:?}",
+        receiver.status()
+    );
+    // The sender comes back with a tone: the reconnect asks for audio again.
+    let _sender = Sender::mpegts(&url);
+    expect_playing(&receiver, &mut observed, "audio gained on reconnect");
+}
+
+/// Writes a short local HLS rendition into `directory` and returns its
+/// segment names.
+fn local_hls_segments(directory: &Path) -> Vec<String> {
+    let playlist = directory.join("local.m3u8");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc2=size={WIDTH}x{HEIGHT}:rate={FPS}:duration=6"),
+            "-c:v",
+            "mpeg2video",
+            "-g",
+            "10",
+            "-f",
+            "hls",
+            "-hls_time",
+            "1",
+            "-hls_list_size",
+            "0",
+            "-hls_segment_filename",
+        ])
+        .arg(directory.join("seg%d.ts"))
+        .arg(&playlist)
+        .stdin(Stdio::null())
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success());
+    std::fs::read_to_string(&playlist)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_served_playlist_cannot_reach_local_files() {
+    use std::fmt::Write as _;
+
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    let local = tempfile::tempdir().unwrap();
+    let segments = local_hls_segments(local.path());
+    assert!(segments.len() >= 3, "{segments:?}");
+    // A remote playlist whose segments are files on the receiving machine.
+    let remote = tempfile::tempdir().unwrap();
+    let mut playlist = String::from(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n",
+    );
+    for segment in &segments {
+        let _ = write!(
+            playlist,
+            "#EXTINF:1.0,\nfile://{}\n",
+            local.path().join(segment).display()
+        );
+    }
+    playlist.push_str("#EXT-X-ENDLIST\n");
+    std::fs::write(remote.path().join("evil.m3u8"), playlist).unwrap();
+    let server = FileServer::start(remote.path().to_path_buf());
+    let mut config = stream(&format!("http://127.0.0.1:{}/evil.m3u8", server.port));
+    config.settings.reconnect.give_up = GiveUp::After(NonZeroU32::new(1).unwrap());
+    let receiver = receiver(&config);
+    let mut observed = Observed::default();
+    pull_until(
+        &receiver,
+        Duration::from_secs(10),
+        &mut observed,
+        |status, _| status.state == NetworkStreamState::Failed,
+    );
+    let status = receiver.status();
+    assert_eq!(
+        observed.pictures, 0,
+        "a local file played through a served playlist: {status:?}"
+    );
+    assert_ne!(status.state, NetworkStreamState::Live);
+}
+
+#[test]
+fn a_served_session_description_cannot_open_rtp_ports() {
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    // An RTP sender and its SDP, served over HTTP: without a protocol
+    // whitelist the child would follow the SDP onto RTP/UDP and play it.
+    let directory = tempfile::tempdir().unwrap();
+    let sdp = directory.path().join("live.sdp");
+    let port = free_udp_port() & !1;
+    let mut command = Command::new("ffmpeg");
+    command
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc2=size={WIDTH}x{HEIGHT}:rate={FPS}"),
+            "-c:v",
+            "mpeg2video",
+            "-g",
+            "10",
+            "-f",
+            "rtp",
+            "-sdp_file",
+        ])
+        .arg(&sdp)
+        .arg(format!("rtp://127.0.0.1:{port}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _sender = Sender(command.spawn().expect("spawn the RTP sender"));
+    let ready = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_to_string(&sdp).map_or(true, |text| !text.contains("m=video")) {
+        assert!(Instant::now() < ready, "the RTP sender wrote no SDP");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let server = FileServer::start(directory.path().to_path_buf());
+    let mut config = stream(&format!("http://127.0.0.1:{}/live.sdp", server.port));
+    config.settings.reconnect.give_up = GiveUp::After(NonZeroU32::new(1).unwrap());
+    let receiver = receiver(&config);
+    let mut observed = Observed::default();
+    pull_until(
+        &receiver,
+        Duration::from_secs(10),
+        &mut observed,
+        |status, _| status.state == NetworkStreamState::Failed,
+    );
+    let status = receiver.status();
+    assert_eq!(
+        observed.pictures, 0,
+        "an HTTP stream reached RTP through its SDP: {status:?}"
+    );
+}
+
+/// Not a test: the stand-in daemon of
+/// `a_killed_parent_takes_its_stream_child_with_it`. It receives a UDP
+/// stream nobody sends, prints that it is ready, and waits to be killed.
+#[test]
+#[ignore = "helper process of a_killed_parent_takes_its_stream_child_with_it"]
+fn killed_parent_helper() {
+    let Ok(port) = std::env::var("FM_NETWORK_PARENT_HELPER_PORT") else {
+        return;
+    };
+    let mut config = stream(&format!("udp://127.0.0.1:{port}"));
+    config.settings.timeout_ms = 60_000;
+    let _receiver = receiver(&config);
+    println!("helper-ready");
+    std::io::stdout().flush().unwrap();
+    loop {
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// The `(pid, comm)` of every child of `parent`.
+#[cfg(target_os = "linux")]
+fn children_of(parent: u32) -> Vec<(u32, String)> {
+    let mut children = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `pid (comm) state ppid ...`; `comm` may hold spaces.
+        let Some((head, tail)) = stat.rsplit_once(") ") else {
+            continue;
+        };
+        let comm = head
+            .split_once(" (")
+            .map_or("", |(_, comm)| comm)
+            .to_owned();
+        let mut fields = tail.split_whitespace();
+        let _state = fields.next();
+        if fields.next().and_then(|ppid| ppid.parse::<u32>().ok()) == Some(parent) {
+            children.push((pid, comm));
+        }
+    }
+    children
+}
+
+/// Whether `pid` is gone (or only a zombie waiting for its new parent).
+#[cfg(target_os = "linux")]
+fn process_gone(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .and_then(|(_, tail)| tail.split_whitespace().next())
+            .is_none_or(|state| state == "Z" || state == "X")
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_killed_parent_takes_its_stream_child_with_it() {
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    let port = free_udp_port();
+    let mut helper = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "killed_parent_helper",
+            "--nocapture",
+        ])
+        .env("FM_NETWORK_PARENT_HELPER_PORT", port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the helper");
+    let mut lines = BufReader::new(helper.stdout.take().unwrap()).lines();
+    assert!(
+        lines.any(|line| line.is_ok_and(|line| line.contains("helper-ready"))),
+        "the helper never started its receiver"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let child = loop {
+        if let Some((pid, _)) = children_of(helper.id())
+            .into_iter()
+            .find(|(_, comm)| comm == "ffmpeg")
+        {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "the helper spawned no ffmpeg");
+        thread::sleep(Duration::from_millis(20));
+    };
+    // The child holds the UDP port while it waits for a sender.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+        assert!(Instant::now() < deadline, "the child never bound its port");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // SIGKILL: the helper runs no cleanup at all.
+    helper.kill().unwrap();
+    helper.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !process_gone(child) {
+        assert!(
+            Instant::now() < deadline,
+            "ffmpeg {child} outlived its killed parent"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_err() {
+        assert!(Instant::now() < deadline, "the UDP port stayed held");
+        thread::sleep(Duration::from_millis(20));
+    }
+}

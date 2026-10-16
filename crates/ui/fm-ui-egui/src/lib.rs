@@ -472,10 +472,11 @@ pub struct StudioUiState {
     /// The latest refused input add or remove, published once with its
     /// rejection.
     pub catalogue_refusal: Option<CatalogueRefusal>,
-    /// The latest refused command, published once with its rejection; its
-    /// typed reason (Protocol 2.45) words the error toast in the console
-    /// language.
-    pub command_refusal: Option<CommandRefusalNotice>,
+    /// Refused commands in arrival order, each published once with its
+    /// rejection (refusals that land before the UI's next frame queue up
+    /// here rather than replacing each other); a typed reason (Protocol
+    /// 2.45) words each one's toast in the console language.
+    pub command_refusals: Vec<CommandRefusalNotice>,
     /// The replicated authoritative project state while control is ready;
     /// the title editor syncs its titles from it.
     pub project_state: Option<ProjectState>,
@@ -528,7 +529,7 @@ impl StudioUiState {
             monitor_images: [None, None],
             catalogue_pending: Vec::new(),
             catalogue_refusal: None,
-            command_refusal: None,
+            command_refusals: Vec::new(),
             project_state: None,
             title_access: TitleAccess::new(false, false, false),
             title_updates: Vec::new(),
@@ -1629,10 +1630,22 @@ impl StudioShell {
     fn observe_toasts(&mut self, state: &StudioUiState, dt_ms: u32) {
         let catalogue = self.catalogue.observe(state, dt_ms);
         if catalogue.refusal_announced {
-            // The refusal toast below already explains this rejection.
-            self.toasts.acknowledge_error(state.error.as_ref());
-            self.toasts
-                .acknowledge_refusal(state.command_refusal.as_ref());
+            // The refusal toast below already explains this rejection; any
+            // other error text joined onto it is still toasted.
+            let command_id = state
+                .catalogue_refusal
+                .as_ref()
+                .map(|refusal| refusal.command_id.as_str());
+            if command_id.is_some_and(|id| {
+                state
+                    .command_refusals
+                    .iter()
+                    .any(|refusal| refusal.command_id == id)
+            }) {
+                self.toasts.acknowledge_refusal(command_id);
+            } else {
+                self.toasts.acknowledge_error(state.error.as_ref());
+            }
         }
         self.toasts.observe(state);
         for toast in catalogue.toasts {

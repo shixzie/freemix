@@ -464,7 +464,7 @@ impl fmt::Display for NetworkStreamError {
                 "the stream URL is empty, too long, not ASCII, contains spaces, or has no host"
             }
             Self::UnsupportedScheme => {
-                "the stream URL must be rtsp, rtsps, rtp, udp, tcp, http, or https"
+                "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)"
             }
             Self::TransportNotRtsp => "a transport hint applies only to RTSP streams",
             Self::JitterBuffer => "the jitter buffer must be 40 to 5000 ms",
@@ -517,6 +517,14 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
         return Err(NetworkStreamError::InvalidUrl);
     }
     let (scheme, rest) = split_scheme(url).ok_or(NetworkStreamError::InvalidUrl)?;
+    // The scheme is judged first: `file:///x` names no host, but what is
+    // wrong with it is the scheme.
+    if !matches!(
+        scheme.as_str(),
+        "rtsp" | "rtsps" | "rtp" | "udp" | "tcp" | "http" | "https"
+    ) {
+        return Err(NetworkStreamError::UnsupportedScheme);
+    }
     let (authority, path) = split_authority(rest);
     let host_port = authority
         .rsplit_once('@')
@@ -835,9 +843,20 @@ mod tests {
                 "{url}"
             );
         }
+        for url in ["ftp://host/x", "file:///etc/passwd", "concat:/a|/b"] {
+            assert_eq!(
+                validate_stream_url(url),
+                Err(if url.contains("://") {
+                    NetworkStreamError::UnsupportedScheme
+                } else {
+                    NetworkStreamError::InvalidUrl
+                }),
+                "{url}"
+            );
+        }
         assert_eq!(
-            validate_stream_url("ftp://host/x"),
-            Err(NetworkStreamError::UnsupportedScheme)
+            NetworkStreamError::UnsupportedScheme.to_string(),
+            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)"
         );
         let long = format!("http://h/{}", "a".repeat(MAX_STREAM_URL_BYTES));
         assert_eq!(

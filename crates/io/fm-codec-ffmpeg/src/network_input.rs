@@ -15,7 +15,11 @@
 //! audio reaches the receiver as the body of an HTTP `POST` to a loopback
 //! listener that only accepts a random per-receiver path. A stream without
 //! audio is detected when the child refuses its empty audio output; the
-//! receiver then connects without audio from that point on. A third output
+//! receiver then connects again at once without audio, and asks for audio
+//! again on every later reconnect, so a source restarted with audio is
+//! heard. (A connection that stays up is not re-probed: probing a second
+//! time needs a second connection to the source, which a UDP or RTP
+//! listener cannot open while the first holds its port.) A third output
 //! copies the input packets into a frame CRC listing on standard error, which
 //! the receiver sums into the received bitrate.
 //!
@@ -45,6 +49,20 @@
 //! then waits the reconnect policy's backoff for attempt `n` and reconnects
 //! (`reconnecting`); a connection that delivered media resets the attempt
 //! count, and a policy that gives up after `n` attempts fails the stream.
+//!
+//! # Containment
+//!
+//! The child may open only its own scheme's protocols
+//! (`-protocol_whitelist`): a served playlist, session description, or
+//! redirect cannot reach `file`, `concat`, or a local RTP/UDP port. On
+//! Linux the child carries a parent-death signal, so a receiver whose
+//! process is killed outright cannot leave it holding a port; elsewhere, a
+//! UDP or RTP child that hears nothing exits after its timeout plus the
+//! connect grace. (The crate's recording and stream-output children need
+//! neither: they read every frame from their parent through a pipe or a
+//! loopback socket, so a killed parent ends their input and they exit.
+//! This receiver's child is the only one that reads from the network, and
+//! so the only one that could wait forever on its own.)
 //!
 //! Credentials in the stream URL never leave the receiver: the last error is
 //! scrubbed of every URL secret and bounded, and [`NetworkInputConfig`]'s
@@ -611,9 +629,21 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
             args.extend(["-re".into(), "-rw_timeout".into(), micros]);
         }
         StreamProtocol::Tcp => args.extend(["-rw_timeout".into(), micros]),
-        StreamProtocol::Rtp | StreamProtocol::Udp => {}
+        StreamProtocol::Rtp | StreamProtocol::Udp => {
+            // A listener that hears nothing gives up on its own, so a child
+            // the receiver can no longer kill frees its port in bounded time
+            // even where no parent-death signal exists.
+            let grace = u64::try_from(CONNECT_GRACE.as_micros()).unwrap_or(u64::MAX);
+            let micros = (u64::from(config.settings.timeout_ms) * 1_000).saturating_add(grace);
+            args.extend(["-timeout".into(), micros.to_string()]);
+        }
     }
-    args.extend(["-i".into(), child_url(&config.url)]);
+    args.extend([
+        "-protocol_whitelist".into(),
+        protocol_whitelist(plan.protocol).into(),
+        "-i".into(),
+        child_url(&config.url),
+    ]);
     let rate = config.frame_rate;
     args.extend([
         "-map".into(),
@@ -665,6 +695,25 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
     args.into_iter().map(OsString::from).collect()
 }
 
+/// The only `ffmpeg` protocols the input of a `protocol` stream may open.
+///
+/// Without an explicit list a stream inherits its first protocol's default
+/// list, which for HTTP still admits `rtp`, `udp`, `httpproxy`, and `data`:
+/// a served session description, playlist, or redirect could then open
+/// local ports or other protocols. `file`, `concat`, `pipe`, and the rest
+/// are never on any list.
+const fn protocol_whitelist(protocol: StreamProtocol) -> &'static str {
+    match protocol {
+        StreamProtocol::Rtsp => "rtsp,rtsps,rtp,srtp,udp,tcp,tls",
+        StreamProtocol::Rtp => "rtp,udp",
+        StreamProtocol::Udp => "udp",
+        StreamProtocol::Tcp => "tcp",
+        StreamProtocol::Http => "http,https,tcp,tls",
+        // AES-128 segments are read through `crypto`.
+        StreamProtocol::Hls => "http,https,tcp,tls,crypto",
+    }
+}
+
 /// `url` as the child receives it: with its scheme in lowercase, since
 /// `ffmpeg` matches protocol names case-sensitively.
 fn child_url(url: &str) -> String {
@@ -674,7 +723,54 @@ fn child_url(url: &str) -> String {
     }
 }
 
+/// A `setpriv` that can give the child a parent-death signal, found once.
+///
+/// The workspace forbids `unsafe`, so the receiver cannot call
+/// `prctl(PR_SET_PDEATHSIG)` between `fork` and `exec` itself; util-linux's
+/// `setpriv --pdeathsig KILL` sets it and then execs `ffmpeg` in the same
+/// process. The kernel signals the child when the thread that spawned it
+/// exits, and the receiver's supervisor thread outlives every child it
+/// spawns, so the signal only fires once the receiver's process is gone,
+/// however it died. Without `setpriv` (macOS, or a minimal Linux) the
+/// child's own input timeouts bound how long it can outlive a killed
+/// parent instead.
+#[cfg(target_os = "linux")]
+fn parent_death_wrapper() -> Option<&'static std::path::Path> {
+    static WRAPPER: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    WRAPPER
+        .get_or_init(|| {
+            let path = std::env::var_os("PATH")?;
+            let setpriv = std::env::split_paths(&path)
+                .map(|directory| directory.join("setpriv"))
+                .find(|candidate| candidate.is_absolute() && candidate.is_file())?;
+            // Older `setpriv` builds lack `--pdeathsig`: prove it works.
+            let works = Command::new(&setpriv)
+                .args(["--pdeathsig", "KILL", "--"])
+                .arg(&setpriv)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            works.then_some(setpriv)
+        })
+        .as_deref()
+}
+
 fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
+    #[cfg(target_os = "linux")]
+    let mut command = match parent_death_wrapper() {
+        Some(setpriv) => {
+            let mut command = Command::new(setpriv);
+            command
+                .args(["--pdeathsig", "KILL", "--"])
+                .arg(&plan.executable);
+            command
+        }
+        None => Command::new(&plan.executable),
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut command = Command::new(&plan.executable);
     command
         .args(arguments(plan, audio_port))
@@ -729,6 +825,10 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
         }
         attempt = attempt.saturating_add(1);
         let mut inner = shared.lock();
+        // A source may come back with audio: every reconnect asks for it
+        // again (a video-only source costs one refused attempt per
+        // reconnect, retried at once without audio).
+        inner.audio_absent = false;
         inner.frames.clear();
         inner.bitrate_bps = 0;
         if !policy.allows(attempt) {
@@ -1160,11 +1260,56 @@ mod tests {
         );
         let joined = args.join(" ");
         assert!(
-            joined.contains("-rtsp_transport tcp -timeout 5000000 -i rtsp://cam.test:554/live")
+            joined.contains(
+                "-rtsp_transport tcp -timeout 5000000 \
+                 -protocol_whitelist rtsp,rtsps,rtp,srtp,udp,tcp,tls -i rtsp://cam.test:554/live"
+            ),
+            "{joined}"
         );
         assert!(joined.contains("http://127.0.0.1:4000/t0k3n"));
         assert!(joined.contains("scale=64:36,fps=fps=25/1:start_time=0,format=rgba"));
         assert!(!args.iter().any(|arg| arg == "-re"));
+    }
+
+    #[test]
+    fn every_scheme_opens_only_its_own_protocols() {
+        for (url, list) in [
+            ("rtsp://cam.test/live", "rtsp,rtsps,rtp,srtp,udp,tcp,tls"),
+            ("rtp://239.0.0.1:5004", "rtp,udp"),
+            ("udp://@:9000", "udp"),
+            ("tcp://encoder.test:9000", "tcp"),
+            ("https://cdn.test/live.ts", "http,https,tcp,tls"),
+            (
+                "http://cdn.test/live/index.m3u8",
+                "http,https,tcp,tls,crypto",
+            ),
+        ] {
+            let args = args(&plan(url, RtspTransport::Auto), Some(4000));
+            let at = args
+                .iter()
+                .position(|arg| arg == "-protocol_whitelist")
+                .unwrap_or_else(|| panic!("{url}: no whitelist in {args:?}"));
+            assert_eq!(args[at + 1], list, "{url}");
+            assert_eq!(args[at + 2], "-i", "{url}: the list must bind the input");
+            for forbidden in ["file", "concat", "pipe", "data", "subfile"] {
+                assert!(
+                    !list.split(',').any(|protocol| protocol == forbidden),
+                    "{url} admits {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_listening_child_gives_up_on_silence_by_itself() {
+        // 5 s stream timeout plus the 5 s connect grace.
+        for url in ["udp://@:9000", "rtp://239.0.0.1:5004"] {
+            let joined = args(&plan(url, RtspTransport::Auto), None).join(" ");
+            assert!(
+                joined.contains("-timeout 10000000 -protocol_whitelist"),
+                "{joined}"
+            );
+        }
     }
 
     #[test]

@@ -36,7 +36,8 @@ use std::sync::OnceLock;
 
 pub use messages::Msg;
 pub use refusal::{
-    InputNames, command_refusal_text, input_use_advice, input_use_sentence, refusal_reason_text,
+    InputNames, bounds_field_name, command_refusal_text, input_use_advice, input_use_sentence,
+    refusal_reason_text,
 };
 
 /// A language with a Studio message catalog.

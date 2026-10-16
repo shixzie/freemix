@@ -50,9 +50,8 @@ impl NetworkStreamDraft {
             settings,
         };
         config.validate().map_err(|error| match error {
-            NetworkStreamError::InvalidUrl | NetworkStreamError::UnsupportedScheme => {
-                Msg::NsReasonUrlInvalid.en()
-            }
+            NetworkStreamError::InvalidUrl => Msg::NsReasonUrlInvalid.en(),
+            NetworkStreamError::UnsupportedScheme => Msg::RsnUnsupportedScheme.en(),
             NetworkStreamError::TransportNotRtsp => Msg::NsReasonTransport.en(),
             NetworkStreamError::Backoff => Msg::NsReasonBackoff.en(),
             NetworkStreamError::JitterBuffer
@@ -300,7 +299,15 @@ mod tests {
     fn the_form_validates_like_the_daemon() {
         let mut draft = NetworkStreamDraft::default();
         assert_eq!(draft.config(), Err(Msg::NsReasonUrlEmpty.en()));
-        draft.url = "ftp://host/live".into();
+        for url in ["ftp://host/live", "file:///etc/passwd"] {
+            draft.url = url.into();
+            assert_eq!(draft.config(), Err(Msg::RsnUnsupportedScheme.en()), "{url}");
+            assert_eq!(
+                Locale::new(Language::Spanish).tr(draft.config().unwrap_err()),
+                "esquema no admitido (admitidos: rtsp, rtp, udp, tcp, http, https, hls)"
+            );
+        }
+        draft.url = "rtsp://".into();
         assert_eq!(draft.config(), Err(Msg::NsReasonUrlInvalid.en()));
         draft.url = " rtsp://cam.local/live ".into();
         draft.settings.transport = RtspTransport::Tcp;

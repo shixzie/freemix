@@ -383,6 +383,7 @@ pub fn catalogue_refusal_message(l: Locale, refusal: &CatalogueRefusal, name: &s
             "project_locked" => l.text(Msg::RefuseProjectLocked).to_owned(),
             "input_locked" => named(Msg::RefuseInputLocked),
             "unavailable" => l.text(Msg::RefuseUnavailable).to_owned(),
+            "unsupported_scheme" => l.text(Msg::RsnUnsupportedScheme).to_owned(),
             _ => refusal.message.clone(),
         },
     };
@@ -2067,6 +2068,17 @@ mod tests {
             catalogue_refusal_message(spanish, &typed_full, "Cam"),
             "Alta rechazada (bounds_exceeded): El show ya tiene el máximo de 256 entradas; \
              quite una entrada primero."
+        );
+        let scheme = refusal(
+            add(5, "Cam"),
+            Some("unsupported_scheme"),
+            "invalid_command",
+            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)",
+        );
+        assert_eq!(
+            catalogue_refusal_message(spanish, &scheme, "Cam"),
+            "Alta rechazada (unsupported_scheme): esquema no admitido (admitidos: rtsp, rtp, \
+             udp, tcp, http, https, hls)"
         );
         let full = refusal(add(5, "Cam"), None, "too_many_inputs", "m");
         assert!(

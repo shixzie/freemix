@@ -666,17 +666,22 @@ fn bar_divider(ui: &mut Ui) {
 /// Picks the most important one-line status message.
 pub(crate) fn status_message(l: Locale, state: &StudioUiState) -> (String, Color32) {
     if let Some(error) = &state.error {
-        // A typed refusal reason words the error in the console language.
-        if let Some(refusal) = state
-            .command_refusal
-            .as_ref()
-            .filter(|refusal| refusal.reason.is_some())
+        // A refusal the console words itself replaces its own line of the
+        // error; anything else joined onto that error still shows.
+        if let Some((refusal, rest)) = state
+            .command_refusals
+            .iter()
+            .rev()
+            .filter(|refusal| refusal.is_localized())
+            .find_map(|refusal| Some((refusal, refusal.remainder_of(error)?)))
         {
+            let mut message = refusal.text(l, state.view.as_ref());
+            if let Some(rest) = rest {
+                message.push_str("; ");
+                message.push_str(&crate::l10n::host_message(l, &rest));
+            }
             return (
-                l.format(
-                    Msg::StatusError,
-                    &[("message", Arg::Str(&refusal.text(l, state.view.as_ref())))],
-                ),
+                l.format(Msg::StatusError, &[("message", Arg::Str(&message))]),
                 ERROR,
             );
         }

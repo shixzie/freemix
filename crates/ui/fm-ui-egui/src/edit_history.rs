@@ -343,7 +343,8 @@ pub fn input_edit_lock_reason(state: &StudioUiState, input: InputId) -> Option<&
 
 /// A refused command as the console words it (Protocol 2.45): published
 /// once with its rejection, toasted in the console language from its typed
-/// reason. A refusal without a reason keeps the worker's English text.
+/// reason (or a field-issue code the console words). A refusal without
+/// either keeps the worker's English text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandRefusalNotice {
     /// The refused command's identifier; each refusal is announced once.
@@ -353,6 +354,13 @@ pub struct CommandRefusalNotice {
     /// The daemon's English text, the fallback wording.
     pub message: String,
     pub reason: Option<RefusalReason>,
+    /// The stable code of the rejection's first field issue, if any.
+    pub issue: Option<String>,
+    /// The worker's English error line for this rejection
+    /// ([`command_rejection_message`]): the part of
+    /// [`StudioUiState::error`] this refusal explains. Anything else joined
+    /// onto that error is not explained by the refusal and is shown too.
+    pub error: String,
 }
 
 impl CommandRefusalNotice {
@@ -364,6 +372,7 @@ impl CommandRefusalNotice {
                 id,
                 code,
                 message,
+                fields,
                 reason,
                 ..
             } => Some(Self {
@@ -371,9 +380,64 @@ impl CommandRefusalNotice {
                 code: code.clone(),
                 message: message.clone(),
                 reason: reason.clone(),
+                issue: fields.first().map(|issue| issue.code.clone()),
+                error: command_rejection_message(code, message, fields),
             }),
             CommandResult::Accepted { .. } => None,
         }
+    }
+
+    /// The console's own wording of an untyped field issue, if it has one.
+    fn issue_msg(&self) -> Option<Msg> {
+        match self.issue.as_deref()? {
+            "unsupported_scheme" => Some(Msg::RsnUnsupportedScheme),
+            _ => None,
+        }
+    }
+
+    /// Whether the console words this refusal itself (from a typed reason
+    /// or a known field issue) rather than showing the worker's English.
+    #[must_use]
+    pub fn is_localized(&self) -> bool {
+        self.reason.is_some() || self.issue_msg().is_some()
+    }
+
+    /// The refusal's toast: worded in the console language when it can be,
+    /// else the worker's English error line.
+    #[must_use]
+    pub fn toast_text(&self, l: Locale, view: Option<&ClientView>) -> String {
+        if self.is_localized() {
+            self.text(l, view)
+        } else {
+            self.error.clone()
+        }
+    }
+
+    /// What `error` holds beyond this refusal's own line: `None` when the
+    /// error is not this refusal's at all, `Some(None)` when the refusal
+    /// explains all of it, and `Some(Some(rest))` for the text joined onto
+    /// it (a persistent error, a deferred-queue overflow).
+    #[must_use]
+    pub fn remainder_of(&self, error: &str) -> Option<Option<String>> {
+        let line = self.error.as_str();
+        if line.is_empty() {
+            return None;
+        }
+        if error == line {
+            return Some(None);
+        }
+        let parts = error.split("; ").collect::<Vec<_>>();
+        let width = line.split("; ").count();
+        let at = parts
+            .windows(width)
+            .position(|window| window.join("; ") == line)?;
+        let rest = parts[..at]
+            .iter()
+            .chain(&parts[at + width..])
+            .copied()
+            .collect::<Vec<_>>()
+            .join("; ");
+        Some((!rest.is_empty()).then_some(rest))
     }
 
     /// The refusal in the console language, naming inputs from `view`.
@@ -387,6 +451,14 @@ impl CommandRefusalNotice {
                 .position(|candidate| *candidate == input)
                 .and_then(|index| view.input_names.get(index).cloned())
         };
+        if self.reason.is_none()
+            && let (Some(msg), Some(issue)) = (self.issue_msg(), self.issue.as_deref())
+        {
+            return l.format(
+                Msg::CommandRefused,
+                &[("code", Arg::Str(issue)), ("reason", Arg::Str(l.text(msg)))],
+            );
+        }
         fm_ui_model::i18n::command_refusal_text(
             l,
             &self.code,
