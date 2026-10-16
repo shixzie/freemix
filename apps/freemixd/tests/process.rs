@@ -6138,11 +6138,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.49.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 49));
+    // The previous protocol is refused; the current one is 2.50.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 50));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 48),
+        protocol: ProtocolVersion::new(2, 49),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6158,7 +6158,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 49)
+        ProtocolVersion::new(2, 50)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -7672,4 +7672,184 @@ fn animation_presets_replicate_apply_and_persist_through_restart() {
             "{restart}"
         );
     }
+}
+
+/// Joins as a viewer and reads the snapshot and the `cue_list_state`
+/// records that complete it (Protocol 2.50).
+fn cue_list_sync(
+    daemon: &Daemon,
+) -> (
+    fm_protocol::SnapshotMessage,
+    Vec<fm_protocol::CueListStateMessage>,
+) {
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Viewer, None);
+    let snapshot = client.receive_snapshot();
+    let mut lists = Vec::new();
+    while lists.len() < usize::from(snapshot.cue_list_states) {
+        match client.receive() {
+            WireMessage::CueListState(state) => lists.push(state),
+            WireMessage::Event(event) => panic!("event before the cue list states: {event:?}"),
+            _ => {}
+        }
+    }
+    (snapshot, lists)
+}
+
+/// RC-017 end to end through the daemon: a cue list edit is a durable
+/// project edit; GO fires the standby cue's actions up to its wait on one
+/// frame; the daemon cue clock (and only it) runs the rest exactly on the
+/// due frame; a late joiner learns the lists from `cue_list_state`; and the
+/// journal replays the same run after a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
+    use fm_protocol::{
+        CueListSpec, CueOperation, CuePendingStatus, CueRunStatus, TransitionFavoriteEffect,
+        WireCue, WireCueAction,
+    };
+
+    fn run_event(client: &mut Client, revision: u64) -> fm_protocol::CueRunChange {
+        match durable_event_at(client, revision).payload {
+            EventPayload::CueRunChanged(change) => *change,
+            other => panic!("expected cue_run_changed at {revision}, got {other:?}"),
+        }
+    }
+    let cut = |input| WireCueAction::Take {
+        input: Some(input),
+        effect: TransitionFavoriteEffect::Cut,
+        duration_frames: 0,
+    };
+
+    let directory = TestDirectory::new("cue-clock");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let store = ProjectStore::new(&project_path).unwrap();
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    let snapshot = admin.receive_snapshot();
+    assert_eq!(snapshot.cue_list_states, 0);
+
+    let spec = CueListSpec {
+        name: "Show".into(),
+        cues: vec![
+            WireCue {
+                id: 10,
+                name: "Open".into(),
+                auto_follow: false,
+                actions: vec![
+                    cut(input(2)),
+                    WireCueAction::Wait { frames: 10 },
+                    cut(input(1)),
+                ],
+            },
+            WireCue {
+                id: 20,
+                name: "Close".into(),
+                auto_follow: false,
+                actions: vec![cut(input(2))],
+            },
+        ],
+    };
+    admin.send(&command(
+        "set-cues",
+        "set-cues-key",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(spec.clone()),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-cues"), 1);
+    match durable_event_at(&mut admin, 1).payload {
+        EventPayload::CueListChanged(list) => {
+            assert_eq!((list.id, &list.spec), (7, &spec));
+            assert_eq!(list.state.standby, Some(10));
+        }
+        other => panic!("expected cue_list_changed, got {other:?}"),
+    }
+
+    // Only the daemon's clock may advance a cue.
+    admin.send(&command(
+        "client-advance",
+        "client-advance-key",
+        CommandPayload::CueAdvance { list: 7, frame: 20 },
+    ));
+    assert!(matches!(
+        admin.next_result(),
+        CommandResult::Rejected { code, current_revision: 1, .. } if code == "unavailable"
+    ));
+
+    let fired_at = Instant::now();
+    admin.send(&command(
+        "go",
+        "go-key",
+        CommandPayload::CueControl {
+            list: 7,
+            operation: CueOperation::Go { cue: None },
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "go"), 2);
+    let go = run_event(&mut admin, 2);
+    assert_eq!((go.list, go.fired.as_slice()), (7, [10].as_slice()));
+    assert_eq!(go.program, input(2));
+    let due = go.frame + 10;
+    assert_eq!(
+        go.state,
+        CueRunStatus {
+            standby: Some(20),
+            live: Some(10),
+            pending: Some(CuePendingStatus {
+                cue: 10,
+                action: 2,
+                due_frame: due,
+            }),
+            played: vec![10],
+            fault: None,
+        }
+    );
+
+    // The clock runs the rest of the cue on exactly its due frame, paced by
+    // wall time (25 fps).
+    let advance = run_event(&mut admin, 3);
+    assert!(
+        fired_at.elapsed() >= Duration::from_millis(300),
+        "the wait ended after {:?}",
+        fired_at.elapsed()
+    );
+    assert_eq!((advance.frame, advance.program), (due, input(1)));
+    assert_eq!(advance.fired, Vec::<u64>::new());
+    assert_eq!(advance.state.pending, None);
+    assert_eq!(advance.state.standby, Some(20));
+
+    let (late, lists) = cue_list_sync(&daemon);
+    assert_eq!((late.revision, late.cue_list_states), (3, 1));
+    assert_eq!(lists[0].revision, 3);
+    assert_eq!((lists[0].list.id, &lists[0].list.spec), (7, &spec));
+    assert_eq!(lists[0].list.state, advance.state);
+    drop(admin);
+    daemon.stop();
+
+    // GO and the clock's advance are journaled like any command, so replay
+    // reproduces the same run.
+    assert_eq!(store.scan_journal().unwrap().batches().len(), 3);
+    let daemon = Daemon::start(&project_path);
+    let (recovered, lists) = cue_list_sync(&daemon);
+    assert_eq!(recovered.revision, 3);
+    assert_eq!(recovered.desired_program, input(1));
+    assert_eq!(lists[0].list.state, advance.state);
+    daemon.wait_success();
+
+    let checkpointed = store.load().unwrap();
+    assert_eq!(checkpointed.position().revision, 3);
+    let lists = checkpointed.project().cue_lists();
+    assert_eq!(lists.len(), 1);
+    assert_eq!((lists[0].id, lists[0].name.as_str()), (7, "Show"));
+    assert_eq!(lists[0].state.standby, Some(20));
 }

@@ -1,5 +1,5 @@
-//! Deterministic shortcuts, triggers, macros, schedules, playlists, and
-//! controllers.
+//! Deterministic shortcuts, triggers, macros, schedules, playlists, cue
+//! stacks, and controllers.
 //!
 //! This crate describes automation intent only. It performs no device I/O and
 //! never reads a clock; every time-sensitive operation receives a caller-owned
@@ -11,6 +11,7 @@ mod condition;
 mod control;
 mod control_map;
 mod controller;
+mod cue;
 mod feedback;
 mod go;
 mod intent;
@@ -47,6 +48,10 @@ pub use controller::{
     ActivatorEngine, ActivatorMapping, ActivatorRule, ControlAddress, ControlMode, ControllerError,
     ControllerFeedback, ControllerInput, ControllerManager, DeviceState, LearnRequest,
     MappedControllerIntent, Mapping, TallySnapshot, ValueRange,
+};
+pub use cue::{
+    CueFiring, CuePendingStep, CueStack, CueStackError, CueStackState, CueStep, FiredCueAction,
+    StackCue,
 };
 pub use feedback::{
     FeedbackBinding, FeedbackError, FeedbackMessage, FeedbackPayload, FeedbackRouter,

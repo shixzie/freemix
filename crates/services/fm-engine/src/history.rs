@@ -160,6 +160,7 @@ impl EngineCommand {
             | Self::SetDisplayOutput { .. }
             | Self::SetNetworkStream { .. }
             | Self::SetCaptureSettings { .. }
+            | Self::SetCueList { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
                 if edit.is_live() {
@@ -207,7 +208,10 @@ impl EngineCommand {
             | Self::PlaylistControl(_)
             | Self::PlaylistAdvance { .. }
             | Self::RealizePlaylistCue(_)
-            | Self::RealizeTitle(_) => EngineCommandKind::LiveOperation,
+            | Self::RealizeTitle(_)
+            | Self::CueControl { .. }
+            | Self::CueAdvance { .. }
+            | Self::RealizeCueActions(_) => EngineCommandKind::LiveOperation,
         }
     }
 }
@@ -875,6 +879,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                     config: Box::new(config.clone()),
                 })
         }
+        EngineCommand::SetCueList { list, .. } => Some(EngineCommand::SetCueList {
+            list: *list,
+            definition: crate::cue::definition(state, *list),
+        }),
         EngineCommand::SetTransitionFavorite { slot, .. } => state
             .transition_favorites()
             .get(*slot)

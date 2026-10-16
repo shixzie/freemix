@@ -2564,6 +2564,7 @@ fn intent_payload(
         StudioIntent::Title(command) => title_payload(&command)
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
+        StudioIntent::Cue(intent) => cue_payload(intent),
         StudioIntent::Media { input, operation } => {
             if let Some(view) = view
                 && !view.inputs.contains(&input)
@@ -2645,6 +2646,20 @@ fn check_input_lifecycle(
 
 /// The protocol command for one Playlist tab action. Starts are immediate;
 /// the tab offers no scheduled start.
+/// The protocol command for one Cues tab action (RC-017).
+fn cue_payload(intent: fm_ui_egui::CueIntent) -> CommandPayload {
+    match intent {
+        fm_ui_egui::CueIntent::Set { list, spec } => CommandPayload::SetCueList {
+            list,
+            spec: Box::new(spec),
+        },
+        fm_ui_egui::CueIntent::Remove { list } => CommandPayload::RemoveCueList { list },
+        fm_ui_egui::CueIntent::Control { list, operation } => {
+            CommandPayload::CueControl { list, operation }
+        }
+    }
+}
+
 fn playlist_payload(intent: PlaylistIntent) -> CommandPayload {
     let operation = match intent {
         PlaylistIntent::Set { loop_mode, entries } => {
@@ -3286,6 +3301,7 @@ mod tests {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
@@ -4911,6 +4927,7 @@ mod tests {
         )));
         peer.send(&WireMessage::Snapshot(SnapshotMessage {
             media_states: 1,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             ..heartbeat_snapshot()
         }));
@@ -5692,6 +5709,47 @@ mod tests {
             scheduled_frame: None,
         };
         assert_eq!(catalogue_refusal(&client, &add.id, &accepted), None);
+    }
+
+    #[test]
+    fn cue_intents_map_to_cue_list_and_control_payloads() {
+        use fm_protocol::{CueListSpec, CueOperation};
+        use fm_ui_egui::CueIntent;
+
+        let spec = CueListSpec {
+            name: "Show".into(),
+            cues: Vec::new(),
+        };
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Cue(CueIntent::Set {
+                    list: 3,
+                    spec: spec.clone(),
+                }),
+                None
+            ),
+            Ok(CommandPayload::SetCueList {
+                list: 3,
+                spec: Box::new(spec)
+            })
+        );
+        assert_eq!(
+            intent_payload(StudioIntent::Cue(CueIntent::Remove { list: 3 }), None),
+            Ok(CommandPayload::RemoveCueList { list: 3 })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Cue(CueIntent::Control {
+                    list: 3,
+                    operation: CueOperation::Go { cue: Some(20) },
+                }),
+                None
+            ),
+            Ok(CommandPayload::CueControl {
+                list: 3,
+                operation: CueOperation::Go { cue: Some(20) },
+            })
+        );
     }
 
     #[test]
@@ -7041,6 +7099,7 @@ mod tests {
             peer.send(&WireMessage::Snapshot(SnapshotMessage {
                 animation_preset_states: 1,
                 media_states: 0,
+                cue_list_states: 0,
                 input_categories: Vec::new(),
                 transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
                 ..title_snapshot()

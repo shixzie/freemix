@@ -36,6 +36,8 @@ const fn id_kind_msg(kind: IdKind) -> Msg {
         IdKind::Preset => Msg::IdKindPreset,
         IdKind::Title => Msg::IdKindTitle,
         IdKind::PlaylistEntry => Msg::IdKindPlaylistEntry,
+        IdKind::CueList => Msg::IdKindCueList,
+        IdKind::Cue => Msg::IdKindCue,
     }
 }
 
@@ -54,6 +56,11 @@ pub fn bounds_field_name(l: Locale, field: &str) -> String {
         "presets" => Msg::BoundsFieldPresets,
         "title_content_bytes" => Msg::BoundsFieldTitleContentBytes,
         "title_text_chars" => Msg::BoundsFieldTitleTextChars,
+        "cue_lists" => Msg::BoundsFieldCueLists,
+        "cues" => Msg::BoundsFieldCues,
+        "actions" => Msg::BoundsFieldCueActions,
+        "list_actions" => Msg::BoundsFieldCueListActions,
+        "text" => Msg::BoundsFieldCueText,
         other => return other.to_owned(),
     };
     l.text(msg).to_owned()
@@ -69,6 +76,7 @@ pub const fn input_use_advice(usage: InputUse) -> Msg {
         InputUse::Stinger { .. } => Msg::AdviceStinger,
         InputUse::SceneLayer { .. } => Msg::AdviceSceneLayer,
         InputUse::PlaylistEntry { .. } => Msg::AdvicePlaylist,
+        InputUse::CueAction { .. } => Msg::AdviceCue,
         InputUse::SceneOnAir => Msg::AdviceSceneOffAir,
         InputUse::SceneAudioSource { .. } | InputUse::AliasTarget { .. } => Msg::AdviceOffline,
     }
@@ -115,6 +123,14 @@ pub fn input_use_sentence(
         InputUse::PlaylistEntry { entry } => {
             numbered(Msg::InUsePlaylistEntry, "entry", &entry.to_string())
         }
+        InputUse::CueAction { list, cue } => l.format(
+            Msg::InUseCueAction,
+            &[
+                ("name", Arg::Str(name)),
+                ("cue", Arg::Str(&cue.to_string())),
+                ("list", Arg::Str(&list.to_string())),
+            ],
+        ),
     }
 }
 
@@ -189,6 +205,9 @@ pub fn refusal_reason_text(l: Locale, reason: &RefusalReason, names: InputNames<
         RefusalReason::PlaylistTakeScheduled { frame } => {
             number(Msg::RsnPlaylistTakeScheduled, "frame", *frame)
         }
+        RefusalReason::CueScheduled { frame } => number(Msg::RsnCueScheduled, "frame", *frame),
+        RefusalReason::NoCueOnStandby => plain(Msg::RsnNoCueOnStandby),
+        RefusalReason::CueRunning { cue } => number(Msg::RsnCueRunning, "cue", *cue),
         RefusalReason::NotDurable => plain(Msg::RsnNotDurable),
         RefusalReason::RateLimited => plain(Msg::RsnRateLimited),
         RefusalReason::RuntimeUnsupported => plain(Msg::RsnRuntimeUnsupported),

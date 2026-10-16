@@ -811,7 +811,7 @@ fn dragging_a_tile_grip_moves_its_whole_tab_group() {
             .layout
             .dock
             .encode_tree()
-            .contains("h500([overlays|stingers|titles*|playlist|media],[inputs])"),
+            .contains("h500([overlays|stingers|titles*|playlist|media|cues],[inputs])"),
         "{}",
         shell.layout.dock.encode_tree()
     );

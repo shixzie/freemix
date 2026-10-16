@@ -56,12 +56,15 @@
   <span class="spacer"></span>
   <button type="button" id="preview" hidden aria-label="Put this input on Preview (P)">Preview</button>
   <button type="button" id="cut" hidden aria-label="Cut Preview to Program (C)">Cut</button>
+  <button type="button" id="standby" hidden aria-label="Put the next cue on standby (S)">Standby</button>
+  <button type="button" id="go" hidden aria-label="GO: fire the cue on standby (G)">GO</button>
   <button type="button" id="fullscreen" aria-label="Toggle full-screen tally (F)">Full screen</button>
 </header>
 <main id="tally" data-light="offline">
   <div id="label" aria-live="polite">FreeMix Tally</div>
   <div id="state" role="status" aria-live="polite">OFFLINE</div>
   <div id="lock" hidden><span id="lock-text"></span></div>
+  <div id="cue" hidden aria-live="polite"></div>
   <div id="board" role="list" aria-label="Inputs" hidden></div>
   <form id="setup" hidden autocomplete="off">
     <label>Access token
@@ -81,7 +84,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.49";
+  const PROTOCOL = "2.50";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -97,6 +100,7 @@
     board: $("board"), setup: $("setup"), token: $("token"), role: $("role"),
     inputs: $("inputs"), preview: $("preview"), cut: $("cut"), fullscreen: $("fullscreen"),
     lock: $("lock"), lockText: $("lock-text"),
+    go: $("go"), standby: $("standby"), cue: $("cue"),
   };
 
   const store = window.sessionStorage;
@@ -122,6 +126,9 @@
     desiredByRevision: new Map(),
     // Replicated edit padlocks: the project lock and each input's own lock.
     locks: { project: false, inputs: new Set() },
+    // Replicated cue lists (RC-017) by id: name, cues [{ id, name }], and
+    // the cue on standby ("" for none). GO drives the lowest-numbered list.
+    cueLists: new Map(),
   };
   let selected = store.getItem("freemix.tally.input") || "";
   let choosing = !selected;
@@ -159,6 +166,32 @@
     const value = record.fields.get(name);
     if (value === undefined) throw new Error(record.kind + " lacks " + name);
     return value;
+  }
+  function unhex(text) {
+    const bytes = new Uint8Array((text.match(/../g) || []).map((pair) => parseInt(pair, 16)));
+    return new TextDecoder().decode(bytes);
+  }
+  // A cue list record's `cues` (`id~name hex~follow~actions`, comma
+  // separated) and `state` (`standby:live:pending:played:fault`).
+  function cueList(record) {
+    const cues = required(record, "cues");
+    return {
+      name: required(record, "name"),
+      cues: cues ? cues.split(",").map((cue) => {
+        const parts = cue.split("~");
+        if (parts.length !== 4) throw new Error("malformed cue");
+        return { id: parts[0], name: unhex(parts[1]) };
+      }) : [],
+      standby: cueStandby(record),
+    };
+  }
+  function cueStandby(record) {
+    const standby = required(record, "state").split(":")[0];
+    return standby === "-" ? "" : standby;
+  }
+  function goList() {
+    const ids = [...show.cueLists.keys()].sort((a, b) => Number(a) - Number(b));
+    return ids.length ? { id: ids[0], ...show.cueLists.get(ids[0]) } : null;
   }
   function base64Url(text) {
     return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -294,6 +327,7 @@
           project: required(record, "project_locked") === "1",
           inputs: new Set(lockedInputs ? lockedInputs.split(",") : []),
         };
+        show.cueLists = new Map(); // its cue_list_state records follow
         show.desiredByRevision.clear();
         trackDesired(link.revision, show.desired.program, show.desired.preview);
         if (!show.inputs.some((input) => input.id === selected)) { selected = ""; choosing = true; }
@@ -312,9 +346,18 @@
         link.revision = revision;
         const name = required(record, "event");
         if (name === "desired_switcher" || name === "stinger_slots_changed"
-            || name === "playlist_changed") { // a playlist take moves Program too
+            || name === "playlist_changed" || name === "cue_run_changed") {
+          // A playlist take or a cue's actions move Program too.
           show.desired = { program: required(record, "program"), preview: required(record, "preview") };
           trackDesired(revision, show.desired.program, show.desired.preview);
+          if (name === "cue_run_changed") {
+            const list = show.cueLists.get(required(record, "list"));
+            if (list) list.standby = cueStandby(record);
+          }
+        } else if (name === "cue_list_changed") {
+          show.cueLists.set(required(record, "list"), cueList(record));
+        } else if (name === "cue_list_removed") {
+          show.cueLists.delete(required(record, "list"));
         } else if (name === "input_renamed") {
           const id = required(record, "input");
           const input = show.inputs.find((candidate) => candidate.id === id);
@@ -351,6 +394,10 @@
         }
         return;
       }
+      case "cue_list_state":
+        if (link.phase !== "live") throw new Error("unexpected cue list state");
+        show.cueLists.set(required(record, "list"), cueList(record));
+        return;
       case "heartbeat_acknowledgement":
         if (Number(required(record, "heartbeat_sequence")) === link.pendingHeartbeat) {
           link.pendingHeartbeat = 0;
@@ -468,9 +515,15 @@
     ui.setup.hidden = link.phase !== "idle" && link.phase !== "stopped";
     ui.board.hidden = !choosing || link.phase !== "live";
     if (!ui.board.hidden) renderBoard();
+    const cues = link.phase === "live" ? goList() : null;
+    const standby = cues && cues.cues.find((cue) => cue.id === cues.standby);
+    ui.cue.hidden = !cues;
+    ui.cue.textContent = cues ? cues.name + " — " + (standby ? "Standby: " + standby.name : "Nothing on standby") : "";
     for (const [button, state] of [
       [ui.preview, shortcutState("select_preview", input && show.desired.preview !== input.id)],
       [ui.cut, shortcutState("transition", true)],
+      [ui.go, cues ? shortcutState("transition", Boolean(standby)) : "hidden"],
+      [ui.standby, cues ? shortcutState("transition", cues.cues.length > 0) : "hidden"],
     ]) {
       button.hidden = state === "hidden";
       button.disabled = state !== "enabled";
@@ -516,6 +569,20 @@
     if (ui.cut.hidden || ui.cut.disabled) return;
     sendCommand([["payload", "cut"]]);
   }
+  // GO fires the standby cue of the lowest-numbered cue list; Standby moves
+  // standby to the cue after it (the first cue when none is on standby).
+  function go() {
+    const cues = goList();
+    if (ui.go.hidden || ui.go.disabled || !cues) return;
+    sendCommand([["payload", "cue_go"], ["list", cues.id]]);
+  }
+  function standbyNext() {
+    const cues = goList();
+    if (ui.standby.hidden || ui.standby.disabled || !cues || !cues.cues.length) return;
+    const index = cues.cues.findIndex((cue) => cue.id === cues.standby);
+    const next = cues.cues[(index + 1) % cues.cues.length];
+    sendCommand([["payload", "cue_standby"], ["list", cues.id], ["cue", next.id]]);
+  }
   function toggleFullScreen() {
     const full = !document.body.classList.contains("full");
     document.body.classList.toggle("full", full);
@@ -538,6 +605,8 @@
 
   ui.preview.addEventListener("click", previewSelected);
   ui.cut.addEventListener("click", cut);
+  ui.go.addEventListener("click", go);
+  ui.standby.addEventListener("click", standbyNext);
   ui.fullscreen.addEventListener("click", toggleFullScreen);
   ui.tally.addEventListener("dblclick", (event) => {
     if (event.target === ui.tally || event.target === ui.label || event.target === ui.state) toggleFullScreen();
@@ -553,6 +622,8 @@
     if (key === "f") toggleFullScreen();
     else if (key === "p") previewSelected();
     else if (key === "c") cut();
+    else if (key === "g") go();
+    else if (key === "s") standbyNext();
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;

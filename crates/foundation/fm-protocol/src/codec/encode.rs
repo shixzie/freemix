@@ -65,6 +65,7 @@ use super::{
 ///
 /// Returns [`CodecError::LineTooLong`] if the encoded record exceeds
 /// [`MAX_LINE_BYTES`].
+#[allow(clippy::too_many_lines)] // one arm per message kind
 pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
     let mut record = Record::default();
     match message {
@@ -149,6 +150,14 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             validate_request_id(&message.request_id)?;
             record.field_str("request_id", &message.request_id)?;
             super::display_output::encode_inventory(&message.inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::CueListState(message) => {
+            record.kind("cue_list_state");
+            record.field("revision", message.revision)?;
+            record.field("frame", message.frame)?;
+            super::cue::encode_list(&message.list, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }
@@ -278,6 +287,35 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => encode_playlist_command(record, payload)?,
+        CommandPayload::SetCueList { list, spec } => {
+            record.field("payload", "cue_list_set")?;
+            super::cue::encode_spec(*list, spec, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::RemoveCueList { list } => {
+            record.field("payload", "cue_list_remove")?;
+            if *list == 0 {
+                return Err(CodecError::InvalidField {
+                    field: "list",
+                    value: "0".to_owned(),
+                });
+            }
+            record.field("list", list)?;
+        }
+        CommandPayload::CueControl { list, operation } => {
+            record.field("payload", operation.payload())?;
+            super::cue::encode_operation(*list, *operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::CueAdvance { list, frame } => {
+            record.field("payload", "cue_advance")?;
+            super::cue::encode_operation(*list, crate::CueOperation::Back, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+            record.field("frame", frame)?;
+        }
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
@@ -1417,6 +1455,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         });
     }
     record.field("media_states", message.media_states)?;
+    if !super::cue::list_count_is_valid(message.cue_list_states) {
+        return Err(CodecError::InvalidField {
+            field: "cue_list_states",
+            value: message.cue_list_states.to_string(),
+        });
+    }
+    record.field("cue_list_states", message.cue_list_states)?;
     record.field_string(
         "input_categories",
         super::input_lifecycle::encode_categories(&message.input_categories)?,
@@ -1992,6 +2037,48 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             encode_overlays(record, "overlays", overlays)?;
         }
         payload @ EventPayload::PlaylistChanged { .. } => encode_playlist_changed(record, payload)?,
+        EventPayload::CueListChanged(list) => {
+            record.field("event", "cue_list_changed")?;
+            super::cue::encode_list(list, &mut |name, value| record.field_string(name, value))?;
+        }
+        EventPayload::CueListRemoved { list } => {
+            record.field("event", "cue_list_removed")?;
+            super::cue::encode_operation(*list, crate::CueOperation::Back, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::CueRunChanged(change) => {
+            record.field("event", "cue_run_changed")?;
+            super::cue::encode_operation(
+                change.list,
+                crate::CueOperation::Back,
+                &mut |name, value| record.field_string(name, value),
+            )?;
+            record.field("frame", change.frame)?;
+            record.field_string("state", super::cue::encode_state(&change.state))?;
+            record.field_string("fired", super::cue::encode_fired(&change.fired))?;
+            record.field("program", change.program)?;
+            record.field("preview", change.preview)?;
+            encode_manual_status(
+                record,
+                change.manual_transition,
+                ManualStatusFields::Unqualified,
+            )?;
+            encode_fade_to_black_state(
+                record,
+                change.fade_to_black,
+                FadeToBlackStateFields::Unqualified,
+            )?;
+            encode_overlays(record, "overlays", &change.overlays)?;
+            encode_input_audio_strips(record, &change.input_audio_strips)?;
+            record.field_string("streams", stream_statuses(&change.streams)?)?;
+            record.field_string("recordings", recording_statuses(&change.recordings)?)?;
+            record.field_string(
+                "playlist",
+                super::playlist::encode_playlist_state(change.playlist),
+            )?;
+            record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
+        }
         EventPayload::GradeChanged(change) => {
             record.field("event", "grade_changed")?;
             encode_grade_change(record, change)?;

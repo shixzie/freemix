@@ -1148,6 +1148,28 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// A cue list edit or cue control applied to a local project (RC-017).
+    Cue {
+        path: PathBuf,
+        payload: fm_protocol::CommandPayload,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// A cue list edit or cue control sent to a running daemon (RC-017).
+    RemoteCue {
+        address: SocketAddr,
+        payload: fm_protocol::CommandPayload,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Prints a local project's cue lists (RC-017).
+    CueLists {
+        path: PathBuf,
+    },
+    /// Prints a running daemon's cue lists with their run state (RC-017).
+    RemoteCueLists {
+        address: SocketAddr,
+    },
     /// A playlist edit or control sent to a running daemon.
     RemotePlaylist {
         address: SocketAddr,
@@ -1773,6 +1795,24 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
         "remote-playlist" => parse_remote_playlist(arguments),
+        cue @ ("cue-lists"
+        | "remote-cue-lists"
+        | "cue-list-set"
+        | "remote-cue-list-set"
+        | "cue-list-remove"
+        | "remote-cue-list-remove"
+        | "go"
+        | "remote-go"
+        | "cue-standby"
+        | "remote-cue-standby"
+        | "cue-back"
+        | "remote-cue-back"
+        | "cue-skip"
+        | "remote-cue-skip"
+        | "cue-stop"
+        | "remote-cue-stop"
+        | "cue-reset"
+        | "remote-cue-reset") => parse_cue(cue, arguments),
         "remote-undo" => parse_remote_history(false, arguments),
         "remote-redo" => parse_remote_history(true, arguments),
         "remote-lock" => parse_remote_lock(arguments),
@@ -5224,6 +5264,148 @@ fn parse_remote_playlist(
     })
 }
 
+/// Parses the cue list commands (RC-017), each taking a project path or,
+/// in its `remote-` form, a daemon address first:
+///
+/// * `cue-lists`;
+/// * `cue-list-set <list> <name> <cues>` where `<cues>` is a `;`-separated
+///   list (`-` for none) of `<id>:<name>:<follow 0|1>:<actions>` and
+///   `<actions>` a `,`-separated list (empty for none) of wire action
+///   tokens, e.g. `take.3.fade.25`, `overlay_on.1.4`, `wait.50` — except that
+///   `title_text.<input>.<field>.<text>` takes plain text;
+/// * `cue-list-remove <list>`;
+/// * `go <list> [<cue>]`, `cue-standby <list> <cue>`, and `cue-back`,
+///   `cue-skip`, `cue-stop`, or `cue-reset <list>`.
+fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    use fm_protocol::{CommandPayload, CueListSpec, CueOperation};
+
+    let mut arguments = arguments.peekable();
+    let (base, remote) = command
+        .strip_prefix("remote-")
+        .map_or((command, false), |base| (base, true));
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    if base == "cue-lists" {
+        if let Some(argument) = arguments.next() {
+            return Err(ArgsError::UnexpectedArgument(argument));
+        }
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::CueLists { path },
+            (None, Some(address)) => Command::RemoteCueLists { address },
+            (None, None) => unreachable!("a cue command names a project or an address"),
+        });
+    }
+    let list = number(&required(&mut arguments, "cue list")?, "cue list")?;
+    let control = |operation| CommandPayload::CueControl { list, operation };
+    let payload = match base {
+        "cue-list-set" => {
+            let name = required(&mut arguments, "cue list name")?;
+            let cues = cue_specs(&required(&mut arguments, "cues")?)?;
+            CommandPayload::SetCueList {
+                list,
+                spec: Box::new(CueListSpec { name, cues }),
+            }
+        }
+        "cue-list-remove" => CommandPayload::RemoveCueList { list },
+        "go" => {
+            let cue = match arguments.next_if(|argument| !argument.starts_with("--")) {
+                Some(cue) => Some(number(&cue, "cue")?),
+                None => None,
+            };
+            control(CueOperation::Go { cue })
+        }
+        "cue-standby" => control(CueOperation::Standby {
+            cue: number(&required(&mut arguments, "cue")?, "cue")?,
+        }),
+        "cue-back" => control(CueOperation::Back),
+        "cue-skip" => control(CueOperation::Skip),
+        "cue-stop" => control(CueOperation::Stop),
+        "cue-reset" => control(CueOperation::Reset),
+        other => return Err(ArgsError::UnknownCommand(other.to_owned())),
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::Cue {
+            path,
+            payload,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteCue {
+            address,
+            payload,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a cue command names a project or an address"),
+    })
+}
+
+/// Parses `cue-list-set` cues (see [`parse_cue`]).
+fn cue_specs(value: &str) -> Result<Vec<fm_protocol::WireCue>, ArgsError> {
+    if value == "-" {
+        return Ok(Vec::new());
+    }
+    value
+        .split(';')
+        .map(|item| {
+            let invalid = || ArgsError::InvalidChoice {
+                field: "cue",
+                value: item.to_owned(),
+            };
+            let parts: Vec<_> = item.splitn(4, ':').collect();
+            let [id, name, follow, actions] = parts[..] else {
+                return Err(invalid());
+            };
+            Ok(fm_protocol::WireCue {
+                id: id.parse().map_err(|_| invalid())?,
+                name: name.to_owned(),
+                auto_follow: match follow {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(invalid()),
+                },
+                actions: if actions.is_empty() {
+                    Vec::new()
+                } else {
+                    actions
+                        .split(',')
+                        .map(|token| {
+                            cue_action(token).ok_or_else(|| ArgsError::InvalidChoice {
+                                field: "cue action",
+                                value: token.to_owned(),
+                            })
+                        })
+                        .collect::<Result<_, _>>()?
+                },
+            })
+        })
+        .collect()
+}
+
+/// One cue action token; `title_text` takes plain text, which is hex-encoded
+/// into the wire token here.
+fn cue_action(token: &str) -> Option<fm_protocol::WireCueAction> {
+    use core::fmt::Write as _;
+
+    if let Some(rest) = token.strip_prefix("title_text.") {
+        let mut parts = rest.splitn(3, '.');
+        let (input, field, text) = (parts.next()?, parts.next()?, parts.next()?);
+        let mut hex = String::with_capacity(text.len() * 2);
+        for byte in text.bytes() {
+            write!(hex, "{byte:02x}").ok()?;
+        }
+        return fm_protocol::parse_cue_action_token(&format!("title_text.{input}.{field}.{hex}"));
+    }
+    fm_protocol::parse_cue_action_token(token)
+}
+
 fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, ArgsError> {
     use fm_protocol::PlaylistTransitionKind;
 
@@ -7224,6 +7406,111 @@ mod tests {
         assert_eq!(
             ArgsError::InvalidRecorder("nope".into()).to_string(),
             "invalid value for --recorder `nope`; expected 1 or 2"
+        );
+    }
+
+    #[test]
+    fn parses_cue_commands_local_and_remote() {
+        use fm_protocol::{CommandPayload, CueOperation};
+
+        let address: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let remote = |payload, expected_revision| {
+            Ok(Command::RemoteCue {
+                address,
+                payload,
+                key: None,
+                expected_revision,
+            })
+        };
+        let control = |operation| CommandPayload::CueControl { list: 3, operation };
+        assert_eq!(
+            parse(strings(&["remote-go", "127.0.0.1:9123", "3"])),
+            remote(control(CueOperation::Go { cue: None }), None)
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-go",
+                "127.0.0.1:9123",
+                "3",
+                "20",
+                "--expect",
+                "4"
+            ])),
+            remote(control(CueOperation::Go { cue: Some(20) }), Some(4))
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-go",
+                "127.0.0.1:9123",
+                "3",
+                "--expect",
+                "4"
+            ])),
+            remote(control(CueOperation::Go { cue: None }), Some(4))
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-cue-standby",
+                "127.0.0.1:9123",
+                "3",
+                "20"
+            ])),
+            remote(control(CueOperation::Standby { cue: 20 }), None)
+        );
+        for (command, operation) in [
+            ("remote-cue-back", CueOperation::Back),
+            ("remote-cue-skip", CueOperation::Skip),
+            ("remote-cue-stop", CueOperation::Stop),
+            ("remote-cue-reset", CueOperation::Reset),
+        ] {
+            assert_eq!(
+                parse(strings(&[command, "127.0.0.1:9123", "3"])),
+                remote(control(operation), None)
+            );
+        }
+        assert_eq!(
+            parse(strings(&["remote-cue-list-remove", "127.0.0.1:9123", "3"])),
+            remote(CommandPayload::RemoveCueList { list: 3 }, None)
+        );
+        assert_eq!(
+            parse(strings(&["remote-cue-lists", "127.0.0.1:9123"])),
+            Ok(Command::RemoteCueLists { address })
+        );
+        assert_eq!(
+            parse(strings(&["cue-list-set", "show.freemix", "3", "Show", "-"])),
+            Ok(Command::Cue {
+                path: PathBuf::from("show.freemix"),
+                payload: CommandPayload::SetCueList {
+                    list: 3,
+                    spec: Box::new(fm_protocol::CueListSpec {
+                        name: "Show".into(),
+                        cues: Vec::new(),
+                    }),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "cue-list-set",
+                "show.freemix",
+                "3",
+                "Show",
+                "1:A:2:"
+            ])),
+            Err(ArgsError::InvalidChoice {
+                field: "cue",
+                value: "1:A:2:".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["go", "show.freemix"])),
+            Err(ArgsError::MissingValue("cue list"))
+        );
+        assert_eq!(
+            parse(strings(&["cue-lists", "show.freemix", "extra"])),
+            Err(ArgsError::UnexpectedArgument("extra".into()))
         );
     }
 

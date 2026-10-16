@@ -179,6 +179,8 @@ pub struct ShowState {
     /// with [`Self::set_scene`] any other), with its animation.
     scenes: BTreeMap<SceneId, EngineScene>,
     playlist: Playlist,
+    /// The operator cue lists and their run states (RC-017).
+    cue_lists: Vec<fm_model::CueList>,
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
     animation_presets: fm_model::AnimationPresetLibrary,
@@ -271,6 +273,7 @@ impl ShowState {
             scenes: BTreeMap::new(),
             playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
                 .expect("an empty playlist is valid"),
+            cue_lists: Vec::new(),
             grading: ProjectGrading::default(),
             luts: BTreeMap::new(),
             animation_presets: fm_model::AnimationPresetLibrary::default(),
@@ -506,6 +509,18 @@ impl ShowState {
                 input,
                 entry: entry.id.get(),
             });
+        }
+        if let Some((list, cue)) = self.cue_lists.iter().find_map(|list| {
+            list.cues
+                .iter()
+                .find(|cue| {
+                    cue.actions
+                        .iter()
+                        .any(|action| action.input() == Some(input))
+                })
+                .map(|cue| (list.id, cue.id))
+        }) {
+            return Err(InputCatalogueError::InCueList { input, list, cue });
         }
         self.desired_switcher
             .remove_input(input)
@@ -1051,6 +1066,41 @@ impl ShowState {
 
     pub(crate) fn replace_playlist(&mut self, playlist: Playlist) {
         self.playlist = playlist;
+    }
+
+    /// The operator cue lists, in display order, with their run states
+    /// (RC-017). Cue time is measured in engine frames.
+    #[must_use]
+    pub fn cue_lists(&self) -> &[fm_model::CueList] {
+        &self.cue_lists
+    }
+
+    /// The cue list with `id`.
+    #[must_use]
+    pub fn cue_list(&self, id: u64) -> Option<&fm_model::CueList> {
+        self.cue_lists.iter().find(|list| list.id == id)
+    }
+
+    /// Installs restored cue lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidCueList`] when a list breaks a bound or
+    /// names an input, title, or stream target outside this show.
+    pub fn set_cue_lists(&mut self, lists: Vec<fm_model::CueList>) -> Result<(), ShowError> {
+        if fm_model::validate_cue_lists(&lists).is_err() {
+            return Err(ShowError::InvalidCueList("definition"));
+        }
+        for list in &lists {
+            crate::cue::check_references(self, &list.cues)
+                .map_err(|_| ShowError::InvalidCueList("reference"))?;
+        }
+        self.cue_lists = lists;
+        Ok(())
+    }
+
+    pub(crate) fn cue_lists_mut(&mut self) -> &mut Vec<fm_model::CueList> {
+        &mut self.cue_lists
     }
 
     /// Returns the project grading: the grade library, imported LUTs, and

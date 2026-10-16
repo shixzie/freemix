@@ -111,6 +111,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     }
     output.push_str("]}");
     write_playlist(output, project.playlist());
+    super::cue::write_cue_lists(output, project.cue_lists());
     super::grade::write_grading(output, project.grading());
     super::animation_preset::write_animation_presets(output, project.animation_presets());
     super::transition_favorite::write_transition_favorites(output, project.transition_favorites());

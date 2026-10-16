@@ -189,6 +189,9 @@ pub enum Intake {
     /// A `media_state` completed one media input the snapshot announced
     /// (Protocol 2.37).
     MediaStateApplied,
+    /// A `cue_list_state` completed one cue list the snapshot announced
+    /// (Protocol 2.50).
+    CueListStateApplied,
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
     DisplayInventoryApplied,
@@ -616,6 +619,10 @@ impl Client {
             WireMessage::MediaState(state) => {
                 self.apply_media_state(state)?;
                 Ok(Intake::MediaStateApplied)
+            }
+            WireMessage::CueListState(state) => {
+                self.apply_cue_list_state(state)?;
+                Ok(Intake::CueListStateApplied)
             }
             WireMessage::DisplayInventory(message) => {
                 self.model.apply_display_inventory(message.inventory);
@@ -1208,6 +1215,57 @@ impl Client {
         Ok(())
     }
 
+    /// Adds one `cue_list_state` the installed snapshot announced
+    /// (Protocol 2.50). Cue list states arrive only while synchronizing from
+    /// a snapshot, after its media states and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A cue list state in any other state, at another revision, beyond the
+    /// announced count, or before the earlier follow-on records forces a
+    /// fresh-snapshot reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_cue_list_state(
+        &mut self,
+        state: fm_protocol::CueListStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_cue_list_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1228,6 +1286,7 @@ impl Client {
                 && state.scene_layouts_complete()
                 && state.animation_presets_complete()
                 && state.media_complete()
+                && state.cue_lists_complete()
         })
     }
 
@@ -1522,6 +1581,10 @@ impl Client {
             | CommandPayload::SetPlaylist { .. }
             | CommandPayload::PlaylistControl { .. }
             | CommandPayload::PlaylistAdvance { .. }
+            | CommandPayload::SetCueList { .. }
+            | CommandPayload::RemoveCueList { .. }
+            | CommandPayload::CueControl { .. }
+            | CommandPayload::CueAdvance { .. }
             | CommandPayload::SetInputGrade { .. }
             | CommandPayload::SetLayerGrade { .. }
             | CommandPayload::SetProgramGrade { .. }

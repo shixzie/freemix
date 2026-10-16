@@ -137,6 +137,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        cue_list_states: 0,
         input_lifecycle: vec![fm_protocol::InputLifecycleStatus::default(); 3],
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
@@ -1463,6 +1464,7 @@ mod titles {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }

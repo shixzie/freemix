@@ -1,6 +1,7 @@
 mod animation;
 mod audio_mixer;
 mod capture;
+mod cue;
 mod decode;
 mod display_output;
 mod encode;
@@ -18,6 +19,7 @@ mod transition;
 mod value;
 
 pub use animation::{motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_bytes};
+pub use cue::{cue_action_token, cue_name_is_valid, parse_cue_action_token};
 pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
 pub use refusal::{decode_refusal_reason, encode_refusal_reason};

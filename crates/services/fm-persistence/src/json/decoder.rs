@@ -71,6 +71,7 @@ struct ProjectDto {
     restart_policy: RestartPolicy,
     edit_locks: EditLocks,
     playlist: Playlist,
+    cue_lists: Vec<fm_model::CueList>,
     grading: ProjectGrading,
     animation_presets: fm_model::AnimationPresetLibrary,
     transition_favorites: fm_model::TransitionFavorites,
@@ -122,6 +123,7 @@ impl ProjectDto {
             restart_policy: parse_restart_policy(object.take("restart_policy")?)?,
             edit_locks: parse_edit_locks(object.take("edit_locks")?)?,
             playlist: parse_playlist(object.take("playlist")?)?,
+            cue_lists: super::cue::parse_cue_lists(&mut object)?,
             grading: super::grade::parse_grading(&mut object)?,
             animation_presets: super::animation_preset::parse_animation_presets(&mut object)?,
             transition_favorites: super::transition_favorite::parse_transition_favorites(
@@ -212,6 +214,9 @@ impl ProjectDto {
         // validation; whether the state is reachable is checked when an
         // engine restores it.
         project.set_playlist(self.playlist);
+        // Cue list bounds, run states, and references are reported by
+        // project validation.
+        project.set_cue_lists(self.cue_lists);
         // Grade bounds, names, and library and LUT references are reported
         // by project validation.
         project.set_grading(self.grading);

@@ -792,6 +792,7 @@ fn serve_streams_snapshot_peer(
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }),
@@ -1669,6 +1670,7 @@ fn write_handshake_snapshot(
             grade_states: 0,
             animation_preset_states: 0,
             media_states,
+            cue_list_states: 0,
             input_categories: vec![fm_protocol::InputCategoryStatus {
                 id: 1,
                 name: "Cameras".into(),
@@ -1780,6 +1782,7 @@ fn write_handshake_version_with_fade_to_black(
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }),
@@ -3824,7 +3827,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 46,
+  "schema_version": 47,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4031,7 +4034,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 46", "\"schema_version\": 45"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 47", "\"schema_version\": 46"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4045,7 +4048,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 45 is unsupported; expected 46",
+        "title template schema 46 is unsupported; expected 47",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4063,7 +4066,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 46,
+  "schema_version": 47,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4326,7 +4329,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 46,
+  "schema_version": 47,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4556,7 +4559,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 46,
+  "schema_version": 47,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4653,7 +4656,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 46,
+  "schema_version": 47,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5728,13 +5731,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        46
+        47
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 46);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 47);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5747,7 +5750,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 46);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 47);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5823,7 +5826,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        46
+        47
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5831,7 +5834,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 46);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 47);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5841,7 +5844,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 46);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 47);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5849,7 +5852,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 46);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 47);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -13023,4 +13026,70 @@ fn remote_capture_commands_send_exact_payloads() {
         ]),
         "invalid capture input",
     );
+}
+
+/// RC-017: `remote-cue-list-set` sends the exact list definition (a title
+/// text in plain text, dots and spaces included) with graphics authority and
+/// completes on `cue_list_changed` and project realization.
+#[test]
+fn remote_cue_list_set_sends_the_exact_definition() {
+    let spec = fm_protocol::CueListSpec {
+        name: "Show".into(),
+        cues: vec![
+            fm_protocol::WireCue {
+                id: 10,
+                name: "Open".into(),
+                auto_follow: true,
+                actions: vec![
+                    fm_protocol::WireCueAction::Take {
+                        input: Some(input(2)),
+                        effect: fm_protocol::TransitionFavoriteEffect::from_token("fade").unwrap(),
+                        duration_frames: 25,
+                    },
+                    fm_protocol::WireCueAction::Wait { frames: 50 },
+                    fm_protocol::WireCueAction::TitleText {
+                        input: input(2),
+                        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                        text: "Hello. world".into(),
+                    },
+                ],
+            },
+            fm_protocol::WireCue {
+                id: 20,
+                name: "Close".into(),
+                auto_follow: false,
+                actions: Vec::new(),
+            },
+        ],
+    };
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-cue-set",
+        payload: CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(spec.clone()),
+        },
+        event: EventPayload::CueListChanged(Box::new(fm_protocol::CueListStatus {
+            id: 7,
+            spec,
+            state: fm_protocol::CueRunStatus {
+                standby: Some(10),
+                ..fm_protocol::CueRunStatus::default()
+            },
+        })),
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-cue-list-set",
+        &server.address(),
+        "7",
+        "Show",
+        "10:Open:1:take.2.fade.25,wait.50,title_text.2.1.Hello. world;20:Close:0:",
+        "--key",
+        "remote-cue-set",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
 }

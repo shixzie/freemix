@@ -1,12 +1,12 @@
 use super::*;
 
 use PanelId::{
-    InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Stingers, Titles,
+    Cues, InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Stingers, Titles,
     Transitions,
 };
 
 const DEFAULT_TREE: &str = "h765(v500(h375([preview],h394([transitions],[program])),\
-h600([inputs],[mixer])),v500([outputs],[overlays|stingers|titles|playlist|media]))";
+h600([inputs],[mixer])),v500([outputs],[overlays|stingers|titles|playlist|media|cues]))";
 
 fn group_of(layout: &DockLayout, panel: PanelId) -> Vec<PanelId> {
     let mut layout = layout.clone();
@@ -70,7 +70,7 @@ fn split_tab_and_move_rearrange_the_tree() {
     assert!(layout.encode_tree().contains("h500([titles],[program])"));
     assert_eq!(
         group_of(&layout, Overlays),
-        vec![Overlays, Stingers, Playlist, Media]
+        vec![Overlays, Stingers, Playlist, Media, Cues]
     );
     all_shown_once(&layout);
 
@@ -81,7 +81,7 @@ fn split_tab_and_move_rearrange_the_tree() {
     assert!(
         layout
             .encode_tree()
-            .ends_with(",[overlays|stingers|playlist|media])")
+            .ends_with(",[overlays|stingers|playlist|media|cues])")
     );
     all_shown_once(&layout);
 
@@ -98,7 +98,7 @@ fn split_tab_and_move_rearrange_the_tree() {
     assert!(
         layout
             .encode_tree()
-            .contains("h500([overlays|stingers|playlist],[media])")
+            .contains("h500([overlays|stingers|playlist|cues],[media])")
     );
     all_shown_once(&layout);
 }
@@ -122,7 +122,7 @@ fn close_and_reopen_restore_panels_to_their_home() {
     layout.show(Stingers);
     assert_eq!(
         group_of(&layout, Stingers),
-        vec![Overlays, Titles, Playlist, Media, Stingers]
+        vec![Overlays, Titles, Playlist, Media, Cues, Stingers]
     );
     assert!(layout.is_showing(Stingers));
 
@@ -161,7 +161,7 @@ fn closing_the_shown_tab_shows_its_left_neighbour() {
     layout.activate(Stingers);
     assert!(layout.close(Stingers));
     assert!(layout.is_showing(Playlist));
-    assert_eq!(group_of(&layout, Media), vec![Playlist, Media]);
+    assert_eq!(group_of(&layout, Media), vec![Playlist, Media, Cues]);
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn a_whole_tab_group_moves_with_its_tabs_and_shown_tab() {
     assert!(
         layout
             .encode_tree()
-            .contains("h500([overlays|stingers|titles*|playlist|media],[inputs])"),
+            .contains("h500([overlays|stingers|titles*|playlist|media|cues],[inputs])"),
         "{}",
         layout.encode_tree()
     );
@@ -186,7 +186,7 @@ fn a_whole_tab_group_moves_with_its_tabs_and_shown_tab() {
     assert!(layout.move_group(Overlays, Mixer, DropZone::Center));
     assert_eq!(
         group_of(&layout, Mixer),
-        vec![Mixer, Overlays, Stingers, Titles, Playlist, Media]
+        vec![Mixer, Overlays, Stingers, Titles, Playlist, Media, Cues]
     );
     assert!(layout.is_showing(Titles));
     all_shown_once(&layout);
@@ -218,12 +218,12 @@ fn tab_groups_list_every_docked_group_in_tree_order() {
     assert_eq!(groups[0], (vec![Preview], 0));
     assert_eq!(
         groups.last(),
-        Some(&(vec![Overlays, Stingers, Titles, Playlist, Media], 4))
+        Some(&(vec![Overlays, Stingers, Titles, Playlist, Media, Cues], 4))
     );
     assert_eq!(
         layout.tab_group(Stingers),
         Some(DockNode::Tabs {
-            panels: vec![Overlays, Stingers, Titles, Playlist, Media],
+            panels: vec![Overlays, Stingers, Titles, Playlist, Media, Cues],
             active: 4,
         })
     );
@@ -295,7 +295,7 @@ fn trees_and_popouts_round_trip_through_text() {
     let popouts = layout.encode_popouts();
     assert_eq!(
         tree,
-        "v560(h394([transitions],[program]),h333([inputs|mixer*],[outputs|overlays|titles|playlist|media]))"
+        "v560(h394([transitions],[program]),h333([inputs|mixer*],[outputs|overlays|titles|playlist|media|cues]))"
     );
     assert_eq!(popouts, "stingers:500x300@10,-20; preview");
     assert_eq!(DockLayout::decode(&tree, &popouts), Ok(layout.clone()));

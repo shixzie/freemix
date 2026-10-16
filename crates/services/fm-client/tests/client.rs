@@ -197,6 +197,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        cue_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }
@@ -2053,6 +2054,7 @@ mod playlists {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             ..snapshot(revision)
@@ -3123,6 +3125,201 @@ mod media {
                         events: Vec::new(),
                         status: Box::new(status(9, MediaTransportState::Playing, 1)),
                     },
+                ))
+                .is_err()
+        );
+    }
+}
+
+/// Protocol 2.50 (RC-017): a snapshot announces one `cue_list_state` per
+/// cue list, which complete it after its media states; `cue_list_changed`,
+/// `cue_list_removed`, and `cue_run_changed` keep the lists and the switcher
+/// current.
+mod cue_lists {
+    use fm_protocol::{
+        CueListSpec, CueListStateMessage, CueListStatus, CueRunChange, CueRunStatus,
+        PlaylistRunState, TransitionFavoriteEffect, WireCue, WireCueAction,
+    };
+
+    use super::*;
+
+    fn list(id: u64, input_id: u128) -> CueListStatus {
+        CueListStatus {
+            id,
+            spec: CueListSpec {
+                name: format!("List {id}"),
+                cues: vec![WireCue {
+                    id: 10,
+                    name: "Open".into(),
+                    auto_follow: false,
+                    actions: vec![WireCueAction::Take {
+                        input: Some(input(input_id)),
+                        effect: TransitionFavoriteEffect::Cut,
+                        duration_frames: 0,
+                    }],
+                }],
+            },
+            state: CueRunStatus {
+                standby: Some(10),
+                ..CueRunStatus::default()
+            },
+        }
+    }
+
+    fn cue_list_state(revision: u64, id: u64, input_id: u128) -> WireMessage {
+        WireMessage::CueListState(CueListStateMessage {
+            revision,
+            frame: 7,
+            list: list(id, input_id),
+        })
+    }
+
+    fn synchronizing(cue_list_states: u16, media_states: u16) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(SnapshotMessage {
+                cue_list_states,
+                media_states,
+                ..snapshot(4)
+            }))
+            .unwrap();
+        client
+    }
+
+    fn resyncs(client: &mut Client, message: WireMessage) {
+        let error = client.intake(message).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    fn event(revision: u64, payload: EventPayload) -> EventMessage {
+        EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            payload,
+        }
+    }
+
+    #[test]
+    fn announced_cue_list_states_complete_the_snapshot_and_events_track_them() {
+        let mut client = synchronizing(2, 0);
+        assert_eq!(
+            client.intake(cue_list_state(4, 1, 2)).unwrap(),
+            Intake::CueListStateApplied
+        );
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        client.intake(cue_list_state(4, 3, 1)).unwrap();
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let state = client.model().state().unwrap();
+        assert_eq!(
+            state
+                .cue_lists()
+                .iter()
+                .map(|list| list.id)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+
+        // GO on list 1 cuts input 2 to Program and plays cue 10.
+        let played = CueRunStatus {
+            standby: None,
+            live: Some(10),
+            pending: None,
+            played: vec![10],
+            fault: None,
+        };
+        client
+            .apply_event(event(
+                5,
+                EventPayload::CueRunChanged(Box::new(CueRunChange {
+                    list: 1,
+                    frame: 9,
+                    state: played.clone(),
+                    fired: vec![10],
+                    program: input(2),
+                    preview: input(1),
+                    manual_transition: ManualTransitionStatus::Inactive,
+                    fade_to_black: live_fade_to_black(),
+                    overlays: fm_protocol::OverlayStatus::empty_channels(),
+                    input_audio_strips: input_audio_strips(),
+                    streams: Vec::new(),
+                    recordings: recordings(),
+                    playlist: PlaylistRunState::Stopped,
+                    titles: Vec::new(),
+                })),
+            ))
+            .unwrap();
+        let state = client.model().state().unwrap();
+        assert_eq!(state.cue_list(1).unwrap().state, played);
+        let view = client.model().view().unwrap();
+        assert_eq!(view.switcher.desired.program, input(2).to_domain());
+
+        // A list edit replaces the list; a removal drops it.
+        let mut edited = list(3, 2);
+        edited.spec.name = "Renamed".into();
+        client
+            .apply_event(event(
+                6,
+                EventPayload::CueListChanged(Box::new(edited.clone())),
+            ))
+            .unwrap();
+        assert_eq!(client.model().state().unwrap().cue_list(3), Some(&edited));
+        client
+            .apply_event(event(7, EventPayload::CueListRemoved { list: 1 }))
+            .unwrap();
+        assert!(client.model().state().unwrap().cue_list(1).is_none());
+    }
+
+    #[test]
+    fn unannounced_early_or_invalid_cue_list_states_force_a_snapshot() {
+        // Beyond the announced count.
+        let mut client = synchronizing(1, 0);
+        client.intake(cue_list_state(4, 1, 2)).unwrap();
+        resyncs(&mut client, cue_list_state(4, 2, 2));
+        // At another revision.
+        resyncs(&mut synchronizing(1, 0), cue_list_state(3, 1, 2));
+        // Naming an input the snapshot does not list.
+        resyncs(&mut synchronizing(1, 0), cue_list_state(4, 1, 9));
+        // Before the announced media states.
+        resyncs(&mut synchronizing(1, 1), cue_list_state(4, 1, 2));
+        // Once ready.
+        resyncs(&mut ready_client(4), cue_list_state(4, 1, 2));
+        // A run change for a list the show lacks.
+        let mut client = ready_client(4);
+        assert!(
+            client
+                .apply_event(event(
+                    5,
+                    EventPayload::CueRunChanged(Box::new(CueRunChange {
+                        list: 9,
+                        frame: 9,
+                        state: CueRunStatus::default(),
+                        fired: Vec::new(),
+                        program: input(1),
+                        preview: input(2),
+                        manual_transition: ManualTransitionStatus::Inactive,
+                        fade_to_black: live_fade_to_black(),
+                        overlays: fm_protocol::OverlayStatus::empty_channels(),
+                        input_audio_strips: input_audio_strips(),
+                        streams: Vec::new(),
+                        recordings: recordings(),
+                        playlist: PlaylistRunState::Stopped,
+                        titles: Vec::new(),
+                    })),
                 ))
                 .is_err()
         );

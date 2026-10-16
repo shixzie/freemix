@@ -103,6 +103,16 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
             RefusalReason::PlaylistTakeScheduled { frame: 1_800 },
             "playlist_take_scheduled:1800",
         ),
+        (
+            in_use(InputUse::CueAction { list: 3, cue: 0 }),
+            "input_in_use:2:cue_action:3:0",
+        ),
+        (
+            RefusalReason::CueScheduled { frame: 90 },
+            "cue_scheduled:90",
+        ),
+        (RefusalReason::NoCueOnStandby, "no_cue_on_standby"),
+        (RefusalReason::CueRunning { cue: 4 }, "cue_running:4"),
         (RefusalReason::NotDurable, "not_durable"),
         (RefusalReason::RateLimited, "rate_limited"),
         (RefusalReason::RuntimeUnsupported, "runtime_unsupported"),
@@ -111,7 +121,7 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 49));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 50));
 }
 
 #[test]

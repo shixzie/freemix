@@ -60,6 +60,8 @@ pub enum InputReference {
     AliasTarget(InputId),
     /// The input of a playlist entry.
     PlaylistEntry(u64),
+    /// An action of cue `cue` in cue list `list` (RC-017).
+    CueAction { list: u64, cue: u64 },
 }
 
 impl std::fmt::Display for InputReference {
@@ -74,6 +76,7 @@ impl std::fmt::Display for InputReference {
             }
             Self::AliasTarget(input) => write!(formatter, "the target of alias input {input}"),
             Self::PlaylistEntry(entry) => write!(formatter, "playlist entry {entry}"),
+            Self::CueAction { list, cue } => write!(formatter, "cue {cue} of cue list {list}"),
         }
     }
 }
@@ -887,7 +890,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(46);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(47);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -923,6 +926,7 @@ pub struct Project {
     locked: bool,
     locked_inputs: BTreeSet<InputId>,
     playlist: Playlist,
+    cue_lists: Vec<crate::CueList>,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
@@ -958,6 +962,7 @@ impl Project {
             locked: false,
             locked_inputs: BTreeSet::new(),
             playlist: Playlist::default(),
+            cue_lists: Vec::new(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
@@ -1327,6 +1332,19 @@ impl Project {
         self.playlist = playlist;
     }
 
+    /// The cue lists, in display order, with their run states (RC-017).
+    #[must_use]
+    pub fn cue_lists(&self) -> &[crate::CueList] {
+        &self.cue_lists
+    }
+
+    /// Replaces the cue lists without checking them; [`Project::validate`]
+    /// reports structural errors and actions naming unknown inputs or
+    /// stream targets.
+    pub fn set_cue_lists(&mut self, cue_lists: Vec<crate::CueList>) {
+        self.cue_lists = cue_lists;
+    }
+
     /// Every persisted grading value: the grade library, imported LUTs, and
     /// the per-input and program grades.
     #[must_use]
@@ -1655,6 +1673,21 @@ impl Project {
                     .iter()
                     .find(|entry| entry.input == input)
                     .map(|entry| InputReference::PlaylistEntry(entry.id))
+            })
+            .or_else(|| {
+                self.cue_lists.iter().find_map(|list| {
+                    list.cues
+                        .iter()
+                        .find(|cue| {
+                            cue.actions
+                                .iter()
+                                .any(|action| action.input() == Some(input))
+                        })
+                        .map(|cue| InputReference::CueAction {
+                            list: list.id,
+                            cue: cue.id,
+                        })
+                })
             })
     }
 

@@ -160,6 +160,11 @@ fn wire_entry(entry: &PlaylistEntry) -> PlaylistEntrySpec {
     }
 }
 
+/// The playlist's run state, for a `cue_run_changed` event.
+pub fn wire_run_state(engine: &Engine) -> PlaylistRunState {
+    wire_state(engine.show().playlist().state())
+}
+
 const fn wire_state(state: PlaylistState) -> PlaylistRunState {
     match state {
         PlaylistState::Stopped => PlaylistRunState::Stopped,

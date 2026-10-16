@@ -1327,7 +1327,8 @@ impl TcpSession {
             | WireMessage::SceneAnimationState(_)
             | WireMessage::SceneLayoutState(_)
             | WireMessage::AnimationPresetState(_)
-            | WireMessage::MediaState(_)) => {
+            | WireMessage::MediaState(_)
+            | WireMessage::CueListState(_)) => {
                 self.intake(message)?;
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)

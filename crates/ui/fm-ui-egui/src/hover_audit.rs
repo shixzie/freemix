@@ -403,6 +403,7 @@ fn model(variant: Variant) -> ClientModel {
         grade_states: 4,
         animation_preset_states: 0,
         media_states: 2,
+        cue_list_states: 2,
         input_categories: vec![
             fm_protocol::InputCategoryStatus {
                 id: 1,
@@ -628,7 +629,138 @@ fn model(variant: Variant) -> ClientModel {
             },
         })
         .unwrap();
+    for list in cue_lists() {
+        model
+            .apply_cue_list_state(fm_protocol::CueListStateMessage {
+                revision: 10,
+                frame: 100,
+                list,
+            })
+            .unwrap();
+    }
     model
+}
+
+/// RC-017: the show's cue lists. List 1 is mid-show (cue 10 live with every
+/// action kind, cue 20 on standby, cue 30 stopped by a refused action);
+/// list 2 waits on its first cue's next actions, so it cannot be edited.
+#[allow(clippy::too_many_lines)] // one fixture action per kind
+fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
+    use fm_protocol::{
+        CueListSpec, CueListStatus, CuePendingStatus, CueRunStatus, WireCue, WireCueAction,
+    };
+    let channel = WireOverlayChannelId::new(2).unwrap();
+    let every_kind = vec![
+        WireCueAction::Preview { input: wire(2) },
+        WireCueAction::Take {
+            input: None,
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Fade,
+            ),
+            duration_frames: 25,
+        },
+        WireCueAction::OverlayOn {
+            channel,
+            input: wire(3),
+        },
+        WireCueAction::OverlayOff { channel },
+        WireCueAction::TitleOn {
+            input: wire(TITLE_INPUT),
+            channel,
+        },
+        WireCueAction::TitleText {
+            input: wire(TITLE_INPUT),
+            field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+            text: "Ana Ruiz".into(),
+        },
+        WireCueAction::TitleOff {
+            input: wire(TITLE_INPUT),
+        },
+        WireCueAction::FadeToBlack {
+            active: true,
+            duration_frames: 25,
+        },
+        WireCueAction::PlaylistStart,
+        WireCueAction::PlaylistStop,
+        WireCueAction::AudioGain {
+            input: wire(1),
+            gain_millidb: -6_000,
+        },
+        WireCueAction::AudioMute {
+            input: wire(2),
+            muted: true,
+        },
+        WireCueAction::Record {
+            recorder: WireRecorderSlot::new(1).unwrap(),
+            start: true,
+        },
+        WireCueAction::Stream {
+            target: WireStreamTargetId::new(NonZeroU128::new(1).unwrap()),
+            start: false,
+        },
+        WireCueAction::Wait { frames: 50 },
+    ];
+    let cue = |id: u64, name: &str, auto_follow, actions| WireCue {
+        id,
+        name: name.into(),
+        auto_follow,
+        actions,
+    };
+    vec![
+        CueListStatus {
+            id: 1,
+            spec: CueListSpec {
+                name: "Show open".into(),
+                cues: vec![
+                    cue(10, "Opener", false, every_kind),
+                    cue(
+                        20,
+                        "Guest",
+                        true,
+                        vec![WireCueAction::Take {
+                            input: Some(wire(4)),
+                            effect: fm_protocol::TransitionFavoriteEffect::Cut,
+                            duration_frames: 0,
+                        }],
+                    ),
+                    cue(30, "Close", false, Vec::new()),
+                ],
+            },
+            state: CueRunStatus {
+                standby: Some(20),
+                live: Some(10),
+                pending: None,
+                played: vec![10],
+                fault: Some((30, 0)),
+            },
+        },
+        CueListStatus {
+            id: 2,
+            spec: CueListSpec {
+                name: "Backup".into(),
+                cues: vec![cue(
+                    1,
+                    "Hold",
+                    false,
+                    vec![
+                        WireCueAction::Wait { frames: 500 },
+                        WireCueAction::Preview { input: wire(1) },
+                    ],
+                )],
+            },
+            state: CueRunStatus {
+                standby: None,
+                live: Some(1),
+                pending: Some(CuePendingStatus {
+                    cue: 1,
+                    action: 1,
+                    due_frame: 600,
+                }),
+                played: vec![1],
+                fault: None,
+            },
+        },
+    ]
 }
 
 /// Which optional live states the fixture show is in.
@@ -1157,6 +1289,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         ("titles", PanelId::Titles),
         ("playlist", PanelId::Playlist),
         ("media", PanelId::Media),
+        ("cues", PanelId::Cues),
     ];
     for (operator, role) in [(true, "operator"), (false, "viewer")] {
         for (tab_name, tab) in tabs {
@@ -1191,6 +1324,21 @@ fn scenes(language: Language) -> Vec<Scene> {
         }),
         ready(true, Variant::default()),
     ));
+    // RC-017: the live list with its every-kind cue expanded, and the
+    // waiting list (editing refused) with its cue expanded, for an operator
+    // and a viewer.
+    for (operator, role) in [(true, "operator"), (false, "viewer")] {
+        for (name, list, cue) in [("cues-actions", 1, 10), ("cues-waiting", 2, 1)] {
+            scenes.push(Scene::console(
+                format!("{role}/{name}"),
+                shell(&|shell| {
+                    shell.layout.dock.show(PanelId::Cues);
+                    shell.cues.select(list, Some(cue));
+                }),
+                ready(operator, Variant::default()),
+            ));
+        }
+    }
     scenes.push(Scene::console(
         "operator/manual-transition",
         shell(&|_| {}),

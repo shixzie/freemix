@@ -56,6 +56,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_input_locks(project, &mut errors);
     validate_input_lifecycle(project, &mut errors);
     validate_playlist(project, &mut errors);
+    validate_cue_lists(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -288,6 +289,68 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
             field: "playlist.next_take",
             kind: ValidationErrorKind::OutOfRange,
         });
+    }
+}
+
+fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
+    let lists = project.cue_lists();
+    if let Err(error) = crate::validate_cue_lists(lists) {
+        errors.push(ValidationError {
+            entity: None,
+            field: "cue_lists",
+            kind: match error {
+                None | Some(crate::CueListError::DuplicateCue(_)) => {
+                    ValidationErrorKind::DuplicateId
+                }
+                Some(crate::CueListError::InvalidName { .. }) => ValidationErrorKind::Empty,
+                Some(_) => ValidationErrorKind::OutOfRange,
+            },
+        });
+    }
+    for action in lists
+        .iter()
+        .flat_map(|list| &list.cues)
+        .flat_map(|cue| &cue.actions)
+    {
+        if let Some(input) = action.input() {
+            let found = project
+                .inputs()
+                .iter()
+                .find(|candidate| candidate.id == input);
+            let is_title = matches!(
+                action,
+                crate::CueAction::TitleOn { .. }
+                    | crate::CueAction::TitleText { .. }
+                    | crate::CueAction::TitleOff { .. }
+            );
+            match found {
+                None => errors.push(ValidationError {
+                    entity: Some(EntityRef::Input(input)),
+                    field: "cue_lists.cues.actions.input",
+                    kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
+                }),
+                Some(found) if is_title && !matches!(found.kind, InputKind::Title(_)) => {
+                    errors.push(ValidationError {
+                        entity: Some(EntityRef::Input(input)),
+                        field: "cue_lists.cues.actions.input",
+                        kind: ValidationErrorKind::FormatMismatch,
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        if let crate::CueAction::Stream { target, .. } = action
+            && !project
+                .stream_targets()
+                .iter()
+                .any(|candidate| candidate.id() == *target)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::StreamTarget(*target)),
+                field: "cue_lists.cues.actions.target",
+                kind: ValidationErrorKind::MissingReference(EntityRef::StreamTarget(*target)),
+            });
+        }
     }
 }
 

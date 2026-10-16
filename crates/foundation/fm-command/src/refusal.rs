@@ -27,11 +27,15 @@ pub enum IdKind {
     /// A title (named by its title input).
     Title,
     PlaylistEntry,
+    /// A cue list (RC-017).
+    CueList,
+    /// A cue of a cue list (RC-017).
+    Cue,
 }
 
 impl IdKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Input,
         Self::Output,
         Self::Scene,
@@ -42,6 +46,8 @@ impl IdKind {
         Self::Preset,
         Self::Title,
         Self::PlaylistEntry,
+        Self::CueList,
+        Self::Cue,
     ];
 
     /// The kind's English noun.
@@ -58,6 +64,8 @@ impl IdKind {
             Self::Preset => "animation preset",
             Self::Title => "title",
             Self::PlaylistEntry => "playlist entry",
+            Self::CueList => "cue list",
+            Self::Cue => "cue",
         }
     }
 }
@@ -99,6 +107,11 @@ pub enum InputUse {
     PlaylistEntry {
         entry: u64,
     },
+    /// Named by an action of cue `cue` in cue list `list` (RC-017).
+    CueAction {
+        list: u64,
+        cue: u64,
+    },
     /// Shown by a scene on air.
     SceneOnAir,
 }
@@ -119,6 +132,9 @@ impl fmt::Display for InputUse {
             }
             Self::AliasTarget { alias } => write!(formatter, "the target of alias input {alias}"),
             Self::PlaylistEntry { entry } => write!(formatter, "played by playlist entry {entry}"),
+            Self::CueAction { list, cue } => {
+                write!(formatter, "named by cue {cue} of cue list {list}")
+            }
             Self::SceneOnAir => formatter.write_str("shown by a scene on air"),
         }
     }
@@ -165,6 +181,14 @@ pub enum RefusalReason {
     StingerRealizing { slot: u8 },
     /// A playlist take is scheduled for `frame`.
     PlaylistTakeScheduled { frame: u64 },
+    /// A cue list's deferred actions are scheduled for `frame` (RC-017).
+    CueScheduled { frame: u64 },
+    /// GO with no cue on standby: the list is empty or ran off its end
+    /// (RC-017).
+    NoCueOnStandby,
+    /// The edit would change or remove cue `cue` while its deferred actions
+    /// wait (RC-017).
+    CueRunning { cue: u64 },
     /// The command could not be made durable.
     NotDurable,
     /// The session sent too much, too fast, or too large.
@@ -213,6 +237,9 @@ impl RefusalReason {
             Self::HistoryDrift => "history_drift",
             Self::StingerRealizing { .. } => "stinger_realizing",
             Self::PlaylistTakeScheduled { .. } => "playlist_take_scheduled",
+            Self::CueScheduled { .. } => "cue_scheduled",
+            Self::NoCueOnStandby => "no_cue_on_standby",
+            Self::CueRunning { .. } => "cue_running",
             Self::NotDurable => "not_durable",
             Self::RateLimited => "rate_limited",
             Self::RuntimeUnsupported => "runtime_unsupported",
@@ -281,6 +308,11 @@ impl fmt::Display for RefusalReason {
             Self::PlaylistTakeScheduled { frame } => {
                 write!(formatter, "a playlist take is scheduled for frame {frame}")
             }
+            Self::CueScheduled { frame } => {
+                write!(formatter, "cue actions are scheduled for frame {frame}")
+            }
+            Self::NoCueOnStandby => formatter.write_str("no cue is on standby"),
+            Self::CueRunning { cue } => write!(formatter, "cue {cue} is still running"),
             Self::NotDurable => formatter.write_str("the command could not be made durable"),
             Self::RateLimited => formatter.write_str("the session is rate limited"),
             Self::RuntimeUnsupported => {

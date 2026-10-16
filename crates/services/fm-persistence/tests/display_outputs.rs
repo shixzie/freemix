@@ -159,7 +159,7 @@ fn display_output_slots_round_trip_exactly_and_strictly() {
     assert_eq!(loaded.project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 46"));
+    assert!(text.contains("\"schema_version\": 47"));
     let first = "{\"slot\": 1, \"display\": {\"id\": \"cg:69733382\", \"name\": \"DELL \\\"U2720Q\\\"\"}, \"source\": \"program\", \"mode\": \"current\", \"scaling\": \"fit\", \"hdr\": \"off\"}";
     let second = "{\"slot\": 2, \"display\": {\"index\": 1}, \"source\": \"output:41\", \"mode\": {\"width\": 1920, \"height\": 1080, \"refresh_millihertz\": 59940}, \"scaling\": \"1:1\", \"hdr\": \"auto\"}";
     assert!(

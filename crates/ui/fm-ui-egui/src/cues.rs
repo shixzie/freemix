@@ -1,0 +1,1344 @@
+//! Cues side tab: the operator cue lists (`RC-017`).
+//!
+//! The tab shows one replicated cue list ([`fm_ui_model::ProjectState::cue_lists`])
+//! at a time: a big GO key that fires the cue on standby, the standby cue's
+//! name, the Back, Skip, Stop, and Reset keys, and every cue with its run
+//! state (live, standby, waiting, played, or stopped by a refused action).
+//! GO, standby (a row's standby key), and fire-now (a row's fire key) need the
+//! transition permission; `G` presses GO from anywhere in the console.
+//!
+//! Editing (lists, cues, and actions, all inline) needs `edit_project`, an
+//! unlocked project, and no cue of the list waiting on its next actions,
+//! because the engine refuses to change a running cue. The tab edits a
+//! working copy of the list: a discrete change (a picker, a checkbox, a
+//! key) sends the whole list at once, while a text field sends it when it
+//! loses focus and a number when its drag ends, so each edit is one
+//! undoable step. The copy follows the replicated list whenever that
+//! changes, so a refused edit snaps back.
+
+use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, Vec2};
+use fm_protocol::{
+    AutoTransitionKind, CueListSpec, CueListStatus, CueOperation, CueRunStatus, MAX_CUE_ACTIONS,
+    MAX_CUE_LISTS, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
+    TransitionFavoriteEffect, WireCue, WireCueAction, WireInputId, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+};
+use fm_types::InputId;
+use fm_ui_model::{ClientView, ProjectState};
+
+use crate::edit_history::stinger_edit_lock_reason;
+use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Arg, Locale, Msg};
+use crate::monitors::input_name;
+use crate::playlist::key_button;
+use crate::theme::{
+    ERROR, PREVIEW, PROGRAM, Tone, border_color, caption, empty_state, field_label, legible,
+    raised_color, small_button, status_chip,
+};
+use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
+
+/// The strip gain range the engine accepts, in millidecibels.
+const MIN_GAIN_MILLIDB: i32 = -96_000;
+const MAX_GAIN_MILLIDB: i32 = 24_000;
+
+/// A cue list operator action. Studio maps each to one protocol command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CueIntent {
+    /// Creates or replaces one list (`cue_list_set`): an undoable project
+    /// edit.
+    Set { list: u64, spec: CueListSpec },
+    /// Deletes one list (`cue_list_remove`): an undoable project edit.
+    Remove { list: u64 },
+    /// GO, standby, back, skip, stop, or reset (`cue_go`, `cue_standby`,
+    /// ...): a journaled operator control, not undoable.
+    Control { list: u64, operation: CueOperation },
+}
+
+/// Why cue controls (GO and the transport keys) are unavailable for the
+/// session, if they are.
+#[must_use]
+pub fn control_block(state: &StudioUiState) -> Option<&'static str> {
+    let ready = state.connection_status == StudioConnectionStatus::Ready
+        && state.view.is_some()
+        && state.can_transition;
+    (!ready).then(|| unavailable_reason(state, Capability::Transition))
+}
+
+/// Why lists cannot be created or deleted, if they cannot: the session
+/// gates, then the project padlock.
+#[must_use]
+pub fn edit_block(state: &StudioUiState) -> Option<&'static str> {
+    let ready = state.connection_status == StudioConnectionStatus::Ready
+        && state.view.is_some()
+        && state.can_edit_project;
+    if !ready {
+        return Some(unavailable_reason(state, Capability::EditProject));
+    }
+    stinger_edit_lock_reason(state)
+}
+
+/// Why `list` cannot be edited, if it cannot: [`edit_block`], then a cue
+/// waiting on its next actions.
+#[must_use]
+pub fn list_edit_block(state: &StudioUiState, list: &CueListStatus) -> Option<&'static str> {
+    edit_block(state).or_else(|| {
+        list.state
+            .pending
+            .is_some()
+            .then_some(Msg::CueReasonRunning.en())
+    })
+}
+
+/// The GO key's intent for `list`.
+///
+/// # Errors
+///
+/// Returns the session `block`, or why nothing can fire (no cue on
+/// standby).
+pub fn go_intent(
+    list: &CueListStatus,
+    block: Option<&'static str>,
+) -> Result<CueIntent, &'static str> {
+    if let Some(reason) = block {
+        return Err(reason);
+    }
+    if list.state.standby.is_none() {
+        return Err(Msg::CueReasonNoStandby.en());
+    }
+    Ok(CueIntent::Control {
+        list: list.id,
+        operation: CueOperation::Go { cue: None },
+    })
+}
+
+/// The lowest list id not in use, or `None` at the list limit.
+#[must_use]
+pub fn new_list_id(lists: &[CueListStatus]) -> Option<u64> {
+    if lists.len() >= MAX_CUE_LISTS {
+        return None;
+    }
+    (1..=MAX_CUE_LISTS as u64 + 1).find(|id| lists.iter().all(|list| list.id != *id))
+}
+
+/// One more than the highest cue id in `cues` (cue ids only need to be
+/// unique within their list).
+#[must_use]
+pub fn new_cue_id(cues: &[WireCue]) -> u64 {
+    cues.iter().map(|cue| cue.id).max().map_or(1, |id| id + 1)
+}
+
+/// A cue's run state, for its chip.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueRole {
+    Idle,
+    Live,
+    Standby,
+    Waiting,
+    Played,
+    Fault,
+}
+
+impl CueRole {
+    /// The role of `cue` under `state`: a fault or wait outranks live, which
+    /// outranks standby and played.
+    #[must_use]
+    pub fn of(state: &CueRunStatus, cue: u64) -> Self {
+        if state.fault.is_some_and(|(fault, _)| fault == cue) {
+            Self::Fault
+        } else if state.pending.is_some_and(|pending| pending.cue == cue) {
+            Self::Waiting
+        } else if state.live == Some(cue) {
+            Self::Live
+        } else if state.standby == Some(cue) {
+            Self::Standby
+        } else if state.played.contains(&cue) {
+            Self::Played
+        } else {
+            Self::Idle
+        }
+    }
+
+    const fn chip(self) -> Option<(Msg, Tone)> {
+        match self {
+            Self::Idle => None,
+            Self::Live => Some((Msg::Live, Tone::OnAir)),
+            Self::Standby => Some((Msg::DisplayStatusWaiting, Tone::Ready)),
+            Self::Waiting => Some((Msg::MediaStateWaiting, Tone::Pending)),
+            Self::Played => Some((Msg::CueStatePlayed, Tone::Idle)),
+            Self::Fault => Some((Msg::CueStateFault, Tone::Fault)),
+        }
+    }
+}
+
+/// What an action does: the kind picker's choices.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionKind {
+    Preview,
+    Take,
+    OverlayOn,
+    OverlayOff,
+    TitleOn,
+    TitleText,
+    TitleOff,
+    FadeToBlack,
+    PlaylistStart,
+    PlaylistStop,
+    AudioGain,
+    AudioMute,
+    Record,
+    Stream,
+    Wait,
+}
+
+impl ActionKind {
+    pub const ALL: [Self; 15] = [
+        Self::Preview,
+        Self::Take,
+        Self::OverlayOn,
+        Self::OverlayOff,
+        Self::TitleOn,
+        Self::TitleText,
+        Self::TitleOff,
+        Self::FadeToBlack,
+        Self::PlaylistStart,
+        Self::PlaylistStop,
+        Self::AudioGain,
+        Self::AudioMute,
+        Self::Record,
+        Self::Stream,
+        Self::Wait,
+    ];
+
+    #[must_use]
+    pub const fn of(action: &WireCueAction) -> Self {
+        match action {
+            WireCueAction::Preview { .. } => Self::Preview,
+            WireCueAction::Take { .. } => Self::Take,
+            WireCueAction::OverlayOn { .. } => Self::OverlayOn,
+            WireCueAction::OverlayOff { .. } => Self::OverlayOff,
+            WireCueAction::TitleOn { .. } => Self::TitleOn,
+            WireCueAction::TitleText { .. } => Self::TitleText,
+            WireCueAction::TitleOff { .. } => Self::TitleOff,
+            WireCueAction::FadeToBlack { .. } => Self::FadeToBlack,
+            WireCueAction::PlaylistStart => Self::PlaylistStart,
+            WireCueAction::PlaylistStop => Self::PlaylistStop,
+            WireCueAction::AudioGain { .. } => Self::AudioGain,
+            WireCueAction::AudioMute { .. } => Self::AudioMute,
+            WireCueAction::Record { .. } => Self::Record,
+            WireCueAction::Stream { .. } => Self::Stream,
+            WireCueAction::Wait { .. } => Self::Wait,
+        }
+    }
+
+    /// The kind's catalog label (English; drawing translates it).
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Preview => Msg::PanelPreview.en(),
+            Self::Take => Msg::TitleOpTake.en(),
+            Self::OverlayOn => Msg::CueActOverlayOn.en(),
+            Self::OverlayOff => Msg::CueActOverlayOff.en(),
+            Self::TitleOn => Msg::CueActTitleOn.en(),
+            Self::TitleText => Msg::CueActTitleText.en(),
+            Self::TitleOff => Msg::CueActTitleOff.en(),
+            Self::FadeToBlack => Msg::FadeToBlack.en(),
+            Self::PlaylistStart => Msg::CueActPlaylistStart.en(),
+            Self::PlaylistStop => Msg::CueActPlaylistStop.en(),
+            Self::AudioGain => Msg::CueActGain.en(),
+            Self::AudioMute => Msg::CueActMute.en(),
+            Self::Record => Msg::CueActRecord.en(),
+            Self::Stream => Msg::CueActStream.en(),
+            Self::Wait => Msg::CueActWait.en(),
+        }
+    }
+
+    /// A fresh action of this kind naming the show's first input, title,
+    /// field, or stream target, or `None` when the show has none to name.
+    #[must_use]
+    pub fn default_action(
+        self,
+        view: &ClientView,
+        project: &ProjectState,
+    ) -> Option<WireCueAction> {
+        let input = || view.inputs.first().copied().map(WireInputId::from_domain);
+        let title = || project.titles().first();
+        let channel = WireOverlayChannelId::new(1)?;
+        Some(match self {
+            Self::Preview => WireCueAction::Preview { input: input()? },
+            Self::Take => WireCueAction::Take {
+                input: None,
+                effect: TransitionFavoriteEffect::Cut,
+                duration_frames: 0,
+            },
+            Self::OverlayOn => WireCueAction::OverlayOn {
+                channel,
+                input: input()?,
+            },
+            Self::OverlayOff => WireCueAction::OverlayOff { channel },
+            Self::TitleOn => WireCueAction::TitleOn {
+                input: WireInputId::from_domain(title()?.input),
+                channel,
+            },
+            Self::TitleText => {
+                let title = title()?;
+                WireCueAction::TitleText {
+                    input: WireInputId::from_domain(title.input),
+                    field: title.fields.first()?.field,
+                    text: String::new(),
+                }
+            }
+            Self::TitleOff => WireCueAction::TitleOff {
+                input: WireInputId::from_domain(title()?.input),
+            },
+            Self::FadeToBlack => WireCueAction::FadeToBlack {
+                active: true,
+                duration_frames: 25,
+            },
+            Self::PlaylistStart => WireCueAction::PlaylistStart,
+            Self::PlaylistStop => WireCueAction::PlaylistStop,
+            Self::AudioGain => WireCueAction::AudioGain {
+                input: input()?,
+                gain_millidb: 0,
+            },
+            Self::AudioMute => WireCueAction::AudioMute {
+                input: input()?,
+                muted: true,
+            },
+            Self::Record => WireCueAction::Record {
+                recorder: WireRecorderSlot::new(1)?,
+                start: true,
+            },
+            Self::Stream => WireCueAction::Stream {
+                target: WireStreamTargetId::new(view.streams.first()?.target),
+                start: true,
+            },
+            Self::Wait => WireCueAction::Wait { frames: 25 },
+        })
+    }
+}
+
+/// The working copy of one list: `base` is the replicated definition it
+/// was taken from (or last sent), `spec` the operator's edits.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Draft {
+    list: u64,
+    base: CueListSpec,
+    spec: CueListSpec,
+}
+
+/// The Cues tab's local state.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CuePanel {
+    selected: Option<u64>,
+    /// The cue whose actions are shown.
+    expanded: Option<u64>,
+    draft: Option<Draft>,
+}
+
+/// One edit the rows asked for this frame.
+enum Change {
+    /// Send the working copy now.
+    Commit,
+    /// Leave it drafted (a text or number still being edited).
+    Draft,
+}
+
+impl CuePanel {
+    /// The list the tab shows: the selected one while it exists, else the
+    /// first.
+    fn shown<'a>(&self, project: &'a ProjectState) -> Option<&'a CueListStatus> {
+        let lists = project.cue_lists();
+        self.selected
+            .and_then(|id| lists.iter().find(|list| list.id == id))
+            .or_else(|| lists.first())
+    }
+
+    /// The list `G` fires: the shown list while it has a cue on standby.
+    pub(crate) fn go_list(&self, state: &StudioUiState) -> Option<u64> {
+        let list = self.shown(state.project_state.as_ref()?)?;
+        list.state.standby.is_some().then_some(list.id)
+    }
+
+    /// Shows list `list` (for tests and fixtures).
+    pub(crate) fn select(&mut self, list: u64, expanded: Option<u64>) {
+        self.selected = Some(list);
+        self.expanded = expanded;
+    }
+
+    /// Takes a fresh working copy whenever the replicated definition
+    /// differs from the one the copy was taken from.
+    fn sync_draft(&mut self, list: &CueListStatus) {
+        let stale = self
+            .draft
+            .as_ref()
+            .is_none_or(|draft| draft.list != list.id || draft.base != list.spec);
+        if stale {
+            self.draft = Some(Draft {
+                list: list.id,
+                base: list.spec.clone(),
+                spec: list.spec.clone(),
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // one immediate-mode tab
+    pub(crate) fn draw(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let l = l10n::locale(ui.ctx());
+        let (Some(view), Some(project)) = (state.view.as_ref(), state.project_state.as_ref())
+        else {
+            empty_state(ui, l.text(Msg::TabCues), l.text(Msg::PlaylistNotSynced));
+            return;
+        };
+        let control = control_block(state);
+        let edit = edit_block(state);
+        let lists = project.cue_lists();
+        let shown = self.shown(project).cloned();
+
+        ui.horizontal(|ui| {
+            if !lists.is_empty() {
+                let current = shown
+                    .as_ref()
+                    .map(|list| list.spec.name.clone())
+                    .unwrap_or_default();
+                ComboBox::from_id_salt("studio-cue-list-pick")
+                    .width(140.0)
+                    .truncate()
+                    .selected_text(RichText::new(current).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for list in lists {
+                            let selected = shown.as_ref().is_some_and(|shown| shown.id == list.id);
+                            if ui
+                                .selectable_label(selected, &list.spec.name)
+                                .on_hover_text(l.text(Msg::CueListPickHover))
+                                .clicked()
+                            {
+                                self.selected = Some(list.id);
+                                self.expanded = None;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(l.text(Msg::CueListPickHover));
+            }
+            let new_id = new_list_id(lists);
+            let reason = edit.unwrap_or(Msg::CueReasonListsFull.en());
+            if ui
+                .add_enabled(
+                    edit.is_none() && new_id.is_some(),
+                    small_button(l.text(Msg::CueListNew)),
+                )
+                .hint(l.text(Msg::CueListNewHover), reason)
+                .clicked()
+                && let Some(id) = new_id
+            {
+                let number = id.to_string();
+                intents.push(StudioIntent::Cue(CueIntent::Set {
+                    list: id,
+                    spec: CueListSpec {
+                        name: l.format(Msg::CueListDefaultName, &[("number", Arg::Str(&number))]),
+                        cues: Vec::new(),
+                    },
+                }));
+                self.selected = Some(id);
+            }
+            if let Some(list) = &shown
+                && ui
+                    .add_enabled(edit.is_none(), small_button(l.text(Msg::CueListRemove)))
+                    .hint(l.text(Msg::CueListRemoveHover), edit.unwrap_or(""))
+                    .clicked()
+            {
+                intents.push(StudioIntent::Cue(CueIntent::Remove { list: list.id }));
+            }
+        });
+        let Some(list) = shown else {
+            empty_state(ui, l.text(Msg::TabCues), l.text(Msg::CueListsEmpty));
+            return;
+        };
+        self.sync_draft(&list);
+        let list_edit = list_edit_block(state, &list);
+        ui.add_space(4.0);
+
+        // The GO key and the cue on standby.
+        let go = go_intent(&list, control);
+        let standby_name = list
+            .state
+            .standby
+            .and_then(|id| list.spec.cues.iter().find(|cue| cue.id == id))
+            .map(|cue| cue.name.clone());
+        let go_button = Button::new(
+            RichText::new(l.text(Msg::CueGo))
+                .size(legible(22.0))
+                .strong(),
+        )
+        .fill(PREVIEW.gamma_multiply(if go.is_ok() { 0.45 } else { 0.12 }))
+        .stroke(Stroke::new(2.0, PREVIEW.gamma_multiply(0.8)))
+        .min_size(Vec2::new(ui.available_width(), 48.0));
+        if ui
+            .add_enabled(go.is_ok(), go_button)
+            .hint(
+                l.text(Msg::CueGoHover),
+                go.as_ref().err().copied().unwrap_or(""),
+            )
+            .clicked()
+            && let Ok(intent) = go.clone()
+        {
+            intents.push(StudioIntent::Cue(intent));
+        }
+        ui.label(
+            RichText::new(standby_name.map_or_else(
+                || l.text(Msg::CueGoNothing).to_owned(),
+                |name| l.format(Msg::CueStandbyLabel, &[("name", Arg::Str(&name))]),
+            ))
+            .size(legible(12.0))
+            .strong()
+            .color(PREVIEW),
+        );
+        ui.horizontal(|ui| {
+            let operations = [
+                (Msg::CueBack, Msg::CueBackHover, CueOperation::Back),
+                (Msg::CueSkip, Msg::CueSkipHover, CueOperation::Skip),
+                (Msg::PlaylistStop, Msg::CueStopHover, CueOperation::Stop),
+                (Msg::CueReset, Msg::CueResetHover, CueOperation::Reset),
+            ];
+            for (label, hover, operation) in operations {
+                if ui
+                    .add_enabled(control.is_none(), key_button(l.text(label), None, 64.0))
+                    .hint(l.text(hover), control.unwrap_or(""))
+                    .clicked()
+                {
+                    intents.push(StudioIntent::Cue(CueIntent::Control {
+                        list: list.id,
+                        operation,
+                    }));
+                }
+            }
+        });
+        if let Some(pending) = list.state.pending {
+            let frame = pending.due_frame.to_string();
+            ui.label(caption(
+                l.format(Msg::CueWaitingNote, &[("frame", Arg::Str(&frame))]),
+            ));
+        }
+        if let Some((cue, action)) = list.state.fault {
+            let (cue, action) = (cue.to_string(), (u32::from(action) + 1).to_string());
+            ui.label(
+                RichText::new(l.format(
+                    Msg::CueFaultNote,
+                    &[("cue", Arg::Str(&cue)), ("action", Arg::Str(&action))],
+                ))
+                .color(ERROR),
+            );
+        }
+        if !state.can_transition {
+            ui.label(caption(l.text(Msg::CueViewOnly)));
+        }
+        ui.add_space(6.0);
+
+        let Some(draft) = self.draft.as_mut() else {
+            return;
+        };
+        let mut change = None;
+        let name = ui
+            .add_enabled(
+                list_edit.is_none(),
+                TextEdit::singleline(&mut draft.spec.name).desired_width(ui.available_width()),
+            )
+            .hint(l.text(Msg::CueListNameHover), list_edit.unwrap_or(""));
+        if name.lost_focus() {
+            change = Some(Change::Commit);
+        }
+        ui.add_space(4.0);
+        if draft.spec.cues.is_empty() {
+            ui.label(caption(l.text(Msg::CueListEmpty)));
+        }
+        let names = Names { l, view, project };
+        let mut edit_row = None;
+        for index in 0..draft.spec.cues.len() {
+            let row = draw_cue_row(
+                ui,
+                &names,
+                &list,
+                (&mut draft.spec.cues, index),
+                (control, list_edit),
+                self.expanded,
+                intents,
+            );
+            if let Some(row) = row {
+                edit_row = Some(row);
+            }
+        }
+        match edit_row {
+            Some(RowEdit::Expand(cue)) => {
+                self.expanded = (self.expanded != Some(cue)).then_some(cue);
+            }
+            Some(RowEdit::Change(row_change)) => change = Some(row_change),
+            None => {}
+        }
+        let full = draft.spec.cues.len() >= MAX_CUES;
+        let reason = list_edit.unwrap_or(Msg::CueReasonCuesFull.en());
+        if ui
+            .add_enabled(
+                list_edit.is_none() && !full,
+                small_button(l.text(Msg::CueAdd)),
+            )
+            .hint(l.text(Msg::CueAddHover), reason)
+            .clicked()
+        {
+            let id = new_cue_id(&draft.spec.cues);
+            let number = id.to_string();
+            draft.spec.cues.push(WireCue {
+                id,
+                name: l.format(Msg::CueDefaultName, &[("number", Arg::Str(&number))]),
+                auto_follow: false,
+                actions: Vec::new(),
+            });
+            self.expanded = Some(id);
+            change = Some(Change::Commit);
+        }
+        if matches!(change, Some(Change::Commit)) && draft.spec != draft.base {
+            draft.base = draft.spec.clone();
+            intents.push(StudioIntent::Cue(CueIntent::Set {
+                list: draft.list,
+                spec: draft.spec.clone(),
+            }));
+        }
+    }
+}
+
+/// Names in the console language.
+struct Names<'a> {
+    l: Locale,
+    view: &'a ClientView,
+    project: &'a ProjectState,
+}
+
+impl Names<'_> {
+    fn input(&self, input: WireInputId) -> String {
+        input_name(
+            self.l,
+            &self.view.inputs,
+            &self.view.input_names,
+            input.to_domain(),
+        )
+    }
+}
+
+enum RowEdit {
+    Expand(u64),
+    Change(Change),
+}
+
+/// One cue: its chip, name, follow box, standby, fire, move, and remove
+/// keys, and (expanded) its actions.
+#[allow(clippy::too_many_lines)]
+fn draw_cue_row(
+    ui: &mut Ui,
+    names: &Names<'_>,
+    list: &CueListStatus,
+    (cues, index): (&mut Vec<WireCue>, usize),
+    (control, edit): (Option<&'static str>, Option<&'static str>),
+    expanded: Option<u64>,
+    intents: &mut Vec<StudioIntent>,
+) -> Option<RowEdit> {
+    let l = names.l;
+    let id = cues[index].id;
+    let role = CueRole::of(&list.state, id);
+    let mut result = None;
+    let stroke = match role {
+        CueRole::Live | CueRole::Waiting => Stroke::new(1.5, PROGRAM),
+        CueRole::Standby => Stroke::new(1.5, PREVIEW),
+        _ => Stroke::new(1.0, border_color()),
+    };
+    Frame::new()
+        .fill(raised_color())
+        .stroke(stroke)
+        .corner_radius(4.0)
+        .inner_margin(4.0)
+        .show(ui, |ui| {
+            ui.push_id(("studio-cue", id), |ui| {
+                ui.horizontal(|ui| {
+                    let (text, tone) = role
+                        .chip()
+                        .map_or(("", Tone::Idle), |(msg, tone)| (l.text(msg), tone));
+                    status_chip(ui, text, tone, 64.0).on_hover_text(l.text(Msg::CueStateHover));
+                    let name = ui
+                        .add_enabled(
+                            edit.is_none(),
+                            TextEdit::singleline(&mut cues[index].name).desired_width(110.0),
+                        )
+                        .hint(l.text(Msg::CueNameHover), edit.unwrap_or(""));
+                    if name.lost_focus() {
+                        result = Some(RowEdit::Change(Change::Commit));
+                    }
+                    let follow = ui
+                        .add_enabled(
+                            edit.is_none(),
+                            egui::Checkbox::new(
+                                &mut cues[index].auto_follow,
+                                l.text(Msg::CueFollow),
+                            ),
+                        )
+                        .hint(l.text(Msg::CueFollowHover), edit.unwrap_or(""));
+                    if follow.changed() {
+                        result = Some(RowEdit::Change(Change::Commit));
+                    }
+                    let operations = [
+                        ("●", Msg::CueJumpHover, CueOperation::Standby { cue: id }),
+                        ("▶", Msg::CueFireHover, CueOperation::Go { cue: Some(id) }),
+                    ];
+                    for (glyph, hover, operation) in operations {
+                        if ui
+                            .add_enabled(control.is_none(), key_button(glyph, None, 28.0))
+                            .hint(l.text(hover), control.unwrap_or(""))
+                            .clicked()
+                        {
+                            intents.push(StudioIntent::Cue(CueIntent::Control {
+                                list: list.id,
+                                operation,
+                            }));
+                        }
+                    }
+                    let moves = [
+                        (
+                            "▲",
+                            Msg::CueUpHover,
+                            index > 0,
+                            index.wrapping_sub(1),
+                            Msg::CueReasonFirst,
+                        ),
+                        (
+                            "▼",
+                            Msg::CueDownHover,
+                            index + 1 < cues.len(),
+                            index + 1,
+                            Msg::CueReasonLast,
+                        ),
+                    ];
+                    for (glyph, hover, possible, other, end) in moves {
+                        let reason = edit.unwrap_or(end.en());
+                        if ui
+                            .add_enabled(edit.is_none() && possible, key_button(glyph, None, 28.0))
+                            .hint(l.text(hover), reason)
+                            .clicked()
+                        {
+                            cues.swap(index, other);
+                            result = Some(RowEdit::Change(Change::Commit));
+                        }
+                    }
+                    if ui
+                        .add_enabled(edit.is_none(), key_button("✕", Some(ERROR), 28.0))
+                        .hint(l.text(Msg::CueRemoveHover), edit.unwrap_or(""))
+                        .clicked()
+                    {
+                        cues.remove(index);
+                        result = Some(RowEdit::Change(Change::Commit));
+                        return;
+                    }
+                    let open = expanded == Some(id);
+                    let count = cues[index].actions.len().to_string();
+                    let label = format!("{count} {}", if open { "−" } else { "+" });
+                    if ui
+                        .add(key_button(&label, None, 36.0))
+                        .on_hover_text(l.text(Msg::CueExpandHover))
+                        .clicked()
+                    {
+                        result = Some(RowEdit::Expand(id));
+                    }
+                });
+                if expanded == Some(id)
+                    && index < cues.len()
+                    && let Some(change) = draw_actions(ui, names, &mut cues[index], edit)
+                {
+                    result = Some(RowEdit::Change(change));
+                }
+            });
+        });
+    ui.add_space(2.0);
+    result
+}
+
+/// A cue's actions, each with its kind picker, parameters, and move and
+/// remove keys, then the Add action key.
+fn draw_actions(
+    ui: &mut Ui,
+    names: &Names<'_>,
+    cue: &mut WireCue,
+    edit: Option<&'static str>,
+) -> Option<Change> {
+    let l = names.l;
+    let mut change = None;
+    let mut remove = None;
+    let mut swap = None;
+    let count = cue.actions.len();
+    for index in 0..count {
+        ui.push_id(("studio-cue-action", index), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(field_label(&(index + 1).to_string()));
+                let current = ActionKind::of(&cue.actions[index]);
+                ui.add_enabled_ui(edit.is_none(), |ui| {
+                    ComboBox::from_id_salt("kind")
+                        .width(104.0)
+                        .selected_text(RichText::new(l.tr(current.label())).size(legible(11.0)))
+                        .show_ui(ui, |ui| {
+                            for kind in ActionKind::ALL {
+                                let fresh = kind.default_action(names.view, names.project);
+                                let response = ui
+                                    .add_enabled(
+                                        fresh.is_some(),
+                                        egui::Button::selectable(
+                                            kind == current,
+                                            l.tr(kind.label()),
+                                        ),
+                                    )
+                                    .hint(
+                                        l.text(Msg::CueActionKindHover),
+                                        edit.unwrap_or(Msg::CueReasonNothingToName.en()),
+                                    );
+                                if response.clicked()
+                                    && kind != current
+                                    && let Some(fresh) = fresh
+                                {
+                                    cue.actions[index] = fresh;
+                                    change = Some(Change::Commit);
+                                }
+                            }
+                        })
+                        .response
+                        .hint(l.text(Msg::CueActionKindHover), edit.unwrap_or(""));
+                });
+                if let Some(param) = draw_params(ui, names, &mut cue.actions[index], edit) {
+                    change = Some(param);
+                }
+                if ui
+                    .add_enabled(edit.is_none() && index > 0, key_button("▲", None, 24.0))
+                    .hint(
+                        l.text(Msg::CueActionUpHover),
+                        edit.unwrap_or(Msg::CueReasonFirst.en()),
+                    )
+                    .clicked()
+                {
+                    swap = Some((index, index - 1));
+                }
+                if ui
+                    .add_enabled(
+                        edit.is_none() && index + 1 < count,
+                        key_button("▼", None, 24.0),
+                    )
+                    .hint(
+                        l.text(Msg::CueActionDownHover),
+                        edit.unwrap_or(Msg::CueReasonLast.en()),
+                    )
+                    .clicked()
+                {
+                    swap = Some((index, index + 1));
+                }
+                if ui
+                    .add_enabled(edit.is_none(), key_button("✕", Some(ERROR), 24.0))
+                    .hint(l.text(Msg::CueActionRemoveHover), edit.unwrap_or(""))
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+            });
+        });
+    }
+    if let Some((a, b)) = swap {
+        cue.actions.swap(a, b);
+        change = Some(Change::Commit);
+    }
+    if let Some(index) = remove {
+        cue.actions.remove(index);
+        change = Some(Change::Commit);
+    }
+    let full = cue.actions.len() >= MAX_CUE_ACTIONS;
+    let reason = edit.unwrap_or(Msg::CueReasonActionsFull.en());
+    if ui
+        .add_enabled(
+            edit.is_none() && !full,
+            small_button(l.text(Msg::CueActionAdd)),
+        )
+        .hint(l.text(Msg::CueActionAddHover), reason)
+        .clicked()
+        && let Some(action) = ActionKind::Take.default_action(names.view, names.project)
+    {
+        cue.actions.push(action);
+        change = Some(Change::Commit);
+    }
+    change
+}
+
+/// An input picker over `choices`; `allow_preview` adds the Preview choice
+/// (`None`).
+fn input_picker(
+    ui: &mut Ui,
+    names: &Names<'_>,
+    salt: &str,
+    (value, choices): (&mut Option<WireInputId>, &[InputId]),
+    allow_preview: bool,
+    edit: Option<&'static str>,
+) -> bool {
+    let l = names.l;
+    let text = value.map_or_else(
+        || l.text(Msg::CueParamPreview).to_owned(),
+        |input| names.input(input),
+    );
+    let mut changed = false;
+    ui.add_enabled_ui(edit.is_none(), |ui| {
+        ComboBox::from_id_salt(salt)
+            .width(110.0)
+            .truncate()
+            .selected_text(RichText::new(text).size(legible(11.0)))
+            .show_ui(ui, |ui| {
+                let options = allow_preview.then_some(None).into_iter().chain(
+                    choices
+                        .iter()
+                        .map(|input| Some(WireInputId::from_domain(*input))),
+                );
+                for option in options {
+                    let label = option.map_or_else(
+                        || l.text(Msg::CueParamPreview).to_owned(),
+                        |input| names.input(input),
+                    );
+                    if ui
+                        .selectable_label(*value == option, label)
+                        .on_hover_text(l.text(Msg::CueParamInputHover))
+                        .clicked()
+                        && *value != option
+                    {
+                        *value = option;
+                        changed = true;
+                    }
+                }
+            })
+            .response
+            .hint(l.text(Msg::CueParamInputHover), edit.unwrap_or(""));
+    });
+    changed
+}
+
+/// A numeric field; reports a commit when its drag ends or it loses focus.
+fn number<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    value: &mut T,
+    range: core::ops::RangeInclusive<T>,
+    (hover, suffix): (&str, &str),
+    (enabled, reason): (bool, &str),
+) -> Option<Change> {
+    let response = ui
+        .add_enabled(enabled, DragValue::new(value).range(range).suffix(suffix))
+        .hint(hover, reason);
+    if response.drag_stopped() || response.lost_focus() {
+        Some(Change::Commit)
+    } else if response.changed() {
+        if response.dragged() || response.has_focus() {
+            Some(Change::Draft)
+        } else {
+            Some(Change::Commit)
+        }
+    } else {
+        None
+    }
+}
+
+/// An on/off box; any toggle commits.
+fn flag(ui: &mut Ui, value: &mut bool, hover: &str, edit: Option<&'static str>) -> Option<Change> {
+    let l = l10n::locale(ui.ctx());
+    ui.add_enabled(
+        edit.is_none(),
+        egui::Checkbox::new(value, l.text(Msg::CueParamOn)),
+    )
+    .hint(hover, edit.unwrap_or(""))
+    .changed()
+    .then_some(Change::Commit)
+}
+
+fn channel(
+    ui: &mut Ui,
+    value: &mut WireOverlayChannelId,
+    l: Locale,
+    edit: Option<&'static str>,
+) -> Option<Change> {
+    let mut number_value = value.number();
+    let change = number(
+        ui,
+        &mut number_value,
+        1..=8,
+        (l.text(Msg::CueParamChannelHover), ""),
+        (edit.is_none(), edit.unwrap_or("")),
+    );
+    if let Some(channel) = WireOverlayChannelId::new(number_value) {
+        *value = channel;
+    }
+    change
+}
+
+/// One action's parameters.
+#[allow(clippy::too_many_lines)] // one picker per action kind
+fn draw_params(
+    ui: &mut Ui,
+    names: &Names<'_>,
+    action: &mut WireCueAction,
+    edit: Option<&'static str>,
+) -> Option<Change> {
+    let l = names.l;
+    let enabled = (edit.is_none(), edit.unwrap_or(""));
+    let frames = l.text(Msg::CueFramesUnit);
+    let suffix = format!(" {frames}");
+    let inputs = &names.view.inputs;
+    let titles: Vec<InputId> = names
+        .project
+        .titles()
+        .iter()
+        .map(|title| title.input)
+        .collect();
+    let pick = |ui: &mut Ui, salt: &str, input: &mut WireInputId, choices: &[InputId]| {
+        let mut value = Some(*input);
+        let changed = input_picker(ui, names, salt, (&mut value, choices), false, edit);
+        if let Some(value) = value {
+            *input = value;
+        }
+        changed.then_some(Change::Commit)
+    };
+    match action {
+        WireCueAction::Preview { input } => pick(ui, "input", input, inputs),
+        WireCueAction::Take {
+            input,
+            effect,
+            duration_frames,
+        } => {
+            let mut change = input_picker(ui, names, "input", (input, inputs), true, edit)
+                .then_some(Change::Commit);
+            let stingers: Vec<_> = names
+                .view
+                .stingers
+                .iter()
+                .filter_map(|stinger| WireStingerSlotId::new(stinger.slot))
+                .collect();
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("effect")
+                    .width(96.0)
+                    .selected_text(
+                        RichText::new(crate::transitions::effect_name(l, *effect))
+                            .size(legible(11.0)),
+                    )
+                    .show_ui(ui, |ui| {
+                        let effects = core::iter::once(TransitionFavoriteEffect::Cut)
+                            .chain(AutoTransitionKind::ALL.map(TransitionFavoriteEffect::Mix))
+                            .chain(
+                                stingers
+                                    .iter()
+                                    .copied()
+                                    .map(TransitionFavoriteEffect::Stinger),
+                            );
+                        for option in effects {
+                            if ui
+                                .selectable_label(
+                                    *effect == option,
+                                    crate::transitions::effect_name(l, option),
+                                )
+                                .on_hover_text(l.text(Msg::CueParamEffectHover))
+                                .clicked()
+                                && *effect != option
+                            {
+                                *effect = option;
+                                *duration_frames = match option {
+                                    TransitionFavoriteEffect::Cut => 0,
+                                    _ => (*duration_frames).max(25),
+                                };
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    })
+                    .response
+                    .hint(l.text(Msg::CueParamEffectHover), edit.unwrap_or(""));
+            });
+            let cut = *effect == TransitionFavoriteEffect::Cut;
+            let reason = edit.unwrap_or(Msg::PlaylistReasonCutHasNoLength.en());
+            let mut frames_value = (*duration_frames).max(u32::from(cut));
+            let number_change = number(
+                ui,
+                &mut frames_value,
+                1..=MAX_CUE_TRANSITION_FRAMES,
+                (l.text(Msg::CueParamFramesHover), &suffix),
+                (edit.is_none() && !cut, reason),
+            );
+            if !cut {
+                *duration_frames = frames_value;
+            }
+            number_change.or(change)
+        }
+        WireCueAction::OverlayOn {
+            channel: slot,
+            input,
+        } => {
+            let change = channel(ui, slot, l, edit);
+            pick(ui, "input", input, inputs).or(change)
+        }
+        WireCueAction::OverlayOff { channel: slot } => channel(ui, slot, l, edit),
+        WireCueAction::TitleOn {
+            input,
+            channel: slot,
+        } => {
+            let change = pick(ui, "title", input, &titles);
+            channel(ui, slot, l, edit).or(change)
+        }
+        WireCueAction::TitleText { input, field, text } => {
+            let before = *input;
+            let mut change = pick(ui, "title", input, &titles);
+            let title = names.project.title(input.to_domain());
+            if *input != before
+                && let Some(first) = title.and_then(|title| title.fields.first())
+            {
+                *field = first.field;
+            }
+            let fields = title
+                .map(|title| title.fields.as_slice())
+                .unwrap_or_default();
+            let current = fields
+                .iter()
+                .find(|candidate| candidate.field == *field)
+                .map(|candidate| candidate.name.clone())
+                .unwrap_or_default();
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("field")
+                    .width(90.0)
+                    .truncate()
+                    .selected_text(RichText::new(current).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for candidate in fields {
+                            if ui
+                                .selectable_label(candidate.field == *field, &candidate.name)
+                                .on_hover_text(l.text(Msg::CueParamFieldHover))
+                                .clicked()
+                                && candidate.field != *field
+                            {
+                                *field = candidate.field;
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    })
+                    .response
+                    .hint(l.text(Msg::CueParamFieldHover), edit.unwrap_or(""));
+            });
+            let response = ui
+                .add_enabled(
+                    edit.is_none(),
+                    TextEdit::singleline(text).desired_width(120.0),
+                )
+                .hint(l.text(Msg::CueParamTextHover), edit.unwrap_or(""));
+            if response.lost_focus() {
+                change = Some(Change::Commit);
+            }
+            change
+        }
+        WireCueAction::TitleOff { input } => pick(ui, "title", input, &titles),
+        WireCueAction::FadeToBlack {
+            active,
+            duration_frames,
+        } => {
+            let change = flag(ui, active, l.text(Msg::CueParamActiveHover), edit);
+            number(
+                ui,
+                duration_frames,
+                1..=MAX_CUE_TRANSITION_FRAMES,
+                (l.text(Msg::CueParamFramesHover), &suffix),
+                enabled,
+            )
+            .or(change)
+        }
+        WireCueAction::PlaylistStart | WireCueAction::PlaylistStop => None,
+        WireCueAction::AudioGain {
+            input,
+            gain_millidb,
+        } => {
+            let change = pick(ui, "input", input, inputs);
+            let mut decibels = f64::from(*gain_millidb) / 1000.0;
+            let gain = number(
+                ui,
+                &mut decibels,
+                f64::from(MIN_GAIN_MILLIDB) / 1000.0..=f64::from(MAX_GAIN_MILLIDB) / 1000.0,
+                (l.text(Msg::CueParamGainHover), " dB"),
+                enabled,
+            );
+            #[allow(clippy::cast_possible_truncation)] // clamped to the strip range
+            {
+                *gain_millidb = (decibels * 1000.0)
+                    .round()
+                    .clamp(f64::from(MIN_GAIN_MILLIDB), f64::from(MAX_GAIN_MILLIDB))
+                    as i32;
+            }
+            gain.or(change)
+        }
+        WireCueAction::AudioMute { input, muted } => {
+            let change = pick(ui, "input", input, inputs);
+            flag(ui, muted, l.text(Msg::CueParamMuteHover), edit).or(change)
+        }
+        WireCueAction::Record { recorder, start } => {
+            let mut slot = recorder.get();
+            let change = number(
+                ui,
+                &mut slot,
+                1..=2,
+                (l.text(Msg::CueParamRecorderHover), ""),
+                enabled,
+            );
+            if let Some(value) = WireRecorderSlot::new(slot) {
+                *recorder = value;
+            }
+            flag(ui, start, l.text(Msg::CueParamStartHover), edit).or(change)
+        }
+        WireCueAction::Stream { target, start } => {
+            let streams = &names.view.streams;
+            let current = streams
+                .iter()
+                .find(|stream| stream.target == target.get())
+                .map(|stream| stream.name.clone())
+                .unwrap_or_default();
+            let mut change = None;
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("target")
+                    .width(100.0)
+                    .truncate()
+                    .selected_text(RichText::new(current).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for stream in streams {
+                            if ui
+                                .selectable_label(stream.target == target.get(), &stream.name)
+                                .on_hover_text(l.text(Msg::CueParamTargetHover))
+                                .clicked()
+                                && stream.target != target.get()
+                            {
+                                *target = WireStreamTargetId::new(stream.target);
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    })
+                    .response
+                    .hint(l.text(Msg::CueParamTargetHover), edit.unwrap_or(""));
+            });
+            flag(ui, start, l.text(Msg::CueParamStartHover), edit).or(change)
+        }
+        WireCueAction::Wait { frames: wait } => number(
+            ui,
+            wait,
+            1..=MAX_CUE_WAIT_FRAMES,
+            (l.text(Msg::CueParamWaitHover), &suffix),
+            enabled,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fm_protocol::CuePendingStatus;
+
+    fn cue(id: u64) -> WireCue {
+        WireCue {
+            id,
+            name: format!("Cue {id}"),
+            auto_follow: false,
+            actions: Vec::new(),
+        }
+    }
+
+    fn list(id: u64, state: CueRunStatus) -> CueListStatus {
+        CueListStatus {
+            id,
+            spec: CueListSpec {
+                name: "Show".into(),
+                cues: vec![cue(10), cue(20), cue(30)],
+            },
+            state,
+        }
+    }
+
+    #[test]
+    fn roles_rank_fault_and_wait_over_live_and_standby() {
+        let state = CueRunStatus {
+            standby: Some(20),
+            live: Some(10),
+            pending: None,
+            played: vec![10],
+            fault: None,
+        };
+        assert_eq!(CueRole::of(&state, 10), CueRole::Live);
+        assert_eq!(CueRole::of(&state, 20), CueRole::Standby);
+        assert_eq!(CueRole::of(&state, 30), CueRole::Idle);
+        let waiting = CueRunStatus {
+            pending: Some(CuePendingStatus {
+                cue: 10,
+                action: 1,
+                due_frame: 50,
+            }),
+            ..state.clone()
+        };
+        assert_eq!(CueRole::of(&waiting, 10), CueRole::Waiting);
+        let fault = CueRunStatus {
+            fault: Some((10, 0)),
+            ..state
+        };
+        assert_eq!(CueRole::of(&fault, 10), CueRole::Fault);
+        let played = CueRunStatus {
+            played: vec![10],
+            ..CueRunStatus::default()
+        };
+        assert_eq!(CueRole::of(&played, 10), CueRole::Played);
+    }
+
+    #[test]
+    fn go_needs_a_standby_cue_and_the_session_gate() {
+        let ready = list(
+            7,
+            CueRunStatus {
+                standby: Some(10),
+                ..CueRunStatus::default()
+            },
+        );
+        assert_eq!(
+            go_intent(&ready, None),
+            Ok(CueIntent::Control {
+                list: 7,
+                operation: CueOperation::Go { cue: None },
+            })
+        );
+        assert_eq!(go_intent(&ready, Some("blocked")), Err("blocked"));
+        let done = list(7, CueRunStatus::default());
+        assert_eq!(go_intent(&done, None), Err(Msg::CueReasonNoStandby.en()));
+    }
+
+    #[test]
+    fn new_ids_take_the_lowest_free_list_and_the_next_cue() {
+        let lists = vec![
+            list(1, CueRunStatus::default()),
+            list(3, CueRunStatus::default()),
+        ];
+        assert_eq!(new_list_id(&lists), Some(2));
+        let full: Vec<_> = (1..=8)
+            .map(|id| list(id, CueRunStatus::default()))
+            .collect();
+        assert_eq!(new_list_id(&full), None);
+        assert_eq!(new_cue_id(&[]), 1);
+        assert_eq!(new_cue_id(&[cue(4), cue(9), cue(2)]), 10);
+    }
+
+    #[test]
+    fn every_action_kind_round_trips_its_kind_and_has_a_label() {
+        for kind in ActionKind::ALL {
+            assert_ne!(kind.label(), "");
+        }
+        assert_eq!(
+            ActionKind::of(&WireCueAction::Wait { frames: 3 }),
+            ActionKind::Wait
+        );
+        assert_eq!(
+            ActionKind::of(&WireCueAction::PlaylistStop),
+            ActionKind::PlaylistStop
+        );
+    }
+}

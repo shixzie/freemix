@@ -42,6 +42,10 @@ pub enum ShowError {
     /// A Fade-to-Black output duration is outside 1 through 3600 frames
     /// (SW-004).
     InvalidFadeToBlackDuration(u32),
+    /// A restored cue list is invalid (RC-017): `definition` for a bound
+    /// or run state, `reference` for an input, title, or stream target
+    /// outside the show.
+    InvalidCueList(&'static str),
     Switcher(SwitcherError),
 }
 
@@ -93,6 +97,7 @@ impl fmt::Display for ShowError {
                 formatter,
                 "Fade-to-Black duration {duration} is outside 1 through 3600 frames"
             ),
+            Self::InvalidCueList(code) => write!(formatter, "invalid cue list ({code})"),
             Self::Switcher(error) => error.fmt(formatter),
         }
     }
@@ -140,6 +145,12 @@ pub enum InputCatalogueError {
         input: InputId,
         entry: u64,
     },
+    /// An action of cue `cue` in cue list `list` names the input (RC-017).
+    InCueList {
+        input: InputId,
+        list: u64,
+        cue: u64,
+    },
 }
 
 impl fmt::Display for InputCatalogueError {
@@ -165,6 +176,10 @@ impl fmt::Display for InputCatalogueError {
             Self::InPlaylist { input, entry } => write!(
                 formatter,
                 "input {input} cannot be removed: playlist entry {entry} plays it"
+            ),
+            Self::InCueList { input, list, cue } => write!(
+                formatter,
+                "input {input} cannot be removed: cue {cue} of cue list {list} names it"
             ),
         }
     }
@@ -192,6 +207,10 @@ impl InputCatalogueError {
             Self::InPlaylist { input, entry } => RefusalReason::InputInUse {
                 input: input.get().get(),
                 usage: InputUse::PlaylistEntry { entry },
+            },
+            Self::InCueList { input, list, cue } => RefusalReason::InputInUse {
+                input: input.get().get(),
+                usage: InputUse::CueAction { list, cue },
             },
         }
     }

@@ -428,9 +428,8 @@ fn catalogue(error: crate::InputCatalogueError) -> Rejection {
     let (code, issue) = match error {
         crate::InputCatalogueError::UnknownInput(_) => (RejectionCode::NotFound, "unknown_input"),
         crate::InputCatalogueError::InUse { .. }
-        | crate::InputCatalogueError::InPlaylist { .. } => {
-            (RejectionCode::Conflict, "input_in_use")
-        }
+        | crate::InputCatalogueError::InPlaylist { .. }
+        | crate::InputCatalogueError::InCueList { .. } => (RejectionCode::Conflict, "input_in_use"),
         crate::InputCatalogueError::DuplicateInput(_) => {
             (RejectionCode::Conflict, "duplicate_input")
         }

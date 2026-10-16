@@ -38,6 +38,7 @@ mod capture_input_ui;
 mod chrome;
 pub mod color_panel;
 mod connection_overlay;
+mod cues;
 mod display_outputs;
 mod dock;
 mod edit_history;
@@ -76,6 +77,11 @@ mod toasts;
 mod transitions;
 mod workspace;
 
+pub use cues::{
+    ActionKind as CueActionKind, CueIntent, CueRole, control_block as cue_control_block,
+    edit_block as cue_edit_block, go_intent as cue_go_intent,
+    list_edit_block as cue_list_edit_block, new_cue_id, new_list_id as new_cue_list_id,
+};
 pub use display_outputs::{
     DisplayOutputAnswer, display_output_block_reason, display_output_clear_intent,
     display_output_set_intent,
@@ -327,6 +333,8 @@ pub enum StudioIntent {
     Title(TitleCommand),
     /// Sends one playlist command: a list edit or transport.
     Playlist(PlaylistIntent),
+    /// Sends one cue list command: a list edit or a cue control (RC-017).
+    Cue(CueIntent),
     /// Drives one media-file input's transport (operator control) or edits
     /// its persisted playback settings (project edit) (Protocol 2.37).
     Media {
@@ -901,16 +909,18 @@ pub(crate) enum ShortcutGroup {
     Transitions,
     Editing,
     InputBank,
+    Cues,
     Console,
 }
 
 impl ShortcutGroup {
     /// Every group in reference order.
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Switching,
         Self::Transitions,
         Self::Editing,
         Self::InputBank,
+        Self::Cues,
         Self::Console,
     ];
 
@@ -921,6 +931,7 @@ impl ShortcutGroup {
             Self::Transitions => Msg::ShortcutGroupTransitions.en(),
             Self::Editing => Msg::ShortcutGroupEditing.en(),
             Self::InputBank => Msg::ShortcutGroupInputBank.en(),
+            Self::Cues => Msg::ShortcutGroupCues.en(),
         }
     }
 }
@@ -937,7 +948,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 23] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 24] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -1027,6 +1038,12 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 23] = [
         keys: Msg::KeyTabEnter.en(),
         action: Msg::ShortcutTileFocus.en(),
         key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: "G",
+        action: Msg::ShortcutCueGo.en(),
+        key: Some(Key::G),
     },
     // Handled by [`help_key`], which works whatever the connection state.
     ShortcutEntry {
@@ -1131,6 +1148,7 @@ fn studio_shortcuts(
     t_bar: TBarKeys,
     (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
     (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
+    cue_go_list: Option<u64>,
 ) -> Vec<StudioIntent> {
     if ui.ctx().egui_wants_keyboard_input() {
         return Vec::new();
@@ -1173,6 +1191,17 @@ fn studio_shortcuts(
                 }
                 Key::C if transition_available => {
                     intents.push(StudioIntent::Cut);
+                    false
+                }
+                // GO on the Cues panel's list (RC-017).
+                Key::G if transition_available => {
+                    let Some(list) = cue_go_list else {
+                        return true;
+                    };
+                    intents.push(StudioIntent::Cue(CueIntent::Control {
+                        list,
+                        operation: fm_protocol::CueOperation::Go { cue: None },
+                    }));
                     false
                 }
                 Key::F if transition_available => {
@@ -1349,6 +1378,8 @@ pub struct StudioShell {
     titles: titles::TitlesPanel,
     /// The Playlist tab: selection, entry form, and countdown anchor.
     playlist: playlist::PlaylistPanel,
+    /// The Cues tab: the shown list, the expanded cue, and the working copy.
+    cues: cues::CuePanel,
     /// Meter and stream message arrival times for the status bar strip.
     health: health::HealthTracker,
     /// UI scale and contrast; local to this console.
@@ -1510,6 +1541,7 @@ impl StudioShell {
                 self.transition_duration_frames,
                 self.fade_to_black_duration_frames,
             ),
+            self.cues.go_list(state),
         );
         intents.extend(edit_history::history_shortcuts(
             ui,
@@ -1811,6 +1843,7 @@ impl Default for StudioShell {
             locale: Locale::ENGLISH,
             titles: titles::TitlesPanel::default(),
             playlist: playlist::PlaylistPanel::default(),
+            cues: cues::CuePanel::default(),
             health: health::HealthTracker::default(),
             appearance: preferences::Appearance::default(),
             default_locale: Locale::ENGLISH,
@@ -1987,6 +2020,7 @@ mod tests {
                 },
                 (&inputs, &TransitionFavoriteStatus::defaults()),
                 (duration, fade_to_black_duration),
+                None,
             );
             let remaining = context.input(|input| input.events.clone());
             drop(ui);
@@ -2250,6 +2284,7 @@ mod tests {
                 },
                 (&inputs, &favorites),
                 (30, 30),
+                Some(1),
             );
             drop(ui);
             let _ = context.end_pass();
@@ -2264,15 +2299,7 @@ mod tests {
         }
         // The numbered row is listed once as "1 – 8"; other keys stay unbound.
         assert_eq!(press(Key::Num2).len(), 1);
-        for key in [
-            Key::A,
-            Key::D,
-            Key::E,
-            Key::G,
-            Key::Space,
-            Key::Enter,
-            Key::Num9,
-        ] {
+        for key in [Key::A, Key::D, Key::E, Key::Space, Key::Enter, Key::Num9] {
             assert!(press(key).is_empty(), "{key:?} is handled but not listed");
         }
         assert!(

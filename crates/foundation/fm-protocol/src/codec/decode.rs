@@ -179,6 +179,11 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 inventory: super::display_output::decode_inventory(&mut fields)?,
             })
         }
+        "cue_list_state" => WireMessage::CueListState(crate::CueListStateMessage {
+            revision: fields.canonical_required("revision")?,
+            frame: fields.canonical_required("frame")?,
+            list: super::cue::decode_list(&mut fields)?,
+        }),
         "media_state" => WireMessage::MediaState(MediaStateMessage {
             revision: fields.canonical_required("revision")?,
             frame: fields.canonical_required("frame")?,
@@ -577,7 +582,9 @@ fn decode_command_payload(
         name if name.starts_with("scene_animation_") => {
             decode_scene_animation_command(fields, name)?
         }
-        name if name.starts_with("playlist_") => decode_playlist_command(fields, name)?,
+        name if name.starts_with("playlist_") || name.starts_with("cue_") => {
+            decode_playlist_command(fields, name)?
+        }
         name if name.starts_with("grade_") => decode_grade_command(fields, name)?,
         name if name.starts_with("animation_preset_") => {
             decode_animation_preset_command(fields, name)?
@@ -621,9 +628,32 @@ fn decode_manual_command(fields: &mut Fields, name: &str) -> Result<CommandPaylo
     Ok(CommandPayload::SetManualTransitionPosition { position })
 }
 
-/// Decodes the playlist commands: list edit, controls, and clock advance.
+/// Decodes the playlist and cue list commands: list edits, controls, and
+/// clock advances.
 fn decode_playlist_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
     let operation = match name {
+        "cue_list_set" => {
+            return Ok(CommandPayload::SetCueList {
+                list: super::cue::decode_list_id(fields)?,
+                spec: Box::new(super::cue::decode_spec(fields)?),
+            });
+        }
+        "cue_list_remove" => {
+            return Ok(CommandPayload::RemoveCueList {
+                list: super::cue::decode_list_id(fields)?,
+            });
+        }
+        "cue_advance" => {
+            return Ok(CommandPayload::CueAdvance {
+                list: super::cue::decode_list_id(fields)?,
+                frame: fields.canonical_required("frame")?,
+            });
+        }
+        cue @ ("cue_go" | "cue_standby" | "cue_back" | "cue_skip" | "cue_stop" | "cue_reset") => {
+            let (list, operation) = super::cue::decode_operation(cue, fields)?
+                .expect("every listed payload is a cue operation");
+            return Ok(CommandPayload::CueControl { list, operation });
+        }
         "playlist_set" => {
             return Ok(CommandPayload::SetPlaylist {
                 loop_mode: parse_playlist_loop(fields.required("loop")?)?,
@@ -1480,6 +1510,7 @@ fn decode_result(fields: &mut Fields) -> Result<CommandResult, CodecError> {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one field per snapshot member
 fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
     let inputs = parse_input_statuses(&fields.required("inputs")?)?;
     let revision = fields.parse_required("revision")?;
@@ -1559,6 +1590,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
                     value,
                 })?
         },
+        cue_list_states: super::cue::parse_list_count(&fields.required("cue_list_states")?)?,
         input_categories: super::input_lifecycle::decode_categories(
             &fields.required("input_categories")?,
         )?,
@@ -2285,6 +2317,28 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             fields: decode_title_fields(&fields.required("fields")?)?,
             overlays: decode_overlays(fields, "overlays")?,
         },
+        "cue_list_changed" => {
+            EventPayload::CueListChanged(Box::new(super::cue::decode_list(fields)?))
+        }
+        "cue_list_removed" => EventPayload::CueListRemoved {
+            list: super::cue::decode_list_id(fields)?,
+        },
+        "cue_run_changed" => EventPayload::CueRunChanged(Box::new(crate::CueRunChange {
+            list: super::cue::decode_list_id(fields)?,
+            frame: fields.canonical_required("frame")?,
+            state: super::cue::decode_state(&fields.required("state")?)?,
+            fired: super::cue::decode_fired(&fields.required("fired")?)?,
+            program: fields.input("program")?,
+            preview: fields.input("preview")?,
+            manual_transition: decode_manual_status(fields, ManualStatusFields::Unqualified)?,
+            fade_to_black: decode_fade_to_black_state(fields, FadeToBlackStateFields::Unqualified)?,
+            overlays: decode_overlays(fields, "overlays")?,
+            input_audio_strips: decode_input_audio_strips(fields)?,
+            streams: parse_stream_statuses(&fields.required("streams")?)?,
+            recordings: parse_recording_statuses(&fields.required("recordings")?)?,
+            playlist: decode_playlist_state(fields.required("playlist")?)?,
+            titles: super::cue::decode_titles(&fields.required("titles")?)?,
+        })),
         "playlist_changed" => EventPayload::PlaylistChanged {
             frame: fields.canonical_required("frame")?,
             loop_mode: parse_playlist_loop(fields.required("loop")?)?,

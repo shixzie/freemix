@@ -33,11 +33,13 @@ pub use fm_protocol::{
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId, SceneId};
 
 pub use animation_presets::AnimationPresetsStatus;
+pub use cue_lists::CueRunUpdate;
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
 pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 
 pub mod animation_editor;
 mod animation_presets;
+pub mod cue_lists;
 pub mod grade_editor;
 mod grading;
 pub mod i18n;
@@ -441,6 +443,9 @@ pub struct ProjectSnapshot {
     /// How many `media_state` records complete this snapshot (Protocol
     /// 2.37).
     pub media_states: u16,
+    /// How many `cue_list_state` records complete this snapshot (Protocol
+    /// 2.50).
+    pub cue_list_states: u16,
     /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -547,6 +552,7 @@ impl ProjectSnapshot {
             animation_preset_states: message.animation_preset_states,
             transition_favorites: message.transition_favorites,
             media_states: message.media_states,
+            cue_list_states: message.cue_list_states,
             input_lifecycle,
             input_categories: message.input_categories,
             audio_mixer: message.audio_mixer,
@@ -712,6 +718,14 @@ pub enum DurableChange {
         input: InputId,
         settings: Box<fm_protocol::CaptureSettings>,
     },
+    /// A cue list after an edit, undo, or redo (Protocol 2.50).
+    CueListChanged(Box<fm_protocol::CueListStatus>),
+    /// A cue list was removed.
+    CueListRemoved {
+        list: u64,
+    },
+    /// A live cue operation or clock advance.
+    CueRunChanged(Box<CueRunUpdate>),
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -933,6 +947,11 @@ impl DurableProjectEvent {
             EventPayload::DisplayOutputChanged { slot, config } => {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
+            EventPayload::CueListChanged(list) => DurableChange::CueListChanged(list),
+            EventPayload::CueListRemoved { list } => DurableChange::CueListRemoved { list },
+            EventPayload::CueRunChanged(change) => {
+                DurableChange::CueRunChanged(Box::new(CueRunUpdate::from_protocol(*change)))
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -1018,6 +1037,11 @@ pub struct ProjectState {
     media: BTreeMap<InputId, MediaStatus>,
     /// `media_state` records the snapshot announced that have not arrived.
     media_states_pending: u16,
+    /// Every cue list in project order (Protocol 2.50).
+    cue_lists: Vec<fm_protocol::CueListStatus>,
+    /// `cue_list_state` records the snapshot announced that have not
+    /// arrived.
+    cue_list_states_pending: u16,
     /// Every input's non-default lifecycle (Protocol 2.38).
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -1135,6 +1159,25 @@ impl ProjectState {
     #[must_use]
     pub const fn media_complete(&self) -> bool {
         self.media_states_pending == 0
+    }
+
+    /// Returns every replicated cue list in project order (Protocol 2.50).
+    #[must_use]
+    pub fn cue_lists(&self) -> &[fm_protocol::CueListStatus] {
+        &self.cue_lists
+    }
+
+    /// Returns cue list `list`.
+    #[must_use]
+    pub fn cue_list(&self, list: u64) -> Option<&fm_protocol::CueListStatus> {
+        self.cue_lists.iter().find(|candidate| candidate.id == list)
+    }
+
+    /// Returns whether every `cue_list_state` the snapshot announced
+    /// arrived.
+    #[must_use]
+    pub const fn cue_lists_complete(&self) -> bool {
+        self.cue_list_states_pending == 0
     }
 
     /// Returns the replicated project grading. Complete only once
@@ -1764,6 +1807,11 @@ pub enum ModelError {
     InvalidAudioMixerChange,
     /// A display-output change shows an unknown output (Protocol 2.42).
     InvalidDisplayOutputChange,
+    /// A `cue_list_state` arrived that the snapshot did not announce or at
+    /// another revision (Protocol 2.50).
+    CueListStateMismatch,
+    /// A cue list change names an unknown list or cue, or does not apply.
+    InvalidCueList(u64),
 }
 
 impl fmt::Display for ModelError {
@@ -1897,6 +1945,12 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidDisplayOutputChange => {
                 formatter.write_str("display-output change shows an unknown output")
+            }
+            Self::CueListStateMismatch => {
+                formatter.write_str("cue list state does not match the snapshot it follows")
+            }
+            Self::InvalidCueList(list) => {
+                write!(formatter, "cue list {list} change does not apply")
             }
         }
     }
@@ -2427,6 +2481,8 @@ impl ClientModel {
             transition_favorites: snapshot.transition_favorites,
             media: BTreeMap::new(),
             media_states_pending: snapshot.media_states,
+            cue_lists: Vec::new(),
+            cue_list_states_pending: snapshot.cue_list_states,
             input_lifecycle,
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
@@ -2728,6 +2784,37 @@ impl ClientModel {
         }
         state.media.insert(input, message.status);
         state.media_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `cue_list_state` records the installed snapshot
+    /// announced (Protocol 2.50), in project list order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::CueListStateMismatch`] when the record is at another
+    /// revision, unannounced, or duplicates a list; a list naming unknown
+    /// inputs is refused like a `cue_list_changed`.
+    pub fn apply_cue_list_state(
+        &mut self,
+        message: fm_protocol::CueListStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if Revision::new(message.revision) != revision
+            || state.cue_list_states_pending == 0
+            || state.cue_list(message.list.id).is_some()
+        {
+            return Err(ModelError::CueListStateMismatch);
+        }
+        cue_lists::validate_list(&message.list, state)?;
+        state.cue_lists.push(message.list);
+        state.cue_list_states_pending -= 1;
         Ok(())
     }
 
@@ -3668,6 +3755,30 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             selection,
             playlist,
         } => return validate_playlist_change(*selection, playlist, state),
+        DurableChange::CueListChanged(list) => {
+            return if state.cue_lists_complete() {
+                cue_lists::validate_list(list, state)
+            } else {
+                Err(ModelError::InvalidCueList(list.id))
+            };
+        }
+        DurableChange::CueListRemoved { list } => {
+            return if state.cue_list(*list).is_some() {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidCueList(*list))
+            };
+        }
+        DurableChange::CueRunChanged(update) => {
+            cue_lists::validate_run(update, state)?;
+            (
+                update.selection,
+                update.manual_transition,
+                None,
+                &update.overlays,
+                &update.input_audio_strips,
+            )
+        }
         DurableChange::DesiredSwitcher {
             selection,
             manual_transition,
@@ -3801,7 +3912,12 @@ fn validate_input_catalogue_change(
             if !state.inputs.contains(input) {
                 return Err(ModelError::UnknownInput(*input));
             }
-            if desired_input_in_use(state, *input) {
+            if desired_input_in_use(state, *input)
+                || state
+                    .cue_lists
+                    .iter()
+                    .any(|list| cue_lists::list_inputs(list).any(|named| named == *input))
+            {
                 return Err(ModelError::InputInUse(*input));
             }
         }
@@ -4109,6 +4225,11 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.switcher.desired = selection;
             state.playlist = Some(playlist);
         }
+        DurableChange::CueListChanged(list) => cue_lists::apply_list(state, *list),
+        DurableChange::CueListRemoved { list } => {
+            state.cue_lists.retain(|candidate| candidate.id != list);
+        }
+        DurableChange::CueRunChanged(update) => cue_lists::apply_run(state, *update),
         DurableChange::GradeChanged(change) => state.grading.apply(change),
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TransitionFavoriteChanged { slot, favorite } => {

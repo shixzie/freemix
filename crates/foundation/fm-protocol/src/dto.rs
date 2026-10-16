@@ -1680,6 +1680,28 @@ pub enum CommandPayload {
     PlaylistAdvance {
         frame: u64,
     },
+    /// Creates or replaces cue list `list` (Protocol 2.50, RC-017): an
+    /// undoable project edit. Wire payload `cue_list_set`.
+    SetCueList {
+        list: u64,
+        spec: Box<crate::CueListSpec>,
+    },
+    /// Removes cue list `list`. Wire payload `cue_list_remove`.
+    RemoveCueList {
+        list: u64,
+    },
+    /// A live cue list operation (GO, standby, back, skip, stop, reset).
+    CueControl {
+        list: u64,
+        operation: crate::CueOperation,
+    },
+    /// The authority's cue clock: runs list `list`'s waiting actions due on
+    /// `frame`. Accepted only for the frame they are due on (or the next
+    /// frame once that has passed).
+    CueAdvance {
+        list: u64,
+        frame: u64,
+    },
     /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
     /// Wire payloads `grade_input_set` and `grade_input_clear`.
     SetInputGrade {
@@ -2293,6 +2315,10 @@ pub struct SnapshotMessage {
     /// ascending input order, at most [`crate::MAX_MEDIA_STATES`] (Protocol
     /// 2.37).
     pub media_states: u16,
+    /// How many [`crate::CueListStateMessage`] records follow this snapshot
+    /// (after its media states), one per cue list in project order, at
+    /// most [`crate::MAX_CUE_LISTS`] (Protocol 2.50).
+    pub cue_list_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
@@ -2401,6 +2427,15 @@ pub enum EventPayload {
         fields: Vec<TitleFieldUpdate>,
         overlays: Vec<OverlayStatus>,
     },
+    /// A cue list was created or edited (or the edit undone or redone):
+    /// the whole list afterwards (Protocol 2.50).
+    CueListChanged(Box<crate::CueListStatus>),
+    /// A cue list was removed.
+    CueListRemoved {
+        list: u64,
+    },
+    /// A live cue list operation or cue clock advance was accepted.
+    CueRunChanged(Box<crate::CueRunChange>),
     /// A playlist command was accepted for `frame`: the complete playlist
     /// afterwards and the desired Program and Preview. When the command put
     /// an entry on air, its input reaches Program on exactly `frame`.
@@ -2896,6 +2931,8 @@ pub enum WireMessage {
     ScenePreviewFrame(ScenePreviewFrameMessage),
     AnimationPresetState(AnimationPresetStateMessage),
     MediaState(crate::MediaStateMessage),
+    /// One cue list after a snapshot (Protocol 2.50).
+    CueListState(crate::CueListStateMessage),
     /// Asks for the current display inventory (Protocol 2.42).
     DisplayInventoryRequest(crate::DisplayInventoryRequest),
     /// Answers a [`crate::DisplayInventoryRequest`] (Protocol 2.42).

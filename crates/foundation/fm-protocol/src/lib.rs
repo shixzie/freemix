@@ -3,6 +3,7 @@
 mod audio_mixer;
 mod capture;
 mod codec;
+mod cue;
 mod display_output;
 mod dto;
 mod input_lifecycle;
@@ -32,8 +33,15 @@ pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
     MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
-    decode_line, decode_refusal_reason, encode_line, encode_refusal_reason, motion_wire_bytes,
-    scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes,
+    cue_action_token, cue_name_is_valid, decode_line, decode_refusal_reason, encode_line,
+    encode_refusal_reason, motion_wire_bytes, parse_cue_action_token, scene_clip_wire_bytes,
+    scene_layout_wire_bytes, title_clip_wire_bytes,
+};
+pub use cue::{
+    CueListSpec, CueListStateMessage, CueListStatus, CueOperation, CuePendingStatus, CueRunChange,
+    CueRunStatus, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_TEXT_BYTES,
+    MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES,
+    MAX_CUE_WAIT_FRAMES, MAX_CUES, WireCue, WireCueAction,
 };
 pub use display_output::{
     DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage,

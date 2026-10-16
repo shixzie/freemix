@@ -95,6 +95,7 @@ use freemixd::{ReadinessRecord, StatusReadinessRecord};
 
 // The free-space alert is constructed only by the native render loop; the
 // preflight and its constants are used in every build.
+mod cue_clock;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
 mod grading;
@@ -10255,6 +10256,16 @@ fn replay_idle_frames(
     recorded: &journal::RecordedMutation,
     budget: &mut IdleReplayBudget,
 ) -> AppResult<()> {
+    if let CommandPayload::CueAdvance { list, frame } = recorded.command.payload {
+        // As for a playlist advance: ticks stop at the due frame when the
+        // advance was on time.
+        let from = control.frame_cursor();
+        budget.check(from, frame)?;
+        while control.frame_cursor() < frame && control.cue_advance_frame() != Some((list, frame)) {
+            control.tick(server)?;
+        }
+        budget.charge(control.frame_cursor().saturating_sub(from));
+    }
     if let CommandPayload::PlaylistAdvance { frame } = recorded.command.payload {
         // Ticks stop at the boundary when the advance was on time, so
         // `frame` only bounds them; the budget is charged what was ticked.
@@ -10592,6 +10603,7 @@ fn restore_engine_with_titles(
     restore_titles(&mut show, canonical, &bundle_assets.titles)?;
     restore_scenes(&mut show, canonical)?;
     show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
+    show.set_cue_lists(canonical.cue_lists().to_vec())?;
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
     restore_presets_favorites_and_media(&mut show, canonical)?;
@@ -11043,6 +11055,13 @@ fn handle_client(
             for state in control.borrow().media_states() {
                 write_session_message(&mut writer, &mut session, &WireMessage::MediaState(state))?;
             }
+            for state in control.borrow().cue_list_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::CueListState(state),
+                )?;
+            }
         }
         SyncPayload::Resume(events) => {
             for event in events {
@@ -11466,10 +11485,9 @@ fn execute_admitted_command(
     native: Option<&mut NativeDaemon>,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
-    let refusal = playlist_clock::playlist_command_refusal(
-        command,
-        control.borrow().diagnostics().current_revision,
-    );
+    let current_revision = control.borrow().diagnostics().current_revision;
+    let refusal = playlist_clock::playlist_command_refusal(command, current_revision)
+        .or_else(|| cue_clock::cue_command_refusal(command, current_revision));
     if let Some(result) = refusal {
         return Ok(CommandDelivery {
             result,
@@ -12552,6 +12570,13 @@ fn command_base_ticks(
     ) {
         return prepared.playlist_ticks();
     }
+    // A cue operation may target a later frame and start transitions.
+    if matches!(
+        command.payload,
+        CommandPayload::CueControl { .. } | CommandPayload::CueAdvance { .. }
+    ) {
+        return prepared.cue_ticks();
+    }
     u64::from(match command.payload {
         CommandPayload::Fade { duration_frames }
         | CommandPayload::AlphaFade { duration_frames }
@@ -12629,6 +12654,10 @@ fn command_base_ticks(
         | CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }
+        | CommandPayload::SetCueList { .. }
+        | CommandPayload::RemoveCueList { .. }
+        | CommandPayload::CueControl { .. }
+        | CommandPayload::CueAdvance { .. }
         | CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
@@ -12783,6 +12812,7 @@ fn stored_project_with_receipts(
     sync_project_audio_mixer(&mut project, show)?;
     sync_project_display_outputs(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
+    project.set_cue_lists(show.cue_lists().to_vec());
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());
@@ -12853,6 +12883,7 @@ fn input_reference_use(reference: fm_model::InputReference) -> fm_protocol::Inpu
             alias: alias.get().get(),
         },
         InputReference::PlaylistEntry(entry) => InputUse::PlaylistEntry { entry },
+        InputReference::CueAction { list, cue } => InputUse::CueAction { list, cue },
     }
 }
 

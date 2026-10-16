@@ -504,6 +504,16 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     assert!(page.contains("required(record, \"locked_inputs\")"));
     assert!(page.contains("name === \"edit_lock_changed\""));
     assert!(page.contains("id=\"lock\""));
+    // RC-017: GO and Standby follow the replicated cue lists, and a cue's
+    // actions move the tally like any other Program change.
+    assert!(page.contains("case \"cue_list_state\":"));
+    assert!(page.contains("name === \"cue_run_changed\""));
+    assert!(page.contains("name === \"cue_list_changed\""));
+    assert!(page.contains("name === \"cue_list_removed\""));
+    assert!(page.contains("[\"payload\", \"cue_go\"]"));
+    assert!(page.contains("[\"payload\", \"cue_standby\"]"));
+    assert!(page.contains("id=\"go\""));
+    assert!(page.contains("id=\"standby\""));
     assert!(page.contains("\"freemix.control.v1\""));
     assert!(page.contains("\"freemix.bearer.\""));
     assert!(!page.contains(TOKEN), "the page never embeds the token");

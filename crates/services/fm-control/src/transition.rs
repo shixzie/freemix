@@ -75,7 +75,7 @@ pub const fn domain_transition_kind(kind: AutoTransitionKind) -> TransitionKind 
     }
 }
 
-const fn wire_effect(effect: TransitionEffect) -> TransitionFavoriteEffect {
+pub(crate) const fn wire_effect(effect: TransitionEffect) -> TransitionFavoriteEffect {
     let kind = match effect {
         TransitionEffect::Cut => return TransitionFavoriteEffect::Cut,
         TransitionEffect::Stinger(slot) => {

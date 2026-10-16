@@ -2,6 +2,7 @@
 
 mod animation_preset;
 mod audio_mixer;
+mod cue;
 mod engine;
 mod error;
 mod grade;
@@ -20,6 +21,7 @@ pub use audio_mixer::{
     EngineAudioGroup, EngineAudioGroupState, EngineAudioMixerEdit, EngineAudioMixerUpdate,
     audio_group_parent_is_acyclic,
 };
+pub use cue::{EngineCueListDefinition, EngineCueOperation, cue_due};
 pub use engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
     EngineFadeToBlackState, EngineManualTransitionKind, EngineManualTransitionPosition,

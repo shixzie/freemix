@@ -19,6 +19,7 @@ mod animation_preset;
 mod audio_mixer;
 mod automation;
 mod capture;
+mod cue;
 mod display_output;
 mod grade;
 mod input_lifecycle;
@@ -30,6 +31,7 @@ mod scene_layer;
 mod title_animation;
 mod title_layout;
 mod transition;
+pub use cue::{cue_engine_command, wire_list as wire_cue_list};
 pub use input_lifecycle::{
     engine_edit as engine_input_lifecycle_edit, media_offline_reason, model_color, model_source,
     wire_color, wire_lifecycle, wire_operation as wire_input_lifecycle_operation, wire_source,
@@ -477,6 +479,42 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             })
             .unwrap_or(0);
         target.saturating_sub(cursor) + transition.max(1)
+    }
+
+    /// Returns the number of frames needed to realize a cue command: up to
+    /// and including its target frame (an advance may target a later
+    /// frame), plus the longest transition its actions started. A refusal
+    /// needs one frame.
+    #[must_use]
+    pub fn cue_ticks(&self) -> u64 {
+        let Some(accepted) = &self.submission.accepted else {
+            return 1;
+        };
+        let Some(acceptance) = accepted.receipt.accepted() else {
+            return 1;
+        };
+        let cursor = self.control.engine.frame_cursor().get();
+        let target = acceptance.result.target_frame.get();
+        let staged = match &self.kind {
+            PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
+            PreparedSubmissionKind::AuthorizationDenial { .. } => return 1,
+        };
+        let mut projected = staged.clone();
+        // Project until the realized switcher settles on the desired one,
+        // bounded by the longest cue transition.
+        let mut extra = 0_u64;
+        while extra < u64::from(fm_model::MAX_CUE_TRANSITION_FRAMES) + 1 {
+            if projected.frame_cursor().get() > target
+                && projected.realized_switcher() == projected.show().desired_switcher()
+            {
+                break;
+            }
+            if projected.tick().is_err() {
+                break;
+            }
+            extra += 1;
+        }
+        extra.max(target.saturating_sub(cursor) + 1)
     }
 
     /// Atomically installs the staged decision and then applies control side effects.
@@ -1457,6 +1495,21 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.next_frame_deadline().map_err(Into::into)
     }
 
+    /// Returns the `cue_list_state` records a session writes after
+    /// [`Self::snapshot`] (and its media states), one per cue list in
+    /// project order (Protocol 2.50).
+    #[must_use]
+    pub fn cue_list_states(&self) -> Vec<fm_protocol::CueListStateMessage> {
+        cue::cue_list_states(&self.engine)
+    }
+
+    /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
+    /// `None` while no cue waits (see [`Engine::cue_advance_frame`]).
+    #[must_use]
+    pub fn cue_advance_frame(&self) -> Option<(u64, u64)> {
+        self.engine.cue_advance_frame()
+    }
+
     /// Returns the only frame a `playlist_advance` is accepted for, or
     /// `None` while no playlist boundary is pending.
     #[must_use]
@@ -2094,6 +2147,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetEditLock { .. }
         | EngineCommand::SetTitleFields { .. }
         | EngineCommand::SetPlaylist { .. }
+        | EngineCommand::SetCueList { .. }
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
@@ -2175,6 +2229,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::SetTitleFields { .. }
         | CommandPayload::SetPlaylist { .. }
+        | CommandPayload::SetCueList { .. }
+        | CommandPayload::RemoveCueList { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::SetDisplayOutput { .. }
@@ -2224,7 +2280,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::RecordStart { .. }
         | CommandPayload::RecordStop { .. }
         | CommandPayload::PlaylistControl { .. }
-        | CommandPayload::PlaylistAdvance { .. } => CommandClass::Transition,
+        | CommandPayload::PlaylistAdvance { .. }
+        | CommandPayload::CueControl { .. }
+        | CommandPayload::CueAdvance { .. } => CommandClass::Transition,
     }
 }
 
@@ -2390,6 +2448,10 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => playlist::playlist_engine_command(payload),
+        payload @ (CommandPayload::SetCueList { .. }
+        | CommandPayload::RemoveCueList { .. }
+        | CommandPayload::CueControl { .. }
+        | CommandPayload::CueAdvance { .. }) => cue::cue_engine_command(payload),
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
@@ -2784,6 +2846,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetCaptureSettings { .. } => {
             return capture::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetCueList { .. } => {
+            return cue::wire_edit_payload(command);
+        }
         _ => return None,
     })
 }
@@ -2965,6 +3030,9 @@ const fn is_program_transition(command: &EngineCommand) -> bool {
             // the desired one, which is immediate when it cut or took nothing.
             | EngineCommand::PlaylistControl(_)
             | EngineCommand::PlaylistAdvance { .. }
+            // A cue may take Program with a transition too.
+            | EngineCommand::CueControl { .. }
+            | EngineCommand::CueAdvance { .. }
     )
 }
 
@@ -3047,6 +3115,26 @@ fn engine_submission(
 
 #[allow(clippy::too_many_lines)]
 fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> EventPayload {
+    if let Some(payload) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::CueListChanged {
+            list,
+            frame,
+            edit,
+            fired,
+            title_texts,
+            ..
+        } = &event.payload
+        else {
+            return None;
+        };
+        Some(if *edit {
+            cue::cue_list_changed(engine, *list)
+        } else {
+            cue::cue_run_changed(engine, *list, *frame, fired, title_texts)
+        })
+    }) {
+        return payload;
+    }
     // A field save and a title take both publish the title's complete values
     // with the desired overlays. The engine reports a take as a desired
     // switcher change (one event per command); its values and field revision
@@ -3377,6 +3465,7 @@ fn snapshot_record(
         animation_preset_states: animation_preset::animation_preset_state_count(engine),
         transition_favorites: transition::wire_favorites(engine),
         media_states: media::media_state_count(engine),
+        cue_list_states: cue::cue_list_state_count(engine),
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),

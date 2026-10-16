@@ -1597,7 +1597,33 @@ pub fn run(command: Command) -> AppResult<()> {
             payload,
             key,
             expected_revision,
+        }
+        | Command::RemoteCue {
+            address,
+            payload,
+            key,
+            expected_revision,
         } => remote::execute(address, payload, key, expected_revision)?,
+        Command::Cue {
+            path,
+            payload,
+            key,
+            expected_revision,
+        } => cue(&path, &payload, key, expected_revision)?,
+        Command::CueLists { path } => {
+            let project = inspect_engine(&path)?;
+            remote::print_cue_lists(
+                project
+                    .engine
+                    .show()
+                    .cue_lists()
+                    .iter()
+                    .map(fm_control::wire_cue_list)
+                    .collect::<Vec<_>>()
+                    .iter(),
+            );
+        }
+        Command::RemoteCueLists { address } => remote::cue_lists(address)?,
         Command::RemoteUndo {
             address,
             redo,
@@ -2240,6 +2266,66 @@ fn mutate(
     Ok(())
 }
 
+/// Applies a cue list edit or cue control to a local project (RC-017).
+///
+/// The lists and their run state (standby, played cues) are saved with the
+/// project, so successive local GOs walk the list. After a GO the simulated
+/// cue clock runs the cue to its end: each wait is ticked
+/// through and its advance submitted on its due frame, exactly as the daemon
+/// clock does, and the last transition is ticked until it settles.
+fn cue(
+    path: &Path,
+    payload: &fm_protocol::CommandPayload,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> AppResult<()> {
+    let mut project = load_engine(path)?;
+    let command = fm_control::cue_engine_command(payload);
+    let result = execute(&mut project.engine, command, 1, key, expected_revision)?;
+    if result.replayed {
+        if let Some(rejection) = result.rejection {
+            return Err(rejection.into());
+        }
+        print_status(&project);
+        return Ok(());
+    }
+    if result.rejection.is_none() {
+        run_cue_clock(&mut project.engine)?;
+    }
+    save_engine(path, &project)?;
+    if let Some(rejection) = result.rejection {
+        return Err(rejection.into());
+    }
+    print_status(&project);
+    Ok(())
+}
+
+/// Runs every waiting cue to its end on the simulated clock.
+fn run_cue_clock(engine: &mut Engine) -> AppResult<()> {
+    while let Some((list, due)) = engine.cue_advance_frame() {
+        while engine.frame_cursor().get() < due {
+            engine.tick()?;
+        }
+        let advance = execute(
+            engine,
+            EngineCommand::CueAdvance { list, frame: due },
+            1,
+            None,
+            None,
+        )?;
+        if let Some(rejection) = advance.rejection {
+            return Err(rejection.into());
+        }
+    }
+    for _ in 0..=fm_model::MAX_CUE_TRANSITION_FRAMES {
+        if engine.realized_switcher() == engine.show().desired_switcher() {
+            break;
+        }
+        engine.tick()?;
+    }
+    Ok(())
+}
+
 fn execute(
     engine: &mut Engine,
     command: EngineCommand,
@@ -2435,6 +2521,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_network_streams(&mut project, snapshot.show())?;
     sync_capture_inputs(&mut project, snapshot.show())?;
     project.set_transition_favorites(*snapshot.show().transition_favorites());
+    project.set_cue_lists(snapshot.show().cue_lists().to_vec());
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
             project
@@ -3714,6 +3801,7 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         project.input_categories().to_vec(),
         project.input_lifecycles(),
     )?;
+    show.set_cue_lists(project.cue_lists().to_vec())?;
     Ok(())
 }
 
@@ -5288,6 +5376,19 @@ Usage:
   freemix-cli remote-playlist <127.0.0.1:port> start [now|after:<frames>|at:<frame>] [--from <entry>] [--key <key>] [--expect <revision>]
   freemix-cli remote-playlist <127.0.0.1:port> <stop|pause|resume|next|previous> [--key <key>] [--expect <revision>]
   freemix-cli remote-playlist <127.0.0.1:port> jump <entry> [--key <key>] [--expect <revision>]
+  freemix-cli cue-lists <project.freemix>
+  freemix-cli remote-cue-lists <127.0.0.1:port>
+  freemix-cli cue-list-set <project.freemix> <list> <name> <-|id:name:0|1:action[,action...][;...]> [--key <key>] [--expect <revision>]
+  freemix-cli remote-cue-list-set <127.0.0.1:port> <list> <name> <-|id:name:0|1:action[,action...][;...]> [--key <key>] [--expect <revision>]
+    actions: preview.<input> take.<input|->.<cut|fade|...>.<frames> overlay_on.<channel>.<input> overlay_off.<channel> title_on.<input>.<channel> title_text.<input>.<field>.<text> title_off.<input> fade_to_black.<0|1>.<frames> playlist_start playlist_stop audio_gain.<input>.<millidB> audio_mute.<input>.<0|1> record.<1|2>.<0|1> stream.<target>.<0|1> wait.<frames>
+  freemix-cli cue-list-remove <project.freemix> <list> [--key <key>] [--expect <revision>]
+  freemix-cli remote-cue-list-remove <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
+  freemix-cli go <project.freemix> <list> [cue] [--key <key>] [--expect <revision>]
+  freemix-cli remote-go <127.0.0.1:port> <list> [cue] [--key <key>] [--expect <revision>]
+  freemix-cli cue-standby <project.freemix> <list> <cue> [--key <key>] [--expect <revision>]
+  freemix-cli remote-cue-standby <127.0.0.1:port> <list> <cue> [--key <key>] [--expect <revision>]
+  freemix-cli <cue-back|cue-skip|cue-stop|cue-reset> <project.freemix> <list> [--key <key>] [--expect <revision>]
+  freemix-cli <remote-cue-back|remote-cue-skip|remote-cue-stop|remote-cue-reset> <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
   freemix-cli remote-undo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-redo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-lock <127.0.0.1:port> <on|off> [--input <input>] [--key <key>] [--expect <revision>]

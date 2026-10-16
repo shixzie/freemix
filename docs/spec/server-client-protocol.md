@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.49 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.50 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1465,6 +1465,79 @@ Protocol 2.49 adds RTMP and SRT network stream inputs (IN-016, IN-017).
   and `input-stream-set` (and their `remote-` forms); the set commands also
   take `--clear-stream-id`, `--clear-stream-key`, and `--clear-passphrase`.
 - 2.48 is refused.
+
+Protocol 2.50 adds operator cue lists with a GO key (RC-017).
+
+- A project holds up to 8 cue lists (ids 1 and up), each with a name of 1 to
+  64 bytes and up to 64 cues; a cue has an id unique in its list, a name,
+  an `auto_follow` flag, and up to 16 actions (256 per list, at most 2048
+  bytes of title text per list). Actions are the tokens of `cues` below:
+  preview, take (cut, a mix kind with 1..=3600 frames, or a stinger slot,
+  of an input or of Preview), overlay on and off (channels 1..=8), title
+  on, title text (up to 128 bytes), title off, Fade to Black, playlist
+  start and stop, a strip fader level or mute, recorder 1 or 2 start or
+  stop, stream target start or stop, and `wait` (1..=216000 frames). A cue
+  takes Program at most once between waits.
+- `payload=cue_list_set` with `list`, `name`, and `cues` creates or replaces
+  one list; `payload=cue_list_remove` with `list` deletes one. Both are
+  `edit_project`-class, undoable project edits that honour the project
+  padlock; every input and stream target a cue names must exist
+  (`not_found`), a title action must name a title input
+  (`invalid_command`), and a cue that is waiting on its next actions cannot
+  be changed or removed (`conflict`, reason `cue_running:<cue>`). An edit
+  keeps the run state of the cues it keeps; a new list puts its first cue
+  on standby. Removing an input a cue names is refused `conflict` with the
+  usage `cue_action:<list>:<cue>`.
+- `payload=cue_go` with `list` and an optional `cue` fires the cue on
+  standby (or `cue`): its actions up to the first `wait` run in order on
+  one frame, as one revision; standby moves to the next cue. With nothing on
+  standby GO is refused `conflict` (reason `no_cue_on_standby`).
+  `payload=cue_standby` (`list`, `cue`), `cue_back`, `cue_skip`, `cue_stop`
+  (drops the waiting cue's remaining actions), and `cue_reset` (clears the
+  played cues and stands by the first) are the other controls. All are
+  `transition`-class operator controls in the `switcher` domain, journaled
+  but never undoable. A refused action refuses the whole GO.
+- `payload=cue_advance` with `list` and `frame` runs a waiting cue's next
+  actions; only the daemon's cue clock submits it, on exactly the due frame
+  (a client's is refused `unavailable`), and a cue that auto-follows fires
+  the next cue on the same frame. While an accepted advance waits for its
+  frame, other commands are refused `conflict` (reason
+  `cue_scheduled:<frame>`). An action the show refuses when its wait ends
+  stops the cue and records the fault.
+- `event=cue_list_changed` carries a whole list: `list`, `name`, `cues`,
+  and `state`; `event=cue_list_removed` carries `list`. They follow every
+  list edit and its undo and redo.
+- `event=cue_run_changed` follows every control and advance: `list`,
+  `frame`, `state`, `fired` (the cue ids fired, `.`-separated), the
+  resulting `program`, `preview`, unqualified manual-transition and
+  Fade-to-Black status, `overlays`, the input audio strips, `streams`,
+  `recordings`, `playlist` (the playlist run-state token), and `titles`
+  (each title field the cue set, `/`-separated
+  `<input>.<field revision>.<field>.<text hex>`).
+- `cues` is a comma-separated list of `<id>~<name hex>~<0|1>~<actions>`,
+  `<actions>` a `/`-separated list of `.`-separated tokens:
+  `preview.<input>`, `take.<input|->.<effect>.<frames>`,
+  `overlay_on.<channel>.<input>`, `overlay_off.<channel>`,
+  `title_on.<input>.<channel>`, `title_text.<input>.<field>.<text hex>`,
+  `title_off.<input>`, `fade_to_black.<0|1>.<frames>`, `playlist_start`,
+  `playlist_stop`, `audio_gain.<input>.<millidB>`,
+  `audio_mute.<input>.<0|1>`, `record.<recorder>.<0|1>`,
+  `stream.<target>.<0|1>`, `wait.<frames>`; hex is lowercase UTF-8.
+  `state` is `<standby>:<live>:<pending>:<played>:<fault>`: cue ids or
+  `-`, `pending` `<cue>.<next action>.<due frame>`, `played` ascending
+  `.`-separated cue ids, and `fault` `<cue>.<action>`.
+- The snapshot adds `cue_list_states` (0..=8); that many
+  `cue_list_state` records (`revision`, `frame`, `list`, `name`, `cues`,
+  `state`) follow its media states, in list order, and complete it.
+- Durability: the project gains `cue_lists`, each with its `id`, `name`,
+  `cues` (`id`, `name`, `auto_follow`, typed `actions`), and run `state`
+  (schema 47).
+- `freemix-cli` adds `cue-lists`, `cue-list-set <list> <name> <cues>`
+  (`id:name:0|1:action,...` joined with `;`, the action tokens above with
+  plain title text), `cue-list-remove`, `go <list> [cue]`, `cue-standby`,
+  `cue-back`, `cue-skip`, `cue-stop`, `cue-reset`, and their `remote-`
+  forms; a local `go` runs the cue's waits on the simulated clock.
+- 2.49 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

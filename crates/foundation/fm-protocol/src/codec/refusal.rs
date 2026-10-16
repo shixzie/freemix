@@ -11,19 +11,21 @@
 //! * `revision_conflict:<current revision>`;
 //! * `unknown_id:<kind>:<id>` and `duplicate_id:<kind>:<id>`, `<kind>` one
 //!   of `input`, `output`, `scene`, `layer`, `category`, `grade`, `lut`,
-//!   `preset`, `title`, `playlist_entry`;
+//!   `preset`, `title`, `playlist_entry`, `cue_list`, `cue`;
 //! * `invalid_name:<max bytes>`;
 //! * `input_locked:<input>`;
 //! * `input_in_use:<input>:<usage>`, `<usage>` one of `program`, `preview`,
 //!   `transition`, `manual_transition`, `scene_on_air`, `overlay:<channel>`,
 //!   `overlay_queue:<channel>`, `stinger:<slot>`, `scene_layer:<scene>`,
 //!   `scene_audio_source:<scene input>`, `alias_target:<alias input>`,
-//!   `playlist_entry:<entry>`;
+//!   `playlist_entry:<entry>`, `cue_action:<list>:<cue>`;
 //! * `display_in_use:<slot>`;
 //! * `bounds_exceeded:<field>:<max>`, `<field>` a `[a-z0-9_]` token of at
 //!   most [`fm_command::MAX_REFUSAL_FIELD_BYTES`] bytes;
 //! * `stinger_realizing:<slot>`;
-//! * `playlist_take_scheduled:<frame>`.
+//! * `playlist_take_scheduled:<frame>`;
+//! * `cue_scheduled:<frame>`, `no_cue_on_standby`, `cue_running:<cue>`
+//!   (Protocol 2.50).
 
 use fm_command::{IdKind, InputUse, RefusalReason};
 
@@ -43,6 +45,8 @@ const fn kind_token(kind: IdKind) -> &'static str {
         IdKind::Preset => "preset",
         IdKind::Title => "title",
         IdKind::PlaylistEntry => "playlist_entry",
+        IdKind::CueList => "cue_list",
+        IdKind::Cue => "cue",
     }
 }
 
@@ -66,6 +70,7 @@ fn usage_token(usage: InputUse) -> String {
         InputUse::SceneAudioSource { scene_input } => format!("scene_audio_source:{scene_input}"),
         InputUse::AliasTarget { alias } => format!("alias_target:{alias}"),
         InputUse::PlaylistEntry { entry } => format!("playlist_entry:{entry}"),
+        InputUse::CueAction { list, cue } => format!("cue_action:{list}:{cue}"),
     }
 }
 
@@ -97,7 +102,8 @@ pub fn encode_refusal_reason(reason: &RefusalReason) -> Result<String, CodecErro
         | RefusalReason::HistoryDrift
         | RefusalReason::NotDurable
         | RefusalReason::RateLimited
-        | RefusalReason::RuntimeUnsupported => None,
+        | RefusalReason::RuntimeUnsupported
+        | RefusalReason::NoCueOnStandby => None,
         RefusalReason::RevisionConflict { current } => Some(current.to_string()),
         RefusalReason::UnknownId { kind, id } | RefusalReason::DuplicateId { kind, id } => {
             Some(format!("{}:{id}", kind_token(*kind)))
@@ -122,7 +128,10 @@ pub fn encode_refusal_reason(reason: &RefusalReason) -> Result<String, CodecErro
             }
             Some(format!("{field}:{max}"))
         }
-        RefusalReason::PlaylistTakeScheduled { frame } => Some(frame.to_string()),
+        RefusalReason::PlaylistTakeScheduled { frame } | RefusalReason::CueScheduled { frame } => {
+            Some(frame.to_string())
+        }
+        RefusalReason::CueRunning { cue } => Some(cue.to_string()),
     };
     Ok(match parameters {
         Some(parameters) => format!("{}:{parameters}", reason.kind()),
@@ -174,6 +183,10 @@ fn parse_usage(parts: &[&str]) -> Option<InputUse> {
         ["playlist_entry", entry] => InputUse::PlaylistEntry {
             entry: parse_canonical_u64(entry)?,
         },
+        ["cue_action", list, cue] => InputUse::CueAction {
+            list: parse_canonical_u64(list)?,
+            cue: parse_canonical_u64(cue)?,
+        },
         _ => return None,
     })
 }
@@ -199,6 +212,13 @@ pub fn decode_refusal_reason(value: &str) -> Result<RefusalReason, CodecError> {
             ["not_durable"] => Some(RefusalReason::NotDurable),
             ["rate_limited"] => Some(RefusalReason::RateLimited),
             ["runtime_unsupported"] => Some(RefusalReason::RuntimeUnsupported),
+            ["no_cue_on_standby"] => Some(RefusalReason::NoCueOnStandby),
+            ["cue_scheduled", frame] => {
+                parse_canonical_u64(frame).map(|frame| RefusalReason::CueScheduled { frame })
+            }
+            ["cue_running", cue] => {
+                parse_canonical_u64(cue).map(|cue| RefusalReason::CueRunning { cue })
+            }
             ["revision_conflict", current] => parse_canonical_u64(current)
                 .map(|current| RefusalReason::RevisionConflict { current }),
             ["unknown_id", kind, id] => parse_kind(kind)

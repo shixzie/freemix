@@ -541,6 +541,7 @@ pub(super) fn run(
         title_previews: &title_previews,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
+        cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
         media_clock: std::cell::RefCell::new(crate::media_clock::MediaClock::default()),
         grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
     };
@@ -707,6 +708,18 @@ pub(super) fn run(
         // The playlist clock runs before the native frame is realized, so a
         // boundary that is the pacer's next frame is cut by its advance.
         if let Err(error) = runtime.playlist_clock.borrow_mut().poll(
+            control,
+            store,
+            durable,
+            authority,
+            native.as_deref_mut(),
+            Some(process_shutdown),
+            Instant::now(),
+        ) {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        if let Err(error) = runtime.cue_clock.borrow_mut().poll(
             control,
             store,
             durable,
@@ -1016,6 +1029,8 @@ struct Runtime<'a> {
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
+    /// The cue clock: runs waiting cue actions on their frames (RC-017).
+    cue_clock: std::cell::RefCell<crate::cue_clock::CueClock>,
     /// Simulated runtime: plays media transports in wall time.
     media_clock: std::cell::RefCell<crate::media_clock::MediaClock>,
     /// Compiled grades per engine revision for exact scene previews.
@@ -1340,6 +1355,12 @@ impl Runtime<'_> {
                     .media_states()
                     .into_iter()
                     .map(WireMessage::MediaState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .cue_list_states()
+                    .into_iter()
+                    .map(WireMessage::CueListState),
             );
         }
     }

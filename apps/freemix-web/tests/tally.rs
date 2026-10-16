@@ -202,6 +202,7 @@ fn snapshot_locked(
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        cue_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }))

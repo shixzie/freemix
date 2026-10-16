@@ -3655,6 +3655,291 @@ mod playlists {
     }
 }
 
+/// RC-017: cue list edits are graphics project edits that publish the whole
+/// list and undo; GO and standby are operator transitions that publish the
+/// run; the clock's `cue_advance` is accepted only for the due frame; and
+/// snapshots announce the `cue_list_state` records that follow them.
+mod cues {
+    use fm_protocol::{
+        CueListSpec, CueOperation, CuePendingStatus, CueRunStatus, TransitionFavoriteEffect,
+        WireCue, WireCueAction,
+    };
+
+    use super::*;
+
+    fn wire(value: u128) -> WireInputId {
+        WireInputId::from_domain(input(value))
+    }
+
+    fn cut(value: u128) -> WireCueAction {
+        WireCueAction::Take {
+            input: Some(wire(value)),
+            effect: TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        }
+    }
+
+    fn spec() -> CueListSpec {
+        CueListSpec {
+            name: "Show".into(),
+            cues: vec![
+                WireCue {
+                    id: 10,
+                    name: "Open".into(),
+                    auto_follow: false,
+                    actions: vec![cut(2), WireCueAction::Wait { frames: 3 }, cut(3)],
+                },
+                WireCue {
+                    id: 20,
+                    name: "Close".into(),
+                    auto_follow: false,
+                    actions: vec![cut(1)],
+                },
+            ],
+        }
+    }
+
+    fn set() -> CommandPayload {
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(spec()),
+        }
+    }
+
+    fn go() -> CommandPayload {
+        CommandPayload::CueControl {
+            list: 7,
+            operation: CueOperation::Go { cue: None },
+        }
+    }
+
+    fn denied(submission: &CommandSubmission) -> bool {
+        matches!(
+            &submission.output.result,
+            CommandResult::Rejected { code, .. } if code == "permission_denied"
+        )
+    }
+
+    fn submit_with_ticks(
+        control: &mut ControlService,
+        id: &str,
+        payload: CommandPayload,
+    ) -> (CommandSubmission, u64) {
+        let prepared = prepared(
+            control
+                .prepare_submit(&principal(Role::Admin), command(id, id, payload), 0)
+                .unwrap(),
+        );
+        let ticks = prepared.cue_ticks();
+        (prepared.commit().unwrap(), ticks)
+    }
+
+    fn run(submission: &CommandSubmission) -> &fm_protocol::CueRunChange {
+        match &submission.output.events[0].payload {
+            EventPayload::CueRunChanged(change) => change,
+            other => panic!("expected cue_run_changed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn authorization_matrix_covers_every_cue_command() {
+        let cases = [
+            (Role::Viewer, set(), false),
+            (Role::Viewer, go(), false),
+            (Role::Graphics, set(), true),
+            (Role::Graphics, go(), false),
+            (Role::Operator, set(), false),
+            (Role::Operator, go(), true),
+            (Role::Audio, go(), false),
+            (Role::Admin, set(), true),
+        ];
+        for (index, (role, payload, allowed)) in cases.into_iter().enumerate() {
+            let mut control = service(8, 8);
+            if matches!(payload, CommandPayload::CueControl { .. }) {
+                submit_with_ticks(&mut control, "seed", set());
+                control.tick(&server_identity()).unwrap();
+            }
+            let submission = control
+                .submit(
+                    &principal(role),
+                    command(&format!("c{index}"), &format!("k{index}"), payload.clone()),
+                    0,
+                )
+                .unwrap();
+            assert_eq!(
+                !denied(&submission),
+                allowed,
+                "{role:?} {payload:?}: {:?}",
+                submission.output.result
+            );
+        }
+    }
+
+    #[test]
+    fn go_fires_to_the_wait_and_the_advance_lands_on_its_frame() {
+        let mut control = service(16, 16);
+        assert_eq!(control.snapshot().snapshot.cue_list_states, 0);
+        let (edit, ticks) = submit_with_ticks(&mut control, "set", set());
+        assert_eq!(ticks, 1);
+        let EventPayload::CueListChanged(list) = &edit.output.events[0].payload else {
+            panic!("expected cue_list_changed: {:?}", edit.output.events);
+        };
+        assert_eq!(
+            (list.id, &list.spec, list.state.standby),
+            (7, &spec(), Some(10))
+        );
+        control.tick(&server_identity()).unwrap();
+
+        let (fired, ticks) = submit_with_ticks(&mut control, "go", go());
+        let change = run(&fired).clone();
+        assert_eq!((change.list, change.fired.as_slice()), (7, [10].as_slice()));
+        assert_eq!((change.program, change.preview), (wire(2), wire(1)));
+        let due = change.frame + 3;
+        assert_eq!(
+            change.state,
+            CueRunStatus {
+                standby: Some(20),
+                live: Some(10),
+                pending: Some(CuePendingStatus {
+                    cue: 10,
+                    action: 2,
+                    due_frame: due,
+                }),
+                played: vec![10],
+                fault: None,
+            }
+        );
+        assert_eq!(ticks, 1);
+        control.tick(&server_identity()).unwrap();
+        assert_eq!(control.engine.realized_switcher().program(), input(2));
+        assert_eq!(control.cue_advance_frame(), Some((7, due)));
+
+        // Only the due advance is taken.
+        let early = control
+            .submit(
+                &principal(Role::Admin),
+                command(
+                    "early",
+                    "early",
+                    CommandPayload::CueAdvance {
+                        list: 7,
+                        frame: due - 1,
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(!early.is_accepted());
+
+        // Accepted ahead, realized on exactly the due frame.
+        let (advance, ticks) = submit_with_ticks(
+            &mut control,
+            "advance",
+            CommandPayload::CueAdvance {
+                list: 7,
+                frame: due,
+            },
+        );
+        let change = run(&advance).clone();
+        assert_eq!((change.frame, change.program), (due, wire(3)));
+        // Until the accepted advance lands, other commands are held off.
+        let held = control
+            .submit(
+                &principal(Role::Admin),
+                command("cut", "cut", CommandPayload::Cut),
+                0,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                &held.output.result,
+                CommandResult::Rejected { reason: Some(fm_protocol::RefusalReason::CueScheduled { frame }), .. }
+                    if *frame == due
+            ),
+            "{:?}",
+            held.output.result
+        );
+        assert_eq!(change.fired, Vec::<u64>::new());
+        assert_eq!(change.state.pending, None);
+        let start = control.frame_cursor();
+        assert_eq!(ticks, due - start + 1);
+        for _ in start..due {
+            let tick = control.tick(&server_identity()).unwrap();
+            assert_eq!(tick.frame.program.primary, input(2));
+        }
+        let tick = control.tick(&server_identity()).unwrap();
+        assert_eq!(tick.frame.frame.get(), due);
+        assert_eq!(tick.frame.program.primary, input(3));
+        assert_eq!(control.cue_advance_frame(), None);
+
+        // The snapshot announces the list that follows it.
+        let snapshot = control.snapshot().snapshot.clone();
+        assert_eq!(snapshot.cue_list_states, 1);
+        let states = control.cue_list_states();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].revision, snapshot.revision);
+        assert_eq!(
+            (states[0].list.id, &states[0].list.state),
+            (7, &change.state)
+        );
+    }
+
+    #[test]
+    fn list_edits_undo_and_runtime_go_does_not() {
+        let mut control = service(16, 16);
+        submit_with_ticks(&mut control, "set", set());
+        control.tick(&server_identity()).unwrap();
+        submit_with_ticks(
+            &mut control,
+            "standby",
+            CommandPayload::CueControl {
+                list: 7,
+                operation: CueOperation::Standby { cue: 20 },
+            },
+        );
+        control.tick(&server_identity()).unwrap();
+        // Undo skips the standby (not undoable) and reverts the list's
+        // creation.
+        let (undo, _) = submit_with_ticks(
+            &mut control,
+            "undo",
+            CommandPayload::Undo {
+                expected_edit: None,
+            },
+        );
+        assert!(
+            matches!(
+                undo.output.events[0].payload,
+                EventPayload::CueListRemoved { list: 7 }
+            ),
+            "{:?}",
+            undo.output.events
+        );
+        control.tick(&server_identity()).unwrap();
+        assert_eq!(control.snapshot().snapshot.cue_list_states, 0);
+        let (redo, _) = submit_with_ticks(
+            &mut control,
+            "redo",
+            CommandPayload::Redo {
+                expected_edit: None,
+            },
+        );
+        assert!(matches!(
+            &redo.output.events[0].payload,
+            EventPayload::CueListChanged(list) if list.spec == spec()
+        ));
+        let (remove, _) = submit_with_ticks(
+            &mut control,
+            "remove",
+            CommandPayload::RemoveCueList { list: 7 },
+        );
+        assert!(matches!(
+            remove.output.events[0].payload,
+            EventPayload::CueListRemoved { list: 7 }
+        ));
+    }
+}
+
 /// SW-019 stage 3: grade commands are `EditProject`, publish
 /// `grade_changed`, follow snapshots as `grade_state` records, and undo
 /// through the shared history.

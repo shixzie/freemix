@@ -27,11 +27,13 @@ pub enum PanelId {
     Titles,
     Playlist,
     Media,
+    /// The operator cue list and its GO button (RC-017).
+    Cues,
 }
 
 impl PanelId {
     /// Every panel, in View › Panels order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Preview,
         Self::Transitions,
         Self::Program,
@@ -43,6 +45,7 @@ impl PanelId {
         Self::Titles,
         Self::Playlist,
         Self::Media,
+        Self::Cues,
     ];
 
     /// The panel's name in `studio.conf`.
@@ -60,6 +63,7 @@ impl PanelId {
             Self::Titles => "titles",
             Self::Playlist => "playlist",
             Self::Media => "media",
+            Self::Cues => "cues",
         }
     }
 
@@ -83,6 +87,7 @@ impl PanelId {
             Self::Titles => Msg::TabTitles,
             Self::Playlist => Msg::TabPlaylist,
             Self::Media => Msg::TabMedia,
+            Self::Cues => Msg::TabCues,
         }
     }
 
@@ -100,6 +105,7 @@ impl PanelId {
             Self::Titles => Msg::TabTitlesHover,
             Self::Playlist => Msg::TabPlaylistHover,
             Self::Media => Msg::TabMediaHover,
+            Self::Cues => Msg::TabCuesHover,
         }
     }
 
@@ -115,21 +121,25 @@ impl PanelId {
             Self::InputBank => (340.0, 220.0),
             Self::Mixer => (220.0, 300.0),
             Self::Outputs => (300.0, 150.0),
-            Self::Overlays | Self::Stingers | Self::Titles | Self::Playlist | Self::Media => {
-                (300.0, 220.0)
-            }
+            Self::Overlays
+            | Self::Stingers
+            | Self::Titles
+            | Self::Playlist
+            | Self::Media
+            | Self::Cues => (300.0, 220.0),
         }
     }
 
     /// Where a reopened panel goes: beside the first of these panels that
     /// is docked, else along this edge of the whole layout.
     const fn home(self) -> (&'static [(Self, DropZone)], DropZone) {
-        const SIDE: [(PanelId, DropZone); 6] = [
+        const SIDE: [(PanelId, DropZone); 7] = [
             (PanelId::Overlays, DropZone::Center),
             (PanelId::Stingers, DropZone::Center),
             (PanelId::Titles, DropZone::Center),
             (PanelId::Playlist, DropZone::Center),
             (PanelId::Media, DropZone::Center),
+            (PanelId::Cues, DropZone::Center),
             (PanelId::Outputs, DropZone::Bottom),
         ];
         match self {
@@ -163,12 +173,16 @@ impl PanelId {
                     (Self::Titles, DropZone::Top),
                     (Self::Playlist, DropZone::Top),
                     (Self::Media, DropZone::Top),
+                    (Self::Cues, DropZone::Top),
                 ],
                 DropZone::Right,
             ),
-            Self::Overlays | Self::Stingers | Self::Titles | Self::Playlist | Self::Media => {
-                (&SIDE, DropZone::Right)
-            }
+            Self::Overlays
+            | Self::Stingers
+            | Self::Titles
+            | Self::Playlist
+            | Self::Media
+            | Self::Cues => (&SIDE, DropZone::Right),
         }
     }
 }
@@ -702,7 +716,7 @@ impl LayoutPreset {
     #[must_use]
     pub fn layout(self) -> DockLayout {
         use PanelId::{
-            InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Stingers,
+            Cues, InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Stingers,
             Titles, Transitions,
         };
         // Shares chosen so Preview and Program stay the same width from
@@ -721,7 +735,7 @@ impl LayoutPreset {
                 ),
             )
         };
-        let side = [Overlays, Stingers, Titles, Playlist, Media];
+        let side = [Overlays, Stingers, Titles, Playlist, Media, Cues];
         let root = match self {
             // Both columns split their height at one share, so the lower
             // row's tab bars line up across the console.
@@ -754,7 +768,7 @@ impl LayoutPreset {
                     Axis::Horizontal,
                     620,
                     DockNode::tabs(&[InputBank, Mixer]),
-                    DockNode::tabs(&[Outputs, Overlays, Stingers, Titles, Playlist, Media]),
+                    DockNode::tabs(&[Outputs, Overlays, Stingers, Titles, Playlist, Media, Cues]),
                 ),
             ),
             Self::AudioFocus => DockNode::split(
@@ -765,7 +779,7 @@ impl LayoutPreset {
                     Axis::Horizontal,
                     380,
                     DockNode::tabs(&[
-                        InputBank, Outputs, Overlays, Stingers, Titles, Playlist, Media,
+                        InputBank, Outputs, Overlays, Stingers, Titles, Playlist, Media, Cues,
                     ]),
                     DockNode::tabs(&[Mixer]),
                 ),

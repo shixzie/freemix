@@ -484,8 +484,8 @@ commands = ["cargo test -p freemix-studio --test studio"]
 [[tests]]
 id = "accept-rc-017"
 state = "present"
-paths = ["crates/features/fm-automation/tests/automation.rs"]
-commands = ["cargo test -p fm-automation --test automation"]
+paths = ["crates/features/fm-automation/tests/automation.rs", "crates/features/fm-automation/tests/cue_stack.rs", "crates/foundation/fm-model/tests/cue_lists.rs", "crates/services/fm-persistence/tests/cue_lists.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/services/fm-engine/tests/cue_lists.rs", "crates/foundation/fm-protocol/tests/cue_lists.rs", "crates/foundation/fm-protocol/tests/refusal.rs", "crates/services/fm-client/tests/client.rs", "apps/freemixd/tests/process.rs", "apps/freemixd/tests/web_tally.rs", "apps/freemix-cli/tests/cue_lists.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-automation --test automation", "cargo test -p fm-automation --test cue_stack", "cargo test -p fm-model --test cue_lists", "cargo test -p fm-persistence --test cue_lists", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-engine --test cue_lists", "cargo test -p fm-protocol --test cue_lists", "cargo test -p fm-protocol --test refusal", "cargo test -p fm-client --test client", "cargo test -p freemixd --test process", "cargo test -p freemixd --test web_tally", "cargo test -p freemix-cli --test cue_lists", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 
 [[tests]]
 id = "accept-rc-018"

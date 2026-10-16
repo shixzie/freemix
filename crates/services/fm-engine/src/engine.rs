@@ -474,6 +474,31 @@ pub enum EngineCommand {
         input: InputId,
         settings: Box<fm_types::capture::CaptureSettings>,
     },
+    /// Creates or replaces (`Some`) or removes (`None`) cue list `list`'s
+    /// definition (RC-017). A project edit honouring the project padlock,
+    /// undone by restoring the previous definition; the run state carries
+    /// across (see [`crate::cue`]).
+    SetCueList {
+        list: u64,
+        definition: Option<crate::EngineCueListDefinition>,
+    },
+    /// Operates cue list `list` on the command's target frame (RC-017): a
+    /// GO runs every action due on that frame together. A live operation.
+    CueControl {
+        list: u64,
+        operation: crate::EngineCueOperation,
+    },
+    /// The cue clock: runs list `list`'s waiting actions on `frame`, which
+    /// must equal [`Engine::cue_advance_frame`]. Accepted ahead of `frame`
+    /// and realized on it; no other command is accepted until then.
+    CueAdvance {
+        list: u64,
+        frame: u64,
+    },
+    /// The runtime action of an accepted cue GO or advance: the realized
+    /// form of every action due on the frame, in order. Never accepted as a
+    /// command.
+    RealizeCueActions(Vec<EngineCommand>),
 }
 
 /// What an accepted title command does on air.
@@ -641,6 +666,19 @@ pub enum EngineEvent {
     CaptureSettingsChanged {
         input: InputId,
         settings: Box<fm_types::capture::CaptureSettings>,
+    },
+    /// A cue list command was accepted for `frame` (RC-017): the list
+    /// afterwards is read from [`ShowState::cue_list`] (`removed` when it no
+    /// longer exists). `fired` lists the cues a GO or advance fired and
+    /// `title_texts` every title text it set, in order. `edit` marks a
+    /// definition edit (or its undo or redo) rather than a live operation.
+    CueListChanged {
+        list: u64,
+        frame: u64,
+        edit: bool,
+        removed: bool,
+        fired: Vec<u64>,
+        title_texts: Vec<(InputId, FieldId, String)>,
     },
 }
 
@@ -913,6 +951,9 @@ pub struct Engine {
     /// The future frame an accepted playlist advance is realized on. No
     /// other command is accepted before it.
     playlist_hold: Option<FrameNumber>,
+    /// The future frame an accepted cue advance is realized on (RC-017). No
+    /// other command is accepted before it.
+    cue_hold: Option<FrameNumber>,
     /// Realized title animations: every title a realized
     /// [`EngineCommand::TakeTitle`] or [`EngineCommand::TitleOffAir`] put
     /// in motion, while its overlay channel still shows it. Runtime state:
@@ -949,6 +990,7 @@ impl Engine {
             transition_in_flight: None,
             history: EditHistory::default(),
             playlist_hold: None,
+            cue_hold: None,
             title_air: BTreeMap::new(),
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
@@ -1258,6 +1300,233 @@ impl Engine {
         })
     }
 
+    /// Returns the only `(list, frame)` a [`EngineCommand::CueAdvance`] is
+    /// accepted for (RC-017): the earliest waiting cue's due frame, or the
+    /// next frame once that has passed. `None` while no cue waits.
+    #[must_use]
+    pub fn cue_advance_frame(&self) -> Option<(u64, u64)> {
+        crate::cue::cue_due(self.show().cue_lists())
+            .map(|(list, due)| (list, due.max(self.scheduler.pacer().next_frame().get())))
+    }
+
+    /// Steps a cue operation or advance on the current show for
+    /// `target_frame`: the list's next run state and, for a GO or advance,
+    /// every due action applied in order to a copy of the show.
+    fn cue_firing(
+        &self,
+        command: &EngineCommand,
+        frame: u64,
+    ) -> Result<(u64, fm_automation::CueFiring<fm_model::CueAction>), Rejection> {
+        let (list_id, operation) = match command {
+            EngineCommand::CueAdvance { list, frame: at } => {
+                if self.cue_advance_frame() != Some((*list, *at)) {
+                    let message = self.cue_advance_frame().map_or_else(
+                        || format!("no cue waits for frame {at}"),
+                        |(due_list, due)| {
+                            format!(
+                                "cue list {due_list} advances at frame {due}, not cue list \
+                                 {list} at frame {at}"
+                            )
+                        },
+                    );
+                    return Err(Rejection::new(RejectionCode::Conflict, message));
+                }
+                (*list, None)
+            }
+            EngineCommand::CueControl { list, operation } => (*list, Some(*operation)),
+            _ => unreachable!("only cue runtime commands are planned"),
+        };
+        let list = self
+            .show()
+            .cue_list(list_id)
+            .ok_or_else(|| crate::cue::unknown_list(list_id))?;
+        let stack = crate::cue::stack(list);
+        let state = crate::cue::stack_state(&list.state);
+        let refused = |error| crate::cue::stack_rejection(list_id, error);
+        let quiet = |state| fm_automation::CueFiring {
+            actions: Vec::new(),
+            fired: Vec::new(),
+            state,
+        };
+        let firing = match operation {
+            None => stack.advance(&state, frame).map_err(refused)?,
+            Some(crate::EngineCueOperation::Go { cue }) => {
+                stack.go(&state, cue, frame).map_err(refused)?
+            }
+            Some(crate::EngineCueOperation::Standby { cue }) => {
+                quiet(stack.standby(&state, cue).map_err(refused)?)
+            }
+            Some(crate::EngineCueOperation::Back) => quiet(stack.back(&state)),
+            Some(crate::EngineCueOperation::Skip) => quiet(stack.skip(&state)),
+            Some(crate::EngineCueOperation::Stop) => quiet(stack.stop(&state)),
+            Some(crate::EngineCueOperation::Reset) => quiet(stack.reset()),
+        };
+        Ok((list_id, firing))
+    }
+
+    /// Plans a cue operation or advance (see [`crate::cue`]).
+    fn cue_plan(
+        &self,
+        command: &EngineCommand,
+        target_frame: FrameNumber,
+    ) -> Result<CuePlan, Rejection> {
+        let frame = target_frame.get();
+        let (list_id, firing) = self.cue_firing(command, frame)?;
+        let mut show = self.show().clone();
+        let mut runtime = Vec::new();
+        let mut transition = None;
+        let mut title_texts = Vec::new();
+        let applied = self.apply_cue_actions(
+            &mut show,
+            &firing.actions,
+            target_frame,
+            &mut runtime,
+            &mut transition,
+            &mut title_texts,
+        );
+        let (state, fired) = match applied {
+            Ok(()) => (firing.state, firing.fired),
+            Err((_, _, rejection)) if !matches!(command, EngineCommand::CueAdvance { .. }) => {
+                return Err(rejection);
+            }
+            Err((cue, step, _)) => {
+                // A refused deferred action stops its cue: the clock must not
+                // retry it, so the advance is accepted with the fault set.
+                show = self.show().clone();
+                runtime.clear();
+                transition = None;
+                title_texts.clear();
+                let list = self
+                    .show()
+                    .cue_list(list_id)
+                    .expect("the planned list exists");
+                let state = crate::cue::stack_state(&list.state);
+                (crate::cue::stack(list).fail(&state, cue, step), Vec::new())
+            }
+        };
+        let index = show
+            .cue_lists()
+            .iter()
+            .position(|candidate| candidate.id == list_id)
+            .expect("the planned list exists");
+        show.cue_lists_mut()[index].state = crate::cue::run_state(state);
+        Ok(CuePlan {
+            show: Box::new(show),
+            event: EngineEvent::CueListChanged {
+                list: list_id,
+                frame,
+                edit: false,
+                removed: false,
+                fired,
+                title_texts,
+            },
+            runtime,
+            transition,
+        })
+    }
+
+    /// Applies fired cue actions in order to `show`, collecting their runtime
+    /// actions, the Program transition they start, and the title texts they
+    /// set. Returns the first refused action as `(cue, step, refusal)`.
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::result_large_err)] // a refusal carries the failing cue and action
+    fn apply_cue_actions(
+        &self,
+        show: &mut ShowState,
+        actions: &[fm_automation::FiredCueAction<fm_model::CueAction>],
+        target_frame: FrameNumber,
+        runtime: &mut Vec<EngineCommand>,
+        transition: &mut Option<TransitionKind>,
+        title_texts: &mut Vec<(InputId, FieldId, String)>,
+    ) -> Result<(), (u64, usize, Rejection)> {
+        let mut takes = 0_usize;
+        for fired in actions {
+            let refuse = |rejection: Rejection| {
+                let message = format!(
+                    "cue {} action {}: {}",
+                    fired.cue,
+                    fired.step + 1,
+                    rejection.message
+                );
+                (
+                    fired.cue,
+                    fired.step,
+                    Rejection {
+                        message,
+                        ..rejection
+                    },
+                )
+            };
+            if let fm_model::CueAction::TitleText { input, field, text } = &fired.action {
+                title_texts.push((*input, FieldId::new(field.get()), text.clone()));
+            }
+            let realized = &self.realized_switcher;
+            let commands = crate::cue::expand(show, &fired.action, |input| {
+                realized.on_air_usage(input).is_some()
+            });
+            for sub in commands {
+                if let Some(kind) = self.transition_in_flight.or(*transition)
+                    && refused_during_transition(&sub)
+                    && !matches!(&sub, EngineCommand::SetInputAudioStrip { .. })
+                {
+                    let name = transition_kind_name(kind);
+                    return Err(refuse(Rejection::new(
+                        RejectionCode::Conflict,
+                        format!("a {name} transition is already in flight"),
+                    )));
+                }
+                if crate::cue::takes_program(&sub) {
+                    takes += 1;
+                    if takes > 1 {
+                        return Err(refuse(Rejection::new(
+                            RejectionCode::Conflict,
+                            "the cues take Program more than once on one frame",
+                        )));
+                    }
+                }
+                let playlist = is_playlist_command(&sub)
+                    .then(|| playlist_step(show, &sub, target_frame.get()));
+                let action = match &playlist {
+                    Some(Ok(step)) => EngineCommand::RealizePlaylistCue(step.cue),
+                    _ => runtime_action(show, &sub),
+                };
+                let kind = runtime_transition_kind(show, &sub).or(match &playlist {
+                    Some(Ok(PlaylistStep { cue: Some(cue), .. })) => {
+                        cue_transition_kind(show.desired_switcher(), cue)
+                    }
+                    _ => None,
+                });
+                let realized_on_air = match &sub {
+                    EngineCommand::TakeTitle { input, channel, .. }
+                        if self.title_leaving_only(*input, *channel) =>
+                    {
+                        None
+                    }
+                    EngineCommand::SetTitleFields { input, .. }
+                    | EngineCommand::TakeTitle { input, .. }
+                    | EngineCommand::TitleOffAir { input } => {
+                        self.realized_switcher.on_air_usage(*input)
+                    }
+                    _ => None,
+                };
+                let mutation = EngineMutation {
+                    command: sub,
+                    target_frame,
+                    realized_on_air,
+                    playlist,
+                    title_clip_bound: None,
+                    scene_clip_bound: None,
+                    media_tracks: None,
+                    cue: None,
+                };
+                mutation.apply(show, &mut Vec::new()).map_err(refuse)?;
+                *transition = transition.or(kind);
+                runtime.push(action);
+            }
+        }
+        Ok(())
+    }
+
     fn playlist_step(
         &self,
         command: &EngineCommand,
@@ -1372,12 +1641,15 @@ impl Engine {
         // A playlist advance is accepted ahead of its boundary and realized
         // on it; every other command targets the next frame.
         let target_frame = match &envelope.command {
-            EngineCommand::PlaylistAdvance { frame } if *frame > next_frame.get() => {
+            EngineCommand::PlaylistAdvance { frame } | EngineCommand::CueAdvance { frame, .. }
+                if *frame > next_frame.get() =>
+            {
                 FrameNumber::new(*frame)
             }
             _ => next_frame,
         };
         let held_until = self.playlist_hold.filter(|frame| *frame >= next_frame);
+        let cue_held_until = self.cue_hold.filter(|frame| *frame >= next_frame);
         let already_seen = self.commands.receipt(&key).is_some();
         // Undo and redo resolve to the stored project edit before scheduling,
         // so the runtime only ever realizes ordinary edit commands.
@@ -1399,13 +1671,29 @@ impl Engine {
             }
             _ => None,
         };
+        // A cue GO or advance is planned once, here, like a playlist step:
+        // every due action is applied to a copy of the show, which the
+        // mutation installs, and realized by one runtime action.
+        let cue = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. })) => {
+                Some(self.cue_plan(command, target_frame))
+            }
+            _ => None,
+        };
+        let cue_transition = match &cue {
+            Some(Ok(plan)) => plan.transition,
+            _ => None,
+        };
         let scheduled = match (&resolution, already_seen) {
             (Ok(resolved), false) => Some(
                 self.scheduler
                     .schedule_action(
                         target_frame,
-                        match &playlist {
-                            Some(Ok(step)) => EngineCommand::RealizePlaylistCue(step.cue),
+                        match (&playlist, &cue) {
+                            (Some(Ok(step)), _) => EngineCommand::RealizePlaylistCue(step.cue),
+                            (_, Some(Ok(plan))) => {
+                                EngineCommand::RealizeCueActions(plan.runtime.clone())
+                            }
                             _ => runtime_action(self.commands.state(), &resolved.command),
                         },
                     )
@@ -1480,44 +1768,23 @@ impl Engine {
                     usage,
                 }));
             }
+            if let Some(frame) = cue_held_until {
+                return Err(Rejection::new(
+                    RejectionCode::Conflict,
+                    format!("cue actions are scheduled for frame {}", frame.get()),
+                )
+                .with_reason(RefusalReason::CueScheduled { frame: frame.get() }));
+            }
+            // A cue GO checks each of its actions against the transition in
+            // flight while it is planned.
             if let Some(kind) = runtime_busy
-                && !matches!(&command, EngineCommand::FadeToBlack { .. })
-                && !matches!(&command, EngineCommand::RenameInput { .. })
-                && !matches!(&command, EngineCommand::ReorderInputs { .. })
-                && !matches!(&command, EngineCommand::AddInput { .. })
-                && !matches!(&command, EngineCommand::SetEditLock { .. })
-                && !matches!(&command, EngineCommand::Grade(_))
-                && !matches!(&command, EngineCommand::TitleAnimation(_))
-                && !matches!(&command, EngineCommand::SceneAnimation(_))
-                && !matches!(&command, EngineCommand::SceneLayer(_))
-                && !matches!(&command, EngineCommand::AudioMixer(_))
-                && !matches!(&command, EngineCommand::SetFadeToBlackOutput { .. })
-                && !matches!(&command, EngineCommand::SetFadeToBlackOutputDuration { .. })
-                && !matches!(&command, EngineCommand::SetFadeToBlackCurve { .. })
-                && !matches!(&command, EngineCommand::SetDisplayOutput { .. })
-                && !matches!(&command, EngineCommand::SetNetworkStream { .. })
-                && !matches!(&command, EngineCommand::SetCaptureSettings { .. })
-                && !matches!(&command, EngineCommand::AnimationPreset(_))
-                && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
-                && !matches!(&command, EngineCommand::Media(_))
+                && refused_during_transition(&command)
                 && !matches!(
                     &command,
-                    EngineCommand::InputLifecycle(edit) if !matches!(
-                        edit,
-                        crate::EngineInputLifecycleEdit::RemoveInputs { .. }
-                            | crate::EngineInputLifecycleEdit::SetClosed { closed: true, .. }
-                    )
+                    EngineCommand::CueControl { .. }
+                        | EngineCommand::CueAdvance { .. }
+                        | EngineCommand::SetCueList { .. }
                 )
-                && !matches!(
-                    &command,
-                    EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
-                )
-                && !matches!(
-                    &command,
-                    EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. }
-                )
-                && !is_overlay_command(&command)
-                && !is_title_command(&command)
             {
                 let name = transition_kind_name(kind);
                 return Err(Rejection::new(
@@ -1533,6 +1800,7 @@ impl Engine {
                 title_clip_bound,
                 scene_clip_bound,
                 media_tracks,
+                cue,
             })
         });
 
@@ -1547,13 +1815,18 @@ impl Engine {
         if let (Some(revision), Ok(resolved)) = (accepted_revision, resolution) {
             let ResolvedCommand { command, step } = resolved;
             self.pending_actions += 1;
-            if let Some(kind) =
-                runtime_transition_kind(self.commands.state(), &command).or(playlist_transition)
+            if let Some(kind) = runtime_transition_kind(self.commands.state(), &command)
+                .or(playlist_transition)
+                .or(cue_transition)
             {
                 self.transition_in_flight = Some(kind);
             }
             if target_frame > next_frame {
-                self.playlist_hold = Some(target_frame);
+                if matches!(&command, EngineCommand::CueAdvance { .. }) {
+                    self.cue_hold = Some(target_frame);
+                } else {
+                    self.playlist_hold = Some(target_frame);
+                }
             }
             if let EngineCommand::Media(media) = &command {
                 self.media
@@ -1660,6 +1933,12 @@ impl Engine {
         {
             self.playlist_hold = None;
         }
+        if self
+            .cue_hold
+            .is_some_and(|frame| frame <= tick.deadline.frame)
+        {
+            self.cue_hold = None;
+        }
 
         let mut events = Vec::new();
         let mut input_audio_strip_updates = Vec::new();
@@ -1667,37 +1946,13 @@ impl Engine {
         let mut media_operations = BTreeMap::<InputId, usize>::new();
         let frame = tick.deadline.frame.get();
         for scheduled in tick.actions {
-            if let EngineCommand::SetInputAudioStrip { input, state } = scheduled.action {
-                input_audio_strip_updates.push((input, state));
-            }
-            if let EngineCommand::AudioMixer(edit) = &scheduled.action
-                && let Some(update) = crate::EngineAudioMixerUpdate::of(edit)
-            {
-                audio_mixer_updates.push(update);
-            }
-            let command_events = if let EngineCommand::Media(command) = scheduled.action {
-                *media_operations.entry(command.input).or_default() += 1;
-                Vec::new()
-            } else if let EngineCommand::RealizeTitle(cue) = scheduled.action {
-                realize_title(
-                    &mut self.realized_switcher,
-                    &mut self.title_air,
-                    cue,
-                    frame,
-                    self.frame_rate,
-                )?
-            } else {
-                // A plain take on a title's channel ends its animation, even
-                // when it takes the same title: it is on air the plain way.
-                if let EngineCommand::TakeOverlay { channel, .. }
-                | EngineCommand::TakeNextOverlay { channel } = &scheduled.action
-                {
-                    self.title_air
-                        .retain(|_, (shown_on, _)| shown_on != channel);
-                }
-                apply_runtime(&mut self.realized_switcher, scheduled.action)?
+            let mut realized = RealizedActions {
+                events: &mut events,
+                input_audio_strip_updates: &mut input_audio_strip_updates,
+                audio_mixer_updates: &mut audio_mixer_updates,
+                media_operations: &mut media_operations,
             };
-            events.extend(command_events);
+            self.realize_action(scheduled.action, frame, &mut realized)?;
             self.runtime_generation = self.runtime_generation.checked_next()?;
         }
 
@@ -1774,6 +2029,54 @@ impl Engine {
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
+    }
+
+    /// Realizes one scheduled runtime action on the realized switcher at
+    /// `frame`; a cue's actions realize in order, as one action.
+    fn realize_action(
+        &mut self,
+        action: EngineCommand,
+        frame: u64,
+        realized: &mut RealizedActions<'_>,
+    ) -> Result<(), EngineError> {
+        if let EngineCommand::RealizeCueActions(actions) = action {
+            for action in actions {
+                self.realize_action(action, frame, realized)?;
+            }
+            return Ok(());
+        }
+        if let EngineCommand::SetInputAudioStrip { input, state } = action {
+            realized.input_audio_strip_updates.push((input, state));
+        }
+        if let EngineCommand::AudioMixer(edit) = &action
+            && let Some(update) = crate::EngineAudioMixerUpdate::of(edit)
+        {
+            realized.audio_mixer_updates.push(update);
+        }
+        let command_events = if let EngineCommand::Media(command) = action {
+            *realized.media_operations.entry(command.input).or_default() += 1;
+            Vec::new()
+        } else if let EngineCommand::RealizeTitle(cue) = action {
+            realize_title(
+                &mut self.realized_switcher,
+                &mut self.title_air,
+                cue,
+                frame,
+                self.frame_rate,
+            )?
+        } else {
+            // A plain take on a title's channel ends its animation, even
+            // when it takes the same title: it is on air the plain way.
+            if let EngineCommand::TakeOverlay { channel, .. }
+            | EngineCommand::TakeNextOverlay { channel } = &action
+            {
+                self.title_air
+                    .retain(|_, (shown_on, _)| shown_on != channel);
+            }
+            apply_runtime(&mut self.realized_switcher, action)?
+        };
+        realized.events.extend(command_events);
+        Ok(())
     }
 
     /// Captures durable and realized state at an idle frame boundary.
@@ -1887,6 +2190,7 @@ impl Engine {
             transition_in_flight: None,
             history: EditHistory::default(),
             playlist_hold: None,
+            cue_hold: None,
             title_air: BTreeMap::new(),
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
@@ -2014,6 +2318,27 @@ struct EngineMutation {
     scene_clip_bound: Option<crate::SceneClipBound>,
     /// The open source's audio stream indexes, for a media command.
     media_tracks: Option<Vec<u32>>,
+    /// The planned cue GO, operation, or advance of a cue runtime command.
+    cue: Option<Result<CuePlan, Rejection>>,
+}
+
+/// Where one tick collects what its runtime actions realized.
+struct RealizedActions<'a> {
+    events: &'a mut Vec<SwitcherEvent>,
+    input_audio_strip_updates: &'a mut Vec<(InputId, EngineInputAudioStripState)>,
+    audio_mixer_updates: &'a mut Vec<crate::EngineAudioMixerUpdate>,
+    media_operations: &'a mut BTreeMap<InputId, usize>,
+}
+
+/// A planned cue command (see [`crate::cue`]): the show once every due
+/// action ran, the event announcing it, the runtime actions realizing it,
+/// and the Program transition it starts.
+#[derive(Clone, Debug)]
+struct CuePlan {
+    show: Box<ShowState>,
+    event: EngineEvent,
+    runtime: Vec<EngineCommand>,
+    transition: Option<TransitionKind>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -2058,6 +2383,39 @@ impl EngineMutation {
             || matches!(&self.command, EngineCommand::RealizePlaylistCue(_))
         {
             return apply_playlist_mutation(state, events, self);
+        }
+        if let EngineCommand::SetCueList { list, definition } = &self.command {
+            crate::cue::apply_set(state, *list, definition.as_ref())?;
+            events.push(EngineEvent::CueListChanged {
+                list: *list,
+                frame: self.target_frame.get(),
+                edit: true,
+                removed: definition.is_none(),
+                fired: Vec::new(),
+                title_texts: Vec::new(),
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if matches!(
+            &self.command,
+            EngineCommand::CueControl { .. }
+                | EngineCommand::CueAdvance { .. }
+                | EngineCommand::RealizeCueActions(_)
+        ) {
+            let Some(plan) = self.cue else {
+                return Err(Rejection::new(
+                    RejectionCode::InvalidCommand,
+                    "cue actions are realized by the engine and are not commands",
+                ));
+            };
+            let plan = plan?;
+            *state = *plan.show;
+            events.push(plan.event);
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
         }
         if matches!(&self.command, EngineCommand::RealizeTitle(_)) {
             return Err(Rejection::new(
@@ -2548,6 +2906,12 @@ impl EngineMutation {
             | EngineCommand::RealizePlaylistCue(_) => {
                 unreachable!("playlist mutations return before switcher command mapping")
             }
+            EngineCommand::SetCueList { .. }
+            | EngineCommand::CueControl { .. }
+            | EngineCommand::CueAdvance { .. }
+            | EngineCommand::RealizeCueActions(_) => {
+                unreachable!("cue mutations return before switcher command mapping")
+            }
             EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
@@ -2736,7 +3100,9 @@ fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
             (RejectionCode::Conflict, "input", "too_many_inputs")
         }
         InputCatalogueError::UnknownInput(_) => (RejectionCode::NotFound, "input", "unknown_input"),
-        InputCatalogueError::InUse { .. } | InputCatalogueError::InPlaylist { .. } => {
+        InputCatalogueError::InUse { .. }
+        | InputCatalogueError::InPlaylist { .. }
+        | InputCatalogueError::InCueList { .. } => {
             (RejectionCode::Conflict, "input", "input_in_use")
         }
     };
@@ -2984,6 +3350,7 @@ fn apply_runtime(
         &command,
         EngineCommand::RenameInput { .. }
             | EngineCommand::SetInputAudioStrip { .. }
+            | EngineCommand::SetCueList { .. }
             | EngineCommand::SetEditLock { .. }
             | EngineCommand::SetTitleFields { .. }
             | EngineCommand::Grade(_)
@@ -3159,6 +3526,12 @@ fn apply_runtime(
         | EngineCommand::PlaylistAdvance { .. }
         | EngineCommand::RealizePlaylistCue(_) => {
             unreachable!("playlist commands are scheduled as playlist cues")
+        }
+        EngineCommand::SetCueList { .. }
+        | EngineCommand::CueControl { .. }
+        | EngineCommand::CueAdvance { .. }
+        | EngineCommand::RealizeCueActions(_) => {
+            unreachable!("cue commands are realized by the engine tick")
         }
         EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
@@ -3348,8 +3721,55 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
-        | EngineCommand::InputLifecycle(_) => None,
+        | EngineCommand::InputLifecycle(_)
+        | EngineCommand::SetCueList { .. }
+        | EngineCommand::CueControl { .. }
+        | EngineCommand::CueAdvance { .. }
+        | EngineCommand::RealizeCueActions(_) => None,
     }
+}
+
+/// Whether `command` is refused while a Program transition is in flight:
+/// another Program change, a Preview selection, a manual transition, a
+/// removal or close of an input, or a strip change.
+fn refused_during_transition(command: &EngineCommand) -> bool {
+    !matches!(command, EngineCommand::FadeToBlack { .. })
+        && !matches!(command, EngineCommand::RenameInput { .. })
+        && !matches!(command, EngineCommand::ReorderInputs { .. })
+        && !matches!(command, EngineCommand::AddInput { .. })
+        && !matches!(command, EngineCommand::SetEditLock { .. })
+        && !matches!(command, EngineCommand::Grade(_))
+        && !matches!(command, EngineCommand::TitleAnimation(_))
+        && !matches!(command, EngineCommand::SceneAnimation(_))
+        && !matches!(command, EngineCommand::SceneLayer(_))
+        && !matches!(command, EngineCommand::AudioMixer(_))
+        && !matches!(command, EngineCommand::SetFadeToBlackOutput { .. })
+        && !matches!(command, EngineCommand::SetFadeToBlackOutputDuration { .. })
+        && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
+        && !matches!(command, EngineCommand::SetDisplayOutput { .. })
+        && !matches!(command, EngineCommand::SetNetworkStream { .. })
+        && !matches!(command, EngineCommand::SetCaptureSettings { .. })
+        && !matches!(command, EngineCommand::AnimationPreset(_))
+        && !matches!(command, EngineCommand::SetTransitionFavorite { .. })
+        && !matches!(command, EngineCommand::Media(_))
+        && !matches!(
+            command,
+            EngineCommand::InputLifecycle(edit) if !matches!(
+                edit,
+                crate::EngineInputLifecycleEdit::RemoveInputs { .. }
+                    | crate::EngineInputLifecycleEdit::SetClosed { closed: true, .. }
+            )
+        )
+        && !matches!(
+            command,
+            EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
+        )
+        && !matches!(
+            command,
+            EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. }
+        )
+        && !is_overlay_command(command)
+        && !is_title_command(command)
 }
 
 /// The operator-facing lower-case name of a transition kind.

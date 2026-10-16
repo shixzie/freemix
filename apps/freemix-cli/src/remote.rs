@@ -80,6 +80,61 @@ pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Prints the cue lists of the daemon at `address` with their run state
+/// (RC-017).
+pub fn cue_lists(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    print_cue_lists(state.cue_lists().iter());
+    Ok(())
+}
+
+/// Prints one `CueList(...)` line per cue list followed by one indented
+/// `Cue(...)` line per cue, or `CueLists=none`.
+pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protocol::CueListStatus>) {
+    let optional = |value: Option<u64>| value.map_or_else(|| "-".to_owned(), |id| id.to_string());
+    let mut any = false;
+    for list in lists {
+        any = true;
+        let state = &list.state;
+        println!(
+            "CueList(id={}, name={:?}, standby={}, live={}, pending={}, played={:?}, fault={})",
+            list.id,
+            list.spec.name,
+            optional(state.standby),
+            optional(state.live),
+            state.pending.map_or_else(
+                || "-".to_owned(),
+                |pending| format!("{}.{}@{}", pending.cue, pending.action, pending.due_frame)
+            ),
+            state.played,
+            state
+                .fault
+                .map_or_else(|| "-".to_owned(), |(cue, action)| format!("{cue}.{action}")),
+        );
+        for cue in &list.spec.cues {
+            println!(
+                "  Cue(id={}, name={:?}, follow={}, actions={})",
+                cue.id,
+                cue.name,
+                cue.auto_follow,
+                cue.actions
+                    .iter()
+                    .map(fm_protocol::cue_action_token)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+    }
+    if !any {
+        println!("CueLists=none");
+    }
+}
+
 /// Prints every network stream input of the daemon at `address` with its
 /// redacted configuration and latest receive status (IN-015).
 pub fn network_streams(address: SocketAddr) -> RemoteResult<()> {
@@ -556,12 +611,14 @@ pub fn execute(
         CommandCompletion::Project
         | CommandCompletion::Padlock
         | CommandCompletion::Playlist { edit: true }
+        | CommandCompletion::Cue { edit: true }
         | CommandCompletion::Media { transport: false } => Role::Graphics,
         CommandCompletion::Audio | CommandCompletion::Mixer { .. } => Role::Audio,
         CommandCompletion::FadeToBlackOutput
         | CommandCompletion::Switcher
         | CommandCompletion::Favorite
         | CommandCompletion::Playlist { edit: false }
+        | CommandCompletion::Cue { edit: false }
         | CommandCompletion::Media { transport: true }
         | CommandCompletion::TitleTake {
             edits_fields: false,
@@ -598,6 +655,12 @@ enum CommandCompletion {
     /// A playlist edit (`project`) or control (`switcher`): completes on
     /// `playlist_changed` and that domain's realization.
     Playlist {
+        edit: bool,
+    },
+    /// A cue list edit (`project`) or cue control (`switcher`): completes on
+    /// `cue_list_changed`/`cue_list_removed` or `cue_run_changed` and that
+    /// domain's realization (Protocol 2.50).
+    Cue {
         edit: bool,
     },
     /// A favourite transition assignment: a transition-class project edit
@@ -655,6 +718,12 @@ impl CommandCompletion {
             CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
                 Self::Playlist { edit: false }
             }
+            CommandPayload::SetCueList { .. } | CommandPayload::RemoveCueList { .. } => {
+                Self::Cue { edit: true }
+            }
+            CommandPayload::CueControl { .. } | CommandPayload::CueAdvance { .. } => {
+                Self::Cue { edit: false }
+            }
             _ => Self::Switcher,
         }
     }
@@ -665,13 +734,15 @@ impl CommandCompletion {
             | Self::Padlock
             | Self::Favorite
             | Self::Playlist { edit: true }
+            | Self::Cue { edit: true }
             | Self::Mixer { live: false }
             | Self::FadeToBlackOutput => domain == "project",
             Self::Audio | Self::Mixer { live: true } => domain == "audio",
             Self::Media { .. } => domain == "media",
-            Self::Switcher | Self::TitleTake { .. } | Self::Playlist { edit: false } => {
-                domain == "switcher"
-            }
+            Self::Switcher
+            | Self::TitleTake { .. }
+            | Self::Playlist { edit: false }
+            | Self::Cue { edit: false } => domain == "switcher",
             Self::History => matches!(domain, "project" | "switcher"),
         }
     }
@@ -770,7 +841,8 @@ impl Remote {
                 | WireMessage::SceneAnimationState(_)
                 | WireMessage::SceneLayoutState(_)
                 | WireMessage::AnimationPresetState(_)
-                | WireMessage::MediaState(_)) => {
+                | WireMessage::MediaState(_)
+                | WireMessage::CueListState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
@@ -875,6 +947,7 @@ impl Remote {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per durable event kind
     fn read_command_events(
         &mut self,
         revision: u64,
@@ -921,9 +994,19 @@ impl Remote {
                                 | CommandCompletion::Padlock
                                 | CommandCompletion::TitleTake { .. }
                                 | CommandCompletion::Playlist { .. }
+                                | CommandCompletion::Cue { .. }
                         ),
                         EventPayload::PlaylistChanged { .. } => {
                             matches!(completion, CommandCompletion::Playlist { .. })
+                        }
+                        EventPayload::CueListChanged(_) | EventPayload::CueListRemoved { .. } => {
+                            matches!(
+                                completion,
+                                CommandCompletion::Cue { edit: true } | CommandCompletion::History
+                            )
+                        }
+                        EventPayload::CueRunChanged(_) => {
+                            completion == CommandCompletion::Cue { edit: false }
                         }
                         EventPayload::TransitionFavoriteChanged { .. } => matches!(
                             completion,

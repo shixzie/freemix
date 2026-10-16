@@ -151,6 +151,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        cue_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
@@ -755,6 +756,7 @@ mod scenes {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };

@@ -5957,4 +5957,230 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::LcReasonCategoriesUnchanged,
         t("la lista de categorías no ha cambiado"),
     ),
+    (Msg::IdKindCueList, t("Lista de cues {id}")),
+    (Msg::IdKindCue, t("Cue {id}")),
+    (
+        Msg::InUseCueAction,
+        t("«{name}» aparece en el cue {cue} de la lista de cues {list}."),
+    ),
+    (Msg::AdviceCue, t("Quítela de ese cue primero.")),
+    (
+        Msg::RsnCueScheduled,
+        t(
+            "Las acciones de un cue están programadas para el fotograma {frame}; espere a que se ejecuten.",
+        ),
+    ),
+    (
+        Msg::RsnNoCueOnStandby,
+        t("No hay ningún cue en espera; ponga uno en espera o reinicie la lista."),
+    ),
+    (
+        Msg::RsnCueRunning,
+        t("El cue {cue} sigue en marcha; deténgalo antes de cambiarlo."),
+    ),
+    (Msg::BoundsFieldCueLists, t("Listas de cues")),
+    (Msg::BoundsFieldCues, t("Cues de una lista")),
+    (Msg::BoundsFieldCueActions, t("Acciones de un cue")),
+    (
+        Msg::BoundsFieldCueListActions,
+        t("Acciones de una lista de cues"),
+    ),
+    (
+        Msg::BoundsFieldCueText,
+        t("Texto de títulos en una lista de cues (bytes)"),
+    ),
+    (Msg::TabCues, t("Cues")),
+    (
+        Msg::TabCuesHover,
+        t(
+            "Listas de cues del operador: arme cues con acciones del show y dispárelos en orden con GO",
+        ),
+    ),
+    (Msg::ShortcutGroupCues, t("Lista de cues")),
+    (
+        Msg::ShortcutCueGo,
+        t("GO: disparar el cue en espera de la lista del panel Cues"),
+    ),
+    (Msg::CueGo, t("GO")),
+    (
+        Msg::CueGoHover,
+        t(
+            "Disparar el cue en espera: sus acciones hasta la primera pausa se ejecutan en un mismo fotograma [G]",
+        ),
+    ),
+    (Msg::CueGoNothing, t("Nada en espera")),
+    (Msg::CueStandbyLabel, t("En espera: {name}")),
+    (Msg::CueBack, t("Retroceder")),
+    (Msg::CueBackHover, t("Mover la espera al cue anterior")),
+    (Msg::CueSkip, t("Saltar")),
+    (
+        Msg::CueSkipHover,
+        t("Pasar la espera al cue siguiente sin dispararlo"),
+    ),
+    (
+        Msg::CueStopHover,
+        t("Descartar las acciones pendientes del cue que espera"),
+    ),
+    (Msg::CueReset, t("Reiniciar")),
+    (
+        Msg::CueResetHover,
+        t("Borrar los cues disparados y poner el primero en espera"),
+    ),
+    (
+        Msg::CueListPickHover,
+        t("Elegir la lista de cues que muestra este panel y que dispara GO"),
+    ),
+    (Msg::CueListNew, t("Nueva lista")),
+    (
+        Msg::CueListNewHover,
+        t("Crear una lista de cues vacía (se puede deshacer)"),
+    ),
+    (Msg::CueListDefaultName, t("Lista de cues {number}")),
+    (Msg::CueListRemove, t("Eliminar lista")),
+    (
+        Msg::CueListRemoveHover,
+        t("Eliminar esta lista de cues (se puede deshacer)"),
+    ),
+    (
+        Msg::CueListNameHover,
+        t("Nombre de esta lista de cues: hasta 64 bytes; pulse Intro para guardar"),
+    ),
+    (
+        Msg::CueListsEmpty,
+        t("Aún no hay listas de cues. Cree una para armar cues."),
+    ),
+    (Msg::CueListEmpty, t("Esta lista aún no tiene cues.")),
+    (Msg::CueAdd, t("Añadir cue")),
+    (
+        Msg::CueAddHover,
+        t("Añadir un cue nuevo y vacío al final de la lista"),
+    ),
+    (Msg::CueDefaultName, t("Cue {number}")),
+    (
+        Msg::CueNameHover,
+        t("Nombre del cue: hasta 64 bytes; pulse Intro para guardar"),
+    ),
+    (Msg::CueFollow, t("Seguir")),
+    (
+        Msg::CueFollowHover,
+        t(
+            "Seguimiento automático: disparar el cue siguiente en cuanto se ejecute la última acción de este",
+        ),
+    ),
+    (
+        Msg::CueJumpHover,
+        t("Poner este cue en espera para que GO lo dispare a continuación"),
+    ),
+    (
+        Msg::CueFireHover,
+        t("Disparar este cue ahora, esté donde esté la espera"),
+    ),
+    (Msg::CueUpHover, t("Subir este cue")),
+    (Msg::CueDownHover, t("Bajar este cue")),
+    (
+        Msg::CueRemoveHover,
+        t("Eliminar este cue (se puede deshacer)"),
+    ),
+    (
+        Msg::CueExpandHover,
+        t("Mostrar u ocultar las acciones de este cue"),
+    ),
+    (Msg::CueStatePlayed, t("DISPARADO")),
+    (Msg::CueStateFault, t("FALLO")),
+    (
+        Msg::CueStateHover,
+        t(
+            "Estado de este cue: al aire, en espera, esperando sus próximas acciones, disparado o detenido por una acción rechazada",
+        ),
+    ),
+    (
+        Msg::CueWaitingNote,
+        t("Próximas acciones en el fotograma {frame}"),
+    ),
+    (
+        Msg::CueFaultNote,
+        t("El cue {cue} se detuvo en la acción {action}: la autoridad la rechazó."),
+    ),
+    (Msg::CueActionAdd, t("Añadir acción")),
+    (Msg::CueActionAddHover, t("Añadir una acción a este cue")),
+    (Msg::CueActionKindHover, t("Qué hace esta acción")),
+    (Msg::CueActionUpHover, t("Adelantar esta acción")),
+    (Msg::CueActionDownHover, t("Atrasar esta acción")),
+    (Msg::CueActionRemoveHover, t("Eliminar esta acción")),
+    (Msg::CueActOverlayOn, t("Overlay dentro")),
+    (Msg::CueActOverlayOff, t("Overlay fuera")),
+    (Msg::CueActTitleOn, t("Título dentro")),
+    (Msg::CueActTitleText, t("Texto de título")),
+    (Msg::CueActTitleOff, t("Título fuera")),
+    (Msg::CueActPlaylistStart, t("Iniciar lista")),
+    (Msg::CueActPlaylistStop, t("Detener lista")),
+    (Msg::CueActGain, t("Fader")),
+    (Msg::CueActMute, t("Silencio")),
+    (Msg::CueActRecord, t("Grabar")),
+    (Msg::CueActStream, t("Emitir")),
+    (Msg::CueActWait, t("Esperar")),
+    (Msg::CueParamPreview, t("(Previo)")),
+    (Msg::CueParamInputHover, t("La entrada que usa esta acción")),
+    (
+        Msg::CueParamEffectHover,
+        t("Efecto de transición: Corte pasa al instante"),
+    ),
+    (Msg::CueParamFramesHover, t("Duración en fotogramas")),
+    (Msg::CueParamChannelHover, t("Canal de overlay, del 1 al 8")),
+    (
+        Msg::CueParamFieldHover,
+        t("El campo de texto del título que se fija"),
+    ),
+    (
+        Msg::CueParamTextHover,
+        t("Texto que se fija: hasta 128 bytes; pulse Intro para guardar"),
+    ),
+    (
+        Msg::CueParamActiveHover,
+        t("Marcado funde a negro; sin marcar vuelve de negro"),
+    ),
+    (Msg::CueParamGainHover, t("Nivel del fader en dB")),
+    (
+        Msg::CueParamMuteHover,
+        t("Marcado silencia el canal; sin marcar lo reactiva"),
+    ),
+    (Msg::CueParamRecorderHover, t("Grabador 1 o 2")),
+    (
+        Msg::CueParamStartHover,
+        t("Marcado inicia; sin marcar detiene"),
+    ),
+    (Msg::CueParamTargetHover, t("El destino de emisión")),
+    (
+        Msg::CueParamWaitHover,
+        t("Fotogramas de espera antes de que se ejecuten las acciones restantes del cue"),
+    ),
+    (Msg::CueParamOn, t("Activo")),
+    (Msg::CueFramesUnit, t("fotogramas")),
+    (
+        Msg::CueViewOnly,
+        t("Solo un operador con permiso de transición puede disparar cues"),
+    ),
+    (
+        Msg::CueReasonRunning,
+        t("un cue de esta lista espera sus próximas acciones; deténgalo primero"),
+    ),
+    (
+        Msg::CueReasonListsFull,
+        t("el show ya tiene el máximo de 8 listas de cues"),
+    ),
+    (
+        Msg::CueReasonCuesFull,
+        t("esta lista ya tiene el máximo de 64 cues"),
+    ),
+    (
+        Msg::CueReasonActionsFull,
+        t("este cue ya tiene el máximo de 16 acciones"),
+    ),
+    (Msg::CueReasonFirst, t("ya es el primero")),
+    (Msg::CueReasonLast, t("ya es el último")),
+    (
+        Msg::CueReasonNothingToName,
+        t("el show no tiene nada que esta acción pueda nombrar"),
+    ),
+    (Msg::CueReasonNoStandby, t("no hay ningún cue en espera")),
 ];
