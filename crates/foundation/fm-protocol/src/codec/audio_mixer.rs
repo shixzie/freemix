@@ -13,6 +13,11 @@
 //!   [`MAX_LIST_ITEMS`] labels fits one field.
 //! * `fade_to_black_excluded_outputs` is a comma-separated, strictly
 //!   ascending list of output ids (empty for none).
+//! * `fade_to_black_output_durations` (Protocol 2.48) is a comma-separated
+//!   list of `<output>:<frames>`, strictly ascending by output, each 1
+//!   through 3600 frames (empty for none); `fade_to_black_curve` is
+//!   `linear` or `ease`. A command or event `duration_frames` is frames or
+//!   `-` for none.
 //!
 //! Group names inside `audio_groups` are percent-escaped before they are
 //! joined.
@@ -286,6 +291,109 @@ pub(super) fn decode_excluded_outputs(value: &str) -> Result<Vec<WireOutputId>, 
         return Err(invalid("fade_to_black_excluded_outputs", value));
     }
     Ok(outputs)
+}
+
+fn parse_canonical_u32(value: &str) -> Option<u32> {
+    parse_canonical_u64(value).and_then(|value| u32::try_from(value).ok())
+}
+
+/// Encodes an optional Fade-to-Black output duration: 1 through 3600
+/// frames, or `-`.
+pub(super) fn encode_optional_duration(duration_frames: Option<u32>) -> Result<String, CodecError> {
+    match duration_frames {
+        None => Ok("-".to_owned()),
+        Some(frames) if (1..=crate::MAX_FADE_TO_BLACK_DURATION_FRAMES).contains(&frames) => {
+            Ok(frames.to_string())
+        }
+        Some(frames) => Err(invalid("duration_frames", frames.to_string())),
+    }
+}
+
+/// Decodes an optional Fade-to-Black output duration, 1 through 3600
+/// frames or `-`.
+pub(super) fn decode_optional_duration(value: String) -> Result<Option<u32>, CodecError> {
+    if value == "-" {
+        return Ok(None);
+    }
+    parse_canonical_u32(&value)
+        .filter(|frames| (1..=crate::MAX_FADE_TO_BLACK_DURATION_FRAMES).contains(frames))
+        .map(Some)
+        .ok_or_else(|| invalid("duration_frames", value))
+}
+
+/// Decodes a Fade-to-Black curve token.
+pub(super) fn decode_curve(value: String) -> Result<crate::FadeToBlackCurve, CodecError> {
+    crate::FadeToBlackCurve::from_token(&value).ok_or_else(|| invalid("curve", value))
+}
+
+/// Decodes the snapshot's `fade_to_black_curve`.
+pub(super) fn decode_snapshot_curve(
+    fields: &mut dyn FieldSource,
+) -> Result<crate::FadeToBlackCurve, CodecError> {
+    decode_curve(fields.required("fade_to_black_curve")?)
+}
+
+/// Decodes the snapshot's `fade_to_black_output_durations`.
+pub(super) fn decode_snapshot_output_durations(
+    fields: &mut dyn FieldSource,
+) -> Result<Vec<(WireOutputId, u32)>, CodecError> {
+    decode_output_durations(&fields.required("fade_to_black_output_durations")?)
+}
+
+/// Encodes the outputs with their own Fade-to-Black duration as
+/// `output:frames` entries, ascending by output.
+pub(super) fn encode_output_durations(
+    durations: &[(WireOutputId, u32)],
+) -> Result<String, CodecError> {
+    if durations.len() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("fade_to_black_output_durations"));
+    }
+    if durations
+        .windows(2)
+        .any(|pair| pair[0].0.get() >= pair[1].0.get())
+        || durations
+            .iter()
+            .any(|(_, frames)| !(1..=crate::MAX_FADE_TO_BLACK_DURATION_FRAMES).contains(frames))
+    {
+        return Err(invalid("fade_to_black_output_durations", "unordered"));
+    }
+    Ok(durations
+        .iter()
+        .map(|(output, frames)| format!("{output}:{frames}"))
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// Decodes the outputs with their own Fade-to-Black duration.
+fn decode_output_durations(value: &str) -> Result<Vec<(WireOutputId, u32)>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("fade_to_black_output_durations"));
+    }
+    let durations = value
+        .split(',')
+        .map(|entry| {
+            let (output, frames) = entry
+                .split_once(':')
+                .ok_or_else(|| invalid("fade_to_black_output_durations", entry))?;
+            let output = parse_canonical_input(output)
+                .map(|id| WireOutputId::new(id.get()))
+                .ok_or_else(|| invalid("fade_to_black_output_durations", entry))?;
+            let frames = parse_canonical_u32(frames)
+                .filter(|frames| (1..=crate::MAX_FADE_TO_BLACK_DURATION_FRAMES).contains(frames))
+                .ok_or_else(|| invalid("fade_to_black_output_durations", entry))?;
+            Ok((output, frames))
+        })
+        .collect::<Result<Vec<_>, CodecError>>()?;
+    if durations
+        .windows(2)
+        .any(|pair| pair[0].0.get() >= pair[1].0.get())
+    {
+        return Err(invalid("fade_to_black_output_durations", value));
+    }
+    Ok(durations)
 }
 
 /// Encodes the snapshot mixer fields.

@@ -254,6 +254,72 @@ fn round_trip_preserves_exact_desired_and_realized_manual_transition_state() {
 }
 
 #[test]
+fn every_manual_kind_round_trips_and_a_stinger_keeps_its_clip_length() {
+    let temp = TestDirectory::new("manual-transition-kinds");
+    let base = project("Manual kinds", 11);
+    let routing = base.runtime_routing();
+    let kinds = ManualTransitionKind::MIXES
+        .into_iter()
+        .chain([ManualTransitionKind::Stinger {
+            slot: 2,
+            clip_frames: 24,
+        }]);
+    for (index, kind) in kinds.enumerate() {
+        let store = ProjectStore::new(temp.project_path(&format!("show-{index}"))).unwrap();
+        // The desired interval spans the whole move; the realized one has
+        // settled on the last frame.
+        let state = |program, preview, interval_start| {
+            ManualTransitionState::new(kind, program, preview, interval_start, 2_500).unwrap()
+        };
+        let expected = StoredProject::from_project_with_manual_transitions(
+            base.project().clone(),
+            routing,
+            RuntimeManualTransitions {
+                desired: Some(state(
+                    routing.desired_program_id.unwrap(),
+                    routing.desired_preview_id.unwrap(),
+                    0,
+                )),
+                realized: Some(state(
+                    routing.realized_program_id.unwrap(),
+                    routing.realized_preview_id.unwrap(),
+                    2_500,
+                )),
+            },
+            base.position(),
+            base.idempotency_receipts().to_vec(),
+        )
+        .unwrap();
+        store.save(&expected).unwrap();
+        assert_eq!(store.load().unwrap(), expected, "{kind:?}");
+        let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+        let written = format!(
+            "\"kind\": \"{}\", \"clip_frames\": {}",
+            kind.token(),
+            kind.clip_frames()
+        );
+        assert!(encoded.contains(&written), "{written}");
+        if kind.clip_frames() == 0 {
+            continue;
+        }
+        // A Stinger needs its clip, a mix has none, and slots are 1-8.
+        for (from, to) in [
+            ("\"clip_frames\": 24", "\"clip_frames\": 0"),
+            ("\"kind\": \"stinger_2\"", "\"kind\": \"stinger_9\""),
+            ("\"kind\": \"stinger_2\"", "\"kind\": \"wipe\""),
+            ("\"kind\": \"stinger_2\"", "\"kind\": \"cut\""),
+        ] {
+            let root = temp.project_path(&format!("malformed-{from}-{to}"));
+            write_manifest(&root, &encoded.replacen(from, to, 1));
+            assert!(
+                ProjectStore::new(root).unwrap().load().is_err(),
+                "{from} -> {to}"
+            );
+        }
+    }
+}
+
+#[test]
 fn round_trip_preserves_settled_fade_to_black_state() {
     let temp = TestDirectory::new("fade-to-black");
     let store = ProjectStore::new(temp.project_path("show")).unwrap();

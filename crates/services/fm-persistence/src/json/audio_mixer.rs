@@ -9,7 +9,9 @@
 //!   {"name": "Group 4", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": null}
 //! ],
 //! "audio_solo_mode": "pfl",
-//! "fade_to_black_excluded_outputs": [5]
+//! "fade_to_black_excluded_outputs": [5],
+//! "fade_to_black_output_durations": [{"output": 3, "duration_frames": 90}],
+//! "fade_to_black_curve": "ease"
 //! ```
 //!
 //! Exactly [`AUDIO_GROUP_COUNT`] groups, group 1 first; `parent` is a group
@@ -17,7 +19,10 @@
 //! validation). `audio_solo_mode` is `sip`, `pfl`, or `afl`. Every strip in
 //! `input_audio_strips` also carries `pan_basis_points`, `label` (empty for
 //! none), and `group` (a group number or `null`). Excluded outputs are
-//! strictly ascending output ids; every other output fades.
+//! strictly ascending output ids; every other output fades. Outputs in
+//! `fade_to_black_output_durations` (schema 45) fade over their own
+//! duration (1 through 3600 frames), strictly ascending by output;
+//! `fade_to_black_curve` is `linear` or `ease`.
 
 use core::fmt::Write as _;
 use std::collections::BTreeSet;
@@ -63,7 +68,55 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         }
         write!(output, "{id}").expect("writing to a string cannot fail");
     }
-    output.push(']');
+    output.push_str("],\n    \"fade_to_black_output_durations\": [");
+    for (index, (id, duration)) in project.fade_to_black_output_durations().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(
+            output,
+            "{{\"output\": {id}, \"duration_frames\": {duration}}}"
+        )
+        .expect("writing to a string cannot fail");
+    }
+    write!(
+        output,
+        "],\n    \"fade_to_black_curve\": \"{}\"",
+        project.fade_to_black_curve().token()
+    )
+    .expect("writing to a string cannot fail");
+}
+
+/// Parses `"fade_to_black_output_durations"` from the project object.
+pub(crate) fn parse_fade_to_black_output_durations(
+    object: &mut Object,
+) -> Result<Vec<(OutputId, u32)>, DecodeError> {
+    let entries = parse_array(
+        object.take("fade_to_black_output_durations")?,
+        "fade_to_black_output_durations",
+        |value| {
+            let mut entry = Object::new(value, "fade-to-black output duration")?;
+            let output = OutputId::new(entry.nonzero_u128("output")?);
+            let duration = entry.u32("duration_frames")?;
+            entry.finish()?;
+            Ok((output, duration))
+        },
+    )?;
+    if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(syntax(
+            "fade_to_black_output_durations must be strictly ascending by output",
+        ));
+    }
+    Ok(entries)
+}
+
+/// Parses `"fade_to_black_curve"` from the project object.
+pub(crate) fn parse_fade_to_black_curve(
+    object: &mut Object,
+) -> Result<fm_types::FadeToBlackCurve, DecodeError> {
+    let token = object.string("fade_to_black_curve")?;
+    fm_types::FadeToBlackCurve::from_token(&token)
+        .ok_or_else(|| syntax("fade_to_black_curve must be \"linear\" or \"ease\""))
 }
 
 /// Parses `"audio_groups"` from the project object.

@@ -449,6 +449,11 @@ pub struct ProjectSnapshot {
     pub audio_mixer: fm_protocol::AudioMixerStatus,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     pub fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// The outputs that fade over their own duration in frames, ascending
+    /// by output (Protocol 2.48).
+    pub fade_to_black_output_durations: Vec<(OutputId, u32)>,
+    /// How automatic Fade-to-Black moves ease (Protocol 2.48).
+    pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -550,6 +555,12 @@ impl ProjectSnapshot {
                 .into_iter()
                 .map(fm_protocol::WireOutputId::to_domain)
                 .collect(),
+            fade_to_black_output_durations: message
+                .fade_to_black_output_durations
+                .into_iter()
+                .map(|(output, frames)| (output.to_domain(), frames))
+                .collect(),
+            fade_to_black_curve: message.fade_to_black_curve,
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
@@ -675,6 +686,15 @@ pub enum DurableChange {
     FadeToBlackOutputChanged {
         output: OutputId,
         affected: bool,
+    },
+    /// `output` now fades over its own duration (Protocol 2.48).
+    FadeToBlackOutputDurationChanged {
+        output: OutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Automatic Fade-to-Black moves now ease along `curve` (Protocol 2.48).
+    FadeToBlackCurveChanged {
+        curve: fm_protocol::FadeToBlackCurve,
     },
     /// A display-output slot was configured or cleared (Protocol 2.42).
     DisplayOutputChanged {
@@ -900,6 +920,16 @@ impl DurableProjectEvent {
                     affected,
                 }
             }
+            EventPayload::FadeToBlackOutputDurationChanged {
+                output,
+                duration_frames,
+            } => DurableChange::FadeToBlackOutputDurationChanged {
+                output: output.to_domain(),
+                duration_frames,
+            },
+            EventPayload::FadeToBlackCurveChanged { curve } => {
+                DurableChange::FadeToBlackCurveChanged { curve }
+            }
             EventPayload::DisplayOutputChanged { slot, config } => {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
@@ -996,6 +1026,10 @@ pub struct ProjectState {
     audio_mixer: fm_protocol::AudioMixerStatus,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// The outputs with their own Fade-to-Black duration (Protocol 2.48).
+    fade_to_black_output_durations: Vec<(OutputId, u32)>,
+    /// How automatic Fade-to-Black moves ease (Protocol 2.48).
+    fade_to_black_curve: fm_protocol::FadeToBlackCurve,
     /// Every configured display-output slot (Protocol 2.42).
     display_outputs: BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::DisplayOutputConfig>,
     /// Each slot's runtime state as last reported (Protocol 2.42); kept for
@@ -1055,6 +1089,18 @@ impl ProjectState {
     #[must_use]
     pub fn fade_to_black_excluded_outputs(&self) -> &[OutputId] {
         &self.fade_to_black_excluded_outputs
+    }
+
+    /// Returns the outputs with their own Fade-to-Black duration.
+    #[must_use]
+    pub fn fade_to_black_output_durations(&self) -> &[(OutputId, u32)] {
+        &self.fade_to_black_output_durations
+    }
+
+    /// Returns how automatic Fade-to-Black moves ease.
+    #[must_use]
+    pub const fn fade_to_black_curve(&self) -> fm_protocol::FadeToBlackCurve {
+        self.fade_to_black_curve
     }
 
     /// Returns input `input`'s replicated lifecycle (Protocol 2.38).
@@ -1343,6 +1389,11 @@ pub struct ClientView {
     pub audio_mixer: fm_protocol::AudioMixerStatus,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     pub fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// The outputs that fade over their own duration in frames, ascending
+    /// by output (Protocol 2.48).
+    pub fade_to_black_output_durations: Vec<(OutputId, u32)>,
+    /// How automatic Fade-to-Black moves ease (Protocol 2.48).
+    pub fade_to_black_curve: fm_protocol::FadeToBlackCurve,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<fm_protocol::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -1415,6 +1466,15 @@ impl ClientView {
     #[must_use]
     pub fn fade_to_black_affects(&self, output: OutputId) -> bool {
         !self.fade_to_black_excluded_outputs.contains(&output)
+    }
+
+    /// The Fade-to-Black duration `output` has of its own, if any.
+    #[must_use]
+    pub fn fade_to_black_output_duration(&self, output: OutputId) -> Option<u32> {
+        self.fade_to_black_output_durations
+            .iter()
+            .find(|(candidate, _)| *candidate == output)
+            .map(|(_, frames)| *frames)
     }
 
     /// Returns input `input`'s lifecycle, or the default for an unknown
@@ -2127,6 +2187,8 @@ impl ClientModel {
             input_categories: state.input_categories.clone(),
             audio_mixer: state.audio_mixer.clone(),
             fade_to_black_excluded_outputs: state.fade_to_black_excluded_outputs.clone(),
+            fade_to_black_output_durations: state.fade_to_black_output_durations.clone(),
+            fade_to_black_curve: state.fade_to_black_curve,
             display_outputs: state
                 .display_outputs
                 .iter()
@@ -2369,6 +2431,8 @@ impl ClientModel {
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
+            fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
+            fade_to_black_curve: snapshot.fade_to_black_curve,
             display_outputs: snapshot
                 .display_outputs
                 .into_iter()
@@ -3555,7 +3619,8 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::AudioMixerChanged(operation) => {
             return validate_audio_mixer_change(operation, state);
         }
-        DurableChange::FadeToBlackOutputChanged { output, .. } => {
+        DurableChange::FadeToBlackOutputChanged { output, .. }
+        | DurableChange::FadeToBlackOutputDurationChanged { output, .. } => {
             return if state.outputs.iter().any(|status| status.output == *output) {
                 Ok(())
             } else {
@@ -3635,6 +3700,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             return Ok(());
         }
         DurableChange::RecordingChanged { .. }
+        | DurableChange::FadeToBlackCurveChanged { .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Project,
             ..
@@ -3959,6 +4025,25 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                     .partition_point(|candidate| candidate.get() < output.get());
                 state.fade_to_black_excluded_outputs.insert(index, output);
             }
+        }
+        DurableChange::FadeToBlackOutputDurationChanged {
+            output,
+            duration_frames,
+        } => {
+            state
+                .fade_to_black_output_durations
+                .retain(|(candidate, _)| *candidate != output);
+            if let Some(frames) = duration_frames {
+                let index = state
+                    .fade_to_black_output_durations
+                    .partition_point(|(candidate, _)| candidate.get() < output.get());
+                state
+                    .fade_to_black_output_durations
+                    .insert(index, (output, frames));
+            }
+        }
+        DurableChange::FadeToBlackCurveChanged { curve } => {
+            state.fade_to_black_curve = curve;
         }
         DurableChange::DesiredSwitcher {
             selection,

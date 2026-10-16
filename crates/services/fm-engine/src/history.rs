@@ -155,6 +155,8 @@ impl EngineCommand {
             | Self::AnimationPreset(_)
             | Self::SetTransitionFavorite { .. }
             | Self::SetFadeToBlackOutput { .. }
+            | Self::SetFadeToBlackOutputDuration { .. }
+            | Self::SetFadeToBlackCurve { .. }
             | Self::SetDisplayOutput { .. }
             | Self::SetNetworkStream { .. }
             | Self::SetCaptureSettings { .. }
@@ -755,6 +757,36 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
     }
 }
 
+/// The exact edit that reverts a Fade-to-Black output or timing edit, or
+/// `None` when it names an output `state` does not have.
+fn fade_to_black_inverse(state: &ShowState, command: &EngineCommand) -> Option<EngineCommand> {
+    let switcher = state.desired_switcher();
+    let known = |output: &fm_types::OutputId| {
+        state
+            .outputs()
+            .iter()
+            .any(|(candidate, _)| candidate == output)
+    };
+    match command {
+        EngineCommand::SetFadeToBlackOutput { output, .. } => {
+            known(output).then(|| EngineCommand::SetFadeToBlackOutput {
+                output: *output,
+                affected: switcher.fade_to_black_affects(*output),
+            })
+        }
+        EngineCommand::SetFadeToBlackOutputDuration { output, .. } => {
+            known(output).then(|| EngineCommand::SetFadeToBlackOutputDuration {
+                output: *output,
+                duration_frames: switcher.fade_to_black_output_duration(*output),
+            })
+        }
+        EngineCommand::SetFadeToBlackCurve { .. } => Some(EngineCommand::SetFadeToBlackCurve {
+            curve: switcher.fade_to_black_curve(),
+        }),
+        _ => None,
+    }
+}
+
 /// Returns the exact command that would revert `command` on `state`, or
 /// `None` when `command` is not a project edit or targets nothing in `state`.
 pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<EngineCommand> {
@@ -820,14 +852,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::AudioMixer(edit) => {
             crate::audio_mixer::inverse(state, edit).map(EngineCommand::AudioMixer)
         }
-        EngineCommand::SetFadeToBlackOutput { output, .. } => state
-            .outputs()
-            .iter()
-            .any(|(candidate, _)| candidate == output)
-            .then(|| EngineCommand::SetFadeToBlackOutput {
-                output: *output,
-                affected: switcher.fade_to_black_affects(*output),
-            }),
+        EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetFadeToBlackOutputDuration { .. }
+        | EngineCommand::SetFadeToBlackCurve { .. } => fade_to_black_inverse(state, command),
         EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),

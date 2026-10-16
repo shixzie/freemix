@@ -1628,6 +1628,162 @@ fn zoom_is_idempotent_and_realizes_on_exact_frame_boundaries() {
 }
 
 #[test]
+fn every_manual_mix_realizes_frame_exactly_and_cancels_at_the_frame_boundary() {
+    for (index, kind) in EngineManualTransitionKind::MIXES.into_iter().enumerate() {
+        let mut engine = engine();
+        let key = |step: &str| format!("{index}-{step}");
+        let run = |engine: &mut Engine, step: &str, command| {
+            let outcome = engine.execute(envelope(&key(step), command), 0).unwrap();
+            assert!(outcome.receipt.accepted().is_some(), "{kind:?} {step}");
+        };
+        run(
+            &mut engine,
+            "start",
+            EngineCommand::StartManualTransition { kind },
+        );
+        let start = engine.tick().unwrap();
+        assert!(start.manual_transition, "{kind:?}");
+        assert_eq!(
+            start.program.transition_kind,
+            Some(kind.transition_kind()),
+            "{kind:?}"
+        );
+        run(
+            &mut engine,
+            "forward",
+            EngineCommand::SetManualTransitionPosition {
+                position: EngineManualTransitionPosition::new(7_000).unwrap(),
+            },
+        );
+        let forward = engine.tick().unwrap();
+        assert_eq!(
+            (
+                forward.program.mix_start_numerator,
+                forward.program.mix_end_numerator,
+                forward.program.mix_denominator,
+            ),
+            (0, 7_000, 10_000),
+            "{kind:?}"
+        );
+        run(
+            &mut engine,
+            "reverse",
+            EngineCommand::SetManualTransitionPosition {
+                position: EngineManualTransitionPosition::new(3_000).unwrap(),
+            },
+        );
+        let reverse = engine.tick().unwrap();
+        assert_eq!(
+            (
+                reverse.program.mix_start_numerator,
+                reverse.program.mix_end_numerator,
+            ),
+            (7_000, 3_000),
+            "{kind:?}"
+        );
+        // The kind survives a snapshot and restore.
+        let mut engine = Engine::restore(engine.snapshot().unwrap()).unwrap();
+        assert_eq!(
+            engine.realized_manual_transition().unwrap().kind,
+            kind,
+            "{kind:?}"
+        );
+        run(&mut engine, "cancel", EngineCommand::CancelManualTransition);
+        let cancelled = engine.tick().unwrap();
+        assert!(!cancelled.manual_transition, "{kind:?}");
+        assert_eq!(cancelled.program.primary, input(1), "{kind:?}");
+        assert!(cancelled.program.secondary.is_none(), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_manual_stinger_scrubs_its_clip_frames_and_needs_ready_media() {
+    let slot = StingerSlotId::new(1).unwrap();
+    let kind = EngineManualTransitionKind::Stinger {
+        slot,
+        duration_frames: 20,
+    };
+    // Without ready media there is nothing to scrub, and no fallback.
+    let mut missing = stinger_engine(false, 12, MissingMediaFallback::Cut);
+    let outcome = missing
+        .execute(
+            envelope("missing", EngineCommand::StartManualTransition { kind }),
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        outcome.receipt.rejected().unwrap().rejection.code,
+        RejectionCode::Conflict
+    );
+    assert!(missing.show().desired_switcher().t_bar().is_none());
+
+    let mut engine = stinger_engine(true, 12, MissingMediaFallback::Cut);
+    let outcome = engine
+        .execute(
+            envelope(
+                "short",
+                EngineCommand::StartManualTransition {
+                    kind: EngineManualTransitionKind::Stinger {
+                        slot,
+                        duration_frames: 10,
+                    },
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(outcome.receipt.rejected().is_some());
+    engine
+        .execute(
+            envelope("start", EngineCommand::StartManualTransition { kind }),
+            0,
+        )
+        .unwrap();
+    let start = engine.tick().unwrap();
+    assert!(start.manual_transition);
+    assert_eq!(
+        start.program.transition_kind,
+        Some(TransitionKind::Stinger(slot))
+    );
+    assert_eq!(
+        (start.program.mix_numerator, start.program.mix_denominator),
+        (0, 20)
+    );
+    for (step, (basis_points, clip_frame)) in [(5_000, 10), (10_000, 19), (2_500, 5)]
+        .into_iter()
+        .enumerate()
+    {
+        engine
+            .execute(
+                envelope(
+                    &format!("scrub-{step}"),
+                    EngineCommand::SetManualTransitionPosition {
+                        position: EngineManualTransitionPosition::new(basis_points).unwrap(),
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        let frame = engine.tick().unwrap();
+        assert_eq!(frame.program.mix_end_numerator, clip_frame);
+    }
+    // The clip length survives a snapshot and restore.
+    let mut engine = Engine::restore(engine.snapshot().unwrap()).unwrap();
+    assert_eq!(engine.realized_manual_transition().unwrap().kind, kind);
+    assert_eq!(
+        engine.realized_switcher().t_bar().unwrap().clip_frames(),
+        20
+    );
+    engine
+        .execute(envelope("commit", EngineCommand::CommitManualTransition), 0)
+        .unwrap();
+    let committed = engine.tick().unwrap();
+    assert_eq!(committed.program.primary, input(2));
+    assert!(committed.program.secondary.is_none());
+    assert!(!committed.manual_transition);
+}
+
+#[test]
 fn ready_stinger_is_idempotent_and_realizes_on_exact_media_frames() {
     let mut engine = stinger_engine(true, 1, MissingMediaFallback::KeepProgram);
     let slot = StingerSlotId::new(1).unwrap();

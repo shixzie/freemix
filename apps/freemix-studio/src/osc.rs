@@ -24,7 +24,15 @@ pub(crate) enum OscAction {
     Slide,
     Zoom,
     Wipe,
-    FadeToBlack { active: bool },
+    FadeToBlack {
+        active: bool,
+    },
+    /// `/freemix/switcher/manual/start/<kind>`: a mix token or
+    /// `stinger_<slot>` (SW-004).
+    StartManualTransition(fm_protocol::TransitionFavoriteEffect),
+    /// `/freemix/switcher/manual/position` with one `i` argument, 0 through
+    /// 10000 basis points (SW-004).
+    SetManualTransitionPosition(fm_protocol::ManualTransitionPosition),
     CommitManualTransition,
     CancelManualTransition,
 }
@@ -176,8 +184,26 @@ fn receive_loop(
 fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
     let (address, type_offset) = padded_string(datagram, 0)?;
     let (types, end) = padded_string(datagram, type_offset)?;
+    if address == "/freemix/switcher/manual/position" {
+        let argument: [u8; 4] = datagram
+            .get(end..)
+            .filter(|_| types == ",i")
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(())?;
+        return u16::try_from(i32::from_be_bytes(argument))
+            .ok()
+            .and_then(fm_protocol::ManualTransitionPosition::new)
+            .map(OscAction::SetManualTransitionPosition)
+            .ok_or(());
+    }
     if types != "," || end != datagram.len() {
         return Err(());
+    }
+    if let Some(kind) = address.strip_prefix("/freemix/switcher/manual/start/") {
+        return match fm_protocol::TransitionFavoriteEffect::from_token(kind) {
+            Some(fm_protocol::TransitionFavoriteEffect::Cut) | None => Err(()),
+            Some(effect) => Ok(OscAction::StartManualTransition(effect)),
+        };
     }
     if let Some(input) = address.strip_prefix("/freemix/switcher/preview/") {
         return match input.as_bytes() {
@@ -253,6 +279,51 @@ mod tests {
         ];
         for (address, action) in cases {
             assert_eq!(decode(&message(address)), Ok(action));
+        }
+        assert_eq!(
+            decode(&message("/freemix/switcher/manual/start/cube_zoom")),
+            Ok(OscAction::StartManualTransition(
+                fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::CubeZoom
+                )
+            ))
+        );
+        assert_eq!(
+            decode(&message("/freemix/switcher/manual/start/stinger_2")),
+            Ok(OscAction::StartManualTransition(
+                fm_protocol::TransitionFavoriteEffect::Stinger(
+                    fm_protocol::WireStingerSlotId::new(2).unwrap()
+                )
+            ))
+        );
+        assert_eq!(
+            decode(&with_types(
+                "/freemix/switcher/manual/position",
+                ",i",
+                &2_500_i32.to_be_bytes()
+            )),
+            Ok(OscAction::SetManualTransitionPosition(
+                fm_protocol::ManualTransitionPosition::new(2_500).unwrap()
+            ))
+        );
+        for datagram in [
+            message("/freemix/switcher/manual/start/cut"),
+            message("/freemix/switcher/manual/start/FADE"),
+            message("/freemix/switcher/manual/position"),
+            with_types(
+                "/freemix/switcher/manual/position",
+                ",i",
+                &10_001_i32.to_be_bytes(),
+            ),
+            with_types(
+                "/freemix/switcher/manual/position",
+                ",i",
+                &(-1_i32).to_be_bytes(),
+            ),
+            with_types("/freemix/switcher/manual/position", ",f", &[0, 0, 0, 0]),
+            with_types("/freemix/switcher/manual/position", ",i", &[0, 0, 0]),
+        ] {
+            assert_eq!(decode(&datagram), Err(()));
         }
 
         let rejected = [

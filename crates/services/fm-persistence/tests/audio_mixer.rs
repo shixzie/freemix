@@ -150,6 +150,9 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         .unwrap();
     expected.set_audio_solo_mode(AudioSoloMode::Pfl);
     expected.set_fade_to_black_output(OutputId::new(id(41)), false);
+    // Output 40 fades over its own 45 frames on the eased curve (schema 45).
+    expected.set_fade_to_black_output_duration(OutputId::new(id(40)), Some(45));
+    expected.set_fade_to_black_curve(fm_types::FadeToBlackCurve::Ease);
     store.save(&stored(expected.clone())).unwrap();
 
     let loaded = store.load().unwrap();
@@ -174,15 +177,26 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
             .project()
             .fade_to_black_affects(OutputId::new(id(40)))
     );
+    assert_eq!(
+        loaded
+            .project()
+            .fade_to_black_output_durations()
+            .get(&OutputId::new(id(40))),
+        Some(&45)
+    );
+    assert_eq!(
+        loaded.project().fade_to_black_curve(),
+        fm_types::FadeToBlackCurve::Ease
+    );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 44"));
+    assert!(text.contains("\"schema_version\": 45"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2}"
     ), "{text}");
     assert!(text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null}"));
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"fade_to_black_excluded_outputs\": [41],\n    \"display_outputs\": []\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": []\n  },"
     ), "{text}");
 
     for (from, to) in [
@@ -235,6 +249,32 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
             "\"fade_to_black_excluded_outputs\": {}",
         ),
         (",\n    \"fade_to_black_excluded_outputs\": [41]", ""),
+        ("\"duration_frames\": 45}", "\"duration_frames\": \"45\"}"),
+        (
+            "{\"output\": 40, \"duration_frames\": 45}",
+            "{\"output\": 40}",
+        ),
+        (
+            "{\"output\": 40, \"duration_frames\": 45}",
+            "{\"output\": 40, \"duration_frames\": 45}, {\"output\": 40, \"duration_frames\": 45}",
+        ),
+        (
+            "{\"output\": 40, \"duration_frames\": 45}",
+            "{\"output\": 40, \"duration_frames\": 45, \"curve\": \"ease\"}",
+        ),
+        (
+            "\"fade_to_black_curve\": \"ease\"",
+            "\"fade_to_black_curve\": \"Ease\"",
+        ),
+        (
+            "\"fade_to_black_curve\": \"ease\"",
+            "\"fade_to_black_curve\": null",
+        ),
+        (",\n    \"fade_to_black_curve\": \"ease\"", ""),
+        (
+            ",\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}]",
+            "",
+        ),
     ] {
         let malformed = text.replacen(from, to, 1);
         assert_ne!(malformed, text, "{from}");
@@ -260,6 +300,9 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
             "\"fade_to_black_excluded_outputs\": [41]",
             "\"fade_to_black_excluded_outputs\": [99]",
         ),
+        ("\"duration_frames\": 45}", "\"duration_frames\": 0}"),
+        ("\"duration_frames\": 45}", "\"duration_frames\": 3601}"),
+        ("{\"output\": 40,", "{\"output\": 99,"),
         // Group 3 inside group 2 inside group 3.
         (
             "{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}",

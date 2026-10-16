@@ -18,7 +18,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -113,7 +113,7 @@ const SETTINGS: &str = "format=1920x1080%4030000%2F1001%3Ayuyv%3Atff\taudio=alsa
 
 #[test]
 fn the_current_protocol_is_2_47() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
 }
 
 #[test]
@@ -607,6 +607,8 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),

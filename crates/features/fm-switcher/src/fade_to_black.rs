@@ -1,7 +1,6 @@
 use core::fmt;
 
-/// Largest automatic Fade-to-Black duration accepted by the switcher.
-pub const MAX_FADE_TO_BLACK_DURATION_FRAMES: u32 = 3_600;
+pub use fm_types::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
 
 /// Exact fixed denominator shared with the compositor FTB position contract.
 pub const FADE_TO_BLACK_POSITION_DENOMINATOR: u32 = u16::MAX as u32;
@@ -131,6 +130,7 @@ struct AutomaticFadeToBlack {
     target: FadeToBlackTarget,
     duration_frames: u32,
     elapsed_frames: u32,
+    curve: FadeToBlackCurve,
 }
 
 impl AutomaticFadeToBlack {
@@ -138,8 +138,9 @@ impl AutomaticFadeToBlack {
         let start = self.start.0;
         let target = self.target.position().0;
         let distance = start.abs_diff(target);
-        let offset = u32::from(distance) * elapsed_frames / self.duration_frames;
-        let offset = u16::try_from(offset).expect("interpolated FTB offset is within its endpoint");
+        let offset = self
+            .curve
+            .offset(distance, elapsed_frames, self.duration_frames);
         if target >= start {
             FadeToBlackPosition(start + offset)
         } else {
@@ -235,7 +236,21 @@ impl FadeToBlackController {
         target: FadeToBlackTarget,
         duration_frames: u32,
     ) -> Result<FadeToBlackRequest, FadeToBlackError> {
-        validate_duration(duration_frames)?;
+        self.request_with_curve(target, duration_frames, FadeToBlackCurve::Linear)
+    }
+
+    /// Like [`Self::request`], easing the move along `curve`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `duration_frames` is zero or exceeds the bound.
+    pub fn request_with_curve(
+        &mut self,
+        target: FadeToBlackTarget,
+        duration_frames: u32,
+        curve: FadeToBlackCurve,
+    ) -> Result<FadeToBlackRequest, FadeToBlackError> {
+        validate_fade_to_black_duration(duration_frames)?;
         if self.target == target {
             return Ok(FadeToBlackRequest::Unchanged);
         }
@@ -256,6 +271,7 @@ impl FadeToBlackController {
             target,
             duration_frames,
             elapsed_frames: 0,
+            curve,
         });
         Ok(FadeToBlackRequest::Started(started))
     }
@@ -317,7 +333,13 @@ impl fmt::Display for FadeToBlackError {
 
 impl std::error::Error for FadeToBlackError {}
 
-fn validate_duration(duration_frames: u32) -> Result<(), FadeToBlackError> {
+/// Checks an automatic Fade-to-Black duration against the switcher bound.
+///
+/// # Errors
+///
+/// Returns an error when `duration_frames` is zero or exceeds
+/// [`MAX_FADE_TO_BLACK_DURATION_FRAMES`].
+pub const fn validate_fade_to_black_duration(duration_frames: u32) -> Result<(), FadeToBlackError> {
     if duration_frames == 0 {
         Err(FadeToBlackError::ZeroDuration)
     } else if duration_frames > MAX_FADE_TO_BLACK_DURATION_FRAMES {

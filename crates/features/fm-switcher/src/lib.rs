@@ -14,8 +14,9 @@ mod transition;
 pub use command::{InputUsage, SwitcherCommand, SwitcherError, SwitcherEvent};
 pub use fade_to_black::{
     FADE_TO_BLACK_POSITION_DENOMINATOR, FadeToBlackAdvance, FadeToBlackController,
-    FadeToBlackError, FadeToBlackFrame, FadeToBlackPosition, FadeToBlackRequest,
+    FadeToBlackCurve, FadeToBlackError, FadeToBlackFrame, FadeToBlackPosition, FadeToBlackRequest,
     FadeToBlackStarted, FadeToBlackTarget, MAX_FADE_TO_BLACK_DURATION_FRAMES,
+    validate_fade_to_black_duration,
 };
 pub use logical_output::{
     AudioMap, AudioSource, BackgroundPlan, CellFeed, FeedLayer, LOGICAL_OUTPUT_COUNT,

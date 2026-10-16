@@ -489,6 +489,12 @@ impl StudioApp {
                 OscAction::Zoom => ExternalStudioAction::Zoom,
                 OscAction::Wipe => ExternalStudioAction::Wipe,
                 OscAction::FadeToBlack { active } => ExternalStudioAction::FadeToBlack { active },
+                OscAction::StartManualTransition(effect) => {
+                    ExternalStudioAction::StartManualTransition(effect)
+                }
+                OscAction::SetManualTransitionPosition(position) => {
+                    ExternalStudioAction::SetManualTransitionPosition(position)
+                }
                 OscAction::CommitManualTransition => ExternalStudioAction::CommitManualTransition,
                 OscAction::CancelManualTransition => ExternalStudioAction::CancelManualTransition,
             };
@@ -2302,6 +2308,20 @@ fn result_id(result: &CommandResult) -> &str {
     }
 }
 
+/// The protocol command one console intent sends, resolved against the
+/// replicated `view`; the same mapping the native Studio worker uses.
+///
+/// # Errors
+///
+/// Returns why the intent cannot be sent, for example an input that no
+/// longer exists.
+pub fn studio_intent_payload(
+    intent: StudioIntent,
+    view: Option<&ClientView>,
+) -> Result<CommandPayload, String> {
+    intent_payload(intent, view)
+}
+
 #[allow(clippy::too_many_lines)]
 fn intent_payload(
     intent: StudioIntent,
@@ -2357,6 +2377,16 @@ fn intent_payload(
                 output: WireOutputId::from_domain(output),
                 affected,
             }
+        }
+        StudioIntent::SetFadeToBlackOutputDuration {
+            output,
+            duration_frames,
+        } => CommandPayload::SetFadeToBlackOutputDuration {
+            output: WireOutputId::from_domain(output),
+            duration_frames,
+        },
+        StudioIntent::SetFadeToBlackCurve { curve } => {
+            CommandPayload::SetFadeToBlackCurve { curve }
         }
         StudioIntent::SelectPreview(input) => CommandPayload::SelectPreview {
             input: WireInputId::from_domain(input),
@@ -3191,6 +3221,8 @@ mod tests {
         SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
@@ -5742,6 +5774,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one table of every mixer intent
     fn mixer_and_fade_to_black_output_intents_map_to_their_payloads() {
         let input = WireInputId::new(NonZeroU128::new(9).unwrap()).to_domain();
         let output = WireOutputId::new(NonZeroU128::new(4).unwrap()).to_domain();
@@ -5818,6 +5851,30 @@ mod tests {
             Ok(CommandPayload::SetFadeToBlackOutput {
                 output: WireOutputId::from_domain(output),
                 affected: false,
+            })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetFadeToBlackOutputDuration {
+                    output,
+                    duration_frames: Some(45)
+                },
+                None
+            ),
+            Ok(CommandPayload::SetFadeToBlackOutputDuration {
+                output: WireOutputId::from_domain(output),
+                duration_frames: Some(45),
+            })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetFadeToBlackCurve {
+                    curve: fm_protocol::FadeToBlackCurve::Ease
+                },
+                None
+            ),
+            Ok(CommandPayload::SetFadeToBlackCurve {
+                curve: fm_protocol::FadeToBlackCurve::Ease,
             })
         );
     }

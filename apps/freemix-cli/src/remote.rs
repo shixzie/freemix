@@ -614,7 +614,9 @@ impl CommandCompletion {
             CommandPayload::AudioMixer(operation) => Self::Mixer {
                 live: operation.is_live(),
             },
-            CommandPayload::SetFadeToBlackOutput { .. } => Self::FadeToBlackOutput,
+            CommandPayload::SetFadeToBlackOutput { .. }
+            | CommandPayload::SetFadeToBlackOutputDuration { .. }
+            | CommandPayload::SetFadeToBlackCurve { .. } => Self::FadeToBlackOutput,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
             CommandPayload::SetEditLock { .. } => Self::Padlock,
             CommandPayload::TakeTitle { fields, .. } => Self::TitleTake {
@@ -909,7 +911,9 @@ impl Remote {
                             completion,
                             CommandCompletion::Mixer { .. } | CommandCompletion::History
                         ),
-                        EventPayload::FadeToBlackOutputChanged { .. } => matches!(
+                        EventPayload::FadeToBlackOutputChanged { .. }
+                        | EventPayload::FadeToBlackOutputDurationChanged { .. }
+                        | EventPayload::FadeToBlackCurveChanged { .. } => matches!(
                             completion,
                             CommandCompletion::FadeToBlackOutput | CommandCompletion::History
                         ),
@@ -958,7 +962,7 @@ impl Remote {
             .ok_or_else(|| RemoteFailure("remote project cursor is unavailable".into()))?;
         let switcher = state.switcher();
         println!(
-            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={} Titles={} Mixer={} FtbExcluded={}",
+            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={} Titles={} Mixer={} FtbExcluded={} FtbDurations={} FtbCurve={}",
             self.project_id,
             state.show_name(),
             cursor.revision,
@@ -982,6 +986,8 @@ impl Remote {
             format_titles(state.titles()),
             format_audio_mixer(state),
             format_fade_to_black_excluded(state),
+            format_fade_to_black_durations(state),
+            state.fade_to_black_curve().token(),
         );
         if let Some(playlist) = state.playlist() {
             println!(
@@ -1251,6 +1257,19 @@ fn format_fade_to_black_excluded(state: &fm_ui_model::ProjectState) -> String {
     )
 }
 
+/// Every output fading over its own duration, as `output:frames`.
+fn format_fade_to_black_durations(state: &fm_ui_model::ProjectState) -> String {
+    format!(
+        "[{}]",
+        state
+            .fade_to_black_output_durations()
+            .iter()
+            .map(|(output, frames)| format!("{output}:{frames}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 fn format_input_roster(state: &fm_ui_model::ProjectState) -> String {
     format!(
         "[{}]",
@@ -1337,12 +1356,7 @@ fn format_manual_transition(status: ManualTransitionStatus) -> String {
         ManualTransitionStatus::Inactive => "inactive".to_owned(),
         ManualTransitionStatus::Active(state) => format!(
             "{}:{}->{}@{}",
-            match state.kind {
-                fm_protocol::ManualTransitionKind::Fade => "fade",
-                fm_protocol::ManualTransitionKind::Wipe => "wipe",
-                fm_protocol::ManualTransitionKind::AlphaFade => "alpha_fade",
-                fm_protocol::ManualTransitionKind::Slide => "slide",
-            },
+            state.kind.token(),
             state.from,
             state.to,
             state.position.basis_points(),

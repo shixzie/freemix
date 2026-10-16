@@ -4,7 +4,8 @@ use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
-    AMBER, PROGRAM, border_color, section_label, text_color, text_dim_color, widget_color,
+    AMBER, PROGRAM, border_color, field_label, section_label, text_color, text_dim_color,
+    widget_color,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -237,10 +238,121 @@ pub(crate) fn draw_fade_to_black_outputs(
                     affected: fades,
                 });
             }
+            draw_output_duration(
+                ui,
+                (output.output, &output.name),
+                view.fade_to_black_output_duration(output.output),
+                (enabled, reason),
+                intents,
+            );
         }
+        ui.separator();
+        draw_curve(ui, view.fade_to_black_curve, (enabled, reason), intents);
     })
     .response
     .hint(l.text(Msg::FtbOutputsHover), reason);
+}
+
+/// One output's `Own duration` toggle and, while it is on, the frames it
+/// fades over instead of the shared Fade-to-Black duration (SW-004). A
+/// drag sends one edit when released; a typed value when it changes.
+fn draw_output_duration(
+    ui: &mut Ui,
+    (output, name): (fm_types::OutputId, &str),
+    duration: Option<u32>,
+    (enabled, reason): (bool, &str),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let output_arg = || [("output", Arg::Str(name))];
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        let mut own = duration.is_some();
+        let toggle_hover = l.format(
+            if own {
+                Msg::FtbOwnDurationOnHover
+            } else {
+                Msg::FtbOwnDurationOffHover
+            },
+            &output_arg(),
+        );
+        if ui
+            .add_enabled(
+                enabled,
+                egui::Checkbox::new(&mut own, l.text(Msg::FtbOwnDuration)),
+            )
+            .hint(&toggle_hover, reason)
+            .changed()
+        {
+            intents.push(StudioIntent::SetFadeToBlackOutputDuration {
+                output,
+                duration_frames: own
+                    .then_some(crate::StudioShell::DEFAULT_TRANSITION_DURATION_FRAMES),
+            });
+        }
+        let Some(confirmed) = duration else {
+            return;
+        };
+        let draft_id = egui::Id::new(("studio-ftb-output-duration", output));
+        let mut frames = ui
+            .data(|data| data.get_temp::<u32>(draft_id))
+            .unwrap_or(confirmed);
+        let response = ui
+            .add_enabled(
+                enabled,
+                DragValue::new(&mut frames)
+                    .range(1..=fm_protocol::MAX_FADE_TO_BLACK_DURATION_FRAMES)
+                    .suffix(" fr")
+                    .speed(1.0),
+            )
+            .hint(
+                &l.format(Msg::FtbOutputDurationHover, &output_arg()),
+                reason,
+            );
+        if response.dragged() {
+            ui.data_mut(|data| data.insert_temp(draft_id, frames));
+        } else {
+            ui.data_mut(|data| data.remove::<u32>(draft_id));
+            if (response.drag_stopped() || response.changed()) && frames != confirmed {
+                intents.push(StudioIntent::SetFadeToBlackOutputDuration {
+                    output,
+                    duration_frames: Some(frames),
+                });
+            }
+        }
+    });
+}
+
+/// The Fade-to-Black curve: Linear or Ease (SW-004).
+fn draw_curve(
+    ui: &mut Ui,
+    current: fm_protocol::FadeToBlackCurve,
+    (enabled, reason): (bool, &str),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(field_label(l.text(Msg::FtbCurveLabel)));
+        for curve in fm_protocol::FadeToBlackCurve::ALL {
+            let (label, hover) = match curve {
+                fm_protocol::FadeToBlackCurve::Linear => {
+                    (Msg::AnimEaseLinear, Msg::FtbCurveLinearHover)
+                }
+                fm_protocol::FadeToBlackCurve::Ease => (Msg::FtbCurveEase, Msg::FtbCurveEaseHover),
+            };
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::selectable(curve == current, l.text(label)),
+                )
+                .hint(l.text(hover), reason)
+                .clicked()
+                && curve != current
+            {
+                intents.push(StudioIntent::SetFadeToBlackCurve { curve });
+            }
+        }
+    });
 }
 
 /// How prominently the Fade-to-Black status line is drawn.

@@ -125,6 +125,16 @@ pub(super) fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayloa
                 affected: *affected,
             })
         }
+        EngineCommand::SetFadeToBlackOutputDuration {
+            output,
+            duration_frames,
+        } => Some(CommandPayload::SetFadeToBlackOutputDuration {
+            output: WireOutputId::from_domain(*output),
+            duration_frames: *duration_frames,
+        }),
+        EngineCommand::SetFadeToBlackCurve { curve } => {
+            Some(CommandPayload::SetFadeToBlackCurve { curve: *curve })
+        }
         _ => None,
     }
 }
@@ -141,6 +151,16 @@ pub(super) fn changed(event: &EngineEvent) -> Option<EventPayload> {
                 output: WireOutputId::from_domain(*output),
                 affected: *affected,
             })
+        }
+        EngineEvent::FadeToBlackOutputDurationChanged {
+            output,
+            duration_frames,
+        } => Some(EventPayload::FadeToBlackOutputDurationChanged {
+            output: WireOutputId::from_domain(*output),
+            duration_frames: *duration_frames,
+        }),
+        EngineEvent::FadeToBlackCurveChanged { curve } => {
+            Some(EventPayload::FadeToBlackCurveChanged { curve: *curve })
         }
         _ => None,
     }
@@ -166,6 +186,14 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
             })
             .collect(),
     }
+}
+
+/// The outputs with their own Fade-to-Black duration, ascending.
+pub(super) fn wire_output_durations(show: &ShowState) -> Vec<(WireOutputId, u32)> {
+    show.desired_switcher()
+        .fade_to_black_output_durations()
+        .map(|(output, frames)| (WireOutputId::from_domain(output), frames))
+        .collect()
 }
 
 /// The outputs Fade to Black leaves live, ascending.

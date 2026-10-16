@@ -136,6 +136,8 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
     WireMessage::Snapshot(SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
@@ -1442,6 +1444,96 @@ fn manual_slide_codec_preserves_exact_current_kind_and_interval() {
 }
 
 #[test]
+fn every_manual_kind_round_trips_and_a_stinger_carries_its_clip_length() {
+    let stinger = ManualTransitionKind::Stinger {
+        slot: fm_protocol::WireStingerSlotId::new(3).unwrap(),
+        duration_frames: 24,
+    };
+    let kinds = fm_protocol::AutoTransitionKind::ALL
+        .map(ManualTransitionKind::from_mix)
+        .into_iter()
+        .chain([stinger]);
+    for kind in kinds {
+        let start = WireMessage::Command(CommandMessage {
+            payload: CommandPayload::StartManualTransition { kind },
+            ..command()
+        });
+        let encoded = encode_line(&start).unwrap();
+        let fields = match kind.duration_frames() {
+            Some(frames) => format!("\ttransition={}\tduration_frames={frames}\n", kind.token()),
+            None => format!("\ttransition={}\n", kind.token()),
+        };
+        assert!(encoded.ends_with(&fields), "{encoded}");
+        assert_eq!(decode_line(&encoded).unwrap(), start);
+
+        let status = ManualTransitionStatus::Active(ManualTransitionState {
+            kind,
+            from: input(1),
+            to: input(2),
+            interval_start: ManualTransitionPosition::new(8_000).unwrap(),
+            position: ManualTransitionPosition::new(2_500).unwrap(),
+        });
+        let event = WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: cursor(),
+            payload: EventPayload::DesiredSwitcher {
+                program: input(1),
+                preview: input(2),
+                manual_transition: status,
+                fade_to_black: FadeToBlackState {
+                    target_active: false,
+                    position: FadeToBlackPosition::LIVE,
+                },
+                overlays: OverlayStatus::empty_channels(),
+                input_audio_strips: input_audio_strips(&[1, 2]),
+            },
+        });
+        let encoded = encode_line(&event).unwrap();
+        assert!(
+            encoded.contains(&format!("\tmanual_kind={}\t", kind.token())),
+            "{encoded}"
+        );
+        assert_eq!(
+            encoded.contains("\tmanual_duration_frames=24\t"),
+            kind == stinger,
+            "{encoded}"
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), event);
+    }
+
+    // A Stinger needs a nonzero clip length; a mix carries none; Cut has
+    // no manual form.
+    let start = encode_line(&WireMessage::Command(CommandMessage {
+        payload: CommandPayload::StartManualTransition { kind: stinger },
+        ..command()
+    }))
+    .unwrap();
+    for (from, to) in [
+        ("\tduration_frames=24", ""),
+        ("\tduration_frames=24", "\tduration_frames=0"),
+        ("transition=stinger_3", "transition=stinger_9"),
+        ("transition=stinger_3", "transition=fade"),
+        ("transition=stinger_3\tduration_frames=24", "transition=cut"),
+    ] {
+        let malformed = start.replacen(from, to, 1);
+        assert_ne!(malformed, start, "{from}");
+        assert!(decode_line(&malformed).is_err(), "{from} -> {to}");
+    }
+    assert!(
+        encode_line(&WireMessage::Command(CommandMessage {
+            payload: CommandPayload::StartManualTransition {
+                kind: ManualTransitionKind::Stinger {
+                    slot: fm_protocol::WireStingerSlotId::new(3).unwrap(),
+                    duration_frames: 0,
+                },
+            },
+            ..command()
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn exact_contract_rejects_every_unknown_field() {
     let fixture = encode_line(&WireMessage::Command(command())).unwrap();
     let required = fixture.replace('\n', "\tfuture=value\n");
@@ -2582,7 +2674,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.47\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.48\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2591,7 +2683,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2801,7 +2893,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -2809,7 +2901,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -2916,7 +3008,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.47\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.48\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2926,7 +3018,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3108,7 +3200,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3156,7 +3248,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3210,7 +3302,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.47\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.48\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3671,7 +3763,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
+                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
             ),
             "{encoded}"
         );
@@ -3993,7 +4085,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4033,7 +4125,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4105,7 +4197,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.47\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.48\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4404,7 +4496,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {
@@ -4509,7 +4601,7 @@ mod playlists {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
+                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
             ),
             "{encoded}"
         );

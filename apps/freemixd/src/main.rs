@@ -3584,13 +3584,15 @@ fn build_stream_groups(
 }
 
 /// The Program audio of one realized frame: the faded mix every output Fade
-/// to Black affects hears, and, while it fades and excludes some output, the
-/// mix before the fade (SW-004).
+/// to Black affects hears, while it fades and excludes some output the mix
+/// before the fade, and the mix of every output fading over its own
+/// duration on a different trajectory (SW-004).
 #[cfg(feature = "native-media")]
 struct CaptureAudio<'a> {
     faded: AudioBlock,
     live: Option<AudioBlock>,
     excluded: &'a [fm_types::OutputId],
+    overrides: &'a [(fm_types::OutputId, AudioBlock)],
 }
 
 #[cfg(feature = "native-media")]
@@ -3601,13 +3603,16 @@ impl CaptureAudio<'_> {
         selected: Option<fm_types::OutputId>,
         project_outputs: &[NativeOutputFrame],
     ) -> &AudioBlock {
+        let output = capture_output_id(selected, project_outputs);
+        if let Some((_, block)) = self
+            .overrides
+            .iter()
+            .find(|(candidate, _)| Some(*candidate) == output)
+        {
+            return block;
+        }
         match &self.live {
-            Some(live)
-                if capture_output_id(selected, project_outputs)
-                    .is_some_and(|output| self.excluded.contains(&output)) =>
-            {
-                live
-            }
+            Some(live) if output.is_some_and(|output| self.excluded.contains(&output)) => live,
             _ => &self.faded,
         }
     }
@@ -3703,6 +3708,8 @@ fn preview_frame(mut frame: FrameResult, preview: InputId) -> FrameResult {
         mix_end_numerator: 0,
     };
     frame.fade_to_black = fm_switcher::FadeToBlackFrame::LIVE;
+    frame.fade_to_black_overrides.clear();
+    frame.manual_transition = false;
     frame.overlays = std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty());
     frame.titles.clear();
     frame.events.clear();
@@ -5368,11 +5375,11 @@ impl NativeDaemon {
     ///
     /// Each running slot resolves its own selected [`fm_types::OutputId`]
     /// independently; a slot whose output is missing latches with
-    /// `"capture:missing_output"`. The first running slot that resolves a
-    /// texture consumes the produced block; when both slots run and resolve a
-    /// texture the second receives a clone, mirroring how the stream fan-out
-    /// clones one block per target. An idle or missing-output slot clones
-    /// nothing, and each slot keeps its own readback owner. Takes the recorder
+    /// `"capture:missing_output"`. Every running slot that resolves a
+    /// texture receives a clone of the block its output hears, mirroring
+    /// how the stream fan-out clones one block per target. An idle or
+    /// missing-output slot clones nothing, and each slot keeps its own
+    /// readback owner. Takes the recorder
     /// pieces separately so the caller can hold immutable borrows of other
     /// daemon fields.
     fn capture_recorders(
@@ -5381,20 +5388,8 @@ impl NativeDaemon {
         runtime: &NativeMediaRuntime,
         project_outputs: &[NativeOutputFrame],
         unbound_output: Option<&NativeTexture>,
-        audio: CaptureAudio<'_>,
+        audio: &CaptureAudio<'_>,
     ) {
-        // A slot recording an output Fade to Black leaves live records the
-        // mix before the fade (SW-004); every other slot records the faded
-        // mix.
-        let live_slot = |slot_index: usize| {
-            audio.live.is_some()
-                && capture_output_id(record_outputs[slot_index], project_outputs)
-                    .is_some_and(|output| audio.excluded.contains(&output))
-        };
-        let live_slots = [live_slot(0), live_slot(1)];
-        let CaptureAudio {
-            faded: audio, live, ..
-        } = audio;
         let mut resolved: [Option<&NativeTexture>; RECORDER_SLOTS] = [None, None];
         for (slot_index, slot) in recorders.iter_mut().enumerate() {
             let ProgramRecording::Running(recorder) = slot else {
@@ -5410,16 +5405,9 @@ impl NativeDaemon {
                 recorder.fail("capture:missing_output".to_owned(), true);
             }
         }
-        // A clone is made only when both slots actually run, resolve a
-        // texture, and record the same mix; the first such slot consumes the
-        // produced block.
-        let mut faded = Some(audio);
-        let mut live = live;
-        let mut remaining = [false, true].map(|wanted_live| {
-            (0..RECORDER_SLOTS)
-                .filter(|&slot| resolved[slot].is_some() && live_slots[slot] == wanted_live)
-                .count()
-        });
+        // A slot recording an output Fade to Black leaves live records the
+        // mix before the fade, one fading over its own duration its own mix,
+        // and every other slot the faded mix (SW-004).
         for (slot_index, slot) in recorders.iter_mut().enumerate() {
             let ProgramRecording::Running(recorder) = slot else {
                 continue;
@@ -5427,21 +5415,9 @@ impl NativeDaemon {
             let Some(program) = resolved[slot_index] else {
                 continue;
             };
-            let kind = usize::from(live_slots[slot_index]);
-            let source = if live_slots[slot_index] {
-                &mut live
-            } else {
-                &mut faded
-            };
-            remaining[kind] -= 1;
-            let block = if remaining[kind] == 0 {
-                source.take()
-            } else {
-                source.clone()
-            };
-            let Some(block) = block else {
-                continue;
-            };
+            let block = audio
+                .for_output(record_outputs[slot_index], project_outputs)
+                .clone();
             recorder.capture(runtime, program, block);
         }
     }
@@ -6176,6 +6152,7 @@ impl NativeDaemon {
         let latest_project_outputs = &mut self.latest_project_outputs;
         let mut audio = None;
         let mut live_audio = None;
+        let mut override_audio = Vec::new();
         let mut fade_to_black_excluded = Vec::new();
         let mut monitor_frame = None;
         let mut preview_source = None;
@@ -6244,6 +6221,7 @@ impl NativeDaemon {
                 .map_err(NativeRealizationError::Audio)?;
             audio = Some(block);
             live_audio = master.take_live_audio();
+            override_audio = master.take_override_audio();
             fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);
             Ok::<(), NativeRealizationError>(())
         })?;
@@ -6261,7 +6239,9 @@ impl NativeDaemon {
         let stream_audio = if self.streams.is_empty() {
             None
         } else {
-            audio.clone().map(|audio| (audio, live_audio.clone()))
+            audio
+                .clone()
+                .map(|audio| (audio, live_audio.clone(), override_audio.clone()))
         };
         if let Some(audio) = audio {
             self.rotate_due_recorders(audio.timing().sequence());
@@ -6271,14 +6251,15 @@ impl NativeDaemon {
                 &self.runtime,
                 &self.latest_project_outputs,
                 self.latest_output.as_ref(),
-                CaptureAudio {
+                &CaptureAudio {
                     faded: audio,
                     live: live_audio,
                     excluded: &fade_to_black_excluded,
+                    overrides: &override_audio,
                 },
             );
         }
-        if let Some((audio, live)) = stream_audio {
+        if let Some((audio, live, overrides)) = stream_audio {
             Self::capture_streams(
                 &mut self.streams,
                 &mut self.stream_groups,
@@ -6290,6 +6271,7 @@ impl NativeDaemon {
                     faded: audio,
                     live,
                     excluded: &fade_to_black_excluded,
+                    overrides: &overrides,
                 },
             );
         }
@@ -10526,6 +10508,12 @@ fn restore_engine_with_titles(
     for &output in canonical.fade_to_black_excluded_outputs() {
         let _ = realized.set_fade_to_black_output(output, false);
     }
+    for (&output, &duration) in canonical.fade_to_black_output_durations() {
+        realized
+            .set_fade_to_black_output_duration(output, Some(duration))
+            .map_err(|error| AppFailure(format!("invalid Fade-to-Black duration: {error}")))?;
+    }
+    let _ = realized.set_fade_to_black_curve(canonical.fade_to_black_curve());
     for target in canonical
         .stream_targets()
         .iter()
@@ -10760,6 +10748,13 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
+    show.restore_fade_to_black_timing(
+        project
+            .fade_to_black_output_durations()
+            .iter()
+            .map(|(output, duration)| (*output, *duration)),
+        project.fade_to_black_curve(),
+    )?;
     Ok(())
 }
 
@@ -10850,7 +10845,13 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
         .collect::<Vec<_>>();
     for output in outputs {
         project.set_fade_to_black_output(output, !excluded.contains(&output));
+        project.set_fade_to_black_output_duration(
+            output,
+            show.desired_switcher()
+                .fade_to_black_output_duration(output),
+        );
     }
+    project.set_fade_to_black_curve(show.desired_switcher().fade_to_black_curve());
     Ok(())
 }
 
@@ -12563,6 +12564,8 @@ fn command_base_ticks(
         | CommandPayload::SceneLayer(_)
         | CommandPayload::AudioMixer(_)
         | CommandPayload::SetFadeToBlackOutput { .. }
+        | CommandPayload::SetFadeToBlackOutputDuration { .. }
+        | CommandPayload::SetFadeToBlackCurve { .. }
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetNetworkStream { .. }
@@ -13280,7 +13283,19 @@ fn persisted_t_bar(state: TBarState) -> PersistedManualTransitionState {
         TransitionKind::Wipe => PersistedManualTransitionKind::Wipe,
         TransitionKind::AlphaFade => PersistedManualTransitionKind::AlphaFade,
         TransitionKind::Slide => PersistedManualTransitionKind::Slide,
-        _ => unreachable!("engine manual transitions are Fade, Wipe, AlphaFade, or Slide"),
+        TransitionKind::VerticalWipe => PersistedManualTransitionKind::VerticalWipe,
+        TransitionKind::VerticalSlide => PersistedManualTransitionKind::VerticalSlide,
+        TransitionKind::Zoom => PersistedManualTransitionKind::Zoom,
+        TransitionKind::Fly => PersistedManualTransitionKind::Fly,
+        TransitionKind::FlyRotate => PersistedManualTransitionKind::FlyRotate,
+        TransitionKind::Cube => PersistedManualTransitionKind::Cube,
+        TransitionKind::CubeZoom => PersistedManualTransitionKind::CubeZoom,
+        TransitionKind::CrossZoom => PersistedManualTransitionKind::CrossZoom,
+        TransitionKind::Merge => PersistedManualTransitionKind::Merge,
+        TransitionKind::Stinger(slot) => PersistedManualTransitionKind::Stinger {
+            slot: slot.number(),
+            clip_frames: state.clip_frames(),
+        },
     };
     PersistedManualTransitionState::new(
         kind,
@@ -13298,18 +13313,28 @@ fn restored_t_bar(state: PersistedManualTransitionState) -> AppResult<TBarState>
         PersistedManualTransitionKind::Wipe => TransitionKind::Wipe,
         PersistedManualTransitionKind::AlphaFade => TransitionKind::AlphaFade,
         PersistedManualTransitionKind::Slide => TransitionKind::Slide,
+        PersistedManualTransitionKind::VerticalWipe => TransitionKind::VerticalWipe,
+        PersistedManualTransitionKind::VerticalSlide => TransitionKind::VerticalSlide,
+        PersistedManualTransitionKind::Zoom => TransitionKind::Zoom,
+        PersistedManualTransitionKind::Fly => TransitionKind::Fly,
+        PersistedManualTransitionKind::FlyRotate => TransitionKind::FlyRotate,
+        PersistedManualTransitionKind::Cube => TransitionKind::Cube,
+        PersistedManualTransitionKind::CubeZoom => TransitionKind::CubeZoom,
+        PersistedManualTransitionKind::CrossZoom => TransitionKind::CrossZoom,
+        PersistedManualTransitionKind::Merge => TransitionKind::Merge,
+        PersistedManualTransitionKind::Stinger { slot, .. } => TransitionKind::Stinger(
+            fm_switcher::StingerSlotId::new(slot)
+                .ok_or_else(|| AppFailure("invalid persisted manual Stinger slot".into()))?,
+        ),
     };
     let interval_start = TBarPosition::new(state.interval_start_basis_points)
         .ok_or_else(|| AppFailure("invalid persisted manual-transition interval start".into()))?;
     let position = TBarPosition::new(state.position_basis_points)
         .ok_or_else(|| AppFailure("invalid persisted manual-transition position".into()))?;
-    Ok(TBarState::restore(
-        kind,
-        state.from_id,
-        state.to_id,
-        interval_start,
-        position,
-    ))
+    Ok(
+        TBarState::restore(kind, state.from_id, state.to_id, interval_start, position)
+            .with_clip_frames(state.kind.clip_frames()),
+    )
 }
 
 fn persisted_engine_receipt(

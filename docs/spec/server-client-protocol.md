@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.47 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.48 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1387,6 +1387,38 @@ Protocol 2.47 adds capture device inputs (IN-001).
   `remote-capture-devices`, which prints each device and a table of its
   formats.
 - 2.46 is refused.
+
+Protocol 2.48 completes Fade to Black and the T-bar (SW-004).
+
+- `payload=fade_to_black_output_duration` with `output` and
+  `duration_frames` (1..=3600, or `-` to follow the global duration) gives
+  one output its own Fade-to-Black duration; an unknown output is refused
+  `not_found`. `payload=fade_to_black_curve` with `curve` (`linear` or
+  `ease`, the exact integer smoothstep `3t^2 - 2t^3`) shapes every
+  automatic Fade-to-Black move. Both are transition-class, undoable project
+  edits that honour padlocks. `event=fade_to_black_output_duration_changed`
+  (`output`, `duration_frames`) and `event=fade_to_black_curve_changed`
+  (`curve`) replicate them.
+- The snapshot adds `fade_to_black_output_durations`, the overrides in
+  ascending output order as `<output>:<frames>` joined with `,` (empty for
+  none), and `fade_to_black_curve`.
+- `payload=manual_start` takes any timed kind as `transition`:
+  every mix token (`fade`, `wipe`, `slide`, `alpha_fade`, `vertical_wipe`,
+  `cube_zoom`, ...) or `stinger_<slot>` with a nonzero `duration_frames`
+  naming the clip length. A manual Stinger needs its configured slot with
+  ready media; the T-bar position picks the clip frame. Manual status
+  fields add `desired_manual_duration_frames`,
+  `realized_manual_duration_frames`, or `manual_duration_frames` for a
+  Stinger. Moving the T-bar back reverses the mix exactly; commit and
+  cancel complete at the next frame boundary.
+- Durability: the project gains `fade_to_black_output_durations` (a list of
+  `{"output", "duration_frames"}`) and `fade_to_black_curve`, and a
+  persisted manual transition carries `clip_frames` (0 for a mix) (schema
+  45).
+- `freemix-cli` adds `ftb-output-duration <output> <frames|none>`,
+  `ftb-curve <linear|ease>`, and their `remote-` forms; `tbar-start` takes
+  any mix token or `stinger-<n> <frames>`.
+- 2.47 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

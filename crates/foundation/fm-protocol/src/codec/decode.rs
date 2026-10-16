@@ -484,6 +484,15 @@ fn decode_command_payload(
             output: decode_output(fields, "output")?,
             affected: fields.boolean("affected")?,
         },
+        "fade_to_black_output_duration" => CommandPayload::SetFadeToBlackOutputDuration {
+            output: decode_output(fields, "output")?,
+            duration_frames: super::audio_mixer::decode_optional_duration(
+                fields.required("duration_frames")?,
+            )?,
+        },
+        "fade_to_black_curve" => CommandPayload::SetFadeToBlackCurve {
+            curve: super::audio_mixer::decode_curve(fields.required("curve")?)?,
+        },
         "set_display_output" => CommandPayload::SetDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
             config: Box::new(super::display_output::decode_config(fields)?),
@@ -583,18 +592,17 @@ fn decode_command_payload(
 fn decode_manual_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
     if name == "manual_start" {
         let value = fields.required("transition")?;
-        let kind = match value.as_str() {
-            "fade" => crate::ManualTransitionKind::Fade,
-            "wipe" => crate::ManualTransitionKind::Wipe,
-            "alpha_fade" => crate::ManualTransitionKind::AlphaFade,
-            "slide" => crate::ManualTransitionKind::Slide,
-            _ => {
-                return Err(CodecError::InvalidField {
-                    field: "transition",
-                    value,
-                });
-            }
+        let duration = if value.starts_with("stinger_") {
+            Some(fields.parse_required("duration_frames")?)
+        } else {
+            None
         };
+        let kind = crate::ManualTransitionKind::from_token(&value, duration).ok_or(
+            CodecError::InvalidField {
+                field: "transition",
+                value,
+            },
+        )?;
         return Ok(CommandPayload::StartManualTransition { kind });
     }
     let value = fields.required("position_basis_points")?;
@@ -1555,6 +1563,10 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         fade_to_black_excluded_outputs: super::audio_mixer::decode_excluded_outputs(
             &fields.required("fade_to_black_excluded_outputs")?,
         )?,
+        fade_to_black_output_durations: super::audio_mixer::decode_snapshot_output_durations(
+            fields,
+        )?,
+        fade_to_black_curve: super::audio_mixer::decode_snapshot_curve(fields)?,
         display_outputs: super::display_output::decode_entries(
             &fields.required("display_outputs")?,
         )?,
@@ -2188,6 +2200,15 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             output: decode_output(fields, "output")?,
             affected: fields.boolean("affected")?,
         },
+        "fade_to_black_output_duration_changed" => EventPayload::FadeToBlackOutputDurationChanged {
+            output: decode_output(fields, "output")?,
+            duration_frames: super::audio_mixer::decode_optional_duration(
+                fields.required("duration_frames")?,
+            )?,
+        },
+        "fade_to_black_curve_changed" => EventPayload::FadeToBlackCurveChanged {
+            curve: super::audio_mixer::decode_curve(fields.required("curve")?)?,
+        },
         "capture_settings_changed" => EventPayload::CaptureSettingsChanged {
             input: fields.canonical_input("input")?,
             settings: Box::new(super::capture::decode_settings(fields)?),
@@ -2603,18 +2624,21 @@ fn decode_manual_status(
         return Ok(ManualTransitionStatus::Inactive);
     }
     let kind_value = fields.required(kind)?;
-    let kind = match kind_value.as_str() {
-        "fade" => ManualTransitionKind::Fade,
-        "wipe" => ManualTransitionKind::Wipe,
-        "alpha_fade" => ManualTransitionKind::AlphaFade,
-        "slide" => ManualTransitionKind::Slide,
-        _ => {
-            return Err(CodecError::InvalidField {
-                field: kind,
-                value: kind_value,
-            });
-        }
+    let duration = if kind_value.starts_with("stinger_") {
+        Some(fields.parse_required(match names {
+            ManualStatusFields::Desired => "desired_manual_duration_frames",
+            ManualStatusFields::Realized => "realized_manual_duration_frames",
+            ManualStatusFields::Unqualified => "manual_duration_frames",
+        })?)
+    } else {
+        None
     };
+    let kind = ManualTransitionKind::from_token(&kind_value, duration).ok_or(
+        CodecError::InvalidField {
+            field: kind,
+            value: kind_value,
+        },
+    )?;
     let from_value = fields.required(from)?;
     let from_input = parse_input(&from_value).ok_or(CodecError::InvalidField {
         field: from,

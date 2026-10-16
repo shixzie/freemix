@@ -448,6 +448,139 @@ fn fade_to_black_output_selection_is_undoable_and_realized_per_output() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn fade_to_black_output_durations_and_curve_are_padlocked_undoable_and_realized() {
+    let mut engine = engine();
+    let duration = |frames| EngineCommand::SetFadeToBlackOutputDuration {
+        output: output(2),
+        duration_frames: frames,
+    };
+    let ease = EngineCommand::SetFadeToBlackCurve {
+        curve: fm_switcher::FadeToBlackCurve::Ease,
+    };
+    assert_eq!(duration(Some(2)).kind(), EngineCommandKind::ProjectEdit);
+    assert_eq!(ease.kind(), EngineCommandKind::ProjectEdit);
+    for (key, command, code) in [
+        ("zero", duration(Some(0)), RejectionCode::InvalidCommand),
+        ("long", duration(Some(3_601)), RejectionCode::InvalidCommand),
+        (
+            "unknown",
+            EngineCommand::SetFadeToBlackOutputDuration {
+                output: output(9),
+                duration_frames: Some(2),
+            },
+            RejectionCode::NotFound,
+        ),
+    ] {
+        let outcome = execute(&mut engine, key, command);
+        assert_eq!(rejection(&outcome).code, code, "{key}");
+    }
+    let outcome = accept(&mut engine, "own", duration(Some(2)));
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        EngineEvent::FadeToBlackOutputDurationChanged {
+            duration_frames: Some(2),
+            ..
+        }
+    )));
+    accept(&mut engine, "ease", ease.clone());
+    let switcher = engine.show().desired_switcher();
+    assert_eq!(switcher.fade_to_black_output_duration(output(2)), Some(2));
+    assert_eq!(
+        switcher.fade_to_black_curve(),
+        fm_switcher::FadeToBlackCurve::Ease
+    );
+
+    // The padlock covers both edits.
+    accept(
+        &mut engine,
+        "lock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: true,
+        },
+    );
+    for (key, command) in [("locked-own", duration(None)), ("locked-ease", ease)] {
+        let outcome = execute(&mut engine, key, command);
+        assert_eq!(
+            EditRejectionKind::of(rejection(&outcome)),
+            Some(EditRejectionKind::ProjectLocked),
+            "{key}"
+        );
+    }
+    accept(
+        &mut engine,
+        "unlock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: false,
+        },
+    );
+
+    // Output 2 fades over its own two frames on the eased curve, Program
+    // over the four the request carries; each frame reports output 2's
+    // interval wherever it differs.
+    accept(
+        &mut engine,
+        "ftb",
+        EngineCommand::FadeToBlack {
+            active: true,
+            duration_frames: 4,
+        },
+    );
+    let mut own = Vec::new();
+    let mut shared = Vec::new();
+    for _ in 0..4 {
+        let frame = engine.tick().unwrap();
+        own.push(
+            frame
+                .fade_to_black_for(output(2))
+                .interval_end()
+                .numerator(),
+        );
+        shared.push(
+            frame
+                .fade_to_black_for(output(1))
+                .interval_end()
+                .numerator(),
+        );
+        assert_eq!(frame.fade_to_black_for(output(1)), frame.fade_to_black);
+        assert_eq!(
+            frame
+                .fade_to_black_overrides
+                .iter()
+                .any(|(candidate, _)| *candidate == output(2)),
+            frame.fade_to_black_for(output(2)) != frame.fade_to_black
+        );
+    }
+    assert_eq!(own, [32_767, 65_535, 65_535, 65_535]);
+    assert_eq!(shared, [10_239, 32_767, 55_295, 65_535]);
+
+    // Undo restores the shared duration and the linear curve, in order.
+    undo(&mut engine, "undo-ease");
+    assert_eq!(
+        engine.show().desired_switcher().fade_to_black_curve(),
+        fm_switcher::FadeToBlackCurve::Linear
+    );
+    undo(&mut engine, "undo-own");
+    assert_eq!(
+        engine
+            .show()
+            .desired_switcher()
+            .fade_to_black_output_duration(output(2)),
+        None
+    );
+    redo(&mut engine, "redo-own");
+    assert_eq!(
+        engine
+            .show()
+            .desired_switcher()
+            .fade_to_black_output_duration(output(2)),
+        Some(2)
+    );
+}
+
+#[test]
 fn solo_mode_and_group_parents_are_undoable_project_edits_and_group_solo_is_live() {
     let mut engine = engine();
     let solo = mixer(EngineAudioMixerEdit::SetGroupSolo {

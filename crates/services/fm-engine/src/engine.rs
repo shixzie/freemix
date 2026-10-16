@@ -10,10 +10,11 @@ use fm_command::{
 };
 use fm_scheduler::{FrameNumber, FrameScheduler, PlanGeneration};
 use fm_switcher::{
-    FadeToBlackFrame, FadeToBlackPosition, InputUsage, OVERLAY_CHANNEL_COUNT, OverlayBorderPreset,
-    OverlayChannelId, OverlayChannelState, OverlayPositionPreset, OverlayTransitionKind,
-    ProgramFrame, RecorderSlot, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherCommand,
-    SwitcherError, SwitcherEvent, SwitcherState, TBarPosition, TransitionKind,
+    FadeToBlackCurve, FadeToBlackFrame, FadeToBlackPosition, InputUsage, OVERLAY_CHANNEL_COUNT,
+    OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayPositionPreset,
+    OverlayTransitionKind, ProgramFrame, RecorderSlot, StingerDescriptor, StingerSlotId,
+    StreamTargetId, SwitcherCommand, SwitcherError, SwitcherEvent, SwitcherState, TBarPosition,
+    TransitionKind,
 };
 use fm_titles::fm_animation::Phase;
 use fm_titles::{FieldId, FieldValue, TitleAir, TitleAirFrame, TitleAirPhase, TitleAirTiming};
@@ -47,12 +48,117 @@ pub const MAX_INPUT_AUDIO_GAIN_MILLIDB: i32 = 24_000;
 pub const MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS: i32 = -10_000;
 pub const MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS: i32 = 10_000;
 
+/// The kind of a manual (T-bar) transition: every timed mix, or a Stinger
+/// scrubbing its clip (SW-004).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineManualTransitionKind {
     Fade,
     Wipe,
     AlphaFade,
     Slide,
+    VerticalWipe,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+    /// Stinger `slot` scrubbing a `duration_frames` clip: the position names
+    /// the clip frame and the base cuts at the slot's cut point.
+    Stinger {
+        slot: StingerSlotId,
+        duration_frames: u32,
+    },
+}
+
+impl EngineManualTransitionKind {
+    /// Every mix kind, in operator order.
+    pub const MIXES: [Self; 13] = [
+        Self::Fade,
+        Self::AlphaFade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
+
+    /// The switcher kind this manual transition draws with.
+    #[must_use]
+    pub const fn transition_kind(self) -> TransitionKind {
+        match self {
+            Self::Fade => TransitionKind::Fade,
+            Self::Wipe => TransitionKind::Wipe,
+            Self::AlphaFade => TransitionKind::AlphaFade,
+            Self::Slide => TransitionKind::Slide,
+            Self::VerticalWipe => TransitionKind::VerticalWipe,
+            Self::VerticalSlide => TransitionKind::VerticalSlide,
+            Self::Zoom => TransitionKind::Zoom,
+            Self::Fly => TransitionKind::Fly,
+            Self::FlyRotate => TransitionKind::FlyRotate,
+            Self::Cube => TransitionKind::Cube,
+            Self::CubeZoom => TransitionKind::CubeZoom,
+            Self::CrossZoom => TransitionKind::CrossZoom,
+            Self::Merge => TransitionKind::Merge,
+            Self::Stinger { slot, .. } => TransitionKind::Stinger(slot),
+        }
+    }
+
+    /// The manual kind of a switcher T-bar state.
+    #[must_use]
+    pub const fn from_t_bar(state: fm_switcher::TBarState) -> Self {
+        match state.kind() {
+            TransitionKind::Fade => Self::Fade,
+            TransitionKind::Wipe => Self::Wipe,
+            TransitionKind::AlphaFade => Self::AlphaFade,
+            TransitionKind::Slide => Self::Slide,
+            TransitionKind::VerticalWipe => Self::VerticalWipe,
+            TransitionKind::VerticalSlide => Self::VerticalSlide,
+            TransitionKind::Zoom => Self::Zoom,
+            TransitionKind::Fly => Self::Fly,
+            TransitionKind::FlyRotate => Self::FlyRotate,
+            TransitionKind::Cube => Self::Cube,
+            TransitionKind::CubeZoom => Self::CubeZoom,
+            TransitionKind::CrossZoom => Self::CrossZoom,
+            TransitionKind::Merge => Self::Merge,
+            TransitionKind::Stinger(slot) => Self::Stinger {
+                slot,
+                duration_frames: state.clip_frames(),
+            },
+        }
+    }
+
+    /// The switcher T-bar state this kind starts between `from` and `to`.
+    #[must_use]
+    pub const fn t_bar_state(
+        self,
+        from: InputId,
+        to: InputId,
+        interval_start: EngineManualTransitionPosition,
+        position: EngineManualTransitionPosition,
+    ) -> fm_switcher::TBarState {
+        let state = fm_switcher::TBarState::restore(
+            self.transition_kind(),
+            from,
+            to,
+            interval_start.domain(),
+            position.domain(),
+        );
+        match self {
+            Self::Stinger {
+                duration_frames, ..
+            } => state.with_clip_frames(duration_frames),
+            _ => state,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -76,7 +182,7 @@ impl EngineManualTransitionPosition {
         self.0.basis_points()
     }
 
-    const fn domain(self) -> TBarPosition {
+    pub(crate) const fn domain(self) -> TBarPosition {
         self.0
     }
 }
@@ -335,6 +441,18 @@ pub enum EngineCommand {
         output: OutputId,
         affected: bool,
     },
+    /// Gives `output` its own Fade-to-Black duration (`Some`, 1 through
+    /// 3600 frames) or returns it to the requested one (`None`) (SW-004). A
+    /// project edit, undone by restoring the previous duration.
+    SetFadeToBlackOutputDuration {
+        output: OutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Chooses how automatic Fade-to-Black moves ease (SW-004). A project
+    /// edit, undone by restoring the previous curve.
+    SetFadeToBlackCurve {
+        curve: FadeToBlackCurve,
+    },
     /// Configures (`Some`) or clears (`None`) one fullscreen display output
     /// slot (OR-011). A project edit, undone by restoring the slot's
     /// previous configuration; the daemon realizes it live.
@@ -495,6 +613,16 @@ pub enum EngineEvent {
         output: OutputId,
         affected: bool,
     },
+    /// `output` now fades over its own duration, or over the requested one
+    /// with `None` (SW-004).
+    FadeToBlackOutputDurationChanged {
+        output: OutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Automatic Fade-to-Black moves now ease along `curve` (SW-004).
+    FadeToBlackCurveChanged {
+        curve: FadeToBlackCurve,
+    },
     /// A display output slot was configured or cleared (or the edit was
     /// undone or redone) (OR-011); the slot afterwards is read from
     /// [`ShowState::display_output`].
@@ -633,6 +761,13 @@ pub struct FrameResult {
     /// The outputs Fade to Black leaves live this frame, ascending (SW-004);
     /// see [`Self::fade_to_black_for`].
     pub fade_to_black_excluded_outputs: Vec<OutputId>,
+    /// This frame's interval for every faded output with its own duration
+    /// whose interval differs from [`Self::fade_to_black`], ascending
+    /// (SW-004); see [`Self::fade_to_black_for`].
+    pub fade_to_black_overrides: Vec<(OutputId, FadeToBlackFrame)>,
+    /// Whether [`Self::program`] is a manual (T-bar) transition, whose
+    /// position the operator moves rather than the clock (SW-004).
+    pub manual_transition: bool,
     /// Every title taken with [`EngineCommand::TakeTitle`] that this frame
     /// shows on an overlay channel, ascending by input, with the pose to
     /// render it in. A title on air any other way (Program, a transition, a
@@ -657,7 +792,10 @@ impl FrameResult {
         if self.fade_to_black_excluded_outputs.contains(&output) {
             FadeToBlackFrame::LIVE
         } else {
-            self.fade_to_black
+            self.fade_to_black_overrides
+                .iter()
+                .find(|(candidate, _)| *candidate == output)
+                .map_or(self.fade_to_black, |(_, frame)| *frame)
         }
     }
 }
@@ -1354,6 +1492,8 @@ impl Engine {
                 && !matches!(&command, EngineCommand::SceneLayer(_))
                 && !matches!(&command, EngineCommand::AudioMixer(_))
                 && !matches!(&command, EngineCommand::SetFadeToBlackOutput { .. })
+                && !matches!(&command, EngineCommand::SetFadeToBlackOutputDuration { .. })
+                && !matches!(&command, EngineCommand::SetFadeToBlackCurve { .. })
                 && !matches!(&command, EngineCommand::SetDisplayOutput { .. })
                 && !matches!(&command, EngineCommand::SetNetworkStream { .. })
                 && !matches!(&command, EngineCommand::SetCaptureSettings { .. })
@@ -1569,6 +1709,9 @@ impl Engine {
             .iter()
             .copied()
             .collect();
+        let fade_to_black_overrides = self.realized_switcher.fade_to_black_override_frames();
+        let manual_transition = self.realized_switcher.transition().is_none()
+            && self.realized_switcher.t_bar().is_some();
         let overlays = self.realized_switcher.overlays().clone();
         // A plain overlay command that replaced or removed a title's source
         // ends its animation.
@@ -1623,6 +1766,8 @@ impl Engine {
             input_audio_strip_updates,
             audio_mixer_updates,
             fade_to_black_excluded_outputs,
+            fade_to_black_overrides,
+            manual_transition,
             titles,
             scenes,
             media: self.tick_media(&media_operations),
@@ -1775,6 +1920,11 @@ fn validate_idle_restore(
             != realized_switcher.fade_to_black_position()
         || show.desired_switcher().fade_to_black_excluded_outputs()
             != realized_switcher.fade_to_black_excluded_outputs()
+        || !show
+            .desired_switcher()
+            .fade_to_black_output_durations()
+            .eq(realized_switcher.fade_to_black_output_durations())
+        || show.desired_switcher().fade_to_black_curve() != realized_switcher.fade_to_black_curve()
         || show.desired_switcher().stingers() != realized_switcher.stingers()
         || show.desired_switcher().overlays() != realized_switcher.overlays()
         || show.desired_switcher().streams() != realized_switcher.streams()
@@ -1790,9 +1940,8 @@ fn validate_idle_restore(
     match (show.desired_switcher().t_bar(), realized_switcher.t_bar()) {
         (None, None) => {}
         (Some(desired), Some(realized))
-            if manual_transition_kind_supported(desired.kind())
-                && manual_transition_kind_supported(realized.kind())
-                && desired.kind() == realized.kind()
+            if desired.kind() == realized.kind()
+                && desired.clip_frames() == realized.clip_frames()
                 && desired.from() == realized.from()
                 && desired.to() == realized.to()
                 && desired.interval_start() == TBarPosition::START
@@ -1962,6 +2111,43 @@ impl EngineMutation {
                 .desired_switcher_mut()
                 .set_fade_to_black_output(output, affected);
             events.push(EngineEvent::FadeToBlackOutputChanged { output, affected });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::SetFadeToBlackOutputDuration {
+            output,
+            duration_frames,
+        } = self.command
+        {
+            if !state
+                .outputs()
+                .iter()
+                .any(|(candidate, _)| *candidate == output)
+            {
+                return Err(Rejection::new(
+                    RejectionCode::NotFound,
+                    format!("show does not contain output {output}"),
+                ));
+            }
+            if let Some(duration) = duration_frames {
+                validate_fade_to_black_duration(duration)?;
+            }
+            state
+                .desired_switcher_mut()
+                .set_fade_to_black_output_duration(output, duration_frames)
+                .expect("validated FTB output duration");
+            events.push(EngineEvent::FadeToBlackOutputDurationChanged {
+                output,
+                duration_frames,
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::SetFadeToBlackCurve { curve } = self.command {
+            let _ = state.desired_switcher_mut().set_fade_to_black_curve(curve);
+            events.push(EngineEvent::FadeToBlackCurveChanged { curve });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });
@@ -2332,9 +2518,7 @@ impl EngineMutation {
             EngineCommand::FadeToBlack { .. } => {
                 unreachable!("Fade-to-Black mutations return before switcher command mapping")
             }
-            EngineCommand::StartManualTransition { kind } => SwitcherCommand::StartTBar {
-                kind: manual_transition_kind(*kind),
-            },
+            EngineCommand::StartManualTransition { kind } => manual_start_command(*kind),
             EngineCommand::SetManualTransitionPosition { position } => {
                 SwitcherCommand::SetTBarPosition(position.domain())
             }
@@ -2369,6 +2553,8 @@ impl EngineMutation {
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetFadeToBlackOutput { .. }
+            | EngineCommand::SetFadeToBlackOutputDuration { .. }
+            | EngineCommand::SetFadeToBlackCurve { .. }
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
@@ -2794,6 +2980,19 @@ fn apply_runtime(
     if let EngineCommand::SetFadeToBlackOutput { output, affected } = command {
         return switcher.apply(SwitcherCommand::SetFadeToBlackOutput { output, affected });
     }
+    if let EngineCommand::SetFadeToBlackOutputDuration {
+        output,
+        duration_frames,
+    } = command
+    {
+        return switcher.apply(SwitcherCommand::SetFadeToBlackOutputDuration {
+            output,
+            duration_frames,
+        });
+    }
+    if let EngineCommand::SetFadeToBlackCurve { curve } = command {
+        return switcher.apply(SwitcherCommand::SetFadeToBlackCurve(curve));
+    }
     if let EngineCommand::InputLifecycle(edit) = &command {
         return realize_input_lifecycle(switcher, edit);
     }
@@ -2908,9 +3107,7 @@ fn apply_runtime(
         EngineCommand::FadeToBlack { .. } => {
             unreachable!("Fade-to-Black commands return before switcher command mapping")
         }
-        EngineCommand::StartManualTransition { kind } => SwitcherCommand::StartTBar {
-            kind: manual_transition_kind(kind),
-        },
+        EngineCommand::StartManualTransition { kind } => manual_start_command(kind),
         EngineCommand::SetManualTransitionPosition { position } => {
             SwitcherCommand::SetTBarPosition(position.domain())
         }
@@ -2946,6 +3143,8 @@ fn apply_runtime(
         | EngineCommand::SceneLayer(_)
         | EngineCommand::AudioMixer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetFadeToBlackOutputDuration { .. }
+        | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
@@ -3118,6 +3317,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SceneLayer(_)
         | EngineCommand::AudioMixer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetFadeToBlackOutputDuration { .. }
+        | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
@@ -3509,34 +3710,24 @@ fn stinger_runtime_transition(
     }
 }
 
-const fn manual_transition_kind(kind: EngineManualTransitionKind) -> TransitionKind {
+const fn manual_start_command(kind: EngineManualTransitionKind) -> SwitcherCommand {
     match kind {
-        EngineManualTransitionKind::Fade => TransitionKind::Fade,
-        EngineManualTransitionKind::Wipe => TransitionKind::Wipe,
-        EngineManualTransitionKind::AlphaFade => TransitionKind::AlphaFade,
-        EngineManualTransitionKind::Slide => TransitionKind::Slide,
+        EngineManualTransitionKind::Stinger {
+            slot,
+            duration_frames,
+        } => SwitcherCommand::StartStingerTBar {
+            slot,
+            duration_frames,
+        },
+        _ => SwitcherCommand::StartTBar {
+            kind: kind.transition_kind(),
+        },
     }
-}
-
-const fn manual_transition_kind_supported(kind: TransitionKind) -> bool {
-    matches!(
-        kind,
-        TransitionKind::Fade
-            | TransitionKind::Wipe
-            | TransitionKind::AlphaFade
-            | TransitionKind::Slide
-    )
 }
 
 fn engine_manual_state(state: fm_switcher::TBarState) -> EngineManualTransitionState {
     EngineManualTransitionState {
-        kind: match state.kind() {
-            TransitionKind::Fade => EngineManualTransitionKind::Fade,
-            TransitionKind::Wipe => EngineManualTransitionKind::Wipe,
-            TransitionKind::AlphaFade => EngineManualTransitionKind::AlphaFade,
-            TransitionKind::Slide => EngineManualTransitionKind::Slide,
-            _ => unreachable!("engine manual transitions are Fade, Wipe, AlphaFade, or Slide"),
-        },
+        kind: EngineManualTransitionKind::from_t_bar(state),
         from: state.from(),
         to: state.to(),
         interval_start: EngineManualTransitionPosition::new(state.interval_start().basis_points())
@@ -3552,6 +3743,7 @@ fn switcher_rejection(error: SwitcherError) -> Rejection {
         | SwitcherError::UnconfiguredStinger(_)
         | SwitcherError::UnknownStreamTarget(_) => RejectionCode::NotFound,
         SwitcherError::TransitionInProgress
+        | SwitcherError::StingerMediaUnavailable(_)
         | SwitcherError::DuplicateInput(_)
         | SwitcherError::InputInUse { .. } => RejectionCode::Conflict,
         SwitcherError::UnsupportedManualTransitionKind

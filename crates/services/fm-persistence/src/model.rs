@@ -14,12 +14,93 @@ pub struct RuntimeRouting {
     pub realized_preview_id: Option<InputId>,
 }
 
+/// The kind of an active manual (T-bar) transition: every timed mix, or a
+/// Stinger scrubbing its clip (SW-004, schema 45).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManualTransitionKind {
     Fade,
     Wipe,
     AlphaFade,
     Slide,
+    VerticalWipe,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+    /// Stinger slot `slot` (1 through 8) scrubbing a `clip_frames` clip.
+    Stinger {
+        slot: u8,
+        clip_frames: u32,
+    },
+}
+
+impl ManualTransitionKind {
+    /// Every mix kind, in operator order.
+    pub const MIXES: [Self; 13] = [
+        Self::Fade,
+        Self::AlphaFade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
+
+    /// The `kind` token: a mix name, or `stinger_<slot>`.
+    #[must_use]
+    pub fn token(self) -> String {
+        match self {
+            Self::Fade => "fade",
+            Self::Wipe => "wipe",
+            Self::AlphaFade => "alpha_fade",
+            Self::Slide => "slide",
+            Self::VerticalWipe => "vertical_wipe",
+            Self::VerticalSlide => "vertical_slide",
+            Self::Zoom => "zoom",
+            Self::Fly => "fly",
+            Self::FlyRotate => "fly_rotate",
+            Self::Cube => "cube",
+            Self::CubeZoom => "cube_zoom",
+            Self::CrossZoom => "cross_zoom",
+            Self::Merge => "merge",
+            Self::Stinger { slot, .. } => return format!("stinger_{slot}"),
+        }
+        .to_owned()
+    }
+
+    /// The Stinger clip length; zero for a mix.
+    #[must_use]
+    pub const fn clip_frames(self) -> u32 {
+        match self {
+            Self::Stinger { clip_frames, .. } => clip_frames,
+            _ => 0,
+        }
+    }
+
+    /// The kind named by `token` with `clip_frames`, which must be zero for
+    /// a mix and nonzero for a Stinger slot 1 through 8.
+    #[must_use]
+    pub fn from_token(token: &str, clip_frames: u32) -> Option<Self> {
+        if let Some(slot) = token.strip_prefix("stinger_") {
+            let slot: u8 = (slot.len() == 1).then(|| slot.parse().ok()).flatten()?;
+            return ((1..=8).contains(&slot) && clip_frames > 0)
+                .then_some(Self::Stinger { slot, clip_frames });
+        }
+        if clip_frames != 0 {
+            return None;
+        }
+        Self::MIXES.into_iter().find(|kind| kind.token() == token)
+    }
 }
 
 /// Exact state of one active manual transition at a frame boundary.

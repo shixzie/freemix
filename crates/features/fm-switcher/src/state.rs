@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fm_types::{InputId, InputOrderError, OutputId, validate_input_order};
 
 use crate::stream::{DesiredStream, StreamTargetId, collect_desired_streams};
 use crate::{
-    FadeToBlackAdvance, FadeToBlackController, FadeToBlackError, FadeToBlackFrame,
-    FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget, InputUsage,
+    FadeToBlackAdvance, FadeToBlackController, FadeToBlackCurve, FadeToBlackError,
+    FadeToBlackFrame, FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget, InputUsage,
     MAX_OVERLAY_TRANSITION_DURATION_FRAMES, MissingMediaFallback, OVERLAY_CHANNEL_COUNT,
     OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayPositionPreset,
     OverlayTransitionKind, RECORDER_SLOT_COUNT, RecorderSlot, STINGER_SLOT_COUNT,
@@ -38,6 +38,11 @@ pub struct SwitcherState {
     fade_to_black: FadeToBlackController,
     /// Outputs Fade to Black leaves live; every other output fades.
     fade_to_black_excluded: BTreeSet<OutputId>,
+    /// How every automatic Fade-to-Black move eases (SW-004).
+    fade_to_black_curve: FadeToBlackCurve,
+    /// Outputs that fade over their own duration instead of the requested
+    /// one, each with its own trajectory (SW-004).
+    fade_to_black_overrides: BTreeMap<OutputId, FadeToBlackOverride>,
     overlays: [OverlayChannelState; OVERLAY_CHANNEL_COUNT],
     stingers: [StingerSlotState; STINGER_SLOT_COUNT],
     streams: Vec<DesiredStream>,
@@ -65,6 +70,8 @@ impl SwitcherState {
             t_bar: None,
             fade_to_black: FadeToBlackController::default(),
             fade_to_black_excluded: BTreeSet::new(),
+            fade_to_black_curve: FadeToBlackCurve::Linear,
+            fade_to_black_overrides: BTreeMap::new(),
             overlays: std::array::from_fn(|_| OverlayChannelState::empty()),
             stingers: std::array::from_fn(|_| StingerSlotState::empty()),
             streams: Vec::new(),
@@ -139,7 +146,10 @@ impl SwitcherState {
         if let Some(usage) = self.input_usage_on_bus(input) {
             return Some(usage);
         }
-        if let Some(TransitionKind::Stinger(slot)) = self.transition.map(TransitionState::kind)
+        if let Some(TransitionKind::Stinger(slot)) = self
+            .transition
+            .map(TransitionState::kind)
+            .or_else(|| self.t_bar.map(TBarState::kind))
             && self
                 .stinger(slot)
                 .descriptor()
@@ -280,8 +290,14 @@ impl SwitcherState {
     /// saved endpoints do not match Program and Preview.
     pub fn restore_t_bar(&mut self, t_bar: TBarState) -> Result<(), SwitcherError> {
         self.require_idle()?;
-        if !manual_transition_supported(t_bar.kind()) {
-            return Err(SwitcherError::UnsupportedManualTransitionKind);
+        match t_bar.kind() {
+            TransitionKind::Stinger(slot) => {
+                self.require_playable_stinger(slot, t_bar.clip_frames())?;
+            }
+            _ if t_bar.clip_frames() != 0 => {
+                return Err(SwitcherError::UnsupportedManualTransitionKind);
+            }
+            _ => {}
         }
         self.require_input(t_bar.from())?;
         self.require_input(t_bar.to())?;
@@ -305,11 +321,86 @@ impl SwitcherState {
     /// Replaces Fade-to-Black state with a settled current-contract endpoint.
     pub fn restore_settled_fade_to_black(&mut self, active: bool) {
         self.fade_to_black = FadeToBlackController::settled(FadeToBlackTarget::from_active(active));
+        for state in self.fade_to_black_overrides.values_mut() {
+            state.controller = self.fade_to_black;
+        }
     }
 
+    /// Whether any Fade-to-Black trajectory, shared or per output, is
+    /// still moving.
     #[must_use]
-    pub const fn fade_to_black_is_automatic(&self) -> bool {
+    pub fn fade_to_black_is_automatic(&self) -> bool {
         self.fade_to_black.is_automatic()
+            || self
+                .fade_to_black_overrides
+                .values()
+                .any(|state| state.controller.is_automatic())
+    }
+
+    /// How automatic Fade-to-Black moves ease (SW-004).
+    #[must_use]
+    pub const fn fade_to_black_curve(&self) -> FadeToBlackCurve {
+        self.fade_to_black_curve
+    }
+
+    /// Chooses how later automatic Fade-to-Black moves ease; a move in
+    /// flight keeps its curve.
+    #[must_use]
+    pub fn set_fade_to_black_curve(&mut self, curve: FadeToBlackCurve) -> Vec<SwitcherEvent> {
+        self.fade_to_black_curve = curve;
+        vec![SwitcherEvent::FadeToBlackCurveChanged { curve }]
+    }
+
+    /// The duration `output` fades over instead of the requested one, if
+    /// it has its own (SW-004).
+    #[must_use]
+    pub fn fade_to_black_output_duration(&self, output: OutputId) -> Option<u32> {
+        self.fade_to_black_overrides
+            .get(&output)
+            .map(|state| state.duration_frames)
+    }
+
+    /// Every output's own Fade-to-Black duration, ascending by output.
+    pub fn fade_to_black_output_durations(&self) -> impl Iterator<Item = (OutputId, u32)> + '_ {
+        self.fade_to_black_overrides
+            .iter()
+            .map(|(output, state)| (*output, state.duration_frames))
+    }
+
+    /// Gives `output` its own Fade-to-Black duration, or with `None` returns
+    /// it to the requested one. A new override continues the shared
+    /// trajectory exactly until the next request; a removed one follows the
+    /// shared trajectory from the next frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FadeToBlackError`] for a zero or oversized duration; the
+    /// state is unchanged.
+    pub fn set_fade_to_black_output_duration(
+        &mut self,
+        output: OutputId,
+        duration_frames: Option<u32>,
+    ) -> Result<Vec<SwitcherEvent>, FadeToBlackError> {
+        match duration_frames {
+            Some(duration) => {
+                crate::validate_fade_to_black_duration(duration)?;
+                let shared = self.fade_to_black;
+                self.fade_to_black_overrides
+                    .entry(output)
+                    .and_modify(|state| state.duration_frames = duration)
+                    .or_insert(FadeToBlackOverride {
+                        duration_frames: duration,
+                        controller: shared,
+                    });
+            }
+            None => {
+                self.fade_to_black_overrides.remove(&output);
+            }
+        }
+        Ok(vec![SwitcherEvent::FadeToBlackOutputDurationChanged {
+            output,
+            duration_frames,
+        }])
     }
 
     #[must_use]
@@ -334,20 +425,37 @@ impl SwitcherState {
     /// interval when FTB affects the output, otherwise settled live.
     #[must_use]
     pub fn fade_to_black_frame_for(&self, output: OutputId) -> FadeToBlackFrame {
-        if self.fade_to_black_affects(output) {
-            self.fade_to_black.frame()
-        } else {
+        if !self.fade_to_black_affects(output) {
             FadeToBlackFrame::LIVE
+        } else if let Some(state) = self.fade_to_black_overrides.get(&output) {
+            state.controller.frame()
+        } else {
+            self.fade_to_black.frame()
         }
+    }
+
+    /// This frame's interval for every affected output with its own
+    /// duration whose interval differs from the shared one, ascending.
+    #[must_use]
+    pub fn fade_to_black_override_frames(&self) -> Vec<(OutputId, FadeToBlackFrame)> {
+        let shared = self.fade_to_black.frame();
+        self.fade_to_black_overrides
+            .iter()
+            .filter(|(output, _)| self.fade_to_black_affects(**output))
+            .map(|(output, state)| (*output, state.controller.frame()))
+            .filter(|(_, frame)| *frame != shared)
+            .collect()
     }
 
     /// The current Fade-to-Black position as `output` shows it.
     #[must_use]
     pub fn fade_to_black_position_for(&self, output: OutputId) -> FadeToBlackPosition {
-        if self.fade_to_black_affects(output) {
-            self.fade_to_black.position()
-        } else {
+        if !self.fade_to_black_affects(output) {
             FadeToBlackPosition::LIVE
+        } else if let Some(state) = self.fade_to_black_overrides.get(&output) {
+            state.controller.position()
+        } else {
+            self.fade_to_black.position()
         }
     }
 
@@ -496,6 +604,10 @@ impl SwitcherState {
                 self.start_transition(TransitionKind::Wipe, duration_frames)
             }
             SwitcherCommand::StartTBar { kind } => self.start_t_bar(kind),
+            SwitcherCommand::StartStingerTBar {
+                slot,
+                duration_frames,
+            } => self.start_stinger_t_bar(slot, duration_frames),
             SwitcherCommand::SetTBarPosition(position) => self.set_t_bar_position(position),
             SwitcherCommand::CommitTBar => self.commit_t_bar(),
             SwitcherCommand::CancelTBar => self.cancel_t_bar(),
@@ -526,6 +638,13 @@ impl SwitcherState {
             SwitcherCommand::SetFadeToBlackOutput { output, affected } => {
                 Ok(self.set_fade_to_black_output(output, affected))
             }
+            SwitcherCommand::SetFadeToBlackOutputDuration {
+                output,
+                duration_frames,
+            } => self
+                .set_fade_to_black_output_duration(output, duration_frames)
+                .map_err(|_| SwitcherError::ZeroDuration),
+            SwitcherCommand::SetFadeToBlackCurve(curve) => Ok(self.set_fade_to_black_curve(curve)),
             SwitcherCommand::SetStreamRunning { target, running } => {
                 self.set_stream_running(target, running)
             }
@@ -548,6 +667,20 @@ impl SwitcherState {
                 mix_end_numerator: transition.mix_end_numerator(),
             }
         } else if let Some(t_bar) = self.t_bar {
+            if let TransitionKind::Stinger(_) = t_bar.kind() {
+                // A Stinger T-bar scrubs its clip: the position names the
+                // clip frame, exactly as elapsed frames do when timed.
+                let frame = t_bar.clip_frame_at(t_bar.position());
+                return ProgramFrame {
+                    primary: t_bar.from(),
+                    secondary: Some(t_bar.to()),
+                    transition_kind: Some(t_bar.kind()),
+                    mix_numerator: frame,
+                    mix_denominator: t_bar.clip_frames(),
+                    mix_start_numerator: t_bar.clip_frame_at(t_bar.interval_start()),
+                    mix_end_numerator: frame,
+                };
+            }
             ProgramFrame {
                 primary: t_bar.from(),
                 secondary: Some(t_bar.to()),
@@ -664,19 +797,21 @@ impl SwitcherState {
         }
     }
 
-    /// Starts a reversible manual transition at the zero position.
+    /// Starts a reversible manual transition of any mix kind at the zero
+    /// position (SW-004).
     ///
     /// # Errors
     ///
     /// Returns [`SwitcherError::TransitionInProgress`] when another transition
-    /// is active, or [`SwitcherError::UnsupportedManualTransitionKind`] when
-    /// `kind` is not Fade, Wipe, `AlphaFade`, or Slide.
+    /// is active, or [`SwitcherError::UnsupportedManualTransitionKind`] for a
+    /// Stinger, which needs its clip length
+    /// ([`Self::start_stinger_t_bar`]).
     pub fn start_t_bar(
         &mut self,
         kind: TransitionKind,
     ) -> Result<Vec<SwitcherEvent>, SwitcherError> {
         self.require_idle()?;
-        if !manual_transition_supported(kind) {
+        if matches!(kind, TransitionKind::Stinger(_)) {
             return Err(SwitcherError::UnsupportedManualTransitionKind);
         }
         self.t_bar = Some(TBarState::new(kind, self.program, self.preview));
@@ -685,6 +820,68 @@ impl SwitcherState {
             from: self.program,
             to: self.preview,
         }])
+    }
+
+    /// Starts a manual Stinger that scrubs the slot's `duration_frames`
+    /// clip: the T-bar position names the clip frame, and the base cuts
+    /// from Program to Preview at the slot's cut point either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SwitcherError::TransitionInProgress`] when another
+    /// transition is active, [`SwitcherError::ZeroDuration`] for an empty
+    /// clip, [`SwitcherError::UnconfiguredStinger`] for an empty slot,
+    /// [`SwitcherError::StingerMediaUnavailable`] when its media is not
+    /// preloaded (a manual Stinger has no fallback), or
+    /// [`SwitcherError::StingerCutPointOutOfRange`].
+    pub fn start_stinger_t_bar(
+        &mut self,
+        slot: StingerSlotId,
+        duration_frames: u32,
+    ) -> Result<Vec<SwitcherEvent>, SwitcherError> {
+        self.require_idle()?;
+        self.require_playable_stinger(slot, duration_frames)?;
+        let kind = TransitionKind::Stinger(slot);
+        self.t_bar = Some(
+            TBarState::new(kind, self.program, self.preview).with_clip_frames(duration_frames),
+        );
+        Ok(vec![SwitcherEvent::TBarStarted {
+            kind,
+            from: self.program,
+            to: self.preview,
+        }])
+    }
+
+    fn require_playable_stinger(
+        &self,
+        slot: StingerSlotId,
+        duration_frames: u32,
+    ) -> Result<(), SwitcherError> {
+        if duration_frames == 0 {
+            return Err(SwitcherError::ZeroDuration);
+        }
+        match self.stinger_playback_decision(slot) {
+            StingerPlaybackDecision::Unconfigured => Err(SwitcherError::UnconfiguredStinger(slot)),
+            StingerPlaybackDecision::Fallback(_) => {
+                Err(SwitcherError::StingerMediaUnavailable(slot))
+            }
+            StingerPlaybackDecision::Play => {
+                let cut_point_frames = self
+                    .stinger(slot)
+                    .descriptor()
+                    .expect("playable stinger has a descriptor")
+                    .cut_point_frames;
+                if cut_point_frames > duration_frames {
+                    Err(SwitcherError::StingerCutPointOutOfRange {
+                        slot,
+                        cut_point_frames,
+                        duration_frames,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     /// Moves an active T-bar to an absolute position; lower positions reverse its progress.
@@ -743,27 +940,44 @@ impl SwitcherState {
     /// # Errors
     ///
     /// Returns [`FadeToBlackError`] for a zero or oversized duration.
+    ///
+    /// # Panics
+    ///
+    /// Never: an output's own duration is validated when it is set.
     pub fn request_fade_to_black(
         &mut self,
         active: bool,
         duration_frames: u32,
     ) -> Result<Vec<SwitcherEvent>, FadeToBlackError> {
         let target = FadeToBlackTarget::from_active(active);
-        Ok(match self.fade_to_black.request(target, duration_frames)? {
-            FadeToBlackRequest::Unchanged => Vec::new(),
-            FadeToBlackRequest::Started(started) => {
-                vec![SwitcherEvent::FadeToBlackStarted {
-                    from: started.from,
-                    target: started.target,
-                    duration_frames: started.duration_frames,
-                }]
-            }
-            FadeToBlackRequest::Completed(target) => {
-                vec![SwitcherEvent::FadeToBlackCompleted {
-                    active: target.active(),
-                }]
-            }
-        })
+        let curve = self.fade_to_black_curve;
+        crate::validate_fade_to_black_duration(duration_frames)?;
+        for state in self.fade_to_black_overrides.values_mut() {
+            state
+                .controller
+                .request_with_curve(target, state.duration_frames, curve)
+                .expect("stored FTB output durations are validated");
+        }
+        Ok(
+            match self
+                .fade_to_black
+                .request_with_curve(target, duration_frames, curve)?
+            {
+                FadeToBlackRequest::Unchanged => Vec::new(),
+                FadeToBlackRequest::Started(started) => {
+                    vec![SwitcherEvent::FadeToBlackStarted {
+                        from: started.from,
+                        target: started.target,
+                        duration_frames: started.duration_frames,
+                    }]
+                }
+                FadeToBlackRequest::Completed(target) => {
+                    vec![SwitcherEvent::FadeToBlackCompleted {
+                        active: target.active(),
+                    }]
+                }
+            },
+        )
     }
 
     /// Configures and activates an overlay channel.
@@ -1077,19 +1291,27 @@ impl SwitcherState {
         }
     }
 
+    /// Advances the shared and every per-output trajectory one frame. The
+    /// move completes once the last of them settles.
     fn advance_fade_to_black(&mut self) -> FadeToBlackAdvance {
-        self.fade_to_black.advance()
+        let mut advance = self.fade_to_black.advance();
+        for state in self.fade_to_black_overrides.values_mut() {
+            if let Some(target) = state.controller.advance().completed {
+                advance.completed = Some(target);
+            }
+        }
+        if advance.completed.is_some() && self.fade_to_black_is_automatic() {
+            advance.completed = None;
+        }
+        advance
     }
 }
 
-const fn manual_transition_supported(kind: TransitionKind) -> bool {
-    matches!(
-        kind,
-        TransitionKind::Fade
-            | TransitionKind::Wipe
-            | TransitionKind::AlphaFade
-            | TransitionKind::Slide
-    )
+/// One output's own Fade-to-Black duration and trajectory (SW-004).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FadeToBlackOverride {
+    duration_frames: u32,
+    controller: FadeToBlackController,
 }
 
 fn append_fade_to_black_events(events: &mut Vec<SwitcherEvent>, advance: FadeToBlackAdvance) {

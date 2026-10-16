@@ -2089,6 +2089,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SceneLayer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetFadeToBlackOutputDuration { .. }
+        | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. } => "project",
@@ -2178,6 +2180,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         // Which outputs Fade to Black fades belongs to the switcher operator
         // (like overlay output inclusion).
         CommandPayload::SetFadeToBlackOutput { .. }
+        | CommandPayload::SetFadeToBlackOutputDuration { .. }
+        | CommandPayload::SetFadeToBlackCurve { .. }
         | CommandPayload::Cut
         | CommandPayload::Fade { .. }
         | CommandPayload::AlphaFade { .. }
@@ -2301,6 +2305,16 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
                 affected: *affected,
             }
         }
+        CommandPayload::SetFadeToBlackOutputDuration {
+            output,
+            duration_frames,
+        } => EngineCommand::SetFadeToBlackOutputDuration {
+            output: output.to_domain(),
+            duration_frames: *duration_frames,
+        },
+        CommandPayload::SetFadeToBlackCurve { curve } => {
+            EngineCommand::SetFadeToBlackCurve { curve: *curve }
+        }
         payload @ (CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }) => {
             display_output::engine_command(payload).expect("a display-output payload")
@@ -2333,12 +2347,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
             duration_frames: *duration_frames,
         },
         CommandPayload::StartManualTransition { kind } => EngineCommand::StartManualTransition {
-            kind: match kind {
-                ManualTransitionKind::Fade => EngineManualTransitionKind::Fade,
-                ManualTransitionKind::Wipe => EngineManualTransitionKind::Wipe,
-                ManualTransitionKind::AlphaFade => EngineManualTransitionKind::AlphaFade,
-                ManualTransitionKind::Slide => EngineManualTransitionKind::Slide,
-            },
+            kind: engine_manual_kind(*kind),
         },
         CommandPayload::SetManualTransitionPosition { position } => {
             EngineCommand::SetManualTransitionPosition {
@@ -2747,7 +2756,10 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         EngineCommand::SceneAnimation(edit) => {
             return scene_animation::wire_scene_animation_payload(edit);
         }
-        command @ (EngineCommand::AudioMixer(_) | EngineCommand::SetFadeToBlackOutput { .. }) => {
+        command @ (EngineCommand::AudioMixer(_)
+        | EngineCommand::SetFadeToBlackOutput { .. }
+        | EngineCommand::SetFadeToBlackOutputDuration { .. }
+        | EngineCommand::SetFadeToBlackCurve { .. }) => {
             return audio_mixer::wire_edit_payload(command);
         }
         command @ EngineCommand::SetDisplayOutput { .. } => {
@@ -3355,6 +3367,8 @@ fn snapshot_record(
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),
+        fade_to_black_output_durations: audio_mixer::wire_output_durations(engine.show()),
+        fade_to_black_curve: engine.show().desired_switcher().fade_to_black_curve(),
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),
@@ -3533,14 +3547,8 @@ fn protocol_manual_status(state: Option<EngineManualTransitionState>) -> ManualT
     let Some(state) = state else {
         return ManualTransitionStatus::Inactive;
     };
-    let kind = match state.kind {
-        EngineManualTransitionKind::Fade => ManualTransitionKind::Fade,
-        EngineManualTransitionKind::Wipe => ManualTransitionKind::Wipe,
-        EngineManualTransitionKind::AlphaFade => ManualTransitionKind::AlphaFade,
-        EngineManualTransitionKind::Slide => ManualTransitionKind::Slide,
-    };
     ManualTransitionStatus::Active(ManualTransitionState {
-        kind,
+        kind: wire_manual_kind(state.kind),
         from: WireInputId::from_domain(state.from),
         to: WireInputId::from_domain(state.to),
         interval_start: ManualTransitionPosition::new(state.interval_start.basis_points())
@@ -3548,6 +3556,68 @@ fn protocol_manual_status(state: Option<EngineManualTransitionState>) -> ManualT
         position: ManualTransitionPosition::new(state.position.basis_points())
             .expect("engine manual transition positions are bounded"),
     })
+}
+
+/// The engine kind of a wire manual transition kind (SW-004).
+///
+/// # Panics
+///
+/// Never: wire and domain Stinger slots are both 1 through 8.
+#[must_use]
+pub fn engine_manual_kind(kind: ManualTransitionKind) -> EngineManualTransitionKind {
+    match kind {
+        ManualTransitionKind::Fade => EngineManualTransitionKind::Fade,
+        ManualTransitionKind::Wipe => EngineManualTransitionKind::Wipe,
+        ManualTransitionKind::AlphaFade => EngineManualTransitionKind::AlphaFade,
+        ManualTransitionKind::Slide => EngineManualTransitionKind::Slide,
+        ManualTransitionKind::VerticalWipe => EngineManualTransitionKind::VerticalWipe,
+        ManualTransitionKind::VerticalSlide => EngineManualTransitionKind::VerticalSlide,
+        ManualTransitionKind::Zoom => EngineManualTransitionKind::Zoom,
+        ManualTransitionKind::Fly => EngineManualTransitionKind::Fly,
+        ManualTransitionKind::FlyRotate => EngineManualTransitionKind::FlyRotate,
+        ManualTransitionKind::Cube => EngineManualTransitionKind::Cube,
+        ManualTransitionKind::CubeZoom => EngineManualTransitionKind::CubeZoom,
+        ManualTransitionKind::CrossZoom => EngineManualTransitionKind::CrossZoom,
+        ManualTransitionKind::Merge => EngineManualTransitionKind::Merge,
+        ManualTransitionKind::Stinger {
+            slot,
+            duration_frames,
+        } => EngineManualTransitionKind::Stinger {
+            slot: StingerSlotId::new(slot.number()).expect("wire Stinger slots are bounded"),
+            duration_frames,
+        },
+    }
+}
+
+/// The wire kind of an engine manual transition kind (SW-004).
+///
+/// # Panics
+///
+/// Never: wire and domain Stinger slots are both 1 through 8.
+#[must_use]
+pub fn wire_manual_kind(kind: EngineManualTransitionKind) -> ManualTransitionKind {
+    match kind {
+        EngineManualTransitionKind::Fade => ManualTransitionKind::Fade,
+        EngineManualTransitionKind::Wipe => ManualTransitionKind::Wipe,
+        EngineManualTransitionKind::AlphaFade => ManualTransitionKind::AlphaFade,
+        EngineManualTransitionKind::Slide => ManualTransitionKind::Slide,
+        EngineManualTransitionKind::VerticalWipe => ManualTransitionKind::VerticalWipe,
+        EngineManualTransitionKind::VerticalSlide => ManualTransitionKind::VerticalSlide,
+        EngineManualTransitionKind::Zoom => ManualTransitionKind::Zoom,
+        EngineManualTransitionKind::Fly => ManualTransitionKind::Fly,
+        EngineManualTransitionKind::FlyRotate => ManualTransitionKind::FlyRotate,
+        EngineManualTransitionKind::Cube => ManualTransitionKind::Cube,
+        EngineManualTransitionKind::CubeZoom => ManualTransitionKind::CubeZoom,
+        EngineManualTransitionKind::CrossZoom => ManualTransitionKind::CrossZoom,
+        EngineManualTransitionKind::Merge => ManualTransitionKind::Merge,
+        EngineManualTransitionKind::Stinger {
+            slot,
+            duration_frames,
+        } => ManualTransitionKind::Stinger {
+            slot: WireStingerSlotId::new(slot.number()).expect("domain Stinger slots are bounded"),
+            duration_frames,
+        },
+    }
 }
 
 fn protocol_fade_to_black_state(state: EngineFadeToBlackState) -> FadeToBlackState {

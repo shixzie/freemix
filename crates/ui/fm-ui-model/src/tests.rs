@@ -82,6 +82,8 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
     ProjectSnapshot {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         network_streams: Vec::new(),
         capture_inputs: Vec::new(),
@@ -1420,6 +1422,8 @@ mod titles {
         fm_protocol::SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
@@ -2559,6 +2563,83 @@ fn replicates_mixer_labels_groups_and_fade_to_black_outputs() {
                 .is_err()
         );
     }
+}
+
+/// Protocol 2.48 (SW-004): per-output Fade-to-Black durations and the
+/// curve replicate from the snapshot and events, in output order.
+#[test]
+fn replicates_fade_to_black_output_durations_and_curve() {
+    let project_id = project(14);
+    let mut model = ClientModel::new(project_id);
+    let mut initial = snapshot(project_id, 1);
+    initial.fade_to_black_output_durations = vec![(output(2), 90)];
+    initial.fade_to_black_curve = fm_protocol::FadeToBlackCurve::Ease;
+    model.install_snapshot(initial).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let view = model.view().unwrap();
+    assert_eq!(view.fade_to_black_output_duration(output(2)), Some(90));
+    assert_eq!(view.fade_to_black_output_duration(output(1)), None);
+    assert_eq!(
+        view.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Ease
+    );
+
+    let changes = [
+        DurableChange::FadeToBlackOutputDurationChanged {
+            output: output(1),
+            duration_frames: Some(12),
+        },
+        DurableChange::FadeToBlackOutputDurationChanged {
+            output: output(2),
+            duration_frames: Some(45),
+        },
+        DurableChange::FadeToBlackCurveChanged {
+            curve: fm_protocol::FadeToBlackCurve::Linear,
+        },
+    ];
+    for (revision, change) in (2..).zip(changes) {
+        model
+            .apply_event(event(project_id, identity.clone(), revision, change))
+            .unwrap();
+    }
+    let view = model.view().unwrap();
+    assert_eq!(
+        view.fade_to_black_output_durations,
+        vec![(output(1), 12), (output(2), 45)]
+    );
+    assert_eq!(
+        view.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Linear
+    );
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            5,
+            DurableChange::FadeToBlackOutputDurationChanged {
+                output: output(1),
+                duration_frames: None,
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        model.view().unwrap().fade_to_black_output_durations,
+        vec![(output(2), 45)]
+    );
+    // An unknown output is refused.
+    assert!(
+        model
+            .apply_event(event(
+                project_id,
+                identity,
+                6,
+                DurableChange::FadeToBlackOutputDurationChanged {
+                    output: output(9),
+                    duration_frames: Some(12),
+                },
+            ))
+            .is_err()
+    );
 }
 
 /// Protocol 2.44 (AU-001): group solo, group parents, and the solo mode

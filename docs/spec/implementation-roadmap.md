@@ -2875,9 +2875,35 @@ strip and a pinned monitor strip with SIP/PFL/AFL keys and its meter.
 `freemix-cli` adds `audio-group-solo`, `audio-group-parent`,
 `audio-solo-mode`, and their `remote-` forms. Remaining gaps: `freemixd`
 has no headphone or monitor device path, so the monitor bus is metered but
-not audible (Studio labels it meter-only); no per-output fade durations;
-and `AU-001`/`SW-004` remain planned until their capability profiles are
-certified.
+not audible (Studio labels it meter-only); per-output fade durations
+arrive with Protocol 2.48 below; and `AU-001` remains planned until its
+capability profiles are certified.
+
+Current implementation boundary for Fade to Black and the T-bar (`SW-004`):
+Protocol 2.48 (schema 45) gives each output an optional Fade-to-Black
+duration that overrides the global one and adds a show-wide curve (`linear`
+or the exact integer smoothstep `ease`); both are padlocked, undoable
+project edits replicated in the snapshot, and the switcher fades every
+affected output over its own duration on that curve. The T-bar drives every
+timed kind manually: all thirteen mixes and Stingers, whose position picks
+the clip frame (a manual Stinger names its clip length and needs its slot
+configured with ready media). Moving back reverses the mix exactly, and
+commit and cancel complete at the next frame boundary. Studio's T-bar runs
+the kind selected on the FADE/WIPE/SLIDE/ALPHA keys or the MORE menu (other
+mixes and configured Stingers), and a favourite's context menu starts it on
+the T-bar; the keyboard drives it with `T` (start), `PgUp`/`PgDn` (10%
+steps), `End` (commit), and `Esc` (cancel), and an OSC controller with
+`/freemix/switcher/manual/start/<kind>` and
+`/freemix/switcher/manual/position <0..10000>`. One gesture model feeds the
+lever, keys, and controller, and `freemix-studio`'s `tbar_consistency` test
+renders identical frame sequences through the lever, keyboard, controller,
+and API for every mix. The Fade-to-Black outputs popover adds an own
+duration per output and the curve keys, all with English and Spanish hover
+help. `freemix-cli` adds `ftb-output-duration`, `ftb-curve`, their
+`remote-` forms, and every kind on `tbar-start`. Remaining gaps: the
+web control surface still starts only its fixed manual kinds, no hardware
+T-bar controller profile ships beyond OSC, and `SW-004` remains planned
+until its capability profiles are certified.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

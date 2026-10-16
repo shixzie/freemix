@@ -328,12 +328,108 @@ impl fmt::Display for WireRecorderSlot {
     }
 }
 
+/// The kind of a manual (T-bar) transition: every timed mix (Protocol
+/// 2.48 adds all of them), or a Stinger scrubbing a clip of
+/// `duration_frames` frames (SW-004).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManualTransitionKind {
     Fade,
     Wipe,
     AlphaFade,
     Slide,
+    VerticalWipe,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+    Stinger {
+        slot: WireStingerSlotId,
+        duration_frames: u32,
+    },
+}
+
+impl ManualTransitionKind {
+    /// The manual kind of every automatic mix.
+    #[must_use]
+    pub const fn from_mix(kind: AutoTransitionKind) -> Self {
+        match kind {
+            AutoTransitionKind::Fade => Self::Fade,
+            AutoTransitionKind::AlphaFade => Self::AlphaFade,
+            AutoTransitionKind::Wipe => Self::Wipe,
+            AutoTransitionKind::VerticalWipe => Self::VerticalWipe,
+            AutoTransitionKind::Slide => Self::Slide,
+            AutoTransitionKind::VerticalSlide => Self::VerticalSlide,
+            AutoTransitionKind::Zoom => Self::Zoom,
+            AutoTransitionKind::Fly => Self::Fly,
+            AutoTransitionKind::FlyRotate => Self::FlyRotate,
+            AutoTransitionKind::Cube => Self::Cube,
+            AutoTransitionKind::CubeZoom => Self::CubeZoom,
+            AutoTransitionKind::CrossZoom => Self::CrossZoom,
+            AutoTransitionKind::Merge => Self::Merge,
+        }
+    }
+
+    /// The automatic mix this manual kind draws, or `None` for a Stinger.
+    #[must_use]
+    pub const fn mix(self) -> Option<AutoTransitionKind> {
+        Some(match self {
+            Self::Fade => AutoTransitionKind::Fade,
+            Self::AlphaFade => AutoTransitionKind::AlphaFade,
+            Self::Wipe => AutoTransitionKind::Wipe,
+            Self::VerticalWipe => AutoTransitionKind::VerticalWipe,
+            Self::Slide => AutoTransitionKind::Slide,
+            Self::VerticalSlide => AutoTransitionKind::VerticalSlide,
+            Self::Zoom => AutoTransitionKind::Zoom,
+            Self::Fly => AutoTransitionKind::Fly,
+            Self::FlyRotate => AutoTransitionKind::FlyRotate,
+            Self::Cube => AutoTransitionKind::Cube,
+            Self::CubeZoom => AutoTransitionKind::CubeZoom,
+            Self::CrossZoom => AutoTransitionKind::CrossZoom,
+            Self::Merge => AutoTransitionKind::Merge,
+            Self::Stinger { .. } => return None,
+        })
+    }
+
+    /// The wire token: an [`AutoTransitionKind`] token, or `stinger_<slot>`.
+    #[must_use]
+    pub fn token(self) -> String {
+        match (self, self.mix()) {
+            (_, Some(mix)) => mix.token().to_owned(),
+            (Self::Stinger { slot, .. }, None) => format!("stinger_{slot}"),
+            (_, None) => unreachable!("only a Stinger has no mix"),
+        }
+    }
+
+    /// The clip length of a Stinger; `None` for a mix.
+    #[must_use]
+    pub const fn duration_frames(self) -> Option<u32> {
+        match self {
+            Self::Stinger {
+                duration_frames, ..
+            } => Some(duration_frames),
+            _ => None,
+        }
+    }
+
+    /// The kind named by `token`, with the nonzero clip length a Stinger
+    /// needs (and a mix must not carry).
+    #[must_use]
+    pub fn from_token(token: &str, duration_frames: Option<u32>) -> Option<Self> {
+        match TransitionFavoriteEffect::from_token(token)? {
+            TransitionFavoriteEffect::Cut => None,
+            TransitionFavoriteEffect::Mix(kind) => {
+                duration_frames.is_none().then_some(Self::from_mix(kind))
+            }
+            TransitionFavoriteEffect::Stinger(slot) => Some(Self::Stinger {
+                slot,
+                duration_frames: duration_frames.filter(|frames| *frames > 0)?,
+            }),
+        }
+    }
 }
 
 /// Exact normalized manual-transition position expressed in basis points.
@@ -1751,6 +1847,18 @@ pub enum CommandPayload {
         output: WireOutputId,
         affected: bool,
     },
+    /// Gives `output` its own Fade-to-Black duration, 1 through 3600 frames,
+    /// or with `None` returns it to the one each request carries (Protocol
+    /// 2.48, SW-004). A padlocked, undoable project edit.
+    SetFadeToBlackOutputDuration {
+        output: WireOutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Chooses how automatic Fade-to-Black moves ease (Protocol 2.48,
+    /// SW-004). A padlocked, undoable project edit.
+    SetFadeToBlackCurve {
+        curve: crate::FadeToBlackCurve,
+    },
     /// Configures one fullscreen display-output slot (Protocol 2.42,
     /// OR-011; see [`crate::DisplayOutputConfig`]). A padlocked, undoable
     /// project edit applied live.
@@ -2187,6 +2295,11 @@ pub struct SnapshotMessage {
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40);
     /// empty when it fades every output.
     pub fade_to_black_excluded_outputs: Vec<WireOutputId>,
+    /// The outputs that fade over their own duration in frames, ascending
+    /// by output (Protocol 2.48).
+    pub fade_to_black_output_durations: Vec<(WireOutputId, u32)>,
+    /// How automatic Fade-to-Black moves ease (Protocol 2.48).
+    pub fade_to_black_curve: crate::FadeToBlackCurve,
     /// Every configured display-output slot, ascending (Protocol 2.42).
     pub display_outputs: Vec<crate::DisplayOutputEntry>,
     /// Every configured slot's runtime state, ascending (Protocol 2.42).
@@ -2326,6 +2439,16 @@ pub enum EventPayload {
     FadeToBlackOutputChanged {
         output: WireOutputId,
         affected: bool,
+    },
+    /// `output` now fades over its own duration, or with `None` over the
+    /// requested one (Protocol 2.48).
+    FadeToBlackOutputDurationChanged {
+        output: WireOutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Automatic Fade-to-Black moves now ease along `curve` (Protocol 2.48).
+    FadeToBlackCurveChanged {
+        curve: crate::FadeToBlackCurve,
     },
     /// A display-output slot was configured (`Some`) or cleared (`None`),
     /// or that edit was undone or redone (Protocol 2.42).

@@ -6061,6 +6061,141 @@ fn fade_to_black_output_selection_is_operator_controlled_and_undoable() {
     );
 }
 
+/// Protocol 2.48 (SW-004): per-output Fade-to-Black durations and the
+/// curve are switcher-operator project edits, replicated in the snapshot
+/// and undoable; a manual Stinger replicates its clip length.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn fade_to_black_timing_and_manual_kinds_replicate_exactly() {
+    let mut control = mixer_service();
+    let wire = fm_protocol::WireOutputId::from_domain(output(8));
+    let duration = CommandPayload::SetFadeToBlackOutputDuration {
+        output: wire,
+        duration_frames: Some(45),
+    };
+    let curve = CommandPayload::SetFadeToBlackCurve {
+        curve: fm_protocol::FadeToBlackCurve::Ease,
+    };
+    for payload in [&duration, &curve] {
+        assert_eq!(
+            control.required_classes(payload).primary(),
+            CommandClass::Transition
+        );
+        let denied = control
+            .submit(
+                &principal(Role::Audio),
+                command("a", "a", payload.clone()),
+                0,
+            )
+            .unwrap();
+        assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    }
+    let applied = control
+        .submit(&principal(Role::Operator), command("d", "d", duration), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::FadeToBlackOutputDurationChanged {
+            output: wire,
+            duration_frames: Some(45),
+        }
+    );
+    let applied = control
+        .submit(&principal(Role::Operator), command("c", "c", curve), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::FadeToBlackCurveChanged {
+            curve: fm_protocol::FadeToBlackCurve::Ease,
+        }
+    );
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(snapshot.fade_to_black_output_durations, vec![(wire, 45)]);
+    assert_eq!(
+        snapshot.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Ease
+    );
+    for (key, payload, code) in [
+        (
+            "zero",
+            CommandPayload::SetFadeToBlackOutputDuration {
+                output: wire,
+                duration_frames: Some(0),
+            },
+            "invalid_command",
+        ),
+        (
+            "unknown",
+            CommandPayload::SetFadeToBlackOutputDuration {
+                output: fm_protocol::WireOutputId::from_domain(output(9)),
+                duration_frames: Some(45),
+            },
+            "not_found",
+        ),
+    ] {
+        let refused = control
+            .submit(&principal(Role::Operator), command(key, key, payload), 0)
+            .unwrap();
+        assert_eq!(rejection_code(&refused), Some(code), "{key}");
+    }
+    for (key, expected) in [
+        (
+            "u1",
+            EventPayload::FadeToBlackCurveChanged {
+                curve: fm_protocol::FadeToBlackCurve::Linear,
+            },
+        ),
+        (
+            "u2",
+            EventPayload::FadeToBlackOutputDurationChanged {
+                output: wire,
+                duration_frames: None,
+            },
+        ),
+    ] {
+        let undo = control
+            .submit(
+                &principal(Role::Admin),
+                command(
+                    key,
+                    key,
+                    CommandPayload::Undo {
+                        expected_edit: None,
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(undo.is_accepted(), "{:?}", undo.output.result);
+        assert_eq!(undo.output.events[0].payload, expected, "{key}");
+    }
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(snapshot.fade_to_black_output_durations, Vec::new());
+    assert_eq!(
+        snapshot.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Linear
+    );
+
+    // Every manual kind maps to the engine and back unchanged.
+    let kinds = fm_protocol::AutoTransitionKind::ALL
+        .map(ManualTransitionKind::from_mix)
+        .into_iter()
+        .chain([ManualTransitionKind::Stinger {
+            slot: fm_protocol::WireStingerSlotId::new(4).unwrap(),
+            duration_frames: 30,
+        }]);
+    for kind in kinds {
+        assert_eq!(
+            crate::wire_manual_kind(crate::engine_manual_kind(kind)),
+            kind
+        );
+    }
+}
+
 #[allow(clippy::unnecessary_box_returns)] // every caller wants the box
 fn display_config(text: &str) -> Box<fm_protocol::DisplayOutputConfig> {
     Box::new(text.parse().unwrap())

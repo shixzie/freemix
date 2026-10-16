@@ -12,14 +12,13 @@ use crate::{
     GradeStateMessage, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus, LiveInputSource,
     MAX_ANIMATION_PRESETS, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, MAX_MEDIA_STATES,
-    ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus,
-    PlaylistOperation, PlaylistStateMessage, ResumeCursor, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, SceneAnimationStateMessage,
-    SceneLayoutStateMessage, ScenePreviewRequest, ServerIdentity, SnapshotMessage, SnapshotReason,
-    StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness, StingerStatus,
-    StreamStatusMessage, StructuredError, TitleAnimationStateMessage, TitleFieldUpdate,
-    TitleLayoutStateMessage, TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage,
-    WireGradeSource, WireMessage,
+    ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, PlaylistOperation,
+    PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
+    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage,
+    ScenePreviewRequest, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
+    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
+    TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
 };
 
 use super::animation::{
@@ -346,6 +345,21 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "fade_to_black_output")?;
             record.field("output", output)?;
             record.field("affected", u8::from(*affected))?;
+        }
+        CommandPayload::SetFadeToBlackOutputDuration {
+            output,
+            duration_frames,
+        } => {
+            record.field("payload", "fade_to_black_output_duration")?;
+            record.field("output", output)?;
+            record.field_string(
+                "duration_frames",
+                super::audio_mixer::encode_optional_duration(*duration_frames)?,
+            )?;
+        }
+        CommandPayload::SetFadeToBlackCurve { curve } => {
+            record.field("payload", "fade_to_black_curve")?;
+            record.field("curve", curve.token())?;
         }
         CommandPayload::SetDisplayOutput { slot, config } => {
             record.field("payload", "set_display_output")?;
@@ -1034,15 +1048,16 @@ fn encode_manual_command(record: &mut Record, payload: &CommandPayload) -> Resul
     match payload {
         CommandPayload::StartManualTransition { kind } => {
             record.field("payload", "manual_start")?;
-            record.field(
-                "transition",
-                match kind {
-                    crate::ManualTransitionKind::Fade => "fade",
-                    crate::ManualTransitionKind::Wipe => "wipe",
-                    crate::ManualTransitionKind::AlphaFade => "alpha_fade",
-                    crate::ManualTransitionKind::Slide => "slide",
-                },
-            )?;
+            record.field_string("transition", kind.token())?;
+            if let Some(duration_frames) = kind.duration_frames() {
+                if duration_frames == 0 {
+                    return Err(CodecError::InvalidField {
+                        field: "duration_frames",
+                        value: "0".to_owned(),
+                    });
+                }
+                record.field("duration_frames", duration_frames)?;
+            }
         }
         CommandPayload::SetManualTransitionPosition { position } => {
             record.field("payload", "manual_position")?;
@@ -1403,6 +1418,11 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         "fade_to_black_excluded_outputs",
         super::audio_mixer::encode_excluded_outputs(&message.fade_to_black_excluded_outputs)?,
     )?;
+    record.field_string(
+        "fade_to_black_output_durations",
+        super::audio_mixer::encode_output_durations(&message.fade_to_black_output_durations)?,
+    )?;
+    record.field("fade_to_black_curve", message.fade_to_black_curve.token())?;
     record.field_string(
         "display_outputs",
         super::display_output::encode_entries(&message.display_outputs)?,
@@ -1991,6 +2011,21 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("output", output)?;
             record.field("affected", u8::from(*affected))?;
         }
+        EventPayload::FadeToBlackOutputDurationChanged {
+            output,
+            duration_frames,
+        } => {
+            record.field("event", "fade_to_black_output_duration_changed")?;
+            record.field("output", output)?;
+            record.field_string(
+                "duration_frames",
+                super::audio_mixer::encode_optional_duration(*duration_frames)?,
+            )?;
+        }
+        EventPayload::FadeToBlackCurveChanged { curve } => {
+            record.field("event", "fade_to_black_curve_changed")?;
+            record.field("curve", curve.token())?;
+        }
         EventPayload::DisplayOutputChanged { slot, config } => {
             record.field("event", "display_output_changed")?;
             super::display_output::encode_changed(*slot, config.as_deref(), &mut |name, value| {
@@ -2334,20 +2369,24 @@ fn encode_manual_status(
         ManualTransitionStatus::Inactive => record.field(active, 0),
         ManualTransitionStatus::Active(state) => {
             record.field(active, 1)?;
-            record.field(
-                kind,
-                match state.kind {
-                    ManualTransitionKind::Fade => "fade",
-                    ManualTransitionKind::Wipe => "wipe",
-                    ManualTransitionKind::AlphaFade => "alpha_fade",
-                    ManualTransitionKind::Slide => "slide",
-                },
-            )?;
+            record.field_string(kind, state.kind.token())?;
+            if let Some(duration_frames) = state.kind.duration_frames() {
+                record.field(manual_duration_field(fields), duration_frames)?;
+            }
             record.field(from, state.from)?;
             record.field(to, state.to)?;
             record.field(interval_start, state.interval_start.basis_points())?;
             record.field(position, state.position.basis_points())
         }
+    }
+}
+
+/// The clip-length field a manual Stinger status adds (Protocol 2.48).
+const fn manual_duration_field(fields: ManualStatusFields) -> &'static str {
+    match fields {
+        ManualStatusFields::Desired => "desired_manual_duration_frames",
+        ManualStatusFields::Realized => "realized_manual_duration_frames",
+        ManualStatusFields::Unqualified => "manual_duration_frames",
     }
 }
 

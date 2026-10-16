@@ -78,6 +78,8 @@ struct ProjectDto {
     audio_groups: fm_model::AudioGroups,
     audio_solo_mode: fm_model::AudioSoloMode,
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
+    fade_to_black_output_durations: Vec<(fm_types::OutputId, u32)>,
+    fade_to_black_curve: fm_types::FadeToBlackCurve,
     display_outputs: Vec<(
         fm_types::display::DisplayOutputSlot,
         fm_types::display::DisplayOutputConfig,
@@ -130,6 +132,9 @@ impl ProjectDto {
             audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
             fade_to_black_excluded_outputs:
                 super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
+            fade_to_black_output_durations:
+                super::audio_mixer::parse_fade_to_black_output_durations(&mut object)?,
+            fade_to_black_curve: super::audio_mixer::parse_fade_to_black_curve(&mut object)?,
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
         };
         object.finish()?;
@@ -224,6 +229,12 @@ impl ProjectDto {
         for output in self.fade_to_black_excluded_outputs {
             project.set_fade_to_black_output(output, false);
         }
+        // Unknown outputs and out-of-range durations are reported by project
+        // validation.
+        for (output, duration) in self.fade_to_black_output_durations {
+            project.set_fade_to_black_output_duration(output, Some(duration));
+        }
+        project.set_fade_to_black_curve(self.fade_to_black_curve);
         // Unknown source outputs and displays both slots claim are reported
         // by project validation.
         for (slot, config) in self.display_outputs {
@@ -1160,13 +1171,10 @@ fn parse_manual_transitions(value: Value) -> Result<RuntimeManualTransitions, De
 
 fn parse_manual_transition(value: Value) -> Result<ManualTransitionState, DecodeError> {
     let mut object = Object::new(value, "manual transition")?;
-    let kind = match object.string("kind")?.as_str() {
-        "fade" => ManualTransitionKind::Fade,
-        "wipe" => ManualTransitionKind::Wipe,
-        "alpha_fade" => ManualTransitionKind::AlphaFade,
-        "slide" => ManualTransitionKind::Slide,
-        value => return Err(unknown_enum("manual transition kind", value)),
-    };
+    let token = object.string("kind")?;
+    let clip_frames = object.u32("clip_frames")?;
+    let kind = ManualTransitionKind::from_token(&token, clip_frames)
+        .ok_or_else(|| unknown_enum("manual transition kind", &token))?;
     let from_id = InputId::new(object.nonzero_u128("from_id")?);
     let to_id = InputId::new(object.nonzero_u128("to_id")?);
     let interval_start_basis_points = object.u16("interval_start_basis_points")?;

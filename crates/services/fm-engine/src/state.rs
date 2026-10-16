@@ -769,6 +769,35 @@ impl ShowState {
         Ok(())
     }
 
+    /// Restores the outputs that fade over their own Fade-to-Black duration
+    /// and the curve every move eases along (SW-004).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownOutput`] for an output outside the show's
+    /// output roster, or [`ShowError::InvalidFadeToBlackDuration`] for a
+    /// duration outside 1 through 3600 frames.
+    pub fn restore_fade_to_black_timing(
+        &mut self,
+        durations: impl IntoIterator<Item = (OutputId, u32)>,
+        curve: fm_switcher::FadeToBlackCurve,
+    ) -> Result<(), ShowError> {
+        for (output, duration) in durations {
+            if !self
+                .outputs
+                .iter()
+                .any(|(candidate, _)| *candidate == output)
+            {
+                return Err(ShowError::UnknownOutput(output));
+            }
+            self.desired_switcher
+                .set_fade_to_black_output_duration(output, Some(duration))
+                .map_err(|_| ShowError::InvalidFadeToBlackDuration(duration))?;
+        }
+        let _ = self.desired_switcher.set_fade_to_black_curve(curve);
+        Ok(())
+    }
+
     /// Restores exact desired manual-transition state from a checkpoint.
     ///
     /// # Errors

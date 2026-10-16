@@ -887,7 +887,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(44);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(45);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -931,6 +931,8 @@ pub struct Project {
     audio_groups: crate::AudioGroups,
     audio_solo_mode: crate::AudioSoloMode,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
+    fade_to_black_output_durations: BTreeMap<OutputId, u32>,
+    fade_to_black_curve: fm_types::FadeToBlackCurve,
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
 }
@@ -964,6 +966,8 @@ impl Project {
             audio_groups: crate::AudioGroups::default(),
             audio_solo_mode: crate::AudioSoloMode::InPlace,
             fade_to_black_excluded_outputs: BTreeSet::new(),
+            fade_to_black_output_durations: BTreeMap::new(),
+            fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
             display_outputs: BTreeMap::new(),
         }
     }
@@ -1151,6 +1155,41 @@ impl Project {
     #[must_use]
     pub fn fade_to_black_affects(&self, output: OutputId) -> bool {
         !self.fade_to_black_excluded_outputs.contains(&output)
+    }
+
+    /// The outputs that fade over their own duration instead of the one
+    /// each Fade to Black request carries (SW-004, schema 45), ascending.
+    #[must_use]
+    pub const fn fade_to_black_output_durations(&self) -> &BTreeMap<OutputId, u32> {
+        &self.fade_to_black_output_durations
+    }
+
+    /// Gives `output` its own Fade-to-Black duration in frames, or with
+    /// `None` returns it to the requested one. Unknown outputs and
+    /// out-of-range durations are reported by [`Self::validate`].
+    pub fn set_fade_to_black_output_duration(
+        &mut self,
+        output: OutputId,
+        duration_frames: Option<u32>,
+    ) {
+        match duration_frames {
+            Some(duration) => {
+                self.fade_to_black_output_durations.insert(output, duration);
+            }
+            None => {
+                self.fade_to_black_output_durations.remove(&output);
+            }
+        }
+    }
+
+    /// How automatic Fade-to-Black moves ease (SW-004, schema 45).
+    #[must_use]
+    pub const fn fade_to_black_curve(&self) -> fm_types::FadeToBlackCurve {
+        self.fade_to_black_curve
+    }
+
+    pub const fn set_fade_to_black_curve(&mut self, curve: fm_types::FadeToBlackCurve) {
+        self.fade_to_black_curve = curve;
     }
 
     /// The configured fullscreen display outputs by slot (OR-011, schema
@@ -3390,6 +3429,7 @@ impl Project {
         }
         self.outputs.retain(|candidate| candidate.id != output);
         self.fade_to_black_excluded_outputs.remove(&output);
+        self.fade_to_black_output_durations.remove(&output);
         Ok(())
     }
 

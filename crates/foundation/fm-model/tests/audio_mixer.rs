@@ -86,7 +86,7 @@ fn project() -> Project {
 
 #[test]
 fn schema_39_defaults_center_pan_unlabelled_ungrouped_and_every_output_fading() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 44);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 45);
     let project = project();
     assert_eq!(
         project.input_audio_strip(input(10)).unwrap().pan,
@@ -213,6 +213,62 @@ fn fade_to_black_output_selection_tracks_outputs_and_is_validated() {
                 && error.kind
                     == ValidationErrorKind::MissingReference(EntityRef::Output(output(99))))
     );
+}
+
+#[test]
+fn fade_to_black_output_durations_and_curve_track_outputs_and_are_validated() {
+    let mut project = project();
+    assert!(project.fade_to_black_output_durations().is_empty());
+    assert_eq!(
+        project.fade_to_black_curve(),
+        fm_types::FadeToBlackCurve::Linear
+    );
+    project.set_fade_to_black_output_duration(output(41), Some(90));
+    project.set_fade_to_black_output_duration(output(40), Some(12));
+    project.set_fade_to_black_curve(fm_types::FadeToBlackCurve::Ease);
+    assert_eq!(
+        project
+            .fade_to_black_output_durations()
+            .iter()
+            .map(|(output, frames)| (*output, *frames))
+            .collect::<Vec<_>>(),
+        [(output(40), 12), (output(41), 90)]
+    );
+    assert_eq!(
+        project.fade_to_black_curve(),
+        fm_types::FadeToBlackCurve::Ease
+    );
+    assert_eq!(project.validate(), Ok(()));
+
+    // Clearing returns an output to the shared duration; removing the
+    // output drops its own.
+    project.set_fade_to_black_output_duration(output(40), None);
+    project.remove_output(output(41)).unwrap();
+    assert!(project.fade_to_black_output_durations().is_empty());
+
+    for (target, frames, kind) in [
+        (
+            output(99),
+            30,
+            ValidationErrorKind::MissingReference(EntityRef::Output(output(99))),
+        ),
+        (output(40), 0, ValidationErrorKind::OutOfRange),
+        (
+            output(40),
+            fm_types::MAX_FADE_TO_BLACK_DURATION_FRAMES + 1,
+            ValidationErrorKind::OutOfRange,
+        ),
+    ] {
+        let mut invalid = project.clone();
+        invalid.set_fade_to_black_output_duration(target, Some(frames));
+        let errors = invalid.validate().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.field == "fade_to_black_output_durations" && error.kind == kind),
+            "{errors:?}"
+        );
+    }
 }
 
 #[test]

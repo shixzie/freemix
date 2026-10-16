@@ -145,14 +145,118 @@ pub(crate) const fn overlay_name(kind: OverlayTransitionKind) -> TransitionName 
     }
 }
 
-/// The names of a manual (T-bar) transition kind.
-pub(crate) const fn manual_name(kind: ManualTransitionKind) -> TransitionName {
-    match kind {
-        ManualTransitionKind::Fade => mix_name(AutoTransitionKind::Fade),
-        ManualTransitionKind::Wipe => mix_name(AutoTransitionKind::Wipe),
-        ManualTransitionKind::AlphaFade => mix_name(AutoTransitionKind::AlphaFade),
-        ManualTransitionKind::Slide => mix_name(AutoTransitionKind::Slide),
+/// The effect a manual (T-bar) transition kind draws: its mix, or its
+/// Stinger slot.
+pub(crate) const fn manual_effect(kind: ManualTransitionKind) -> TransitionFavoriteEffect {
+    match (kind, kind.mix()) {
+        (_, Some(mix)) => TransitionFavoriteEffect::Mix(mix),
+        (ManualTransitionKind::Stinger { slot, .. }, None) => {
+            TransitionFavoriteEffect::Stinger(slot)
+        }
+        (_, None) => TransitionFavoriteEffect::Cut,
     }
+}
+
+/// The manual (T-bar) form of a transition effect: a mix, or a Stinger
+/// whose clip spans `duration_frames`; Cut has none.
+#[must_use]
+pub const fn manual_kind_for(
+    effect: TransitionFavoriteEffect,
+    duration_frames: u32,
+) -> Option<ManualTransitionKind> {
+    match effect {
+        TransitionFavoriteEffect::Cut => None,
+        TransitionFavoriteEffect::Mix(kind) => Some(ManualTransitionKind::from_mix(kind)),
+        TransitionFavoriteEffect::Stinger(slot) => Some(ManualTransitionKind::Stinger {
+            slot,
+            duration_frames,
+        }),
+    }
+}
+
+/// The step `PgUp` and `PgDn` move an active T-bar by, in basis points.
+pub const T_BAR_KEY_STEP_BASIS_POINTS: i32 = 1_000;
+
+/// One T-bar gesture. The lever, the console keys, and an external
+/// controller all reduce to these, so each sends the same commands for the
+/// same move (SW-001, SW-004).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TBarGesture {
+    /// Start a manual transition of this kind.
+    Start(ManualTransitionKind),
+    /// Move the lever to `position`, first starting `kind` when no manual
+    /// transition is active.
+    MoveTo {
+        kind: ManualTransitionKind,
+        position: ManualTransitionPosition,
+    },
+    /// Move the active lever by this many basis points; negative reverses.
+    Step(i32),
+    /// Commit the active manual transition.
+    Commit,
+    /// Cancel the active manual transition.
+    Cancel,
+}
+
+/// The intents one T-bar `gesture` sends against the replicated `desired`
+/// manual transition and the session's `availability`.
+#[must_use]
+pub fn t_bar_intents(
+    desired: ManualTransitionStatus,
+    availability: ManualTransitionAvailability,
+    gesture: TBarGesture,
+) -> Vec<StudioIntent> {
+    let current = desired_manual_position(desired);
+    let active = availability.active_controls;
+    match gesture {
+        TBarGesture::Start(kind) if availability.start => {
+            vec![StudioIntent::StartManualTransition { kind }]
+        }
+        TBarGesture::MoveTo { position, .. } if active => {
+            if position == current {
+                Vec::new()
+            } else {
+                vec![StudioIntent::SetManualTransitionPosition { position }]
+            }
+        }
+        TBarGesture::MoveTo { kind, position } if availability.start => {
+            let mut intents = vec![StudioIntent::StartManualTransition { kind }];
+            if position != ManualTransitionPosition::START {
+                intents.push(StudioIntent::SetManualTransitionPosition { position });
+            }
+            intents
+        }
+        TBarGesture::Step(delta) if active => {
+            let target = (i32::from(current.basis_points()) + delta)
+                .clamp(0, i32::from(ManualTransitionPosition::MAX));
+            match u16::try_from(target)
+                .ok()
+                .and_then(ManualTransitionPosition::new)
+            {
+                Some(position) if position != current => {
+                    vec![StudioIntent::SetManualTransitionPosition { position }]
+                }
+                _ => Vec::new(),
+            }
+        }
+        TBarGesture::Commit if active => vec![StudioIntent::CommitManualTransition],
+        TBarGesture::Cancel if active => vec![StudioIntent::CancelManualTransition],
+        _ => Vec::new(),
+    }
+}
+
+/// The T-bar gesture a bare console key performs: `T` starts the selected
+/// kind, `PgUp` and `PgDn` step the lever, `End` commits, and `Esc` cancels.
+#[must_use]
+pub const fn t_bar_key_gesture(key: egui::Key, kind: ManualTransitionKind) -> Option<TBarGesture> {
+    Some(match key {
+        egui::Key::T => TBarGesture::Start(kind),
+        egui::Key::PageUp => TBarGesture::Step(T_BAR_KEY_STEP_BASIS_POINTS),
+        egui::Key::PageDown => TBarGesture::Step(-T_BAR_KEY_STEP_BASIS_POINTS),
+        egui::Key::End => TBarGesture::Commit,
+        egui::Key::Escape => TBarGesture::Cancel,
+        _ => return None,
+    })
 }
 
 /// The overlay transition after `kind` in [`OverlayTransitionKind::ALL`],
@@ -212,13 +316,15 @@ pub(crate) const fn favorite_intent(favorite: TransitionFavoriteStatus) -> Studi
 
 /// The four favourite keys: a click takes the favourite, F5 through F8
 /// take it from the keyboard, and right-click assigns it.
+#[allow(clippy::too_many_lines)] // one panel section, top to bottom
 fn draw_favorites(
     ui: &mut Ui,
     metrics: ColumnMetrics,
-    shell: &StudioShell,
-    state: &StudioUiState,
+    shell: &mut StudioShell,
+    (state, start): (&StudioUiState, (bool, &str)),
     intents: &mut Vec<StudioIntent>,
 ) {
+    let t_bar_kind = &mut shell.t_bar_kind;
     let l = l10n::locale(ui.ctx());
     let availability = transition_availability(TransitionGate::from_state(state));
     let reason = unavailable_reason(state, Capability::Transition);
@@ -319,9 +425,41 @@ fn draw_favorites(
                     (assign_enabled, reason),
                     intents,
                 );
+                draw_favorite_t_bar_start(ui, (slot, favorite), start, t_bar_kind, intents);
             });
         }
     });
+}
+
+/// A favourite's `Start on T-bar` item: selects the favourite's effect as
+/// the T-bar kind and starts it as a manual transition (Cut has none).
+pub(crate) fn draw_favorite_t_bar_start(
+    ui: &mut Ui,
+    (slot, favorite): (u8, TransitionFavoriteStatus),
+    (enabled, reason): (bool, &str),
+    t_bar_kind: &mut ManualTransitionKind,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let Some(kind) = manual_kind_for(favorite.effect, favorite.duration_frames) else {
+        return;
+    };
+    let l = l10n::locale(ui.ctx());
+    let hover = l.format(
+        Msg::FavoriteTBarHover,
+        &[
+            ("slot", Arg::from(u32::from(slot))),
+            ("effect", Arg::Str(&effect_name(l, favorite.effect))),
+        ],
+    );
+    if ui
+        .add_enabled(enabled, egui::Button::new(l.text(Msg::FavoriteTBar)))
+        .hint(&hover, reason)
+        .clicked()
+    {
+        *t_bar_kind = kind;
+        intents.push(StudioIntent::StartManualTransition { kind });
+        ui.close();
+    }
 }
 
 /// The MORE key: a menu taking each automatic mix without a key of its own.
@@ -469,6 +607,7 @@ fn fitted_label_size(ui: &Ui, text: &str, (min, max): (f32, f32), width: f32) ->
 
 const T_BAR_HEIGHT: f32 = 148.0;
 
+#[allow(clippy::too_many_lines)] // one panel section, top to bottom
 pub(crate) fn draw_transition_column(
     ui: &mut Ui,
     shell: &mut StudioShell,
@@ -525,17 +664,17 @@ pub(crate) fn draw_transition_column(
             draw_auto_transitions(ui, metrics, shell, state, intents);
         });
         ui.add_space(4.0);
-        draw_t_bar(
-            ui,
-            desired,
-            manual.active_controls,
-            manual.alpha_fade_start_exposed,
-            intents,
-        );
+        draw_t_bar(ui, desired, manual, shell.t_bar_kind, intents);
     });
-    draw_favorites(ui, metrics, shell, state, intents);
-    ui.separator();
     let session_reason = unavailable_reason(state, Capability::Transition);
+    draw_favorites(
+        ui,
+        metrics,
+        shell,
+        (state, (manual.start, session_reason)),
+        intents,
+    );
+    ui.separator();
     let manual_reason = if state.connection_status.controls_enabled()
         && state.view.is_some()
         && state.can_transition
@@ -556,11 +695,26 @@ pub(crate) fn draw_transition_column(
             names: &view.input_names,
         },
     );
+    let stingers: Vec<WireStingerSlotId> = state
+        .view
+        .as_ref()
+        .map(|view| {
+            view.stingers
+                .iter()
+                .filter_map(|stinger| WireStingerSlotId::new(stinger.slot))
+                .collect()
+        })
+        .unwrap_or_default();
     draw_manual_transition(
         ui,
         (desired, realized),
         (manual, &mut shell.layout.show_manual_details),
         (session_reason, manual_reason),
+        ManualStart {
+            kind: &mut shell.t_bar_kind,
+            stingers: &stingers,
+            duration_frames: shell.transition_duration_frames,
+        },
         names,
         intents,
     );
@@ -685,6 +839,7 @@ fn draw_manual_transition(
     (desired, realized): (ManualTransitionStatus, ManualTransitionStatus),
     (availability, details): (ManualTransitionAvailability, &mut bool),
     (start_reason, active_reason): (&str, &str),
+    start: ManualStart<'_>,
     names: InputNames<'_>,
     intents: &mut Vec<StudioIntent>,
 ) {
@@ -726,9 +881,9 @@ fn draw_manual_transition(
         ui.spacing_mut().item_spacing.x = 4.0;
         draw_manual_start_buttons(
             ui,
-            availability.start,
+            (availability.start, start_reason),
             availability.alpha_fade_start_exposed,
-            start_reason,
+            start,
             intents,
         );
     });
@@ -758,10 +913,9 @@ fn draw_manual_transition(
 /// replicated desired and realized manual-transition state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ManualSummary {
-    /// The desired transition kind as catalog English (worded in the
-    /// console language when drawn), or `None` while no manual transition
-    /// is desired.
-    pub(crate) kind: Option<&'static str>,
+    /// The desired transition kind in the console language, or `None`
+    /// while no manual transition is desired.
+    pub(crate) kind: Option<String>,
     /// Source and destination input names of the desired transition.
     pub(crate) route: Option<(String, String)>,
     /// Desired lever travel in whole percent (0 = start, 100 = end).
@@ -808,7 +962,7 @@ pub(crate) fn manual_summary(
             confirmed,
         },
         ManualTransitionStatus::Active(state) => ManualSummary {
-            kind: Some(manual_kind_label(state.kind)),
+            kind: Some(manual_kind_text(names.locale, state.kind)),
             route: Some((names.name(state.from), names.name(state.to))),
             percent: state.position.basis_points() / 100,
             confirmed,
@@ -816,12 +970,13 @@ pub(crate) fn manual_summary(
     }
 }
 
-const fn manual_kind_label(kind: ManualTransitionKind) -> &'static str {
-    match kind {
-        ManualTransitionKind::Fade => Msg::FadeKey.en(),
-        ManualTransitionKind::Wipe => Msg::WipeKey.en(),
-        ManualTransitionKind::AlphaFade => Msg::AlphaFadeKind.en(),
-        ManualTransitionKind::Slide => Msg::SlideKey.en(),
+/// A manual kind's key label (`WIPE`, `ALPHA FADE`, `STING 2`).
+pub(crate) fn manual_kind_text(l: Locale, kind: ManualTransitionKind) -> String {
+    match manual_effect(kind) {
+        TransitionFavoriteEffect::Mix(AutoTransitionKind::AlphaFade) => {
+            l.text(Msg::AlphaFadeKind).to_owned()
+        }
+        effect => effect_short(l, effect),
     }
 }
 
@@ -860,11 +1015,16 @@ fn draw_manual_status(
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(l.tr(summary.kind.unwrap_or(Msg::NoManualTransition.en())))
-                        .size(crate::theme::legible(10.5))
-                        .strong()
-                        .extra_letter_spacing(0.8)
-                        .color(if active { AMBER } else { muted_color() }),
+                    RichText::new(
+                        summary
+                            .kind
+                            .as_deref()
+                            .unwrap_or(l.text(Msg::NoManualTransition)),
+                    )
+                    .size(crate::theme::legible(10.5))
+                    .strong()
+                    .extra_letter_spacing(0.8)
+                    .color(if active { AMBER } else { muted_color() }),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if active {
@@ -954,15 +1114,20 @@ pub(crate) fn t_bar_position(fraction: f32) -> ManualTransitionPosition {
 ///
 /// The lever always draws the replicated desired position; dragging emits
 /// position intents and the lever follows once the daemon confirms them.
+/// Dragging an idle lever first starts the selected kind (`kind`); until
+/// the daemon confirms the start, the rest of that drag only moves it.
+#[allow(clippy::too_many_lines)] // one panel section, top to bottom
 fn draw_t_bar(
     ui: &mut Ui,
     desired: ManualTransitionStatus,
-    enabled: bool,
-    alpha_fade_exposed: bool,
+    availability: ManualTransitionAvailability,
+    kind: ManualTransitionKind,
     intents: &mut Vec<StudioIntent>,
 ) {
     const WIDTH: f32 = 40.0;
     const HANDLE: Vec2 = Vec2::new(36.0, 16.0);
+    let enabled = availability.active_controls || availability.start;
+    let started_id = egui::Id::new("studio-t-bar-started");
     let sense = if enabled {
         Sense::click_and_drag()
     } else {
@@ -974,21 +1139,35 @@ fn draw_t_bar(
     let moved = response.drag_started()
         || response.clicked()
         || (response.dragged() && response.drag_delta() != Vec2::ZERO);
+    let started = ui.data(|data| data.get_temp::<bool>(started_id).unwrap_or(false));
     if enabled
         && moved
         && let Some(pointer) = response.interact_pointer_pos()
     {
         let fraction = (travel_bottom - pointer.y) / (travel_bottom - travel_top);
         let position = t_bar_position(fraction);
-        if position != desired_manual_position(desired) {
-            intents.push(StudioIntent::SetManualTransitionPosition { position });
+        let sent = if started && !availability.active_controls {
+            // Started earlier in this drag; the start is not confirmed yet.
+            vec![StudioIntent::SetManualTransitionPosition { position }]
+        } else {
+            t_bar_intents(
+                desired,
+                availability,
+                TBarGesture::MoveTo { kind, position },
+            )
+        };
+        if sent
+            .iter()
+            .any(|intent| matches!(intent, StudioIntent::StartManualTransition { .. }))
+        {
+            ui.data_mut(|data| data.insert_temp(started_id, true));
         }
+        intents.extend(sent);
     }
-    let response = response.on_hover_text(t_bar_hover(
-        l10n::locale(ui.ctx()),
-        enabled,
-        alpha_fade_exposed,
-    ));
+    if !response.dragged() && !response.drag_started() {
+        ui.data_mut(|data| data.remove::<bool>(started_id));
+    }
+    let response = response.on_hover_text(t_bar_hover(l10n::locale(ui.ctx()), availability, kind));
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -1063,8 +1242,12 @@ fn draw_t_bar(
 }
 
 /// The T-bar tooltip: how to drive the lever, or how to enable it.
-fn t_bar_hover(l: Locale, enabled: bool, alpha_fade_exposed: bool) -> String {
-    if enabled {
+fn t_bar_hover(
+    l: Locale,
+    availability: ManualTransitionAvailability,
+    kind: ManualTransitionKind,
+) -> String {
+    if availability.active_controls {
         l.format(
             Msg::TBarHoverActive,
             &[
@@ -1072,52 +1255,129 @@ fn t_bar_hover(l: Locale, enabled: bool, alpha_fade_exposed: bool) -> String {
                 ("cancel", Arg::Str(l.text(Msg::CancelKey))),
             ],
         )
+    } else if availability.start {
+        with_key(
+            l,
+            &l.format(
+                Msg::TBarHoverReady,
+                &[("kind", Arg::Str(&effect_name(l, manual_effect(kind))))],
+            ),
+            "T",
+        )
     } else {
         l.format(
             Msg::TBarHoverIdle,
             &[(
                 "keys",
-                Arg::Str(&manual_start_keys(l, alpha_fade_exposed, ", ")),
+                Arg::Str(&manual_start_keys(
+                    l,
+                    availability.alpha_fade_start_exposed,
+                    ", ",
+                )),
             )],
         )
     }
 }
 
+/// What the manual start keys start: the selected T-bar kind they set, the
+/// configured Stinger slots MORE offers, and a Stinger's clip length.
+pub(crate) struct ManualStart<'a> {
+    pub(crate) kind: &'a mut ManualTransitionKind,
+    pub(crate) stingers: &'a [WireStingerSlotId],
+    pub(crate) duration_frames: u32,
+}
+
 fn draw_manual_start_buttons(
     ui: &mut Ui,
-    enabled: bool,
+    (enabled, reason): (bool, &str),
     alpha_fade_exposed: bool,
-    reason: &str,
+    start: ManualStart<'_>,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let ManualStart {
+        kind: selected,
+        stingers,
+        duration_frames,
+    } = start;
     let l = l10n::locale(ui.ctx());
     let mut keys = vec![
-        ManualTransitionKind::Fade,
-        ManualTransitionKind::Wipe,
-        ManualTransitionKind::Slide,
+        AutoTransitionKind::Fade,
+        AutoTransitionKind::Wipe,
+        AutoTransitionKind::Slide,
     ];
     if alpha_fade_exposed {
-        keys.push(ManualTransitionKind::AlphaFade);
+        keys.push(AutoTransitionKind::AlphaFade);
     }
-    // Equal-width keys that always fill the column, whatever the language.
-    #[allow(clippy::cast_precision_loss)] // three or four keys
-    let count = keys.len() as f32;
+    // Equal-width keys, MORE last, that always fill the column, whatever
+    // the language.
+    #[allow(clippy::cast_precision_loss)] // four or five keys
+    let count = (keys.len() + 1) as f32;
     let spacing = ui.spacing().item_spacing.x;
     let size = Vec2::new(
         ((ui.available_width() - spacing * (count - 1.0)) / count).floor(),
         22.0,
     );
     ui.spacing_mut().button_padding.x = 2.0;
-    for kind in keys {
-        let TransitionName { short, name } = manual_name(kind);
+    for mix in &keys {
+        let kind = ManualTransitionKind::from_mix(*mix);
+        let TransitionName { short, name } = mix_name(*mix);
         let tooltip = l.format(Msg::ManualStartHover, &[("kind", Arg::Str(l.text(name)))]);
         let response = ui
-            .add_enabled(enabled, start_button(l.text(short), size))
+            .add_enabled(
+                enabled,
+                start_button(l.text(short), size).selected(*selected == kind),
+            )
             .hint(&tooltip, reason);
         if response.clicked() {
+            *selected = kind;
             intents.push(StudioIntent::StartManualTransition { kind });
         }
     }
+    // Every other mix and each configured Stinger, scrubbed by the lever.
+    let more = AutoTransitionKind::ALL
+        .into_iter()
+        .filter(|mix| !keys.contains(mix))
+        .map(TransitionFavoriteEffect::Mix)
+        .chain(
+            stingers
+                .iter()
+                .copied()
+                .map(TransitionFavoriteEffect::Stinger),
+        );
+    let selected_more = !keys
+        .iter()
+        .any(|mix| *selected == ManualTransitionKind::from_mix(*mix));
+    let key = start_button(l.text(Msg::MoreTransitionsKey), size).selected(selected_more);
+    egui::containers::menu::MenuButton::from_button(key)
+        .ui(ui, |ui| {
+            for effect in more {
+                let Some(kind) = manual_kind_for(effect, duration_frames) else {
+                    continue;
+                };
+                let label = effect_name(l, effect);
+                let tooltip = l.format(Msg::ManualStartHover, &[("kind", Arg::Str(&label))]);
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new(label.as_str()).selected(*selected == kind),
+                    )
+                    .hint(&tooltip, reason)
+                    .clicked()
+                {
+                    *selected = kind;
+                    intents.push(StudioIntent::StartManualTransition { kind });
+                    ui.close();
+                }
+            }
+        })
+        .0
+        .hint(
+            &l.format(
+                Msg::ManualMoreHover,
+                &[("frames", Arg::Str(&l10n::frames(l, duration_frames)))],
+            ),
+            reason,
+        );
 }
 
 fn start_button(label: &str, size: Vec2) -> egui::Button<'static> {
@@ -1238,7 +1498,7 @@ pub(crate) fn manual_transition_label(l: Locale, status: ManualTransitionStatus)
         ManualTransitionStatus::Active(state) => l.format(
             Msg::ManualStateActive,
             &[
-                ("kind", Arg::Str(l.tr(manual_kind_label(state.kind)))),
+                ("kind", Arg::Str(&manual_kind_text(l, state.kind))),
                 ("from", Arg::Str(&state.from.to_string())),
                 ("to", Arg::Str(&state.to.to_string())),
                 (
@@ -1318,6 +1578,126 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one table of every surface
+    fn t_bar_gestures_send_the_same_commands_from_every_surface() {
+        let idle = ManualTransitionStatus::Inactive;
+        let ready = ManualTransitionAvailability {
+            start: true,
+            alpha_fade_start_exposed: true,
+            active_controls: false,
+        };
+        let live = ManualTransitionAvailability {
+            start: false,
+            alpha_fade_start_exposed: true,
+            active_controls: true,
+        };
+        let at = |basis_points| ManualTransitionPosition::new(basis_points).unwrap();
+        let set = |basis_points| StudioIntent::SetManualTransitionPosition {
+            position: at(basis_points),
+        };
+        let kind = ManualTransitionKind::CubeZoom;
+        // Dragging an idle lever starts the selected kind, then moves it.
+        assert_eq!(
+            t_bar_intents(
+                idle,
+                ready,
+                TBarGesture::MoveTo {
+                    kind,
+                    position: at(2_500)
+                }
+            ),
+            vec![StudioIntent::StartManualTransition { kind }, set(2_500)]
+        );
+        assert_eq!(
+            t_bar_intents(
+                idle,
+                ready,
+                TBarGesture::MoveTo {
+                    kind,
+                    position: ManualTransitionPosition::START
+                }
+            ),
+            vec![StudioIntent::StartManualTransition { kind }]
+        );
+        // An active lever moves, reverses, steps within range, and ends.
+        let moving = active(4_750);
+        let to = |basis_points| TBarGesture::MoveTo {
+            kind,
+            position: at(basis_points),
+        };
+        assert_eq!(t_bar_intents(moving, live, to(3_000)), vec![set(3_000)]);
+        assert_eq!(t_bar_intents(moving, live, to(4_750)), Vec::new());
+        assert_eq!(
+            t_bar_intents(moving, live, TBarGesture::Step(1_000)),
+            vec![set(5_750)]
+        );
+        assert_eq!(
+            t_bar_intents(active(9_500), live, TBarGesture::Step(1_000)),
+            vec![set(10_000)]
+        );
+        assert_eq!(
+            t_bar_intents(active(0), live, TBarGesture::Step(-1_000)),
+            Vec::new()
+        );
+        assert_eq!(
+            t_bar_intents(moving, live, TBarGesture::Commit),
+            vec![StudioIntent::CommitManualTransition]
+        );
+        assert_eq!(
+            t_bar_intents(moving, live, TBarGesture::Cancel),
+            vec![StudioIntent::CancelManualTransition]
+        );
+        // Nothing moves without the matching availability.
+        assert_eq!(
+            t_bar_intents(idle, ready, TBarGesture::Step(1_000)),
+            Vec::new()
+        );
+        assert_eq!(t_bar_intents(idle, ready, TBarGesture::Commit), Vec::new());
+        assert_eq!(
+            t_bar_intents(moving, live, TBarGesture::Start(kind)),
+            Vec::new()
+        );
+        // The console keys reduce to the same gestures.
+        assert_eq!(
+            t_bar_key_gesture(egui::Key::T, kind),
+            Some(TBarGesture::Start(kind))
+        );
+        assert_eq!(
+            t_bar_key_gesture(egui::Key::PageDown, kind),
+            Some(TBarGesture::Step(-T_BAR_KEY_STEP_BASIS_POINTS))
+        );
+        assert_eq!(
+            t_bar_key_gesture(egui::Key::End, kind),
+            Some(TBarGesture::Commit)
+        );
+        assert_eq!(t_bar_key_gesture(egui::Key::A, kind), None);
+        // Every effect but Cut has a manual form; a Stinger carries its clip.
+        let slot = WireStingerSlotId::new(2).unwrap();
+        assert_eq!(manual_kind_for(TransitionFavoriteEffect::Cut, 30), None);
+        assert_eq!(
+            manual_kind_for(TransitionFavoriteEffect::Stinger(slot), 45),
+            Some(ManualTransitionKind::Stinger {
+                slot,
+                duration_frames: 45
+            })
+        );
+        for mix in AutoTransitionKind::ALL {
+            let kind = manual_kind_for(TransitionFavoriteEffect::Mix(mix), 30).unwrap();
+            assert_eq!(manual_effect(kind), TransitionFavoriteEffect::Mix(mix));
+        }
+        assert_eq!(
+            manual_kind_text(
+                Locale::ENGLISH,
+                ManualTransitionKind::Stinger {
+                    slot,
+                    duration_frames: 45
+                }
+            ),
+            "STING 2"
+        );
+    }
+
+    #[test]
     fn t_bar_fraction_maps_to_clamped_basis_points() {
         assert_eq!(t_bar_position(0.0), ManualTransitionPosition::START);
         assert_eq!(t_bar_position(-1.0), ManualTransitionPosition::START);
@@ -1364,7 +1744,7 @@ mod tests {
             }
         );
         let summary = manual_summary(active(4_750), active(4_750), names);
-        assert_eq!(summary.kind, Some("SLIDE"));
+        assert_eq!(summary.kind.as_deref(), Some("SLIDE"));
         assert_eq!(
             summary.route,
             Some(("Camera 1".to_owned(), "Input 9".to_owned()))

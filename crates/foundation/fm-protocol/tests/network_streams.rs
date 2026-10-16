@@ -15,7 +15,7 @@ use fm_protocol::{
     decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -90,7 +90,7 @@ const SETTINGS: &str = "transport=tcp\tjitter_ms=500\tbackoff_min_ms=250\tbackof
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
 }
 
 #[test]
@@ -376,6 +376,8 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams,

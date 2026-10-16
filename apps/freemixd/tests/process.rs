@@ -1706,6 +1706,198 @@ fn fade_to_black_excludes_an_unselected_output_and_survives_restart() {
     assert!(persisted.project().fade_to_black_affects(output_id(1)));
 }
 
+/// SW-004, Protocol 2.48: an output's own Fade-to-Black duration and the
+/// curve are accepted, replicated project edits that survive a restart; an
+/// unknown output is refused (a zero duration cannot be encoded). A manual
+/// T-bar runs a MORE mix (Cube Zoom) forward, back, and to commit, and a
+/// Stinger with no configured slot is refused.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn fade_to_black_timing_and_a_more_kind_t_bar_round_trip_through_the_daemon() {
+    let directory = TestDirectory::new("ftb-timing");
+    let project_path = directory.project_path();
+    create_two_output_project(&project_path);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Operator, None);
+    let snapshot = client.receive_snapshot();
+    assert_eq!(snapshot.fade_to_black_output_durations, Vec::new());
+    assert_eq!(
+        snapshot.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Linear
+    );
+
+    let confidence = fm_protocol::WireOutputId::from_domain(output_id(2));
+    for (id, payload, event, revision) in [
+        (
+            "ftb-duration",
+            CommandPayload::SetFadeToBlackOutputDuration {
+                output: confidence,
+                duration_frames: Some(45),
+            },
+            fm_protocol::EventPayload::FadeToBlackOutputDurationChanged {
+                output: confidence,
+                duration_frames: Some(45),
+            },
+            1,
+        ),
+        (
+            "ftb-curve",
+            CommandPayload::SetFadeToBlackCurve {
+                curve: fm_protocol::FadeToBlackCurve::Ease,
+            },
+            fm_protocol::EventPayload::FadeToBlackCurveChanged {
+                curve: fm_protocol::FadeToBlackCurve::Ease,
+            },
+            2,
+        ),
+    ] {
+        client.send(&command(id, id, payload));
+        assert!(matches!(
+            client.next_result(),
+            CommandResult::Accepted { id: accepted, revision: at, .. }
+                if accepted == id && at == revision
+        ));
+        assert_eq!(next_event_payload(&mut client), event);
+    }
+    for (id, payload, code) in [
+        (
+            "ftb-unknown",
+            CommandPayload::SetFadeToBlackOutputDuration {
+                output: fm_protocol::WireOutputId::from_domain(output_id(9)),
+                duration_frames: Some(45),
+            },
+            "not_found",
+        ),
+        (
+            "tbar-stinger",
+            CommandPayload::StartManualTransition {
+                kind: ManualTransitionKind::Stinger {
+                    slot: fm_protocol::WireStingerSlotId::new(1).unwrap(),
+                    duration_frames: 20,
+                },
+            },
+            "not_found",
+        ),
+    ] {
+        client.send(&command(id, id, payload));
+        assert!(
+            matches!(
+                client.next_result(),
+                CommandResult::Rejected { code: refused, current_revision: 2, .. }
+                    if refused == code
+            ),
+            "{id}"
+        );
+    }
+
+    // The T-bar scrubs a MORE mix forward and back, then commits.
+    for (id, payload, revision) in [
+        (
+            "tbar-start",
+            CommandPayload::StartManualTransition {
+                kind: ManualTransitionKind::CubeZoom,
+            },
+            3,
+        ),
+        (
+            "tbar-forward",
+            CommandPayload::SetManualTransitionPosition {
+                position: ManualTransitionPosition::new(7_500).unwrap(),
+            },
+            4,
+        ),
+        (
+            "tbar-back",
+            CommandPayload::SetManualTransitionPosition {
+                position: ManualTransitionPosition::new(2_500).unwrap(),
+            },
+            5,
+        ),
+    ] {
+        client.send(&command(id, id, payload));
+        assert!(
+            matches!(
+                client.next_result(),
+                CommandResult::Accepted { revision: at, .. } if at == revision
+            ),
+            "{id}"
+        );
+    }
+    drop(client);
+
+    let mut observer = daemon.connect();
+    observer.handshake_as(Role::Viewer, None);
+    let snapshot = observer.receive_snapshot();
+    assert_eq!(
+        snapshot.fade_to_black_output_durations,
+        vec![(confidence, 45)]
+    );
+    assert_eq!(
+        snapshot.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Ease
+    );
+    assert!(matches!(
+        snapshot.desired_manual_transition,
+        ManualTransitionStatus::Active(desired)
+            if desired.kind == ManualTransitionKind::CubeZoom
+                && desired.position.basis_points() == 2_500
+    ));
+    drop(observer);
+
+    let mut operator = daemon.connect();
+    operator.handshake_as(Role::Operator, None);
+    operator.receive_snapshot();
+    operator.send(&command(
+        "tbar-commit",
+        "tbar-commit",
+        CommandPayload::CommitManualTransition,
+    ));
+    assert!(matches!(
+        operator.next_result(),
+        CommandResult::Accepted { revision: 6, .. }
+    ));
+    drop(operator);
+    daemon.stop();
+
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    restarted.handshake_as(Role::Viewer, None);
+    let snapshot = restarted.receive_snapshot();
+    assert_eq!(
+        snapshot.fade_to_black_output_durations,
+        vec![(confidence, 45)]
+    );
+    assert_eq!(
+        snapshot.fade_to_black_curve,
+        fm_protocol::FadeToBlackCurve::Ease
+    );
+    assert_eq!(
+        snapshot.desired_manual_transition,
+        ManualTransitionStatus::Inactive
+    );
+    drop(restarted);
+    daemon.wait_success();
+
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(
+        persisted
+            .project()
+            .fade_to_black_output_durations()
+            .get(&output_id(2)),
+        Some(&45)
+    );
+    assert_eq!(
+        persisted.project().fade_to_black_curve(),
+        fm_types::FadeToBlackCurve::Ease
+    );
+    assert_eq!(
+        persisted.runtime_manual_transitions(),
+        fm_persistence::RuntimeManualTransitions::default()
+    );
+}
+
 /// OR-011, Protocol 2.42: a daemon without a display presenter keeps
 /// display-output slots as replicated, validated project configuration;
 /// every configured slot waits with `no-presenter`, the inventory says
@@ -5882,11 +6074,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.47.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+    // The previous protocol is refused; the current one is 2.48.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 46),
+        protocol: ProtocolVersion::new(2, 47),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5902,7 +6094,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 47)
+        ProtocolVersion::new(2, 48)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

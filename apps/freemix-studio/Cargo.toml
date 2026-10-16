@@ -27,6 +27,11 @@ fm-ui-model = { path = "../../crates/ui/fm-ui-model" }
 nix = { version = "0.27.1", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
+fm-auth = { path = "../../crates/services/fm-auth" }
+fm-clock = { path = "../../crates/media/fm-clock" }
+fm-control = { path = "../../crates/services/fm-control" }
+fm-engine = { path = "../../crates/services/fm-engine" }
+fm-sim = { path = "../../crates/media/fm-sim" }
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [lints]

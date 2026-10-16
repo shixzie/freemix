@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -95,7 +95,7 @@ fn base64url(bytes: &[u8]) -> String {
 
 #[test]
 fn protocol_version_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn identity_grade_and_simple_commands_have_an_exact_wire_form() {
 
 #[test]
 fn every_grade_command_state_and_change_round_trips() {
-    let messages = [
+    let messages = vec![
         command(CommandPayload::SetInputGrade {
             input: input(u128::MAX),
             source: Some(WireGradeSource::Inline(Box::new(rich()))),
@@ -437,7 +437,7 @@ fn snapshot_grade_state_count_is_bounded() {
 
     let line = encode_line(&sample_snapshot()).unwrap();
     assert!(
-        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"),
+        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"),
         "{line}"
     );
     let over = line.replace(
@@ -457,6 +457,8 @@ fn sample_snapshot() -> WireMessage {
     WireMessage::Snapshot(SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),

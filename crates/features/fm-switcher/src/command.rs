@@ -1,9 +1,9 @@
 use fm_types::{InputId, OutputId};
 
 use crate::{
-    FadeToBlackPosition, FadeToBlackTarget, MissingMediaFallback, OverlayBorderPreset,
-    OverlayChannelId, OverlayPositionPreset, OverlayTransitionKind, RecorderSlot,
-    StingerPreloadState, StingerSlotId, StreamTargetId, TBarPosition, TransitionKind,
+    FadeToBlackCurve, FadeToBlackPosition, FadeToBlackTarget, MissingMediaFallback,
+    OverlayBorderPreset, OverlayChannelId, OverlayPositionPreset, OverlayTransitionKind,
+    RecorderSlot, StingerPreloadState, StingerSlotId, StreamTargetId, TBarPosition, TransitionKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +19,11 @@ pub enum SwitcherCommand {
     },
     StartTBar {
         kind: TransitionKind,
+    },
+    /// Starts a manual Stinger scrubbing a `duration_frames` clip (SW-004).
+    StartStingerTBar {
+        slot: StingerSlotId,
+        duration_frames: u32,
     },
     SetTBarPosition(TBarPosition),
     CommitTBar,
@@ -57,6 +62,14 @@ pub enum SwitcherCommand {
         output: OutputId,
         affected: bool,
     },
+    /// Gives `output` its own Fade-to-Black duration, or with `None`
+    /// returns it to the requested one (SW-004).
+    SetFadeToBlackOutputDuration {
+        output: OutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Chooses how automatic Fade-to-Black moves ease (SW-004).
+    SetFadeToBlackCurve(FadeToBlackCurve),
     SetStreamRunning {
         target: StreamTargetId,
         running: bool,
@@ -105,6 +118,13 @@ pub enum SwitcherEvent {
     },
     FadeToBlackCompleted {
         active: bool,
+    },
+    FadeToBlackOutputDurationChanged {
+        output: OutputId,
+        duration_frames: Option<u32>,
+    },
+    FadeToBlackCurveChanged {
+        curve: FadeToBlackCurve,
     },
     OverlayTaken {
         channel: OverlayChannelId,
@@ -193,6 +213,8 @@ pub enum SwitcherError {
     },
     OverlayQueueEmpty(OverlayChannelId),
     UnconfiguredStinger(StingerSlotId),
+    /// A manual Stinger needs its media preloaded; it has no fallback.
+    StingerMediaUnavailable(StingerSlotId),
     StingerCutPointOutOfRange {
         slot: StingerSlotId,
         cut_point_frames: u32,
@@ -260,8 +282,9 @@ impl core::fmt::Display for SwitcherError {
             Self::TransitionInProgress => {
                 formatter.write_str("a transition is already in progress")
             }
-            Self::UnsupportedManualTransitionKind => formatter
-                .write_str("manual transitions support only Fade, Wipe, AlphaFade, and Slide"),
+            Self::UnsupportedManualTransitionKind => {
+                formatter.write_str("a manual Stinger needs its clip length in frames")
+            }
             Self::InvalidManualTransitionRoute => {
                 formatter.write_str("manual transition endpoints must match Program and Preview")
             }
@@ -285,6 +308,11 @@ impl core::fmt::Display for SwitcherError {
                     channel.number()
                 )
             }
+            Self::StingerMediaUnavailable(slot) => write!(
+                formatter,
+                "stinger slot {} media is not preloaded; a manual Stinger has no fallback",
+                slot.number()
+            ),
             Self::UnconfiguredStinger(slot) => {
                 write!(
                     formatter,

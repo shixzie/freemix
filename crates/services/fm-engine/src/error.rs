@@ -39,6 +39,9 @@ pub enum ShowError {
     InvalidDisplayOutput(fm_types::display::DisplayOutputSlot, &'static str),
     /// An output is not part of the show's output roster.
     UnknownOutput(OutputId),
+    /// A Fade-to-Black output duration is outside 1 through 3600 frames
+    /// (SW-004).
+    InvalidFadeToBlackDuration(u32),
     Switcher(SwitcherError),
 }
 
@@ -86,6 +89,10 @@ impl fmt::Display for ShowError {
             Self::UnknownOutput(output) => {
                 write!(formatter, "show does not contain output {output}")
             }
+            Self::InvalidFadeToBlackDuration(duration) => write!(
+                formatter,
+                "Fade-to-Black duration {duration} is outside 1 through 3600 frames"
+            ),
             Self::Switcher(error) => error.fmt(formatter),
         }
     }

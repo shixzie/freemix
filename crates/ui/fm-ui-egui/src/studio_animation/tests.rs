@@ -90,6 +90,8 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
     let snapshot = SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
@@ -692,6 +694,8 @@ mod scenes {
         let snapshot = SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),

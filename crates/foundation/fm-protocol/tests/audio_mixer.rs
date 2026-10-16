@@ -13,7 +13,7 @@ use fm_protocol::{
     WireRecorderSlot, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -130,6 +130,8 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer,
         fade_to_black_excluded_outputs: excluded,
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
@@ -162,7 +164,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
 }
 
 #[test]
@@ -384,6 +386,98 @@ fn strip_pan_and_fade_to_black_output_commands_round_trip() {
 }
 
 #[test]
+fn fade_to_black_durations_and_curve_round_trip_strictly() {
+    // Commands: a duration, or `-` to follow the shared one; a curve.
+    for (duration_frames, field) in [(Some(45), "45"), (Some(3_600), "3600"), (None, "-")] {
+        let line = round_trip(&command(CommandPayload::SetFadeToBlackOutputDuration {
+            output: output(8),
+            duration_frames,
+        }));
+        assert_eq!(
+            line,
+            format!(
+                "{PREFIX}\tpayload=fade_to_black_output_duration\toutput=8\tduration_frames={field}\n"
+            )
+        );
+        let line = round_trip(&event(EventPayload::FadeToBlackOutputDurationChanged {
+            output: output(8),
+            duration_frames,
+        }));
+        assert!(
+            line.contains(&format!(
+                "\tevent=fade_to_black_output_duration_changed\toutput=8\tduration_frames={field}\t"
+            )),
+            "{line}"
+        );
+    }
+    for curve in fm_protocol::FadeToBlackCurve::ALL {
+        let line = round_trip(&command(CommandPayload::SetFadeToBlackCurve { curve }));
+        assert_eq!(
+            line,
+            format!(
+                "{PREFIX}\tpayload=fade_to_black_curve\tcurve={}\n",
+                curve.token()
+            )
+        );
+        let line = round_trip(&event(EventPayload::FadeToBlackCurveChanged { curve }));
+        assert!(
+            line.contains(&format!(
+                "\tevent=fade_to_black_curve_changed\tcurve={}\t",
+                curve.token()
+            )),
+            "{line}"
+        );
+    }
+    for bad in [
+        "\tpayload=fade_to_black_output_duration\toutput=8\tduration_frames=0",
+        "\tpayload=fade_to_black_output_duration\toutput=8\tduration_frames=3601",
+        "\tpayload=fade_to_black_output_duration\toutput=8\tduration_frames=045",
+        "\tpayload=fade_to_black_output_duration\toutput=8\tduration_frames=",
+        "\tpayload=fade_to_black_output_duration\toutput=0\tduration_frames=45",
+        "\tpayload=fade_to_black_output_duration\toutput=8",
+        "\tpayload=fade_to_black_curve\tcurve=Ease",
+        "\tpayload=fade_to_black_curve\tcurve=",
+        "\tpayload=fade_to_black_curve",
+    ] {
+        assert!(decode_line(&format!("{PREFIX}{bad}\n")).is_err(), "{bad}");
+    }
+    assert!(
+        encode_line(&command(CommandPayload::SetFadeToBlackOutputDuration {
+            output: output(8),
+            duration_frames: Some(0),
+        }))
+        .is_err()
+    );
+
+    // The snapshot lists every output's own duration and the curve.
+    let mut message = snapshot(AudioMixerStatus::default(), Vec::new());
+    if let WireMessage::Snapshot(snapshot) = &mut message {
+        snapshot.fade_to_black_output_durations = vec![(output(7), 45), (output(8), 3_600)];
+        snapshot.fade_to_black_curve = fm_protocol::FadeToBlackCurve::Ease;
+    }
+    let line = round_trip(&message);
+    assert!(
+        line.contains("\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=7%3A45%2C8%3A3600\tfade_to_black_curve=ease\tdisplay_outputs="),
+        "{line}"
+    );
+    let valid = encode_line(&message).unwrap();
+    for (from, to) in [
+        ("7%3A45%2C8%3A3600", "8%3A3600%2C7%3A45"),
+        ("7%3A45%2C8%3A3600", "7%3A45%2C7%3A46"),
+        ("7%3A45%2C8%3A3600", "7%3A0"),
+        ("7%3A45%2C8%3A3600", "7%3A3601"),
+        ("7%3A45%2C8%3A3600", "7"),
+        ("fade_to_black_curve=ease", "fade_to_black_curve=EASE"),
+        ("\tfade_to_black_curve=ease", ""),
+        ("\tfade_to_black_output_durations=7%3A45%2C8%3A3600", ""),
+    ] {
+        let malformed = valid.replacen(from, to, 1);
+        assert_ne!(malformed, valid, "{from}");
+        assert!(decode_line(&malformed).is_err(), "{from} -> {to}");
+    }
+}
+
+#[test]
 fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     let line = round_trip(&snapshot(mixer(), vec![output(8)]));
     assert!(
@@ -392,7 +486,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
         ),
         "{line}"
     );
@@ -403,13 +497,13 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
         vec![output(8), output(wide)],
     ));
     assert!(
-        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
+        line.ends_with(&format!("\tfade_to_black_excluded_outputs=8%2C{wide}\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"
         )),
         "{line}"
     );
     let line = round_trip(&snapshot(AudioMixerStatus::default(), Vec::new()));
     assert!(
-        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"),
+        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\n"),
         "{line}"
     );
 

@@ -898,6 +898,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Cancelar la transición manual con T-bar activa"),
     ),
     (
+        Msg::ShortcutStartTBar,
+        t("Iniciar la transición manual con T-bar seleccionada"),
+    ),
+    (
+        Msg::ShortcutStepTBar,
+        t("Mover la T-bar activa un 10 % hacia el final, o hacia atrás"),
+    ),
+    (
+        Msg::ShortcutCommitManual,
+        t("Completar la transición manual con T-bar activa"),
+    ),
+    (
         Msg::ShortcutUndo,
         t("Deshacer la última edición del proyecto (historial compartido)"),
     ),
@@ -1183,12 +1195,29 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::TBarHoverActive,
         t(
-            "T-bar manual: arrastre la palanca (abajo = inicio, arriba = fin) y luego {commit} o {cancel}  [Esc]",
+            "T-bar manual: arrastre la palanca (abajo = inicio, arriba = fin) o muévala un 10 % con PgUp / PgDn, y luego {commit} [End] o {cancel} [Esc]",
         ),
     ),
     (
         Msg::TBarHoverIdle,
         t("T-bar manual: inicie una transición manual ({keys}) para habilitar la palanca"),
+    ),
+    (
+        Msg::TBarHoverReady,
+        t(
+            "T-bar manual: suba la palanca para iniciar una transición reversible ({kind}) y recorrerla (abajo = inicio, arriba = fin); elija el tipo con una tecla MANUAL, MÁS o el menú de una favorita",
+        ),
+    ),
+    (
+        Msg::ManualMoreHover,
+        t(
+            "Iniciar otra transición manual: cualquier otra mezcla, o un Stinger configurado cuyo clip dura lo mismo que la duración compartida ({frames}) y sigue a la palanca",
+        ),
+    ),
+    (Msg::FavoriteTBar, t("Iniciar en la T-bar")),
+    (
+        Msg::FavoriteTBarHover,
+        t("Iniciar {effect} (favorita {slot}) como transición manual reversible en la T-bar"),
     ),
     // Fade to black.
     (
@@ -1473,6 +1502,31 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("{output} sigue en directo durante el fundido a negro; márquela para fundirla también"),
     ),
     (Msg::FtbOutputsMenu, t("Salidas del fundido a negro")),
+    (Msg::FtbOwnDuration, t("Duración propia")),
+    (
+        Msg::FtbOwnDurationOnHover,
+        t(
+            "{output} se funde con su propia duración; desmárquela para seguir la duración del fundido a negro",
+        ),
+    ),
+    (
+        Msg::FtbOwnDurationOffHover,
+        t("{output} se funde con la duración del fundido a negro; márquela para darle una propia"),
+    ),
+    (
+        Msg::FtbOutputDurationHover,
+        t("Duración propia del fundido a negro de {output} en fotogramas (arrastre o escriba)"),
+    ),
+    (Msg::FtbCurveLabel, t("Curva")),
+    (Msg::FtbCurveEase, t("Suave")),
+    (
+        Msg::FtbCurveLinearHover,
+        t("El fundido a negro avanza el mismo paso en cada fotograma"),
+    ),
+    (
+        Msg::FtbCurveEaseHover,
+        t("El fundido a negro empieza y termina despacio (smoothstep)"),
+    ),
     (
         Msg::MenuFullscreenOutputs,
         t("Salidas a pantalla completa…"),

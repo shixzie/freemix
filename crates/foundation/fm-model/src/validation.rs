@@ -162,6 +162,26 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
             });
         }
     }
+    for (&output, &duration) in project.fade_to_black_output_durations() {
+        if !project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "fade_to_black_output_durations",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
+            });
+        }
+        if duration == 0 || duration > fm_types::MAX_FADE_TO_BLACK_DURATION_FRAMES {
+            errors.push(ValidationError {
+                entity: None,
+                field: "fade_to_black_output_durations",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
 }
 
 fn validate_input_locks(project: &Project, errors: &mut Vec<ValidationError>) {

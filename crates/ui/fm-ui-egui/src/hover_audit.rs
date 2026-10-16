@@ -255,7 +255,11 @@ fn model(variant: Variant) -> ClientModel {
             });
             mixer
         },
+        // Program fades over its own duration on the eased curve, so the
+        // FTB output menu's duration field and curve keys are audited.
         fade_to_black_excluded_outputs: vec![output(2)],
+        fade_to_black_output_durations: vec![(output(1), 45)],
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::Ease,
         display_outputs: display_output_entries(),
         display_output_states: display_output_states(),
         // IN-015: a live stream and a reconnecting one, so the tile badges
@@ -1663,6 +1667,27 @@ fn transition_menu_scenes(locale: Locale) -> Vec<Scene> {
                     (2, 30),
                     &stingers,
                     (enabled, reason),
+                    &mut intents,
+                );
+            }),
+        });
+        scenes.push(Scene {
+            name: format!("{variant}/favourite-t-bar"),
+            draw: Box::new(move |ui| {
+                crate::l10n::set_locale(ui.ctx(), locale);
+                let mut intents = Vec::new();
+                let mut kind = fm_protocol::ManualTransitionKind::Fade;
+                crate::transitions::draw_favorite_t_bar_start(
+                    ui,
+                    (
+                        3,
+                        fm_protocol::TransitionFavoriteStatus {
+                            effect: fm_protocol::TransitionFavoriteEffect::Stinger(stingers[1]),
+                            duration_frames: 45,
+                        },
+                    ),
+                    (enabled, reason),
+                    &mut kind,
                     &mut intents,
                 );
             }),

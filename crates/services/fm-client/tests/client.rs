@@ -162,6 +162,8 @@ fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
         fade_to_black_excluded_outputs: Vec::new(),
+        fade_to_black_output_durations: Vec::new(),
+        fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
@@ -822,6 +824,100 @@ fn whitespace_only_idempotency_key_does_not_mutate_command_state() {
         .unwrap();
     assert_eq!(command.id, "diagnostic-a:1");
     assert_eq!(command.idempotency_key, " accepted ");
+}
+
+/// Protocol 2.48 (SW-004): a client reduces a manual Stinger with its clip
+/// length and every output's own Fade-to-Black duration and the curve,
+/// and queues the timing edits exactly, without optimistic state.
+#[test]
+fn manual_stingers_and_fade_to_black_timing_reduce_into_the_client_model() {
+    let output = fm_protocol::WireOutputId::new(NonZeroU128::new(7).unwrap());
+    let stinger = ManualTransitionKind::Stinger {
+        slot: WireStingerSlotId::new(2).unwrap(),
+        duration_frames: 24,
+    };
+    let mut client = Client::new(config(4)).unwrap();
+    client.start_connect().unwrap();
+    client.transport_connected().unwrap();
+    client.accept_handshake(handshake(4, None)).unwrap();
+    let mut initial = snapshot(4);
+    initial.outputs = vec![fm_protocol::OutputStatus {
+        output,
+        name: "Program".into(),
+    }];
+    initial.fade_to_black_output_durations = vec![(output, 90)];
+    initial.desired_manual_transition = ManualTransitionStatus::Active(ManualTransitionState {
+        kind: stinger,
+        from: input(1),
+        to: input(2),
+        interval_start: ManualTransitionPosition::START,
+        position: ManualTransitionPosition::new(5_000).unwrap(),
+    });
+    client.apply_snapshot(initial).unwrap();
+    let state = client.model().state().unwrap();
+    assert!(matches!(
+        state.switcher().desired_manual_transition,
+        ModelManualTransitionStatus::Active(active) if active.kind == stinger
+    ));
+    assert_eq!(
+        state.fade_to_black_output_durations(),
+        [(output.to_domain(), 90)]
+    );
+
+    for (revision, payload) in [
+        (
+            5,
+            EventPayload::FadeToBlackOutputDurationChanged {
+                output,
+                duration_frames: Some(45),
+            },
+        ),
+        (
+            6,
+            EventPayload::FadeToBlackCurveChanged {
+                curve: fm_protocol::FadeToBlackCurve::Ease,
+            },
+        ),
+    ] {
+        client
+            .apply_event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision,
+                },
+                payload,
+            })
+            .unwrap();
+    }
+    let state = client.model().state().unwrap();
+    assert_eq!(
+        state.fade_to_black_output_durations(),
+        [(output.to_domain(), 45)]
+    );
+    assert_eq!(
+        state.fade_to_black_curve(),
+        fm_protocol::FadeToBlackCurve::Ease
+    );
+
+    let payload = CommandPayload::SetFadeToBlackOutputDuration {
+        output,
+        duration_frames: None,
+    };
+    let command = client
+        .queue_command(payload.clone(), "ftb-duration", Some(6), None)
+        .unwrap();
+    assert_eq!(command.payload, payload);
+    assert!(matches!(client.pop_outbound(), Some(Outbound::Command(queued)) if queued == command));
+    // Nothing changes until the authority's event arrives.
+    assert_eq!(
+        client
+            .model()
+            .state()
+            .unwrap()
+            .fade_to_black_output_durations(),
+        [(output.to_domain(), 45)]
+    );
 }
 
 #[test]

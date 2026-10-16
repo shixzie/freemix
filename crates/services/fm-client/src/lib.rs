@@ -1486,6 +1486,8 @@ impl Client {
             | CommandPayload::SceneLayer(_)
             | CommandPayload::AudioMixer(_)
             | CommandPayload::SetFadeToBlackOutput { .. }
+            | CommandPayload::SetFadeToBlackOutputDuration { .. }
+            | CommandPayload::SetFadeToBlackCurve { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetNetworkStream { .. }

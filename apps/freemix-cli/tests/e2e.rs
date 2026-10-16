@@ -757,6 +757,8 @@ fn serve_streams_snapshot_peer(
         &WireMessage::Snapshot(SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
@@ -1631,6 +1633,8 @@ fn write_handshake_snapshot(
         &WireMessage::Snapshot(SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: SNAPSHOT_NETWORK_STREAMS.with(|cell| cell.borrow().clone()),
@@ -1741,6 +1745,8 @@ fn write_handshake_version_with_fade_to_black(
         &WireMessage::Snapshot(SnapshotMessage {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
@@ -2650,6 +2656,50 @@ fn remote_mixer_and_fade_to_black_output_commands_replicate() {
         stdout(&output)
     );
     server.finish();
+
+    // Protocol 2.48: an output's own FTB duration and the curve.
+    for (key, payload, event, arguments, printed) in [
+        (
+            "remote-ftb-duration",
+            CommandPayload::SetFadeToBlackOutputDuration {
+                output: auxiliary,
+                duration_frames: Some(45),
+            },
+            EventPayload::FadeToBlackOutputDurationChanged {
+                output: auxiliary,
+                duration_frames: Some(45),
+            },
+            vec!["remote-ftb-output-duration", "31", "45"],
+            "FtbDurations=[31:45]",
+        ),
+        (
+            "remote-ftb-curve",
+            CommandPayload::SetFadeToBlackCurve {
+                curve: fm_protocol::FadeToBlackCurve::Ease,
+            },
+            EventPayload::FadeToBlackCurveChanged {
+                curve: fm_protocol::FadeToBlackCurve::Ease,
+            },
+            vec!["remote-ftb-curve", "ease"],
+            "FtbCurve=ease",
+        ),
+    ] {
+        let server = FakeRemoteServer::start_edit(RemoteEdit {
+            role: Role::Operator,
+            key,
+            payload,
+            event,
+            domain: "project",
+        });
+        let address = server.address();
+        let mut invocation = vec![arguments[0], address.as_str()];
+        invocation.extend(&arguments[1..]);
+        invocation.extend(["--key", key, "--expect", "0"]);
+        let output = invoke(&invocation);
+        assert_success(&output);
+        assert!(stdout(&output).contains(printed), "{}", stdout(&output));
+        server.finish();
+    }
 
     // Protocol 2.44: the solo mode and a group parent are project edits, a
     // group solo is live audio.
@@ -3774,7 +3824,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 44,
+  "schema_version": 45,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -3981,7 +4031,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 44", "\"schema_version\": 43"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 45", "\"schema_version\": 44"),
     )
     .unwrap();
     assert_failure_contains(
@@ -3995,7 +4045,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 43 is unsupported; expected 44",
+        "title template schema 44 is unsupported; expected 45",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4013,7 +4063,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 44,
+  "schema_version": 45,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4276,7 +4326,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 44,
+  "schema_version": 45,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4506,7 +4556,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 44,
+  "schema_version": 45,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4603,7 +4653,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 44,
+  "schema_version": 45,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5678,13 +5728,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        44
+        45
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 44);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 45);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5697,7 +5747,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 44);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 45);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5773,7 +5823,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        44
+        45
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5781,7 +5831,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 44);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 45);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5791,7 +5841,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 44);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 45);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5799,7 +5849,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 44);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 45);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -6451,6 +6501,60 @@ fn local_audio_bus_send_editing_is_atomic() {
 }
 
 #[test]
+fn local_t_bar_starts_every_mix_and_refuses_an_unready_stinger() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    for (token, kind) in [
+        ("cube-zoom", fm_persistence::ManualTransitionKind::CubeZoom),
+        (
+            "vertical_wipe",
+            fm_persistence::ManualTransitionKind::VerticalWipe,
+        ),
+        ("merge", fm_persistence::ManualTransitionKind::Merge),
+    ] {
+        assert_success(&invoke_bounded(&[
+            "tbar-start",
+            context.project_path(),
+            token,
+        ]));
+        assert_success(&invoke_bounded(&[
+            "tbar-position",
+            context.project_path(),
+            "2500",
+        ]));
+        let stored = store.load().unwrap();
+        let desired = stored.runtime_manual_transitions().desired.unwrap();
+        assert_eq!((desired.kind, desired.position_basis_points), (kind, 2_500));
+        assert_success(&invoke_bounded(&["tbar-cancel", context.project_path()]));
+    }
+    // A Stinger names its clip length and needs a configured, ready slot.
+    assert!(
+        !invoke_bounded(&["tbar-start", context.project_path(), "stinger-1"])
+            .status
+            .success()
+    );
+    assert!(
+        !invoke_bounded(&["tbar-start", context.project_path(), "cut"])
+            .status
+            .success()
+    );
+    assert_failure_contains(
+        &invoke_bounded(&["tbar-start", context.project_path(), "stinger-1", "20"]),
+        "stinger slot 1 is not configured",
+    );
+    assert!(
+        store
+            .load()
+            .unwrap()
+            .runtime_manual_transitions()
+            .desired
+            .is_none()
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
 fn project_rename_preserves_runtime_state_and_rejects_blank_name() {
     let context = ContractContext::new();
     assert_success(&invoke_bounded(&[
@@ -6635,6 +6739,46 @@ fn local_mixer_labels_groups_pan_and_fade_to_black_outputs_persist() {
     );
     assert!(project.fade_to_black_affects(output(30)));
     assert!(!project.fade_to_black_affects(output(31)));
+
+    // Protocol 2.48 locally: an output's own FTB duration and the curve
+    // persist; an unknown output and an out-of-range duration are refused.
+    for arguments in [
+        vec!["ftb-output-duration", context.project_path(), "30", "45"],
+        vec!["ftb-curve", context.project_path(), "ease"],
+    ] {
+        assert_success(&invoke_bounded(&arguments));
+    }
+    assert_failure_contains(
+        &invoke_bounded(&["ftb-output-duration", context.project_path(), "99", "45"]),
+        "show does not contain output 99",
+    );
+    for bad in [
+        ["ftb-output-duration", context.project_path(), "30", "0"],
+        ["ftb-output-duration", context.project_path(), "30", "3601"],
+        ["ftb-curve", context.project_path(), "smooth", "--key"],
+    ] {
+        assert!(!invoke_bounded(&bad).status.success(), "{bad:?}");
+    }
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    assert_eq!(
+        stored
+            .project()
+            .fade_to_black_output_durations()
+            .get(&output(30)),
+        Some(&45)
+    );
+    assert_eq!(
+        stored.project().fade_to_black_curve(),
+        fm_types::FadeToBlackCurve::Ease
+    );
+    assert_success(&invoke_bounded(&[
+        "ftb-output-duration",
+        context.project_path(),
+        "30",
+        "none",
+    ]));
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    assert!(stored.project().fade_to_black_output_durations().is_empty());
 
     // Clearing the label and taking the output back restores the defaults.
     assert_success(&invoke_bounded(&[
@@ -9972,10 +10116,10 @@ fn local_manual_t_bar_holds_reverses_cancels_commits_and_survives_each_restart()
     assert_eq!(status(&context.project), stdout(&endpoint));
     let endpoint_manifest = manifest(&context.project);
     assert!(endpoint_manifest.contains(
-        r#""desired": {"kind": "wipe", "from_id": 1, "to_id": 2, "interval_start_basis_points": 0, "position_basis_points": 10000}"#
+        r#""desired": {"kind": "wipe", "clip_frames": 0, "from_id": 1, "to_id": 2, "interval_start_basis_points": 0, "position_basis_points": 10000}"#
     ));
     assert!(endpoint_manifest.contains(
-        r#""realized": {"kind": "wipe", "from_id": 1, "to_id": 2, "interval_start_basis_points": 10000, "position_basis_points": 10000}"#
+        r#""realized": {"kind": "wipe", "clip_frames": 0, "from_id": 1, "to_id": 2, "interval_start_basis_points": 10000, "position_basis_points": 10000}"#
     ));
 
     let reversed = invoke(&[
@@ -10077,10 +10221,10 @@ fn local_manual_alpha_fade_survives_restart_and_replays_idempotently() {
     assert_eq!(status(&context.project), positioned_status);
     let positioned_manifest = manifest(&context.project);
     assert!(positioned_manifest.contains(
-        r#""desired": {"kind": "alpha_fade", "from_id": 1, "to_id": 2, "interval_start_basis_points": 0, "position_basis_points": 6250}"#
+        r#""desired": {"kind": "alpha_fade", "clip_frames": 0, "from_id": 1, "to_id": 2, "interval_start_basis_points": 0, "position_basis_points": 6250}"#
     ));
     assert!(positioned_manifest.contains(
-        r#""realized": {"kind": "alpha_fade", "from_id": 1, "to_id": 2, "interval_start_basis_points": 6250, "position_basis_points": 6250}"#
+        r#""realized": {"kind": "alpha_fade", "clip_frames": 0, "from_id": 1, "to_id": 2, "interval_start_basis_points": 6250, "position_basis_points": 6250}"#
     ));
 
     let repeated = invoke(&[
@@ -10132,10 +10276,10 @@ fn local_manual_slide_survives_restart_with_exact_desired_and_realized_state() {
     assert_eq!(status(&context.project), stdout(&positioned));
     let stored = manifest(&context.project);
     assert!(stored.contains(
-        r#""desired": {"kind": "slide", "from_id": 1, "to_id": 2, "interval_start_basis_points": 0, "position_basis_points": 6250}"#
+        r#""desired": {"kind": "slide", "clip_frames": 0, "from_id": 1, "to_id": 2, "interval_start_basis_points": 0, "position_basis_points": 6250}"#
     ));
     assert!(stored.contains(
-        r#""realized": {"kind": "slide", "from_id": 1, "to_id": 2, "interval_start_basis_points": 6250, "position_basis_points": 6250}"#
+        r#""realized": {"kind": "slide", "clip_frames": 0, "from_id": 1, "to_id": 2, "interval_start_basis_points": 6250, "position_basis_points": 6250}"#
     ));
 
     fs::remove_dir_all(context.root).unwrap();

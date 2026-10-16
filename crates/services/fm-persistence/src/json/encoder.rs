@@ -11,9 +11,9 @@ use fm_types::{
 };
 
 use crate::{
-    CURRENT_SCHEMA_VERSION, FadeToBlackState, IdempotencyReceipt, ManualTransitionKind,
-    ManualTransitionState, ReceiptOutcome, RuntimeOverlayBorder, RuntimeOverlayChannel,
-    RuntimeOverlayPosition, StoredProject,
+    CURRENT_SCHEMA_VERSION, FadeToBlackState, IdempotencyReceipt, ManualTransitionState,
+    ReceiptOutcome, RuntimeOverlayBorder, RuntimeOverlayChannel, RuntimeOverlayPosition,
+    StoredProject,
 };
 
 pub(crate) fn encode(stored: &StoredProject) -> String {
@@ -324,15 +324,11 @@ fn write_manual_transition(output: &mut String, transition: Option<ManualTransit
         output.push_str("null");
         return;
     };
-    let kind = match transition.kind {
-        ManualTransitionKind::Fade => "fade",
-        ManualTransitionKind::Wipe => "wipe",
-        ManualTransitionKind::AlphaFade => "alpha_fade",
-        ManualTransitionKind::Slide => "slide",
-    };
+    let kind = transition.kind.token();
+    let clip_frames = transition.kind.clip_frames();
     write!(
         output,
-        "{{\"kind\": \"{kind}\", \"from_id\": {}, \"to_id\": {}, \"interval_start_basis_points\": {}, \"position_basis_points\": {}}}",
+        "{{\"kind\": \"{kind}\", \"clip_frames\": {clip_frames}, \"from_id\": {}, \"to_id\": {}, \"interval_start_basis_points\": {}, \"position_basis_points\": {}}}",
         transition.from_id,
         transition.to_id,
         transition.interval_start_basis_points,

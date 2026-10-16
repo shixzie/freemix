@@ -368,32 +368,295 @@ fn slide_t_bar_holds_reverses_restores_commits_and_cancels() {
     assert!(restored.t_bar().is_none());
 }
 
-#[test]
-fn manual_transition_rejects_every_unsupported_kind_without_mutation() {
-    let unsupported = [
-        TransitionKind::Zoom,
-        TransitionKind::Stinger(StingerSlotId::new(1).unwrap()),
-    ];
+/// Every timed mix the switcher takes automatically (SW-002).
+const MIXES: [TransitionKind; 13] = [
+    TransitionKind::Fade,
+    TransitionKind::AlphaFade,
+    TransitionKind::Wipe,
+    TransitionKind::VerticalWipe,
+    TransitionKind::Slide,
+    TransitionKind::VerticalSlide,
+    TransitionKind::Zoom,
+    TransitionKind::Fly,
+    TransitionKind::FlyRotate,
+    TransitionKind::Cube,
+    TransitionKind::CubeZoom,
+    TransitionKind::CrossZoom,
+    TransitionKind::Merge,
+];
 
-    for kind in unsupported {
+fn position(basis_points: u16) -> TBarPosition {
+    TBarPosition::new(basis_points).unwrap()
+}
+
+/// The Program mix as (start, end, numerator, denominator).
+fn mix(switcher: &SwitcherState) -> (u32, u32, u32, u32) {
+    let frame = switcher.program_frame();
+    (
+        frame.mix_start_numerator,
+        frame.mix_end_numerator,
+        frame.mix_numerator,
+        frame.mix_denominator,
+    )
+}
+
+#[test]
+fn every_mix_scrubs_frame_exactly_reverses_cancels_and_commits_on_the_t_bar() {
+    for kind in MIXES {
         let mut switcher = state();
         assert_eq!(
             switcher.start_t_bar(kind),
-            Err(SwitcherError::UnsupportedManualTransitionKind)
-        );
-        assert!(switcher.t_bar().is_none());
-
-        assert_eq!(
-            switcher.restore_t_bar(TBarState::restore(
+            Ok(vec![SwitcherEvent::TBarStarted {
                 kind,
-                input(1),
-                input(2),
-                TBarPosition::START,
-                TBarPosition::START,
-            )),
-            Err(SwitcherError::UnsupportedManualTransitionKind)
+                from: input(1),
+                to: input(2),
+            }])
+        );
+        let frame = switcher.program_frame();
+        assert_eq!(
+            (frame.primary, frame.secondary, frame.transition_kind),
+            (input(1), Some(input(2)), Some(kind))
+        );
+        assert_eq!(mix(&switcher), (0, 0, 0, 10_000), "{kind:?}");
+        // The lever moves within a frame: the frame mixes from where the
+        // last frame settled to the new position.
+        switcher
+            .apply(SwitcherCommand::SetTBarPosition(position(2_500)))
+            .unwrap();
+        assert_eq!(mix(&switcher), (0, 2_500, 2_500, 10_000), "{kind:?}");
+        let _ = switcher.advance_frame_events();
+        assert_eq!(mix(&switcher), (2_500, 2_500, 2_500, 10_000), "{kind:?}");
+        // Lower positions reverse exactly.
+        switcher
+            .apply(SwitcherCommand::SetTBarPosition(position(1_000)))
+            .unwrap();
+        assert_eq!(mix(&switcher), (2_500, 1_000, 1_000, 10_000), "{kind:?}");
+        let _ = switcher.advance_frame_events();
+        // Cancel restores Program at the next frame boundary, untouched.
+        assert_eq!(
+            switcher.apply(SwitcherCommand::CancelTBar),
+            Ok(vec![SwitcherEvent::TBarCancelled])
+        );
+        assert_eq!(
+            (switcher.program(), switcher.preview()),
+            (input(1), input(2))
+        );
+        assert_eq!(switcher.program_frame().secondary, None);
+        // Commit swaps Program and Preview at once, from any position.
+        switcher.start_t_bar(kind).unwrap();
+        switcher
+            .apply(SwitcherCommand::SetTBarPosition(position(6_000)))
+            .unwrap();
+        let events = switcher.apply(SwitcherCommand::CommitTBar).unwrap();
+        assert!(events.contains(&SwitcherEvent::TransitionCompleted {
+            kind,
+            program: input(2),
+        }));
+        assert_eq!(
+            (switcher.program(), switcher.preview()),
+            (input(2), input(1))
         );
         assert!(switcher.t_bar().is_none());
+        assert_eq!(switcher.program_frame().secondary, None);
+    }
+}
+
+#[test]
+fn a_manual_stinger_needs_its_clip_and_preloaded_media_and_scrubs_clip_frames() {
+    let mut switcher = state();
+    let slot = StingerSlotId::new(1).unwrap();
+    let unconfigured = StingerSlotId::new(2).unwrap();
+    // A Stinger is started with its clip length, never as a plain kind.
+    assert_eq!(
+        switcher.start_t_bar(TransitionKind::Stinger(slot)),
+        Err(SwitcherError::UnsupportedManualTransitionKind)
+    );
+    assert_eq!(
+        switcher.start_stinger_t_bar(unconfigured, 20),
+        Err(SwitcherError::UnconfiguredStinger(unconfigured))
+    );
+    switcher
+        .configure_stinger(
+            slot,
+            StingerDescriptor::new(
+                input(3),
+                true,
+                12,
+                StingerAudioPolicy::MixWithProgram,
+                MissingMediaFallback::Cut,
+            ),
+        )
+        .unwrap();
+    // Scrubbing has no fallback: the clip must be ready.
+    switcher.preload_stinger(slot, false).unwrap();
+    assert_eq!(
+        switcher.start_stinger_t_bar(slot, 20),
+        Err(SwitcherError::StingerMediaUnavailable(slot))
+    );
+    switcher.preload_stinger(slot, true).unwrap();
+    assert_eq!(
+        switcher.start_stinger_t_bar(slot, 0),
+        Err(SwitcherError::ZeroDuration)
+    );
+    assert_eq!(
+        switcher.start_stinger_t_bar(slot, 10),
+        Err(SwitcherError::StingerCutPointOutOfRange {
+            slot,
+            cut_point_frames: 12,
+            duration_frames: 10,
+        })
+    );
+    assert!(switcher.t_bar().is_none());
+    assert_eq!(
+        switcher.apply(SwitcherCommand::StartStingerTBar {
+            slot,
+            duration_frames: 20,
+        }),
+        Ok(vec![SwitcherEvent::TBarStarted {
+            kind: TransitionKind::Stinger(slot),
+            from: input(1),
+            to: input(2),
+        }])
+    );
+    assert_eq!(switcher.t_bar().unwrap().clip_frames(), 20);
+    // The position names the clip frame: n * position / 10000, the last
+    // frame at the end, exactly as elapsed frames do when timed.
+    assert_eq!(mix(&switcher), (0, 0, 0, 20));
+    for (basis_points, clip_frame) in [(500, 1), (5_000, 10), (9_999, 19), (10_000, 19)] {
+        switcher
+            .apply(SwitcherCommand::SetTBarPosition(position(basis_points)))
+            .unwrap();
+        assert_eq!(switcher.program_frame().mix_numerator, clip_frame);
+        let _ = switcher.advance_frame_events();
+    }
+    // Reversing scrubs back through the same frames.
+    switcher
+        .apply(SwitcherCommand::SetTBarPosition(position(2_500)))
+        .unwrap();
+    assert_eq!(mix(&switcher), (19, 5, 5, 20));
+    switcher.apply(SwitcherCommand::CommitTBar).unwrap();
+    assert_eq!(switcher.program(), input(2));
+    // Restoring keeps the same rules: a clip only for a Stinger.
+    let restored = |kind, clip_frames| {
+        TBarState::restore(
+            kind,
+            input(2),
+            input(1),
+            TBarPosition::START,
+            TBarPosition::START,
+        )
+        .with_clip_frames(clip_frames)
+    };
+    assert_eq!(
+        switcher.restore_t_bar(restored(TransitionKind::Wipe, 20)),
+        Err(SwitcherError::UnsupportedManualTransitionKind)
+    );
+    assert_eq!(
+        switcher.restore_t_bar(restored(TransitionKind::Stinger(slot), 0)),
+        Err(SwitcherError::ZeroDuration)
+    );
+    assert!(switcher.t_bar().is_none());
+    switcher
+        .restore_t_bar(restored(TransitionKind::Stinger(slot), 20))
+        .unwrap();
+    assert_eq!(mix(&switcher), (0, 0, 0, 20));
+}
+
+#[test]
+fn outputs_fade_to_black_over_their_own_duration_and_the_curve() {
+    let mut switcher = state();
+    let own = output(7);
+    let shared = output(8);
+    assert_eq!(
+        switcher.set_fade_to_black_output_duration(own, Some(0)),
+        Err(FadeToBlackError::ZeroDuration)
+    );
+    assert_eq!(
+        switcher
+            .set_fade_to_black_output_duration(own, Some(MAX_FADE_TO_BLACK_DURATION_FRAMES + 1)),
+        Err(FadeToBlackError::DurationLimit {
+            duration_frames: MAX_FADE_TO_BLACK_DURATION_FRAMES + 1,
+            maximum: MAX_FADE_TO_BLACK_DURATION_FRAMES,
+        })
+    );
+    assert_eq!(
+        switcher.set_fade_to_black_output_duration(own, Some(2)),
+        Ok(vec![SwitcherEvent::FadeToBlackOutputDurationChanged {
+            output: own,
+            duration_frames: Some(2),
+        }])
+    );
+    assert_eq!(switcher.fade_to_black_output_duration(own), Some(2));
+    assert_eq!(switcher.fade_to_black_output_duration(shared), None);
+    switcher.request_fade_to_black(true, 4).unwrap();
+    // Each output follows its own linear trajectory; Fade to Black
+    // completes only when the slowest one settles.
+    let mut completed = Vec::new();
+    for (own_end, shared_end) in [
+        (32_767, 16_383),
+        (65_535, 32_767),
+        (65_535, 49_151),
+        (65_535, 65_535),
+    ] {
+        assert_eq!(
+            switcher
+                .fade_to_black_frame_for(own)
+                .interval_end()
+                .numerator(),
+            own_end
+        );
+        assert_eq!(
+            switcher
+                .fade_to_black_frame_for(shared)
+                .interval_end()
+                .numerator(),
+            shared_end
+        );
+        // Reported whenever the two trajectories' intervals differ.
+        let differs =
+            switcher.fade_to_black_frame_for(own) != switcher.fade_to_black_frame_for(shared);
+        assert!(
+            differs,
+            "the trajectories differ on every frame of this fade"
+        );
+        assert_eq!(
+            switcher
+                .fade_to_black_override_frames()
+                .iter()
+                .any(|(output, _)| *output == own),
+            differs
+        );
+        completed.push(
+            switcher
+                .advance_frame_events()
+                .iter()
+                .any(|event| matches!(event, SwitcherEvent::FadeToBlackCompleted { .. })),
+        );
+    }
+    assert_eq!(completed, [false, false, false, true]);
+    assert_eq!(
+        switcher.fade_to_black_frame_for(own).interval_start(),
+        FadeToBlackPosition::BLACK
+    );
+    // Removing the duration returns the output to the shared trajectory.
+    switcher
+        .set_fade_to_black_output_duration(own, None)
+        .unwrap();
+    assert_eq!(switcher.fade_to_black_output_duration(own), None);
+    assert_eq!(switcher.fade_to_black_override_frames(), Vec::new());
+
+    // The eased curve is the exact integer smoothstep, slow at both ends.
+    let mut eased = state();
+    assert_eq!(
+        eased.set_fade_to_black_curve(fm_switcher::FadeToBlackCurve::Ease),
+        vec![SwitcherEvent::FadeToBlackCurveChanged {
+            curve: fm_switcher::FadeToBlackCurve::Ease,
+        }]
+    );
+    eased.request_fade_to_black(true, 4).unwrap();
+    for expected in [10_239, 32_767, 55_295, 65_535] {
+        let _ = eased.advance_frame_events();
+        assert_eq!(eased.fade_to_black_position().numerator(), expected);
     }
 }
 

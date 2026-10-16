@@ -120,7 +120,10 @@ pub use stream_control::{StreamAction, stream_action, stream_command_pending};
 pub use studio_animation::{ANIMATION_SHORTCUT, TitleAnimationRefusal};
 pub use studio_color::{COLOR_SHORTCUT, GradeLutFile, GradeLutRequest, GradeRefusal};
 pub use titles::TitleUpdate;
-pub use transitions::next_overlay_transition;
+pub use transitions::{
+    T_BAR_KEY_STEP_BASIS_POINTS, TBarGesture, manual_kind_for, next_overlay_transition,
+    t_bar_intents, t_bar_key_gesture,
+};
 
 use theme::{border_color, graphite_color, panel_color};
 
@@ -175,6 +178,16 @@ pub enum StudioIntent {
     AudioMixer(fm_protocol::AudioMixerOperation),
     /// Chooses whether Fade to Black fades one output (SW-004).
     SetFadeToBlackOutput { output: OutputId, affected: bool },
+    /// Gives one output its own Fade-to-Black duration, or (`None`) makes
+    /// it follow the shared one (SW-004, Protocol 2.48).
+    SetFadeToBlackOutputDuration {
+        output: OutputId,
+        duration_frames: Option<u32>,
+    },
+    /// Chooses the Fade-to-Black curve (SW-004, Protocol 2.48).
+    SetFadeToBlackCurve {
+        curve: fm_protocol::FadeToBlackCurve,
+    },
     /// Saves one fullscreen display-output slot (OR-011, Protocol 2.42).
     SetDisplayOutput {
         slot: fm_protocol::DisplayOutputSlot,
@@ -375,7 +388,14 @@ pub enum ExternalStudioAction {
     Slide,
     Zoom,
     Wipe,
-    FadeToBlack { active: bool },
+    FadeToBlack {
+        active: bool,
+    },
+    /// Starts the manual form of an effect; a Stinger's clip spans the
+    /// shared transition duration (SW-004).
+    StartManualTransition(fm_protocol::TransitionFavoriteEffect),
+    /// Moves the active manual transition's lever (SW-004).
+    SetManualTransitionPosition(ManualTransitionPosition),
     CommitManualTransition,
     CancelManualTransition,
 }
@@ -825,28 +845,36 @@ pub fn external_intent(
                 duration_frames: fade_to_black_duration_frames,
             })
         }
-        ExternalStudioAction::CommitManualTransition
+        ExternalStudioAction::StartManualTransition(_)
+        | ExternalStudioAction::SetManualTransitionPosition(_)
+        | ExternalStudioAction::CommitManualTransition
         | ExternalStudioAction::CancelManualTransition => {
-            let active = state.view.as_ref().is_some_and(|view| {
-                matches!(
-                    view.switcher.desired_manual_transition,
-                    ManualTransitionStatus::Active(_)
-                )
-            });
-            let available =
-                manual_transition_availability(ManualTransitionGate::from_state(state), active);
-            if !available.active_controls {
-                return None;
-            }
-            Some(match action {
-                ExternalStudioAction::CommitManualTransition => {
-                    StudioIntent::CommitManualTransition
+            let desired = state
+                .view
+                .as_ref()
+                .map_or(ManualTransitionStatus::Inactive, |view| {
+                    view.switcher.desired_manual_transition
+                });
+            let available = manual_transition_availability(
+                ManualTransitionGate::from_state(state),
+                matches!(desired, ManualTransitionStatus::Active(_)),
+            );
+            let gesture = match action {
+                ExternalStudioAction::StartManualTransition(effect) => {
+                    TBarGesture::Start(manual_kind_for(effect, transition_duration_frames)?)
                 }
-                ExternalStudioAction::CancelManualTransition => {
-                    StudioIntent::CancelManualTransition
+                ExternalStudioAction::SetManualTransitionPosition(position) => {
+                    if !available.active_controls {
+                        return None;
+                    }
+                    // A controller always sends its lever position, even
+                    // one the replica already shows.
+                    return Some(StudioIntent::SetManualTransitionPosition { position });
                 }
-                _ => unreachable!(),
-            })
+                ExternalStudioAction::CommitManualTransition => TBarGesture::Commit,
+                _ => TBarGesture::Cancel,
+            };
+            t_bar_intents(desired, available, gesture).pop()
         }
         _ => None,
     }
@@ -909,7 +937,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 20] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 23] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -939,6 +967,24 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 20] = [
         keys: "B",
         action: Msg::ShortcutFadeToBlack.en(),
         key: Some(Key::B),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "T",
+        action: Msg::ShortcutStartTBar.en(),
+        key: Some(Key::T),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "PgUp / PgDn",
+        action: Msg::ShortcutStepTBar.en(),
+        key: Some(Key::PageUp),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "End",
+        action: Msg::ShortcutCommitManual.en(),
+        key: Some(Key::End),
     },
     ShortcutEntry {
         group: ShortcutGroup::Transitions,
@@ -1069,11 +1115,20 @@ pub(crate) const fn favorite_key_name(slot: u8) -> &'static str {
     }
 }
 
+/// The T-bar the console keys drive: the replicated desired manual
+/// transition, its availability, and the selected kind `T` starts.
+#[derive(Clone, Copy, Debug)]
+struct TBarKeys {
+    desired: ManualTransitionStatus,
+    availability: ManualTransitionAvailability,
+    kind: ManualTransitionKind,
+}
+
 fn studio_shortcuts(
     ui: &mut Ui,
     gate: TransitionGate,
     can_select_preview: bool,
-    manual_transition_active_controls: bool,
+    t_bar: TBarKeys,
     (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
     (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
 ) -> Vec<StudioIntent> {
@@ -1082,7 +1137,8 @@ fn studio_shortcuts(
     }
     let preview_available = preview_selection_available(gate, can_select_preview);
     let transition_available = transition_availability(gate).basic();
-    if !preview_available && !transition_available && !manual_transition_active_controls {
+    let manual_available = t_bar.availability.start || t_bar.availability.active_controls;
+    if !preview_available && !transition_available && !manual_available {
         return Vec::new();
     }
     ui.input_mut(|input| {
@@ -1105,9 +1161,15 @@ fn studio_shortcuts(
                     });
                     false
                 }
-                Key::Escape if manual_transition_active_controls => {
-                    intents.push(StudioIntent::CancelManualTransition);
-                    false
+                Key::T | Key::PageUp | Key::PageDown | Key::End | Key::Escape
+                    if manual_available =>
+                {
+                    let sent = transitions::t_bar_key_gesture(*key, t_bar.kind)
+                        .map(|gesture| t_bar_intents(t_bar.desired, t_bar.availability, gesture))
+                        .unwrap_or_default();
+                    let handled = !sent.is_empty();
+                    intents.extend(sent);
+                    !handled
                 }
                 Key::C if transition_available => {
                     intents.push(StudioIntent::Cut);
@@ -1260,6 +1322,9 @@ pub const fn tally_state(input: InputId, switcher: SwitcherState) -> TallyState 
 pub struct StudioShell {
     transition_duration_frames: u32,
     fade_to_black_duration_frames: u32,
+    /// The kind the T-bar starts when dragged idle or on `T` (SW-004);
+    /// local to this console.
+    t_bar_kind: ManualTransitionKind,
     rename_draft: Option<RenameDraft>,
     stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
@@ -1357,6 +1422,18 @@ impl StudioShell {
         );
     }
 
+    /// Returns the kind the T-bar starts when dragged idle or on `T`.
+    #[must_use]
+    pub const fn t_bar_kind(&self) -> ManualTransitionKind {
+        self.t_bar_kind
+    }
+
+    /// Selects the kind the T-bar starts when dragged idle or on `T`, as
+    /// the MANUAL keys, MORE, and a favourite's `Start on T-bar` do.
+    pub const fn set_t_bar_kind(&mut self, kind: ManualTransitionKind) {
+        self.t_bar_kind = kind;
+    }
+
     /// Returns the console layout: docked and popped-out panels, saved
     /// layouts, and the disclosure toggles.
     #[must_use]
@@ -1418,7 +1495,16 @@ impl StudioShell {
             ui,
             TransitionGate::from_state(state),
             state.can_select_preview,
-            manual_transition_controls.active_controls,
+            TBarKeys {
+                desired: state
+                    .view
+                    .as_ref()
+                    .map_or(ManualTransitionStatus::Inactive, |view| {
+                        view.switcher.desired_manual_transition
+                    }),
+                availability: manual_transition_controls,
+                kind: self.t_bar_kind,
+            },
             (inputs, favorites),
             (
                 self.transition_duration_frames,
@@ -1707,6 +1793,7 @@ impl Default for StudioShell {
         Self {
             transition_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             fade_to_black_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
+            t_bar_kind: ManualTransitionKind::Fade,
             rename_draft: None,
             stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),
@@ -1888,7 +1975,15 @@ mod tests {
                 &mut ui,
                 gate,
                 can_select_preview,
-                manual_transition_active_controls,
+                TBarKeys {
+                    desired: ManualTransitionStatus::Inactive,
+                    availability: ManualTransitionAvailability {
+                        start: false,
+                        alpha_fade_start_exposed: true,
+                        active_controls: manual_transition_active_controls,
+                    },
+                    kind: ManualTransitionKind::Fade,
+                },
                 (&inputs, &TransitionFavoriteStatus::defaults()),
                 (duration, fade_to_black_duration),
             );
@@ -2139,8 +2234,22 @@ mod tests {
                     .max_rect(context.viewport_rect()),
             );
             let favorites = TransitionFavoriteStatus::defaults();
-            let intents =
-                studio_shortcuts(&mut ui, gate, true, true, (&inputs, &favorites), (30, 30));
+            let intents = studio_shortcuts(
+                &mut ui,
+                gate,
+                true,
+                TBarKeys {
+                    desired: ManualTransitionStatus::Inactive,
+                    availability: ManualTransitionAvailability {
+                        start: true,
+                        alpha_fade_start_exposed: true,
+                        active_controls: true,
+                    },
+                    kind: ManualTransitionKind::Fade,
+                },
+                (&inputs, &favorites),
+                (30, 30),
+            );
             drop(ui);
             let _ = context.end_pass();
             intents
@@ -2618,6 +2727,8 @@ mod tests {
         ClientView {
             audio_mixer: fm_protocol::AudioMixerStatus::default(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_output_durations: Vec::new(),
+            fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             display_inventory: None,

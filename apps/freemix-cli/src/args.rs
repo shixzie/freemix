@@ -10,13 +10,11 @@ use fm_types::network_stream::{
     StallSlate, StreamUrl,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ManualTransitionKind {
-    Fade,
-    Wipe,
-    AlphaFade,
-    Slide,
-}
+/// How automatic Fade-to-Black moves ease (SW-004).
+pub use fm_protocol::FadeToBlackCurve;
+/// A manual (T-bar) transition kind: any timed mix, or a Stinger with its
+/// clip length (SW-004).
+pub use fm_protocol::ManualTransitionKind;
 
 /// An overlay channel transition: Cut, Fade, or a motion kind (SW-005).
 pub use fm_protocol::OverlayTransitionKind as OverlayTransition;
@@ -922,6 +920,35 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Gives an output its own Fade-to-Black duration, or (`None`) returns
+    /// it to the shared one (SW-004).
+    FadeToBlackOutputDuration {
+        path: PathBuf,
+        output: u128,
+        duration_frames: Option<u32>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteFadeToBlackOutputDuration {
+        address: SocketAddr,
+        output: u128,
+        duration_frames: Option<u32>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Chooses the Fade-to-Black curve (SW-004).
+    FadeToBlackCurve {
+        path: PathBuf,
+        curve: FadeToBlackCurve,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteFadeToBlackCurve {
+        address: SocketAddr,
+        curve: FadeToBlackCurve,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Labels a strip, assigns it to a group, renames a group, or moves a
     /// group fader (AU-001).
     AudioMixer {
@@ -1676,6 +1703,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         output @ ("ftb-output" | "remote-ftb-output") => {
             parse_fade_to_black_output(output, arguments)
         }
+        timing @ ("ftb-output-duration"
+        | "remote-ftb-output-duration"
+        | "ftb-curve"
+        | "remote-ftb-curve") => parse_fade_to_black_timing(timing, arguments),
         "rename" => parse_rename(arguments),
         "input-reorder" => parse_reorder(arguments, false),
         "preview" => {
@@ -2418,6 +2449,80 @@ fn parse_fade_to_black_output(
             expected_revision,
         },
         (None, None) => unreachable!("an FTB output command names a project or an address"),
+    })
+}
+
+/// `ftb-output-duration <output> <frames|none>` and `ftb-curve
+/// <linear|ease>`, with their `remote-` forms (SW-004).
+fn parse_fade_to_black_timing(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let address = if remote {
+        Some(socket_address(&required(&mut arguments, "address")?)?)
+    } else {
+        None
+    };
+    let path = if remote {
+        None
+    } else {
+        Some(required_path(&mut arguments, "project path")?)
+    };
+    if command.ends_with("-curve") {
+        let value = required(&mut arguments, "curve")?;
+        let curve = FadeToBlackCurve::from_token(&value).ok_or(ArgsError::InvalidChoice {
+            field: "curve",
+            value,
+        })?;
+        let (key, expected_revision) = command_options(arguments)?;
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::FadeToBlackCurve {
+                path,
+                curve,
+                key,
+                expected_revision,
+            },
+            (None, Some(address)) => Command::RemoteFadeToBlackCurve {
+                address,
+                curve,
+                key,
+                expected_revision,
+            },
+            (None, None) => unreachable!("an FTB curve command names a project or an address"),
+        });
+    }
+    let output = number(&required(&mut arguments, "output")?, "output")?;
+    let value = required(&mut arguments, "frames")?;
+    let duration_frames = if value == "none" {
+        None
+    } else {
+        let frames = number::<u32>(&value, "frames")?;
+        if !(1..=fm_protocol::MAX_FADE_TO_BLACK_DURATION_FRAMES).contains(&frames) {
+            return Err(ArgsError::InvalidChoice {
+                field: "frames",
+                value,
+            });
+        }
+        Some(frames)
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::FadeToBlackOutputDuration {
+            path,
+            output,
+            duration_frames,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteFadeToBlackOutputDuration {
+            address,
+            output,
+            duration_frames,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("an FTB duration command names a project or an address"),
     })
 }
 
@@ -4258,7 +4363,7 @@ fn parse_t_bar_action(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<TBarAction, ArgsError> {
     if command.ends_with("-start") {
-        let kind = manual_kind(&required(arguments, "transition kind")?)?;
+        let kind = manual_kind(&required(arguments, "transition kind")?, arguments)?;
         Ok(TBarAction::Start(kind))
     } else if command.ends_with("-position") {
         let position = basis_points(&required(arguments, "basis points")?)?;
@@ -5587,16 +5692,36 @@ fn socket_address(value: &str) -> Result<SocketAddr, ArgsError> {
     number(value, "address")
 }
 
-fn manual_kind(value: &str) -> Result<ManualTransitionKind, ArgsError> {
-    match value {
-        "fade" => Ok(ManualTransitionKind::Fade),
-        "wipe" => Ok(ManualTransitionKind::Wipe),
-        "alpha-fade" => Ok(ManualTransitionKind::AlphaFade),
-        "slide" => Ok(ManualTransitionKind::Slide),
-        _ => Err(ArgsError::InvalidChoice {
-            field: "transition kind",
-            value: value.to_owned(),
-        }),
+/// A manual kind: any timed mix (`cube-zoom` or `cube_zoom`), or
+/// `stinger-<slot>` followed by its clip length in frames.
+fn manual_kind(
+    value: &str,
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<ManualTransitionKind, ArgsError> {
+    let token = value.replace('-', "_");
+    let invalid = || ArgsError::InvalidChoice {
+        field: "transition kind",
+        value: value.to_owned(),
+    };
+    match fm_protocol::TransitionFavoriteEffect::from_token(&token).ok_or_else(invalid)? {
+        fm_protocol::TransitionFavoriteEffect::Cut => Err(invalid()),
+        fm_protocol::TransitionFavoriteEffect::Mix(kind) => {
+            Ok(ManualTransitionKind::from_mix(kind))
+        }
+        fm_protocol::TransitionFavoriteEffect::Stinger(slot) => {
+            let duration_frames =
+                number::<u32>(&required(arguments, "clip frames")?, "clip frames")?;
+            if duration_frames == 0 {
+                return Err(ArgsError::InvalidChoice {
+                    field: "clip frames",
+                    value: duration_frames.to_string(),
+                });
+            }
+            Ok(ManualTransitionKind::Stinger {
+                slot,
+                duration_frames,
+            })
+        }
     }
 }
 
@@ -6167,6 +6292,99 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn parses_every_manual_kind_and_fade_to_black_timing() {
+        for (token, kind) in [
+            ("cube-zoom", ManualTransitionKind::CubeZoom),
+            ("vertical_slide", ManualTransitionKind::VerticalSlide),
+            ("merge", ManualTransitionKind::Merge),
+        ] {
+            assert_eq!(
+                parse(strings(&["tbar-start", "show.freemix", token])),
+                Ok(Command::TBar {
+                    path: "show.freemix".into(),
+                    action: TBarAction::Start(kind),
+                    key: None,
+                    expected_revision: None,
+                })
+            );
+        }
+        assert_eq!(
+            parse(strings(&[
+                "remote-tbar-start",
+                "127.0.0.1:9123",
+                "stinger-2",
+                "24",
+                "--expect",
+                "3",
+            ])),
+            Ok(Command::RemoteTBar {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                action: TBarAction::Start(ManualTransitionKind::Stinger {
+                    slot: fm_protocol::WireStingerSlotId::new(2).unwrap(),
+                    duration_frames: 24,
+                }),
+                key: None,
+                expected_revision: Some(3),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["ftb-output-duration", "show.freemix", "8", "45"])),
+            Ok(Command::FadeToBlackOutputDuration {
+                path: "show.freemix".into(),
+                output: 8,
+                duration_frames: Some(45),
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-ftb-output-duration",
+                "127.0.0.1:9123",
+                "8",
+                "none",
+            ])),
+            Ok(Command::RemoteFadeToBlackOutputDuration {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                output: 8,
+                duration_frames: None,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["ftb-curve", "show.freemix", "ease"])),
+            Ok(Command::FadeToBlackCurve {
+                path: "show.freemix".into(),
+                curve: FadeToBlackCurve::Ease,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["remote-ftb-curve", "127.0.0.1:9123", "linear"])),
+            Ok(Command::RemoteFadeToBlackCurve {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                curve: FadeToBlackCurve::Linear,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        for bad in [
+            &["tbar-start", "show.freemix", "cut"][..],
+            &["tbar-start", "show.freemix", "stinger-2"],
+            &["tbar-start", "show.freemix", "stinger-2", "0"],
+            &["tbar-start", "show.freemix", "stinger-9", "24"],
+            &["ftb-output-duration", "show.freemix", "8", "0"],
+            &["ftb-output-duration", "show.freemix", "8", "3601"],
+            &["ftb-output-duration", "show.freemix", "8"],
+            &["ftb-curve", "show.freemix", "Ease"],
+        ] {
+            assert!(parse(strings(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

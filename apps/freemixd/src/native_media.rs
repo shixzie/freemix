@@ -3179,6 +3179,9 @@ pub struct NativeMasterRuntime {
     /// The last rendered block before Fade to Black, kept only while Fade
     /// to Black is fading and some output is excluded from it (SW-004).
     live_audio: Option<AudioBlock>,
+    /// This frame's mix for every output fading over its own duration on a
+    /// different trajectory (SW-004).
+    override_audio: Vec<(OutputId, AudioBlock)>,
 }
 
 impl NativeMasterRuntime {
@@ -3577,6 +3580,7 @@ impl NativeMasterRuntime {
             collect_output: true,
             failed: false,
             live_audio: None,
+            override_audio: Vec::new(),
         })
     }
 
@@ -3922,6 +3926,12 @@ impl NativeMasterRuntime {
     /// to Black is fading and some output is excluded from it (SW-004).
     pub const fn take_live_audio(&mut self) -> Option<AudioBlock> {
         self.live_audio.take()
+    }
+
+    /// The last rendered block for every output Fade to Black fades over
+    /// its own duration on a different trajectory (SW-004).
+    pub fn take_override_audio(&mut self) -> Vec<(OutputId, AudioBlock)> {
+        core::mem::take(&mut self.override_audio)
     }
 
     /// Applies a realized strip group membership, group level, group solo,
@@ -4964,6 +4974,27 @@ impl NativeMasterRuntime {
         } else {
             None
         };
+        // Outputs fading over their own duration (SW-004) hear the mix
+        // before the fade, faded along their own trajectory.
+        self.override_audio.clear();
+        for &(output, output_fade) in &frame.fade_to_black_overrides {
+            let mut planes: Vec<Vec<f32>> = self
+                .scratch
+                .mix
+                .iter()
+                .map(|plane| plane[..samples].to_vec())
+                .collect();
+            apply_fade_to_black_audio(&mut planes, samples, output_fade);
+            self.override_audio.push((
+                output,
+                AudioBlock::new(
+                    timing,
+                    self.format.sample_rate,
+                    self.format.channels.clone(),
+                    planes,
+                )?,
+            ));
+        }
         apply_fade_to_black_audio(&mut self.scratch.mix, samples, frame.fade_to_black);
         // Canonical ownership is required by the returned/recorded frame. The
         // diagnostic collecting sink also retains its own bounded clone; these
@@ -6013,6 +6044,11 @@ fn stinger_audio_request(
     let Some(SwitcherTransitionKind::Stinger(slot)) = frame.program.transition_kind else {
         return Ok(None);
     };
+    // A manual Stinger scrubs its picture; its clip audio, which plays only
+    // forward at the frame rate, stays silent (SW-004).
+    if frame.manual_transition {
+        return Ok(None);
+    }
     let config = project
         .stinger(slot)
         .ok_or(NativeMasterError::MissingStingerConfiguration(slot))?;
@@ -9262,6 +9298,8 @@ mod tests {
         FrameResult {
             audio_mixer_updates: Vec::new(),
             fade_to_black_excluded_outputs: Vec::new(),
+            fade_to_black_overrides: Vec::new(),
+            manual_transition: false,
             fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
             overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
             input_audio_strip_updates: Vec::new(),
@@ -9358,6 +9396,7 @@ mod tests {
         );
         NativeMasterRuntime {
             live_audio: None,
+            override_audio: Vec::new(),
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::new(9).unwrap()),
@@ -9405,6 +9444,7 @@ mod tests {
         );
         NativeMasterRuntime {
             live_audio: None,
+            override_audio: Vec::new(),
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::new(9).unwrap()),

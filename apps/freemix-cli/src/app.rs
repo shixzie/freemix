@@ -1120,6 +1120,60 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::FadeToBlackOutputDuration {
+            path,
+            output,
+            duration_frames,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetFadeToBlackOutputDuration {
+                output: output_id(output)?,
+                duration_frames,
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteFadeToBlackOutputDuration {
+            address,
+            output,
+            duration_frames,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetFadeToBlackOutputDuration {
+                output: fm_protocol::WireOutputId::from_domain(output_id(output)?),
+                duration_frames,
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::FadeToBlackCurve {
+            path,
+            curve,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetFadeToBlackCurve { curve },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteFadeToBlackCurve {
+            address,
+            curve,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetFadeToBlackCurve { curve },
+            key,
+            expected_revision,
+        )?,
         Command::FadeToBlack {
             path,
             target,
@@ -3725,6 +3779,12 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     for &output in project.fade_to_black_excluded_outputs() {
         let _ = realized.set_fade_to_black_output(output, false);
     }
+    for (&output, &duration) in project.fade_to_black_output_durations() {
+        realized
+            .set_fade_to_black_output_duration(output, Some(duration))
+            .map_err(|error| AppFailure(format!("invalid Fade-to-Black duration: {error}")))?;
+    }
+    let _ = realized.set_fade_to_black_curve(project.fade_to_black_curve());
     let fade_to_black = stored.runtime_fade_to_black();
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
@@ -3924,6 +3984,13 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
+    show.restore_fade_to_black_timing(
+        project
+            .fade_to_black_output_durations()
+            .iter()
+            .map(|(output, duration)| (*output, *duration)),
+        project.fade_to_black_curve(),
+    )?;
     Ok(())
 }
 
@@ -3998,7 +4065,13 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         .collect::<Vec<_>>();
     for output in outputs {
         project.set_fade_to_black_output(output, !excluded.contains(&output));
+        project.set_fade_to_black_output_duration(
+            output,
+            show.desired_switcher()
+                .fade_to_black_output_duration(output),
+        );
     }
+    project.set_fade_to_black_curve(show.desired_switcher().fade_to_black_curve());
     Ok(())
 }
 
@@ -4180,7 +4253,19 @@ fn persisted_t_bar(state: TBarState) -> PersistedManualTransitionState {
         TransitionKind::Wipe => PersistedManualTransitionKind::Wipe,
         TransitionKind::AlphaFade => PersistedManualTransitionKind::AlphaFade,
         TransitionKind::Slide => PersistedManualTransitionKind::Slide,
-        _ => unreachable!("engine manual transitions are Fade, Wipe, AlphaFade, or Slide"),
+        TransitionKind::VerticalWipe => PersistedManualTransitionKind::VerticalWipe,
+        TransitionKind::VerticalSlide => PersistedManualTransitionKind::VerticalSlide,
+        TransitionKind::Zoom => PersistedManualTransitionKind::Zoom,
+        TransitionKind::Fly => PersistedManualTransitionKind::Fly,
+        TransitionKind::FlyRotate => PersistedManualTransitionKind::FlyRotate,
+        TransitionKind::Cube => PersistedManualTransitionKind::Cube,
+        TransitionKind::CubeZoom => PersistedManualTransitionKind::CubeZoom,
+        TransitionKind::CrossZoom => PersistedManualTransitionKind::CrossZoom,
+        TransitionKind::Merge => PersistedManualTransitionKind::Merge,
+        TransitionKind::Stinger(slot) => PersistedManualTransitionKind::Stinger {
+            slot: slot.number(),
+            clip_frames: state.clip_frames(),
+        },
     };
     PersistedManualTransitionState::new(
         kind,
@@ -4198,18 +4283,28 @@ fn restored_t_bar(state: PersistedManualTransitionState) -> AppResult<TBarState>
         PersistedManualTransitionKind::Wipe => TransitionKind::Wipe,
         PersistedManualTransitionKind::AlphaFade => TransitionKind::AlphaFade,
         PersistedManualTransitionKind::Slide => TransitionKind::Slide,
+        PersistedManualTransitionKind::VerticalWipe => TransitionKind::VerticalWipe,
+        PersistedManualTransitionKind::VerticalSlide => TransitionKind::VerticalSlide,
+        PersistedManualTransitionKind::Zoom => TransitionKind::Zoom,
+        PersistedManualTransitionKind::Fly => TransitionKind::Fly,
+        PersistedManualTransitionKind::FlyRotate => TransitionKind::FlyRotate,
+        PersistedManualTransitionKind::Cube => TransitionKind::Cube,
+        PersistedManualTransitionKind::CubeZoom => TransitionKind::CubeZoom,
+        PersistedManualTransitionKind::CrossZoom => TransitionKind::CrossZoom,
+        PersistedManualTransitionKind::Merge => TransitionKind::Merge,
+        PersistedManualTransitionKind::Stinger { slot, .. } => TransitionKind::Stinger(
+            fm_switcher::StingerSlotId::new(slot)
+                .ok_or_else(|| AppFailure("invalid persisted manual Stinger slot".into()))?,
+        ),
     };
     let interval_start = TBarPosition::new(state.interval_start_basis_points)
         .ok_or_else(|| AppFailure("invalid persisted manual-transition interval start".into()))?;
     let position = TBarPosition::new(state.position_basis_points)
         .ok_or_else(|| AppFailure("invalid persisted manual-transition position".into()))?;
-    Ok(TBarState::restore(
-        kind,
-        state.from_id,
-        state.to_id,
-        interval_start,
-        position,
-    ))
+    Ok(
+        TBarState::restore(kind, state.from_id, state.to_id, interval_start, position)
+            .with_clip_frames(state.kind.clip_frames()),
+    )
 }
 
 /// Loads a project that is about to be mutated.
@@ -4929,15 +5024,7 @@ fn format_t_bar(state: Option<TBarState>) -> String {
         |state| {
             format!(
                 "{}:{}->{}@{}",
-                match state.kind() {
-                    TransitionKind::Fade => "fade",
-                    TransitionKind::Wipe => "wipe",
-                    TransitionKind::AlphaFade => "alpha_fade",
-                    TransitionKind::Slide => "slide",
-                    _ => unreachable!(
-                        "engine manual transitions are Fade, Wipe, AlphaFade, or Slide"
-                    ),
-                },
+                fm_control::wire_manual_kind(EngineManualTransitionKind::from_t_bar(state)).token(),
                 state.from(),
                 state.to(),
                 state.position().basis_points(),
@@ -5136,12 +5223,14 @@ Usage:
   freemix-cli overlay-queue <show.freemix> <channel:1..=8> <source-input> [--key <key>] [--expect <revision>]
   freemix-cli overlay-next <show.freemix> <channel:1..=8> [--key <key>] [--expect <revision>]
   freemix-cli wipe <show.freemix> <frames> [--key <key>] [--expect <revision>]
-  freemix-cli tbar-start <show.freemix> <fade|wipe|alpha-fade|slide> [--key <key>] [--expect <revision>]
+  freemix-cli tbar-start <show.freemix> <mix kind|stinger-<slot> <clip-frames>> [--key <key>] [--expect <revision>]
   freemix-cli tbar-position <show.freemix> <basis-points:0..=10000> [--key <key>] [--expect <revision>]
   freemix-cli tbar-commit <show.freemix> [--key <key>] [--expect <revision>]
   freemix-cli tbar-cancel <show.freemix> [--key <key>] [--expect <revision>]
   freemix-cli ftb <show.freemix> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli ftb-output <show.freemix> <output> <affected:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli ftb-output-duration <show.freemix> <output> <frames:1..=3600|none> [--key <key>] [--expect <revision>]
+  freemix-cli ftb-curve <show.freemix> <linear|ease> [--key <key>] [--expect <revision>]
   freemix-cli display-output-set <show.freemix> <slot:1|2> <display=index:N|name:NAME|id:ID[,source=program|preview|output:ID][,mode=current|WxH[@HZ]][,scaling=fit|fill|stretch|1:1][,hdr=off|auto]> [--key <key>] [--expect <revision>]
   freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli display-output-list <show.freemix>
@@ -5206,12 +5295,14 @@ Usage:
   freemix-cli remote-overlay-queue <127.0.0.1:port> <channel:1..=8> <source-input> [--key <key>] [--expect <revision>]
   freemix-cli remote-overlay-next <127.0.0.1:port> <channel:1..=8> [--key <key>] [--expect <revision>]
   freemix-cli remote-wipe <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
-  freemix-cli remote-tbar-start <127.0.0.1:port> <fade|wipe|alpha-fade|slide> [--key <key>] [--expect <revision>]
+  freemix-cli remote-tbar-start <127.0.0.1:port> <mix kind|stinger-<slot> <clip-frames>> [--key <key>] [--expect <revision>]
   freemix-cli remote-tbar-position <127.0.0.1:port> <basis-points:0..=10000> [--key <key>] [--expect <revision>]
   freemix-cli remote-tbar-commit <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-tbar-cancel <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb <127.0.0.1:port> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb-output <127.0.0.1:port> <output> <affected:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli remote-ftb-output-duration <127.0.0.1:port> <output> <frames:1..=3600|none> [--key <key>] [--expect <revision>]
+  freemix-cli remote-ftb-curve <127.0.0.1:port> <linear|ease> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-set <127.0.0.1:port> <slot:1|2> <spec as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-list <127.0.0.1:port>
@@ -5242,13 +5333,8 @@ Usage:
     );
 }
 
-const fn engine_manual_kind(kind: ManualTransitionKind) -> EngineManualTransitionKind {
-    match kind {
-        ManualTransitionKind::Fade => EngineManualTransitionKind::Fade,
-        ManualTransitionKind::Wipe => EngineManualTransitionKind::Wipe,
-        ManualTransitionKind::AlphaFade => EngineManualTransitionKind::AlphaFade,
-        ManualTransitionKind::Slide => EngineManualTransitionKind::Slide,
-    }
+fn engine_manual_kind(kind: ManualTransitionKind) -> EngineManualTransitionKind {
+    fm_control::engine_manual_kind(kind)
 }
 
 const fn switcher_overlay_transition(kind: CliOverlayTransition) -> OverlayTransitionKind {
@@ -5450,20 +5536,9 @@ const fn model_stinger_fallback(fallback: CliStingerFallback) -> StingerMissingM
     }
 }
 
-const fn protocol_manual_kind(kind: ManualTransitionKind) -> fm_protocol::ManualTransitionKind {
-    match kind {
-        ManualTransitionKind::Fade => fm_protocol::ManualTransitionKind::Fade,
-        ManualTransitionKind::Wipe => fm_protocol::ManualTransitionKind::Wipe,
-        ManualTransitionKind::AlphaFade => fm_protocol::ManualTransitionKind::AlphaFade,
-        ManualTransitionKind::Slide => fm_protocol::ManualTransitionKind::Slide,
-    }
-}
-
 fn protocol_t_bar_payload(action: TBarAction) -> fm_protocol::CommandPayload {
     match action {
-        TBarAction::Start(kind) => fm_protocol::CommandPayload::StartManualTransition {
-            kind: protocol_manual_kind(kind),
-        },
+        TBarAction::Start(kind) => fm_protocol::CommandPayload::StartManualTransition { kind },
         TBarAction::SetPosition(position) => {
             fm_protocol::CommandPayload::SetManualTransitionPosition {
                 position: fm_protocol::ManualTransitionPosition::new(position)

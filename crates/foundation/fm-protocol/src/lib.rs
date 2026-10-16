@@ -12,6 +12,8 @@ mod network_stream;
 mod scene_layer;
 mod version;
 
+pub use fm_types::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
+
 pub use audio_mixer::{
     AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
     InputAudioLabel, MAX_AUDIO_LABEL_BYTES, audio_group_is_valid, audio_label_is_valid,

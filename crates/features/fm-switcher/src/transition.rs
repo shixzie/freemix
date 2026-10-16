@@ -80,6 +80,8 @@ pub struct TBarState {
     to: InputId,
     interval_start: TBarPosition,
     position: TBarPosition,
+    /// The clip length a Stinger T-bar scrubs through; zero for every mix.
+    clip_frames: u32,
 }
 
 impl TBarState {
@@ -90,7 +92,36 @@ impl TBarState {
             to,
             interval_start: TBarPosition::START,
             position: TBarPosition::START,
+            clip_frames: 0,
         }
+    }
+
+    /// The same state scrubbing a Stinger clip of `clip_frames` frames.
+    #[must_use]
+    pub const fn with_clip_frames(mut self, clip_frames: u32) -> Self {
+        self.clip_frames = clip_frames;
+        self
+    }
+
+    /// The Stinger clip length this T-bar scrubs through (SW-004); zero for
+    /// a mix.
+    #[must_use]
+    pub const fn clip_frames(self) -> u32 {
+        self.clip_frames
+    }
+
+    /// The Stinger clip frame `position` shows: the position scaled to the
+    /// clip, rounded down, and held on the last frame at the end of travel.
+    #[must_use]
+    pub fn clip_frame_at(self, position: TBarPosition) -> u32 {
+        if self.clip_frames == 0 {
+            return 0;
+        }
+        let frame = u64::from(position.basis_points()) * u64::from(self.clip_frames)
+            / u64::from(TBarPosition::MAX);
+        u32::try_from(frame)
+            .unwrap_or(u32::MAX)
+            .min(self.clip_frames - 1)
     }
 
     /// Reconstructs exact manual-transition state from a validated checkpoint.
@@ -108,6 +139,7 @@ impl TBarState {
             to,
             interval_start,
             position,
+            clip_frames: 0,
         }
     }
 

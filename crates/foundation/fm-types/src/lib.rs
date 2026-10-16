@@ -4,6 +4,7 @@ mod audio;
 pub mod capture;
 mod color;
 pub mod display;
+mod fade_to_black;
 mod id;
 mod memory;
 pub mod network_stream;
@@ -16,6 +17,7 @@ pub use color::{
     AlphaMode, ChromaLocation, ColorMetadata, ColorPrimaries, MatrixCoefficients, SignalRange,
     TransferFunction,
 };
+pub use fade_to_black::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
 pub use id::{BusId, InputId, OutputId, ProjectId, SceneId};
 pub use memory::MemoryDomain;
 pub use scaling::{OutputScaling, ParseOutputScalingError, ScaledViewport};
