@@ -1130,6 +1130,18 @@ impl Runtime<'_> {
                 ))?;
                 Ok(())
             }
+            // The media plane's last capture device inventory (IN-001); a
+            // daemon without capture answers with no backend and no devices.
+            WireMessage::CaptureDevicesRequest(request) => {
+                let inventory = self.control.borrow().capture_inventory().clone();
+                peer.reply(WireMessage::CaptureDevices(
+                    fm_protocol::CaptureDevicesMessage {
+                        request_id: request.request_id,
+                        inventory,
+                    },
+                ))?;
+                Ok(())
+            }
             _ => {
                 peer.reply(error_message(
                     "unexpected_message",

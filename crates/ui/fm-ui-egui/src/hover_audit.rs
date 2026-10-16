@@ -60,8 +60,16 @@
 //! draft with one layer selected, two layers selected, a padlock, and a
 //! viewer.
 //!
+//! The Add input dialog's camera / capture form (IN-001) is audited in the
+//! console with a device inventory (a device chosen, formats filtered, an
+//! ALSA device typed), and without one (not yet known, no capture backend,
+//! a failed scan); the fixture's capture inputs put a SIGNAL LOST banner
+//! and a LIVE badge on two tiles. [`check_capture`] audits those scenes
+//! alone and requires each capture control's help to have been shown.
+//!
 //! The audits are hidden public entry points ([`check`],
-//! [`check_timeline`], [`check_color_panel`]) so the integration target
+//! [`check_timeline`], [`check_color_panel`], [`check_capture`]) so the
+//! integration target
 //! `tests/hover_audit.rs` runs them in every shipped language. They rely on
 //! the widget info egui records only in debug builds.
 
@@ -277,6 +285,10 @@ fn model(variant: Variant) -> ClientModel {
                 },
             },
         ],
+        // IN-001: a camera whose signal is lost and a live one, so the
+        // SIGNAL LOST banner, the corner badge, and their details are
+        // audited (Protocol 2.47).
+        capture_inputs: capture_entries(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -674,6 +686,206 @@ fn display_output_states() -> Vec<fm_protocol::DisplayOutputStatus> {
             slot: DisplayOutputSlot::new(2).unwrap(),
             state: WireDisplayOutputState::Waiting(WaitReason::DisplayAbsent),
         },
+    ]
+}
+
+/// One capture format of the fixture devices.
+fn capture_format(
+    (width, height): (u32, u32),
+    (numerator, denominator): (u32, u32),
+    pixel_format: fm_protocol::CapturePixelFormat,
+    scan: fm_protocol::CaptureScan,
+) -> fm_protocol::CaptureFormat {
+    fm_protocol::CaptureFormat {
+        width,
+        height,
+        rate: FrameRate::new(numerator, denominator).unwrap(),
+        pixel_format,
+        scan,
+    }
+}
+
+/// The capture inputs of the fixture (IN-001): Guest (input 4) lost its
+/// unplugged camera, Slides (input 3) captures live.
+fn capture_entries() -> Vec<fm_protocol::CaptureInputEntry> {
+    use fm_protocol::{
+        CaptureInputConfig, CaptureInputEntry, CaptureLossReason, CapturePixelFormat, CaptureScan,
+        CaptureSignalState, CaptureStatus,
+    };
+    vec![
+        CaptureInputEntry {
+            input: wire(3),
+            config: CaptureInputConfig::new("v4l2:pci-0000:03:00.0:decklink"),
+            status: CaptureStatus {
+                state: CaptureSignalState::Live,
+                device: Some("/dev/video2".into()),
+                format: Some(capture_format(
+                    (1920, 1080),
+                    (30_000, 1_001),
+                    CapturePixelFormat::Yuyv,
+                    CaptureScan::InterlacedTff,
+                )),
+                audio: true,
+                frames: 9_000,
+                ..CaptureStatus::default()
+            },
+        },
+        CaptureInputEntry {
+            input: wire(4),
+            config: CaptureInputConfig::new("v4l2:usb-0000:00:14.0-1:C920"),
+            status: CaptureStatus {
+                state: CaptureSignalState::SignalLost,
+                reason: Some(CaptureLossReason::Unplugged),
+                losses: 2,
+                recoveries: 1,
+                renegotiations: 1,
+                last_error: Some("No such device".into()),
+                ..CaptureStatus::default()
+            },
+        },
+    ]
+}
+
+/// The daemon's capture inventory of the fixture: a webcam with paired
+/// audio and several formats, and a capture card without paired audio.
+fn capture_inventory() -> fm_protocol::CaptureInventory {
+    use fm_protocol::{CaptureDevice, CaptureInventory, CapturePixelFormat, CaptureScan};
+    let progressive = CaptureScan::Progressive;
+    CaptureInventory {
+        backend: Some("v4l2".into()),
+        error: None,
+        devices: vec![
+            CaptureDevice {
+                stable_key: "v4l2:usb-0000:00:14.0-1:C920".into(),
+                name: "HD Pro Webcam C920".into(),
+                path: "/dev/video0".into(),
+                driver: "uvcvideo".into(),
+                bus: "usb-0000:00:14.0-1".into(),
+                audio: Some("hw:CARD=C920,DEV=0".into()),
+                formats: vec![
+                    capture_format(
+                        (1920, 1080),
+                        (30, 1),
+                        CapturePixelFormat::Mjpeg,
+                        progressive,
+                    ),
+                    capture_format((1920, 1080), (5, 1), CapturePixelFormat::Yuyv, progressive),
+                    capture_format((1280, 720), (60, 1), CapturePixelFormat::Mjpeg, progressive),
+                    capture_format((640, 480), (30, 1), CapturePixelFormat::Yuyv, progressive),
+                ],
+            },
+            CaptureDevice {
+                stable_key: "v4l2:pci-0000:03:00.0:decklink".into(),
+                name: "DeckLink Mini Recorder".into(),
+                path: "/dev/video2".into(),
+                driver: "decklink".into(),
+                bus: "pci-0000:03:00.0".into(),
+                audio: None,
+                formats: vec![
+                    capture_format((3840, 2160), (30, 1), CapturePixelFormat::Nv12, progressive),
+                    capture_format(
+                        (1920, 1080),
+                        (30_000, 1_001),
+                        CapturePixelFormat::Yuyv,
+                        CaptureScan::InterlacedTff,
+                    ),
+                    capture_format(
+                        (720, 576),
+                        (25, 1),
+                        CapturePixelFormat::Yuyv,
+                        CaptureScan::InterlacedBff,
+                    ),
+                ],
+            },
+        ],
+    }
+}
+
+/// `state` with `inventory` as the daemon's capture devices.
+fn with_capture_inventory(
+    mut state: StudioUiState,
+    inventory: Option<fm_protocol::CaptureInventory>,
+) -> StudioUiState {
+    if let Some(view) = state.view.as_mut() {
+        view.capture_inventory = inventory;
+    }
+    state
+}
+
+/// The Add input dialog's camera / capture form (IN-001): a webcam chosen
+/// with a filtered format and an ALSA device typed; a capture card with an
+/// interlaced format, its absent paired audio, and the black loss slate;
+/// and the inventory not yet known, without a capture backend, and after a
+/// failed scan.
+fn capture_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::capture_input_ui::AudioChoice;
+    use crate::input_catalogue::{AddInputDraft, NewInputKind};
+    let operator = ready(true, Variant::default());
+    let inventory = capture_inventory();
+    let shell = |configure: &dyn Fn(&mut AddInputDraft)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_add_input(&operator);
+        if let Some(draft) = shell.add_input.as_mut() {
+            draft.kind = NewInputKind::Capture;
+            configure(draft);
+        }
+        shell
+    };
+    let webcam = inventory.devices[0].clone();
+    let card = inventory.devices[1].clone();
+    let failed = fm_protocol::CaptureInventory {
+        backend: Some("v4l2".into()),
+        error: Some("permission denied on /dev/video1".into()),
+        devices: Vec::new(),
+    };
+    vec![
+        Scene::console(
+            "dialog/add-input-capture",
+            shell(&|draft| {
+                draft.capture.select_device(&webcam);
+                draft.capture.format = Some(webcam.formats[0]);
+                draft.capture.filter.pixel = Some(fm_protocol::CapturePixelFormat::Mjpeg);
+                draft.capture.audio = AudioChoice::Alsa;
+                draft.capture.alsa_device = "hw:CARD=USB,DEV=0".into();
+            }),
+            with_capture_inventory(operator.clone(), Some(inventory.clone())),
+        ),
+        Scene::console(
+            "dialog/add-input-capture-card",
+            shell(&|draft| {
+                draft.capture.select_device(&card);
+                draft.capture.format = Some(card.formats[1]);
+                draft.capture.loss = fm_protocol::CaptureLossSlate::Black;
+            }),
+            with_capture_inventory(operator.clone(), Some(inventory.clone())),
+        ),
+        Scene::console(
+            "dialog/add-input-capture-none-audio",
+            shell(&|draft| {
+                draft.capture.select_device(&webcam);
+                draft.capture.audio = AudioChoice::None;
+            }),
+            with_capture_inventory(operator.clone(), Some(inventory.clone())),
+        ),
+        Scene::console(
+            "dialog/add-input-capture-unknown",
+            shell(&|_| {}),
+            with_capture_inventory(operator.clone(), None),
+        ),
+        Scene::console(
+            "dialog/add-input-capture-no-backend",
+            shell(&|_| {}),
+            with_capture_inventory(
+                operator.clone(),
+                Some(fm_protocol::CaptureInventory::default()),
+            ),
+        ),
+        Scene::console(
+            "dialog/add-input-capture-scan-failed",
+            shell(&|_| {}),
+            with_capture_inventory(operator.clone(), Some(failed)),
+        ),
     ]
 }
 
@@ -1243,6 +1455,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(designer_scenes(locale));
     scenes.extend(transition_menu_scenes(locale));
     scenes.extend(dock_scenes(locale));
+    scenes.extend(capture_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
@@ -2169,6 +2382,70 @@ pub fn check(language: Language) {
             .any(|text| text.contains(&hint))
         {
             let _ = writeln!(failures, "no tooltip names the {hint} shortcut");
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+/// Audits the camera / capture form of the Add input dialog and the
+/// capture tile badges (IN-001) in `language` under the console rules, and
+/// requires each capture control's help (device, filters, formats,
+/// Automatic, audio, ALSA device, loss slate, Rescan) and the SIGNAL LOST
+/// and LIVE tile details to have been shown.
+pub fn check_capture(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, capture_scenes(locale));
+    dump("hover-capture", language, &controls);
+    println!("{}", report(language, &findings));
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    let inventory = capture_inventory();
+    let mut required: Vec<String> = [
+        Msg::KindCaptureHover,
+        Msg::CapRefreshHover,
+        Msg::CapFilterSizeHover,
+        Msg::CapFilterRateHover,
+        Msg::CapFilterPixelHover,
+        Msg::CapFormatAutoHover,
+        Msg::CapAudioNoneHover,
+        Msg::CapAudioPairedHover,
+        Msg::CapAudioAlsaHover,
+        Msg::CapAlsaDeviceHover,
+        Msg::CapLossHoldHover,
+        Msg::CapLossBlackHover,
+    ]
+    .into_iter()
+    .map(|msg| locale.text(msg).to_owned())
+    .collect();
+    // A device, an interlaced format, and both capture tiles' details.
+    required.push(inventory.devices[0].path.clone());
+    required.push(crate::capture_input_ui::format_hover(
+        locale,
+        &inventory.devices[1].formats[1],
+    ));
+    required.push(locale.format(
+        Msg::CapDetailLost,
+        &[
+            ("state", Arg::Str(locale.text(Msg::CapBadgeSignalLost))),
+            ("reason", Arg::Str(locale.text(Msg::CapLostUnplugged))),
+        ],
+    ));
+    required.push(locale.format(
+        Msg::CapDetailDevice,
+        &[
+            ("device", Arg::Str("/dev/video2")),
+            ("state", Arg::Str(locale.text(Msg::Live))),
+        ],
+    ));
+    for text in required {
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|tooltip| tooltip.contains(&text))
+        {
+            let _ = writeln!(failures, "no capture tooltip shows {text:?}");
         }
     }
     assert!(failures.is_empty(), "{failures}");

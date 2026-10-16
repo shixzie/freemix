@@ -563,6 +563,7 @@ mod tests {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,

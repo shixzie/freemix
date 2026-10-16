@@ -121,6 +121,42 @@ pub struct NetworkInputConfig {
     pub channels: u16,
     /// Cap on the queued decoded pictures, in bytes.
     pub max_buffer_bytes: usize,
+    /// A local capture device read instead of [`Self::url`] (IN-001).
+    pub device: Option<DeviceInput>,
+}
+
+/// A local capture device a receiver reads instead of a stream URL
+/// (IN-001): one `ffmpeg` demuxer input for the pictures and, optionally, a
+/// second one for the audio.
+///
+/// The receiver treats the device like a stream: it buffers pictures in the
+/// same bounded jitter buffer, cuts audio on program frame boundaries, and
+/// reconnects (reopens the device) when it stops delivering. An audio input
+/// that keeps the device from opening is dropped: the receiver reopens the
+/// device without audio.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceInput {
+    /// The `ffmpeg` input format, such as `v4l2`.
+    pub format: String,
+    /// Demuxer options given before `-i`, as name and value pairs (such as
+    /// `input_format`, `video_size`, and `framerate`).
+    pub options: Vec<(String, String)>,
+    /// The device path, such as `/dev/video0`.
+    pub path: String,
+    /// The field order of interlaced pictures (`tff` or `bff`), which are
+    /// deinterlaced before scaling; `None` for progressive pictures.
+    pub field_order: Option<&'static str>,
+    /// The audio input read beside the pictures, if any.
+    pub audio: Option<DeviceAudioInput>,
+}
+
+/// The audio input of a [`DeviceInput`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceAudioInput {
+    /// The `ffmpeg` input format, such as `alsa`.
+    pub format: String,
+    /// The audio device, such as `hw:CARD=C920,DEV=0`.
+    pub path: String,
 }
 
 impl NetworkInputConfig {
@@ -143,6 +179,32 @@ impl NetworkInputConfig {
             sample_rate: 48_000,
             channels: 2,
             max_buffer_bytes: DEFAULT_MAX_BUFFER_BYTES,
+            device: None,
+        }
+    }
+
+    /// A receiver of the local capture `device` at `width`×`height` and
+    /// `frame_rate`, with 48 kHz stereo audio, the default buffer cap, and
+    /// `settings` for its buffer, reopen policy, and timeout.
+    #[must_use]
+    pub fn device(
+        device: DeviceInput,
+        settings: NetworkStreamSettings,
+        width: u32,
+        height: u32,
+        frame_rate: FrameRate,
+    ) -> Self {
+        Self {
+            ffmpeg: Executable::SearchPath,
+            url: device.path.clone(),
+            settings,
+            width,
+            height,
+            frame_rate,
+            sample_rate: 48_000,
+            channels: 2,
+            max_buffer_bytes: DEFAULT_MAX_BUFFER_BYTES,
+            device: Some(device),
         }
     }
 
@@ -190,6 +252,7 @@ impl fmt::Debug for NetworkInputConfig {
             .field("sample_rate", &self.sample_rate)
             .field("channels", &self.channels)
             .field("max_buffer_bytes", &self.max_buffer_bytes)
+            .field("device", &self.device)
             .finish()
     }
 }
@@ -260,6 +323,8 @@ struct Inner {
     audio_absent: bool,
     /// The child refused an output without streams.
     saw_empty_output: bool,
+    /// The child reported an error naming a device's audio input.
+    audio_input_failed: bool,
     state: NetworkStreamState,
     reconnect_at: Option<Instant>,
     last_data: Option<Instant>,
@@ -310,7 +375,8 @@ impl Shared {
 struct Plan {
     config: NetworkInputConfig,
     executable: OsString,
-    protocol: StreamProtocol,
+    /// The stream protocol; `None` for a capture device.
+    protocol: Option<StreamProtocol>,
     bounds: BufferBounds,
     frame_bytes: usize,
     channels: usize,
@@ -370,13 +436,24 @@ impl NetworkReceiver {
     /// A stream that does not connect is not an error: the receiver reports
     /// it through [`Self::status`] and keeps reconnecting.
     pub fn start(config: NetworkInputConfig) -> Result<Self, NetworkInputError> {
-        let protocol =
-            validate_stream_url(&config.url).map_err(NetworkInputError::InvalidStream)?;
+        let protocol = match &config.device {
+            Some(device) => {
+                if device.path.is_empty() || device.format.is_empty() {
+                    return Err(NetworkInputError::InvalidFormat);
+                }
+                None
+            }
+            None => {
+                Some(validate_stream_url(&config.url).map_err(NetworkInputError::InvalidStream)?)
+            }
+        };
         config
             .settings
             .validate()
             .map_err(NetworkInputError::InvalidStream)?;
-        if config.settings.transport != RtspTransport::Auto && protocol != StreamProtocol::Rtsp {
+        if config.settings.transport != RtspTransport::Auto
+            && protocol != Some(StreamProtocol::Rtsp)
+        {
             return Err(NetworkInputError::InvalidStream(
                 NetworkStreamError::TransportNotRtsp,
             ));
@@ -397,6 +474,11 @@ impl NetworkReceiver {
             .ok_or(NetworkInputError::InvalidFormat)?;
         let executable = receiver_executable(&config.ffmpeg)?;
         let channels = usize::from(config.channels);
+        // A device without an audio input connects without audio.
+        let audio_absent = config
+            .device
+            .as_ref()
+            .is_some_and(|device| device.audio.is_none());
         let plan = Arc::new(Plan {
             executable,
             protocol,
@@ -409,6 +491,7 @@ impl NetworkReceiver {
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 state: NetworkStreamState::Connecting,
+                audio_absent,
                 audio: vec![VecDeque::new(); channels],
                 last_samples: vec![0.0; channels],
                 // The consumer starts on a blank picture: no black slate is
@@ -524,6 +607,13 @@ impl NetworkReceiver {
     pub fn buffered_frames(&self) -> usize {
         self.shared.lock().frames.len()
     }
+
+    /// Whether the receiver connects with audio: `false` once it found the
+    /// stream (or device) has none, or a device's audio input failed.
+    #[must_use]
+    pub fn audio_active(&self) -> bool {
+        !self.shared.lock().audio_absent
+    }
 }
 
 impl Drop for NetworkReceiver {
@@ -616,7 +706,10 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
     .iter()
     .map(ToString::to_string)
     .collect();
-    match plan.protocol {
+    if let Some(device) = &config.device {
+        return device_arguments(plan, device, args, audio_port);
+    }
+    match plan.protocol.unwrap_or(StreamProtocol::Udp) {
         StreamProtocol::Rtsp => {
             match config.settings.transport {
                 RtspTransport::Auto => {}
@@ -758,6 +851,76 @@ fn parent_death_wrapper() -> Option<&'static std::path::Path> {
         .as_deref()
 }
 
+/// The child's arguments for a capture device: the picture input, the
+/// optional audio input, then the video and audio outputs.
+fn device_arguments(
+    plan: &Plan,
+    device: &DeviceInput,
+    mut args: Vec<String>,
+    audio_port: Option<u16>,
+) -> Vec<OsString> {
+    let config = &plan.config;
+    args.extend(["-thread_queue_size".into(), "64".into()]);
+    args.extend(["-f".into(), device.format.clone()]);
+    for (name, value) in &device.options {
+        args.extend([format!("-{name}"), value.clone()]);
+    }
+    args.extend(["-i".into(), device.path.clone()]);
+    let audio = device.audio.as_ref().filter(|_| audio_port.is_some());
+    if let Some(audio) = audio {
+        args.extend([
+            "-thread_queue_size".into(),
+            "1024".into(),
+            "-f".into(),
+            audio.format.clone(),
+            "-i".into(),
+            audio.path.clone(),
+        ]);
+    }
+    let rate = config.frame_rate;
+    let deinterlace = device
+        .field_order
+        .map(|order| format!("yadif=mode=send_frame:parity={order},"))
+        .unwrap_or_default();
+    args.extend([
+        "-map".into(),
+        "0:v:0".into(),
+        "-vf".into(),
+        format!(
+            "{deinterlace}scale={}:{},fps=fps={}/{}:start_time=0,format=rgba",
+            config.width,
+            config.height,
+            rate.numerator(),
+            rate.denominator()
+        ),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "pipe:1".into(),
+    ]);
+    if let (Some(_), Some(port)) = (audio, audio_port) {
+        args.extend([
+            "-map".into(),
+            "1:a:0".into(),
+            "-af".into(),
+            format!("aresample={}:async=1:first_pts=0", config.sample_rate),
+            "-ac".into(),
+            config.channels.to_string(),
+            "-c:a".into(),
+            "pcm_f32le".into(),
+            "-f".into(),
+            "f32le".into(),
+            "-chunked_post".into(),
+            "0".into(),
+            "-method".into(),
+            "POST".into(),
+            format!("http://127.0.0.1:{port}/{}", plan.token),
+        ]);
+    }
+    args.into_iter().map(OsString::from).collect()
+}
+
 fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     #[cfg(target_os = "linux")]
     let mut command = match parent_death_wrapper() {
@@ -815,6 +978,11 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
         }
         {
             let mut inner = shared.lock();
+            if inner.audio_input_failed && !inner.audio_absent && !inner.delivered {
+                // The audio input kept the device from opening: reopen it
+                // without audio.
+                inner.audio_absent = true;
+            }
             if inner.saw_empty_output && !inner.audio_absent && !inner.delivered {
                 // No audio stream: connect again at once, without audio.
                 inner.audio_absent = true;
@@ -883,6 +1051,7 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         inner.last_data = None;
         inner.empty_pulls = 0;
         inner.saw_empty_output = false;
+        inner.audio_input_failed = false;
         inner.window_bytes = 0;
         inner.window_start = None;
         (inner.generation, inner.audio_absent)
@@ -1098,6 +1267,15 @@ fn read_log(shared: &Shared, plan: &Plan, generation: u64, stderr: ChildStderr) 
         if text.contains("does not contain any stream") {
             inner.saw_empty_output = true;
         }
+        if let Some(audio) = plan
+            .config
+            .device
+            .as_ref()
+            .and_then(|device| device.audio.as_ref())
+            && (text.contains(&audio.path) || text.contains(&format!("[{} @", audio.format)))
+        {
+            inner.audio_input_failed = true;
+        }
         // The child echoes the URL it was given; the secrets are the same.
         let scrubbed = scrub_stream_text(text, &child_url(&plan.config.url));
         if !scrubbed.is_empty() {
@@ -1236,7 +1414,7 @@ mod tests {
         let config = NetworkInputConfig::new(&stream, 64, 36, FrameRate::new(25, 1).unwrap());
         Plan {
             executable: "ffmpeg".into(),
-            protocol: validate_stream_url(url).unwrap(),
+            protocol: Some(validate_stream_url(url).unwrap()),
             bounds: config.buffer_bounds().unwrap(),
             frame_bytes: config.frame_bytes().unwrap(),
             channels: 2,
@@ -1358,6 +1536,47 @@ mod tests {
                 capacity_frames: 6
             }
         );
+    }
+
+    #[test]
+    fn device_arguments_read_the_device_and_its_audio_and_deinterlace() {
+        let device = DeviceInput {
+            format: "v4l2".into(),
+            options: vec![
+                ("input_format".into(), "yuyv422".into()),
+                ("video_size".into(), "1920x1080".into()),
+                ("framerate".into(), "30000/1001".into()),
+            ],
+            path: "/dev/video2".into(),
+            field_order: Some("tff"),
+            audio: Some(DeviceAudioInput {
+                format: "alsa".into(),
+                path: "hw:CARD=Cam,DEV=0".into(),
+            }),
+        };
+        let config = NetworkInputConfig::device(
+            device,
+            NetworkStreamSettings::default(),
+            64,
+            36,
+            FrameRate::new(25, 1).unwrap(),
+        );
+        let mut plan = plan("udp://@:9000", RtspTransport::Auto);
+        plan.protocol = None;
+        plan.config = config;
+        let joined = args(&plan, Some(4000)).join(" ");
+        assert!(joined.contains(
+            "-f v4l2 -input_format yuyv422 -video_size 1920x1080 -framerate 30000/1001 -i /dev/video2"
+        ));
+        assert!(joined.contains("-f alsa -i hw:CARD=Cam,DEV=0"));
+        assert!(joined.contains("-map 1:a:0"));
+        assert!(joined.contains(
+            "yadif=mode=send_frame:parity=tff,scale=64:36,fps=fps=25/1:start_time=0,format=rgba"
+        ));
+        assert!(!joined.contains("framecrc"));
+        let silent = args(&plan, None).join(" ");
+        assert!(!silent.contains("alsa"));
+        assert!(!silent.contains("f32le"));
     }
 
     #[test]

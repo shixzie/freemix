@@ -192,6 +192,9 @@ pub enum Intake {
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
     DisplayInventoryApplied,
+    /// A `capture_devices` reply updated the replicated capture device
+    /// inventory (Protocol 2.47).
+    CaptureDevicesApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -618,7 +621,12 @@ impl Client {
                 self.model.apply_display_inventory(message.inventory);
                 Ok(Intake::DisplayInventoryApplied)
             }
+            WireMessage::CaptureDevices(message) => {
+                self.model.apply_capture_inventory(message.inventory);
+                Ok(Intake::CaptureDevicesApplied)
+            }
             WireMessage::DisplayInventoryRequest(_)
+            | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -1393,6 +1401,13 @@ impl Client {
         if let RuntimeLifecycleEvent::DisplayInventory(inventory) = &event.event {
             self.model.apply_display_inventory(inventory.clone());
         }
+        if let RuntimeLifecycleEvent::CaptureStatus { input, status } = &event.event {
+            self.model
+                .apply_runtime_capture_status(input.to_domain(), (**status).clone())?;
+        }
+        if let RuntimeLifecycleEvent::CaptureDevices(inventory) = &event.event {
+            self.model.apply_capture_inventory(inventory.clone());
+        }
         if let RuntimeLifecycleEvent::NetworkStreamStatus { input, status } = &event.event {
             self.model
                 .apply_runtime_network_stream_status(input.to_domain(), (**status).clone())?;
@@ -1474,6 +1489,7 @@ impl Client {
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetNetworkStream { .. }
+            | CommandPayload::SetCaptureSettings { .. }
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

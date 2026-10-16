@@ -887,7 +887,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(43);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(44);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1911,6 +1911,51 @@ impl Project {
         };
         *playback = settings;
         Ok(())
+    }
+
+    /// Replaces capture input `input`'s settings (IN-001).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::SetCaptureSettingsError`] for an unknown input, an
+    /// input that is not a capture device, or invalid settings. Nothing
+    /// changes on error.
+    pub fn set_capture_settings(
+        &mut self,
+        input: InputId,
+        settings: fm_types::capture::CaptureSettings,
+    ) -> Result<(), crate::SetCaptureSettingsError> {
+        settings
+            .validate()
+            .map_err(crate::SetCaptureSettingsError::Invalid)?;
+        let target = self
+            .inputs
+            .iter_mut()
+            .find(|candidate| candidate.id == input)
+            .ok_or(crate::SetCaptureSettingsError::UnknownInput(input))?;
+        let InputKind::Device { capture, .. } = &mut target.kind else {
+            return Err(crate::SetCaptureSettingsError::NotCaptureInput(input));
+        };
+        *capture = settings;
+        Ok(())
+    }
+
+    /// The stable key and settings of capture input `input` (IN-001).
+    #[must_use]
+    pub fn capture_input(
+        &self,
+        input: InputId,
+    ) -> Option<(&str, &fm_types::capture::CaptureSettings)> {
+        self.inputs
+            .iter()
+            .find(|candidate| candidate.id == input)
+            .and_then(|candidate| match &candidate.kind {
+                InputKind::Device {
+                    stable_key,
+                    capture,
+                } => Some((stable_key.as_str(), capture)),
+                _ => None,
+            })
     }
 
     /// The playback settings of media input `input`.
@@ -3878,9 +3923,12 @@ pub enum InputKind {
         asset_uri: String,
         playback: crate::MediaPlaybackSettings,
     },
-    /// Exact adapter-qualified source identity from platform discovery.
+    /// A local camera or capture card (schema 44, IN-001): the exact
+    /// adapter-qualified stable key from platform discovery, and the
+    /// requested format, audio, and loss slate.
     Device {
         stable_key: String,
+        capture: fm_types::capture::CaptureSettings,
     },
     /// A network stream received by URL (schema 43, IN-015): RTSP, RTP,
     /// UDP, TCP, or HTTP(S) MPEG-TS, or an HLS playlist, with its jitter

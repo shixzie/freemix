@@ -50,7 +50,7 @@ pub use media_playback::{
     MAX_MEDIA_SPEED_BASIS_POINTS, MEDIA_SPEED_NORMAL_BASIS_POINTS,
     MIN_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MIN_MEDIA_SPEED_BASIS_POINTS, MediaAudioSpeedPolicy,
     MediaEndAction, MediaGrowing, MediaPlaybackSettings, MediaPlaybackSettingsError,
-    SetMediaPlaybackError,
+    SetCaptureSettingsError, SetMediaPlaybackError,
 };
 pub use playlist::{
     MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES, Playlist,

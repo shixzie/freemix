@@ -686,9 +686,10 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
         } => {
             super::media_playback::write_media_input(output, asset_uri, playback);
         }
-        InputKind::Device { stable_key } => {
-            write_string_variant(output, "device", "stable_key", stable_key);
-        }
+        InputKind::Device {
+            stable_key,
+            capture,
+        } => super::capture::write_device_input(output, stable_key, capture),
         InputKind::NetworkStream(config) => {
             super::network_stream::write_network_stream(output, config);
         }
@@ -813,13 +814,6 @@ pub(crate) fn write_hex_color(output: &mut String, color: Rgba8) {
         color.red, color.green, color.blue, color.alpha
     )
     .expect("writing to a string cannot fail");
-}
-
-fn write_string_variant(output: &mut String, kind: &str, field: &str, value: &str) {
-    write!(output, "{{\"type\": \"{kind}\", \"{field}\": \"")
-        .expect("writing to a string cannot fail");
-    escape_string(output, value);
-    output.push_str("\"}");
 }
 
 fn write_strings(output: &mut String, values: &[String]) {

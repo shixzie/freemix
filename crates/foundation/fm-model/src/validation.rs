@@ -687,9 +687,10 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                 require_name(errors, entity, "asset_uri", asset_uri);
                 validate_media_playback(entity, playback, errors);
             }
-            InputKind::Device { stable_key } => {
-                require_name(errors, entity, "stable_key", stable_key);
-            }
+            InputKind::Device {
+                stable_key,
+                capture,
+            } => validate_capture_input(entity, stable_key, capture, errors),
             InputKind::NetworkStream(config) => validate_network_stream(entity, config, errors),
             InputKind::Scene {
                 scene_id,
@@ -757,6 +758,57 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
         );
     }
     validate_network_stream_count(project, errors);
+    validate_capture_input_count(project, errors);
+}
+
+/// A capture input's stable key and settings are usable (IN-001).
+fn validate_capture_input(
+    entity: Option<EntityRef>,
+    stable_key: &str,
+    capture: &fm_types::capture::CaptureSettings,
+    errors: &mut Vec<ValidationError>,
+) {
+    if stable_key.trim().is_empty() {
+        errors.push(ValidationError {
+            entity,
+            field: "stable_key",
+            kind: ValidationErrorKind::Empty,
+        });
+    } else if fm_types::capture::validate_stable_key(stable_key).is_err() {
+        errors.push(ValidationError {
+            entity,
+            field: "stable_key",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    if let Err(error) = capture.validate() {
+        errors.push(ValidationError {
+            entity,
+            field: match error {
+                fm_types::capture::CaptureError::AlsaDevice
+                | fm_types::capture::CaptureError::Token => "kind.device.capture.audio",
+                _ => "kind.device.capture.format",
+            },
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+/// IN-001: a bounded number of capture inputs keeps every snapshot that
+/// carries them inside one line.
+fn validate_capture_input_count(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(input) = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::Device { .. }))
+        .nth(fm_types::capture::MAX_CAPTURE_INPUTS)
+    {
+        errors.push(ValidationError {
+            entity: Some(EntityRef::Input(input.id)),
+            field: "kind.device",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
 }
 
 /// A network stream input's configuration is usable (IN-015).

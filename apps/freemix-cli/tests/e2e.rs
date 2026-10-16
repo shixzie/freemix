@@ -760,6 +760,7 @@ fn serve_streams_snapshot_peer(
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
             engine: engine.clone(),
             revision: 1,
             show_name: "Remote Contract".into(),
@@ -1578,6 +1579,10 @@ std::thread_local! {
     /// thread (IN-015).
     static SNAPSHOT_NETWORK_STREAMS: std::cell::RefCell<Vec<fm_protocol::NetworkStreamEntry>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Capture inputs the fake daemon's snapshot lists on this thread
+    /// (IN-001).
+    static SNAPSHOT_CAPTURE_INPUTS: std::cell::RefCell<Vec<fm_protocol::CaptureInputEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// [`serve_edit`] with scene layouts in the snapshot, so a
@@ -1629,6 +1634,7 @@ fn write_handshake_snapshot(
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: SNAPSHOT_NETWORK_STREAMS.with(|cell| cell.borrow().clone()),
+            capture_inputs: SNAPSHOT_CAPTURE_INPUTS.with(|cell| cell.borrow().clone()),
             engine: engine.clone(),
             revision,
             show_name: "Remote Contract".into(),
@@ -1738,6 +1744,7 @@ fn write_handshake_version_with_fade_to_black(
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
             engine: engine.clone(),
             revision,
             show_name: "Remote Contract".into(),
@@ -3767,7 +3774,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 43,
+  "schema_version": 44,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -3974,7 +3981,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 43", "\"schema_version\": 42"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 44", "\"schema_version\": 43"),
     )
     .unwrap();
     assert_failure_contains(
@@ -3988,7 +3995,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 42 is unsupported; expected 43",
+        "title template schema 43 is unsupported; expected 44",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4006,7 +4013,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 43,
+  "schema_version": 44,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4269,7 +4276,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 43,
+  "schema_version": 44,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4499,7 +4506,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 43,
+  "schema_version": 44,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4596,7 +4603,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 43,
+  "schema_version": 44,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5671,13 +5678,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        43
+        44
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 43);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 44);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5690,7 +5697,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 43);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 44);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5766,7 +5773,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        43
+        44
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5774,7 +5781,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 43);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 44);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5784,7 +5791,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 43);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 44);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5792,7 +5799,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 43);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 44);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -11934,6 +11941,7 @@ fn remote_network_stream_commands_send_exact_payloads() {
             input: input(9),
             name: "Camera 9".into(),
             network_stream: Some(Box::new(config.redacted())),
+            capture: None,
         },
         domain: "project",
     });
@@ -12052,5 +12060,331 @@ fn remote_network_stream_commands_send_exact_payloads() {
             "gopher://cam.test/live",
         ]),
         "invalid network stream",
+    );
+}
+
+/// IN-001: local capture inputs are validated, persisted with their
+/// settings, edited option by option, and listed idle.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn local_capture_inputs_persist_and_list_idle() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    let listed = invoke_bounded(&["input-capture-status", context.project_path()]);
+    assert_success(&listed);
+    assert!(
+        stdout(&listed).contains("CaptureInputs=none"),
+        "{}",
+        stdout(&listed)
+    );
+
+    assert_success(&invoke_bounded(&[
+        "input-add-capture",
+        context.project_path(),
+        "40",
+        "USB camera",
+        "v4l2:usb-0000:00:14.0-1",
+        "--format",
+        "1920x1080@30000/1001:yuyv:tff",
+        "--audio",
+        "alsa:hw:CARD=C920,DEV=0",
+        "--loss",
+        "black",
+    ]));
+    for (arguments, message) in [
+        (
+            vec!["41", "Bad", "cam", "--format", "1920x1080"],
+            "invalid capture input",
+        ),
+        (
+            vec!["41", "Bad", "cam", "--format", "1920x1080@60/2:yuyv:p"],
+            "invalid capture input",
+        ),
+        (
+            vec!["41", "Bad", "cam", "--audio", "pulse:default"],
+            "invalid capture input",
+        ),
+        (vec!["41", "Bad", "cam", "--loss", "blue"], "loss slate"),
+        (vec!["41", "Bad", "cam", "--key", "k"], "--key"),
+    ] {
+        let mut full = vec!["input-add-capture", context.project_path()];
+        full.extend(arguments);
+        assert_failure_contains(&invoke_bounded(&full), message);
+    }
+
+    assert_success(&invoke_bounded(&[
+        "input-capture-set",
+        context.project_path(),
+        "40",
+        "--audio",
+        "none",
+    ]));
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "input-capture-set",
+            context.project_path(),
+            "1",
+            "--loss",
+            "hold",
+        ]),
+        "not a capture input",
+    );
+
+    let listed = invoke_bounded(&["input-capture-status", context.project_path()]);
+    assert_success(&listed);
+    let text = stdout(&listed);
+    assert!(
+        text.contains(
+            "CaptureInput(input=40, device=\"v4l2:usb-0000:00:14.0-1\", \
+             format=1920x1080@30000/1001:yuyv:tff, audio=none, loss=black, state=idle, \
+             reason=none, node=none, active_format=none, audio_live=off, frames=0, losses=0, \
+             recoveries=0, renegotiations=0, last_error=none)"
+        ),
+        "{text}"
+    );
+
+    assert_success(&invoke_bounded(&[
+        "input-capture-set",
+        context.project_path(),
+        "40",
+        "--format",
+        "auto",
+    ]));
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let kind = &stored
+        .project()
+        .inputs()
+        .iter()
+        .find(|input| input.id.get().get() == 40)
+        .unwrap()
+        .kind;
+    let InputKind::Device {
+        stable_key,
+        capture,
+    } = kind
+    else {
+        panic!("{kind:?}");
+    };
+    assert_eq!(stable_key, "v4l2:usb-0000:00:14.0-1");
+    assert_eq!(
+        *capture,
+        fm_protocol::CaptureSettings {
+            format: None,
+            audio: fm_protocol::CaptureAudio::None,
+            loss: fm_protocol::CaptureLossSlate::Black,
+        }
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// IN-001, Protocol 2.47: remote capture commands send exact payloads, keep
+/// omitted settings, list the daemon's capture inputs with their status,
+/// and print the daemon's device inventory as a format table.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn remote_capture_commands_send_exact_payloads() {
+    use fm_protocol::{
+        CaptureAudio, CaptureDevice, CaptureFormat, CaptureInputConfig, CaptureInputEntry,
+        CaptureInventory, CaptureLossReason, CaptureLossSlate, CaptureSettings, CaptureSignalState,
+        CaptureStatus,
+    };
+    let format = CaptureFormat::from_token("1920x1080@30000/1001:yuyv:tff").unwrap();
+    let config = CaptureInputConfig {
+        stable_key: "v4l2:usb-1".into(),
+        settings: CaptureSettings {
+            format: Some(format),
+            audio: CaptureAudio::Paired,
+            loss: CaptureLossSlate::Black,
+        },
+    };
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-capture-add",
+        payload: CommandPayload::AddInput {
+            input: input(9),
+            name: "Camera 9".into(),
+            source: fm_protocol::LiveInputSource::Capture(Box::new(config.clone())),
+        },
+        event: EventPayload::InputAdded {
+            input: input(9),
+            name: "Camera 9".into(),
+            network_stream: None,
+            capture: Some(Box::new(config.clone())),
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-input-add-capture",
+        &server.address(),
+        "9",
+        "Camera 9",
+        "v4l2:usb-1",
+        "--format",
+        "1920x1080@30000/1001:yuyv:tff",
+        "--loss",
+        "black",
+        "--key",
+        "remote-capture-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+
+    // An edit keeps every setting it does not name.
+    let entry = CaptureInputEntry {
+        input: input(1),
+        config: config.clone(),
+        status: CaptureStatus {
+            state: CaptureSignalState::SignalLost,
+            reason: Some(CaptureLossReason::Unplugged),
+            device: Some("/dev/video0".into()),
+            format: Some(format),
+            audio: true,
+            frames: 1_200,
+            losses: 1,
+            recoveries: 0,
+            renegotiations: 0,
+            last_error: None,
+        },
+    };
+    let settings = CaptureSettings {
+        audio: CaptureAudio::Alsa("hw:CARD=C920,DEV=0".into()),
+        ..config.settings.clone()
+    };
+    let edit = RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-capture-set",
+        payload: CommandPayload::SetCaptureSettings {
+            input: input(1),
+            settings: Box::new(settings.clone()),
+        },
+        event: EventPayload::CaptureSettingsChanged {
+            input: input(1),
+            settings: Box::new(settings),
+        },
+        domain: "project",
+    };
+    let entries = vec![entry];
+    let server = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let entries = entries.clone();
+        let worker = thread::spawn(move || {
+            SNAPSHOT_CAPTURE_INPUTS.with(|cell| *cell.borrow_mut() = entries);
+            serve_edit(&listener, &edit);
+        });
+        FakeRemoteServer { address, worker }
+    };
+    let output = invoke(&[
+        "remote-input-capture-set",
+        &server.address(),
+        "1",
+        "--audio",
+        "alsa:hw:CARD=C920,DEV=0",
+        "--key",
+        "remote-capture-set",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        SNAPSHOT_CAPTURE_INPUTS.with(|cell| *cell.borrow_mut() = entries);
+        let engine = EngineIdentity {
+            engine_id: "capture-engine".into(),
+            state_epoch: 1,
+            log_id: "capture-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    });
+    let output = invoke(&["remote-input-capture-status", &server.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(
+        text.contains(
+            "CaptureInput(input=1, device=\"v4l2:usb-1\", \
+             format=1920x1080@30000/1001:yuyv:tff, audio=paired, loss=black, \
+             state=signal_lost, reason=unplugged, node=\"/dev/video0\", \
+             active_format=1920x1080@30000/1001:yuyv:tff, audio_live=on, frames=1200, \
+             losses=1, recoveries=0, renegotiations=0, last_error=none)"
+        ),
+        "{text}"
+    );
+    server.finish();
+
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        let engine = EngineIdentity {
+            engine_id: "capture-engine".into(),
+            state_epoch: 1,
+            log_id: "capture-log".into(),
+        };
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        let WireMessage::CaptureDevicesRequest(request) = read_message(&mut reader) else {
+            panic!("expected a capture devices request");
+        };
+        assert!(request.request_id.starts_with("cli-capture-"));
+        write_message(
+            &mut writer,
+            &WireMessage::CaptureDevices(fm_protocol::CaptureDevicesMessage {
+                request_id: request.request_id,
+                inventory: CaptureInventory {
+                    backend: Some("v4l2".into()),
+                    error: None,
+                    devices: vec![CaptureDevice {
+                        stable_key: "v4l2:usb-1".into(),
+                        name: "HD Pro Webcam C920".into(),
+                        path: "/dev/video0".into(),
+                        driver: "uvcvideo".into(),
+                        bus: "usb-0000:00:14.0-1".into(),
+                        audio: Some("hw:CARD=C920,DEV=0".into()),
+                        formats: vec![
+                            CaptureFormat::from_token("3840x2160@30/1:mjpeg:p").unwrap(),
+                            format,
+                        ],
+                    }],
+                },
+            }),
+        );
+    });
+    let output = invoke(&["remote-capture-devices", &server.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    for line in [
+        "CaptureDevices(backend=v4l2, devices=1, error=none)",
+        "Device(key=\"v4l2:usb-1\", name=\"HD Pro Webcam C920\", path=\"/dev/video0\", \
+         driver=\"uvcvideo\", bus=\"usb-0000:00:14.0-1\", audio=\"hw:CARD=C920,DEV=0\", \
+         formats=2)",
+        "  FORMAT                         LABEL                  CLASS",
+        "  3840x2160@30/1:mjpeg:p         3840x2160 30p MJPEG    UHD",
+        "  1920x1080@30000/1001:yuyv:tff  1920x1080 59.94i YUYV  HD",
+    ] {
+        assert!(
+            text.lines().any(|candidate| candidate == line),
+            "{line}\n{text}"
+        );
+    }
+    server.finish();
+
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "remote-input-add-capture",
+            "127.0.0.1:9",
+            "9",
+            "Camera",
+            "cam",
+            "--format",
+            "bogus",
+        ]),
+        "invalid capture input",
     );
 }

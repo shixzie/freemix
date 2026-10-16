@@ -98,7 +98,7 @@ impl NativeSourceKey {
                 audio: *audio_source,
             },
             InputKind::Title(_) => Self::Title,
-            InputKind::Device { stable_key } => Self::Device(stable_key.clone()),
+            InputKind::Device { stable_key, .. } => Self::Device(stable_key.clone()),
             InputKind::Color => Self::Color,
             InputKind::Alias { .. } => Self::Alias,
             InputKind::MixFeed(_) => Self::MixFeed,
@@ -112,7 +112,7 @@ impl NativeSourceKey {
 
     /// Why the native runtime cannot start this source while it runs, if
     /// it cannot.
-    fn unsupported_live(&self, input: InputId) -> Option<String> {
+    fn unsupported_live(&self, input: InputId, capture_live: bool) -> Option<String> {
         match self {
             Self::Generator(SimulatedInput {
                 audio: SimulatedAudio::Sine { .. },
@@ -126,6 +126,7 @@ impl NativeSourceKey {
                 "title input {input} cannot be added while the native media runtime runs; stop \
                  the daemon and use freemix-cli"
             )),
+            Self::Device(_) if capture_live => None,
             Self::Device(_) => Some(format!(
                 "capture input {input} cannot be added or replaced while the native media \
                  runtime runs; stop the daemon and use freemix-cli"
@@ -161,6 +162,9 @@ pub(crate) struct NativeCatalogueBudget {
     frame_bytes: u64,
     /// Inputs whose audio the Master decodes itself (Stinger clips).
     decoded: BTreeSet<InputId>,
+    /// The runtime has a capture backend that adds, replaces, and removes
+    /// capture inputs live (IN-001).
+    capture_live: bool,
 }
 
 impl NativeCatalogueBudget {
@@ -185,7 +189,7 @@ impl NativeCatalogueBudget {
                      change while the native media runtime runs"
                 )));
             }
-            if matches!(key, NativeSourceKey::Device(_)) {
+            if matches!(key, NativeSourceKey::Device(_)) && !self.capture_live {
                 return Some(unsupported(format!(
                     "capture input {input} cannot be removed or replaced while the native media \
                      runtime runs; stop the daemon and use freemix-cli"
@@ -200,7 +204,7 @@ impl NativeCatalogueBudget {
             if before.get(input) == Some(key) {
                 continue;
             }
-            if let Some(reason) = key.unsupported_live(*input) {
+            if let Some(reason) = key.unsupported_live(*input, self.capture_live) {
                 return Some(unsupported(reason));
             }
             if key.has_video_source() && !self.sources.contains(input) {
@@ -283,6 +287,7 @@ impl NativeDaemon {
                 .saturating_mul(8)
                 .max(1),
             decoded: self.master.decoded_inputs().collect(),
+            capture_live: self.captures.is_some(),
         }
     }
 
@@ -393,6 +398,24 @@ impl NativeDaemon {
                         pushed.push(input);
                         Some(seed)
                     }
+                }
+                NativeSourceKey::Device(_) if self.captures.is_some() => {
+                    // The capture supervisor starts when the captures
+                    // follow the project (IN-001).
+                    let frame = native_streams::startup_picture(
+                        size,
+                        settings.frame_rate,
+                        native_clock_domain(),
+                    )
+                    .ok_or_else(|| {
+                        AppFailure(format!("native capture input {input} cannot be timed"))
+                    })?;
+                    resolved.push(NativeResolvedSource::LiveFrame {
+                        input,
+                        frame: frame.clone(),
+                    });
+                    pushed.push(input);
+                    Some(frame)
                 }
                 NativeSourceKey::Network => {
                     let frame = native_streams::startup_picture(
@@ -607,6 +630,7 @@ mod tests {
             max_retained_bytes: frame_bytes * capacity,
             frame_bytes,
             decoded: BTreeSet::new(),
+            capture_live: false,
         }
     }
 
@@ -644,6 +668,7 @@ mod tests {
             generator(SimulatedAudio::Sine { frequency_hz: 440 }),
             InputKind::Device {
                 stable_key: "camera".into(),
+                capture: fm_types::capture::CaptureSettings::default(),
             },
             InputKind::Color,
             InputKind::Alias {
@@ -664,12 +689,29 @@ mod tests {
             1,
             InputKind::Device {
                 stable_key: "camera".into(),
+                capture: fm_types::capture::CaptureSettings::default(),
             },
         )]);
         assert_eq!(
             reason(budget.refusal(&camera, &project(&[]))),
             Some(RefusalReason::RuntimeUnsupported)
         );
+        // With a capture backend, capture inputs are added, replaced, and
+        // removed live.
+        let mut live = budget.clone();
+        live.capture_live = true;
+        assert!(live.refusal(&camera, &project(&[])).is_none());
+        let with_camera = project(&[
+            (1, generator(SimulatedAudio::Silence)),
+            (
+                2,
+                InputKind::Device {
+                    stable_key: "v4l2:usb-1#Cam".into(),
+                    capture: fm_types::capture::CaptureSettings::default(),
+                },
+            ),
+        ]);
+        assert!(live.refusal(&current, &with_camera).is_none());
         let mut decoded = budget;
         decoded.decoded.insert(id(1));
         assert_eq!(

@@ -30,8 +30,9 @@ pub const MAX_SHOW_INPUTS: usize = 256;
 ///
 /// The generators are exactly the sources the simulated daemon renders: a
 /// solid RGBA color and color bars, both with silent audio. A network
-/// stream (IN-015) is received by URL. The engine carries the source
-/// opaquely so an undone add can be redone exactly.
+/// stream (IN-015) is received by URL, and a capture input (IN-001)
+/// acquires a local device by its stable key. The engine carries the
+/// source opaquely so an undone add can be redone exactly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineInputSource {
     Solid {
@@ -42,6 +43,7 @@ pub enum EngineInputSource {
     },
     Bars,
     NetworkStream(Box<fm_types::network_stream::NetworkStreamConfig>),
+    Capture(Box<fm_types::capture::CaptureInputConfig>),
 }
 
 impl EngineInputSource {
@@ -60,6 +62,11 @@ impl EngineInputSource {
             Self::Bars => fm_model::GeneratorVideo::Bars,
             Self::NetworkStream(config) => {
                 return fm_model::InputSourceSpec::Network((**config).clone());
+            }
+            Self::Capture(config) => {
+                return fm_model::InputSourceSpec::Device {
+                    stable_key: config.stable_key.clone(),
+                };
             }
         };
         fm_model::InputSourceSpec::Generator {
@@ -185,6 +192,9 @@ pub struct ShowState {
     input_lifecycle: BTreeMap<InputId, fm_model::InputLifecycle>,
     /// The replaceable source of every input that has one (IN-026).
     input_sources: BTreeMap<InputId, fm_model::InputSourceSpec>,
+    /// Every capture device input's settings (IN-001): exactly the inputs
+    /// whose source is a device.
+    capture: BTreeMap<InputId, fm_types::capture::CaptureSettings>,
     /// Every non-empty strip label (AU-001).
     input_audio_labels: BTreeMap<InputId, String>,
     /// Every strip's group membership (AU-001).
@@ -269,6 +279,7 @@ impl ShowState {
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
             input_sources: BTreeMap::new(),
+            capture: BTreeMap::new(),
             input_audio_labels: BTreeMap::new(),
             input_audio_groups: BTreeMap::new(),
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
@@ -515,6 +526,7 @@ impl ShowState {
         self.media.remove(&input);
         self.input_lifecycle.remove(&input);
         self.input_sources.remove(&input);
+        self.capture.remove(&input);
         self.input_audio_labels.remove(&input);
         self.input_audio_groups.remove(&input);
         Ok(())
@@ -1219,7 +1231,7 @@ impl ShowState {
         if !self.inputs.contains(&input) {
             return Err(ShowError::UnknownInput(input));
         }
-        self.input_sources.insert(input, source);
+        self.set_input_source_unchecked(input, source);
         Ok(())
     }
 
@@ -1261,12 +1273,73 @@ impl ShowState {
             })
     }
 
+    /// Records `source`; a device source keeps the input's capture settings
+    /// (defaults for an input that was not a device), any other source
+    /// drops them (IN-001).
     pub(crate) fn set_input_source_unchecked(
         &mut self,
         input: InputId,
         source: fm_model::InputSourceSpec,
     ) {
+        if matches!(source, fm_model::InputSourceSpec::Device { .. }) {
+            self.capture.entry(input).or_default();
+        } else {
+            self.capture.remove(&input);
+        }
         self.input_sources.insert(input, source);
+    }
+
+    /// Capture input `input`'s settings (IN-001), or `None` when `input` is
+    /// not a capture device input.
+    #[must_use]
+    pub fn capture_settings(&self, input: InputId) -> Option<&fm_types::capture::CaptureSettings> {
+        self.capture.get(&input)
+    }
+
+    /// Every capture device input with its stable key and settings,
+    /// ascending by input (IN-001).
+    pub fn capture_inputs(
+        &self,
+    ) -> impl Iterator<Item = (InputId, &str, &fm_types::capture::CaptureSettings)> {
+        self.capture
+            .iter()
+            .filter_map(|(input, settings)| match self.input_sources.get(input) {
+                Some(fm_model::InputSourceSpec::Device { stable_key }) => {
+                    Some((*input, stable_key.as_str(), settings))
+                }
+                _ => None,
+            })
+    }
+
+    /// Replaces capture input `input`'s settings (IN-001), as a project
+    /// restores them; its source must already be a device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] for an input outside this show
+    /// and [`ShowError::InvalidCaptureSettings`] for an input that is not a
+    /// capture device or invalid settings.
+    pub fn set_capture_settings(
+        &mut self,
+        input: InputId,
+        settings: fm_types::capture::CaptureSettings,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        if !self.capture.contains_key(&input) || settings.validate().is_err() {
+            return Err(ShowError::InvalidCaptureSettings(input));
+        }
+        self.capture.insert(input, settings);
+        Ok(())
+    }
+
+    pub(crate) fn set_capture_settings_unchecked(
+        &mut self,
+        input: InputId,
+        settings: fm_types::capture::CaptureSettings,
+    ) {
+        self.capture.insert(input, settings);
     }
 
     pub(crate) fn remove_media_input(&mut self, input: InputId) {

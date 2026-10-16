@@ -132,6 +132,19 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             validate_request_id(&message.request_id)?;
             record.field_str("request_id", &message.request_id)?;
         }
+        WireMessage::CaptureDevicesRequest(message) => {
+            record.kind("capture_devices_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+        }
+        WireMessage::CaptureDevices(message) => {
+            record.kind("capture_devices");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::capture::encode_inventory(&message.inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::DisplayInventory(message) => {
             record.kind("display_inventory");
             validate_request_id(&message.request_id)?;
@@ -345,6 +358,13 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "clear_display_output")?;
             record.field("slot", slot)?;
         }
+        CommandPayload::SetCaptureSettings { input, settings } => {
+            record.field("payload", "input_capture_set")?;
+            record.field("input", input)?;
+            super::capture::encode_settings(settings, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::SetNetworkStream {
             input,
             url,
@@ -469,6 +489,12 @@ fn encode_input_catalogue_command(
                 LiveInputSource::NetworkStream(config) => {
                     record.field("kind", "network_stream")?;
                     super::network_stream::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })
+                }
+                LiveInputSource::Capture(config) => {
+                    record.field("kind", "capture")?;
+                    super::capture::encode_config(config, &mut |name, value| {
                         record.field_string(name, value)
                     })
                 }
@@ -1288,6 +1314,7 @@ fn encode_result(record: &mut Record, message: &CommandResult) -> Result<(), Cod
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one field per snapshot section
 fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(), CodecError> {
     record.kind("snapshot");
     encode_identity(record, &message.engine)?;
@@ -1387,6 +1414,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "network_streams",
         super::network_stream::encode_entries(&message.network_streams)?,
+    )?;
+    record.field_string(
+        "capture_inputs",
+        super::capture::encode_entries(&message.capture_inputs)?,
     )
 }
 
@@ -1827,16 +1858,32 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             input,
             name,
             network_stream,
+            capture,
         } => {
             validate_new_input_name(name)?;
             record.field("event", "input_added")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
-            if let Some(config) = network_stream {
-                record.field("kind", "network_stream")?;
-                super::network_stream::encode_config(config, &mut |name, value| {
-                    record.field_string(name, value)
-                })?;
+            match (network_stream, capture) {
+                (Some(config), None) => {
+                    record.field("kind", "network_stream")?;
+                    super::network_stream::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })?;
+                }
+                (None, Some(config)) => {
+                    record.field("kind", "capture")?;
+                    super::capture::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })?;
+                }
+                (None, None) => {}
+                (Some(_), Some(_)) => {
+                    return Err(CodecError::InvalidField {
+                        field: "kind",
+                        value: "network_stream and capture".to_owned(),
+                    });
+                }
             }
         }
         EventPayload::InputRemoved { input } => {
@@ -1947,6 +1994,13 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::DisplayOutputChanged { slot, config } => {
             record.field("event", "display_output_changed")?;
             super::display_output::encode_changed(*slot, config.as_deref(), &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::CaptureSettingsChanged { input, settings } => {
+            record.field("event", "capture_settings_changed")?;
+            record.field("input", input)?;
+            super::capture::encode_settings(settings, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }
@@ -2197,6 +2251,18 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::DisplayOutputStatus(status) => {
             record.field("event", "display_output_status")?;
             super::display_output::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::CaptureStatus { input, status } => {
+            record.field("event", "capture_status")?;
+            super::capture::encode_status(*input, status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::CaptureDevices(inventory) => {
+            record.field("event", "capture_devices")?;
+            super::capture::encode_inventory(inventory, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

@@ -383,6 +383,11 @@ pub enum SessionEvent {
     DisplayInventory {
         message: fm_protocol::DisplayInventoryMessage,
     },
+    /// The daemon answered a capture devices request (Protocol 2.47). The
+    /// inventory is also in the replicated model.
+    CaptureDevices {
+        message: fm_protocol::CaptureDevicesMessage,
+    },
     /// One valid `title_preview_frame` part arrived for `request_id`. When
     /// `complete` is `true` it finished its group and the decoded image is
     /// available from [`TcpSession::latest_title_preview`].
@@ -717,6 +722,25 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::DisplayInventoryRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for the daemon's capture devices (Protocol 2.47). The answer
+    /// arrives later as [`SessionEvent::CaptureDevices`] naming the same
+    /// `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_capture_devices_request(
+        &mut self,
+        request: fm_protocol::CaptureDevicesRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::CaptureDevicesRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1286,6 +1310,10 @@ impl TcpSession {
                 self.intake(WireMessage::DisplayInventory(message.clone()))?;
                 Ok(SessionEvent::DisplayInventory { message })
             }
+            WireMessage::CaptureDevices(message) => {
+                self.intake(WireMessage::CaptureDevices(message.clone()))?;
+                Ok(SessionEvent::CaptureDevices { message })
+            }
             // Title, playlist, grade, title animation, title layout, scene
             // animation, scene layout, and animation preset states complete a
             // snapshot while
@@ -1315,7 +1343,8 @@ impl TcpSession {
             | WireMessage::CapabilityReport(_)
             | WireMessage::DiagnosticsRequest(_)
             | WireMessage::DiagnosticsResponse(_)
-            | WireMessage::DisplayInventoryRequest(_) => {
+            | WireMessage::DisplayInventoryRequest(_)
+            | WireMessage::CaptureDevicesRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

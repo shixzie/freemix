@@ -1,6 +1,10 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use fm_model::{DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy, StreamLadder, StreamLadderRung};
+use fm_types::capture::{
+    CaptureAudio, CaptureError, CaptureFormat, CaptureInputConfig, CaptureLossSlate,
+    CaptureSettings,
+};
 use fm_types::network_stream::{
     GiveUp, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings, RtspTransport,
     StallSlate, StreamUrl,
@@ -1047,6 +1051,53 @@ pub enum Command {
     RemoteNetworkStreamStatus {
         address: SocketAddr,
     },
+    /// Adds a capture device input to a project (IN-001).
+    CaptureInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        config: Box<CaptureInputConfig>,
+    },
+    /// Adds a capture device input to a running daemon (IN-001).
+    RemoteCaptureInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        config: Box<CaptureInputConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Edits a project's capture input settings; omitted options keep the
+    /// input's current values (IN-001).
+    CaptureSet {
+        path: PathBuf,
+        input: u128,
+        options: CaptureOptions,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Edits a running daemon's capture input settings; omitted options
+    /// keep the input's current values (IN-001).
+    RemoteCaptureSet {
+        address: SocketAddr,
+        input: u128,
+        options: CaptureOptions,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists a project's capture inputs (idle: nothing acquires them).
+    CaptureStatus {
+        path: PathBuf,
+    },
+    /// Lists a running daemon's capture inputs with their status.
+    RemoteCaptureStatus {
+        address: SocketAddr,
+    },
+    /// Lists the capture devices a running daemon can open, with their
+    /// formats (IN-001).
+    RemoteCaptureDevices {
+        address: SocketAddr,
+    },
     RemoteInputRemove {
         address: SocketAddr,
         input: u128,
@@ -1351,6 +1402,8 @@ pub enum ArgsError {
     /// A network stream URL or setting is unusable (IN-015). Never names
     /// the URL, which may carry credentials.
     InvalidNetworkStream(NetworkStreamError),
+    /// A capture device key or setting is unusable (IN-001).
+    InvalidCapture(CaptureError),
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1372,6 +1425,7 @@ impl core::fmt::Display for ArgsError {
             Self::InvalidNetworkStream(error) => {
                 write!(formatter, "invalid network stream: {error}")
             }
+            Self::InvalidCapture(error) => write!(formatter, "invalid capture input: {error}"),
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -1677,6 +1731,13 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-input-stream-set"
         | "input-stream-status"
         | "remote-input-stream-status") => parse_network_stream(stream, arguments),
+        capture @ ("input-add-capture"
+        | "remote-input-add-capture"
+        | "input-capture-set"
+        | "remote-input-capture-set"
+        | "input-capture-status"
+        | "remote-input-capture-status"
+        | "remote-capture-devices") => parse_capture(capture, arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -4632,6 +4693,185 @@ fn parse_network_stream(
             expected_revision,
         },
         (None, None) => unreachable!("a network stream command names a target"),
+    })
+}
+
+/// Changes to a capture input's settings; `None` keeps the current value
+/// (IN-001).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CaptureOptions {
+    pub format: Option<CaptureFormatChoice>,
+    pub audio: Option<CaptureAudio>,
+    pub loss: Option<CaptureLossSlate>,
+}
+
+/// A capture input's requested format: `auto` picks the device format
+/// nearest the program.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureFormatChoice {
+    Auto,
+    Format(CaptureFormat),
+}
+
+impl CaptureOptions {
+    /// `settings` with every given option applied.
+    #[must_use]
+    pub fn apply(&self, mut settings: CaptureSettings) -> CaptureSettings {
+        if let Some(format) = self.format {
+            settings.format = match format {
+                CaptureFormatChoice::Auto => None,
+                CaptureFormatChoice::Format(format) => Some(format),
+            };
+        }
+        if let Some(audio) = &self.audio {
+            settings.audio = audio.clone();
+        }
+        if let Some(loss) = self.loss {
+            settings.loss = loss;
+        }
+        settings
+    }
+}
+
+/// Parses the capture options and `--key`/`--expect`:
+/// `[--format <WxH@num/den:pixel:scan>|auto] [--audio none|paired|alsa:<dev>]
+/// [--loss hold|black]`.
+fn capture_options(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<(CaptureOptions, Option<String>, Option<u64>), ArgsError> {
+    let mut options = CaptureOptions::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--format" => {
+                let value = required(&mut arguments, "capture format")?;
+                options.format = Some(if value == "auto" {
+                    CaptureFormatChoice::Auto
+                } else {
+                    CaptureFormatChoice::Format(
+                        CaptureFormat::from_token(&value).map_err(ArgsError::InvalidCapture)?,
+                    )
+                });
+            }
+            "--audio" => {
+                let value = required(&mut arguments, "capture audio")?;
+                options.audio =
+                    Some(CaptureAudio::from_token(&value).map_err(ArgsError::InvalidCapture)?);
+            }
+            "--loss" => {
+                let value = required(&mut arguments, "loss slate")?;
+                options.loss = Some(CaptureLossSlate::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "loss slate",
+                        value,
+                    },
+                )?);
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok((options, key, expected_revision))
+}
+
+/// Parses the capture input commands (IN-001):
+/// `input-add-capture <project> <input> <name> <stable-key> [options]`,
+/// `remote-input-add-capture <address> <input> <name> <stable-key> [options]
+/// [--key <key>] [--expect <revision>]`, `input-capture-set <project>
+/// <input> [options] [--key <key>] [--expect <revision>]`, its `remote-`
+/// form, `input-capture-status <project>` /
+/// `remote-input-capture-status <address>`, and
+/// `remote-capture-devices <address>`.
+fn parse_capture(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command.strip_prefix("remote-").unwrap_or(command);
+    if matches!(action, "input-capture-status" | "capture-devices") {
+        reject_extra(&mut arguments)?;
+        return Ok(match (action, path, address) {
+            ("input-capture-status", Some(path), _) => Command::CaptureStatus { path },
+            ("input-capture-status", None, Some(address)) => {
+                Command::RemoteCaptureStatus { address }
+            }
+            (_, None, Some(address)) => Command::RemoteCaptureDevices { address },
+            _ => unreachable!("a capture command names a target"),
+        });
+    }
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    if action == "input-add-capture" {
+        let name = nonblank(&mut arguments, "input name")?;
+        let stable_key = nonblank(&mut arguments, "capture device key")?;
+        let (options, key, expected_revision) = capture_options(arguments)?;
+        let config = Box::new(CaptureInputConfig {
+            stable_key,
+            settings: options.apply(CaptureSettings::default()),
+        });
+        config.validate().map_err(ArgsError::InvalidCapture)?;
+        return match (path, address) {
+            (Some(path), _) => {
+                if key.is_some() || expected_revision.is_some() {
+                    return Err(ArgsError::UnknownOption(
+                        if key.is_some() { "--key" } else { "--expect" }.into(),
+                    ));
+                }
+                Ok(Command::CaptureInputAdd {
+                    path,
+                    input,
+                    name,
+                    config,
+                })
+            }
+            (None, Some(address)) => Ok(Command::RemoteCaptureInputAdd {
+                address,
+                input,
+                name,
+                config,
+                key,
+                expected_revision,
+            }),
+            (None, None) => unreachable!("a capture command names a target"),
+        };
+    }
+    let (options, key, expected_revision) = capture_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::CaptureSet {
+            path,
+            input,
+            options,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteCaptureSet {
+            address,
+            input,
+            options,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a capture command names a target"),
     })
 }
 

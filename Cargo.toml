@@ -34,6 +34,7 @@ members = [
     "crates/io/fm-codec-ffmpeg",
     "crates/io/fm-codec-image",
     "crates/io/fm-io-api",
+    "crates/io/fm-io-linux",
     "crates/io/fm-io-macos",
     "crates/io/fm-io-network",
     "crates/io/fm-io-srt",

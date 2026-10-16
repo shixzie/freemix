@@ -456,6 +456,9 @@ pub struct ProjectSnapshot {
     /// Every network stream input, ascending, with its redacted config and
     /// status (Protocol 2.46).
     pub network_streams: Vec<fm_protocol::NetworkStreamEntry>,
+    /// Every capture input, ascending, with its stable key, settings, and
+    /// status (Protocol 2.47).
+    pub capture_inputs: Vec<fm_protocol::CaptureInputEntry>,
 }
 
 impl ProjectSnapshot {
@@ -550,6 +553,7 @@ impl ProjectSnapshot {
             display_outputs: message.display_outputs,
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
+            capture_inputs: message.capture_inputs,
         }
     }
 }
@@ -572,6 +576,9 @@ pub enum DurableChange {
         /// The redacted configuration of an added network stream (Protocol
         /// 2.46).
         network_stream: Option<Box<fm_protocol::NetworkStreamConfig>>,
+        /// The device and settings of an added capture input (Protocol
+        /// 2.47).
+        capture: Option<Box<fm_protocol::CaptureInputConfig>>,
     },
     /// An input removed with its strip and padlock.
     InputRemoved {
@@ -680,6 +687,11 @@ pub enum DurableChange {
         input: InputId,
         config: Box<fm_protocol::NetworkStreamConfig>,
     },
+    /// A capture input's settings changed (Protocol 2.47).
+    CaptureSettingsChanged {
+        input: InputId,
+        settings: Box<fm_protocol::CaptureSettings>,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -751,11 +763,19 @@ impl DurableProjectEvent {
                 input,
                 name,
                 network_stream,
+                capture,
             } => DurableChange::InputAdded {
                 input: input.to_domain(),
                 name,
                 network_stream,
+                capture,
             },
+            EventPayload::CaptureSettingsChanged { input, settings } => {
+                DurableChange::CaptureSettingsChanged {
+                    input: input.to_domain(),
+                    settings,
+                }
+            }
             EventPayload::NetworkStreamChanged { input, config } => {
                 DurableChange::NetworkStreamChanged {
                     input: input.to_domain(),
@@ -985,6 +1005,9 @@ pub struct ProjectState {
     /// Every network stream input's redacted config and latest status
     /// (Protocol 2.46).
     network_streams: BTreeMap<InputId, fm_protocol::NetworkStreamEntry>,
+    /// Every capture input's stable key, settings, and latest status
+    /// (Protocol 2.47).
+    capture_inputs: BTreeMap<InputId, fm_protocol::CaptureInputEntry>,
 }
 
 impl ProjectState {
@@ -993,6 +1016,13 @@ impl ProjectState {
     #[must_use]
     pub fn network_stream(&self, input: InputId) -> Option<&fm_protocol::NetworkStreamEntry> {
         self.network_streams.get(&input)
+    }
+
+    /// Capture input `input`'s stable key, settings, and latest status
+    /// (Protocol 2.47).
+    #[must_use]
+    pub fn capture_input(&self, input: InputId) -> Option<&fm_protocol::CaptureInputEntry> {
+        self.capture_inputs.get(&input)
     }
 
     /// Returns every configured display-output slot (Protocol 2.42).
@@ -1323,9 +1353,24 @@ pub struct ClientView {
     /// Every network stream input, ascending, with its redacted config and
     /// latest status (Protocol 2.46).
     pub network_streams: Vec<fm_protocol::NetworkStreamEntry>,
+    /// Every capture input, ascending, with its stable key, settings, and
+    /// latest status (Protocol 2.47).
+    pub capture_inputs: Vec<fm_protocol::CaptureInputEntry>,
+    /// The capture devices as the daemon last reported them (Protocol
+    /// 2.47); `None` until a `capture_devices` reply or event arrives.
+    pub capture_inventory: Option<fm_protocol::CaptureInventory>,
 }
 
 impl ClientView {
+    /// Capture input `input`'s stable key, settings, and latest status, if
+    /// it is a capture input (Protocol 2.47).
+    #[must_use]
+    pub fn capture_input(&self, input: InputId) -> Option<&fm_protocol::CaptureInputEntry> {
+        self.capture_inputs
+            .iter()
+            .find(|entry| entry.input.to_domain() == input)
+    }
+
     /// Network stream input `input`'s redacted config and latest status,
     /// if it is a network stream (Protocol 2.46).
     #[must_use]
@@ -1930,6 +1975,9 @@ pub struct ClientModel {
     /// The connected displays as last reported (Protocol 2.42). Runtime
     /// state that survives resynchronization.
     display_inventory: Option<fm_protocol::DisplayInventory>,
+    /// The capture devices as last reported (Protocol 2.47). Runtime state
+    /// that survives resynchronization.
+    capture_inventory: Option<fm_protocol::CaptureInventory>,
 }
 
 impl ClientModel {
@@ -1948,7 +1996,40 @@ impl ClientModel {
             sync_status: SyncStatus::AwaitingSnapshot,
             known_revision: None,
             display_inventory: None,
+            capture_inventory: None,
         }
+    }
+
+    /// Records the capture devices from a `capture_devices` runtime event
+    /// or reply (Protocol 2.47).
+    pub fn apply_capture_inventory(&mut self, inventory: fm_protocol::CaptureInventory) {
+        self.capture_inventory = Some(inventory);
+    }
+
+    /// Returns the capture devices as last reported (Protocol 2.47).
+    #[must_use]
+    pub const fn capture_inventory(&self) -> Option<&fm_protocol::CaptureInventory> {
+        self.capture_inventory.as_ref()
+    }
+
+    /// Records a capture input's acquisition status from a `capture_status`
+    /// runtime event (Protocol 2.47). Runtime events never move the durable
+    /// cursor; a status for an input the model does not know as a capture
+    /// input is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_capture_status(
+        &mut self,
+        input: InputId,
+        status: fm_protocol::CaptureStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if let Some(entry) = state.capture_inputs.get_mut(&input) {
+            entry.status = status;
+        }
+        Ok(())
     }
 
     /// Records the connected displays from a `display_inventory` runtime
@@ -2069,6 +2150,13 @@ impl ClientModel {
                 .filter(|entry| state.inputs.contains(&entry.input.to_domain()))
                 .cloned()
                 .collect(),
+            capture_inputs: state
+                .capture_inputs
+                .values()
+                .filter(|entry| state.inputs.contains(&entry.input.to_domain()))
+                .cloned()
+                .collect(),
+            capture_inventory: self.capture_inventory.clone(),
         })
     }
 
@@ -2293,6 +2381,11 @@ impl ClientModel {
                 .collect(),
             network_streams: snapshot
                 .network_streams
+                .into_iter()
+                .map(|entry| (entry.input.to_domain(), entry))
+                .collect(),
+            capture_inputs: snapshot
+                .capture_inputs
                 .into_iter()
                 .map(|entry| (entry.input.to_domain(), entry))
                 .collect(),
@@ -3562,6 +3655,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             };
         }
         DurableChange::NetworkStreamChanged { input, .. }
+        | DurableChange::CaptureSettingsChanged { input, .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Input(input),
             ..
@@ -3741,7 +3835,18 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             input,
             name,
             network_stream,
+            capture,
         } => {
+            if let Some(config) = capture {
+                state.capture_inputs.insert(
+                    input,
+                    fm_protocol::CaptureInputEntry {
+                        input: fm_protocol::WireInputId::from_domain(input),
+                        config: *config,
+                        status: fm_protocol::CaptureStatus::default(),
+                    },
+                );
+            }
             if let Some(config) = network_stream {
                 state.network_streams.insert(
                     input,
@@ -3756,7 +3861,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         }
         DurableChange::InputRemoved { input } => {
             state.network_streams.remove(&input);
+            state.capture_inputs.remove(&input);
             apply_input_removed(state, input);
+        }
+        DurableChange::CaptureSettingsChanged { input, settings } => {
+            if let Some(entry) = state.capture_inputs.get_mut(&input) {
+                entry.config.settings = *settings;
+            }
         }
         DurableChange::NetworkStreamChanged { input, config } => {
             let entry = state.network_streams.entry(input).or_insert_with(|| {
@@ -3788,6 +3899,34 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                         state.network_streams.remove(&input);
                     }
                 }
+                // A device keeps the settings of a device it replaces, as
+                // the engine does (IN-001).
+                match source {
+                    fm_protocol::WireInputSource::Device { stable_key } => {
+                        let entry = state.capture_inputs.entry(input).or_insert_with(|| {
+                            fm_protocol::CaptureInputEntry {
+                                input: fm_protocol::WireInputId::from_domain(input),
+                                config: fm_protocol::CaptureInputConfig::new(stable_key.clone()),
+                                status: fm_protocol::CaptureStatus::default(),
+                            }
+                        });
+                        entry.config.stable_key.clone_from(stable_key);
+                    }
+                    _ => {
+                        state.capture_inputs.remove(&input);
+                    }
+                }
+            }
+            if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
+                &operation
+                && let Some(original) = state.capture_inputs.get(&source.to_domain())
+            {
+                let copy = fm_protocol::CaptureInputEntry {
+                    input: *input,
+                    config: original.config.clone(),
+                    status: fm_protocol::CaptureStatus::default(),
+                };
+                state.capture_inputs.insert(input.to_domain(), copy);
             }
             input_lifecycle::apply(state, operation, added);
         }

@@ -1926,6 +1926,61 @@ Remaining gaps:
 
 `IN-015` therefore remains planned.
 
+Current implementation boundary for local capture inputs (`IN-001`, Linux):
+a capture input (schema 44, `InputKind::Device`, at most 16 per show) names a
+device by its adapter-qualified stable key and carries an optional requested
+format (size, rate, YUYV/NV12/MJPEG, progressive or top/bottom-field-first
+interlaced), an audio choice (none, the device's paired ALSA card, or a named
+ALSA device), and a hold-last or black loss slate. Protocol 2.47 adds it to
+`add_input` (`kind=capture`), edits it with `input_capture_set`, carries
+`capture_inputs` in the snapshot, reports per-input `capture_status` (idle,
+starting, live, signal lost with unplugged/stalled/no-signal/error reason,
+failed; node, negotiated format, audio, frames, losses, recoveries,
+renegotiations, last error) and the device inventory as `capture_devices`
+runtime events, and answers a `capture_devices_request`. The new
+`fm-io-linux` crate enumerates V4L2 nodes through the pure-Rust `linuxvideo`
+binding (capture-capable nodes only; YUYV, NV12, and MJPEG with discrete,
+stepwise, and continuous sizes and intervals; field order), keys each device
+`v4l2:<bus>#<card>` with an ordinal for identical cards on one bus, pairs it
+with the ALSA card on the same USB/PCI parent through sysfs, and polls for
+hot-plug. A per-input supervisor uses the requested format when offered,
+else the nearest one (same scan, smallest size covering the request or the
+program, closest rate, then uncompressed formats first), and acquires through an `ffmpeg -f v4l2`
+child (plus `-f alsa` audio, falling back to video-only when the audio device
+cannot open) that deinterlaces with `yadif` and scales to the program format,
+and detects unplug, stalls (1 s without pictures), and no-signal. On loss
+the input holds its last picture or shows black with silent audio, and it
+reacquires the same device (stable key, then same card and ordinal, then
+node path) under the same input ID, at another node if it re-enumerates
+there; a change in the device's formats renegotiates. A native `freemixd`
+on Linux opens the project's capture inputs at startup, and adds, removes,
+replaces, and re-configures them live. `--diagnostic-capture-inventory FILE`
+substitutes a deterministic fake backend driven by a rewritable inventory
+file (`freemixd --test native_capture` covers go-live, the device's picture
+on Program, unplug to the black slate, replug at another node with the same
+input ID, renegotiation, inventory requests, a settings edit, and a live add
+and remove). The Studio Add input dialog offers Camera/capture with the
+daemon's devices and a format picker, and input tiles show a SIGNAL LOST
+badge. `freemix-cli` has `input-add-capture`, `input-capture-set`,
+`input-capture-status`, and their `remote-` forms, plus
+`remote-capture-devices`.
+
+Remaining gaps:
+- No real V4L2 frame acquisition, hot-plug, or ALSA evidence has been
+  recorded; `fm-io-linux --test v4l2_real` only runs on a host with a
+  capture device (`FM_REQUIRE_V4L2=1` makes its absence a failure).
+- Acquisition needs `ffmpeg` at runtime and decodes through it in software;
+  there is no zero-copy or hardware path, and pictures are stretched to the
+  program format.
+- Audio is stereo and follows the engine clock without drift correction.
+- macOS keeps the camera-helper path from startup only; its live capture
+  add/remove stays refused, and there is no Windows adapter.
+- The simulated daemon reports every capture input idle and has no device
+  inventory.
+- Not verified at SD/UHD rates on hardware or at the profile-a-hd load.
+
+`IN-001` therefore remains planned.
+
 Current implementation boundary for item 3: the authored model now carries a
 local HLS destination and an optional multi-bitrate HLS ladder.
 `StreamProtocol::Hls` is a keyless protocol whose endpoint is one absolute

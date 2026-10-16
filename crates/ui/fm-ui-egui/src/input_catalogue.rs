@@ -94,6 +94,8 @@ pub enum NewInputKind {
     Bars,
     /// A network stream input (IN-015).
     Network,
+    /// A local camera or capture card input (IN-001).
+    Capture,
 }
 
 impl NewInputKind {
@@ -108,6 +110,7 @@ impl NewInputKind {
             Self::Solid => Msg::NameSolidColour,
             Self::Bars => Msg::NameColourBars,
             Self::Network => Msg::NameNetworkStream,
+            Self::Capture => Msg::NameCapture,
         }
     }
 
@@ -116,6 +119,7 @@ impl NewInputKind {
             Self::Solid => Msg::KindSolidKey,
             Self::Bars => Msg::KindBarsKey,
             Self::Network => Msg::KindNetworkKey,
+            Self::Capture => Msg::KindCaptureKey,
         }
     }
 
@@ -124,6 +128,7 @@ impl NewInputKind {
             Self::Solid => Msg::KindSolidHover,
             Self::Bars => Msg::KindBarsHover,
             Self::Network => Msg::KindNetworkHover,
+            Self::Capture => Msg::KindCaptureHover,
         }
     }
 }
@@ -427,6 +432,8 @@ pub(crate) struct AddInputDraft {
     pub(crate) color: Color32,
     /// The stream form of a network stream input (IN-015).
     pub(crate) stream: crate::network_stream_ui::NetworkStreamDraft,
+    /// The capture form of a camera or capture card input (IN-001).
+    pub(crate) capture: crate::capture_input_ui::CaptureDraft,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -454,6 +461,7 @@ impl AddInputDraft {
             name_edited: false,
             color: COLOUR_PRESETS[5].1,
             stream: crate::network_stream_ui::NetworkStreamDraft::default(),
+            capture: crate::capture_input_ui::CaptureDraft::default(),
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -467,7 +475,8 @@ impl AddInputDraft {
         }
     }
 
-    /// The new input's source, or why the stream form is unusable.
+    /// The new input's source, or why the stream or capture form is
+    /// unusable.
     pub(crate) fn source(&self) -> Result<LiveInputSource, &'static str> {
         Ok(match self.kind {
             NewInputKind::Solid => LiveInputSource::Solid {
@@ -480,6 +489,7 @@ impl AddInputDraft {
             NewInputKind::Network => {
                 LiveInputSource::NetworkStream(Box::new(self.stream.config()?))
             }
+            NewInputKind::Capture => LiveInputSource::Capture(Box::new(self.capture.config()?)),
         })
     }
 }
@@ -911,12 +921,14 @@ impl StudioShell {
                 );
                 ui.add_space(8.0);
                 ui.label(section_label(l.text(Msg::AddInputKind)));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
+                // Four kinds wrap rather than widen the dialog.
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
                     for kind in [
                         NewInputKind::Solid,
                         NewInputKind::Bars,
                         NewInputKind::Network,
+                        NewInputKind::Capture,
                     ] {
                         let selected = draft.kind == kind;
                         let response = ui
@@ -925,6 +937,10 @@ impl StudioShell {
                         if response.clicked() && !selected {
                             let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
                             draft.set_kind(kind, &taken);
+                            // The capture form lists the server's devices.
+                            if kind == NewInputKind::Capture {
+                                intents.push(StudioIntent::RequestCaptureDevices);
+                            }
                         }
                     }
                 });
@@ -975,6 +991,28 @@ impl StudioShell {
                 if draft.kind == NewInputKind::Network {
                     ui.add_space(6.0);
                     crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
+                }
+                if draft.kind == NewInputKind::Capture {
+                    ui.add_space(6.0);
+                    let outcome = crate::capture_input_ui::draw_capture_form(
+                        ui,
+                        l,
+                        state,
+                        &mut draft.capture,
+                    );
+                    if outcome.rescan {
+                        intents.push(StudioIntent::RequestCaptureDevices);
+                    }
+                    // The device name is the suggested input name.
+                    if let Some(device) = outcome.picked
+                        && !draft.name_edited
+                    {
+                        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+                        if let Some(name) = crate::capture_input_ui::suggested_name(&device, &taken)
+                        {
+                            draft.name = name;
+                        }
+                    }
                 }
                 ui.add_space(6.0);
                 ui.horizontal_top(|ui| {
@@ -1346,11 +1384,16 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
             }
         }
         // A stream shows nothing until it connects.
-        NewInputKind::Network => {
+        // A capture input shows nothing until its device starts.
+        NewInputKind::Network | NewInputKind::Capture => {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                l.text(Msg::ConnConnecting),
+                l.text(if draft.kind == NewInputKind::Capture {
+                    Msg::StreamStarting
+                } else {
+                    Msg::ConnConnecting
+                }),
                 FontId::new(10.0, FontFamily::Proportional),
                 muted_color(),
             );
@@ -1418,6 +1461,7 @@ mod tests {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -2107,5 +2151,31 @@ mod tests {
         );
         assert_eq!(hex_colour(draft.color), "#ab0cff");
         assert_eq!(capitalized("the name is empty"), "The name is empty");
+    }
+
+    #[test]
+    fn capture_drafts_add_the_chosen_device_or_say_why_not() {
+        let state = state();
+        let tracker = CatalogueTracker::default();
+        let mut draft = AddInputDraft::new(&state, &tracker);
+        let taken = tracker.taken_names(&state);
+        draft.set_kind(NewInputKind::Capture, &taken);
+        assert_eq!(draft.name, "Camera 1");
+        assert_eq!(draft.source(), Err(Msg::CapReasonNoDevice.en()));
+        assert_eq!(
+            add_input_intent(&draft, &state, &tracker),
+            Err(Msg::CapReasonNoDevice.en())
+        );
+        draft.capture.device = Some("v4l2:usb-1:C920".into());
+        let Ok(StudioIntent::AddInput { source, .. }) = add_input_intent(&draft, &state, &tracker)
+        else {
+            panic!("a chosen device adds a capture input");
+        };
+        assert_eq!(
+            source,
+            LiveInputSource::Capture(Box::new(fm_protocol::CaptureInputConfig::new(
+                "v4l2:usb-1:C920"
+            )))
+        );
     }
 }

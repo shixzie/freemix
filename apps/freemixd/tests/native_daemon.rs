@@ -4454,6 +4454,7 @@ fn save_camera_project(path: &Path) {
         name: "Fake Camera".into(),
         kind: InputKind::Device {
             stable_key: format!("macos.avfoundation.camera.v1.{source_id}"),
+            capture: fm_types::capture::CaptureSettings::default(),
         },
         required_capabilities: Vec::new(),
     });

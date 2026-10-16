@@ -153,6 +153,7 @@ fn snapshot_locked(
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        capture_inputs: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Morning Show".to_owned(),

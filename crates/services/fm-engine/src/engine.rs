@@ -349,6 +349,13 @@ pub enum EngineCommand {
         input: InputId,
         config: Box<fm_types::network_stream::NetworkStreamConfig>,
     },
+    /// Replaces capture input `input`'s settings (IN-001). A project edit
+    /// that honours the input's padlock, undone by restoring the previous
+    /// settings; the daemon reopens the device live.
+    SetCaptureSettings {
+        input: InputId,
+        settings: Box<fm_types::capture::CaptureSettings>,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -500,6 +507,12 @@ pub enum EngineEvent {
     NetworkStreamChanged {
         input: InputId,
         config: Box<fm_types::network_stream::NetworkStreamConfig>,
+    },
+    /// A capture input's settings changed (or the edit was undone or
+    /// redone) (IN-001).
+    CaptureSettingsChanged {
+        input: InputId,
+        settings: Box<fm_types::capture::CaptureSettings>,
     },
 }
 
@@ -1343,6 +1356,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::SetFadeToBlackOutput { .. })
                 && !matches!(&command, EngineCommand::SetDisplayOutput { .. })
                 && !matches!(&command, EngineCommand::SetNetworkStream { .. })
+                && !matches!(&command, EngineCommand::SetCaptureSettings { .. })
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(&command, EngineCommand::Media(_))
@@ -2015,6 +2029,33 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetCaptureSettings { input, settings } = self.command {
+            if state.capture_settings(input).is_none() {
+                return Err(if state.inputs().contains(&input) {
+                    Rejection::new(
+                        RejectionCode::InvalidCommand,
+                        format!("input {input} is not a capture input"),
+                    )
+                    .with_field(FieldIssue::new(
+                        "input",
+                        "not_capture_input",
+                        "the input is not a capture input",
+                    ))
+                } else {
+                    Rejection::new(
+                        RejectionCode::NotFound,
+                        format!("show does not contain input {input}"),
+                    )
+                    .with_reason(crate::error::unknown_input_reason(input))
+                });
+            }
+            settings.validate().map_err(capture_rejection)?;
+            state.set_capture_settings_unchecked(input, (*settings).clone());
+            events.push(EngineEvent::CaptureSettingsChanged { input, settings });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::AnimationPreset(edit) = self.command {
             crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
             events.push(EngineEvent::AnimationPresetsChanged(edit));
@@ -2330,6 +2371,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackOutput { .. }
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetNetworkStream { .. }
+            | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2403,12 +2445,19 @@ fn apply_input_catalogue_mutation(
                         .with_field(FieldIssue::new("kind", "too_many_network_streams", message)));
                 }
             }
+            if let EngineInputSource::Capture(config) = &source {
+                config.validate().map_err(capture_rejection)?;
+                check_capture_room(state)?;
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
             state
                 .set_input_source(input, source.spec())
                 .map_err(|_| input_catalogue_rejection(InputCatalogueError::UnknownInput(input)))?;
+            if let EngineInputSource::Capture(config) = &source {
+                state.set_capture_settings_unchecked(input, config.settings.clone());
+            }
             events.push(EngineEvent::InputAdded {
                 input,
                 name,
@@ -2424,6 +2473,34 @@ fn apply_input_catalogue_mutation(
         _ => unreachable!("only input catalogue commands are delegated"),
     }
     Ok(EngineAcceptance { target_frame })
+}
+
+/// Refuses an unusable capture device key or settings (IN-001).
+fn capture_rejection(error: fm_types::capture::CaptureError) -> Rejection {
+    let message = error.to_string();
+    let (field, code) = match error {
+        fm_types::capture::CaptureError::StableKey => ("device", "invalid_device"),
+        fm_types::capture::CaptureError::AlsaDevice | fm_types::capture::CaptureError::Token => {
+            ("audio", "invalid_audio")
+        }
+        fm_types::capture::CaptureError::Dimensions
+        | fm_types::capture::CaptureError::Rate
+        | fm_types::capture::CaptureError::FormatToken => ("format", "invalid_format"),
+    };
+    Rejection::new(RejectionCode::InvalidCommand, message.clone())
+        .with_field(FieldIssue::new(field, code, message))
+}
+
+/// Refuses another capture input once the show holds
+/// [`fm_types::capture::MAX_CAPTURE_INPUTS`] (IN-001).
+pub(crate) fn check_capture_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state.capture_inputs().count();
+    if count >= fm_types::capture::MAX_CAPTURE_INPUTS {
+        let message = format!("the show already has {count} capture inputs, the most it may hold");
+        return Err(Rejection::new(RejectionCode::Conflict, message.clone())
+            .with_field(FieldIssue::new("kind", "too_many_capture_inputs", message)));
+    }
+    Ok(())
 }
 
 /// Refuses an unusable network stream configuration (IN-015), naming its
@@ -2707,6 +2784,7 @@ fn apply_runtime(
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetNetworkStream { .. }
+            | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2870,6 +2948,7 @@ fn apply_runtime(
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetNetworkStream { .. }
+        | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
@@ -3041,6 +3120,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetNetworkStream { .. }
+        | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)

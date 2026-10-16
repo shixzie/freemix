@@ -91,6 +91,7 @@ fn valid_project() -> Project {
         name: "Camera".into(),
         kind: InputKind::Device {
             stable_key: "camera-1".into(),
+            capture: fm_types::capture::CaptureSettings::default(),
         },
         required_capabilities: vec!["capture.camera.raw".into()],
     });
@@ -945,6 +946,7 @@ fn canvas_project(width: u32, height: u32, pixel_format: PixelFormat) -> Project
         name: "Camera".into(),
         kind: InputKind::Device {
             stable_key: "camera-1".into(),
+            capture: fm_types::capture::CaptureSettings::default(),
         },
         required_capabilities: Vec::new(),
     });

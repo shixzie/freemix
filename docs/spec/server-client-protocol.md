@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.46 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.47 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1331,6 +1331,62 @@ Protocol 2.46 adds network stream inputs (IN-015).
 - Durability: a network stream input is an input kind of the project
   (schema 43, `kind.network_stream`), at most 16 per show.
 - 2.45 is refused.
+
+Protocol 2.47 adds capture device inputs (IN-001).
+
+- A capture input names its device by an adapter-qualified stable key
+  (`device`, 1 to 256 bytes without control characters) and carries
+  settings: `format` (`-` picks the device format nearest the program size
+  and rate, otherwise `<w>x<h>@<num>/<den>:<pixel>:<scan>` with the rate
+  reduced, `<pixel>` one of `yuyv`, `nv12`, `mjpeg`, `<scan>` one of `p`,
+  `tff`, `bff`, sides 16..=8192 and at most 240 frames per second),
+  `audio` (`none`, `paired` for the device's own audio, or
+  `alsa:<device>` with 1 to 64 bytes of printable ASCII), and `loss`
+  (`hold` keeps the last picture, `black` shows black while the signal is
+  lost). Both sides validate every field. At most 16 capture inputs per
+  show; adding, duplicating, or replacing a source to a seventeenth is
+  refused `conflict` with reason `too_many_capture_inputs`.
+- `add_input` takes `kind=capture` with `device`, `format`, `audio`, and
+  `loss`. `payload=input_capture_set` with `input`, `format`, `audio`, and
+  `loss` replaces a capture input's settings; editing an input that is not
+  a capture input is refused `invalid_command`, and an unknown input
+  `not_found`. The edit is undoable and honours padlocks. Replacing a
+  capture input's device keeps its settings, and duplicating one copies
+  them.
+- `input_added` for a capture input appends `kind=capture` and its
+  configuration; `event=capture_settings_changed` carries `input` and the
+  edited settings.
+- The runtime event `event=capture_status` carries `input`, `state`
+  (`idle`, `starting`, `live`, `signal_lost`, `failed`), `reason`
+  (`unplugged`, `stalled`, `no_signal`, `error`, or `-`), `device` (the
+  acquired node, at most 128 bytes, or `-`), `format` (the negotiated
+  format or `-`), `audio` (`0` or `1`), `frames`, `losses`, `recoveries`,
+  `renegotiations`, and `error` (at most 160 bytes, or `-`).
+- `capture_devices_request` carries `protocol` and a non-blank
+  `request_id`; any role may send it. The `capture_devices` reply echoes
+  `request_id` and carries `backend` (a lowercase token such as `v4l2`, or
+  `-` when the daemon realizes no capture inputs), `error` (why the last
+  enumeration failed, or `-`), and `devices`. The runtime event
+  `event=capture_devices` carries the same three fields when the inventory
+  changes. `devices` joins at most 16 entries in ascending stable-key
+  order with `,`; an entry is
+  `<key>~<name>~<path>~<driver>~<bus>~<audio|->~<format>;<format>...`
+  with at most 128 formats. Inside the list `%`, `~`, `,`, and `;` are
+  written `%25`, `%7E`, `%2C`, and `%3B`, and a text that is exactly `-`
+  is written `%2D`; decoding accepts only that form. A daemon drops formats
+  from the longest lists, then devices, until the reply fits one line.
+- The snapshot's `capture_inputs` lists every capture input in ascending
+  input order as
+  `<input>~<device>~<format|->~<audio>~<loss>~<state>~<reason|->~<node|->~<active format|->~<0|1>~<frames>~<losses>~<recoveries>~<renegotiations>`,
+  escaped as in `devices`.
+- Durability: a capture input is the project's `device` input kind, which
+  gains a `capture` object with `format` (token or `null`), `audio`, and
+  `loss` (schema 44).
+- `freemix-cli` adds `input-add-capture`, `input-capture-set`,
+  `input-capture-status`, their `remote-` forms, and
+  `remote-capture-devices`, which prints each device and a table of its
+  formats.
+- 2.46 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

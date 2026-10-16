@@ -44,6 +44,7 @@ use fm_switcher::{
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
     ProjectId, SampleFormat, SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
+    capture::CaptureInputConfig,
 };
 use fm_video::{ImageFrame, write_ppm};
 
@@ -1287,6 +1288,99 @@ pub fn run(command: Command) -> AppResult<()> {
             ));
         }
         Command::RemoteNetworkStreamStatus { address } => remote::network_streams(address)?,
+        Command::CaptureInputAdd {
+            path,
+            input,
+            name,
+            config,
+        } => {
+            let CaptureInputConfig {
+                stable_key,
+                settings,
+            } = *config;
+            add_input_with_kind(
+                &path,
+                input_id(input)?,
+                name,
+                InputKind::Device {
+                    stable_key,
+                    capture: settings,
+                },
+            )?;
+        }
+        Command::RemoteCaptureInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::Capture(config),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::CaptureSet {
+            path,
+            input,
+            options,
+            key,
+            expected_revision,
+        } => {
+            let input = input_id(input)?;
+            let current = inspect_engine(&path)?
+                .engine
+                .show()
+                .capture_settings(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a capture input")))?;
+            mutate(
+                &path,
+                EngineCommand::SetCaptureSettings {
+                    input,
+                    settings: Box::new(options.apply(current)),
+                },
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::RemoteCaptureSet {
+            address,
+            input,
+            options,
+            key,
+            expected_revision,
+        } => {
+            remote::set_capture_settings(
+                address,
+                input_id(input)?,
+                &options,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::CaptureStatus { path } => {
+            let project = inspect_engine(&path)?;
+            // Nothing acquires a project's devices: every input is idle.
+            remote::print_capture_inputs(project.engine.show().capture_inputs().map(
+                |(input, stable_key, settings)| fm_protocol::CaptureInputEntry {
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    config: CaptureInputConfig {
+                        stable_key: stable_key.to_owned(),
+                        settings: settings.clone(),
+                    },
+                    status: fm_protocol::CaptureStatus::default(),
+                },
+            ));
+        }
+        Command::RemoteCaptureStatus { address } => remote::capture_inputs(address)?,
+        Command::RemoteCaptureDevices { address } => remote::capture_devices(address)?,
         Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
         Command::RemoteAudioStrip {
             address,
@@ -2270,6 +2364,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_recording_desired(&mut project, snapshot.show());
     sync_input_lifecycle(&mut project, snapshot.show());
     sync_network_streams(&mut project, snapshot.show())?;
+    sync_capture_inputs(&mut project, snapshot.show())?;
     project.set_transition_favorites(*snapshot.show().transition_favorites());
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
@@ -2340,6 +2435,27 @@ fn sync_network_streams(project: &mut Project, show: &ShowState) -> AppResult<()
             .map_err(|error| {
                 AppFailure(format!(
                     "input {input}'s network stream could not be stored: {error}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+/// Copies each capture input's settings the engine edited into the project
+/// (IN-001).
+fn sync_capture_inputs(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    for (input, _, settings) in show.capture_inputs() {
+        if project
+            .capture_input(input)
+            .is_none_or(|(_, stored)| stored == settings)
+        {
+            continue;
+        }
+        project
+            .set_capture_settings(input, settings.clone())
+            .map_err(|error| {
+                AppFailure(format!(
+                    "input {input}'s capture settings could not be stored: {error}"
                 ))
             })?;
     }
@@ -3520,6 +3636,9 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         }
         if let Some(source) = fm_model::InputSourceSpec::from_kind(&input.kind) {
             show.set_input_source(input.id, source)?;
+        }
+        if let InputKind::Device { capture, .. } = &input.kind {
+            show.set_capture_settings(input.id, capture.clone())?;
         }
     }
     show.restore_input_lifecycle(
@@ -5030,6 +5149,10 @@ Usage:
   freemix-cli input-stream-set <show.freemix> <input> [--url <url>] [stream options] [--key <key>] [--expect <revision>]
   freemix-cli input-stream-status <show.freemix>
     stream options: [--transport auto|tcp|udp] [--jitter-ms <40..=5000>] [--backoff-min-ms <100..=60000>] [--backoff-max-ms <100..=60000>] [--give-up never|<1..=10000>] [--timeout-ms <500..=60000>] [--stall freeze|black]
+  freemix-cli input-add-capture <show.freemix> <nonzero-input-id> <name> <device-stable-key> [capture options]
+  freemix-cli input-capture-set <show.freemix> <input> [capture options] [--key <key>] [--expect <revision>]
+  freemix-cli input-capture-status <show.freemix>
+    capture options: [--format <W>x<H>@<num>/<den>:<yuyv|nv12|mjpeg>:<p|tff|bff>|auto] [--audio none|paired|alsa:<device>] [--loss hold|black]
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
@@ -5040,6 +5163,10 @@ Usage:
   freemix-cli remote-input-add-stream <127.0.0.1:port> <input> <name> <url> [stream options] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-stream-set <127.0.0.1:port> <input> [--url <url>] [stream options] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-stream-status <127.0.0.1:port>
+  freemix-cli remote-input-add-capture <127.0.0.1:port> <input> <name> <device-stable-key> [capture options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-capture-set <127.0.0.1:port> <input> [capture options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-capture-status <127.0.0.1:port>
+  freemix-cli remote-capture-devices <127.0.0.1:port>
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>> [--key <key>] [--expect <revision>]

@@ -1,6 +1,7 @@
 //! Transport-neutral wire DTOs and newline-delimited control codec.
 
 mod audio_mixer;
+mod capture;
 mod codec;
 mod display_output;
 mod dto;
@@ -15,6 +16,15 @@ pub use audio_mixer::{
     AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
     InputAudioLabel, MAX_AUDIO_LABEL_BYTES, audio_group_is_valid, audio_label_is_valid,
     fade_to_black_affects,
+};
+pub use capture::{
+    CaptureAudio, CaptureDevice, CaptureDevicesMessage, CaptureDevicesRequest, CaptureError,
+    CaptureFormat, CaptureInputConfig, CaptureInputEntry, CaptureInventory, CaptureLossReason,
+    CaptureLossSlate, CapturePixelFormat, CaptureScan, CaptureSettings, CaptureSignalState,
+    CaptureStatus, MAX_CAPTURE_BACKEND_BYTES, MAX_CAPTURE_DEVICE_FORMATS, MAX_CAPTURE_DEVICES,
+    MAX_CAPTURE_ERROR_BYTES, MAX_CAPTURE_INPUTS, MAX_CAPTURE_KEY_BYTES, MAX_CAPTURE_TEXT_BYTES,
+    bounded_capture_text, fit_capture_inventory, is_capture_backend_token, validate_stable_key,
+    wire_capture_status,
 };
 pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,

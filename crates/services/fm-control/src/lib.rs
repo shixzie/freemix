@@ -18,6 +18,7 @@ use std::{
 mod animation_preset;
 mod audio_mixer;
 mod automation;
+mod capture;
 mod display_output;
 mod grade;
 mod input_lifecycle;
@@ -518,12 +519,16 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 control
                     .network_states
                     .retain(|input, _| control.engine.show().network_stream(*input).is_some());
+                control
+                    .capture_states
+                    .retain(|input, _| control.engine.show().capture_settings(*input).is_some());
                 control.snapshot = snapshot_record(
                     &control.engine,
                     &control.identity,
                     &control.input_offline,
                     &control.display_states,
                     &control.network_states,
+                    &control.capture_states,
                 );
 
                 let live_events = submission
@@ -797,6 +802,12 @@ pub struct ControlService<A = Policy> {
     /// Each network stream input's receive status as the media plane last
     /// reported it (IN-015).
     network_states: BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
+    /// Each capture input's acquisition status as the media plane last
+    /// reported it (IN-001).
+    capture_states: BTreeMap<InputId, fm_protocol::CaptureStatus>,
+    /// The capture devices as the media plane last enumerated them
+    /// (IN-001).
+    capture_inventory: fm_protocol::CaptureInventory,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -836,6 +847,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         Self {
             engine,
@@ -859,6 +871,8 @@ impl<A: AuthorizationHook> ControlService<A> {
             display_states: BTreeMap::new(),
             display_inventory: fm_protocol::DisplayInventory::default(),
             network_states: BTreeMap::new(),
+            capture_states: BTreeMap::new(),
+            capture_inventory: fm_protocol::CaptureInventory::default(),
         }
     }
 
@@ -971,6 +985,113 @@ impl<A: AuthorizationHook> ControlService<A> {
                 slot,
                 state,
             }),
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// Every capture input with its stable key and settings, ascending, for
+    /// the media plane that acquires it (IN-001).
+    #[must_use]
+    pub fn capture_inputs(&self) -> Vec<(InputId, fm_protocol::CaptureInputConfig)> {
+        self.engine
+            .show()
+            .capture_inputs()
+            .map(|(input, stable_key, settings)| {
+                (
+                    input,
+                    fm_protocol::CaptureInputConfig {
+                        stable_key: stable_key.to_owned(),
+                        settings: settings.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Capture input `input`'s acquisition status as last reported
+    /// (IN-001), or `None` when nothing reported on it (or it is not a
+    /// capture input).
+    #[must_use]
+    pub fn capture_status(&self, input: InputId) -> Option<&fm_protocol::CaptureStatus> {
+        self.capture_states.get(&input)
+    }
+
+    /// Records capture input `input`'s acquisition status as the media
+    /// plane observes it (IN-001), bounded for the wire (see
+    /// [`fm_protocol::wire_capture_status`]). A change refreshes the
+    /// snapshot and returns the published `capture_status` runtime event;
+    /// an unchanged status, or an input that is not a capture input,
+    /// returns `None`. The latest status is kept per input until the input
+    /// is removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_capture_status(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        status: &fm_protocol::CaptureStatus,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        let status = fm_protocol::wire_capture_status(status);
+        if self.engine.show().capture_settings(input).is_none()
+            || self.capture_states.get(&input) == Some(&status)
+        {
+            return Ok(None);
+        }
+        self.capture_states.insert(input, status.clone());
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::CaptureStatus {
+                input: WireInputId::from_domain(input),
+                status: Box::new(status),
+            },
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// The capture devices as last enumerated (IN-001); empty, without a
+    /// backend, until the media plane reports.
+    #[must_use]
+    pub const fn capture_inventory(&self) -> &fm_protocol::CaptureInventory {
+        &self.capture_inventory
+    }
+
+    /// Records the capture devices as the media plane enumerates them
+    /// (IN-001), bounded to what one wire line carries (see
+    /// [`fm_protocol::fit_capture_inventory`]). A change returns the
+    /// published `capture_devices` runtime event; an unchanged inventory
+    /// returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_capture_inventory(
+        &mut self,
+        server: &ServerIdentity,
+        inventory: &fm_protocol::CaptureInventory,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        let inventory = fm_protocol::fit_capture_inventory(inventory);
+        if self.capture_inventory == inventory {
+            return Ok(None);
+        }
+        self.capture_inventory = inventory.clone();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::CaptureDevices(inventory),
         )?;
         let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
         Ok(Some(event))
@@ -1531,6 +1652,9 @@ impl<A: AuthorizationHook> ControlService<A> {
                 url,
                 settings,
             } => network_stream::engine_command(self.engine.show(), *input, url.as_ref(), settings),
+            CommandPayload::SetCaptureSettings { input, settings } => {
+                capture::engine_command(*input, settings)
+            }
             payload => engine_command(payload),
         };
         let replay_payload = history_target
@@ -1732,6 +1856,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &self.input_offline,
             &self.display_states,
             &self.network_states,
+            &self.capture_states,
         );
     }
 
@@ -1965,7 +2090,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SceneLayer(_)
         | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetDisplayOutput { .. }
-        | EngineCommand::SetNetworkStream { .. } => "project",
+        | EngineCommand::SetNetworkStream { .. }
+        | EngineCommand::SetCaptureSettings { .. } => "project",
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::Media(_) => "media",
@@ -2038,7 +2164,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SceneLayer(_)
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
-        | CommandPayload::SetNetworkStream { .. } => CommandClass::EditProject,
+        | CommandPayload::SetNetworkStream { .. }
+        | CommandPayload::SetCaptureSettings { .. } => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -2180,6 +2307,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         }
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
+        }
+        CommandPayload::SetCaptureSettings { input, settings } => {
+            capture::engine_command(*input, settings)
         }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
@@ -2454,6 +2584,7 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         },
         LiveInputSource::Bars => EngineInputSource::Bars,
         LiveInputSource::NetworkStream(config) => EngineInputSource::NetworkStream(config.clone()),
+        LiveInputSource::Capture(config) => EngineInputSource::Capture(config.clone()),
     }
 }
 
@@ -2472,6 +2603,7 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         },
         EngineInputSource::Bars => LiveInputSource::Bars,
         EngineInputSource::NetworkStream(config) => LiveInputSource::NetworkStream(config.clone()),
+        EngineInputSource::Capture(config) => LiveInputSource::Capture(config.clone()),
     }
 }
 
@@ -2623,6 +2755,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         }
         command @ EngineCommand::SetNetworkStream { .. } => {
             return network_stream::wire_edit_payload(command);
+        }
+        command @ EngineCommand::SetCaptureSettings { .. } => {
+            return capture::wire_edit_payload(command);
         }
         _ => return None,
     })
@@ -2969,6 +3104,13 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     {
         return payload;
     }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| capture::changed(&event.payload))
+    {
+        return payload;
+    }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
             return None;
@@ -3067,6 +3209,10 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
                     EngineInputSource::NetworkStream(config) => Some(Box::new(config.redacted())),
                     _ => None,
                 },
+                capture: match source {
+                    EngineInputSource::Capture(config) => Some(config.clone()),
+                    _ => None,
+                },
             }),
             EngineEvent::InputRemoved { input } => Some(EventPayload::InputRemoved {
                 input: WireInputId::from_domain(*input),
@@ -3140,6 +3286,7 @@ fn snapshot_record(
     offline: &BTreeMap<InputId, fm_protocol::InputOfflineReason>,
     display_states: &BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
     network_states: &BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
+    capture_states: &BTreeMap<InputId, fm_protocol::CaptureStatus>,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
@@ -3211,6 +3358,7 @@ fn snapshot_record(
         display_outputs: display_output::wire_entries(engine.show()),
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),
+        capture_inputs: capture::wire_entries(engine.show(), capture_states),
     };
     SnapshotRecord {
         cursor: EventCursor {

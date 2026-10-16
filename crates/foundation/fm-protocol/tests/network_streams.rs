@@ -15,7 +15,7 @@ use fm_protocol::{
     decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.46\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.47\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -90,7 +90,7 @@ const SETTINGS: &str = "transport=tcp\tjitter_ms=500\tbackoff_min_ms=250\tbackof
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 46));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 47));
 }
 
 #[test]
@@ -197,6 +197,7 @@ fn events_carry_the_redacted_config() {
         input: input(5),
         name: "Camera".into(),
         network_stream: Some(Box::new(config)),
+        capture: None,
     });
     let line = round_trip(&added);
     assert!(line.contains("\tkind=network_stream\turl="), "{line}");
@@ -204,6 +205,7 @@ fn events_carry_the_redacted_config() {
         input: input(6),
         name: "Slate".into(),
         network_stream: None,
+        capture: None,
     });
     assert!(!round_trip(&plain).contains("kind="));
 }
@@ -377,5 +379,6 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams,
+        capture_inputs: Vec::new(),
     })
 }

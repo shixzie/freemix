@@ -159,8 +159,10 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             *current_muted = muted;
             true
         }
-        // One queued display inventory request answers every later one.
-        (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory) => true,
+        // One queued display inventory (or capture devices) request answers
+        // every later one.
+        (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)
+        | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices) => true,
         // Exact previews (title or scene) are latest-wins: a newer request
         // replaces a queued one.
         (
@@ -1146,7 +1148,8 @@ fn run_worker(
             Ok(WorkerRequest::Intent(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
-                | StudioIntent::RequestDisplayInventory),
+                | StudioIntent::RequestDisplayInventory
+                | StudioIntent::RequestCaptureDevices),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
@@ -1172,7 +1175,8 @@ fn run_worker(
                     | SessionEvent::RuntimeEvent { .. }
                     | SessionEvent::AudioMeters { .. }
                     | SessionEvent::StreamStatus { .. }
-                    | SessionEvent::DisplayInventory { .. },
+                    | SessionEvent::DisplayInventory { .. }
+                    | SessionEvent::CaptureDevices { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1227,7 +1231,8 @@ fn run_worker(
             Ok(WorkerRequest::Intent(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
-                | StudioIntent::RequestDisplayInventory),
+                | StudioIntent::RequestDisplayInventory
+                | StudioIntent::RequestCaptureDevices),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
@@ -1288,6 +1293,15 @@ fn handle_preview_request(
         }
         return true;
     }
+    // The capture devices (IN-001, Protocol 2.47) are asked for the same way.
+    if matches!(request, StudioIntent::RequestCaptureDevices) {
+        if recovery.active() {
+            runtime.want_capture_devices();
+        } else {
+            runtime.request_capture_devices();
+        }
+        return true;
+    }
     let request_id = match &request {
         StudioIntent::TitlePreview(request) => request.request_id.clone(),
         StudioIntent::ScenePreview(request) => request.request_id.clone(),
@@ -1320,7 +1334,8 @@ fn handle_worker_intent(
     let intent = match intent {
         request @ (StudioIntent::TitlePreview(_)
         | StudioIntent::ScenePreview(_)
-        | StudioIntent::RequestDisplayInventory) => {
+        | StudioIntent::RequestDisplayInventory
+        | StudioIntent::RequestCaptureDevices) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
         intent => intent,
@@ -1618,7 +1633,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::RuntimeEvent { .. }
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
-                        | SessionEvent::DisplayInventory { .. } => Some(true),
+                        | SessionEvent::DisplayInventory { .. }
+                        | SessionEvent::CaptureDevices { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -2097,6 +2113,7 @@ fn receive_command_event(
             SessionEvent::AudioMeters { .. }
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
+                | SessionEvent::CaptureDevices { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2538,6 +2555,9 @@ fn intent_payload(
         }
         StudioIntent::RequestDisplayInventory => {
             return Err("A display inventory request is not a command".to_owned());
+        }
+        StudioIntent::RequestCaptureDevices => {
+            return Err("A capture devices request is not a command".to_owned());
         }
         StudioIntent::SetDisplayOutput { slot, config } => {
             CommandPayload::SetDisplayOutput { slot, config }
@@ -3174,6 +3194,7 @@ mod tests {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -5827,6 +5848,16 @@ mod tests {
             Ok(CommandPayload::ClearDisplayOutput { slot })
         );
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
+        assert!(intent_payload(StudioIntent::RequestCaptureDevices, None).is_err());
+        let mut capture = StudioIntent::RequestCaptureDevices;
+        assert!(coalesce_adjacent_intent(
+            &mut capture,
+            StudioIntent::RequestCaptureDevices
+        ));
+        assert!(!coalesce_adjacent_intent(
+            &mut capture,
+            StudioIntent::RequestDisplayInventory
+        ));
         let mut queued = StudioIntent::RequestDisplayInventory;
         assert!(coalesce_adjacent_intent(
             &mut queued,

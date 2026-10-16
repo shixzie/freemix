@@ -144,6 +144,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        capture_inputs: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Studio test".to_owned(),
@@ -2542,4 +2543,88 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
             .all(|forbidden| !packages.contains(forbidden)),
         "Studio linked an engine, control, persistence, GPU, or media crate"
     );
+}
+
+fn capture_devices_reply(request_id: &str) -> WireMessage {
+    WireMessage::CaptureDevices(fm_protocol::CaptureDevicesMessage {
+        request_id: request_id.to_owned(),
+        inventory: fm_protocol::CaptureInventory {
+            backend: Some("v4l2".to_owned()),
+            error: None,
+            devices: Vec::new(),
+        },
+    })
+}
+
+/// IN-001: the capture devices are runtime state a resumed session does
+/// not carry, so once Studio knows them, a reconnect asks for them again
+/// (with `capture_devices_request`), and the reply reaches the view.
+#[test]
+fn reconnect_requeries_known_capture_devices() {
+    let (address, server_thread) = spawn_server(|listener| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut first = Peer::accept(&listener);
+        assert!(matches!(first.receive(), WireMessage::HandshakeRequest(_)));
+        first.send(&WireMessage::HandshakeResponse(handshake(
+            project_id(),
+            4,
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        first.send(&WireMessage::Snapshot(snapshot(4)));
+        first.send(&capture_devices_reply("pushed"));
+        // Nothing asked for the devices on the first connect.
+        assert!(matches!(first.receive(), WireMessage::Heartbeat(_)));
+        drop(first);
+
+        let mut resumed = Peer::accept(&listener);
+        let WireMessage::HandshakeRequest(request) = resumed.receive() else {
+            panic!("expected reconnect handshake request");
+        };
+        let cursor = request.resume_cursor.expect("resume cursor");
+        resumed.send(&WireMessage::HandshakeResponse(handshake(
+            project_id(),
+            4,
+            HandshakeOutcome::Resume { cursor },
+        )));
+        let WireMessage::CaptureDevicesRequest(request) = resumed.receive_until(deadline) else {
+            panic!("expected a capture devices request after resume");
+        };
+        assert!(request.request_id.starts_with("studio-capture-"));
+        resumed.send(&capture_devices_reply(&request.request_id));
+    });
+
+    let mut runtime = StudioRuntime::new(existing_config(address, project_id())).unwrap();
+    runtime.connect(CONNECT_TIMEOUT).unwrap();
+    assert!(matches!(
+        runtime.receive().unwrap(),
+        SessionEvent::CaptureDevices { .. }
+    ));
+    runtime.send_heartbeat(1).unwrap();
+    assert!(matches!(
+        runtime.receive().unwrap(),
+        SessionEvent::Disconnected { .. }
+    ));
+    let backoff = Duration::from_millis(runtime.session().reconnect_backoff().unwrap().delay_ms);
+    assert_eq!(
+        runtime.reconnect(backoff, CONNECT_TIMEOUT).unwrap(),
+        SessionEvent::Connected {
+            mode: SyncMode::Resume
+        }
+    );
+    let SessionEvent::CaptureDevices { message } = runtime.receive().unwrap() else {
+        panic!("expected the capture devices reply");
+    };
+    assert!(message.request_id.starts_with("studio-capture-"));
+    assert_eq!(
+        runtime
+            .session()
+            .client()
+            .model()
+            .capture_inventory()
+            .and_then(|inventory| inventory.backend.as_deref()),
+        Some("v4l2")
+    );
+    server_thread.join().unwrap();
 }

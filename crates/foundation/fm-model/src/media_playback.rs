@@ -283,3 +283,25 @@ impl fmt::Display for SetMediaPlaybackError {
 }
 
 impl std::error::Error for SetMediaPlaybackError {}
+
+/// Why [`crate::Project::set_capture_settings`] refused (IN-001).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetCaptureSettingsError {
+    UnknownInput(fm_types::InputId),
+    NotCaptureInput(fm_types::InputId),
+    Invalid(fm_types::capture::CaptureError),
+}
+
+impl fmt::Display for SetCaptureSettingsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
+            Self::NotCaptureInput(input) => {
+                write!(formatter, "input {input} is not a capture device input")
+            }
+            Self::Invalid(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SetCaptureSettingsError {}

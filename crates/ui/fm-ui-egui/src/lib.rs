@@ -34,6 +34,7 @@ use fm_ui_model::title_editor::{TitleAccess, TitleCommand};
 use fm_ui_model::{ClientView, ManualTransitionStatus, ProjectState, StreamStatus, SwitcherState};
 
 pub mod animation_timeline;
+mod capture_input_ui;
 mod chrome;
 pub mod color_panel;
 mod connection_overlay;
@@ -186,6 +187,9 @@ pub enum StudioIntent {
     /// Asks the server for its connected displays (Protocol 2.42); the
     /// reply updates [`fm_ui_model::ClientView::display_inventory`].
     RequestDisplayInventory,
+    /// Asks the server for its capture devices (IN-001, Protocol 2.47);
+    /// the reply updates [`fm_ui_model::ClientView::capture_inventory`].
+    RequestCaptureDevices,
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -2618,6 +2622,8 @@ mod tests {
             display_output_states: Vec::new(),
             display_inventory: None,
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
+            capture_inventory: None,
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {

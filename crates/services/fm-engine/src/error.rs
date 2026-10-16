@@ -22,6 +22,9 @@ pub enum ShowError {
     DuplicateOutput(OutputId),
     UnknownInput(InputId),
     InvalidMediaPlayback(InputId, fm_model::MediaPlaybackSettingsError),
+    /// The input is not a capture device input, or the capture settings are
+    /// invalid (IN-001).
+    InvalidCaptureSettings(InputId),
     /// The input category list or a lifecycle entry is invalid; carries the
     /// [`fm_model::InputLifecycleError::code`] (IN-026).
     InvalidInputLifecycle(&'static str),
@@ -60,6 +63,10 @@ impl fmt::Display for ShowError {
             Self::InvalidMediaPlayback(input, error) => {
                 write!(formatter, "media input {input} playback settings: {error}")
             }
+            Self::InvalidCaptureSettings(input) => write!(
+                formatter,
+                "input {input} is not a capture input or its capture settings are invalid"
+            ),
             Self::InvalidInputLifecycle(code) => {
                 write!(
                     formatter,

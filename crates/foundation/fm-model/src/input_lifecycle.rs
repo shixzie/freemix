@@ -477,7 +477,11 @@ impl InputSourceSpec {
                     Err(InputSourceError::UnsupportedMediaType)
                 }
             }
-            Self::Device { stable_key } => validate_locator(stable_key),
+            Self::Device { stable_key } => {
+                validate_locator(stable_key)?;
+                fm_types::capture::validate_stable_key(stable_key)
+                    .map_err(|_| InputSourceError::InvalidLocator)
+            }
             Self::Network(config) => config
                 .validate()
                 .map(|_| ())
@@ -505,7 +509,7 @@ impl InputSourceSpec {
             InputKind::Media { asset_uri, .. } => Some(Self::Media {
                 asset_uri: asset_uri.clone(),
             }),
-            InputKind::Device { stable_key } => Some(Self::Device {
+            InputKind::Device { stable_key, .. } => Some(Self::Device {
                 stable_key: stable_key.clone(),
             }),
             InputKind::NetworkStream(config) => Some(Self::Network(config.clone())),
@@ -517,7 +521,9 @@ impl InputSourceSpec {
         }
     }
 
-    /// The input kind of this source. A media source plays with `playback`.
+    /// The input kind of this source. A media source plays with `playback`;
+    /// a capture device has default capture settings (IN-001), which
+    /// [`crate::Project::set_capture_settings`] edits.
     #[must_use]
     pub fn to_kind(&self, playback: MediaPlaybackSettings) -> InputKind {
         match self {
@@ -538,6 +544,7 @@ impl InputSourceSpec {
             },
             Self::Device { stable_key } => InputKind::Device {
                 stable_key: stable_key.clone(),
+                capture: fm_types::capture::CaptureSettings::default(),
             },
             Self::Network(config) => InputKind::NetworkStream(config.clone()),
         }

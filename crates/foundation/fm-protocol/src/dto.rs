@@ -793,12 +793,14 @@ impl EditHistoryStatus {
 
 /// The source an input may be added with while the show is live.
 ///
-/// These are the generators the simulated daemon renders and network
-/// streams (Protocol 2.46); every other input kind (media files, capture
-/// devices, Scenes, aliases, mix feeds) is added offline. Wire encoding:
-/// `kind=solid` plus `color=<rrggbbaa>` (eight lowercase hex digits),
-/// `kind=bars`, or `kind=network_stream` plus the config fields (see
-/// [`crate::NetworkStreamConfig`]). Generator audio is always silent.
+/// These are the generators the simulated daemon renders, network streams
+/// (Protocol 2.46), and capture devices (Protocol 2.47); every other input
+/// kind (media files, Scenes, aliases, mix feeds) is added offline. Wire
+/// encoding: `kind=solid` plus `color=<rrggbbaa>` (eight lowercase hex
+/// digits), `kind=bars`, `kind=network_stream` plus the config fields (see
+/// [`crate::NetworkStreamConfig`]), or `kind=capture` plus `device` and the
+/// settings fields (see [`crate::CaptureInputConfig`]). Generator audio is
+/// always silent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiveInputSource {
     Solid {
@@ -810,6 +812,8 @@ pub enum LiveInputSource {
     Bars,
     /// A network stream (IN-015). `Debug` shows only the redacted URL.
     NetworkStream(Box<crate::NetworkStreamConfig>),
+    /// A local capture device and its settings (Protocol 2.47, IN-001).
+    Capture(Box<crate::CaptureInputConfig>),
 }
 
 /// Most fields one title carries; equals the title domain bound.
@@ -1767,6 +1771,12 @@ pub enum CommandPayload {
         url: Option<crate::StreamUrl>,
         settings: crate::NetworkStreamSettings,
     },
+    /// Replaces capture input `input`'s settings (Protocol 2.47, IN-001).
+    /// A padlocked, undoable project edit applied live.
+    SetCaptureSettings {
+        input: WireInputId,
+        settings: Box<crate::CaptureSettings>,
+    },
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2184,6 +2194,9 @@ pub struct SnapshotMessage {
     /// Every network stream input, ascending, with its redacted config and
     /// latest status (Protocol 2.46).
     pub network_streams: Vec<crate::NetworkStreamEntry>,
+    /// Every capture input, ascending, with its stable key, settings, and
+    /// latest status (Protocol 2.47).
+    pub capture_inputs: Vec<crate::CaptureInputEntry>,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2223,6 +2236,9 @@ pub enum EventPayload {
         /// The redacted configuration of an added network stream (Protocol
         /// 2.46); `None` for a generator.
         network_stream: Option<Box<crate::NetworkStreamConfig>>,
+        /// The device and settings of an added capture input (Protocol
+        /// 2.47); `None` for any other source.
+        capture: Option<Box<crate::CaptureInputConfig>>,
     },
     /// An input left the show together with its Master strip and padlock.
     /// It was neither Program nor Preview nor otherwise on air; a settled-off
@@ -2322,6 +2338,12 @@ pub enum EventPayload {
     NetworkStreamChanged {
         input: WireInputId,
         config: Box<crate::NetworkStreamConfig>,
+    },
+    /// A capture input's settings changed, or that edit was undone or
+    /// redone (Protocol 2.47).
+    CaptureSettingsChanged {
+        input: WireInputId,
+        settings: Box<crate::CaptureSettings>,
     },
     /// An animation preset library edit (or its undo or redo) was accepted
     /// (Protocol 2.34).
@@ -2442,6 +2464,13 @@ pub enum RuntimeLifecycleEvent {
         input: WireInputId,
         status: Box<crate::NetworkStreamStatus>,
     },
+    /// A capture input's acquisition status changed (Protocol 2.47).
+    CaptureStatus {
+        input: WireInputId,
+        status: Box<crate::CaptureStatus>,
+    },
+    /// The capture devices the daemon can open changed (Protocol 2.47).
+    CaptureDevices(crate::CaptureInventory),
 }
 
 /// Runtime progress references durable state but has an independent sequence.
@@ -2743,4 +2772,8 @@ pub enum WireMessage {
     DisplayInventoryRequest(crate::DisplayInventoryRequest),
     /// Answers a [`crate::DisplayInventoryRequest`] (Protocol 2.42).
     DisplayInventory(crate::DisplayInventoryMessage),
+    /// Asks for the daemon's capture devices (Protocol 2.47).
+    CaptureDevicesRequest(crate::CaptureDevicesRequest),
+    /// Answers a [`crate::CaptureDevicesRequest`] (Protocol 2.47).
+    CaptureDevices(crate::CaptureDevicesMessage),
 }

@@ -104,6 +104,8 @@ mod latest_record;
 mod media_clock;
 mod monitor_tap;
 #[cfg(feature = "native-media")]
+mod native_captures;
+#[cfg(feature = "native-media")]
 mod native_catalogue;
 #[cfg(feature = "native-media")]
 mod native_files;
@@ -194,6 +196,23 @@ use freemixd::native_media::{
 use stinger_mutation::{NativeStingerMutation, NativeStingerRetirements};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:0";
+
+/// The fake capture inventory of `--diagnostic-capture-inventory` (IN-001),
+/// set once before the native runtime starts.
+#[cfg(feature = "native-media")]
+static DIAGNOSTIC_CAPTURE_INVENTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The capture backend native capture inputs use: the diagnostic fake
+/// inventory when given, else this platform's (V4L2 on Linux). `None` on
+/// platforms whose capture inputs are realized otherwise (macOS cameras) or
+/// not at all.
+#[cfg(feature = "native-media")]
+fn native_capture_backend() -> Option<native_captures::CaptureBackend> {
+    DIAGNOSTIC_CAPTURE_INVENTORY
+        .get()
+        .map(|path| native_captures::CaptureBackend::Fake(path.clone()))
+        .or_else(native_captures::CaptureBackend::platform)
+}
 const PROTOCOL_VERSION: ProtocolVersion = CURRENT_PROTOCOL_VERSION;
 const CAPABILITIES_DIGEST: &str = "phase1-simulated";
 const NATIVE_MEDIA_CAPABILITIES_DIGEST: &str =
@@ -688,6 +707,9 @@ struct NativeDaemon {
     files: native_files::NativeMediaFiles,
     /// Network stream inputs and their receivers (IN-015).
     network: native_streams::NativeNetworkStreams,
+    /// Local camera and capture-card inputs and their device backend
+    /// (IN-001); `None` without a capture backend.
+    captures: Option<native_captures::NativeCaptures>,
     /// The source realized for every input, which live catalogue changes
     /// follow (see [`native_catalogue`]).
     catalogue: std::collections::BTreeMap<InputId, native_catalogue::NativeSourceKey>,
@@ -4532,6 +4554,13 @@ impl NativeDaemon {
         for input in network.inputs() {
             master.attach_pushed_audio(input)?;
         }
+        let captures = start_native_captures(stored)?;
+        for input in captures
+            .iter()
+            .flat_map(native_captures::NativeCaptures::inputs)
+        {
+            master.attach_pushed_audio(input)?;
+        }
         let (playback, stingers) = preflight_native_video(
             &runtime,
             adapter.as_ref(),
@@ -4604,6 +4633,7 @@ impl NativeDaemon {
             titles,
             files,
             network,
+            captures,
             catalogue: native_catalogue::catalogue_keys(stored.project()),
             stills: Vec::new(),
             picture_size: {
@@ -4714,6 +4744,22 @@ impl NativeDaemon {
             control
                 .set_network_stream_status(server, input, status)
                 .map_err(|error| AppFailure(format!("network input {input} status: {error}")))?;
+        }
+        // Capture inputs (IN-001): each input's acquisition status, and the
+        // device inventory whenever it changes.
+        if let Some(captures) = &mut self.captures {
+            for (input, status) in captures.statuses(Instant::now()) {
+                control
+                    .set_capture_status(server, input, &status)
+                    .map_err(|error| {
+                        AppFailure(format!("capture input {input} status: {error}"))
+                    })?;
+            }
+            if let Some(inventory) = captures.inventory() {
+                control
+                    .set_capture_inventory(server, &inventory)
+                    .map_err(|error| AppFailure(format!("capture inventory: {error}")))?;
+            }
         }
         Ok(())
     }
@@ -5971,6 +6017,14 @@ impl NativeDaemon {
             .sync(&control.network_stream_configs(), |input| {
                 control.input_lifecycle(input).closed
             });
+        if let Some(captures) = &mut self.captures {
+            let inputs = control
+                .capture_inputs()
+                .into_iter()
+                .map(|(input, config)| (input, config.stable_key, config.settings))
+                .collect::<Vec<_>>();
+            captures.sync(&inputs, |input| control.input_lifecycle(input).closed);
+        }
         for input in self.files.inputs() {
             let closed = control.input_lifecycle(input).closed;
             let reopened = self.files.is_closed(input) && !closed;
@@ -6030,7 +6084,17 @@ impl NativeDaemon {
             .expect("next frame projection was initialized");
         // Network streams hand over the projected frame's picture and audio
         // from their jitter buffers, once per frame; they never wait.
-        for pulled in self.network.pull(projected.frame.get()) {
+        let captured = self
+            .captures
+            .as_mut()
+            .map(|captures| captures.pull(projected.frame.get()))
+            .unwrap_or_default();
+        for pulled in self
+            .network
+            .pull(projected.frame.get())
+            .into_iter()
+            .chain(captured)
+        {
             if let Some(frame) = pulled.video {
                 self.runtime.ingest_live_video_frame_blocking(
                     &mut self.playback,
@@ -6519,6 +6583,48 @@ fn preflight_native_video(
     let expected = stored.project().settings().video.dimensions;
     validate_native_video_dimensions("media source", playback.registry(), expected)?;
     Ok((playback, stingers))
+}
+
+/// Starts the capture backend and a supervisor for every capture input of
+/// `stored` (IN-001), or `None` without a capture backend. A device that is
+/// absent or fails is reported through its input's status; none stops the
+/// daemon.
+#[cfg(feature = "native-media")]
+fn start_native_captures(
+    stored: &StoredProject,
+) -> AppResult<Option<native_captures::NativeCaptures>> {
+    let Some(backend) = native_capture_backend() else {
+        return Ok(None);
+    };
+    let project = stored.project();
+    let settings = project.settings();
+    let inputs = project
+        .inputs()
+        .iter()
+        .filter_map(|input| match &input.kind {
+            InputKind::Device {
+                stable_key,
+                capture,
+            } => Some(native_captures::CaptureInput {
+                input: input.id,
+                stable_key: stable_key.clone(),
+                settings: capture.clone(),
+                closed: project.input_lifecycle(input.id).closed,
+            }),
+            _ => None,
+        })
+        .collect();
+    let dimensions = settings.video.dimensions;
+    native_captures::NativeCaptures::start(
+        &backend,
+        inputs,
+        settings.frame_rate,
+        native_clock_domain(),
+        (dimensions.width(), dimensions.height()),
+        settings.audio.sample_rate,
+    )
+    .map(Some)
+    .map_err(|error| AppFailure(error).into())
 }
 
 /// Starts a receiver for every open network stream input of `stored`
@@ -7099,9 +7205,27 @@ fn resolve_native_sources(
     camera_helper: Option<&Path>,
 ) -> AppResult<NativeSourceResolution> {
     let settings = stored.project().settings();
+    let captures = native_capture_backend().is_some();
     let mut sources = Vec::with_capacity(stored.project().inputs().len());
     for input in stored.project().inputs() {
         let source = match &input.kind {
+            // A capture input starts on a blank picture; its supervisor
+            // ingests every picture after it (IN-001).
+            InputKind::Device { .. } if captures => {
+                let dimensions = settings.video.dimensions;
+                native_streams::startup_picture(
+                    (dimensions.width(), dimensions.height()),
+                    settings.frame_rate,
+                    native_clock_domain(),
+                )
+                .map(|frame| NativeResolvedSource::LiveFrame {
+                    input: input.id,
+                    frame,
+                })
+                .ok_or_else(|| {
+                    AppFailure(format!("native capture input {} cannot be timed", input.id)).into()
+                })
+            }
             InputKind::Media { asset_uri, .. } => resolve_native_media_source(
                 store,
                 input.id,
@@ -7153,6 +7277,12 @@ fn resolve_native_sources(
 
     #[cfg(target_os = "macos")]
     {
+        if captures {
+            return Ok(NativeSourceResolution {
+                sources,
+                cameras: NativeCameraInputs::default(),
+            });
+        }
         let (mut device_sources, cameras) = resolve_macos_camera_sources(stored, camera_helper)?;
         sources.append(&mut device_sources);
         Ok(NativeSourceResolution { sources, cameras })
@@ -7160,11 +7290,12 @@ fn resolve_native_sources(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = camera_helper;
-        if let Some(input) = stored
-            .project()
-            .inputs()
-            .iter()
-            .find(|input| matches!(input.kind, InputKind::Device { .. }))
+        if !captures
+            && let Some(input) = stored
+                .project()
+                .inputs()
+                .iter()
+                .find(|input| matches!(input.kind, InputKind::Device { .. }))
         {
             return Err(AppFailure(format!(
                 "native device input {} has no adapter on this platform",
@@ -7226,7 +7357,7 @@ fn resolve_macos_camera_sources_with_policy(
         .inputs()
         .iter()
         .filter_map(|input| match &input.kind {
-            InputKind::Device { stable_key } => Some((input.id, stable_key.as_str())),
+            InputKind::Device { stable_key, .. } => Some((input.id, stable_key.as_str())),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -7741,6 +7872,9 @@ enum Command {
         /// with every slot waiting for a presenter.
         presenter_fallback: bool,
         camera_helper: Option<PathBuf>,
+        /// `--diagnostic-capture-inventory`: capture inputs acquire the fake
+        /// devices listed in this file instead of real ones (IN-001).
+        capture_inventory: Option<PathBuf>,
         record_program: Option<PathBuf>,
         record_output: Option<fm_types::OutputId>,
         record_program_2: Option<PathBuf>,
@@ -7850,6 +7984,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut fullscreen_display = None;
             let mut display_outputs: Vec<DisplayOutputConfig> = Vec::new();
             let mut display_inventory: Option<PathBuf> = None;
+            let mut capture_inventory: Option<PathBuf> = None;
             let mut display_presenter = false;
             let mut presenter_if_available = false;
             let mut camera_helper = None;
@@ -8412,6 +8547,23 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             })?;
                         display_inventory = Some(PathBuf::from(value));
                     }
+                    "--diagnostic-capture-inventory" if capture_inventory.is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--diagnostic-capture-inventory`".into(),
+                        )
+                        .into());
+                    }
+                    "--diagnostic-capture-inventory" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure(
+                                    "missing value for --diagnostic-capture-inventory".into(),
+                                )
+                            })?;
+                        capture_inventory = Some(PathBuf::from(value));
+                    }
                     "--diagnostic-stop-after" if diagnostic_stop_after.is_some() => {
                         return Err(AppFailure(
                             "duplicate option `--diagnostic-stop-after`".into(),
@@ -8611,6 +8763,12 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     .into());
                 }
             }
+            if capture_inventory.is_some() && !native_media {
+                return Err(AppFailure(
+                    "--diagnostic-capture-inventory requires --native-media".into(),
+                )
+                .into());
+            }
             Ok(Command::Serve {
                 project,
                 listen,
@@ -8624,6 +8782,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 display_inventory,
                 presenter_fallback,
                 camera_helper,
+                capture_inventory,
                 record_program,
                 record_output,
                 record_program_2,
@@ -8762,6 +8921,18 @@ fn reject_extra(mut arguments: impl Iterator<Item = String>) -> AppResult<()> {
     }
 }
 
+/// Installs the diagnostic capture inventory before the runtime starts.
+#[cfg_attr(not(feature = "native-media"), allow(clippy::needless_pass_by_value))]
+fn install_capture_inventory(path: Option<PathBuf>) {
+    #[cfg(feature = "native-media")]
+    if let Some(path) = path {
+        let _ = DIAGNOSTIC_CAPTURE_INVENTORY.set(path);
+    }
+    #[cfg(not(feature = "native-media"))]
+    let _ = path;
+}
+
+#[allow(clippy::too_many_lines)]
 fn run(command: Command) -> AppResult<()> {
     match command {
         Command::Serve {
@@ -8777,6 +8948,7 @@ fn run(command: Command) -> AppResult<()> {
             display_inventory,
             presenter_fallback,
             camera_helper,
+            capture_inventory,
             record_program,
             record_output,
             record_program_2,
@@ -8791,6 +8963,7 @@ fn run(command: Command) -> AppResult<()> {
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
+            install_capture_inventory(capture_inventory);
             if !display_outputs.is_empty() {
                 DisplayOutputSet::new(display_outputs.clone())
                     .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
@@ -10286,6 +10459,9 @@ fn restore_presets_favorites_and_media(
         // (IN-026).
         if let Some(source) = fm_model::InputSourceSpec::from_kind(&input.kind) {
             show.set_input_source(input.id, source)?;
+        }
+        if let fm_model::InputKind::Device { capture, .. } = &input.kind {
+            show.set_capture_settings(input.id, capture.clone())?;
         }
     }
     show.restore_input_lifecycle(
@@ -12322,6 +12498,7 @@ fn command_ticks(
     prepared.scene_settle_ticks(command_base_ticks(command, prepared))
 }
 
+#[allow(clippy::too_many_lines)] // one arm per command payload
 fn command_base_ticks(
     command: &CommandMessage,
     prepared: &fm_control::PreparedSubmission<'_, Policy>,
@@ -12389,6 +12566,7 @@ fn command_base_ticks(
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetNetworkStream { .. }
+        | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -12578,6 +12756,18 @@ fn stored_project_with_receipts(
                 })?;
         }
     }
+    // Capture settings live beside the device source (IN-001).
+    for (input, _, settings) in show.capture_inputs() {
+        if project.capture_input(input).map(|(_, current)| current) != Some(settings) {
+            project
+                .set_capture_settings(input, settings.clone())
+                .map_err(|error| {
+                    AppFailure(format!(
+                        "project cannot take capture input {input}'s settings: {error}"
+                    ))
+                })?;
+        }
+    }
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -12737,6 +12927,22 @@ fn sync_project_inputs(
                         id: input,
                         name,
                         kind: fm_model::InputKind::NetworkStream(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::Capture(config) => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::Device {
+                            stable_key: config.stable_key,
+                            capture: config.settings,
+                        },
                         required_capabilities: Vec::new(),
                     })
                     .map_err(|error| {
@@ -13571,7 +13777,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -13584,6 +13790,7 @@ Use --record-program=<path> or --record-program-2=<path> when the output name be
 Fullscreen display selection is a zero-based index ordered by desktop position, then name, then platform display id; --fullscreen-program --fullscreen-display N is shorthand for --display-output display=index:N.\n\
 --display-output replaces the project's display-output slots (slot 1, then slot 2) and opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display); it requires --native-media plus a build with feature `display-surface`. --display-presenter opens the project's own display-output slots the same way. --display-presenter-if-available (what Studio's supervised daemon uses) does so (the presenter always runs native media) in a build with feature `display-surface` unless --web-listen, --status-listen, --hls-listen, --record-fallback-dir, --diagnostic-stop-after, or --recover-to-checkpoint is given; when no window system, window, or GPU is available it emits FREEMIXD_DISPLAY_PRESENTER state=unavailable and serves as without the option, which is also all it does in any other build. Slots are project configuration edited live by set_display_output/clear_display_output commands (Protocol 2.42); a daemon without a presenter keeps them waiting with reason no-presenter. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|preview|output:<output-id> (default program; preview is composited only while an output showing it is active), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
 --diagnostic-display-inventory FILE presents the project's display outputs headlessly to off-screen rasters sized to a tab-separated display inventory re-read from FILE (one display per line: id=, mode=, optional name=, x=, y=, modes=, hdr=; a missing file means no display is connected) and emits sampled FREEMIXD_DISPLAY_FRAME probes. It is a test and diagnostic aid, not an operator output.\n\
+--diagnostic-capture-inventory FILE (requires --native-media) replaces the capture backend with a deterministic fake whose devices follow a tab-separated inventory re-read from FILE (one device per line: key=, path=, formats=, optional name=, rgba=, audio=, stalled=, no_signal=; a missing file means no device is connected). Capture inputs acquire solid pictures from it and report capture_status as with real devices. It is a test and diagnostic aid.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
 --web-listen enables the loopback-only `/v1/control` WebSocket listener and requires FREEMIXD_WEB_TOKEN.\n\
@@ -13975,6 +14182,7 @@ mod tests {
             name: "Camera".into(),
             kind: InputKind::Device {
                 stable_key: stable_key.into(),
+                capture: fm_types::capture::CaptureSettings::default(),
             },
             required_capabilities: Vec::new(),
         });
@@ -14030,6 +14238,7 @@ mod tests {
                 name: format!("Camera {value}"),
                 kind: InputKind::Device {
                     stable_key: key.to_owned(),
+                    capture: fm_types::capture::CaptureSettings::default(),
                 },
                 required_capabilities: Vec::new(),
             });
@@ -14078,6 +14287,7 @@ mod tests {
                 name: format!("Camera {value}"),
                 kind: InputKind::Device {
                     stable_key: key.clone(),
+                    capture: fm_types::capture::CaptureSettings::default(),
                 },
                 required_capabilities: Vec::new(),
             });
@@ -14226,6 +14436,7 @@ mod tests {
                 display_inventory: None,
                 presenter_fallback: false,
                 camera_helper: None,
+                capture_inventory: None,
                 record_program: None,
                 record_output: None,
                 record_program_2: None,
@@ -17418,6 +17629,49 @@ mod tests {
         };
         assert!(!fullscreen_program, "the inventory host is headless");
         assert_eq!(display_inventory, Some(PathBuf::from("displays.tsv")));
+    }
+
+    #[test]
+    fn diagnostic_capture_inventory_requires_native_media_and_one_file() {
+        let Command::Serve {
+            capture_inventory, ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--native-media",
+            "--diagnostic-capture-inventory",
+            "captures.tsv",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        assert_eq!(capture_inventory, Some(PathBuf::from("captures.tsv")));
+        for arguments in [
+            &[
+                "serve",
+                "show.freemix",
+                "--diagnostic-capture-inventory",
+                "a",
+            ][..],
+            &[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--diagnostic-capture-inventory",
+                "a",
+                "--diagnostic-capture-inventory",
+                "b",
+            ][..],
+            &[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--diagnostic-capture-inventory",
+            ][..],
+        ] {
+            assert!(parse_args(strings(arguments)).is_err(), "{arguments:?}");
+        }
     }
 
     #[test]

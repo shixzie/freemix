@@ -426,6 +426,21 @@ impl StudioShell {
                 &entry.status,
             );
         }
+        // A capture input's acquisition state (IN-001).
+        let capture = state
+            .view
+            .as_ref()
+            .and_then(|view| view.capture_input(input));
+        if let Some(entry) = capture
+            && ui.is_rect_visible(rect)
+        {
+            crate::capture_input_ui::paint_capture_badge(
+                ui.painter(),
+                Rect::from_min_size(rect.min, Vec2::new(width, thumb_height)),
+                l,
+                &entry.status,
+            );
+        }
         let shortcut = if index < 8 {
             format!("  [{}]", index + 1)
         } else {
@@ -439,6 +454,10 @@ impl StudioShell {
         if let Some(entry) = stream {
             status.push_str(" · ");
             status.push_str(&crate::network_stream_ui::stream_details(l, entry));
+        }
+        if let Some(entry) = capture {
+            status.push_str(" · ");
+            status.push_str(&crate::capture_input_ui::capture_details(l, entry));
         }
         let hover = format!(
             "{status}\n{}\n{source}\n{}",

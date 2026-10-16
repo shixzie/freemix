@@ -173,6 +173,168 @@ fn format_network_stream(entry: &fm_protocol::NetworkStreamEntry) -> String {
     )
 }
 
+/// Lists the capture inputs of the daemon at `address` with their status
+/// (IN-001).
+pub fn capture_inputs(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let view = remote
+        .client
+        .model()
+        .view()
+        .ok_or_else(|| RemoteFailure("remote project view is unavailable".into()))?;
+    print_capture_inputs(view.capture_inputs.iter().cloned());
+    Ok(())
+}
+
+/// Edits capture input `input` of the daemon at `address`: the options
+/// given replace the input's current settings (IN-001).
+pub fn set_capture_settings(
+    address: SocketAddr,
+    input: fm_types::InputId,
+    options: &crate::args::CaptureOptions,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let current = remote
+        .client
+        .model()
+        .view()
+        .and_then(|view| {
+            view.capture_input(input)
+                .map(|entry| entry.config.settings.clone())
+        })
+        .ok_or_else(|| RemoteFailure(format!("input {input} is not a capture input")))?;
+    let payload = CommandPayload::SetCaptureSettings {
+        input: fm_protocol::WireInputId::from_domain(input),
+        settings: Box::new(options.apply(current)),
+    };
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.execute(payload, key, expected_revision, CommandCompletion::Project)
+}
+
+/// Prints one `CaptureInput(...)` line per capture input, or
+/// `CaptureInputs=none`.
+pub(crate) fn print_capture_inputs(
+    entries: impl IntoIterator<Item = fm_protocol::CaptureInputEntry>,
+) {
+    let mut any = false;
+    for entry in entries {
+        any = true;
+        println!("{}", format_capture_input(&entry));
+    }
+    if !any {
+        println!("CaptureInputs=none");
+    }
+}
+
+fn quoted_or_none(text: Option<&str>) -> String {
+    text.map_or_else(|| "none".to_owned(), |text| format!("{text:?}"))
+}
+
+fn format_capture_input(entry: &fm_protocol::CaptureInputEntry) -> String {
+    let settings = &entry.config.settings;
+    let status = &entry.status;
+    format!(
+        "CaptureInput(input={}, device={:?}, format={}, audio={}, loss={}, state={}, reason={}, node={}, active_format={}, audio_live={}, frames={}, losses={}, recoveries={}, renegotiations={}, last_error={})",
+        entry.input,
+        entry.config.stable_key,
+        settings
+            .format
+            .map_or_else(|| "auto".to_owned(), |format| format.token()),
+        settings.audio.token(),
+        settings.loss.token(),
+        status.state.token(),
+        status.reason.map_or("none", |reason| reason.token()),
+        quoted_or_none(status.device.as_deref()),
+        status
+            .format
+            .map_or_else(|| "none".to_owned(), |format| format.token()),
+        if status.audio { "on" } else { "off" },
+        status.frames,
+        status.losses,
+        status.recoveries,
+        status.renegotiations,
+        quoted_or_none(status.last_error.as_deref()),
+    )
+}
+
+/// Lists the capture devices the daemon at `address` can open, with a
+/// table of each device's formats (IN-001).
+pub fn capture_devices(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-capture-{}", unique_client_id()?);
+    remote.write(&WireMessage::CaptureDevicesRequest(
+        fm_protocol::CaptureDevicesRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    let reply = loop {
+        match remote.read_until(deadline)? {
+            WireMessage::CaptureDevices(reply) if reply.request_id == request_id => break reply,
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(RemoteFailure("expected capture_devices from daemon".into()).into());
+            }
+        }
+    };
+    print_capture_devices(&reply.inventory);
+    Ok(())
+}
+
+/// Prints a `CaptureDevices(...)` header, then per device a `Device(...)`
+/// line followed by an aligned table of its formats.
+fn print_capture_devices(inventory: &fm_protocol::CaptureInventory) {
+    println!(
+        "CaptureDevices(backend={}, devices={}, error={})",
+        inventory.backend.as_deref().unwrap_or("none"),
+        inventory.devices.len(),
+        quoted_or_none(inventory.error.as_deref())
+    );
+    for device in &inventory.devices {
+        println!(
+            "Device(key={:?}, name={:?}, path={:?}, driver={:?}, bus={:?}, audio={}, formats={})",
+            device.stable_key,
+            device.name,
+            device.path,
+            device.driver,
+            device.bus,
+            quoted_or_none(device.audio.as_deref()),
+            device.formats.len()
+        );
+        let rows: Vec<(String, String, &str)> = device
+            .formats
+            .iter()
+            .map(|format| (format.token(), format.label(), format.class().label()))
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        let token_width = rows
+            .iter()
+            .map(|row| row.0.len())
+            .fold("FORMAT".len(), usize::max);
+        let label_width = rows
+            .iter()
+            .map(|row| row.1.len())
+            .fold("LABEL".len(), usize::max);
+        println!(
+            "  {:token_width$}  {:label_width$}  CLASS",
+            "FORMAT", "LABEL"
+        );
+        for (token, label, class) in &rows {
+            println!("  {token:token_width$}  {label:label_width$}  {class}");
+        }
+    }
+}
+
 /// Prints one `DisplayOutput(...)` line per configured slot, or
 /// `DisplayOutputs=none`.
 pub(crate) fn print_display_outputs<'a>(
@@ -446,6 +608,7 @@ impl CommandCompletion {
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetNetworkStream { .. }
+            | CommandPayload::SetCaptureSettings { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
@@ -708,7 +871,8 @@ impl Remote {
                         | EventPayload::SceneAnimationChanged { .. }
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }
-                        | EventPayload::NetworkStreamChanged { .. } => matches!(
+                        | EventPayload::NetworkStreamChanged { .. }
+                        | EventPayload::CaptureSettingsChanged { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),

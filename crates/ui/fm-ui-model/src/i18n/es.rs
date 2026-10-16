@@ -1990,7 +1990,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AddInputIntro,
         t(
-            "Añade al final del banco una entrada generada en vivo o un flujo de red, con un canal de mezclador predeterminado. Las entradas de medios y captura se añaden sin conexión.",
+            "Añade al final del banco una entrada generada en vivo, un flujo de red o una cámara, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
         ),
     ),
     (Msg::AddInputKind, t("Tipo")),
@@ -2105,6 +2105,159 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::NsDetailNextAttempt,
         t("Próximo intento en {seconds} s"),
+    ),
+    (Msg::NameCapture, t("Cámara")),
+    (Msg::KindCaptureKey, t("CÁMARA / CAPTURA")),
+    (
+        Msg::KindCaptureHover,
+        t(
+            "Una cámara o tarjeta de captura conectada al servidor, con su propio formato, audio e imagen de pérdida de señal; se vuelve a adquirir automáticamente al desconectarla y reconectarla",
+        ),
+    ),
+    (Msg::CapDevice, t("Dispositivo de captura")),
+    (Msg::CapRefresh, t("Volver a buscar dispositivos")),
+    (
+        Msg::CapRefreshHover,
+        t(
+            "Pide al servidor que vuelva a listar sus dispositivos de captura, por ejemplo tras conectar una cámara",
+        ),
+    ),
+    (
+        Msg::CapInventoryUnknown,
+        t("Pidiendo al servidor sus dispositivos de captura…"),
+    ),
+    (
+        Msg::CapInventoryNoBackend,
+        t(
+            "Este servidor no tiene sistema de captura: no puede abrir cámaras ni tarjetas de captura",
+        ),
+    ),
+    (
+        Msg::CapInventoryEmpty,
+        t(
+            "No se encontraron dispositivos de captura ({backend}); conecta una cámara y vuelve a buscar",
+        ),
+    ),
+    (
+        Msg::CapInventoryCount,
+        plural(
+            "{count} dispositivo de captura encontrado ({backend})",
+            "{count} dispositivos de captura encontrados ({backend})",
+        ),
+    ),
+    (
+        Msg::CapInventoryError,
+        t("Falló la búsqueda de dispositivos: {error}"),
+    ),
+    (Msg::CapDeviceOption, t("{name} · {path} · {bus}")),
+    (
+        Msg::CapDeviceHover,
+        t(
+            "{name} en {path} (bus {bus}, controlador {driver}); {formats} formatos; audio emparejado: {audio}",
+        ),
+    ),
+    (Msg::CapPairedNone, t("ninguno emparejado")),
+    (Msg::CapFormat, t("Formato")),
+    (
+        Msg::CapFormatAuto,
+        t("Automático (el más cercano al programa)"),
+    ),
+    (
+        Msg::CapFormatAutoHover,
+        t(
+            "Deja que el servidor abra el formato del dispositivo más cercano al tamaño de imagen y la cadencia del programa, con preferencia por el barrido progresivo",
+        ),
+    ),
+    (
+        Msg::CapFormatOptionHover,
+        t("Abre el dispositivo en {format}: {class}, {scan}"),
+    ),
+    (Msg::CapScanProgressive, t("progresivo")),
+    (Msg::CapScanTff, t("entrelazado, campo superior primero")),
+    (Msg::CapScanBff, t("entrelazado, campo inferior primero")),
+    (Msg::CapFilterSize, t("Tamaño de imagen")),
+    (Msg::CapFilterRate, t("Cadencia")),
+    (Msg::CapFilterPixel, t("Formato de píxel")),
+    (Msg::CapFilterAll, t("Cualquiera")),
+    (
+        Msg::CapFilterSizeHover,
+        t("Muestra solo los formatos del dispositivo con este tamaño de imagen"),
+    ),
+    (
+        Msg::CapFilterRateHover,
+        t(
+            "Muestra solo los formatos del dispositivo con esta cadencia de cuadros (un formato entrelazado lleva el doble de campos)",
+        ),
+    ),
+    (
+        Msg::CapFilterPixelHover,
+        t(
+            "Muestra solo los formatos del dispositivo con este formato de píxel: YUYV y NV12 no están comprimidos, MJPEG está comprimido y hay que decodificarlo",
+        ),
+    ),
+    (
+        Msg::CapFilterNone,
+        t("Ningún formato coincide con estos filtros"),
+    ),
+    (Msg::CapRateFps, t("{rate} cps")),
+    (Msg::CapAudioNone, t("NINGUNO")),
+    (Msg::CapAudioPaired, t("AUDIO DEL DISPOSITIVO")),
+    (Msg::CapAudioAlsa, t("DISPOSITIVO ALSA")),
+    (Msg::CapAudioNoneHover, t("La entrada queda en silencio")),
+    (
+        Msg::CapAudioPairedHover,
+        t(
+            "La entrada oye el dispositivo de audio de la misma cámara o tarjeta, si lo tiene; si no, queda en silencio",
+        ),
+    ),
+    (
+        Msg::CapAudioAlsaHover,
+        t(
+            "La entrada oye un dispositivo de captura ALSA con nombre en el servidor, como hw:CARD=C920,DEV=0",
+        ),
+    ),
+    (Msg::CapPairedAudio, t("Audio emparejado: {audio}")),
+    (
+        Msg::CapAlsaDeviceHover,
+        t(
+            "El nombre del dispositivo de captura ALSA en el servidor: de 1 a 64 caracteres imprimibles sin espacios, como los lista arecord -L",
+        ),
+    ),
+    (Msg::CapLoss, t("Al perder la señal")),
+    (Msg::CapLossHold, t("MANTENER ÚLTIMA IMAGEN")),
+    (
+        Msg::CapLossHoldHover,
+        t("Mientras se pierde la señal, la entrada mantiene su última imagen y queda en silencio"),
+    ),
+    (
+        Msg::CapLossBlackHover,
+        t("Mientras se pierde la señal, la entrada muestra negro y queda en silencio"),
+    ),
+    (Msg::CapReasonNoDevice, t("elige un dispositivo de captura")),
+    (
+        Msg::CapReasonAlsa,
+        t(
+            "el nombre del dispositivo ALSA debe tener de 1 a 64 caracteres imprimibles sin espacios",
+        ),
+    ),
+    (
+        Msg::CapReasonSettings,
+        t("un ajuste de captura está fuera de rango"),
+    ),
+    (Msg::CapBadgeSignalLost, t("SIN SEÑAL")),
+    (Msg::CapLostUnplugged, t("dispositivo desconectado")),
+    (Msg::CapLostStalled, t("no llegan imágenes")),
+    (Msg::CapLostNoSignal, t("sin señal de entrada")),
+    (Msg::CapLostError, t("error de adquisición")),
+    (Msg::CapDetailDevice, t("Captura {device}: {state}")),
+    (Msg::CapDetailLost, t("{state} ({reason})")),
+    (Msg::CapDetailFormat, t("{format}, {audio}")),
+    (Msg::CapDetailNoFormat, t("formato sin negociar")),
+    (Msg::CapDetailAudioOn, t("audio activado")),
+    (Msg::CapDetailAudioOff, t("audio desactivado")),
+    (
+        Msg::CapDetailCounters,
+        t("{losses} pérdidas, {recoveries} recuperaciones, {renegotiations} renegociaciones"),
     ),
     (Msg::AddInputName, t("Nombre")),
     (Msg::NameSuggested, t("Nombre único sugerido")),

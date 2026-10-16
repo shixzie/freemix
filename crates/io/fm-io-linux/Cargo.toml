@@ -1,0 +1,16 @@
+[package]
+name = "fm-io-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fm-codec-ffmpeg = { path = "../fm-codec-ffmpeg" }
+fm-types = { path = "../../foundation/fm-types" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linuxvideo = "0.3.5"
+
+[lints]
+workspace = true

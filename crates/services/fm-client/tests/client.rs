@@ -165,6 +165,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        capture_inputs: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Show".to_owned(),
@@ -1509,6 +1510,7 @@ fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
                     input: input(3),
                     name: "Red".to_owned(),
                     network_stream: None,
+                    capture: None,
                 },
             ),
         ),
@@ -3198,6 +3200,7 @@ fn network_stream_inputs_and_status_replicate() {
                     input: input(5),
                     name: "Remote camera".into(),
                     network_stream: Some(Box::new(config.clone())),
+                    capture: None,
                 },
             ))
             .unwrap(),
@@ -3257,6 +3260,138 @@ fn network_stream_inputs_and_status_replicate() {
             .view()
             .unwrap()
             .network_stream(input(5).to_domain())
+            .is_none()
+    );
+}
+
+/// IN-001, Protocol 2.47: a capture input added live carries its device
+/// and settings into the view, `capture_settings_changed` replaces them,
+/// `capture_status` runtime events update its status, and the capture
+/// device inventory arrives by runtime event or `capture_devices` reply.
+#[test]
+#[allow(clippy::too_many_lines)] // one add, edit, status, and inventory round trip
+fn capture_inputs_status_and_inventory_replicate() {
+    use fm_protocol::{
+        CaptureAudio, CaptureDevice, CaptureDevicesMessage, CaptureInputConfig, CaptureInventory,
+        CaptureLossReason, CaptureSettings, CaptureSignalState, CaptureStatus,
+    };
+    let mut client = ready_client(4);
+    let event = |revision, payload| {
+        WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            payload,
+        })
+    };
+    let config = CaptureInputConfig::new("v4l2:usb-1#C920");
+    assert_eq!(
+        client
+            .intake(event(
+                5,
+                EventPayload::InputAdded {
+                    input: input(5),
+                    name: "USB camera".into(),
+                    network_stream: None,
+                    capture: Some(Box::new(config.clone())),
+                },
+            ))
+            .unwrap(),
+        Intake::EventApplied
+    );
+    let view = client.model().view().unwrap();
+    let entry = view
+        .capture_input(input(5).to_domain())
+        .expect("the added capture input");
+    assert_eq!(entry.config, config);
+    assert_eq!(entry.status, CaptureStatus::default());
+    assert!(view.capture_input(input(1).to_domain()).is_none());
+    assert_eq!(view.capture_inventory, None);
+
+    let settings = CaptureSettings {
+        audio: CaptureAudio::None,
+        ..CaptureSettings::default()
+    };
+    client
+        .intake(event(
+            6,
+            EventPayload::CaptureSettingsChanged {
+                input: input(5),
+                settings: Box::new(settings.clone()),
+            },
+        ))
+        .unwrap();
+    let status = CaptureStatus {
+        state: CaptureSignalState::SignalLost,
+        reason: Some(CaptureLossReason::Stalled),
+        losses: 1,
+        ..CaptureStatus::default()
+    };
+    client
+        .apply_runtime_event(runtime_event(
+            6,
+            7,
+            1,
+            RuntimeLifecycleEvent::CaptureStatus {
+                input: input(5),
+                status: Box::new(status.clone()),
+            },
+        ))
+        .unwrap();
+    let view = client.model().view().unwrap();
+    let entry = view.capture_input(input(5).to_domain()).unwrap();
+    assert_eq!(entry.config.settings, settings);
+    assert_eq!(entry.status, status);
+
+    let inventory = CaptureInventory {
+        backend: Some("v4l2".into()),
+        error: None,
+        devices: vec![CaptureDevice {
+            stable_key: "v4l2:usb-1#C920".into(),
+            name: "C920".into(),
+            path: "/dev/video0".into(),
+            driver: "uvcvideo".into(),
+            bus: "usb-1".into(),
+            audio: None,
+            formats: Vec::new(),
+        }],
+    };
+    client
+        .apply_runtime_event(runtime_event(
+            6,
+            8,
+            1,
+            RuntimeLifecycleEvent::CaptureDevices(inventory.clone()),
+        ))
+        .unwrap();
+    assert_eq!(
+        client.model().view().unwrap().capture_inventory.as_ref(),
+        Some(&inventory)
+    );
+    let empty = CaptureInventory::default();
+    assert_eq!(
+        client
+            .intake(WireMessage::CaptureDevices(CaptureDevicesMessage {
+                request_id: "devices-1".into(),
+                inventory: empty.clone(),
+            }))
+            .unwrap(),
+        Intake::CaptureDevicesApplied
+    );
+    assert_eq!(client.model().capture_inventory(), Some(&empty));
+
+    // Removing the input removes its entry.
+    client
+        .intake(event(7, EventPayload::InputRemoved { input: input(5) }))
+        .unwrap();
+    assert!(
+        client
+            .model()
+            .view()
+            .unwrap()
+            .capture_input(input(5).to_domain())
             .is_none()
     );
 }

@@ -228,13 +228,7 @@ impl NativeNetworkStreams {
             let PulledFrame { picture, audio } = receiver.pull();
             let video = match picture {
                 Picture::New(bytes) => format.picture(frame, bytes),
-                Picture::Black => {
-                    let mut bytes = vec![0_u8; picture_bytes(format.dimensions)];
-                    for pixel in bytes.as_chunks_mut::<4>().0 {
-                        pixel[3] = u8::MAX;
-                    }
-                    format.picture(frame, bytes)
-                }
+                Picture::Black => format.black(frame),
                 Picture::Hold => None,
             };
             pulled.push(PulledStream {
@@ -253,17 +247,19 @@ impl NativeNetworkStreams {
     }
 }
 
-/// The program format every picture and audio block is delivered in.
+/// The program format every picture and audio block is delivered in
+/// (shared with capture inputs, see [`crate::native_captures`]).
 #[derive(Clone, Copy)]
-struct Format {
-    rate: FrameRate,
-    clock_domain: ClockDomainId,
-    dimensions: (u32, u32),
-    sample_rate: SampleRate,
+pub(crate) struct Format {
+    pub(crate) rate: FrameRate,
+    pub(crate) clock_domain: ClockDomainId,
+    pub(crate) dimensions: (u32, u32),
+    pub(crate) sample_rate: SampleRate,
 }
 
 impl Format {
-    fn picture(&self, frame: u64, bytes: Vec<u8>) -> Option<CpuVideoFrame> {
+    /// An RGBA picture of program frame `frame`.
+    pub(crate) fn picture(&self, frame: u64, bytes: Vec<u8>) -> Option<CpuVideoFrame> {
         let timing = output_timing(frame, self.rate, self.clock_domain)?;
         let size = VideoDimensions::new(self.dimensions.0, self.dimensions.1)?;
         let stride = usize::try_from(self.dimensions.0).ok()?.checked_mul(4)?;
@@ -283,7 +279,28 @@ impl Format {
             .ok()
     }
 
-    fn audio(&self, frame: u64, planes: Vec<Vec<f32>>) -> Option<AudioBlock> {
+    /// Opaque black at the program size, for program frame `frame`.
+    pub(crate) fn black(&self, frame: u64) -> Option<CpuVideoFrame> {
+        let mut bytes = vec![0_u8; picture_bytes(self.dimensions)];
+        for pixel in bytes.as_chunks_mut::<4>().0 {
+            pixel[3] = u8::MAX;
+        }
+        self.picture(frame, bytes)
+    }
+
+    /// Stereo silence lasting program frame `frame`.
+    pub(crate) fn silence(&self, frame: u64) -> Option<AudioBlock> {
+        let hertz = u128::from(self.sample_rate.hertz());
+        let at = |k: u64| {
+            u128::from(k) * hertz * u128::from(self.rate.denominator())
+                / u128::from(self.rate.numerator()).max(1)
+        };
+        let samples = usize::try_from(at(frame.checked_add(1)?) - at(frame)).ok()?;
+        self.audio(frame, vec![vec![0.0; samples]; 2])
+    }
+
+    /// Planar stereo audio of program frame `frame`.
+    pub(crate) fn audio(&self, frame: u64, planes: Vec<Vec<f32>>) -> Option<AudioBlock> {
         let samples = u64::try_from(planes.first()?.len()).ok()?;
         let hertz = self.sample_rate.hertz();
         let start = u128::from(frame) * u128::from(hertz) * u128::from(self.rate.denominator())

@@ -111,6 +111,9 @@ pub struct StudioRuntime {
     /// Whether the UI has asked for the display inventory; once it has (or
     /// the inventory is known), every (re)connect asks for it again.
     display_inventory_wanted: bool,
+    /// Whether the UI has asked for the capture devices (IN-001); once it
+    /// has (or they are known), every (re)connect asks for them again.
+    capture_devices_wanted: bool,
     /// The latest answer per display-output slot to this session's set or
     /// clear, carried the same way.
     display_output_answers: [Option<DisplayOutputAnswer>; fm_protocol::MAX_DISPLAY_OUTPUTS],
@@ -168,6 +171,7 @@ impl StudioRuntime {
             preview_failed: None,
             animation_refusal: None,
             display_inventory_wanted: false,
+            capture_devices_wanted: false,
             display_output_answers: [const { None }; fm_protocol::MAX_DISPLAY_OUTPUTS],
         })
     }
@@ -235,6 +239,31 @@ impl StudioRuntime {
             && self
                 .session
                 .send_display_inventory_request(fm_protocol::DisplayInventoryRequest { request_id })
+                .is_ok()
+    }
+
+    /// Records that the UI wants the capture devices without asking now
+    /// (the session is recovering); the next (re)connect asks for them.
+    pub(crate) const fn want_capture_devices(&mut self) {
+        self.capture_devices_wanted = true;
+    }
+
+    /// Asks the server for its capture devices (IN-001, Protocol 2.47);
+    /// the reply updates the replicated capture inventory. Returns whether
+    /// the request went out; one that cannot be sent is dropped, and the
+    /// next (re)connect asks again.
+    pub(crate) fn request_capture_devices(&mut self) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.capture_devices_wanted = true;
+        let request_id = format!(
+            "studio-capture-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_capture_devices_request(fm_protocol::CaptureDevicesRequest { request_id })
                 .is_ok()
     }
 
@@ -391,6 +420,7 @@ impl StudioRuntime {
             }
         };
         self.requery_display_inventory();
+        self.requery_capture_devices();
         Ok(event)
     }
 
@@ -403,6 +433,18 @@ impl StudioRuntime {
             || self.session.client().model().display_inventory().is_some()
         {
             self.request_display_inventory();
+        }
+    }
+
+    /// Asks for the capture devices again after a (re)connect when the UI
+    /// wanted them or they were known: like the display inventory, they are
+    /// runtime state no resumed or re-snapshotted session carries, and
+    /// cameras may have been plugged in or out while disconnected.
+    fn requery_capture_devices(&mut self) {
+        if self.capture_devices_wanted
+            || self.session.client().model().capture_inventory().is_some()
+        {
+            self.request_capture_devices();
         }
     }
 

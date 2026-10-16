@@ -84,6 +84,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         fade_to_black_excluded_outputs: Vec::new(),
         display_outputs: Vec::new(),
         network_streams: Vec::new(),
+        capture_inputs: Vec::new(),
         display_output_states: Vec::new(),
         cursor: ProjectCursor {
             project_id,
@@ -1146,6 +1147,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(9),
                 name: "Red".into(),
                 network_stream: None,
+                capture: None,
             },
         ))
         .unwrap();
@@ -1195,6 +1197,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(2),
                 name: "Twin".into(),
                 network_stream: None,
+                capture: None,
             },
             ModelError::DuplicateInput(input(2)),
         ),
@@ -1203,6 +1206,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(10),
                 name: "Camera".into(),
                 network_stream: None,
+                capture: None,
             },
             ModelError::InvalidInputNames,
         ),
@@ -1211,6 +1215,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(10),
                 name: " ".into(),
                 network_stream: None,
+                capture: None,
             },
             ModelError::InvalidInputNames,
         ),
@@ -1255,6 +1260,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: fm_protocol::WireInputId::from_domain(input(11)),
                 name: "Bars".into(),
                 network_stream: None,
+                capture: None,
             },
             edit_history: EditHistoryStatus::EMPTY,
         },
@@ -1265,6 +1271,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             input: input(11),
             name: "Bars".into(),
             network_stream: None,
+            capture: None,
         }
     );
     model.apply_event(added).unwrap();
@@ -1416,6 +1423,7 @@ mod titles {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            capture_inputs: Vec::new(),
             engine: engine("engine-a", 1, "log-a"),
             revision: 10,
             show_name: "Show".into(),
@@ -2617,4 +2625,131 @@ fn replicates_group_solo_parents_and_solo_mode() {
                 .is_err()
         );
     }
+}
+
+/// IN-001, Protocol 2.47: capture inputs come from the snapshot, follow
+/// settings edits, keep their settings when their device is replaced or
+/// duplicated (as the engine does), and leave with another source.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn capture_inputs_follow_snapshot_edits_replacements_and_duplicates() {
+    use fm_protocol::{
+        CaptureAudio, CaptureInputConfig, CaptureInputEntry, CaptureSettings, CaptureStatus,
+        InputLifecycleOperation, WireInputSource,
+    };
+
+    let project = project(1);
+    let mut model = ClientModel::new(project);
+    let mut base = snapshot(project, 4);
+    let settings = CaptureSettings {
+        audio: CaptureAudio::None,
+        ..CaptureSettings::default()
+    };
+    base.capture_inputs = vec![CaptureInputEntry {
+        input: fm_protocol::WireInputId::from_domain(input(1)),
+        config: CaptureInputConfig {
+            stable_key: "cam-a".into(),
+            settings: settings.clone(),
+        },
+        status: CaptureStatus::default(),
+    }];
+    model.install_snapshot(base.clone()).unwrap();
+    let engine = base.cursor.engine.clone();
+    assert_eq!(
+        model
+            .view()
+            .unwrap()
+            .capture_input(input(1))
+            .map(|entry| &entry.config.settings),
+        Some(&settings)
+    );
+    assert!(model.view().unwrap().capture_input(input(2)).is_none());
+
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            5,
+            DurableChange::InputLifecycleChanged {
+                operation: InputLifecycleOperation::ReplaceSource {
+                    input: fm_protocol::WireInputId::from_domain(input(1)),
+                    source: WireInputSource::Device {
+                        stable_key: "cam-b".into(),
+                    },
+                },
+                added: Vec::new(),
+            },
+        ))
+        .unwrap();
+    let view = model.view().unwrap();
+    let entry = view.capture_input(input(1)).unwrap();
+    assert_eq!(entry.config.stable_key, "cam-b");
+    assert_eq!(entry.config.settings, settings);
+
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            6,
+            DurableChange::InputLifecycleChanged {
+                operation: InputLifecycleOperation::Duplicate {
+                    source: fm_protocol::WireInputId::from_domain(input(1)),
+                    input: fm_protocol::WireInputId::from_domain(input(7)),
+                    name: None,
+                },
+                added: vec![(input(7), "Camera 2".into())],
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        model
+            .view()
+            .unwrap()
+            .capture_input(input(7))
+            .map(|entry| &entry.config),
+        Some(&CaptureInputConfig {
+            stable_key: "cam-b".into(),
+            settings: settings.clone(),
+        })
+    );
+
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            7,
+            DurableChange::CaptureSettingsChanged {
+                input: input(7),
+                settings: Box::new(CaptureSettings::default()),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        model
+            .view()
+            .unwrap()
+            .capture_input(input(7))
+            .map(|entry| &entry.config.settings),
+        Some(&CaptureSettings::default())
+    );
+
+    model
+        .apply_event(event(
+            project,
+            engine,
+            8,
+            DurableChange::InputLifecycleChanged {
+                operation: InputLifecycleOperation::ReplaceSource {
+                    input: fm_protocol::WireInputId::from_domain(input(1)),
+                    source: WireInputSource::Generator {
+                        video: fm_protocol::WireGeneratorVideo::Bars,
+                        tone_hz: None,
+                    },
+                },
+                added: Vec::new(),
+            },
+        ))
+        .unwrap();
+    assert!(model.view().unwrap().capture_input(input(1)).is_none());
+    assert_eq!(model.view().unwrap().capture_inputs.len(), 1);
 }

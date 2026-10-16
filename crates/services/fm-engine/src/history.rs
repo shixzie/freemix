@@ -157,6 +157,7 @@ impl EngineCommand {
             | Self::SetFadeToBlackOutput { .. }
             | Self::SetDisplayOutput { .. }
             | Self::SetNetworkStream { .. }
+            | Self::SetCaptureSettings { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
                 if edit.is_live() {
@@ -831,6 +832,14 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),
         }),
+        EngineCommand::SetCaptureSettings { input, .. } => {
+            state
+                .capture_settings(*input)
+                .map(|settings| EngineCommand::SetCaptureSettings {
+                    input: *input,
+                    settings: Box::new(settings.clone()),
+                })
+        }
         EngineCommand::SetNetworkStream { input, .. } => {
             state
                 .network_stream(*input)
@@ -923,6 +932,7 @@ pub(crate) fn check_edit_locks(
         | EngineCommand::Grade(EngineGradeEdit::SetInput { input, .. })
         | EngineCommand::Media(crate::EngineMediaCommand { input, .. })
         | EngineCommand::SetNetworkStream { input, .. }
+        | EngineCommand::SetCaptureSettings { input, .. }
             if state.is_input_locked(*input) =>
         {
             Err(EditRejection::InputLocked(*input))

@@ -457,6 +457,9 @@ pub(crate) fn apply(
         EngineInputLifecycleEdit::Duplicate { source, .. } => {
             let (inputs, _) = added_inputs(state, edit, &[])?;
             let (input, name) = inputs[0].clone();
+            if state.capture_settings(*source).is_some() {
+                crate::engine::check_capture_room(state)?;
+            }
             let mut staged = state.clone();
             staged.add_input(input, name).map_err(catalogue)?;
             if let Some(strip) = state.input_audio_strip(*source) {
@@ -481,6 +484,9 @@ pub(crate) fn apply(
             );
             if let Some(spec) = state.input_source(*source) {
                 staged.set_input_source_unchecked(input, spec.clone());
+            }
+            if let Some(settings) = state.capture_settings(*source) {
+                staged.set_capture_settings_unchecked(input, settings.clone());
             }
             if let Some(settings) = state.media_settings(*source) {
                 staged.insert_media_input(input, *settings);
@@ -513,6 +519,11 @@ pub(crate) fn apply(
                     ),
                 ));
             };
+            if matches!(source, InputSourceSpec::Device { .. })
+                && state.capture_settings(*input).is_none()
+            {
+                crate::engine::check_capture_room(state)?;
+            }
             match (current.is_media(), source.is_media()) {
                 (false, true) => {
                     state.insert_media_input(*input, fm_model::MediaPlaybackSettings::default());

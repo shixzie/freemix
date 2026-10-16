@@ -7,8 +7,8 @@ workstreams = ["media-core-clocks", "gpu-compositor-color", "audio-dsp", "codecs
 [[tests]]
 id = "accept-in-001"
 state = "present"
-paths = ["crates/io/fm-io-api/tests/contracts.rs", "crates/io/fm-io-macos/tests/protocol.rs", "apps/freemix-capture-node/tests/process.rs"]
-commands = ["cargo test -p fm-io-api --test contracts", "cargo test -p fm-io-macos --test protocol", "cargo test -p freemix-capture-node --test process"]
+paths = ["crates/io/fm-io-api/tests/contracts.rs", "crates/io/fm-io-macos/tests/protocol.rs", "apps/freemix-capture-node/tests/process.rs", "crates/io/fm-io-linux/tests/enumeration.rs", "crates/io/fm-io-linux/tests/supervisor.rs", "crates/io/fm-io-linux/tests/ffmpeg_device.rs", "crates/io/fm-io-linux/tests/v4l2_real.rs", "crates/foundation/fm-model/tests/capture_inputs.rs", "crates/foundation/fm-protocol/tests/capture_inputs.rs", "crates/services/fm-engine/tests/capture_inputs.rs", "apps/freemixd/tests/native_capture.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-io-api --test contracts", "cargo test -p fm-io-macos --test protocol", "cargo test -p freemix-capture-node --test process", "cargo test -p fm-io-linux --test enumeration", "cargo test -p fm-io-linux --test supervisor", "cargo test -p fm-io-linux --test ffmpeg_device", "cargo test -p fm-io-linux --test v4l2_real", "cargo test -p fm-model --test capture_inputs", "cargo test -p fm-protocol --test capture_inputs", "cargo test -p fm-engine --test capture_inputs", "cargo test -p freemixd --test native_capture", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-002"
 state = "planned"

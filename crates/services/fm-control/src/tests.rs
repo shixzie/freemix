@@ -2783,7 +2783,7 @@ fn input_add_and_remove_project_events_snapshots_history_and_journal() {
     assert!(matches!(
         added.output.events.as_slice(),
         [EventMessage {
-            payload: EventPayload::InputAdded { input: added, name, network_stream: None },
+            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None },
             edit_history: EditHistoryStatus {
                 undo_depth: 1,
                 next_undo: Some(1),
@@ -6421,4 +6421,204 @@ fn network_stream_inputs_replicate_redacted_with_their_status() {
         entry.status.last_error, None,
         "a snapshot carries no error text"
     );
+}
+
+/// IN-001: a capture input added live replicates its device and settings;
+/// `input_capture_set` edits are undoable and replicate as
+/// `capture_settings_changed`; the media plane's status becomes a
+/// `capture_status` runtime event and the snapshot's entry (without the
+/// error text), and its device inventory a `capture_devices` event.
+#[test]
+#[allow(clippy::too_many_lines)] // one add, edit, status, and inventory round trip
+fn capture_inputs_replicate_with_their_status_and_inventory() {
+    use fm_protocol::{
+        CaptureAudio, CaptureDevice, CaptureInputConfig, CaptureInventory, CaptureLossReason,
+        CaptureSettings, CaptureSignalState, CaptureStatus,
+    };
+
+    let mut control = service(16, 16);
+    let admin = principal(Role::Admin);
+    let config = CaptureInputConfig::new("v4l2:usb-1#C920");
+    let added = control
+        .submit(
+            &admin,
+            command(
+                "add",
+                "add-key",
+                CommandPayload::AddInput {
+                    input: WireInputId::from_domain(input(5)),
+                    name: "Camera".to_owned(),
+                    source: LiveInputSource::Capture(Box::new(config.clone())),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        added.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputAdded { capture: Some(added), network_stream: None, .. },
+            ..
+        }] if **added == config
+    ));
+    assert_wire_exact(&control, &added);
+    assert_eq!(control.capture_inputs(), [(input(5), config.clone())]);
+
+    let settings = CaptureSettings {
+        audio: CaptureAudio::None,
+        loss: fm_protocol::CaptureLossSlate::Black,
+        ..CaptureSettings::default()
+    };
+    let edited = control
+        .submit(
+            &admin,
+            command(
+                "set",
+                "set-key",
+                CommandPayload::SetCaptureSettings {
+                    input: WireInputId::from_domain(input(5)),
+                    settings: Box::new(settings.clone()),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        edited.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::CaptureSettingsChanged { settings: changed, .. },
+            ..
+        }] if **changed == settings
+    ));
+    assert_wire_exact(&control, &edited);
+    let entries = &control.snapshot().snapshot.capture_inputs;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].config.settings, settings);
+    assert_eq!(entries[0].status.state, CaptureSignalState::Idle);
+
+    // Undo restores the defaults and replicates them.
+    let undone = control
+        .submit(
+            &admin,
+            command(
+                "undo",
+                "undo-key",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        undone.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::CaptureSettingsChanged { settings: changed, .. },
+            ..
+        }] if **changed == CaptureSettings::default()
+    ));
+
+    // A non-capture input is refused.
+    let refused = control
+        .submit(
+            &admin,
+            command(
+                "bad",
+                "bad-key",
+                CommandPayload::SetCaptureSettings {
+                    input: WireInputId::from_domain(input(1)),
+                    settings: Box::new(settings),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(refused.output.events.len(), 0);
+
+    let status = CaptureStatus {
+        state: CaptureSignalState::SignalLost,
+        reason: Some(CaptureLossReason::Unplugged),
+        losses: 1,
+        last_error: Some("No such device".into()),
+        ..CaptureStatus::default()
+    };
+    let event = control
+        .set_capture_status(&server_identity(), input(5), &status)
+        .unwrap()
+        .expect("a changed status is published");
+    assert!(matches!(
+        &event.event,
+        RuntimeLifecycleEvent::CaptureStatus { status: published, .. }
+            if **published == status
+    ));
+    assert!(fm_protocol::encode_line(&WireMessage::RuntimeEvent(event)).is_ok());
+    // Unchanged, or not a capture input: nothing.
+    assert!(
+        control
+            .set_capture_status(&server_identity(), input(5), &status)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        control
+            .set_capture_status(&server_identity(), input(1), &status)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(control.capture_status(input(5)), Some(&status));
+    let entry = &control.snapshot().snapshot.capture_inputs[0];
+    assert_eq!(entry.status.state, CaptureSignalState::SignalLost);
+    assert_eq!(entry.status.losses, 1);
+    assert_eq!(
+        entry.status.last_error, None,
+        "a snapshot carries no error text"
+    );
+
+    // The inventory is bounded, published on change only.
+    assert_eq!(control.capture_inventory(), &CaptureInventory::default());
+    let inventory = CaptureInventory {
+        backend: Some("fake".into()),
+        error: None,
+        devices: vec![CaptureDevice {
+            stable_key: "v4l2:usb-1#C920".into(),
+            name: "C920".into(),
+            path: "/dev/video0".into(),
+            driver: "uvcvideo".into(),
+            bus: "usb-1".into(),
+            audio: None,
+            formats: Vec::new(),
+        }],
+    };
+    let event = control
+        .set_capture_inventory(&server_identity(), &inventory)
+        .unwrap()
+        .expect("a new inventory is published");
+    assert!(matches!(
+        &event.event,
+        RuntimeLifecycleEvent::CaptureDevices(published) if *published == inventory
+    ));
+    assert!(
+        control
+            .set_capture_inventory(&server_identity(), &inventory)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(control.capture_inventory(), &inventory);
+
+    // Removing the input drops its status.
+    control
+        .submit(
+            &admin,
+            command(
+                "remove",
+                "remove-key",
+                CommandPayload::RemoveInput {
+                    input: WireInputId::from_domain(input(5)),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(control.capture_status(input(5)), None);
+    assert_eq!(control.snapshot().snapshot.capture_inputs.len(), 0);
 }

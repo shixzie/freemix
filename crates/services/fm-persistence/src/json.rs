@@ -1,5 +1,6 @@
 mod animation_preset;
 mod audio_mixer;
+mod capture;
 mod decoder;
 mod display_output;
 mod encoder;

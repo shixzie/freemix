@@ -126,6 +126,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        capture_inputs: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Show".to_owned(),
@@ -1693,5 +1694,53 @@ fn title_previews_are_requested_assembled_and_atomic() {
         ConnectionState::Backoff(_)
     ));
     assert!(session.latest_title_preview().is_none());
+    server_thread.join().unwrap();
+}
+
+/// IN-001, Protocol 2.47: a capture devices request goes out exactly and
+/// its reply surfaces as [`SessionEvent::CaptureDevices`] and in the model.
+#[test]
+fn capture_devices_request_and_reply_round_trip() {
+    use fm_protocol::{CaptureDevicesMessage, CaptureDevicesRequest, CaptureInventory};
+
+    let inventory = CaptureInventory {
+        backend: Some("fake".into()),
+        error: Some("one device busy".into()),
+        devices: Vec::new(),
+    };
+    let reply = inventory.clone();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        let WireMessage::CaptureDevicesRequest(request) = peer.receive() else {
+            panic!("expected a capture devices request")
+        };
+        assert_eq!(request.request_id, "devices-1");
+        peer.send(&WireMessage::CaptureDevices(CaptureDevicesMessage {
+            request_id: request.request_id,
+            inventory: reply,
+        }));
+    });
+
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session
+        .send_capture_devices_request(CaptureDevicesRequest {
+            request_id: "devices-1".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        session.receive().unwrap(),
+        SessionEvent::CaptureDevices {
+            message: CaptureDevicesMessage {
+                request_id: "devices-1".into(),
+                inventory: inventory.clone(),
+            }
+        }
+    );
+    assert_eq!(
+        session.client().model().capture_inventory(),
+        Some(&inventory)
+    );
     server_thread.join().unwrap();
 }

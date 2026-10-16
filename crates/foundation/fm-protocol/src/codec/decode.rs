@@ -75,6 +75,7 @@ use super::{
 ///
 /// Returns a [`CodecError`] for invalid framing, escaping, required fields,
 /// field values, or message types.
+#[allow(clippy::too_many_lines)] // one dispatch over every message type
 pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
     if line.len() > MAX_LINE_BYTES {
         return Err(CodecError::LineTooLong);
@@ -156,6 +157,19 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;
             WireMessage::DisplayInventoryRequest(crate::DisplayInventoryRequest { request_id })
+        }
+        "capture_devices_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::CaptureDevicesRequest(crate::CaptureDevicesRequest { request_id })
+        }
+        "capture_devices" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::CaptureDevices(crate::CaptureDevicesMessage {
+                request_id,
+                inventory: super::capture::decode_inventory(&mut fields)?,
+            })
         }
         "display_inventory" => {
             let request_id = fields.required("request_id")?;
@@ -476,6 +490,10 @@ fn decode_command_payload(
         },
         "clear_display_output" => CommandPayload::ClearDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
+        },
+        "input_capture_set" => CommandPayload::SetCaptureSettings {
+            input: fields.canonical_input("input")?,
+            settings: Box::new(super::capture::decode_settings(fields)?),
         },
         "input_stream_set" => {
             let input = fields.canonical_input("input")?;
@@ -1144,6 +1162,9 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
         "network_stream" => Ok(LiveInputSource::NetworkStream(Box::new(
             super::network_stream::decode_config(fields)?,
         ))),
+        "capture" => Ok(LiveInputSource::Capture(Box::new(
+            super::capture::decode_config(fields)?,
+        ))),
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,
@@ -1543,6 +1564,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         network_streams: super::network_stream::decode_entries(
             &fields.required("network_streams")?,
         )?,
+        capture_inputs: super::capture::decode_entries(&fields.required("capture_inputs")?)?,
     })
 }
 
@@ -2099,22 +2121,30 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             input: fields.input("input")?,
             name: fields.required("name")?,
         },
-        "input_added" => EventPayload::InputAdded {
-            input: fields.canonical_input("input")?,
-            name: decode_new_input_name(fields)?,
-            network_stream: match fields.optional("kind").as_deref() {
-                None => None,
-                Some("network_stream") => {
-                    Some(Box::new(super::network_stream::decode_config(fields)?))
-                }
+        "input_added" => {
+            let input = fields.canonical_input("input")?;
+            let name = decode_new_input_name(fields)?;
+            let (network_stream, capture) = match fields.optional("kind").as_deref() {
+                None => (None, None),
+                Some("network_stream") => (
+                    Some(Box::new(super::network_stream::decode_config(fields)?)),
+                    None,
+                ),
+                Some("capture") => (None, Some(Box::new(super::capture::decode_config(fields)?))),
                 Some(other) => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
                         value: other.to_owned(),
                     });
                 }
-            },
-        },
+            };
+            EventPayload::InputAdded {
+                input,
+                name,
+                network_stream,
+                capture,
+            }
+        }
         "input_removed" => EventPayload::InputRemoved {
             input: fields.canonical_input("input")?,
         },
@@ -2157,6 +2187,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "fade_to_black_output_changed" => EventPayload::FadeToBlackOutputChanged {
             output: decode_output(fields, "output")?,
             affected: fields.boolean("affected")?,
+        },
+        "capture_settings_changed" => EventPayload::CaptureSettingsChanged {
+            input: fields.canonical_input("input")?,
+            settings: Box::new(super::capture::decode_settings(fields)?),
         },
         "network_stream_changed" => EventPayload::NetworkStreamChanged {
             input: fields.canonical_input("input")?,
@@ -2489,6 +2523,16 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         "display_inventory" => RuntimeLifecycleEvent::DisplayInventory(
             super::display_output::decode_inventory(fields)?,
         ),
+        "capture_status" => {
+            let (input, status) = super::capture::decode_status(fields)?;
+            RuntimeLifecycleEvent::CaptureStatus {
+                input,
+                status: Box::new(status),
+            }
+        }
+        "capture_devices" => {
+            RuntimeLifecycleEvent::CaptureDevices(super::capture::decode_inventory(fields)?)
+        }
         "network_stream_status" => {
             let (input, status) = super::network_stream::decode_status(fields)?;
             RuntimeLifecycleEvent::NetworkStreamStatus {
