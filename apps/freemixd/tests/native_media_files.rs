@@ -191,12 +191,25 @@ fn save_project(path: &Path) {
 struct NativeDaemon {
     child: Child,
     address: SocketAddr,
+    /// The daemon's stderr lines, drained so it never blocks on the pipe.
+    log: mpsc::Receiver<String>,
 }
 
 impl Drop for NativeDaemon {
+    /// On a failure, reports whether the daemon exited by itself and
+    /// replays its stderr (including any `FREEMIXD_SESSION` drop reason).
     fn drop(&mut self) {
+        if thread::panicking() {
+            thread::sleep(Duration::from_millis(500));
+            eprintln!("daemon exit: {:?}", self.child.try_wait());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if thread::panicking() {
+            while let Ok(line) = self.log.recv_timeout(Duration::from_secs(2)) {
+                eprintln!("daemon: {line}");
+            }
+        }
     }
 }
 
@@ -218,16 +231,18 @@ fn start_native(project: &Path) -> Result<NativeDaemon, String> {
     });
     let line = receiver.recv_timeout(STARTUP_TIMEOUT).unwrap_or_default();
     if let Ok(readiness) = line.parse::<ReadinessRecord>() {
-        // Drain stderr so the daemon never blocks on a full pipe.
-        if let Some(mut stderr) = child.stderr.take() {
+        let (log_sender, log) = mpsc::channel();
+        if let Some(stderr) = child.stderr.take() {
             thread::spawn(move || {
-                let mut sink = Vec::new();
-                let _ = stderr.read_to_end(&mut sink);
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    let _ = log_sender.send(line);
+                }
             });
         }
         return Ok(NativeDaemon {
             child,
             address: readiness.address,
+            log,
         });
     }
     let _ = child.kill();

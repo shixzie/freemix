@@ -12,7 +12,7 @@ use std::{
 };
 
 use fm_auth::Principal;
-use fm_control::{LiveEvent, Subscription};
+use fm_control::{LiveEvent, SubscriberFailureReason, Subscription};
 use fm_persistence::StoredProject;
 use fm_protocol::{
     AudioMetersMessage, ClientType, CommandPayload, CommandResult, ErrorMessage,
@@ -608,22 +608,28 @@ pub(super) fn run(
         let mut close = vec![false; peers.len()];
         for (index, peer) in peers.iter_mut().enumerate() {
             close[index] = read_peer(peer);
-            if !close[index] && peer.phase == Phase::AwaitHandshake {
-                close[index] = Instant::now() >= peer.handshake_deadline;
+            if !close[index]
+                && peer.phase == Phase::AwaitHandshake
+                && Instant::now() >= peer.handshake_deadline
+            {
+                close[index] = dropping(peer.id, "handshake_timeout");
             }
             if !close[index]
                 && let Some(session) = peer.session.as_mut()
+                && !super::session_heartbeat_active(session).unwrap_or(false)
             {
-                close[index] = !super::session_heartbeat_active(session).unwrap_or(false);
+                close[index] = dropping(peer.id, "heartbeat_timeout");
             }
             if !close[index]
-                && peer
-                    .subscription
-                    .as_ref()
-                    .and_then(Subscription::failure)
-                    .is_some()
+                && let Some(failure) = peer.subscription.as_ref().and_then(Subscription::failure)
             {
-                close[index] = true;
+                close[index] = dropping(
+                    peer.id,
+                    match failure {
+                        SubscriberFailureReason::SlowClient => "subscription_slow_client",
+                        SubscriberFailureReason::Disconnected => "subscription_disconnected",
+                    },
+                );
             }
         }
 
@@ -641,7 +647,9 @@ pub(super) fn run(
             };
             match runtime.dispatch(&mut peers[index], message, durable, native.as_deref_mut()) {
                 Ok(()) => {}
-                Err(DispatchError::Peer) => close[index] = true,
+                Err(DispatchError::Peer) => {
+                    close[index] = dropping(peers[index].id, "dispatch_refused");
+                }
                 Err(DispatchError::Daemon(error)) => {
                     shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
                     return Err(error);
@@ -761,7 +769,7 @@ pub(super) fn run(
                 continue;
             }
             if peer.phase == Phase::Syncing && peer.feed_initial_sync().is_err() {
-                close[index] = true;
+                close[index] = dropping(peer.id, "initial_sync_refused");
                 continue;
             }
             match write_peer(peer) {
@@ -771,7 +779,7 @@ pub(super) fn run(
                         once_peer = Some(peer.id);
                     }
                 }
-                WriteOutcome::Failed => close[index] = true,
+                WriteOutcome::Failed => close[index] = dropping(peer.id, "write_failed"),
             }
             if peer.phase == Phase::Syncing
                 && peer.initial_sync.is_empty()
@@ -830,7 +838,7 @@ fn release_held_results(
                     slot: None,
                 });
             }
-            Err(_) => close[index] = true,
+            Err(_) => close[index] = dropping(peer.id, "reply_refused"),
         }
     }
 }
@@ -879,7 +887,8 @@ fn read_peer(peer: &mut Peer) -> bool {
                 peer.inbound.extend(messages);
                 false
             }
-            Ok(_) | Err(_) => true,
+            Ok(_) => dropping(peer.id, "inbound_overflow"),
+            Err(_) => dropping(peer.id, "undecodable_inbound"),
         },
         Err(error)
             if matches!(
@@ -905,6 +914,14 @@ fn finish_after_read_close(peer: &mut Peer) -> bool {
     }
     peer.phase = Phase::Closing;
     false
+}
+
+/// Logs why the daemon drops a peer that did not close its own connection,
+/// so a client that sees the connection end can be matched to the policy
+/// that ended it. Returns `true`, the peer's close flag.
+fn dropping(peer: u64, reason: &str) -> bool {
+    eprintln!("FREEMIXD_SESSION\tv=1\tpeer={peer}\tclosed={reason}");
+    true
 }
 
 fn raw_peer_count(peers: &[Peer]) -> usize {
@@ -1440,7 +1457,7 @@ fn drain_live(peers: &mut [Peer], close: &mut [bool], budgets: &mut [usize]) {
                     break;
                 }
                 Err(_) => {
-                    close[index] = true;
+                    close[index] = dropping(peer.id, "live_event_refused");
                     break;
                 }
             }

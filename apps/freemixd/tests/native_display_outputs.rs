@@ -202,9 +202,20 @@ struct Daemon {
 }
 
 impl Drop for Daemon {
+    /// On a failure, reports whether the daemon exited by itself and
+    /// replays the stderr the test had not consumed yet.
     fn drop(&mut self) {
+        if thread::panicking() {
+            thread::sleep(Duration::from_millis(500));
+            eprintln!("daemon exit: {:?}", self.child.try_wait());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if thread::panicking() {
+            while let Ok(line) = self.stderr.recv_timeout(Duration::from_secs(2)) {
+                eprintln!("daemon: {line}");
+            }
+        }
     }
 }
 

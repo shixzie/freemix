@@ -15,7 +15,7 @@
 //! `FM_REQUIRE_NATIVE_MEDIA=1` makes that a failure.
 
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
     num::NonZeroU128,
     path::Path,
@@ -115,12 +115,25 @@ fn save_project(path: &Path) {
 struct NativeDaemon {
     child: Child,
     address: SocketAddr,
+    /// The daemon's stderr lines, drained so it never blocks on the pipe.
+    log: mpsc::Receiver<String>,
 }
 
 impl Drop for NativeDaemon {
+    /// On a failure, reports whether the daemon exited by itself and
+    /// replays its stderr (including any `FREEMIXD_SESSION` drop reason).
     fn drop(&mut self) {
+        if thread::panicking() {
+            thread::sleep(Duration::from_millis(500));
+            eprintln!("daemon exit: {:?}", self.child.try_wait());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if thread::panicking() {
+            while let Ok(line) = self.log.recv_timeout(Duration::from_secs(2)) {
+                eprintln!("daemon: {line}");
+            }
+        }
     }
 }
 
@@ -136,32 +149,37 @@ fn start_native(project: &Path) -> Result<NativeDaemon, String> {
         .spawn()
         .map_err(|error| format!("cannot spawn native daemon: {error}"))?;
     let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
         let _ = BufReader::new(stdout).read_line(&mut line);
         let _ = sender.send(line);
     });
-    let (stderr_sender, stderr_receiver) = mpsc::channel();
+    let (log_sender, log) = mpsc::channel();
     thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        let _ = stderr_sender.send(text);
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = log_sender.send(line);
+        }
     });
     let line = receiver.recv_timeout(STARTUP_TIMEOUT).unwrap_or_default();
     if let Ok(readiness) = line.parse::<ReadinessRecord>() {
         return Ok(NativeDaemon {
             child,
             address: readiness.address,
+            log,
         });
     }
     let _ = child.kill();
     let _ = child.wait();
-    let stderr = stderr_receiver
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap_or_default();
-    Err(format!("native daemon did not become ready: {stderr}"))
+    let mut stderr = Vec::new();
+    while let Ok(line) = log.recv_timeout(Duration::from_secs(5)) {
+        stderr.push(line);
+    }
+    Err(format!(
+        "native daemon did not become ready: {}",
+        stderr.join("\n")
+    ))
 }
 
 /// One Program monitor sample: the realized frame, its Program input, and

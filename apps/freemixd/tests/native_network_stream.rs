@@ -31,8 +31,9 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, MonitorFrameAssembler, MonitorImage, MonitorTap, Role,
-    RuntimeLifecycleEvent, WireInputId, WireMessage, decode_line, encode_line,
+    EventPayload, HandshakeRequest, HeartbeatMessage, MonitorFrameAssembler, MonitorImage,
+    MonitorTap, Role, RuntimeLifecycleEvent, ServerIdentity, WireInputId, WireMessage, decode_line,
+    encode_line,
 };
 use fm_types::network_stream::{
     NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus, StallSlate,
@@ -170,9 +171,20 @@ struct NativeDaemon {
 }
 
 impl Drop for NativeDaemon {
+    /// On a failure, reports whether the daemon exited by itself and
+    /// replays its stderr (including any `FREEMIXD_SESSION` drop reason).
     fn drop(&mut self) {
+        if thread::panicking() {
+            thread::sleep(Duration::from_millis(500));
+            eprintln!("daemon exit: {:?}", self.child.try_wait());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if thread::panicking() {
+            while let Ok(line) = self.log.recv_timeout(Duration::from_secs(2)) {
+                eprintln!("daemon: {line}");
+            }
+        }
     }
 }
 
@@ -217,11 +229,20 @@ fn start_native(project: &Path) -> Result<NativeDaemon, String> {
     Err(format!("native daemon did not become ready: {stderr}"))
 }
 
+/// How often the client heartbeats: well inside the daemon's 15 s session
+/// heartbeat timeout, which a loaded host can otherwise outlast mid-test.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
+
 struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     assembler: MonitorFrameAssembler,
     commands: u64,
+    /// The daemon's identity once its handshake response arrived; only then
+    /// can the client heartbeat.
+    server: Option<ServerIdentity>,
+    heartbeats: u64,
+    last_heartbeat: Instant,
 }
 
 impl Client {
@@ -236,6 +257,9 @@ impl Client {
             reader: BufReader::new(stream),
             assembler: MonitorFrameAssembler::new(),
             commands: 0,
+            server: None,
+            heartbeats: 0,
+            last_heartbeat: Instant::now(),
         }
     }
 
@@ -246,8 +270,29 @@ impl Client {
         self.writer.flush().unwrap();
     }
 
+    /// Keeps the session alive like a real client: the daemon closes a
+    /// session that has not heartbeat within its timeout, however busy the
+    /// connection is otherwise.
+    fn heartbeat_if_due(&mut self) {
+        let Some(server) = self.server.clone() else {
+            return;
+        };
+        if self.last_heartbeat.elapsed() < HEARTBEAT_EVERY {
+            return;
+        }
+        self.heartbeats += 1;
+        self.send(&WireMessage::Heartbeat(HeartbeatMessage {
+            server,
+            sequence: self.heartbeats,
+            sent_at_ms: self.heartbeats,
+            last_applied: None,
+        }));
+        self.last_heartbeat = Instant::now();
+    }
+
     /// The next message; no line on the wire ever carries the URL secret.
     fn receive(&mut self) -> WireMessage {
+        self.heartbeat_if_due();
         let mut line = String::new();
         assert_ne!(
             self.reader.read_line(&mut line).unwrap(),
@@ -255,7 +300,15 @@ impl Client {
             "daemon closed"
         );
         assert!(!line.contains(SECRET), "the URL secret leaked: {line}");
-        decode_line(&line).unwrap()
+        let message = decode_line(&line).unwrap();
+        if let WireMessage::HandshakeResponse(response) = &message {
+            self.server = Some(response.server.clone());
+        }
+        assert!(
+            !matches!(&message, WireMessage::Error(_)),
+            "daemon error: {message:?}"
+        );
+        message
     }
 
     fn wait_for<T>(
@@ -406,9 +459,15 @@ fn native_daemon_receives_a_network_stream_and_reports_its_status_over_the_wire(
     );
     assert_eq!(entry.config.settings.stall, StallSlate::Black);
 
-    // Nothing is sent yet: the receiver connects and waits.
+    // Nothing is sent yet: the receiver connects and waits. On a loaded
+    // host its first attempt can give up on the silence (after its timeout
+    // and connect grace) before this client subscribes, so it may already
+    // be reconnecting.
     let _ = client.status("a connecting status", |status| {
-        status.state == NetworkStreamState::Connecting
+        matches!(
+            status.state,
+            NetworkStreamState::Connecting | NetworkStreamState::Reconnecting { .. }
+        )
     });
 
     let sender = Sender::start(port);

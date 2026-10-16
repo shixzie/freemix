@@ -282,6 +282,25 @@ impl DaemonProcess {
     }
 }
 
+impl Drop for DaemonProcess {
+    /// Never lets the daemon outlive the test; on a failure, reports whether
+    /// it exited by itself and replays the stderr not yet consumed.
+    fn drop(&mut self) {
+        let failing = thread::panicking();
+        if failing {
+            thread::sleep(Duration::from_millis(500));
+            eprintln!("daemon exit: {:?}", self.child.try_wait());
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if failing {
+            while let Ok(chunk) = self.stderr.recv_timeout(Duration::from_secs(2)) {
+                eprint!("{chunk}");
+            }
+        }
+    }
+}
+
 fn drain(mut reader: impl Read + Send + 'static) -> mpsc::Receiver<String> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
