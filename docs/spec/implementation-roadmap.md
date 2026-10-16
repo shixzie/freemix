@@ -491,7 +491,12 @@ client, CLI, simulated daemon process, and Studio worker coverage, and
 `freemixd --test native_media_files` decodes a Matroska fixture with two
 tracks end to end when built with `--features native-media`
 (`FM_REQUIRE_FFMPEG=1` and `FM_REQUIRE_NATIVE_MEDIA=1` make missing tools a
-failure). There is still no persistent decoder process (each window is a
+failure). A native daemon also takes media files added live (batch import,
+duplicate, source replacement, and undo/redo): the worker opens the file
+off the render thread and the input airs once it reports it; a file that
+does not open, does not match the project size, or lacks colour tags
+faults its input instead of stopping the daemon (`freemixd --test
+native_live_inputs`). There is still no persistent decoder process (each window is a
 bounded tool run), no reverse play, no variable-frame-rate source support,
 no pitch-preserving time stretch, and no certification on the Windows,
 macOS, or profile-a-hd profiles, so `IN-003` remains planned.
@@ -525,9 +530,22 @@ ITU-R BS.775 matrices. Media faults map to offline reasons, published once and c
 when the input plays again. `freemixd` validates an import or a media
 replacement first, then copies the host media paths the command keeps into
 the bundle before executing and journaling it (removing any copy it does
-not keep); the native daemon refuses duplicate, import,
-multi-input removal, and source replacement, as it refuses live add and
-remove. The CLI edits categories, colour, pause, and close locally through
+not keep). The native daemon follows add, duplicate, import, removal,
+multi-input removal, source replacement, and their undo and redo live:
+after the command commits and before the next frame it retires every
+removed input (or replaced source) from the source registry and the Master
+mixer, stops its media-file worker off the render thread, and starts every
+new one on a transparent black picture and silence until its worker
+delivers (a generator renders its picture at once; a media file opens and
+decodes on its own worker, which reports the file, or its fault, through
+the input's status; a still decodes on its own thread; a network stream's
+receiver connects; a Scene input only recompiles the native project plan).
+Before staging, the native runtime vets the catalogue a command would
+leave and refuses, typed `runtime_unsupported`, kinds it does not realize
+live (capture devices, titles, colour, alias, and Program/Preview feed
+inputs, a generator test tone, and a change to a Stinger clip input it
+decodes since startup), and, typed `bounds_exceeded` on `inputs`, a
+catalogue past 64 native inputs or the retained GPU frame budget. The CLI edits categories, colour, pause, and close locally through
 the engine (`input-categories`, `input-category`, `input-color`,
 `input-pause`, `input-close`), imports a file list locally
 (`input-import-batch`), duplicates with labels (`input-duplicate`), and
@@ -540,9 +558,14 @@ category chips, and offers Duplicate, Replace source, Category, Colour,
 Pause/Resume, and Close/Reopen in the tile menu plus a batch import path
 list, with English and Spanish hover help. Acceptance (`accept-in-026`)
 adds model, persistence, protocol, engine, simulated daemon process, native
-media-file (`--features native-media`), CLI, and Studio hover-audit
-coverage. Capture devices are not paused or released natively (camera
-capture is macOS-only and the device graph is fixed at startup), device and
+media-file and live input catalogue (`--features native-media`,
+`freemixd --test native_live_inputs`: a colour, an imported clip, a
+duplicated scene, and a loopback network stream added, cut to Program,
+heard on Master, undone, redone, and removed while the daemon runs), CLI,
+and Studio hover-audit coverage. Capture devices are not paused, released,
+added, or removed natively (camera capture is macOS-only and the device
+graph is fixed at startup), title inputs cannot be added live natively,
+device and
 network sources report no availability yet, there is no relink-on-offline
 workflow beyond `project-relink`, and no certification on the Windows,
 macOS, or profile-a-hd profiles, so `IN-026` remains planned.
@@ -1876,7 +1899,10 @@ clock. On a stall the input holds its last frame or shows black and its audio
 fades to silence. The worker reconnects with backoff after a timeout or EOF and
 fails once the give-up count is reached. None of this blocks the Program
 render thread. A native `freemixd` opens the project's stream inputs at
-startup, restarts a receiver when its settings change, and publishes status.
+startup, connects a stream input added live (or by undo/redo) without a
+restart, stops a removed one's receiver, restarts a receiver when its
+settings change, and publishes status (`freemixd --test native_live_inputs`
+adds, airs, hears, and removes one over loopback UDP).
 The Studio Add input dialog has a validated stream form, and input tiles show
 a LIVE/BUFFERING/RECONNECTING n/FAILED badge. `freemix-cli` has
 `input-add-stream`, `input-stream-set`, and `input-stream-status` with
@@ -1884,8 +1910,6 @@ a LIVE/BUFFERING/RECONNECTING n/FAILED badge. `freemix-cli` has
 kill and recovery, and the jitter bound.
 
 Remaining gaps:
-- A native daemon refuses live `add_input`, so stream inputs must exist when
-  it starts.
 - Any settings edit reconnects the stream.
 - The simulated daemon reports every stream idle.
 - `ffmpeg` is required at runtime. Without it the input stays reconnecting

@@ -22,7 +22,7 @@ pub use matrix::{
 #[cfg(feature = "native-wgpu")]
 pub use native::{
     NativeImportError, NativeImportNormalizer, NativeSdrOutputTransform,
-    NativeSdrOutputTransformError, NativeWorkingFrame,
+    NativeSdrOutputTransformError, NativeWorkingFrame, validate_native_import,
 };
 pub use pipeline::{
     ColorError, ColorPipeline, ConvertedImage, DecodedFrame, LinearFrame, LinearRgba,

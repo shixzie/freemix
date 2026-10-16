@@ -178,6 +178,94 @@ pub(crate) struct NativeMediaFiles {
     dimensions: (u32, u32),
     late_frame: Option<u64>,
     late_frames: u64,
+    /// The codec adapter workers open their files through; `None` until a
+    /// daemon without media files at startup adds one.
+    adapter: Option<Adapter>,
+}
+
+/// How one worker starts.
+struct WorkerStart {
+    /// The file as opened at startup, if it was.
+    player: Option<FilePlayer>,
+    /// Reports already due (a startup fault).
+    reports: Vec<FileReport>,
+    closed: bool,
+    /// Added live: the worker opens the file itself first, as an input
+    /// reopening does.
+    open_live: bool,
+}
+
+/// The playback configuration of an input with `settings`.
+fn playback_config(
+    settings: &MediaPlaybackSettings,
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+) -> FilePlaybackConfig {
+    let mut config = FilePlaybackConfig::new(clock_domain, rate);
+    config.audio = Some(
+        settings
+            .audio_stream
+            .map_or(StreamSelector::Best, StreamSelector::Index),
+    );
+    config.growing = settings.growing.map(|growing| GrowingFileConfig {
+        live_edge_offset_frames: u64::from(growing.live_edge_offset_frames),
+        complete_after_idle_refreshes: NonZeroU32::new(growing.idle_completion_refreshes),
+    });
+    config
+}
+
+/// Starts one input's worker thread.
+fn spawn_worker(
+    adapter: Adapter,
+    input: InputId,
+    path: PathBuf,
+    config: FilePlaybackConfig,
+    start: WorkerStart,
+    growing: bool,
+    (rate, clock_domain, dimensions): (FrameRate, ClockDomainId, (u32, u32)),
+) -> Result<Worker, String> {
+    let WorkerStart {
+        player,
+        reports,
+        closed,
+        open_live,
+    } = start;
+    let shared = Arc::new(Shared {
+        state: Mutex::new(WorkerState {
+            reports,
+            closed,
+            ..WorkerState::default()
+        }),
+        wake: Condvar::new(),
+        panicked: AtomicBool::new(false),
+    });
+    let worker_shared = Arc::clone(&shared);
+    let thread = thread::Builder::new()
+        .name(format!("freemix-media-file-{input}"))
+        .spawn(move || {
+            let reopen = || adapter.open_playback(&path, config);
+            run_guarded(&worker_shared, || {
+                run_worker(
+                    &worker_shared,
+                    player,
+                    &reopen,
+                    WorkerMode { growing, open_live },
+                    rate,
+                    clock_domain,
+                    dimensions,
+                );
+            });
+        })
+        .map_err(|error| format!("native media input {input} worker: {error}"))?;
+    Ok(Worker {
+        shared,
+        thread: Some(thread),
+        requested: None,
+        collected: None,
+        closed,
+        blank_pending: false,
+        last_frame: None,
+    })
 }
 
 /// Maps a playback failure onto the input fault clients see.
@@ -351,16 +439,7 @@ impl NativeMediaFiles {
             closed,
         } in inputs
         {
-            let mut config = FilePlaybackConfig::new(clock_domain, rate);
-            config.audio = Some(
-                settings
-                    .audio_stream
-                    .map_or(StreamSelector::Best, StreamSelector::Index),
-            );
-            config.growing = settings.growing.map(|growing| GrowingFileConfig {
-                live_edge_offset_frames: u64::from(growing.live_edge_offset_frames),
-                complete_after_idle_refreshes: NonZeroU32::new(growing.idle_completion_refreshes),
-            });
+            let config = playback_config(&settings, rate, clock_domain);
             let growing = settings.growing.is_some();
             let seed_timing = timing_at(0, rate, clock_domain)
                 .ok_or_else(|| format!("native media input {input} cannot be timed"))?;
@@ -391,46 +470,21 @@ impl NativeMediaFiles {
                 input,
                 seed.ok_or_else(|| format!("native media input {input} cannot be timed"))?,
             ));
-            let shared = Arc::new(Shared {
-                state: Mutex::new(WorkerState {
+            let worker = spawn_worker(
+                adapter.clone(),
+                input,
+                path,
+                config,
+                WorkerStart {
+                    player,
                     reports,
                     closed,
-                    ..WorkerState::default()
-                }),
-                wake: Condvar::new(),
-                panicked: AtomicBool::new(false),
-            });
-            let worker_shared = Arc::clone(&shared);
-            let reopen_adapter = adapter.clone();
-            let thread = thread::Builder::new()
-                .name(format!("freemix-media-file-{input}"))
-                .spawn(move || {
-                    let reopen = || reopen_adapter.open_playback(&path, config);
-                    run_guarded(&worker_shared, || {
-                        run_worker(
-                            &worker_shared,
-                            player,
-                            &reopen,
-                            growing,
-                            rate,
-                            clock_domain,
-                            dimensions,
-                        );
-                    });
-                })
-                .map_err(|error| format!("native media input {input} worker: {error}"))?;
-            workers.insert(
-                input,
-                Worker {
-                    shared,
-                    thread: Some(thread),
-                    requested: None,
-                    collected: None,
-                    closed,
-                    blank_pending: false,
-                    last_frame: None,
+                    open_live: false,
                 },
-            );
+                growing,
+                (rate, clock_domain, dimensions),
+            )?;
+            workers.insert(input, worker);
         }
         Ok((
             Self {
@@ -442,15 +496,18 @@ impl NativeMediaFiles {
                 dimensions,
                 late_frame: None,
                 late_frames: 0,
+                adapter: Some(adapter.clone()),
             },
             seeds,
         ))
     }
 
-    /// No media-file inputs (a project without local video).
+    /// No media-file inputs (a project without local video). One added
+    /// live opens through an adapter made then.
     pub(crate) fn start_empty(
         rate: FrameRate,
         clock_domain: ClockDomainId,
+        dimensions: (u32, u32),
     ) -> (Self, Vec<(InputId, CpuVideoFrame)>) {
         (
             Self {
@@ -459,12 +516,108 @@ impl NativeMediaFiles {
                 blanks: Vec::new(),
                 rate,
                 clock_domain,
-                dimensions: (0, 0),
+                dimensions,
                 late_frame: None,
                 late_frames: 0,
+                adapter: None,
             },
             Vec::new(),
         )
+    }
+
+    /// Adds media-file input `input` while the daemon runs (IN-026) and
+    /// returns its seed picture: transparent black, sequence zero, held
+    /// until its worker presents the file. The file is opened on the
+    /// worker, never here: the worker reports it ([`FileReport::Opened`],
+    /// and the engine opens the transport on it) or its fault
+    /// ([`FileReport::Fault`], and the input goes offline), exactly as an
+    /// input reopening does. A closed input opens once it reopens.
+    /// `adapter` makes the codec adapter when none exists yet; without one
+    /// the input faults as `tool_unavailable`.
+    pub(crate) fn add_live(
+        &mut self,
+        input: MediaFileInput,
+        adapter: impl FnOnce() -> Option<Adapter>,
+    ) -> Result<CpuVideoFrame, String> {
+        let MediaFileInput {
+            input,
+            path,
+            settings,
+            closed,
+        } = input;
+        self.remove(input);
+        if self.adapter.is_none() {
+            self.adapter = adapter();
+        }
+        let seed = timing_at(0, self.rate, self.clock_domain)
+            .and_then(|timing| blank_picture(self.dimensions, timing))
+            .ok_or_else(|| format!("native media input {input} cannot be timed"))?;
+        let config = playback_config(&settings, self.rate, self.clock_domain);
+        let growing = settings.growing.is_some();
+        let worker = if let Some(adapter) = self.adapter.clone() {
+            spawn_worker(
+                adapter,
+                input,
+                path,
+                config,
+                WorkerStart {
+                    player: None,
+                    reports: Vec::new(),
+                    closed,
+                    open_live: true,
+                },
+                growing,
+                (self.rate, self.clock_domain, self.dimensions),
+            )?
+        } else {
+            eprintln!(
+                "FREEMIXD_MEDIA\tv=1\tinput={input}\tstartup_fault={}",
+                EngineMediaFault::ToolUnavailable.token()
+            );
+            Worker {
+                shared: Arc::new(Shared {
+                    state: Mutex::new(WorkerState {
+                        reports: vec![FileReport::Fault(EngineMediaFault::ToolUnavailable)],
+                        closed,
+                        ..WorkerState::default()
+                    }),
+                    wake: Condvar::new(),
+                    panicked: AtomicBool::new(true),
+                }),
+                thread: None,
+                requested: None,
+                collected: None,
+                closed,
+                blank_pending: false,
+                last_frame: None,
+            }
+        };
+        self.workers.insert(input, worker);
+        Ok(seed)
+    }
+
+    /// Removes media-file input `input` (an input removed, or given another
+    /// source, live): its worker stops and is joined off the session loop,
+    /// and nothing more of it is presented or reported. Returns whether it
+    /// had a worker.
+    pub(crate) fn remove(&mut self, input: InputId) -> bool {
+        self.sources.retain(|(candidate, _)| *candidate != input);
+        self.blanks.retain(|blank| blank.input != input);
+        let Some(mut worker) = self.workers.remove(&input) else {
+            return false;
+        };
+        worker.shared.lock().shutdown = true;
+        worker.shared.wake.notify_one();
+        if let Some(thread) = worker.thread.take() {
+            // Bounded by one in-flight tool run, which the loop never
+            // waits for.
+            let _ = thread::Builder::new()
+                .name(format!("freemix-media-file-retire-{input}"))
+                .spawn(move || {
+                    let _ = thread.join();
+                });
+        }
+        true
     }
 
     /// Every input's source as opened at startup, for
@@ -700,6 +853,14 @@ fn follow_growing_source(
     }
 }
 
+/// How a worker follows its file.
+#[derive(Clone, Copy)]
+struct WorkerMode {
+    growing: bool,
+    /// Added live: open the file before anything else.
+    open_live: bool,
+}
+
 /// Runs one input's worker. A picture that is not `dimensions` (a file
 /// reopened after it changed on disk) faults the input as unsupported
 /// instead of reaching the source registry, which would fail the session.
@@ -708,7 +869,7 @@ fn run_worker(
     shared: &Shared,
     mut opened: Option<FilePlayer>,
     reopen: &dyn Fn() -> Result<FilePlayer, FilePlaybackError>,
-    growing: bool,
+    WorkerMode { growing, open_live }: WorkerMode,
     rate: FrameRate,
     clock_domain: ClockDomainId,
     dimensions: (u32, u32),
@@ -717,7 +878,8 @@ fn run_worker(
     let mut next_refresh = Instant::now() + second;
     // Closed at startup: nothing is open until the input reopens. Open but
     // without a player: the file did not open, and the input is offline.
-    let mut released = shared.lock().closed;
+    // Added live: the file opens first, as on reopening.
+    let mut released = shared.lock().closed || open_live;
     let mut faulted = opened.is_none() && !released;
     let mut last_picture: Option<Arc<CpuVideoFrame>> = None;
     loop {
@@ -817,10 +979,14 @@ fn run_worker(
                 (None, None)
             } else {
                 match player.present(request.tick.clone()) {
+                    // A picture of another size, or one the GPU import
+                    // refuses (no colour metadata), would fail the shared
+                    // source registry: it faults this input instead.
                     Ok(output)
                         if output.video.as_ref().is_some_and(|picture| {
                             let size = picture.payload().dimensions();
                             (size.width(), size.height()) != dimensions
+                                || fm_color::validate_native_import(picture).is_err()
                         }) =>
                     {
                         faulted = true;
@@ -891,8 +1057,8 @@ mod tests {
         let (mut files, _) = NativeMediaFiles::start_empty(
             FrameRate::new(25, 1).unwrap(),
             ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+            (32, 18),
         );
-        files.dimensions = (32, 18);
         files.workers.insert(
             input(),
             Worker {

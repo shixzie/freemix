@@ -1208,6 +1208,12 @@ impl NativeProjectPlan {
         self.transient_rgba16f_bytes
     }
 
+    /// How many inputs (audio strips) the plan realizes.
+    #[must_use]
+    pub fn input_count(&self) -> usize {
+        self.audio_routes.len()
+    }
+
     /// Returns every configured output in stable project order.
     #[must_use]
     pub fn output_ids(&self) -> &[OutputId] {
@@ -2110,6 +2116,12 @@ impl NativeSourceRegistry {
         self.retained_rgba16f_bytes
     }
 
+    /// The bounds this registry holds its sources to.
+    #[must_use]
+    pub const fn limits(&self) -> NativeSourceLimits {
+        self.limits
+    }
+
     /// Iterates full-width source IDs in deterministic map order.
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = InputId> + '_ {
         self.sources.keys().copied()
@@ -2295,6 +2307,9 @@ pub struct NativeSourcePlayback {
     worker: NativeDecodeWorker,
     failed: bool,
     latest: NativeLatestFrames,
+    /// Decodes in flight for sources removed or replaced live, discarded
+    /// when they complete.
+    orphaned: Vec<NativeDecodeRequest>,
 }
 
 impl NativeSourcePlayback {
@@ -2341,6 +2356,36 @@ impl NativeSourcePlayback {
     pub fn set_retained_byte_limit(&mut self, maximum: u64) {
         debug_assert!(self.registry.retained_rgba16f_bytes <= maximum);
         self.registry.limits.max_retained_rgba16f_bytes = maximum;
+    }
+
+    /// Removes `input`'s source (an input removed live, IN-026), releasing
+    /// its retained frames. A decode the worker still runs for it is
+    /// discarded when it completes. Returns whether `input` had a source.
+    pub fn remove_source(&mut self, input: InputId) -> bool {
+        let Some(prefix) = self.registry.sources.remove(&input) else {
+            return false;
+        };
+        self.orphan(input, &prefix);
+        if let Some((width, height)) = self.registry.dimensions {
+            let released = rgba16f_frame_bytes(input, width, height)
+                .unwrap_or(0)
+                .saturating_mul(u64::try_from(prefix.frames.len()).unwrap_or(u64::MAX));
+            self.registry.retained_rgba16f_bytes = self
+                .registry
+                .retained_rgba16f_bytes
+                .saturating_sub(released);
+        }
+        self.latest.lock().remove(&input);
+        true
+    }
+
+    /// Forgets a source taken out of the registry: a decode still in flight
+    /// for it completes into nothing.
+    fn orphan(&mut self, input: InputId, prefix: &NativeVideoPrefix) {
+        if let Some(request) = prefix.in_flight {
+            debug_assert_eq!(request.input, input);
+            self.orphaned.push(request);
+        }
     }
 
     /// Stops the decode worker and consumes playback into its current registry.
@@ -3682,6 +3727,107 @@ impl NativeMasterRuntime {
         Ok(())
     }
 
+    /// Follows a live input catalogue change (IN-026): `project` is the
+    /// plan compiled for the changed catalogue. Every strip it no longer has
+    /// leaves both mixers with its source, every input in `replaced` (a new
+    /// source under the same id) is set up afresh, and every new leaf input
+    /// starts as a silent source whose strip takes the plan's controls.
+    /// Inputs in `pushed` then become pushed sources
+    /// ([`Self::attach_pushed_audio`]).
+    ///
+    /// Ordinary decoded sources, their cursors and synchronizers, the mixer
+    /// ramps of unchanged strips, and Stinger audio are untouched. The
+    /// change is staged on clones of both mixers, so a failure leaves the
+    /// mixers as they were.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bound, route, or mixer failure.
+    pub fn follow_catalogue(
+        &mut self,
+        project: &NativeProjectPlan,
+        replaced: &BTreeSet<InputId>,
+        pushed: &[InputId],
+    ) -> Result<(), NativeMasterError> {
+        if project.audio_routes.len() > MAX_NATIVE_AUDIO_STRIPS {
+            return Err(NativeMasterError::BoundsExceeded);
+        }
+        let mut mixer = self.mixer.clone();
+        let mut pending_mixer = self.pending_mixer.clone();
+        let mut retired = Vec::new();
+        for (&input, source) in &self.sources {
+            if !project.audio_strips.contains_key(&input) || replaced.contains(&input) {
+                if source.synchronizer.is_some() || source.in_flight.is_some() {
+                    return Err(NativeMasterError::DecodeContract { input });
+                }
+                retired.push(input);
+            }
+        }
+        let aliases = project
+            .audio_strips
+            .keys()
+            .copied()
+            .filter(|input| mixer.input_state(*input).is_some())
+            .filter(|input| !self.sources.contains_key(input))
+            .filter(|input| {
+                replaced.contains(input)
+                    || !matches!(
+                        project.audio_route(*input),
+                        Some(NativeAudioRoute::Leaf(source)) if !retired.contains(&source)
+                    )
+            })
+            .collect::<Vec<_>>();
+        // Strips whose input left (or whose source changed) and every
+        // alias of a retired source leave the mixer before anything is
+        // added back.
+        let retiring = |input: &InputId| {
+            !project.audio_strips.contains_key(input)
+                || retired.contains(input)
+                || aliases.contains(input)
+        };
+        let configured = self
+            .scratch
+            .meter_inputs
+            .iter()
+            .copied()
+            .chain(retired.iter().copied())
+            .chain(aliases.iter().copied())
+            .collect::<BTreeSet<_>>();
+        for input in configured.into_iter().filter(retiring) {
+            if mixer.input_state(input).is_some() {
+                mixer.remove_input(input)?;
+            }
+            if pending_mixer.input_state(input).is_some() {
+                pending_mixer.remove_input(input)?;
+            }
+        }
+        let map = ChannelMapping::identity(self.format.channels.clone())?;
+        let mut added = Vec::new();
+        for (&input, route) in &project.audio_routes {
+            if *route != NativeAudioRoute::Leaf(input) || mixer.input_state(input).is_some() {
+                continue;
+            }
+            let state = native_input_state(project, input)?;
+            mixer.add_input(input, self.format.clone(), map.clone(), state)?;
+            pending_mixer.add_input(input, self.format.clone(), map.clone(), state)?;
+            added.push(input);
+        }
+        self.mixer = mixer;
+        self.pending_mixer = pending_mixer;
+        for input in &retired {
+            self.sources.remove(input);
+            self.scratch.rendered.remove(input);
+        }
+        for input in added {
+            self.sources.insert(input, NativeAudioSource::silence());
+        }
+        self.realize_project_audio(project)?;
+        for &input in pushed {
+            self.attach_pushed_audio(input)?;
+        }
+        Ok(())
+    }
+
     /// Hands pushed source `input` its audio for engine frame `frame`.
     ///
     /// The block's channels map onto the Master layout by
@@ -3930,6 +4076,16 @@ impl NativeMasterRuntime {
     #[must_use]
     pub const fn expected_next_frame(&self) -> u64 {
         self.expected_next_frame
+    }
+
+    /// Inputs whose audio is decoded from a file by this Master's own
+    /// worker (a Stinger clip's media input since startup). Their decode
+    /// cursors cannot be retired while the show runs.
+    pub fn decoded_inputs(&self) -> impl Iterator<Item = InputId> + '_ {
+        self.sources
+            .iter()
+            .filter(|(_, source)| source.synchronizer.is_some())
+            .map(|(input, _)| *input)
     }
 
     #[must_use]
@@ -7114,6 +7270,7 @@ impl NativeMediaRuntime {
             worker,
             failed: false,
             latest,
+            orphaned: Vec::new(),
         })
     }
 
@@ -7349,6 +7506,114 @@ impl NativeMediaRuntime {
         block_on(self.ingest_live_video_frame(playback, input, frame))
     }
 
+    /// Registers `input` as a new live source seeded with `frame`, or
+    /// replaces its current source with one (a live input catalogue change,
+    /// IN-026). The seed is normalized here, once; later pictures arrive
+    /// through [`Self::ingest_live_video_frame`].
+    ///
+    /// The source bounds hold exactly as at startup: at most
+    /// [`NativeSourceLimits::max_media_inputs`] sources, every source at the
+    /// registry's dimensions (the first source of an empty registry sets
+    /// them), and the retained-byte charge within its limit. A refused seed
+    /// leaves playback unchanged and usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed bound, dimension, timeline, or normalization error,
+    /// or [`NativeSourcePlaybackError::Failed`] for failed playback.
+    pub fn insert_live_source_blocking(
+        &self,
+        playback: &mut NativeSourcePlayback,
+        input: InputId,
+        frame: CpuVideoFrame,
+    ) -> Result<(), NativeSourcePlaybackError> {
+        block_on(self.insert_live_source(playback, input, frame))
+    }
+
+    async fn insert_live_source(
+        &self,
+        playback: &mut NativeSourcePlayback,
+        input: InputId,
+        frame: CpuVideoFrame,
+    ) -> Result<(), NativeSourcePlaybackError> {
+        if playback.failed {
+            return Err(NativeSourcePlaybackError::Failed);
+        }
+        let (offsets_ns, last_source_pts, last_sequence, clock_domain) =
+            validate_live_seed_timing(input, &frame)?;
+        let size = frame.payload().dimensions();
+        let dimensions = (size.width(), size.height());
+        if let Some((expected_width, expected_height)) = playback.registry.dimensions
+            && dimensions != (expected_width, expected_height)
+        {
+            return Err(NativeSourceError::DimensionMismatch {
+                input,
+                expected_width,
+                expected_height,
+                actual_width: dimensions.0,
+                actual_height: dimensions.1,
+            }
+            .into());
+        }
+        let frame_bytes = rgba16f_frame_bytes(input, dimensions.0, dimensions.1)?;
+        let replaced_bytes = playback.registry.sources.get(&input).map_or(0, |prefix| {
+            frame_bytes.saturating_mul(u64::try_from(prefix.frames.len()).unwrap_or(u64::MAX))
+        });
+        let count = playback.registry.sources.len()
+            + usize::from(!playback.registry.sources.contains_key(&input));
+        if count > playback.registry.limits.max_media_inputs {
+            return Err(NativeSourceError::TooManySources {
+                actual: count,
+                maximum: playback.registry.limits.max_media_inputs,
+            }
+            .into());
+        }
+        let required = playback
+            .registry
+            .retained_rgba16f_bytes
+            .saturating_sub(replaced_bytes)
+            .checked_add(frame_bytes)
+            .ok_or(NativeSourceError::RetainedBytesExceeded {
+                required: u64::MAX,
+                maximum: playback.registry.limits.max_retained_rgba16f_bytes,
+            })?;
+        if required > playback.registry.limits.max_retained_rgba16f_bytes {
+            return Err(NativeSourceError::RetainedBytesExceeded {
+                required,
+                maximum: playback.registry.limits.max_retained_rgba16f_bytes,
+            }
+            .into());
+        }
+        let normalized = self
+            .normalizer
+            .normalize(&self.context, &frame)
+            .await
+            .map_err(|error| NativeSourcePlaybackError::Normalize { input, error })?;
+        if let Some(previous) = playback.registry.sources.remove(&input) {
+            playback.orphan(input, &previous);
+        }
+        playback.registry.sources.insert(
+            input,
+            NativeVideoPrefix {
+                frames: vec![normalized],
+                offsets_ns,
+                source_pts_origin: last_source_pts,
+                last_source_pts,
+                last_sequence,
+                clock_domain,
+                kind: NativeVideoSourceKind::Live,
+                end_of_stream: false,
+                in_flight: None,
+                available_for_stinger: false,
+                pinned_for_stinger: false,
+            },
+        );
+        playback.registry.dimensions = Some(dimensions);
+        playback.registry.retained_rgba16f_bytes = required;
+        playback.latest.store(input, frame);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn service_source_playback_inner(
         &self,
@@ -7370,6 +7635,14 @@ impl NativeMediaRuntime {
         for completed in completed {
             let request = completed.request;
             let input = request.input;
+            if let Some(index) = playback
+                .orphaned
+                .iter()
+                .position(|orphaned| *orphaned == request)
+            {
+                playback.orphaned.swap_remove(index);
+                continue;
+            }
             let mut window = completed
                 .window
                 .map_err(|error| NativeSourcePlaybackError::Decode { input, error })?;
@@ -11060,6 +11333,7 @@ mod tests {
             worker: NativeDecodeWorker::spawn(BTreeMap::new()).unwrap(),
             failed: false,
             latest: NativeLatestFrames::default(),
+            orphaned: Vec::new(),
         }
     }
 

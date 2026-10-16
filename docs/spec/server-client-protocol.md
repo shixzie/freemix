@@ -967,10 +967,16 @@ import, besides the existing add, remove, rename, and reorder):
   a closed input's file at startup, and an open input whose file is missing
   or does not play starts offline (`source_missing`, `unsupported`, ...)
   instead of stopping startup; closing and reopening it retries the file. A
-  media-file worker that fails takes its input offline (`decode_failed`). The native daemon refuses
-  `input_duplicate`, `input_import_batch`, `inputs_remove`, and
-  `input_replace_source` (`unavailable`), as it refuses live add and
-  remove.
+  media-file worker that fails takes its input offline (`decode_failed`). The native daemon realizes
+  `add_input`, `remove_input`, `input_duplicate`, `input_import_batch`,
+  `inputs_remove`, `input_replace_source`, and their undo and redo live,
+  starting new sources off the render thread; a source that fails to start
+  reports through the input's status. It refuses (`unavailable`,
+  `runtime_unsupported`) a change that would add or replace a capture,
+  title, colour, alias, or Program/Preview feed input or a generator test
+  tone, or remove a capture input or a Stinger clip input it decodes since
+  startup, and refuses (`resource_exhausted`, `bounds_exceeded` on
+  `inputs`) a catalogue past its native source bound.
 - Durability: categories and per-input lifecycle are project state
   (schema 37, `input_categories` and `input_lifecycle`).
 - 2.37 is refused.

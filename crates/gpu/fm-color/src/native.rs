@@ -613,6 +613,18 @@ struct ValidatedSource<'a> {
     transfer: TransferFunction,
 }
 
+/// Checks, without GPU work, that [`NativeImportNormalizer`] accepts
+/// `source`: its pixel format, colour metadata, and plane layout. A
+/// producer uses it to refuse a frame before it reaches a shared source
+/// registry.
+///
+/// # Errors
+///
+/// Returns the error normalizing `source` would.
+pub fn validate_native_import(source: &CpuVideoFrame) -> Result<(), NativeImportError> {
+    validate_source(source).map(|_| ())
+}
+
 fn validate_source(source: &CpuVideoFrame) -> Result<ValidatedSource<'_>, NativeImportError> {
     let payload = source.payload();
     if !matches!(payload.format(), PixelFormat::Rgba8 | PixelFormat::Bgra8) {

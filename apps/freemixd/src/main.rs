@@ -104,6 +104,8 @@ mod latest_record;
 mod media_clock;
 mod monitor_tap;
 #[cfg(feature = "native-media")]
+mod native_catalogue;
+#[cfg(feature = "native-media")]
 mod native_files;
 #[cfg(feature = "native-media")]
 mod native_streams;
@@ -686,6 +688,13 @@ struct NativeDaemon {
     files: native_files::NativeMediaFiles,
     /// Network stream inputs and their receivers (IN-015).
     network: native_streams::NativeNetworkStreams,
+    /// The source realized for every input, which live catalogue changes
+    /// follow (see [`native_catalogue`]).
+    catalogue: std::collections::BTreeMap<InputId, native_catalogue::NativeSourceKey>,
+    /// Still images of inputs added live, decoding off the loop.
+    stills: Vec<native_catalogue::PendingStill>,
+    /// The project's picture size, in pixels.
+    picture_size: (u32, u32),
     #[cfg(target_os = "macos")]
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
@@ -4595,6 +4604,12 @@ impl NativeDaemon {
             titles,
             files,
             network,
+            catalogue: native_catalogue::catalogue_keys(stored.project()),
+            stills: Vec::new(),
+            picture_size: {
+                let dimensions = stored.project().settings().video.dimensions;
+                (dimensions.width(), dimensions.height())
+            },
             #[cfg(target_os = "macos")]
             cameras: resolution.cameras,
             #[cfg(target_os = "macos")]
@@ -5891,6 +5906,7 @@ impl NativeDaemon {
     /// file workers reported. A change voids the projected frame, whose media
     /// ticks it moves.
     fn apply_file_reports(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
+        self.apply_live_stills(control)?;
         let reports = self.files.take_reports();
         if reports.is_empty() {
             return Ok(());
@@ -5979,6 +5995,11 @@ impl NativeDaemon {
         self.cameras.poll_into(&self.runtime, &mut self.playback)?;
         self.titles.set_frame(self.pacer.next_frame().get());
         for (input, frame) in self.titles.take_completed() {
+            // A title removed live keeps rendering until the worker learns
+            // of it; nothing of it is ingested.
+            if !self.playback.registry().contains(input) {
+                continue;
+            }
             self.runtime
                 .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
         }
@@ -6574,6 +6595,7 @@ fn resolve_native_file_sources(
         None if inputs.is_empty() => native_files::NativeMediaFiles::start_empty(
             project.settings().frame_rate,
             native_clock_domain(),
+            (dimensions.width(), dimensions.height()),
         ),
         None => {
             return Err(AppFailure("native media files require ffmpeg".into()).into());
@@ -7027,6 +7049,48 @@ impl NativeDaemon {
     fn emit_telemetry(&mut self) {}
 }
 
+/// The one picture generator input `input` shows: bars or a solid colour
+/// at the project's size, dated sequence zero.
+#[cfg(feature = "native-media")]
+fn native_generator_frame(
+    input: InputId,
+    simulated: &fm_model::SimulatedInput,
+    settings: &fm_model::ProjectSettings,
+) -> AppResult<fm_frame::CpuVideoFrame> {
+    let pattern = match simulated.video {
+        SimulatedVideo::Bars => SourcePattern::Bars,
+        SimulatedVideo::Solid(color) => {
+            SourcePattern::Solid(Rgba8::new(color.red, color.green, color.blue, color.alpha))
+        }
+    };
+    let dimensions = settings.video.dimensions;
+    let mut source = SimulatedVideoSource::new(
+        dimensions.width(),
+        dimensions.height(),
+        settings.frame_rate,
+        native_clock_domain(),
+        pattern,
+    )
+    .map_err(|error| {
+        AppFailure(format!(
+            "native generator construction failed for input {input}: {error}"
+        ))
+    })?;
+    source
+        .next_frame()
+        .map_err(|error| {
+            AppFailure(format!(
+                "native generator frame failed for input {input}: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            AppFailure(format!(
+                "native generator produced signal loss for input {input}"
+            ))
+            .into()
+        })
+}
+
 #[cfg(feature = "native-media")]
 #[allow(clippy::too_many_lines)]
 fn resolve_native_sources(
@@ -7046,46 +7110,11 @@ fn resolve_native_sources(
                 settings.video.dimensions,
             ),
             InputKind::Simulated(simulated) => {
-                let pattern = match simulated.video {
-                    SimulatedVideo::Bars => SourcePattern::Bars,
-                    SimulatedVideo::Solid(color) => SourcePattern::Solid(Rgba8::new(
-                        color.red,
-                        color.green,
-                        color.blue,
-                        color.alpha,
-                    )),
-                };
-                let dimensions = settings.video.dimensions;
-                let mut source = SimulatedVideoSource::new(
-                    dimensions.width(),
-                    dimensions.height(),
-                    settings.frame_rate,
-                    native_clock_domain(),
-                    pattern,
-                )
-                .map_err(|error| {
-                    AppFailure(format!(
-                        "native generator construction failed for input {}: {error}",
-                        input.id
-                    ))
-                })?;
-                let frame = source
-                    .next_frame()
-                    .map_err(|error| {
-                        AppFailure(format!(
-                            "native generator frame failed for input {}: {error}",
-                            input.id
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        AppFailure(format!(
-                            "native generator produced signal loss for input {}",
-                            input.id
-                        ))
-                    })?;
-                Ok(NativeResolvedSource::RetainedFrame {
-                    input: input.id,
-                    frame,
+                native_generator_frame(input.id, simulated, settings).map(|frame| {
+                    NativeResolvedSource::RetainedFrame {
+                        input: input.id,
+                        frame,
+                    }
                 })
             }
             InputKind::Color => Err(AppFailure(format!(
@@ -11319,18 +11348,21 @@ fn execute_native_authority_command(
     native: &mut NativeDaemon,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
-    if native_refuses_input_catalogue(&command.payload) {
-        return Ok(CommandDelivery {
-            result: native_input_catalogue_rejection(
-                command,
-                control.diagnostics().current_revision,
-            ),
-            #[cfg(test)]
-            events: Vec::new(),
-            #[cfg(test)]
-            runtime_events: Vec::new(),
-        });
-    }
+    // Live catalogue changes (IN-026): host media an import or a source
+    // replacement names comes into the bundle first, and the native
+    // runtime vets the catalogue a command would leave before it is staged.
+    let imported = import_host_media(control, store, principal, command, now);
+    let command = imported.command.as_ref().unwrap_or(command);
+    #[cfg(feature = "native-media")]
+    let budget = native.catalogue_budget();
+    #[cfg(feature = "native-media")]
+    let vet = move |current: &StoredProject, candidate: &StoredProject| {
+        budget.refusal(current.project(), candidate.project())
+    };
+    #[cfg(feature = "native-media")]
+    let vet: Option<&ProjectVet<'_>> = Some(&vet);
+    #[cfg(not(feature = "native-media"))]
+    let vet: Option<&ProjectVet<'_>> = None;
     native.invalidate_projection();
     let execution = if is_stinger_mutation(command) {
         match execute_native_stinger_mutation(
@@ -11364,6 +11396,7 @@ fn execute_native_authority_command(
             server,
             command,
             now,
+            vet,
             |control, server| {
                 native
                     .wait_and_tick(control, server, process_shutdown)?
@@ -11387,7 +11420,10 @@ fn execute_native_authority_command(
     #[cfg(feature = "native-media")]
     native.titles.observe_templates(&control.title_templates());
     #[cfg(feature = "native-media")]
+    native.sync_input_catalogue(control, durable.project())?;
+    #[cfg(feature = "native-media")]
     native.sync_input_lifecycle(control)?;
+    imported.discard_unused(store, durable.project());
     Ok(durable_delivery(execution))
 }
 
@@ -11591,46 +11627,6 @@ fn import_host_media(
     HostMediaImport {
         command: Some(rewritten),
         copied,
-    }
-}
-
-/// Whether a native daemon refuses `payload` because it changes the input
-/// catalogue or an input's source graph: add, remove, duplicate, batch
-/// import, multi-input removal, and source replacement (IN-026).
-fn native_refuses_input_catalogue(payload: &CommandPayload) -> bool {
-    matches!(
-        payload,
-        CommandPayload::AddInput { .. }
-            | CommandPayload::RemoveInput { .. }
-            | CommandPayload::InputLifecycle(
-                fm_protocol::InputLifecycleOperation::Duplicate { .. }
-                    | fm_protocol::InputLifecycleOperation::Import { .. }
-                    | fm_protocol::InputLifecycleOperation::RemoveInputs { .. }
-                    | fm_protocol::InputLifecycleOperation::ReplaceSource { .. }
-            )
-    )
-}
-
-/// Refuses a live input addition or removal on a native daemon.
-///
-/// The native media runtime builds its capture, decode and mixer graph from
-/// the project at startup and cannot add or retire a source graph while it
-/// runs, so the catalogue may only change offline there. Nothing is staged, so
-/// the command leaves no receipt and stays refused on every retry.
-fn native_input_catalogue_rejection(
-    command: &CommandMessage,
-    current_revision: u64,
-) -> CommandResult {
-    CommandResult::Rejected {
-        id: command.id.clone(),
-        code: RejectionCode::Unavailable.as_str().to_owned(),
-        message: "live input add, remove, duplicate, import and source replacement are not \
-                  realized by the native media runtime; stop the daemon and use freemix-cli"
-            .to_owned(),
-        fields: Vec::new(),
-        current_revision,
-        retryable: false,
-        reason: Some(fm_protocol::RefusalReason::RuntimeUnsupported),
     }
 }
 
@@ -12131,11 +12127,19 @@ fn execute_durable_command(
         server,
         command,
         now_millis,
+        None,
         |control, server| Ok(control.tick(server)?.runtime_events),
     )
 }
 
+/// Refuses an accepted command by the project it would leave (the durable
+/// project, then the staged one) before anything is recorded.
+type ProjectVet<'a> = dyn Fn(&StoredProject, &StoredProject) -> Option<CommandRefusal> + 'a;
+
 /// Stages, records, commits, and realizes one command.
+///
+/// `vet` may refuse an accepted command by the project it would leave;
+/// nothing is staged or recorded for a refused one.
 ///
 /// Failures before `store.record` refuse the command as classified by
 /// [`staging_refusal`]; a failing `record` refuses it as undurable; failures
@@ -12149,6 +12153,7 @@ fn execute_durable_command_with_ticks(
     server: &ServerIdentity,
     command: &CommandMessage,
     now_millis: u64,
+    vet: Option<&ProjectVet<'_>>,
     mut tick: impl FnMut(
         &mut ControlService<Policy>,
         &ServerIdentity,
@@ -12203,6 +12208,15 @@ fn execute_durable_command_with_ticks(
             return refuse_staged_command(command, current_revision, error, Vec::new());
         }
     };
+    if prepared.submission().is_accepted()
+        && let Some(refusal) = vet.and_then(|vet| vet(durable, &updated))
+    {
+        drop(prepared);
+        return Ok(DurableExecution {
+            submission: rejected_submission(command, current_revision, &refusal),
+            runtime_events: Vec::new(),
+        });
+    }
     // An animation edit's template is staged before its batch, so whatever
     // replays the batch finds the template the manifest it lands on needs.
     let animations = staged_title_animations(&prepared, &updated);
@@ -19952,94 +19966,6 @@ mod tests {
         assert_eq!(saver.0.get(), 2);
     }
 
-    #[test]
-    fn native_input_catalogue_changes_are_refused_with_the_offline_path() {
-        let result = native_input_catalogue_rejection(
-            &test_command(
-                "native-add",
-                "native-add-key",
-                CommandPayload::AddInput {
-                    input: fm_protocol::WireInputId::from_domain(test_input_id(9)),
-                    name: "Guest".into(),
-                    source: fm_protocol::LiveInputSource::Bars,
-                },
-            ),
-            4,
-        );
-        assert!(matches!(
-            result,
-            CommandResult::Rejected {
-                ref code,
-                ref message,
-                current_revision: 4,
-                retryable: false,
-                ..
-            } if code == "unavailable"
-                && message.contains("not realized by the native media runtime")
-                && message.contains("freemix-cli")
-        ));
-        // IN-026: duplicate, import, multi-input removal and source
-        // replacement change the source graph and are refused natively;
-        // labels, pause and close are realized.
-        let wire = |id| fm_protocol::WireInputId::from_domain(test_input_id(id));
-        for (operation, refused) in [
-            (
-                fm_protocol::InputLifecycleOperation::Duplicate {
-                    source: wire(1),
-                    input: wire(9),
-                    name: None,
-                },
-                true,
-            ),
-            (
-                fm_protocol::InputLifecycleOperation::Import { items: Vec::new() },
-                true,
-            ),
-            (
-                fm_protocol::InputLifecycleOperation::RemoveInputs {
-                    inputs: vec![wire(2)],
-                },
-                true,
-            ),
-            (
-                fm_protocol::InputLifecycleOperation::ReplaceSource {
-                    input: wire(2),
-                    source: fm_protocol::WireInputSource::Generator {
-                        video: fm_protocol::WireGeneratorVideo::Bars,
-                        tone_hz: None,
-                    },
-                },
-                true,
-            ),
-            (
-                fm_protocol::InputLifecycleOperation::SetPaused {
-                    input: wire(2),
-                    paused: true,
-                },
-                false,
-            ),
-            (
-                fm_protocol::InputLifecycleOperation::SetClosed {
-                    input: wire(2),
-                    closed: true,
-                },
-                false,
-            ),
-            (
-                fm_protocol::InputLifecycleOperation::SetColor {
-                    input: wire(2),
-                    color: Some(fm_protocol::InputColorLabel::Red),
-                },
-                false,
-            ),
-        ] {
-            assert_eq!(
-                native_refuses_input_catalogue(&CommandPayload::InputLifecycle(operation)),
-                refused
-            );
-        }
-    }
-
     #[cfg(feature = "native-media")]
     #[test]
     fn native_stinger_preflight_rejections_are_path_free_and_retryable_by_resubmission() {
@@ -20542,6 +20468,7 @@ mod tests {
             server,
             command,
             0,
+            None,
             |control, server| {
                 let outcome = control.tick(server)?;
                 realized.push((
