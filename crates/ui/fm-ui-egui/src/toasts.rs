@@ -73,6 +73,9 @@ pub(crate) struct Toast {
     pub(crate) id: u64,
     /// Toasts with the same key replace each other in place.
     pub(crate) key: Option<String>,
+    /// Shown on hover: details kept out of the message, such as a
+    /// refusal's stable reason code.
+    pub(crate) detail: Option<String>,
 }
 
 /// Bounded toast queue plus the messages already announced.
@@ -96,12 +99,23 @@ pub(crate) struct ToastQueue {
 impl ToastQueue {
     /// Pushes one toast, dropping the oldest when the queue is full.
     pub(crate) fn push(&mut self, kind: ToastKind, message: String) {
-        self.push_keyed(None, kind, message);
+        self.push_keyed(None, kind, message, None);
     }
 
     /// Replaces the toast with `key` in place (new kind, message, and a full
     /// lifetime), or pushes a new keyed toast when none is visible.
     pub(crate) fn upsert(&mut self, key: &str, kind: ToastKind, message: String) {
+        self.upsert_detailed(key, kind, message, None);
+    }
+
+    /// [`Self::upsert`] with a hover `detail`.
+    pub(crate) fn upsert_detailed(
+        &mut self,
+        key: &str,
+        kind: ToastKind,
+        message: String,
+        detail: Option<String>,
+    ) {
         if let Some(toast) = self
             .toasts
             .iter_mut()
@@ -110,11 +124,12 @@ impl ToastQueue {
             let lifetime_ms = kind.lifetime_ms();
             toast.kind = kind;
             toast.message = message;
+            toast.detail = detail;
             toast.remaining_ms = lifetime_ms;
             toast.lifetime_ms = lifetime_ms;
             return;
         }
-        self.push_keyed(Some(key.to_owned()), kind, message);
+        self.push_keyed(Some(key.to_owned()), kind, message, detail);
     }
 
     /// Marks the current error as already announced, so a message another
@@ -133,7 +148,13 @@ impl ToastQueue {
         }
     }
 
-    fn push_keyed(&mut self, key: Option<String>, kind: ToastKind, message: String) {
+    fn push_keyed(
+        &mut self,
+        key: Option<String>,
+        kind: ToastKind,
+        message: String,
+        detail: Option<String>,
+    ) {
         if self.toasts.len() == TOAST_CAPACITY {
             self.toasts.pop_front();
         }
@@ -145,6 +166,7 @@ impl ToastQueue {
             lifetime_ms,
             id: self.next_id,
             key,
+            detail,
         });
         self.next_id = self.next_id.wrapping_add(1);
     }
@@ -222,13 +244,16 @@ impl ToastQueue {
             }
             let own = (!self.acknowledged_refusals.contains(&refusal.command_id))
                 .then(|| refusal.toast_text(self.locale, state.view.as_ref()));
+            let detail = own.as_ref().map(|_| {
+                fm_ui_model::i18n::refusal_code_detail(self.locale, refusal.reason_code())
+            });
             let rest = remainder.flatten().filter(|_| error_is_new);
             let message = match (own, rest) {
                 (Some(own), Some(rest)) => Some(format!("{own}; {rest}")),
                 (own, rest) => own.or(rest),
             };
             if let Some(message) = message {
-                self.push(ToastKind::Error, message);
+                self.push_keyed(None, ToastKind::Error, message, detail);
             }
         }
         if explained {
@@ -373,7 +398,7 @@ mod tests {
         )
     }
 
-    const SCENE_LAYER_ES: &str = "Comando rechazado (input_in_use): «Entrada 1» es una fuente \
+    const SCENE_LAYER_ES: &str = "Comando rechazado: «Entrada 1» es una fuente \
                                   de capa de la escena 100. Quite esa capa de la escena primero.";
 
     fn spanish_queue() -> ToastQueue {
@@ -460,7 +485,7 @@ mod tests {
             messages,
             [
                 SCENE_LAYER_ES,
-                "Comando rechazado (bounds_exceeded): Correcciones de color: el límite es 64."
+                "Comando rechazado: Correcciones de color: el límite es 64."
             ]
         );
     }
@@ -526,12 +551,12 @@ mod tests {
         queue.observe(&state);
         assert_eq!(
             queue.iter().next().unwrap().message,
-            "Comando rechazado (unsupported_scheme): esquema no admitido (admitidos: rtsp, rtp, \
+            "Comando rechazado: esquema no admitido (admitidos: rtsp, rtp, \
              udp, tcp, http, https, hls, rtmp, rtmps, srt)"
         );
         assert_eq!(
             refusal.text(Locale::ENGLISH, None),
-            "Command refused (unsupported_scheme): unsupported scheme (allowed: rtsp, rtp, udp, \
+            "Command refused: unsupported scheme (allowed: rtsp, rtp, udp, \
              tcp, http, https, hls, rtmp, rtmps, srt)"
         );
     }

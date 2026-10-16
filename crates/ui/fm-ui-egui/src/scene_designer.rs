@@ -52,9 +52,9 @@ use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON, edit_histo
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
-    AMBER, MONITOR_BLACK, Tone, accent_color, border_strong_color, caption, close_key, field_label,
-    muted_color, raised_color, section_label, small_button, status_chip, text_color,
-    text_dim_color,
+    AMBER, KeyIcon, MONITOR_BLACK, Tone, accent_color, add_icon_button, border_strong_color,
+    caption, close_key, field_label, muted_color, raised_color, section_label, small_button,
+    status_chip, text_color, text_dim_color,
 };
 use crate::toasts::ToastKind;
 use crate::{StudioIntent, StudioShell, StudioUiState, workspace};
@@ -1628,6 +1628,15 @@ fn scrub(
                 .speed(scrub.speed)
                 .suffix(scrub.suffix)
                 .max_decimals(decimals)
+                .custom_formatter(move |value, range| {
+                    // One-decimal fields read whole numbers without a
+                    // trailing `.0` (`30 %`, not `30.0 %`).
+                    if decimals == 1 && (value - value.round()).abs() < 0.05 {
+                        format!("{value:.0}")
+                    } else {
+                        egui::emath::format_with_decimals_in_range(value, range)
+                    }
+                })
                 .update_while_editing(false),
         )
         .hint(&scrub.hover, blocked.unwrap_or(""));
@@ -2244,6 +2253,17 @@ fn key_section(
     }
 }
 
+/// A compact effect-row key with a painted `icon`.
+fn icon_key(ui: &mut Ui, enabled: bool, icon: KeyIcon, label: &str) -> egui::Response {
+    add_icon_button(
+        ui,
+        enabled,
+        egui::Button::new("").min_size(Vec2::new(22.0, 20.0)),
+        icon,
+        label,
+    )
+}
+
 /// An effect kind's name and what it does.
 fn effect_text(name: &str) -> (Msg, Msg) {
     match name {
@@ -2258,37 +2278,49 @@ fn effect_text(name: &str) -> (Msg, Msg) {
     }
 }
 
-/// An effect parameter's label, help, and shown value per stored value
-/// (sharpen's per mille shows as percent).
-fn parameter_text(name: &str, parameter: usize) -> (Msg, Msg, f64) {
+/// An effect parameter's label, help, shown value per stored value
+/// (sharpen's per mille shows as percent), and unit suffix. Every signed
+/// strength (brightness, contrast, saturation) and sharpen read in percent;
+/// levels read in 8-bit code values.
+fn parameter_text(name: &str, parameter: usize) -> (Msg, Msg, f64, &'static str) {
     match (name, parameter) {
-        ("levels", 0) => (Msg::ColourBlack, Msg::DesignEffectBlackHover, 1.0),
-        ("levels", _) => (Msg::ColourWhite, Msg::DesignEffectWhiteHover, 1.0),
+        ("levels", 0) => (Msg::ColourBlack, Msg::DesignEffectBlackHover, 1.0, ""),
+        ("levels", _) => (Msg::ColourWhite, Msg::DesignEffectWhiteHover, 1.0, ""),
         ("brightness_contrast", 0) => (
             Msg::DesignEffectBrightness,
             Msg::DesignEffectBrightnessHover,
             1.0,
+            " %",
         ),
-        ("brightness_contrast", _) => (Msg::GradeContrast, Msg::DesignEffectContrastHover, 1.0),
+        ("brightness_contrast", _) => (
+            Msg::GradeContrast,
+            Msg::DesignEffectContrastHover,
+            1.0,
+            " %",
+        ),
         ("saturation", _) => (
             Msg::DesignEffectAmount,
             Msg::DesignEffectSaturationAmountHover,
             1.0,
+            " %",
         ),
         ("sharpen", _) => (
             Msg::DesignEffectAmount,
             Msg::DesignEffectSharpenAmountHover,
             0.1,
+            " %",
         ),
         (_, 0) => (
             Msg::DesignEffectHorizontal,
             Msg::DesignEffectHorizontalHover,
             1.0,
+            "",
         ),
         _ => (
             Msg::DesignEffectVertical,
             Msg::DesignEffectVerticalHover,
             1.0,
+            "",
         ),
     }
 }
@@ -2331,31 +2363,43 @@ fn effects_section(
                 )
                 .on_hover_text(l.text(hover));
                 ui.with_layout(l10n::trailing_layout(l), |ui| {
-                    if ui
-                        .add_enabled(reason.is_none(), small_button("✕"))
-                        .hint(l.text(Msg::DesignEffectRemoveHover), reason.unwrap_or(""))
-                        .clicked()
+                    if icon_key(
+                        ui,
+                        reason.is_none(),
+                        KeyIcon::Remove,
+                        l.text(Msg::KeyRemove),
+                    )
+                    .hint(l.text(Msg::DesignEffectRemoveHover), reason.unwrap_or(""))
+                    .clicked()
                     {
                         action = Some((index, None));
                     }
                     let last = index + 1 == count;
-                    if ui
-                        .add_enabled(reason.is_none() && !last, small_button("▼"))
-                        .hint(
-                            l.text(Msg::DesignEffectDownHover),
-                            reason.unwrap_or(Msg::DesignReasonEffectLast.en()),
-                        )
-                        .clicked()
+                    if icon_key(
+                        ui,
+                        reason.is_none() && !last,
+                        KeyIcon::Down,
+                        l.text(Msg::KeyMoveDown),
+                    )
+                    .hint(
+                        l.text(Msg::DesignEffectDownHover),
+                        reason.unwrap_or(Msg::DesignReasonEffectLast.en()),
+                    )
+                    .clicked()
                     {
                         action = Some((index, Some(index + 1)));
                     }
-                    if ui
-                        .add_enabled(reason.is_none() && index > 0, small_button("▲"))
-                        .hint(
-                            l.text(Msg::DesignEffectUpHover),
-                            reason.unwrap_or(Msg::DesignReasonEffectFirst.en()),
-                        )
-                        .clicked()
+                    if icon_key(
+                        ui,
+                        reason.is_none() && index > 0,
+                        KeyIcon::Up,
+                        l.text(Msg::KeyMoveUp),
+                    )
+                    .hint(
+                        l.text(Msg::DesignEffectUpHover),
+                        reason.unwrap_or(Msg::DesignReasonEffectFirst.en()),
+                    )
+                    .clicked()
                     {
                         action = Some((index, Some(index.saturating_sub(1))));
                     }
@@ -2370,7 +2414,7 @@ fn effects_section(
                         let Ok(parameter_index) = u8::try_from(parameter) else {
                             continue;
                         };
-                        let (label, help, _) = parameter_text(&effect.name, parameter);
+                        let (label, help, _, _) = parameter_text(&effect.name, parameter);
                         let mut on = effect.parameters[parameter] != 0;
                         if ui
                             .add_enabled(
@@ -2401,7 +2445,7 @@ fn effects_section(
                         let Ok(parameter_index) = u8::try_from(parameter) else {
                             continue;
                         };
-                        let (label, help, shown_per_stored) =
+                        let (label, help, shown_per_stored, suffix) =
                             parameter_text(&effect.name, parameter);
                         scrub(
                             ui,
@@ -2418,7 +2462,7 @@ fn effects_section(
                                 range: f64::from(*minimum) * shown_per_stored
                                     ..=f64::from(*maximum) * shown_per_stored,
                                 speed: if shown_per_stored < 1.0 { 0.25 } else { 0.5 },
-                                suffix: if shown_per_stored < 1.0 { " %" } else { "" },
+                                suffix,
                                 shown_per_stored,
                             },
                             reason,

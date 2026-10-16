@@ -70,6 +70,8 @@ impl ColumnMetrics {
 const _: () = assert!(fm_protocol::TRANSITION_FAVORITE_COUNT == 4);
 /// Label size range of the favourite keys (points).
 const FAVORITE_LABEL_MIN: f32 = 9.0;
+/// Smallest label size of the manual start keys.
+const MANUAL_LABEL_MIN: f32 = 8.0;
 const FAVORITE_LABEL_MAX: f32 = 12.0;
 /// The automatic mixes behind the MORE key: every kind without a key of
 /// its own in the column.
@@ -718,6 +720,17 @@ pub(crate) fn draw_transition_column(
         names,
         intents,
     );
+}
+
+/// The rule and Fade to Black block that close the transition column. A
+/// short Transitions tile pins this block along its bottom edge instead of
+/// letting it scroll away (see `StudioShell::draw_transitions_body`).
+pub(crate) fn draw_fade_to_black_block(
+    ui: &mut Ui,
+    shell: &mut StudioShell,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+) {
     ui.separator();
     fade_to_black::draw_fade_to_black(ui, &mut shell.fade_to_black_duration_frames, state, intents);
     shell.set_fade_to_black_duration_frames(shell.fade_to_black_duration_frames);
@@ -1318,6 +1331,16 @@ fn draw_manual_start_buttons(
         22.0,
     );
     ui.spacing_mut().button_padding.x = 2.0;
+    // One label size for every key: the largest at which each label fits
+    // its key, so a long word (Spanish `DESLIZAR`) shrinks instead of
+    // ending in an ellipsis.
+    let label_max = crate::theme::legible(10.0);
+    let label_size = keys
+        .iter()
+        .map(|mix| l.text(mix_name(*mix).short))
+        .chain([l.text(Msg::MoreTransitionsKey)])
+        .map(|label| fitted_label_size(ui, label, (MANUAL_LABEL_MIN, label_max), size.x - 6.0))
+        .fold(label_max, f32::min);
     for mix in &keys {
         let kind = ManualTransitionKind::from_mix(*mix);
         let TransitionName { short, name } = mix_name(*mix);
@@ -1325,7 +1348,7 @@ fn draw_manual_start_buttons(
         let response = ui
             .add_enabled(
                 enabled,
-                start_button(l.text(short), size).selected(*selected == kind),
+                start_button(l.text(short), size, label_size).selected(*selected == kind),
             )
             .hint(&tooltip, reason);
         if response.clicked() {
@@ -1347,7 +1370,8 @@ fn draw_manual_start_buttons(
     let selected_more = !keys
         .iter()
         .any(|mix| *selected == ManualTransitionKind::from_mix(*mix));
-    let key = start_button(l.text(Msg::MoreTransitionsKey), size).selected(selected_more);
+    let key =
+        start_button(l.text(Msg::MoreTransitionsKey), size, label_size).selected(selected_more);
     egui::containers::menu::MenuButton::from_button(key)
         .ui(ui, |ui| {
             for effect in more {
@@ -1380,10 +1404,10 @@ fn draw_manual_start_buttons(
         );
 }
 
-fn start_button(label: &str, size: Vec2) -> egui::Button<'static> {
+fn start_button(label: &str, size: Vec2, text_size: f32) -> egui::Button<'static> {
     egui::Button::new(
         RichText::new(label.to_owned())
-            .size(crate::theme::legible(10.0))
+            .size(text_size)
             .color(text_color()),
     )
     .min_size(size)

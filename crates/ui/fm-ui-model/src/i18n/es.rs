@@ -1,8 +1,9 @@
 //! Spanish catalog.
 //!
 //! Broadcast abbreviations that Spanish-speaking operators read as-is on
-//! hardware (`PGM`, `PVW`, `REC`, `T-bar`, `Stinger`, `FIFO`) stay
-//! untranslated; full words are translated (`Previo`, `Programa`, `Corte`).
+//! hardware (`PGM`, `PVW`, `REC`, `T-bar`, `Stinger`, `FIFO`, and the
+//! audio terms `SIP`, `PFL`, `AFL`, `MON`, `CLIP`) stay untranslated, and
+//! their hover help says what they mean in Spanish; full words are translated (`Previo`, `Programa`, `Corte`).
 //! Status words that describe an input use the feminine (`entrada`).
 
 use super::{Entry, Msg, plural, t};
@@ -785,7 +786,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CatalogueHeading, t("Catálogo")),
     (
         Msg::AddInputMenuHover,
-        t("Añade al final del banco una entrada de color sólido o barras de color"),
+        t(
+            "Añade al final del banco una entrada de color sólido, barras de color, flujo de red o cámara",
+        ),
     ),
     (Msg::RemoveInput, t("Quitar entrada")),
     (
@@ -1045,14 +1048,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::RenameCancelHover, t("Descartar este cambio de nombre")),
     (
         Msg::AddTileHover,
-        t("Añadir entrada…\nUn color sólido o barras de color, al final del banco"),
+        t(
+            "Añadir entrada…\nUn color sólido, barras de color, un flujo de red o una cámara, al final del banco",
+        ),
     ),
     (Msg::AddingName, t("AÑADIENDO {name}…")),
     (
         Msg::InputCountHover,
         t("Entradas del show / el máximo que admite un show"),
     ),
-    (Msg::AddTileKinds, t("color sólido · barras de color")),
+    (Msg::AddTileKinds, t("color · barras · red · cámara")),
     (Msg::NoThumbnail, t("sin miniatura")),
     // Tally.
     (Msg::TallyProgram, t("PROGRAMA")),
@@ -1081,7 +1086,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::FramesSuffix, t("{frames} fr")),
     (Msg::KeyHint, t("{action}  [{key}]")),
     (Msg::KeyEnter, t("Intro")),
-    (Msg::KeyArrows, t("↑/↓")),
+    (Msg::KeyArrows, t("Flechas arriba/abajo")),
+    (Msg::KeyMoveUp, t("Subir")),
+    (Msg::KeyMoveDown, t("Bajar")),
+    (Msg::KeyRemove, t("Quitar de la lista")),
     (Msg::WordOn, t("activo")),
     (Msg::WordOff, t("apagado")),
     (Msg::WordYes, t("sí")),
@@ -1094,7 +1102,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::FadeKey, t("FUNDIDO")),
     (Msg::WipeKey, t("CORTINA")),
     (Msg::AlphaKey, t("ALFA")),
-    (Msg::SlideKey, t("DESLIZ")),
+    (Msg::SlideKey, t("DESLIZAR")),
     (Msg::ZoomKey, t("ZOOM")),
     (Msg::AlphaFadeKind, t("FUNDIDO ALFA")),
     (
@@ -1118,7 +1126,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Zoom de Previo a Programa con la duración compartida"),
     ),
     (Msg::VerticalWipeKey, t("CORTINA V")),
-    (Msg::VerticalSlideKey, t("DESLIZ V")),
+    (Msg::VerticalSlideKey, t("DESLIZAR V")),
     (Msg::FlyKey, t("VUELO")),
     (Msg::FlyRotateKey, t("VUELO GIRO")),
     (Msg::CubeKey, t("CUBO")),
@@ -1567,7 +1575,21 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::DisplaySlotHeading, t("Salida {slot}")),
     (Msg::DisplayStatusOff, t("SIN USO")),
     (Msg::DisplayStatusActive, t("ACTIVA")),
-    (Msg::DisplayStatusWaiting, t("EN ESPERA")),
+    (Msg::DisplayStatusUnknown, t("DESCONOCIDO")),
+    (
+        Msg::DisplayUnknownReconnecting,
+        t("Desconocido (reconectando)"),
+    ),
+    (
+        Msg::DisplayUnknownDisconnected,
+        t("Desconocido (sin conexión con el servidor)"),
+    ),
+    (Msg::DisplayByName, t("{name}, por nombre")),
+    (Msg::DisplayById, t("Pantalla {id}")),
+    (
+        Msg::DisplayByIndex,
+        t("Pantalla {number} por posición en el escritorio"),
+    ),
     (
         Msg::DisplayStatusHover,
         t("El estado en vivo de la salida {slot} según el servidor"),
@@ -1729,25 +1751,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReasonDisplayApplying,
         t("el servidor aún no ha respondido al último cambio"),
     ),
-    (
-        Msg::WaitDisplayAbsent,
-        t("En espera: la pantalla no está conectada"),
-    ),
-    (
-        Msg::WaitDisplayInUse,
-        t("En espera: otra salida usa esta pantalla"),
-    ),
+    (Msg::WaitDisplayAbsent, t("La pantalla no está conectada")),
+    (Msg::WaitDisplayInUse, t("Otra salida usa esta pantalla")),
     (
         Msg::WaitAmbiguousName,
-        t("En espera: varias pantallas comparten este nombre"),
+        t("Varias pantallas comparten este nombre"),
     ),
     (
         Msg::WaitEnumerationFailed,
-        t("En espera: no se pudo leer la lista de pantallas"),
+        t("No se pudo leer la lista de pantallas"),
     ),
     (
         Msg::WaitNoPresenter,
-        t("En espera: este servidor no abre ventanas a pantalla completa"),
+        t("Este servidor no abre ventanas a pantalla completa"),
     ),
     (Msg::HdrStateSdr, t("rango estándar (SDR)")),
     (Msg::HdrStateHdr, t("HDR activo")),
@@ -2550,8 +2566,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     // Input fallback name and catalogue refusals.
     (Msg::InputFallbackName, t("Entrada {input}")),
-    (Msg::AddRefused, t("Alta rechazada ({code}): {advice}")),
-    (Msg::RemoveRefused, t("Baja rechazada ({code}): {advice}")),
+    (Msg::AddRefused, t("Alta rechazada: {advice}")),
+    (Msg::RemoveRefused, t("Baja rechazada: {advice}")),
     (
         Msg::RefuseDuplicateInput,
         t("La entrada {input} ya existe; abra Añadir entrada de nuevo para obtener un id libre."),
@@ -2660,10 +2676,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Saque esa escena del aire primero."),
     ),
     // Typed command refusals (Protocol 2.45).
-    (
-        Msg::CommandRefused,
-        t("Comando rechazado ({code}): {reason}"),
-    ),
+    (Msg::CommandRefused, t("Comando rechazado: {reason}")),
+    (Msg::ToastReasonCode, t("Código del motivo: {code}")),
     (
         Msg::RsnPermissionDenied,
         t("Esta sesión no tiene permiso para hacerlo."),
@@ -3384,7 +3398,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AnimStepForwardHover,
         t("Avanzar un fotograma (Mayús: diez fotogramas)"),
     ),
-    (Msg::AnimKeyButton, t("◆ Clave")),
+    (Msg::AnimKeyButton, t("♦ Clave")),
     (
         Msg::AnimKeyHover,
         t("Añadir una clave en el cabezal en la fila de propiedad activa, con su valor actual"),
@@ -3432,11 +3446,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AnimKeySpace, t("Espacio")),
     (
         Msg::AnimKeyStepBack,
-        t("Re Pág, o ← sin claves seleccionadas"),
+        t("Re Pág, o flecha izquierda sin claves seleccionadas"),
     ),
     (
         Msg::AnimKeyStepForward,
-        t("Av Pág, o → sin claves seleccionadas"),
+        t("Av Pág, o flecha derecha sin claves seleccionadas"),
     ),
     (Msg::AnimKeyDelete, t("Supr")),
     (Msg::AnimKeyRedo, t("Ctrl+Mayús+Z")),

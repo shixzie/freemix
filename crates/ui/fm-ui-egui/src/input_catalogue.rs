@@ -331,9 +331,20 @@ pub fn remove_input_availability(
     }
 }
 
+/// The stable reason code of a refused add or remove (`input_in_use`): the
+/// typed reason's kind, else the field issue's code, else the rejection's.
+#[must_use]
+pub fn catalogue_refusal_code(refusal: &CatalogueRefusal) -> &str {
+    match &refusal.typed_reason {
+        Some(reason) => reason.kind(),
+        None => refusal.reason.as_deref().unwrap_or(refusal.code.as_str()),
+    }
+}
+
 /// Words a refused add or remove for its toast in the console language: the
-/// action, the stable reason code, what it means for this input, and what to
-/// do next. A typed reason (Protocol 2.45) is worded from its parameters; a
+/// action, what it means for this input, and what to do next. The stable
+/// reason code stays out of the sentence (it is the toast's hover detail,
+/// [`catalogue_refusal_code`]). A typed reason (Protocol 2.45) is worded from its parameters; a
 /// refusal without one is worded from its stable field-issue code, and a
 /// daemon detail the console does not recognise passes through.
 #[must_use]
@@ -343,10 +354,7 @@ pub fn catalogue_refusal_message(l: Locale, refusal: &CatalogueRefusal, name: &s
     } else {
         Msg::RemoveRefused
     };
-    let code: &str = match &refusal.typed_reason {
-        Some(reason) => reason.kind(),
-        None => refusal.reason.as_deref().unwrap_or(refusal.code.as_str()),
-    };
+    let code = catalogue_refusal_code(refusal);
     let named = |msg: Msg| l.format(msg, &[("name", Arg::Str(name))]);
     let input = refusal.request.input();
     // The refused input is named by the operator's name; others by number.
@@ -392,10 +400,7 @@ pub fn catalogue_refusal_message(l: Locale, refusal: &CatalogueRefusal, name: &s
             _ => refusal.message.clone(),
         },
     };
-    l.format(
-        lead,
-        &[("code", Arg::Str(code)), ("advice", Arg::Str(&advice))],
-    )
+    l.format(lead, &[("advice", Arg::Str(&advice))])
 }
 
 /// Builds the Add input intent from the dialog, or says why it is blocked.
@@ -524,6 +529,8 @@ pub(crate) struct CatalogueToast {
     pub(crate) key: String,
     pub(crate) kind: ToastKind,
     pub(crate) message: String,
+    /// Hover detail: a refusal's stable reason code.
+    pub(crate) detail: Option<String>,
 }
 
 /// What one frame of tracking resolved.
@@ -578,6 +585,7 @@ impl CatalogueTracker {
             key,
             kind: ToastKind::Pending,
             message,
+            detail: None,
         }
     }
 
@@ -631,15 +639,22 @@ impl CatalogueTracker {
             outstanding.seen_pending |= pending;
             let resolved = resolve(locale, outstanding, state, pending, ready, fresh_refusal);
             if let Some((kind, message)) = resolved {
-                if kind == ToastKind::Error
-                    && fresh_refusal.is_some_and(|refusal| refusal.request == outstanding.request)
-                {
+                let refused = fresh_refusal
+                    .filter(|refusal| refusal.request == outstanding.request)
+                    .filter(|_| kind == ToastKind::Error);
+                if refused.is_some() {
                     outcomes.refusal_announced = true;
                 }
                 outcomes.toasts.push(CatalogueToast {
                     key: outstanding.key.clone(),
                     kind,
                     message,
+                    detail: refused.map(|refusal| {
+                        fm_ui_model::i18n::refusal_code_detail(
+                            locale,
+                            catalogue_refusal_code(refusal),
+                        )
+                    }),
                 });
                 return false;
             }
@@ -665,6 +680,10 @@ impl CatalogueTracker {
                 key: format!("input-catalogue-refusal-{}", refusal.command_id),
                 kind: ToastKind::Error,
                 message: catalogue_refusal_message(locale, refusal, &name),
+                detail: Some(fm_ui_model::i18n::refusal_code_detail(
+                    locale,
+                    catalogue_refusal_code(refusal),
+                )),
             });
             outcomes.refusal_announced = true;
         }
@@ -1861,6 +1880,7 @@ mod tests {
                 kind: ToastKind::Success,
                 message: "Added \"Colour Bars 1\" as input 5 at position 5. Undo removes it again."
                     .to_owned(),
+                detail: None,
             }]
         );
         assert!(!outcomes.refusal_announced);
@@ -1894,8 +1914,13 @@ mod tests {
         assert_eq!(outcomes.toasts[0].kind, ToastKind::Error);
         assert_eq!(
             outcomes.toasts[0].message,
-            "Remove refused (input_in_use): \"Solid Colour 1\" is the source of overlay 2. \
+            "Remove refused: \"Solid Colour 1\" is the source of overlay 2. \
              Take the overlay off or clear its queue first."
+        );
+        // The stable code moves to the toast's hover detail.
+        assert_eq!(
+            outcomes.toasts[0].detail.as_deref(),
+            Some("Reason code: input_in_use")
         );
         assert!(!tracker.removal_in_flight(&state, input(3)));
         // The same refusal is announced once.
@@ -1978,7 +2003,7 @@ mod tests {
         assert!(outcomes.refusal_announced);
         assert_eq!(
             outcomes.toasts[0].message,
-            "Add refused (duplicate_name): Another input is already named \"Cam\"; pick another."
+            "Add refused: Another input is already named \"Cam\"; pick another."
         );
     }
 
@@ -2006,49 +2031,49 @@ mod tests {
         let cases = [
             (
                 refusal(add(7, "X"), Some("duplicate_input"), "conflict", "m"),
-                "Add refused (duplicate_input): Input 7 already exists; open Add input again for a fresh id.",
+                "Add refused: Input 7 already exists; open Add input again for a fresh id.",
             ),
             (
                 refusal(add(7, "X"), Some("too_many_inputs"), "conflict", "m"),
-                "Add refused (too_many_inputs): The show is at its 256-input limit; remove an input first.",
+                "Add refused: The show is at its 256-input limit; remove an input first.",
             ),
             (
                 refusal(remove(), Some("unknown_input"), "not_found", "m"),
-                "Remove refused (unknown_input): \"X\" no longer exists; another editor removed it.",
+                "Remove refused: \"X\" no longer exists; another editor removed it.",
             ),
             (
                 refusal(add(7, "X"), Some("invalid_name"), "invalid_command", "m"),
-                "Add refused (invalid_name): Use a non-blank name of at most 128 bytes.",
+                "Add refused: Use a non-blank name of at most 128 bytes.",
             ),
             (
                 refusal(add(7, "X"), Some("project_locked"), "conflict", "m"),
-                "Add refused (project_locked): The project is locked; unlock the padlock in the top bar to change inputs.",
+                "Add refused: The project is locked; unlock the padlock in the top bar to change inputs.",
             ),
             (
                 refusal(remove(), Some("input_locked"), "conflict", "m"),
-                "Remove refused (input_locked): \"X\" has its own padlock; unlock it to remove it.",
+                "Remove refused: \"X\" has its own padlock; unlock it to remove it.",
             ),
             (
                 typed(RefusalReason::InputInUse {
                     input: 2,
                     usage: InputUse::Preview,
                 }),
-                "Remove refused (input_in_use): \"X\" is on Preview. Route another input to that bus first.",
+                "Remove refused: \"X\" is on Preview. Route another input to that bus first.",
             ),
             (
                 typed(RefusalReason::InputInUse {
                     input: 2,
                     usage: InputUse::SceneLayer { scene: 100 },
                 }),
-                "Remove refused (input_in_use): \"X\" is a layer source of scene 100. Remove that layer from the scene first.",
+                "Remove refused: \"X\" is a layer source of scene 100. Remove that layer from the scene first.",
             ),
             (
                 typed(RefusalReason::ProjectLocked),
-                "Remove refused (project_locked): The project is locked; unlock the padlock in the top bar to change inputs.",
+                "Remove refused: The project is locked; unlock the padlock in the top bar to change inputs.",
             ),
             (
                 typed(RefusalReason::RuntimeUnsupported),
-                "Remove refused (runtime_unsupported): This daemon cannot change its inputs while running (native media); add or remove inputs offline.",
+                "Remove refused: This daemon cannot change its inputs while running (native media); add or remove inputs offline.",
             ),
             (
                 // A refusal without a typed reason or a known code keeps the
@@ -2059,15 +2084,15 @@ mod tests {
                     "conflict",
                     "input 2 cannot be removed: it is a layer source of scene 100",
                 ),
-                "Remove refused (conflict): input 2 cannot be removed: it is a layer source of scene 100",
+                "Remove refused: input 2 cannot be removed: it is a layer source of scene 100",
             ),
             (
                 refusal(remove(), None, "unavailable", "native"),
-                "Remove refused (unavailable): This daemon cannot change its inputs while running (native media); add or remove inputs offline.",
+                "Remove refused: This daemon cannot change its inputs while running (native media); add or remove inputs offline.",
             ),
             (
                 refusal(remove(), None, "stale_revision", "revision moved"),
-                "Remove refused (stale_revision): revision moved",
+                "Remove refused: revision moved",
             ),
         ];
         for (refusal, expected) in cases {
@@ -2083,7 +2108,7 @@ mod tests {
         });
         assert_eq!(
             catalogue_refusal_message(spanish, &stinger, "X"),
-            "Baja rechazada (input_in_use): «X» es el medio del Stinger 3. \
+            "Baja rechazada: «X» es el medio del Stinger 3. \
              Vacíe o reasigne esa ranura de Stinger primero."
         );
         // The review's screenshot: a Spanish console no longer shows the
@@ -2094,7 +2119,7 @@ mod tests {
         });
         assert_eq!(
             catalogue_refusal_message(spanish, &scene, "Camera 1 Wide"),
-            "Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la \
+            "Baja rechazada: «Camera 1 Wide» es una fuente de capa de la \
              escena 100. Quite esa capa de la escena primero."
         );
         let playlist = typed(RefusalReason::InputInUse {
@@ -2103,7 +2128,7 @@ mod tests {
         });
         assert_eq!(
             catalogue_refusal_message(spanish, &playlist, "X"),
-            "Baja rechazada (input_in_use): «X» se reproduce en la entrada 4 de la lista. \
+            "Baja rechazada: «X» se reproduce en la entrada 4 de la lista. \
              Quítela de la lista primero."
         );
         let typed_full = CatalogueRefusal {
@@ -2112,7 +2137,7 @@ mod tests {
         };
         assert_eq!(
             catalogue_refusal_message(spanish, &typed_full, "Cam"),
-            "Alta rechazada (bounds_exceeded): El show ya tiene el máximo de 256 entradas; \
+            "Alta rechazada: El show ya tiene el máximo de 256 entradas; \
              quite una entrada primero."
         );
         let scheme = refusal(
@@ -2123,13 +2148,13 @@ mod tests {
         );
         assert_eq!(
             catalogue_refusal_message(spanish, &scheme, "Cam"),
-            "Alta rechazada (unsupported_scheme): esquema no admitido (admitidos: rtsp, rtp, \
+            "Alta rechazada: esquema no admitido (admitidos: rtsp, rtp, \
              udp, tcp, http, https, hls, rtmp, rtmps, srt)"
         );
         let full = refusal(add(5, "Cam"), None, "too_many_inputs", "m");
         assert!(
             catalogue_refusal_message(spanish, &full, "X")
-                .starts_with("Alta rechazada (too_many_inputs): El show ya tiene el máximo de 256")
+                .starts_with("Alta rechazada: El show ya tiene el máximo de 256")
         );
         assert_eq!(
             crate::monitors::fallback_input_name(spanish, input(9)),

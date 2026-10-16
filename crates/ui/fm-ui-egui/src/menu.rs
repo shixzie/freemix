@@ -867,7 +867,7 @@ impl StudioShell {
         let mut delete = None;
         for (index, saved) in self.layout.saved_layouts.iter().enumerate() {
             let current = self.layout.dock == saved.layout;
-            let marker = if current { "● " } else { "" };
+            let marker = if current { "• " } else { "" };
             ui.menu_button(format!("{marker}{}", saved.name), |ui| {
                 if ui
                     .button(l.text(Msg::ColorLibraryApply))

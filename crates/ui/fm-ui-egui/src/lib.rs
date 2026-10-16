@@ -93,8 +93,8 @@ pub use edit_history::{
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 pub use input_catalogue::{
     CatalogueAvailability, CatalogueRefusal, CatalogueRequest, MAX_LIVE_INPUTS, NewInputKind,
-    add_input_availability, catalogue_refusal_message, input_name_problem, input_usage_reason,
-    next_free_input_id, remove_input_availability, suggested_input_name,
+    add_input_availability, catalogue_refusal_code, catalogue_refusal_message, input_name_problem,
+    input_usage_reason, next_free_input_id, remove_input_availability, suggested_input_name,
 };
 pub use media_transport::{
     MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
@@ -1739,7 +1739,8 @@ impl StudioShell {
         }
         self.toasts.observe(state);
         for toast in catalogue.toasts {
-            self.toasts.upsert(&toast.key, toast.kind, toast.message);
+            self.toasts
+                .upsert_detailed(&toast.key, toast.kind, toast.message, toast.detail);
         }
     }
 

@@ -499,7 +499,12 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
                 });
             });
             let message = crate::toasts::localize_notice(l, &toast.message);
-            ui.add(egui::Label::new(RichText::new(message).size(12.0).color(text_color())).wrap());
+            let label = ui.add(
+                egui::Label::new(RichText::new(message).size(12.0).color(text_color())).wrap(),
+            );
+            if let Some(detail) = &toast.detail {
+                label.on_hover_text(detail);
+            }
         })
         .response;
     let rect = response.rect;

@@ -28,7 +28,9 @@ use fm_ui_model::ClientView;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{Tone, card, muted_color, section_label, status_chip, text_dim_color};
-use crate::{StudioIntent, StudioShell, StudioUiState, stinger_edit_lock_reason};
+use crate::{
+    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, stinger_edit_lock_reason,
+};
 
 const DIALOG_WIDTH: f32 = 600.0;
 const SLOTS: usize = fm_protocol::MAX_DISPLAY_OUTPUTS;
@@ -356,12 +358,51 @@ pub(crate) fn mode_text(mode: DisplayMode) -> String {
     }
 }
 
-/// The status chip, its tone, and the detail line of one slot.
+/// A saved display target in words: the display's name, how it is bound
+/// when that is not by id (`Projector, by name`), never the raw selector.
+pub(crate) fn selector_label(l: Locale, selector: &DisplaySelector) -> String {
+    match selector {
+        DisplaySelector::IdOrName { name, .. } => name.clone(),
+        DisplaySelector::Name(name) => l.format(Msg::DisplayByName, &[("name", Arg::Str(name))]),
+        DisplaySelector::Id(id) => l.format(Msg::DisplayById, &[("id", Arg::Str(id.as_str()))]),
+        DisplaySelector::Index(index) => l.format(
+            Msg::DisplayByIndex,
+            &[("number", Arg::Plain(*index as u64 + 1))],
+        ),
+    }
+}
+
+/// The status chip, its tone, and the detail line of one slot. While the
+/// console is not synchronized with the server (`connection` not ready)
+/// the slot's state is unknown, whatever the last copy said.
 pub(crate) fn slot_status(
     l: Locale,
+    connection: StudioConnectionStatus,
     configured: bool,
     state: Option<&WireDisplayOutputState>,
 ) -> (&'static str, Tone, String) {
+    match connection {
+        StudioConnectionStatus::Ready => {}
+        StudioConnectionStatus::Launching
+        | StudioConnectionStatus::Connecting
+        | StudioConnectionStatus::Synchronizing
+        | StudioConnectionStatus::Backoff => {
+            return (
+                Msg::DisplayStatusUnknown.en(),
+                Tone::Idle,
+                l.text(Msg::DisplayUnknownReconnecting).to_owned(),
+            );
+        }
+        StudioConnectionStatus::Disconnected
+        | StudioConnectionStatus::Failed
+        | StudioConnectionStatus::ProtocolMismatch => {
+            return (
+                Msg::DisplayStatusUnknown.en(),
+                Tone::Idle,
+                l.text(Msg::DisplayUnknownDisconnected).to_owned(),
+            );
+        }
+    }
     if !configured {
         return (
             Msg::DisplayStatusOff.en(),
@@ -385,13 +426,14 @@ pub(crate) fn slot_status(
             }
             (Msg::DisplayStatusActive.en(), Tone::Ready, detail)
         }
+        // The shared `WAITING` state word; the detail line says why.
         Some(WireDisplayOutputState::Waiting(reason)) => (
-            Msg::DisplayStatusWaiting.en(),
+            Msg::MediaStateWaiting.en(),
             Tone::Pending,
             l.text(wait_reason_text(*reason)).to_owned(),
         ),
         None => (
-            Msg::DisplayStatusWaiting.en(),
+            Msg::MediaStateWaiting.en(),
             Tone::Pending,
             l.text(Msg::WaitNoPresenter).to_owned(),
         ),
@@ -549,6 +591,7 @@ fn draw_slot(
         ui.spacing_mut().item_spacing.y = 6.0;
         let (chip, tone, detail) = slot_status(
             l,
+            state.connection_status,
             saved.is_some(),
             view.and_then(|view| view.display_output_state(slot)),
         );
@@ -588,7 +631,7 @@ fn draw_slot(
                                 || {
                                     l.format(
                                         Msg::DisplayNotConnected,
-                                        &[("display", Arg::Str(&selector.to_string()))],
+                                        &[("display", Arg::Str(&selector_label(l, selector)))],
                                     )
                                 },
                                 |display| display_label(l, display),
@@ -603,7 +646,7 @@ fn draw_slot(
                             if let Some(selector) = selected
                                 && resolve_display(inventory, selector).is_none()
                             {
-                                let text = selector.to_string();
+                                let text = selector_label(l, selector);
                                 let _ = ui
                                     .selectable_label(
                                         true,
@@ -1182,19 +1225,24 @@ mod tests {
         );
         let l = Locale::ENGLISH;
         assert_eq!(
-            slot_status(l, false, None),
+            slot_status(l, StudioConnectionStatus::Ready, false, None),
             ("UNUSED", Tone::Idle, "Not configured".to_owned())
+        );
+        assert_eq!(
+            slot_status(l, StudioConnectionStatus::Backoff, false, None),
+            ("UNKNOWN", Tone::Idle, "Unknown (reconnecting)".to_owned())
         );
         assert_eq!(
             slot_status(
                 l,
+                StudioConnectionStatus::Ready,
                 true,
                 Some(&WireDisplayOutputState::Waiting(WaitReason::DisplayInUse))
             ),
             (
-                "STANDBY",
+                "WAITING",
                 Tone::Pending,
-                "Waiting: another output uses this display".to_owned()
+                "Another output uses this display".to_owned()
             )
         );
         let active = WireDisplayOutputState::Active(WireActiveDisplay {
@@ -1204,7 +1252,8 @@ mod tests {
             mode_fallback: true,
             hdr: HdrState::SdrDisplayNotCapable,
         });
-        let (chip, tone, detail) = slot_status(l, true, Some(&active));
+        let (chip, tone, detail) =
+            slot_status(l, StudioConnectionStatus::Ready, true, Some(&active));
         assert_eq!((chip, tone), ("ACTIVE", Tone::Ready));
         assert!(detail.starts_with("On Wall at 1920×1080 @ 60 Hz; SDR, the display"));
         assert!(detail.ends_with("so the current mode is used"), "{detail}");

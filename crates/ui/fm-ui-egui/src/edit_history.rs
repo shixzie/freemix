@@ -452,20 +452,22 @@ impl CommandRefusalNotice {
                 .and_then(|index| view.input_names.get(index).cloned())
         };
         if self.reason.is_none()
-            && let (Some(msg), Some(issue)) = (self.issue_msg(), self.issue.as_deref())
+            && let Some(msg) = self.issue_msg()
         {
-            return l.format(
-                Msg::CommandRefused,
-                &[("code", Arg::Str(issue)), ("reason", Arg::Str(l.text(msg)))],
-            );
+            return l.format(Msg::CommandRefused, &[("reason", Arg::Str(l.text(msg)))]);
         }
-        fm_ui_model::i18n::command_refusal_text(
-            l,
-            &self.code,
-            &self.message,
-            self.reason.as_ref(),
-            &names,
-        )
+        fm_ui_model::i18n::command_refusal_text(l, &self.message, self.reason.as_ref(), &names)
+    }
+
+    /// The stable code behind this refusal: the typed reason's kind, else
+    /// the field issue's code, else the top-level rejection code.
+    #[must_use]
+    pub fn reason_code(&self) -> &str {
+        match (&self.reason, self.issue.as_deref()) {
+            (Some(reason), _) => reason.kind(),
+            (None, Some(issue)) => issue,
+            (None, None) => &self.code,
+        }
     }
 }
 

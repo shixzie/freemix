@@ -455,6 +455,23 @@ enum DockAction {
     ToggleMaximized(PanelId),
 }
 
+/// Least height the scrolling part of a short Transitions tile keeps when
+/// the Fade to Black block is pinned below it.
+const TRANSITIONS_MIN_SCROLL_HEIGHT: f32 = 120.0;
+
+/// Lays out the transition column: it follows the tile's width within its
+/// range and is centred in a wider tile, clear of the gutter where a short
+/// tile's scroll bar floats.
+fn transition_column(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    let room = ui.available_width() - transitions::SCROLL_GUTTER;
+    let width = transitions::column_width(room);
+    let spare = (room - width).max(0.0);
+    ui.horizontal_top(|ui| {
+        ui.add_space((spare / 2.0).floor());
+        fixed_width_column(ui, width, add);
+    });
+}
+
 /// A painted icon key's glyph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Icon {
@@ -1129,6 +1146,10 @@ impl StudioShell {
             self.draw_monitor_panel(ui, panel, state, frame);
             return;
         }
+        if panel == PanelId::Transitions {
+            self.draw_transitions_body(ui, state, frame, intents);
+            return;
+        }
         let (min_width, min_height) = panel.min_size();
         // The mixer keeps at least one input strip beside Master in view.
         let min_width = if panel == PanelId::Mixer {
@@ -1201,6 +1222,93 @@ impl StudioShell {
         });
     }
 
+    /// The Transitions tile. The column scrolls in a short tile, but once
+    /// it overflows, the Fade to Black block is pinned along the tile's
+    /// bottom edge instead, so an open manual `DETAILS` block (or any other
+    /// growth) never pushes the emergency key out of view.
+    fn draw_transitions_body(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        frame: &PanelFrame,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let (min_width, _) = PanelId::Transitions.min_size();
+        // Last frame's heights: the column above the block, and the block.
+        let memory = ui.id().with("studio-transitions-heights");
+        let (column, block): (f32, f32) = ui.data(|data| data.get_temp(memory)).unwrap_or_default();
+        let full = ui.available_rect_before_wrap();
+        // Pin only while the whole column overflows and the scrolling part
+        // keeps a usable height.
+        let pin = block > 0.0
+            && column + block > full.height()
+            && full.height() - block >= TRANSITIONS_MIN_SCROLL_HEIGHT;
+        let scroll_rect = if pin {
+            Rect::from_min_max(full.min, pos2(full.max.x, full.max.y - block))
+        } else {
+            full
+        };
+        let mut measured_block = block;
+        let output = ui
+            .scope_builder(
+                UiBuilder::new()
+                    .max_rect(scroll_rect)
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    ScrollArea::both()
+                        .id_salt(("studio-dock-scroll", PanelId::Transitions.key()))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width().max(min_width));
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            transition_column(ui, |ui| {
+                                transitions::draw_transition_column(
+                                    ui,
+                                    self,
+                                    state,
+                                    frame.manual,
+                                    intents,
+                                );
+                                if !pin {
+                                    let top = ui.cursor().min.y;
+                                    transitions::draw_fade_to_black_block(ui, self, state, intents);
+                                    measured_block = ui.min_rect().max.y - top;
+                                }
+                            });
+                        })
+                },
+            )
+            .inner;
+        let mut column_height = output.content_size.y;
+        if pin {
+            let block_rect = Rect::from_min_max(pos2(full.min.x, full.max.y - block), full.max);
+            let pinned = ui.scope_builder(
+                UiBuilder::new()
+                    .max_rect(block_rect)
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    let top = ui.cursor().min.y;
+                    transition_column(ui, |ui| {
+                        transitions::draw_fade_to_black_block(ui, self, state, intents);
+                    });
+                    ui.min_rect().max.y - top
+                },
+            );
+            measured_block = pinned.inner;
+        } else {
+            column_height -= measured_block;
+        }
+        // A frame that changes whether the block is pinned is redrawn at
+        // once rather than on the next input.
+        let pin_next = column_height + measured_block > full.height()
+            && full.height() - measured_block >= TRANSITIONS_MIN_SCROLL_HEIGHT;
+        if pin_next != pin {
+            ui.ctx().request_repaint();
+        }
+        ui.data_mut(|data| data.insert_temp(memory, (column_height, measured_block)));
+    }
+
     /// One panel's own drawing functions, as the fixed console called them.
     fn draw_panel_content(
         &mut self,
@@ -1214,20 +1322,7 @@ impl StudioShell {
             PanelId::Preview | PanelId::Program => {
                 self.draw_monitor_panel(ui, panel, state, frame);
             }
-            PanelId::Transitions => {
-                // The column follows the tile's width within its range and
-                // is centred in a wider tile, clear of the gutter where a
-                // short tile's scroll bar floats.
-                let room = ui.available_width() - transitions::SCROLL_GUTTER;
-                let width = transitions::column_width(room);
-                let spare = (room - width).max(0.0);
-                ui.horizontal_top(|ui| {
-                    ui.add_space((spare / 2.0).floor());
-                    fixed_width_column(ui, width, |ui| {
-                        transitions::draw_transition_column(ui, self, state, frame.manual, intents);
-                    });
-                });
-            }
+            PanelId::Transitions => self.draw_transitions_body(ui, state, frame, intents),
             PanelId::InputBank => self.draw_inputs(ui, state, intents),
             PanelId::Mixer => mixer::draw_mixer(
                 ui,

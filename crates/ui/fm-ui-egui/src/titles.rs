@@ -370,7 +370,7 @@ impl TitlesPanel {
             );
             if field.changed_upstream && !field.dirty {
                 ui.label(
-                    RichText::new("●")
+                    RichText::new("•")
                         .size(crate::theme::legible(9.0))
                         .color(AMBER),
                 )

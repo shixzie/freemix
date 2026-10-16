@@ -197,23 +197,28 @@ pub fn refusal_reason_text(l: Locale, reason: &RefusalReason, names: InputNames<
 
 /// A refused command's toast: the typed reason worded in the console
 /// language, or the daemon's English `message` when the refusal carries no
-/// reason.
+/// reason. The stable reason code is not part of the sentence; see
+/// [`refusal_code_detail`].
 #[must_use]
 pub fn command_refusal_text(
     l: Locale,
-    code: &str,
     message: &str,
     reason: Option<&RefusalReason>,
     names: InputNames<'_>,
 ) -> String {
-    let (code, text) = match reason {
-        Some(reason) => (reason.kind(), refusal_reason_text(l, reason, names)),
-        None => (code, message.to_owned()),
+    let text = match reason {
+        Some(reason) => refusal_reason_text(l, reason, names),
+        None => message.to_owned(),
     };
-    l.format(
-        Msg::CommandRefused,
-        &[("code", Arg::Str(code)), ("reason", Arg::Str(&text))],
-    )
+    l.format(Msg::CommandRefused, &[("reason", Arg::Str(&text))])
+}
+
+/// The hover detail of a refusal toast: its stable reason code
+/// (`Reason code: input_in_use`), kept out of the localized sentence but
+/// available to support staff.
+#[must_use]
+pub fn refusal_code_detail(l: Locale, code: &str) -> String {
+    l.format(Msg::ToastReasonCode, &[("code", Arg::Str(code))])
 }
 
 #[cfg(test)]
@@ -294,26 +299,23 @@ mod tests {
             usage: InputUse::SceneLayer { scene: 100 },
         };
         assert_eq!(
-            command_refusal_text(
-                ES,
-                "conflict",
-                "input 1 cannot be removed",
-                Some(&reason),
-                &names
-            ),
-            "Comando rechazado (input_in_use): «Camera 1 Wide» es una fuente de capa de la \
+            command_refusal_text(ES, "input 1 cannot be removed", Some(&reason), &names),
+            "Comando rechazado: «Camera 1 Wide» es una fuente de capa de la \
              escena 100. Quite esa capa de la escena primero."
         );
         assert_eq!(
             command_refusal_text(
                 Locale::ENGLISH,
-                "conflict",
                 "input 1 cannot be removed",
                 Some(&reason),
                 &names
             ),
-            "Command refused (input_in_use): \"Camera 1 Wide\" is a layer source of scene 100. \
+            "Command refused: \"Camera 1 Wide\" is a layer source of scene 100. \
              Remove that layer from the scene first."
+        );
+        assert_eq!(
+            refusal_code_detail(ES, reason.kind()),
+            "Código del motivo: input_in_use"
         );
         // An unnamed input gets the localized fallback name.
         let alias = RefusalReason::InputInUse {
@@ -394,14 +396,8 @@ mod tests {
     #[test]
     fn a_refusal_without_a_reason_falls_back_to_the_daemon_text() {
         assert_eq!(
-            command_refusal_text(
-                ES,
-                "invalid_command",
-                "title field is too long",
-                None,
-                &names
-            ),
-            "Comando rechazado (invalid_command): title field is too long"
+            command_refusal_text(ES, "title field is too long", None, &names),
+            "Comando rechazado: title field is too long"
         );
     }
 }

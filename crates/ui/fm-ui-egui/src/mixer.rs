@@ -177,7 +177,68 @@ pub(crate) fn bounded_label(text: &str) -> &str {
 /// Total width the mixer wants for `strips` input strips plus Master.
 #[allow(clippy::cast_precision_loss)] // strip counts are tiny
 pub(crate) fn mixer_width(strips: usize) -> f32 {
-    (strips as f32 + 1.0) * (STRIP_WIDTH + 2.0 + STRIP_GAP) + 34.0
+    (strips as f32 + 1.0) * STRIP_PITCH + 34.0
+}
+
+/// Distance from one strip's left edge to the next one's.
+const STRIP_PITCH: f32 = STRIP_WIDTH + 2.0 + STRIP_GAP;
+/// Width of the fade where the strip area's edge cuts through a strip.
+const SCROLL_FADE_WIDTH: f32 = 28.0;
+
+/// Width of the scrolling strip area inside `room` for `strips` strips:
+/// all the room when every strip fits, else only as many whole strips as
+/// fit, so the pinned Monitor and Master strips never sit beside a sliver.
+#[allow(clippy::cast_precision_loss)] // strip counts are tiny
+pub(crate) fn whole_strips_width(room: f32, strips: usize) -> f32 {
+    let content = strips as f32 * STRIP_PITCH - STRIP_GAP;
+    if content <= room {
+        return room;
+    }
+    let whole = ((room + STRIP_GAP) / STRIP_PITCH).floor().max(1.0);
+    (whole * STRIP_PITCH - STRIP_GAP).min(room)
+}
+
+/// Fades the strip area's left or right edge into the panel where it cuts
+/// through a strip, so a partly scrolled strip reads as "more this way"
+/// instead of a clipped sliver.
+fn paint_scroll_edges(painter: &egui::Painter, viewport: Rect, offset: f32, content: f32) {
+    // A strip spans the first `STRIP_PITCH - STRIP_GAP` points of each
+    // pitch; an edge at content position `x` cuts one when it falls inside.
+    let cuts = |x: f32| {
+        let into = x.rem_euclid(STRIP_PITCH);
+        into > 1.0 && into < STRIP_PITCH - STRIP_GAP - 1.0
+    };
+    let fill = crate::theme::panel_color();
+    let width = SCROLL_FADE_WIDTH.min(viewport.width() / 4.0);
+    if offset > 0.5 && cuts(offset) {
+        let band = Rect::from_min_size(viewport.min, Vec2::new(width, viewport.height()));
+        paint_fade(painter, band, fill, true);
+    }
+    if offset + viewport.width() < content - 0.5 && cuts(offset + viewport.width()) {
+        let band = Rect::from_min_max(
+            egui::pos2(viewport.max.x - width, viewport.min.y),
+            viewport.max,
+        );
+        paint_fade(painter, band, fill, false);
+    }
+}
+
+/// A horizontal gradient over `band`, opaque `fill` at its left edge when
+/// `opaque_left`, else at its right edge, transparent at the other.
+fn paint_fade(painter: &egui::Painter, band: Rect, fill: Color32, opaque_left: bool) {
+    let (left, right) = if opaque_left {
+        (fill, Color32::TRANSPARENT)
+    } else {
+        (Color32::TRANSPARENT, fill)
+    };
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(band.left_top(), left);
+    mesh.colored_vertex(band.right_top(), right);
+    mesh.colored_vertex(band.right_bottom(), right);
+    mesh.colored_vertex(band.left_bottom(), left);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Maps a gain in milli-dB onto the fader's 0..=1 travel.
@@ -511,6 +572,8 @@ pub(crate) fn draw_mixer(
     // when the mixer is narrower than all strips.
     let master_width = 2.0 * (STRIP_WIDTH + 2.0 + STRIP_GAP);
     let inputs_width = (ui.available_width() - master_width).max(STRIP_WIDTH);
+    let strip_count = view.input_audio_strips.len() + active_groups(view).len();
+    let viewport_width = whole_strips_width(inputs_width, strip_count);
     let mut clear = Vec::new();
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = STRIP_GAP;
@@ -518,9 +581,10 @@ pub(crate) fn draw_mixer(
             Vec2::new(inputs_width, ui.available_height()),
             egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
-                ScrollArea::horizontal()
+                let scrolled = ScrollArea::horizontal()
                     .id_salt("studio-mixer")
                     .auto_shrink([false, true])
+                    .max_width(viewport_width)
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = STRIP_GAP;
@@ -584,6 +648,12 @@ pub(crate) fn draw_mixer(
                             }
                         });
                     });
+                paint_scroll_edges(
+                    ui.painter(),
+                    scrolled.inner_rect,
+                    scrolled.state.offset.x,
+                    scrolled.content_size.x,
+                );
             },
         );
         // The input strips start at the left; a rule sets the pinned
@@ -878,7 +948,9 @@ fn label_entry(
             enabled,
             egui::TextEdit::singleline(&mut text)
                 .char_limit(MAX_LABEL_BYTES)
-                .hint_text(placeholder)
+                // The placeholder uses the label's monospace font so a
+                // labelled and an unlabelled strip's rows stay level.
+                .hint_text(RichText::new(placeholder).monospace())
                 .font(egui::TextStyle::Monospace),
         )
         .hint(hover, reason);

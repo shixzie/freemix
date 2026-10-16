@@ -36,10 +36,10 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::theme::{
-    ACCENT_FILL, AMBER, ERROR, PREVIEW, PROGRAM, PROGRAM_FILL, Tone, accent_color, border_color,
-    border_strong_color, caption, elided, empty_state, field_label, graphite_color, mono,
-    muted_color, raised_color, section_label, status_chip, text_color, text_dim_color,
-    widget_color, widget_hover_color,
+    ACCENT_FILL, AMBER, ERROR, KeyIcon, PREVIEW, PROGRAM, PROGRAM_FILL, Tone, accent_color,
+    add_icon_button, border_color, border_strong_color, caption, elided, empty_state, field_label,
+    graphite_color, mono, muted_color, raised_color, section_label, status_chip, text_color,
+    text_dim_color, widget_color, widget_hover_color,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -1406,6 +1406,13 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
     }
 }
 
+/// A row key's face: a font glyph, or a painted icon with its name.
+#[derive(Clone, Copy)]
+enum RowKey {
+    Glyph(&'static str),
+    Icon(KeyIcon, Msg),
+}
+
 /// Earlier, Later, Enable/Skip, and Remove keys for the selected row.
 fn draw_row_actions(
     ui: &mut Ui,
@@ -1423,19 +1430,19 @@ fn draw_row_actions(
         ui.spacing_mut().item_spacing.x = 4.0;
         let actions = [
             (
-                "▲",
+                RowKey::Icon(KeyIcon::Up, Msg::KeyMoveUp),
                 ListEdit::MoveUp(selected),
                 Msg::PlaylistMoveUpHover,
                 None,
             ),
             (
-                "▼",
+                RowKey::Icon(KeyIcon::Down, Msg::KeyMoveDown),
                 ListEdit::MoveDown(selected),
                 Msg::PlaylistMoveDownHover,
                 None,
             ),
             (
-                if enabled { "⏸" } else { "✔" },
+                RowKey::Glyph(if enabled { "⏸" } else { "✔" }),
                 ListEdit::ToggleEnabled(selected),
                 if enabled {
                     Msg::PlaylistDisableHover
@@ -1445,17 +1452,27 @@ fn draw_row_actions(
                 None,
             ),
             (
-                "✕",
+                RowKey::Icon(KeyIcon::Remove, Msg::KeyRemove),
                 ListEdit::Remove(selected),
                 Msg::PlaylistRemoveHover,
                 Some(ERROR),
             ),
         ];
-        for (glyph, edit_kind, hover, tone) in actions {
+        for (key, edit_kind, hover, tone) in actions {
             let intent = list_edit(playlist, edit_kind, edit);
-            let response = ui
-                .add_enabled(intent.is_ok(), key_button(glyph, tone, 40.0))
-                .hint(l.text(hover), intent.as_ref().err().copied().unwrap_or(""));
+            let response = match key {
+                RowKey::Glyph(glyph) => {
+                    ui.add_enabled(intent.is_ok(), key_button(glyph, tone, 40.0))
+                }
+                RowKey::Icon(icon, label) => add_icon_button(
+                    ui,
+                    intent.is_ok(),
+                    key_button("", tone, 40.0),
+                    icon,
+                    l.text(label),
+                ),
+            }
+            .hint(l.text(hover), intent.as_ref().err().copied().unwrap_or(""));
             if response.clicked()
                 && let Ok(intent) = intent
             {

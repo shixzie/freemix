@@ -393,6 +393,23 @@ impl StudioShell {
             Vec2::new(width, thumb_height + TILE_NAME_HEIGHT),
             Sense::click(),
         );
+        // A network stream input's receive state (IN-015).
+        let stream = state
+            .view
+            .as_ref()
+            .and_then(|view| view.network_stream(input));
+        // A capture input's acquisition state (IN-001).
+        let capture = state
+            .view
+            .as_ref()
+            .and_then(|view| view.capture_input(input));
+        // A status badge sits where the `no thumbnail` caption goes, so the
+        // caption gives way to it.
+        let status_badge = stream.is_some_and(|entry| {
+            crate::network_stream_ui::stream_badge(l, &entry.status).is_some()
+        }) || capture.is_some_and(|entry| {
+            crate::capture_input_ui::capture_badge(l, &entry.status).is_some()
+        });
         if ui.is_rect_visible(rect) {
             paint_tile(
                 ui,
@@ -408,14 +425,10 @@ impl StudioShell {
                     hovered: response.hovered(),
                     focused: response.has_focus(),
                     pressed: response.is_pointer_button_down_on(),
+                    status_badge,
                 },
             );
         }
-        // A network stream input's receive state (IN-015).
-        let stream = state
-            .view
-            .as_ref()
-            .and_then(|view| view.network_stream(input));
         if let Some(entry) = stream
             && ui.is_rect_visible(rect)
         {
@@ -426,11 +439,6 @@ impl StudioShell {
                 &entry.status,
             );
         }
-        // A capture input's acquisition state (IN-001).
-        let capture = state
-            .view
-            .as_ref()
-            .and_then(|view| view.capture_input(input));
         if let Some(entry) = capture
             && ui.is_rect_visible(rect)
         {
@@ -1160,6 +1168,8 @@ struct TilePaint<'a> {
     hovered: bool,
     focused: bool,
     pressed: bool,
+    /// A stream or capture status badge covers the caption line.
+    status_badge: bool,
 }
 
 #[allow(clippy::too_many_lines)] // one painter pass per tile region
@@ -1175,6 +1185,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         hovered,
         focused,
         pressed,
+        status_badge,
     } = paint;
     let painter = ui.painter_at(rect.expand(4.0));
     let radius = CornerRadius::same(4);
@@ -1240,13 +1251,15 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
                 Color32::from_rgb(40, 44, 50)
             },
         );
-        painter.text(
-            pos2(thumb.center().x, thumb.max.y - 10.0),
-            Align2::CENTER_CENTER,
-            l10n::locale(ui.ctx()).text(Msg::NoThumbnail),
-            FontId::new(crate::theme::legible(9.0), FontFamily::Proportional),
-            crate::theme::faded(muted_color(), 0.7),
-        );
+        if !status_badge {
+            painter.text(
+                pos2(thumb.center().x, thumb.max.y - 10.0),
+                Align2::CENTER_CENTER,
+                l10n::locale(ui.ctx()).text(Msg::NoThumbnail),
+                FontId::new(crate::theme::legible(9.0), FontFamily::Proportional),
+                crate::theme::faded(muted_color(), 0.7),
+            );
+        }
     }
     if lifecycle.closed {
         // A closed input's source is released: dim whatever is shown.

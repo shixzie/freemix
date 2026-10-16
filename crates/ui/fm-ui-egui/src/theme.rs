@@ -755,6 +755,79 @@ pub(crate) fn small_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.into()).size(legible(11.0))).min_size(Vec2::new(0.0, 20.0))
 }
 
+/// A painted key glyph. The console fonts have no `▲`, `▼`, or `✕`, so
+/// list keys paint their symbol instead of typing it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyIcon {
+    /// Move the row earlier: an up-pointing triangle.
+    Up,
+    /// Move the row later: a down-pointing triangle.
+    Down,
+    /// Remove the row: a diagonal cross.
+    Remove,
+}
+
+/// Paints `icon` centred in `rect`, about `extent` points across.
+pub(crate) fn paint_key_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    icon: KeyIcon,
+    extent: f32,
+    color: Color32,
+) {
+    let centre = rect.center();
+    let half = extent / 2.0;
+    match icon {
+        KeyIcon::Up | KeyIcon::Down => {
+            let sign = if icon == KeyIcon::Up { 1.0 } else { -1.0 };
+            let points = vec![
+                centre + Vec2::new(-half, sign * half * 0.6),
+                centre + Vec2::new(half, sign * half * 0.6),
+                centre + Vec2::new(0.0, -sign * half * 0.75),
+            ];
+            painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+        }
+        KeyIcon::Remove => {
+            let stroke = Stroke::new(1.6, color);
+            let d = half * 0.75;
+            painter.line_segment(
+                [centre + Vec2::new(-d, -d), centre + Vec2::new(d, d)],
+                stroke,
+            );
+            painter.line_segment(
+                [centre + Vec2::new(d, -d), centre + Vec2::new(-d, d)],
+                stroke,
+            );
+        }
+    }
+}
+
+/// Adds `button` (built with empty text) with `icon` painted over it,
+/// named `label` for assistive technology and the hover audit.
+pub(crate) fn add_icon_button(
+    ui: &mut Ui,
+    enabled: bool,
+    button: egui::Button<'_>,
+    icon: KeyIcon,
+    label: &str,
+) -> Response {
+    let response = ui.add_enabled(enabled, button);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let color = if enabled {
+        ui.style().interact(&response).text_color()
+    } else {
+        ui.visuals()
+            .widgets
+            .noninteractive
+            .fg_stroke
+            .color
+            .gamma_multiply(0.45)
+    };
+    let extent = (response.rect.height() * 0.42).clamp(7.0, 11.0);
+    paint_key_icon(ui.painter(), response.rect, icon, extent, color);
+    response
+}
+
 pub(crate) fn routing_color(desired: fm_types::InputId, realized: fm_types::InputId) -> Color32 {
     if desired == realized {
         muted_color()

@@ -5582,13 +5582,13 @@ mod tests {
         let spanish = fm_ui_model::i18n::Locale::new(fm_ui_model::i18n::Language::Spanish);
         assert_eq!(
             fm_ui_egui::catalogue_refusal_message(spanish, &refusal, "Camera 1 Wide"),
-            "Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la \
+            "Baja rechazada: «Camera 1 Wide» es una fuente de capa de la \
              escena 100. Quite esa capa de la escena primero."
         );
         let notice = CommandRefusalNotice::from_result(&typed).unwrap();
         assert_eq!(notice.reason, Some(scene_layer));
         let toast = notice.text(spanish, None);
-        assert!(toast.starts_with("Comando rechazado (input_in_use): «Entrada 2»"));
+        assert!(toast.starts_with("Comando rechazado: «Entrada 2»"));
         assert!(!toast.contains("layer source"), "{toast}");
     }
 
