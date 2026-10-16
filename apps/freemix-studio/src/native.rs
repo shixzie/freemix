@@ -4697,7 +4697,6 @@ mod tests {
                         current_revision: 4,
                         reason: None,
                         retryable: false,
-                        reason: None,
                     }));
                 }
                 other => panic!("unexpected peer message: {other:?}"),
