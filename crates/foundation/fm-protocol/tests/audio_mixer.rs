@@ -13,7 +13,7 @@ use fm_protocol::{
     WireRecorderSlot, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.48\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.49\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -164,7 +164,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 48));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 49));
 }
 
 #[test]

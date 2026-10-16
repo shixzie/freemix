@@ -6412,6 +6412,189 @@ fn display_outputs_are_undoable_project_edits_with_runtime_state() {
     );
 }
 
+/// IN-016/IN-017: an RTMP listener's stream key and an SRT input's
+/// passphrase never leave the server (events, snapshot, and wire carry
+/// `***`); `input_stream_set` keeps, replaces, or clears each secret; undo
+/// restores the exact secret; and a second input listening on a taken port
+/// is refused with `listen_port_in_use`.
+#[test]
+#[allow(clippy::too_many_lines)] // one add, edit, undo, and conflict round trip
+fn rtmp_and_srt_secrets_stay_on_the_server_and_listeners_never_share_a_port() {
+    use fm_protocol::SecretEdit;
+    use fm_types::network_stream::{NetworkStreamConfig, StreamMode};
+
+    let mut control = service(16, 16);
+    let admin = principal(Role::Admin);
+    let mut rtmp = NetworkStreamConfig::new("rtmp://0.0.0.0:1935/live");
+    rtmp.settings.mode = StreamMode::Listener;
+    rtmp.stream_key = Some("sk_live_hunter2".into());
+    let add = |id: &str, input_value: u128, config: NetworkStreamConfig| {
+        command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::AddInput {
+                input: WireInputId::from_domain(input(input_value)),
+                name: format!("Stream {input_value}"),
+                source: LiveInputSource::NetworkStream(Box::new(config)),
+            },
+        )
+    };
+    let added = control
+        .submit(&admin, add("add-rtmp", 5, rtmp.clone()), 0)
+        .unwrap();
+    assert!(matches!(
+        added.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputAdded { network_stream: Some(config), .. },
+            ..
+        }] if config.stream_key.as_deref() == Some("***")
+    ));
+    assert_wire_exact(&control, &added);
+    let leaks = |control: &ControlService, submission: &CommandSubmission, secret: &str| {
+        let mut wire = String::new();
+        for message in submission.output.clone().into_wire_messages() {
+            wire.push_str(&fm_protocol::encode_line(&message).unwrap());
+        }
+        wire.push_str(
+            &fm_protocol::encode_line(&WireMessage::Snapshot(control.snapshot().snapshot.clone()))
+                .unwrap(),
+        );
+        wire.contains(secret)
+    };
+    assert!(!leaks(&control, &added, "sk_live_hunter2"));
+    assert_eq!(control.network_stream_configs(), [(input(5), rtmp.clone())]);
+
+    // Another listener on TCP 1935 is refused; SRT on UDP 1935 is not.
+    let mut taken = NetworkStreamConfig::new("rtmp://127.0.0.1:1935/other");
+    taken.settings.mode = StreamMode::Listener;
+    let refused = control
+        .submit(&admin, add("add-taken", 6, taken), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("listen_port_in_use"));
+    assert_eq!(rejection_code(&refused), Some("conflict"));
+    let mut srt = NetworkStreamConfig::new("srt://0.0.0.0:1935");
+    srt.settings.mode = StreamMode::Listener;
+    srt.passphrase = Some("correct-horse-battery".into());
+    srt.stream_id = Some("cam1".into());
+    let added = control
+        .submit(&admin, add("add-srt", 7, srt.clone()), 0)
+        .unwrap();
+    assert!(matches!(
+        added.output.result,
+        CommandResult::Accepted { .. }
+    ));
+    assert!(!leaks(&control, &added, "correct-horse-battery"));
+    let entries = &control.snapshot().snapshot.network_streams;
+    assert_eq!(entries[1].config.passphrase.as_deref(), Some("***"));
+    assert_eq!(entries[1].config.stream_id.as_deref(), Some("cam1"));
+
+    // Moving the SRT input onto RTMP's port as another SRT listener is
+    // fine; a second SRT listener on it is refused at edit time too.
+    let set = |id: &str, input_value: u128, url: Option<&str>, stream_key, passphrase| {
+        command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::SetNetworkStream {
+                input: WireInputId::from_domain(input(input_value)),
+                url: url.map(fm_protocol::StreamUrl::new),
+                settings: fm_types::network_stream::NetworkStreamSettings {
+                    mode: StreamMode::Listener,
+                    ..fm_types::network_stream::NetworkStreamSettings::default()
+                },
+                stream_id: None,
+                stream_key,
+                passphrase,
+            },
+        )
+    };
+    // Keep: the stored key stays, though the client never saw it.
+    let kept = control
+        .submit(
+            &admin,
+            set("keep", 5, None, SecretEdit::Keep, SecretEdit::Keep),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(kept.output.result, CommandResult::Accepted { .. }));
+    assert_eq!(
+        control.network_stream_configs()[0].1.stream_key.as_deref(),
+        Some("sk_live_hunter2")
+    );
+    // Replace, then undo back to the exact old key.
+    let replaced = control
+        .submit(
+            &admin,
+            set(
+                "replace",
+                5,
+                None,
+                SecretEdit::Set("sk_new_key".into()),
+                SecretEdit::Keep,
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(!leaks(&control, &replaced, "sk_new_key"));
+    assert_eq!(
+        control.network_stream_configs()[0].1.stream_key.as_deref(),
+        Some("sk_new_key")
+    );
+    let undone = control.submit(&admin, undo("undo-key", None), 0).unwrap();
+    assert!(matches!(
+        undone.output.result,
+        CommandResult::Accepted { .. }
+    ));
+    assert!(!leaks(&control, &undone, "sk_live_hunter2"));
+    assert_eq!(
+        control.network_stream_configs()[0].1.stream_key.as_deref(),
+        Some("sk_live_hunter2")
+    );
+    // Clear.
+    control
+        .submit(
+            &admin,
+            set("clear", 5, None, SecretEdit::Clear, SecretEdit::Keep),
+            0,
+        )
+        .unwrap();
+    assert_eq!(control.network_stream_configs()[0].1.stream_key, None);
+    // A passphrase on RTMP is refused with its field.
+    let refused = control
+        .submit(
+            &admin,
+            set(
+                "bad",
+                5,
+                None,
+                SecretEdit::Keep,
+                SecretEdit::Set("0123456789".into()),
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("invalid_passphrase"));
+    // The SRT input cannot take another SRT listener's port.
+    let mut second = NetworkStreamConfig::new("srt://0.0.0.0:9000");
+    second.settings.mode = StreamMode::Listener;
+    control
+        .submit(&admin, add("add-srt2", 8, second), 0)
+        .unwrap();
+    let refused = control
+        .submit(
+            &admin,
+            set(
+                "collide",
+                8,
+                Some("srt://0.0.0.0:1935"),
+                SecretEdit::Keep,
+                SecretEdit::Keep,
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("listen_port_in_use"));
+}
+
 /// IN-015: a network stream input added live replicates its redacted
 /// configuration; `input_stream_set` edits replicate redacted; the media
 /// plane's status becomes a `network_stream_status` runtime event and the
@@ -6473,6 +6656,9 @@ fn network_stream_inputs_replicate_redacted_with_their_status() {
                     input: WireInputId::from_domain(input(5)),
                     url: Some(StreamUrl::new("https://cdn.test/live.m3u8?token=abc")),
                     settings,
+                    stream_id: None,
+                    stream_key: fm_protocol::SecretEdit::Keep,
+                    passphrase: fm_protocol::SecretEdit::Keep,
                 },
             ),
             0,
@@ -6500,6 +6686,9 @@ fn network_stream_inputs_replicate_redacted_with_their_status() {
                     input: WireInputId::from_domain(input(5)),
                     url: None,
                     settings,
+                    stream_id: None,
+                    stream_key: fm_protocol::SecretEdit::Keep,
+                    passphrase: fm_protocol::SecretEdit::Keep,
                 },
             ),
             0,

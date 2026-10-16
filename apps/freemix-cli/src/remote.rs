@@ -104,19 +104,24 @@ pub fn set_network_stream(
     expected_revision: Option<u64>,
 ) -> RemoteResult<()> {
     let mut remote = Remote::connect(address, Role::Graphics)?;
-    let current = remote
+    let (settings, stream_id) = remote
         .client
         .model()
         .view()
         .and_then(|view| {
             view.network_stream(input)
-                .map(|entry| entry.config.settings)
+                .map(|entry| (entry.config.settings, entry.config.stream_id.clone()))
         })
         .ok_or_else(|| RemoteFailure(format!("input {input} is not a network stream")))?;
+    // The daemon never reveals the stored stream key or passphrase, so an
+    // edit that names neither keeps them (IN-016, IN-017).
     let payload = CommandPayload::SetNetworkStream {
         input: fm_protocol::WireInputId::from_domain(input),
         url: options.url.clone(),
-        settings: options.apply(current),
+        settings: options.apply(settings),
+        stream_id: options.stream_id(stream_id.as_deref()),
+        stream_key: options.stream_key.clone(),
+        passphrase: options.passphrase.clone(),
     };
     let key = match key {
         Some(key) => key,
@@ -141,7 +146,8 @@ pub(crate) fn print_network_streams(
 }
 
 fn format_network_stream(entry: &fm_protocol::NetworkStreamEntry) -> String {
-    let settings = &entry.config.settings;
+    let config = &entry.config;
+    let settings = &config.settings;
     let status = &entry.status;
     let state = match status.state {
         fm_protocol::NetworkStreamState::Reconnecting {
@@ -150,10 +156,18 @@ fn format_network_stream(entry: &fm_protocol::NetworkStreamEntry) -> String {
         } => format!("reconnecting(attempt={attempt}, next_in_ms={next_in_ms})"),
         state => state.token().to_owned(),
     };
+    // The stream key and passphrase are secrets: only their presence shows.
+    let secret = |value: &Option<String>| {
+        if value.is_some() {
+            fm_types::network_stream::REDACTED
+        } else {
+            "none"
+        }
+    };
     format!(
-        "NetworkStream(input={}, url={:?}, transport={}, jitter_ms={}, backoff_ms={}..{}, give_up={}, timeout_ms={}, stall={}, state={state}, bitrate_bps={}, buffer_ms={}, dropped_frames={}, late_frames={}, reconnects={}, last_error={})",
+        "NetworkStream(input={}, url={:?}, transport={}, jitter_ms={}, backoff_ms={}..{}, give_up={}, timeout_ms={}, stall={}, mode={}, latency_ms={}, key_length={}, audio={}, stream_id={}, stream_key={}, passphrase={}, state={state}, bitrate_bps={}, buffer_ms={}, dropped_frames={}, late_frames={}, reconnects={}, source_channels={}, last_error={})",
         entry.input,
-        entry.config.url,
+        config.url,
         settings.transport.token(),
         settings.jitter_buffer_ms,
         settings.reconnect.backoff_min_ms,
@@ -161,11 +175,22 @@ fn format_network_stream(entry: &fm_protocol::NetworkStreamEntry) -> String {
         settings.reconnect.give_up.token(),
         settings.timeout_ms,
         settings.stall.token(),
+        settings.mode.token(),
+        settings.latency_ms,
+        settings.key_length.token(),
+        settings.audio.token(),
+        config
+            .stream_id
+            .as_deref()
+            .map_or_else(|| "none".to_owned(), |id| format!("{id:?}")),
+        secret(&config.stream_key),
+        secret(&config.passphrase),
         status.bitrate_bps,
         status.buffer_ms,
         status.dropped_frames,
         status.late_frames,
         status.reconnects,
+        status.source_channels,
         status
             .last_error
             .as_deref()

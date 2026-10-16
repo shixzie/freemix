@@ -2206,6 +2206,7 @@ impl EngineMutation {
                 });
             }
             config.validate().map_err(network_stream_rejection)?;
+            check_listen_port(state, input, &config)?;
             state.set_input_source_unchecked(
                 input,
                 fm_model::InputSourceSpec::Network((*config).clone()),
@@ -2622,6 +2623,7 @@ fn apply_input_catalogue_mutation(
         } => {
             if let EngineInputSource::NetworkStream(config) = &source {
                 config.validate().map_err(network_stream_rejection)?;
+                check_listen_port(state, input, config)?;
                 let count = state.network_streams().count();
                 if count >= fm_types::network_stream::MAX_NETWORK_STREAM_INPUTS {
                     let message = format!(
@@ -2685,6 +2687,27 @@ pub(crate) fn check_capture_room(state: &ShowState) -> Result<(), Rejection> {
         let message = format!("the show already has {count} capture inputs, the most it may hold");
         return Err(Rejection::new(RejectionCode::Conflict, message.clone())
             .with_field(FieldIssue::new("kind", "too_many_capture_inputs", message)));
+    }
+    Ok(())
+}
+
+/// Refuses a network stream that would listen on a local port another
+/// network stream input (other than `input`) already listens on (IN-016,
+/// IN-017).
+pub(crate) fn check_listen_port(
+    state: &ShowState,
+    input: InputId,
+    config: &fm_types::network_stream::NetworkStreamConfig,
+) -> Result<(), Rejection> {
+    let Some(endpoint) = config.listen_endpoint() else {
+        return Ok(());
+    };
+    if let Some((holder, _)) = state.network_streams().find(|(other, other_config)| {
+        *other != input && other_config.listen_endpoint() == Some(endpoint)
+    }) {
+        let message = format!("input {holder} already listens on {endpoint}");
+        return Err(Rejection::new(RejectionCode::Conflict, message.clone())
+            .with_field(FieldIssue::new("url", "listen_port_in_use", message)));
     }
     Ok(())
 }

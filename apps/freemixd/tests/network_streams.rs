@@ -4,6 +4,11 @@
 //! `input_added`, `network_stream_changed`, and the snapshot with its URL
 //! redacted, and persisted (credentials included) across restart. The
 //! simulated runtime receives nothing: every stream reports `idle`.
+//!
+//! IN-016/IN-017: an RTMP listener's stream key and an SRT input's
+//! passphrase never reach the wire (`***` in events and the snapshot) yet
+//! persist across restart, and a second input listening on a taken port is
+//! refused with `listen_port_in_use`.
 
 use std::{
     fs,
@@ -30,7 +35,8 @@ use fm_protocol::{
     WireMessage, decode_line, encode_line,
 };
 use fm_types::network_stream::{
-    NetworkStreamConfig, NetworkStreamState, RtspTransport, StallSlate, StreamUrl,
+    NetworkStreamConfig, NetworkStreamSettings, NetworkStreamState, RtspTransport, SecretEdit,
+    StallSlate, StreamMode, StreamUrl,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -40,7 +46,13 @@ use freemixd::ReadinessRecord;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const WAIT: Duration = Duration::from_secs(20);
-const SECRETS: [&str; 3] = ["hunter2", "n3wpass", "s1gnature"];
+const SECRETS: [&str; 5] = [
+    "hunter2",
+    "n3wpass",
+    "s1gnature",
+    "sk_live_9zQ",
+    "srt-passphrase-xyz",
+];
 
 fn input(value: u128) -> InputId {
     InputId::new(NonZeroU128::new(value).unwrap())
@@ -318,6 +330,9 @@ fn network_stream_inputs_replicate_redacted_and_persist() {
         input: wire(5),
         url: None,
         settings,
+        stream_id: None,
+        stream_key: SecretEdit::Keep,
+        passphrase: SecretEdit::Keep,
     });
     let EventPayload::NetworkStreamChanged {
         input: changed_input,
@@ -337,6 +352,9 @@ fn network_stream_inputs_replicate_redacted_and_persist() {
             "rtsp://admin:n3wpass@cam.test:554/live2?signature=s1gnature",
         )),
         settings,
+        stream_id: None,
+        stream_key: SecretEdit::Keep,
+        passphrase: SecretEdit::Keep,
     });
     let EventPayload::NetworkStreamChanged {
         config: changed, ..
@@ -355,16 +373,25 @@ fn network_stream_inputs_replicate_redacted_and_persist() {
             input: wire(5),
             url: Some(StreamUrl::new("udp://@:9000")),
             settings: udp_only,
+            stream_id: None,
+            stream_key: SecretEdit::Keep,
+            passphrase: SecretEdit::Keep,
         },
         CommandPayload::SetNetworkStream {
             input: wire(1),
             url: None,
             settings,
+            stream_id: None,
+            stream_key: SecretEdit::Keep,
+            passphrase: SecretEdit::Keep,
         },
         CommandPayload::SetNetworkStream {
             input: wire(9),
             url: None,
             settings,
+            stream_id: None,
+            stream_key: SecretEdit::Keep,
+            passphrase: SecretEdit::Keep,
         },
     ] {
         let (result, events) = client.submit(&refused);
@@ -404,4 +431,90 @@ fn network_stream_inputs_replicate_redacted_and_persist() {
         "rtsp://***@cam.test:554/live2?signature=***"
     );
     assert_eq!(entry.config.settings.jitter_buffer_ms, 800);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn rtmp_and_srt_secrets_never_reach_the_wire_and_listen_ports_are_exclusive() {
+    let directory = TestDirectory::new();
+    let project = directory.project();
+    save_project(&project);
+    let daemon = Daemon::start(&project);
+    let (mut client, _) = Client::connect(&daemon);
+
+    let mut rtmp = NetworkStreamConfig::new("rtmp://0.0.0.0:19350/live");
+    rtmp.settings.mode = StreamMode::Listener;
+    rtmp.stream_key = Some("sk_live_9zQ".into());
+    let added = client.accept(&CommandPayload::AddInput {
+        input: wire(5),
+        name: "OBS".into(),
+        source: LiveInputSource::NetworkStream(Box::new(rtmp)),
+    });
+    let EventPayload::InputAdded {
+        network_stream: Some(added),
+        ..
+    } = added
+    else {
+        panic!("expected input_added with its stream: {added:?}");
+    };
+    assert_eq!(added.stream_key.as_deref(), Some("***"));
+    assert_eq!(added.settings.mode, StreamMode::Listener);
+
+    let mut srt = NetworkStreamConfig::new("srt://0.0.0.0:19350");
+    srt.settings.mode = StreamMode::Listener;
+    srt.settings.latency_ms = 250;
+    srt.passphrase = Some("srt-passphrase-xyz".into());
+    srt.stream_id = Some("cam1".into());
+    client.accept(&CommandPayload::AddInput {
+        input: wire(6),
+        name: "Remote".into(),
+        source: LiveInputSource::NetworkStream(Box::new(srt)),
+    });
+
+    // A second RTMP listener on TCP 19350 is refused.
+    let mut taken = NetworkStreamConfig::new("rtmp://127.0.0.1:19350/other");
+    taken.settings.mode = StreamMode::Listener;
+    let (result, events) = client.submit(&CommandPayload::AddInput {
+        input: wire(7),
+        name: "Taken".into(),
+        source: LiveInputSource::NetworkStream(Box::new(taken)),
+    });
+    let CommandResult::Rejected { fields, .. } = &result else {
+        panic!("a taken port is refused: {result:?}");
+    };
+    assert_eq!(fields[0].code, "listen_port_in_use", "{result:?}");
+    assert_eq!(events, []);
+
+    // Keeping the key across a settings edit; the event masks it.
+    let changed = client.accept(&CommandPayload::SetNetworkStream {
+        input: wire(5),
+        url: None,
+        settings: NetworkStreamSettings {
+            mode: StreamMode::Listener,
+            jitter_buffer_ms: 600,
+            ..NetworkStreamSettings::default()
+        },
+        stream_id: None,
+        stream_key: SecretEdit::Keep,
+        passphrase: SecretEdit::Keep,
+    });
+    let EventPayload::NetworkStreamChanged { config, .. } = changed else {
+        panic!("expected network_stream_changed: {changed:?}");
+    };
+    assert_eq!(config.stream_key.as_deref(), Some("***"));
+    drop(client);
+    drop(daemon);
+
+    // Restarted, both secrets persisted (set, masked) and never shown.
+    let daemon = Daemon::start(&project);
+    let (_client, snapshot) = Client::connect(&daemon);
+    let [rtmp, srt] = snapshot.network_streams.as_slice() else {
+        panic!("{:?}", snapshot.network_streams);
+    };
+    assert_eq!(rtmp.config.stream_key.as_deref(), Some("***"));
+    assert_eq!(rtmp.config.settings.jitter_buffer_ms, 600);
+    assert_eq!(srt.config.passphrase.as_deref(), Some("***"));
+    assert_eq!(srt.config.stream_id.as_deref(), Some("cam1"));
+    assert_eq!(srt.config.settings.latency_ms, 250);
+    assert_eq!(srt.status.state, NetworkStreamState::Idle);
 }

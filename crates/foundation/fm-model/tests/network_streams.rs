@@ -1,6 +1,8 @@
 //! IN-015 network stream inputs (schema 43): the configuration's bounds,
 //! URL validation and redaction, the per-project input limit, and the
-//! replaceable network source.
+//! replaceable network source. IN-016/IN-017 (schema 46): RTMP and SRT
+//! modes, stream keys, passphrases, and stream IDs, their redaction, and
+//! listen ports no two inputs share.
 
 use std::num::{NonZeroU32, NonZeroU128};
 
@@ -10,8 +12,8 @@ use fm_model::{
 };
 use fm_types::network_stream::{
     GiveUp, MAX_JITTER_BUFFER_MS, MAX_NETWORK_STREAM_INPUTS, MIN_JITTER_BUFFER_MS,
-    NetworkStreamConfig, NetworkStreamError, ReconnectPolicy, RtspTransport, StreamProtocol,
-    redact_stream_url, scrub_stream_text, validate_stream_url,
+    NetworkStreamConfig, NetworkStreamError, ReconnectPolicy, RtspTransport, StreamMode,
+    StreamProtocol, redact_stream_url, scrub_stream_text, validate_stream_url,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -195,7 +197,7 @@ fn project_validation_names_the_invalid_field_and_bounds_the_input_count() {
 
 #[test]
 fn a_network_source_is_replaceable_and_validated() {
-    let config = NetworkStreamConfig::new("srt://not-supported:9000");
+    let config = NetworkStreamConfig::new("ftp://not-supported/live.ts");
     assert_eq!(
         InputSourceSpec::Network(config).validate(),
         Err(InputSourceError::InvalidNetworkStream)
@@ -217,4 +219,100 @@ fn a_network_source_is_replaceable_and_validated() {
         )
         .unwrap();
     assert_eq!(project.inputs()[0].kind, InputKind::NetworkStream(replaced));
+}
+
+#[test]
+fn rtmp_and_srt_fields_validate_per_protocol_and_redact_their_secrets() {
+    for (url, protocol) in [
+        ("rtmp://ingest.example/live/key123", StreamProtocol::Rtmp),
+        ("rtmps://ingest.example:443/app", StreamProtocol::Rtmp),
+        ("srt://encoder.local:9000", StreamProtocol::Srt),
+        ("srt://0.0.0.0:9000/", StreamProtocol::Srt),
+    ] {
+        assert_eq!(validate_stream_url(url), Ok(protocol), "{url}");
+    }
+    assert!(validate_stream_url("srt://encoder.local").is_err());
+    assert!(validate_stream_url("rtmp://ingest.example").is_err());
+    assert_eq!(
+        redact_stream_url("rtmp://ingest.example/live/key123"),
+        "rtmp://ingest.example/live/***"
+    );
+
+    let mut rtmp = NetworkStreamConfig::new("rtmp://0.0.0.0:1935/live");
+    rtmp.settings.mode = StreamMode::Listener;
+    rtmp.stream_key = Some("obs-key".into());
+    assert_eq!(rtmp.validate(), Ok(StreamProtocol::Rtmp));
+    assert_eq!(rtmp.redacted().stream_key.as_deref(), Some("***"));
+    assert_eq!(
+        rtmp.redacted().validate_redacted(),
+        Ok(StreamProtocol::Rtmp)
+    );
+    assert!(!format!("{:?}", rtmp.redacted()).contains("obs-key"));
+    assert_eq!(rtmp.scrub("refused obs-key"), "refused ***");
+    let mut rendezvous = rtmp.clone();
+    rendezvous.settings.mode = StreamMode::Rendezvous;
+    assert_eq!(
+        rendezvous.validate(),
+        Err(NetworkStreamError::ModeUnsupported)
+    );
+    let mut low_port = NetworkStreamConfig::new("rtmp://0.0.0.0:80/live");
+    low_port.settings.mode = StreamMode::Listener;
+    assert_eq!(low_port.validate(), Err(NetworkStreamError::ListenPort));
+
+    let mut srt = NetworkStreamConfig::new("srt://encoder.local:9000");
+    srt.passphrase = Some("short".into());
+    assert_eq!(srt.validate(), Err(NetworkStreamError::Passphrase));
+    srt.passphrase = Some("long-enough-secret".into());
+    srt.stream_id = Some("cam1".into());
+    assert_eq!(srt.validate(), Ok(StreamProtocol::Srt));
+    assert!(srt.connect_url().contains("streamid=cam1"));
+    srt.stream_key = Some("rtmp-only".into());
+    assert_eq!(srt.validate(), Err(NetworkStreamError::StreamKey));
+    srt.stream_key = None;
+    srt.settings.latency_ms = 9_000;
+    assert_eq!(srt.validate(), Err(NetworkStreamError::Latency));
+
+    // A bad field in a project names its field.
+    let mut project = project();
+    let mut bad = NetworkStreamConfig::new("srt://encoder.local:9000");
+    bad.passphrase = Some("short".into());
+    project.add_input(network(1, bad));
+    let errors = project.validate().unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.entity == Some(EntityRef::Input(input(1)))
+                && error.field == "kind.network_stream.passphrase"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn two_inputs_never_listen_on_one_port() {
+    let listener = |url: &str| {
+        let mut config = NetworkStreamConfig::new(url);
+        config.settings.mode = StreamMode::Listener;
+        config
+    };
+    let mut project = project();
+    project.add_input(network(1, listener("rtmp://0.0.0.0:1935/live")));
+    // SRT listens on UDP: the same number is another port.
+    project.add_input(network(2, listener("srt://0.0.0.0:1935")));
+    // A caller to the same port listens on nothing.
+    project.add_input(network(
+        3,
+        NetworkStreamConfig::new("rtmp://127.0.0.1:1935/live"),
+    ));
+    assert_eq!(project.validate(), Ok(()));
+
+    project.add_input(network(4, listener("rtmp://127.0.0.1:1935/other")));
+    let errors = project.validate().unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.entity == Some(EntityRef::Input(input(4)))
+                && error.field == "kind.network_stream.url"
+                && error.kind == ValidationErrorKind::DuplicateReference),
+        "{errors:?}"
+    );
 }

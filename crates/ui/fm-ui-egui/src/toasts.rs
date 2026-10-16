@@ -517,7 +517,7 @@ mod tests {
         let refusal = refused(
             "c-1",
             "invalid_command",
-            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)",
+            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls, rtmp, rtmps, srt)",
             Some("unsupported_scheme"),
             None,
         );
@@ -527,12 +527,12 @@ mod tests {
         assert_eq!(
             queue.iter().next().unwrap().message,
             "Comando rechazado (unsupported_scheme): esquema no admitido (admitidos: rtsp, rtp, \
-             udp, tcp, http, https, hls)"
+             udp, tcp, http, https, hls, rtmp, rtmps, srt)"
         );
         assert_eq!(
             refusal.text(Locale::ENGLISH, None),
             "Command refused (unsupported_scheme): unsupported scheme (allowed: rtsp, rtp, udp, \
-             tcp, http, https, hls)"
+             tcp, http, https, hls, rtmp, rtmps, srt)"
         );
     }
 

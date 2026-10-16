@@ -383,12 +383,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             input,
             url,
             settings,
+            stream_id,
+            stream_key,
+            passphrase,
         } => {
             record.field("payload", "input_stream_set")?;
             super::network_stream::encode_set(
                 *input,
-                url.as_ref(),
-                settings,
+                &super::network_stream::SetFields {
+                    url: url.clone(),
+                    settings: *settings,
+                    stream_id: stream_id.clone(),
+                    stream_key: stream_key.clone(),
+                    passphrase: passphrase.clone(),
+                },
                 &mut |name, value| record.field_string(name, value),
             )?;
         }
@@ -502,9 +510,11 @@ fn encode_input_catalogue_command(
                 LiveInputSource::Bars => record.field("kind", "bars"),
                 LiveInputSource::NetworkStream(config) => {
                     record.field("kind", "network_stream")?;
-                    super::network_stream::encode_config(config, &mut |name, value| {
-                        record.field_string(name, value)
-                    })
+                    super::network_stream::encode_config(
+                        config,
+                        super::network_stream::Secrets::Exact,
+                        &mut |name, value| record.field_string(name, value),
+                    )
                 }
                 LiveInputSource::Capture(config) => {
                     record.field("kind", "capture")?;
@@ -1887,9 +1897,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             match (network_stream, capture) {
                 (Some(config), None) => {
                     record.field("kind", "network_stream")?;
-                    super::network_stream::encode_config(config, &mut |name, value| {
-                        record.field_string(name, value)
-                    })?;
+                    super::network_stream::encode_config(
+                        config,
+                        super::network_stream::Secrets::Redacted,
+                        &mut |name, value| record.field_string(name, value),
+                    )?;
                 }
                 (None, Some(config)) => {
                     record.field("kind", "capture")?;
@@ -2042,9 +2054,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::NetworkStreamChanged { input, config } => {
             record.field("event", "network_stream_changed")?;
             record.field("input", input)?;
-            super::network_stream::encode_config(config, &mut |name, value| {
-                record.field_string(name, value)
-            })?;
+            super::network_stream::encode_config(
+                config,
+                super::network_stream::Secrets::Redacted,
+                &mut |name, value| record.field_string(name, value),
+            )?;
         }
         EventPayload::SceneLayoutChanged { edit, layout } => {
             let layers = encode_scene_layers(layout)?;

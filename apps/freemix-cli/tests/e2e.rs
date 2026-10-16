@@ -3824,7 +3824,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 45,
+  "schema_version": 46,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4031,7 +4031,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 45", "\"schema_version\": 44"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 46", "\"schema_version\": 45"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4045,7 +4045,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 44 is unsupported; expected 45",
+        "title template schema 45 is unsupported; expected 46",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4063,7 +4063,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 45,
+  "schema_version": 46,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4326,7 +4326,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 45,
+  "schema_version": 46,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4556,7 +4556,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 45,
+  "schema_version": 46,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4653,7 +4653,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 45,
+  "schema_version": 46,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5728,13 +5728,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        45
+        46
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 45);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 46);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5747,7 +5747,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 45);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 46);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5823,7 +5823,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        45
+        46
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5831,7 +5831,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 45);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 46);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5841,7 +5841,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 45);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 46);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5849,7 +5849,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 45);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 46);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -12036,8 +12036,9 @@ fn local_network_stream_inputs_persist_and_list_redacted() {
         text.contains(
             "NetworkStream(input=40, url=\"rtsp://***@cam.test:554/live\", transport=tcp, \
              jitter_ms=900, backoff_ms=500..20000, give_up=12, timeout_ms=5000, stall=black, \
-             state=idle, bitrate_bps=0, buffer_ms=0, dropped_frames=0, late_frames=0, \
-             reconnects=0, last_error=none)"
+             mode=caller, latency_ms=120, key_length=16, audio=mix, stream_id=none, \
+             stream_key=none, passphrase=none, state=idle, bitrate_bps=0, buffer_ms=0, \
+             dropped_frames=0, late_frames=0, reconnects=0, source_channels=0, last_error=none)"
         ),
         "{text}"
     );
@@ -12132,12 +12133,16 @@ fn remote_network_stream_commands_send_exact_payloads() {
             input: input(1),
             url: Some(StreamUrl::new("rtsp://admin:n3w@cam.test/live2")),
             settings,
+            stream_id: None,
+            stream_key: fm_protocol::SecretEdit::Keep,
+            passphrase: fm_protocol::SecretEdit::Keep,
         },
         event: EventPayload::NetworkStreamChanged {
             input: input(1),
             config: Box::new(NetworkStreamConfig {
                 url: "rtsp://***@cam.test/live2".into(),
                 settings,
+                ..NetworkStreamConfig::default()
             }),
         },
         domain: "project",
@@ -12188,8 +12193,10 @@ fn remote_network_stream_commands_send_exact_payloads() {
         text.contains(
             "NetworkStream(input=1, url=\"rtsp://***@cam.test/live\", transport=tcp, \
              jitter_ms=300, backoff_ms=500..10000, give_up=never, timeout_ms=7000, \
-             stall=freeze, state=reconnecting(attempt=2, next_in_ms=800), bitrate_bps=0, \
-             buffer_ms=0, dropped_frames=0, late_frames=0, reconnects=2, last_error=none)"
+             stall=freeze, mode=caller, latency_ms=120, key_length=16, audio=mix, \
+             stream_id=none, stream_key=none, passphrase=none, \
+             state=reconnecting(attempt=2, next_in_ms=800), bitrate_bps=0, buffer_ms=0, \
+             dropped_frames=0, late_frames=0, reconnects=2, source_channels=0, last_error=none)"
         ),
         "{text}"
     );
@@ -12202,6 +12209,491 @@ fn remote_network_stream_commands_send_exact_payloads() {
             "9",
             "Camera",
             "gopher://cam.test/live",
+        ]),
+        "invalid network stream",
+    );
+}
+
+/// Asserts neither stdout nor stderr of `output` reveals any of `secrets`.
+fn assert_no_secrets(output: &Output, secrets: &[&str]) {
+    let out = stdout(output);
+    let err = String::from_utf8_lossy(&output.stderr);
+    for secret in secrets {
+        assert!(!out.contains(secret), "stdout reveals `{secret}`: {out}");
+        assert!(!err.contains(secret), "stderr reveals `{secret}`: {err}");
+    }
+}
+
+/// The stored network stream configuration of `input` in `project`.
+fn stored_network_stream(project: &Path, input: u128) -> fm_protocol::NetworkStreamConfig {
+    let stored = ProjectStore::new(project).unwrap().load().unwrap();
+    let kind = &stored
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id.get().get() == input)
+        .unwrap()
+        .kind;
+    let InputKind::NetworkStream(config) = kind else {
+        panic!("{kind:?}");
+    };
+    config.clone()
+}
+
+/// IN-016/IN-017: local RTMP and SRT inputs persist their mode, latency,
+/// key length, audio pair, stream ID, and secrets; status never reveals the
+/// stream key or passphrase; edits keep or clear the secrets; and a second
+/// listener on one port or a short passphrase is refused.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn local_rtmp_and_srt_inputs_keep_their_secrets_out_of_reports() {
+    const KEY: &str = "live_9f3Kq7Zx";
+    const NEW_KEY: &str = "live_n3wK3yZ";
+    const PASSPHRASE: &str = "correct horse battery";
+    const SECRETS: [&str; 3] = [KEY, NEW_KEY, PASSPHRASE];
+    let context = ContractContext::new();
+    let path = context.project_path();
+    assert_success(&invoke_bounded(&["new", path]));
+
+    let added = invoke_bounded(&[
+        "input-add-stream",
+        path,
+        "50",
+        "RTMP in",
+        "rtmp://0.0.0.0:1935/live",
+        "--mode",
+        "listener",
+        "--stream-key",
+        KEY,
+    ]);
+    assert_success(&added);
+    assert_no_secrets(&added, &SECRETS);
+    let added = invoke_bounded(&[
+        "input-add-stream",
+        path,
+        "51",
+        "SRT in",
+        "srt://ingest.test:9000",
+        "--passphrase",
+        PASSPHRASE,
+        "--key-length",
+        "32",
+        "--stream-id",
+        "#!::r=live/cam1,m=request",
+        "--latency-ms",
+        "400",
+        "--audio",
+        "3-4",
+    ]);
+    assert_success(&added);
+    assert_no_secrets(&added, &SECRETS);
+
+    let listed = invoke_bounded(&["input-stream-status", path]);
+    assert_success(&listed);
+    assert_no_secrets(&listed, &SECRETS);
+    let text = stdout(&listed);
+    for expected in [
+        "NetworkStream(input=50, url=\"rtmp://0.0.0.0:1935/live\", transport=auto, \
+         jitter_ms=300, backoff_ms=500..10000, give_up=never, timeout_ms=5000, stall=freeze, \
+         mode=listener, latency_ms=120, key_length=16, audio=mix, stream_id=none, \
+         stream_key=***, passphrase=none, state=idle, bitrate_bps=0, buffer_ms=0, \
+         dropped_frames=0, late_frames=0, reconnects=0, source_channels=0, last_error=none)",
+        "NetworkStream(input=51, url=\"srt://ingest.test:9000\", transport=auto, \
+         jitter_ms=300, backoff_ms=500..10000, give_up=never, timeout_ms=5000, stall=freeze, \
+         mode=caller, latency_ms=400, key_length=32, audio=3-4, \
+         stream_id=\"#!::r=live/cam1,m=request\", stream_key=none, passphrase=***, \
+         state=idle, bitrate_bps=0, buffer_ms=0, dropped_frames=0, late_frames=0, \
+         reconnects=0, source_channels=0, last_error=none)",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+    let listed = invoke_bounded(&["inputs", path]);
+    assert_success(&listed);
+    assert_no_secrets(&listed, &SECRETS);
+
+    let rtmp = stored_network_stream(&context.project, 50);
+    assert_eq!(rtmp.settings.mode, fm_protocol::StreamMode::Listener);
+    assert_eq!(rtmp.stream_key.as_deref(), Some(KEY));
+    let srt = stored_network_stream(&context.project, 51);
+    assert_eq!(srt.passphrase.as_deref(), Some(PASSPHRASE));
+    assert_eq!(srt.stream_id.as_deref(), Some("#!::r=live/cam1,m=request"));
+    assert_eq!(srt.settings.latency_ms, 400);
+    assert_eq!(srt.settings.key_length, fm_protocol::SrtKeyLength::Aes256);
+    assert_eq!(srt.settings.audio, fm_protocol::AudioChannels::Pair34);
+
+    // An edit that names no secret keeps both.
+    let edited = invoke_bounded(&["input-stream-set", path, "51", "--latency-ms", "800"]);
+    assert_success(&edited);
+    assert_no_secrets(&edited, &SECRETS);
+    let srt = stored_network_stream(&context.project, 51);
+    assert_eq!(srt.settings.latency_ms, 800);
+    assert_eq!(srt.passphrase.as_deref(), Some(PASSPHRASE));
+    assert_eq!(srt.stream_id.as_deref(), Some("#!::r=live/cam1,m=request"));
+    let edited = invoke_bounded(&["input-stream-set", path, "50", "--stream-key", NEW_KEY]);
+    assert_success(&edited);
+    assert_no_secrets(&edited, &SECRETS);
+    assert_eq!(
+        stored_network_stream(&context.project, 50)
+            .stream_key
+            .as_deref(),
+        Some(NEW_KEY)
+    );
+
+    // Refusals never echo a secret and leave the input as it was.
+    for (arguments, message) in [
+        (
+            vec!["input-stream-set", path, "51", "--passphrase", "too-short"],
+            "invalid network stream",
+        ),
+        (
+            vec![
+                "input-add-stream",
+                path,
+                "53",
+                "Short",
+                "srt://ingest.test:9001",
+                "--passphrase",
+                "too-short",
+            ],
+            "invalid network stream",
+        ),
+        (
+            vec!["input-stream-set", path, "51", "--latency-ms", "10"],
+            "invalid network stream",
+        ),
+        (
+            vec!["input-stream-set", path, "51", "--audio", "9-10"],
+            "audio channels",
+        ),
+        (
+            vec!["input-stream-set", path, "51", "--mode", "push"],
+            "stream mode",
+        ),
+        (
+            vec!["input-stream-set", path, "51", "--key-length", "12"],
+            "key length",
+        ),
+        (
+            vec![
+                "input-stream-set",
+                path,
+                "50",
+                "--stream-key",
+                KEY,
+                "--clear-stream-key",
+            ],
+            "cannot be combined",
+        ),
+        (
+            vec!["input-stream-set", path, "51", "--stream-key", KEY],
+            "invalid network stream",
+        ),
+        (
+            vec![
+                "input-add-stream",
+                path,
+                "53",
+                "Clear",
+                "srt://ingest.test:9001",
+                "--clear-passphrase",
+            ],
+            "--clear-passphrase",
+        ),
+    ] {
+        let output = invoke_bounded(&arguments);
+        assert_failure_contains(&output, message);
+        assert_no_secrets(&output, &SECRETS);
+    }
+    let srt = stored_network_stream(&context.project, 51);
+    assert_eq!(srt.passphrase.as_deref(), Some(PASSPHRASE));
+    assert_eq!(srt.settings.latency_ms, 800);
+
+    // A second listener on the same TCP port is refused, added or edited.
+    let refused = invoke_bounded(&[
+        "input-add-stream",
+        path,
+        "52",
+        "Second",
+        "rtmp://0.0.0.0:1935/other",
+        "--mode",
+        "listener",
+    ]);
+    assert_failure_contains(&refused, "input 50 already listens on TCP port 1935");
+    assert_no_secrets(&refused, &SECRETS);
+    assert_success(&invoke_bounded(&[
+        "input-add-stream",
+        path,
+        "52",
+        "Second",
+        "rtmp://0.0.0.0:1936/other",
+        "--mode",
+        "listener",
+    ]));
+    let refused = invoke_bounded(&[
+        "input-stream-set",
+        path,
+        "52",
+        "--url",
+        "rtmp://0.0.0.0:1935/other",
+    ]);
+    assert_failure_contains(&refused, "already listens on TCP port 1935");
+    assert_no_secrets(&refused, &SECRETS);
+
+    // Clearing removes exactly the named secrets.
+    assert_success(&invoke_bounded(&[
+        "input-stream-set",
+        path,
+        "51",
+        "--clear-passphrase",
+        "--clear-stream-id",
+    ]));
+    let srt = stored_network_stream(&context.project, 51);
+    assert_eq!(srt.passphrase, None);
+    assert_eq!(srt.stream_id, None);
+    assert_eq!(srt.settings.key_length, fm_protocol::SrtKeyLength::Aes256);
+    assert_success(&invoke_bounded(&[
+        "input-stream-set",
+        path,
+        "50",
+        "--clear-stream-key",
+    ]));
+    assert_eq!(stored_network_stream(&context.project, 50).stream_key, None);
+    let listed = invoke_bounded(&["input-stream-status", path]);
+    assert!(
+        stdout(&listed).contains("stream_id=none, stream_key=none, passphrase=none, state=idle"),
+        "{}",
+        stdout(&listed)
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// IN-016/IN-017, Protocol 2.49: remote RTMP/SRT commands send their
+/// secrets exactly, an edit keeps the secrets it does not name, status shows
+/// the listening state with secrets masked, and a daemon's refusal of a
+/// second listener on one port is reported.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn remote_srt_and_rtmp_commands_send_secret_edits() {
+    use fm_protocol::{
+        AudioChannels, NetworkStreamConfig, NetworkStreamEntry, NetworkStreamState,
+        NetworkStreamStatus, SecretEdit, StreamMode,
+    };
+    const PASSPHRASE: &str = "correct horse battery";
+    let mut config = NetworkStreamConfig::new("srt://ingest.test:9000");
+    config.settings.latency_ms = 250;
+    config.settings.audio = AudioChannels::Pair12;
+    config.stream_id = Some("cam-7".into());
+    config.passphrase = Some(PASSPHRASE.into());
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-srt-add",
+        payload: CommandPayload::AddInput {
+            input: input(9),
+            name: "SRT 9".into(),
+            source: fm_protocol::LiveInputSource::NetworkStream(Box::new(config.clone())),
+        },
+        event: EventPayload::InputAdded {
+            input: input(9),
+            name: "SRT 9".into(),
+            network_stream: Some(Box::new(config.redacted())),
+            capture: None,
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-input-add-stream",
+        &server.address(),
+        "9",
+        "SRT 9",
+        "srt://ingest.test:9000",
+        "--latency-ms",
+        "250",
+        "--audio",
+        "1-2",
+        "--stream-id",
+        "cam-7",
+        "--passphrase",
+        PASSPHRASE,
+        "--key",
+        "remote-srt-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert_no_secrets(&output, &[PASSPHRASE]);
+    server.finish();
+
+    // The daemon reports the stored passphrase only as `***`; an edit that
+    // names no secret keeps it, and the stream ID carries over.
+    let mut current = NetworkStreamConfig::new("srt://ingest.test:9000");
+    current.settings.mode = StreamMode::Listener;
+    current.stream_id = Some("cam-7".into());
+    current.passphrase = Some("***".into());
+    let entry = NetworkStreamEntry {
+        input: input(1),
+        config: current.clone(),
+        status: NetworkStreamStatus {
+            state: NetworkStreamState::Listening,
+            source_channels: 6,
+            ..NetworkStreamStatus::default()
+        },
+    };
+    let mut settings = current.settings;
+    settings.latency_ms = 1_000;
+    let edits = [
+        (
+            vec!["--latency-ms", "1000"],
+            "remote-srt-keep",
+            Some("cam-7"),
+            SecretEdit::Keep,
+        ),
+        (
+            vec![
+                "--clear-passphrase",
+                "--clear-stream-id",
+                "--latency-ms",
+                "1000",
+            ],
+            "remote-srt-clear",
+            None,
+            SecretEdit::Clear,
+        ),
+        (
+            vec!["--passphrase", "an0ther-passphrase", "--latency-ms", "1000"],
+            "remote-srt-set",
+            Some("cam-7"),
+            SecretEdit::Set("an0ther-passphrase".into()),
+        ),
+    ];
+    for (options, key, stream_id, passphrase) in edits {
+        let event_config = NetworkStreamConfig {
+            settings,
+            stream_id: stream_id.map(str::to_owned),
+            passphrase: passphrase.apply(Some("***")).map(|_| "***".to_owned()),
+            ..current.clone()
+        };
+        let edit = RemoteEdit {
+            role: Role::Graphics,
+            key,
+            payload: CommandPayload::SetNetworkStream {
+                input: input(1),
+                url: None,
+                settings,
+                stream_id: stream_id.map(str::to_owned),
+                stream_key: SecretEdit::Keep,
+                passphrase,
+            },
+            event: EventPayload::NetworkStreamChanged {
+                input: input(1),
+                config: Box::new(event_config),
+            },
+            domain: "project",
+        };
+        let streams = vec![entry.clone()];
+        let server = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let worker = thread::spawn(move || {
+                SNAPSHOT_NETWORK_STREAMS.with(|cell| *cell.borrow_mut() = streams);
+                serve_edit(&listener, &edit);
+            });
+            FakeRemoteServer { address, worker }
+        };
+        let address = server.address();
+        let mut arguments = vec!["remote-input-stream-set", address.as_str(), "1"];
+        arguments.extend(options);
+        arguments.extend(["--key", key, "--expect", "0"]);
+        let output = invoke(&arguments);
+        assert_success(&output);
+        assert_no_secrets(&output, &["an0ther-passphrase"]);
+        server.finish();
+    }
+
+    let streams = vec![entry];
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        SNAPSHOT_NETWORK_STREAMS.with(|cell| *cell.borrow_mut() = streams);
+        let engine = EngineIdentity {
+            engine_id: "stream-engine".into(),
+            state_epoch: 1,
+            log_id: "stream-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    });
+    let output = invoke(&["remote-input-stream-status", &server.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(
+        text.contains(
+            "NetworkStream(input=1, url=\"srt://ingest.test:9000\", transport=auto, \
+             jitter_ms=300, backoff_ms=500..10000, give_up=never, timeout_ms=5000, \
+             stall=freeze, mode=listener, latency_ms=120, key_length=16, audio=mix, \
+             stream_id=\"cam-7\", stream_key=none, passphrase=***, state=listening, \
+             bitrate_bps=0, buffer_ms=0, dropped_frames=0, late_frames=0, reconnects=0, \
+             source_channels=6, last_error=none)"
+        ),
+        "{text}"
+    );
+    server.finish();
+
+    // The daemon refuses a second listener on one port.
+    let server = FakeRemoteServer::start_test_peer(|stream| {
+        let engine = EngineIdentity {
+            engine_id: "stream-engine".into(),
+            state_epoch: 1,
+            log_id: "stream-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
+        let WireMessage::Command(command) = read_message(&mut reader) else {
+            panic!("expected the remote add command");
+        };
+        let message = "input 1 already listens on TCP port 1935".to_owned();
+        write_message(
+            &mut writer,
+            &WireMessage::CommandResult(CommandResult::Rejected {
+                id: command.id,
+                code: "conflict".into(),
+                message: message.clone(),
+                fields: vec![fm_protocol::FieldIssue {
+                    field: "url".into(),
+                    code: "listen_port_in_use".into(),
+                    message,
+                }],
+                current_revision: 0,
+                retryable: false,
+                reason: None,
+            }),
+        );
+    });
+    let output = invoke(&[
+        "remote-input-add-stream",
+        &server.address(),
+        "10",
+        "Second",
+        "rtmp://0.0.0.0:1935/live",
+        "--mode",
+        "listener",
+        "--stream-key",
+        "live_9f3Kq7Zx",
+    ]);
+    assert_failure_contains(&output, "already listens on TCP port 1935");
+    assert_no_secrets(&output, &["live_9f3Kq7Zx"]);
+    server.finish();
+
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "remote-input-add-stream",
+            "127.0.0.1:9",
+            "9",
+            "SRT",
+            "srt://ingest.test:9000",
+            "--passphrase",
+            "short",
         ]),
         "invalid network stream",
     );

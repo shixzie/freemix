@@ -3272,7 +3272,10 @@ fn display_output_slots_status_and_inventory_replicate() {
 
 /// IN-015, Protocol 2.46: a network stream input added live carries its
 /// redacted configuration into the view, `network_stream_changed` replaces
-/// it, and `network_stream_status` runtime events update its status.
+/// it (Protocol 2.49: here with an SRT listener's mode, latency, stream ID,
+/// audio pair, and masked passphrase), and `network_stream_status` runtime
+/// events update its status (with the listening state and the source's
+/// channel count).
 #[test]
 fn network_stream_inputs_and_status_replicate() {
     use fm_protocol::{NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus};
@@ -3310,8 +3313,14 @@ fn network_stream_inputs_and_status_replicate() {
     assert_eq!(entry.status, NetworkStreamStatus::default());
     assert!(view.network_stream(input(1).to_domain()).is_none());
 
-    let mut edited = config.clone();
+    let mut edited = NetworkStreamConfig::new("srt://0.0.0.0:9000");
     edited.settings.jitter_buffer_ms = 1_200;
+    edited.settings.mode = fm_protocol::StreamMode::Listener;
+    edited.settings.latency_ms = 300;
+    edited.settings.key_length = fm_protocol::SrtKeyLength::Aes256;
+    edited.settings.audio = fm_protocol::AudioChannels::Pair56;
+    edited.stream_id = Some("cam1".into());
+    edited.passphrase = Some("***".into());
     client
         .intake(event(
             6,
@@ -3328,6 +3337,7 @@ fn network_stream_inputs_and_status_replicate() {
         dropped_frames: 1,
         late_frames: 2,
         reconnects: 0,
+        source_channels: 8,
         last_error: None,
     };
     client

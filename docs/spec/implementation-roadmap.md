@@ -1875,10 +1875,48 @@ references redacted from debug output, bounded reconnect backoff, bounded
 packet queues, and RTT/loss/retransmit/bandwidth/queue-drop statistics. No
 other crate uses it yet. The only real SRT path is the FFmpeg output sink in
 caller mode, verified against a real listener as MPEG-TS with H.264/AAC.
-Remaining gaps: no SRT input, no libSRT or socket adapter, no real
-handshake, encryption, statistics, or reconnect over a network, no listener or
-rendezvous output, and no input-side MPEG-TS/AAC demux or multichannel audio
-mapping, so `IN-017` remains planned.
+SRT input now runs through the network stream input (see the IN-015
+boundary below): a `srt://` stream input (schema 46, Protocol 2.49) is a
+caller, listener, or rendezvous with a receive latency (20–8000 ms), an
+optional AES passphrase (10–79 bytes) with a 16/24/32-byte key length, and
+an optional stream ID, received through `ffmpeg`'s `libsrt` as MPEG-TS and
+decoded like any other stream input. Up to eight source audio channels are
+downmixed or one stereo pair (1-2, 3-4, 5-6, 7-8) is picked; status reports
+the source channel count. A listener reports `listening` while it waits and
+listens again when its caller leaves, without counting reconnects; two
+inputs never listen on one UDP port (`listen_port_in_use`). The passphrase
+is stored only in the project and is `***` on every other surface (events,
+snapshot, status errors, CLI, logs). Verified over loopback with `ffmpeg`
+SRT callers and listeners, encrypted with a matching and a wrong
+passphrase, and a native `freemixd` receiving an encrypted caller.
+Remaining gaps: SRT link statistics (RTT, loss, retransmits) are not
+reported, since the `ffmpeg` CLI does not expose them (status keeps
+bitrate, buffer, dropped and late frames, and reconnects); `fm-io-srt` is
+still unused; the passphrase reaches the `ffmpeg` child's command line; no
+SRT listener or rendezvous output; tests skip without `libsrt` unless
+`FM_REQUIRE_FFMPEG_SRT=1`; not verified on Windows or macOS or at UHD, so
+`IN-017` remains planned.
+
+Current implementation boundary for RTMP inputs (`IN-016`): an `rtmp://`
+or `rtmps://` stream input (schema 46, Protocol 2.49) either calls a server
+(pull, the optional stream key appended to the application path) or, as an
+`rtmp://` listener, accepts a push (OBS-style) on its configured port
+(1024 or above) and application; a publisher using another stream key is
+dropped with "a publisher used another stream key", since `ffmpeg`'s
+listener only warns. The listener reports `listening`, goes live on the
+push, and listens again when the publisher leaves, without counting
+reconnects; two inputs never listen on one TCP port
+(`listen_port_in_use`). The stream key is stored only in the project and
+is `***` everywhere else, the URL path after the application likewise.
+Studio's Add input stream form gains mode keys and the key field with
+hover help; `freemix-cli` gains `--mode` and `--stream-key`. Verified over
+loopback with an `ffmpeg` publisher pushing to the listener (right and
+wrong key, relisten) and an `ffmpeg` RTMP server for the caller, and a
+native `freemixd` taking a push onto Program. Remaining gaps: no `rtmps`
+listener (no TLS certificate handling); the key reaches the `ffmpeg`
+child's command line; the listener's `listening` state is reported as its
+child starts, slightly before the port is bound; only one publisher per
+input; not verified on Windows or macOS, so `IN-016` remains planned.
 
 Current implementation boundary for network stream inputs (`IN-015`): a
 `network_stream` input kind (schema 43, at most 16 per show) holds an RTSP,

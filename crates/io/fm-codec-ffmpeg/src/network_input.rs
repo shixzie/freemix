@@ -1,7 +1,8 @@
-//! `FFmpeg`-backed network stream receiver (IN-015).
+//! `FFmpeg`-backed network stream receiver (IN-015, IN-016, IN-017).
 //!
 //! A [`NetworkReceiver`] receives one RTSP, RTP, UDP, TCP, or HTTP MPEG-TS
-//! stream, or an HLS playlist, through a supervised `ffmpeg` child, and hands
+//! stream, an HLS playlist, an RTMP(S) stream, or an SRT stream through a
+//! supervised `ffmpeg` child, and hands
 //! its consumer exactly one program frame per [`NetworkReceiver::pull`]
 //! without ever blocking: the session loop that realizes Program pulls once
 //! per engine frame and never waits on the network.
@@ -11,7 +12,9 @@
 //! The child decodes the stream's first video stream, scaled to the program
 //! size (stretched, not letterboxed) and resampled to the program rate, as
 //! raw RGBA on its standard output, and the first audio stream as
-//! interleaved `f32` PCM at the program sample rate and channel count. The
+//! interleaved `f32` PCM at the program sample rate and channel count (a
+//! downmix of every source channel, or one chosen stereo pair of a source of
+//! up to eight channels). The
 //! audio reaches the receiver as the body of an HTTP `POST` to a loopback
 //! listener that only accepts a random per-receiver path. A stream without
 //! audio is detected when the child refuses its empty audio output; the
@@ -42,6 +45,18 @@
 //! last picture, or black) and its audio fades to silence over one frame
 //! instead of stopping with a click, and fades back in when it recovers.
 //!
+//! # Listening (RTMP and SRT)
+//!
+//! An RTMP listener (`-listen 1`) or SRT listener or rendezvous waits for its
+//! peer in `listening` without a data timeout. Its child gives up after
+//! [`LISTEN_CYCLE`] without a peer (so a child the receiver can no longer
+//! kill frees its port in bounded time), and the receiver listens again at
+//! once without counting a reconnect attempt; it does the same when a
+//! publisher disconnects. `ffmpeg`'s RTMP listener accepts any stream name,
+//! so the receiver itself drops a publisher whose stream key is not the
+//! configured one. A child that fails quickly (its port is taken) reconnects
+//! with the backoff policy.
+//!
 //! # Reconnect
 //!
 //! A connection that delivers no media for `timeout_ms` (plus a fixed grace
@@ -64,10 +79,11 @@
 //! This receiver's child is the only one that reads from the network, and
 //! so the only one that could wait forever on its own.)
 //!
-//! Credentials in the stream URL never leave the receiver: the last error is
-//! scrubbed of every URL secret and bounded, and [`NetworkInputConfig`]'s
-//! `Debug` output redacts the URL. The URL is passed to the child on its
-//! command line, as `ffmpeg` requires.
+//! Credentials in the stream URL, the RTMP stream key, and the SRT
+//! passphrase never leave the receiver: the last error is scrubbed of every
+//! secret and bounded, and [`NetworkInputConfig`]'s `Debug` output redacts
+//! them. They are passed to the child on its command line, as `ffmpeg`
+//! requires.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -83,8 +99,8 @@ use std::time::{Duration, Instant};
 use fm_types::FrameRate;
 use fm_types::network_stream::{
     MAX_STREAM_ERROR_BYTES, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings,
-    NetworkStreamState, NetworkStreamStatus, RtspTransport, StallSlate, StreamProtocol,
-    redact_stream_url, scrub_stream_text, validate_stream_url,
+    NetworkStreamState, NetworkStreamStatus, REDACTED, RtspTransport, StallSlate, StreamMode,
+    StreamProtocol, redact_stream_url, scrub_stream_text,
 };
 
 use crate::config::Executable;
@@ -96,6 +112,13 @@ pub const MAX_NETWORK_AUDIO_CHANNELS: u16 = 8;
 /// Extra time a connection has to deliver its first picture beyond the
 /// stream timeout (probing, playlist fetch, and decoder start).
 pub const CONNECT_GRACE: Duration = Duration::from_secs(5);
+/// How long a listening child waits for its peer before it exits and the
+/// receiver listens again.
+pub const LISTEN_CYCLE: Duration = Duration::from_secs(30);
+/// A listening child that ran at least this long before it ended listens
+/// again at once; one that ended sooner failed (its port is taken) and
+/// reconnects with the backoff policy.
+const LISTEN_FAILURE_WINDOW: Duration = Duration::from_secs(2);
 
 const AUDIO_HEADER_LIMIT: usize = 8 * 1024;
 const BITRATE_WINDOW: Duration = Duration::from_secs(1);
@@ -123,6 +146,12 @@ pub struct NetworkInputConfig {
     pub max_buffer_bytes: usize,
     /// A local capture device read instead of [`Self::url`] (IN-001).
     pub device: Option<DeviceInput>,
+    /// SRT stream ID (IN-017).
+    pub stream_id: Option<String>,
+    /// RTMP stream key (IN-016), a secret.
+    pub stream_key: Option<String>,
+    /// SRT passphrase (IN-017), a secret.
+    pub passphrase: Option<String>,
 }
 
 /// A local capture device a receiver reads instead of a stream URL
@@ -180,6 +209,22 @@ impl NetworkInputConfig {
             channels: 2,
             max_buffer_bytes: DEFAULT_MAX_BUFFER_BYTES,
             device: None,
+            stream_id: stream.stream_id.clone(),
+            stream_key: stream.stream_key.clone(),
+            passphrase: stream.passphrase.clone(),
+        }
+    }
+
+    /// The stream this receiver opens: its URL, settings, and connection
+    /// fields.
+    #[must_use]
+    pub fn stream(&self) -> NetworkStreamConfig {
+        NetworkStreamConfig {
+            url: self.url.clone(),
+            settings: self.settings,
+            stream_id: self.stream_id.clone(),
+            stream_key: self.stream_key.clone(),
+            passphrase: self.passphrase.clone(),
         }
     }
 
@@ -205,6 +250,9 @@ impl NetworkInputConfig {
             channels: 2,
             max_buffer_bytes: DEFAULT_MAX_BUFFER_BYTES,
             device: Some(device),
+            stream_id: None,
+            stream_key: None,
+            passphrase: None,
         }
     }
 
@@ -253,6 +301,9 @@ impl fmt::Debug for NetworkInputConfig {
             .field("channels", &self.channels)
             .field("max_buffer_bytes", &self.max_buffer_bytes)
             .field("device", &self.device)
+            .field("stream_id", &self.stream_id)
+            .field("stream_key", &self.stream_key.as_ref().map(|_| REDACTED))
+            .field("passphrase", &self.passphrase.as_ref().map(|_| REDACTED))
             .finish()
     }
 }
@@ -325,6 +376,12 @@ struct Inner {
     saw_empty_output: bool,
     /// The child reported an error naming a device's audio input.
     audio_input_failed: bool,
+    /// The connected RTMP publisher used another stream key: drop it.
+    rejected_peer: bool,
+    /// The child's log is inside its input stream dump (`Input #0`).
+    in_input_dump: bool,
+    /// Audio channels of the source's first audio stream; 0 unknown.
+    source_channels: u16,
     state: NetworkStreamState,
     reconnect_at: Option<Instant>,
     last_data: Option<Instant>,
@@ -377,6 +434,8 @@ struct Plan {
     executable: OsString,
     /// The stream protocol; `None` for a capture device.
     protocol: Option<StreamProtocol>,
+    /// The stream, for its connect URL and secrets; `None` for a device.
+    stream: Option<NetworkStreamConfig>,
     bounds: BufferBounds,
     frame_bytes: usize,
     channels: usize,
@@ -407,6 +466,29 @@ impl Plan {
     fn stall_after(&self) -> usize {
         (self.bounds.target_frames / 2).max(2)
     }
+
+    /// Whether the child waits for its peer (an RTMP or SRT listener, or an
+    /// SRT rendezvous).
+    fn listens(&self) -> bool {
+        self.stream.is_some() && self.config.settings.mode.waits_for_peer()
+    }
+
+    /// `text` with every secret of the stream masked and bounded.
+    fn scrub(&self, text: &str) -> String {
+        match &self.stream {
+            Some(stream) => stream.scrub(text),
+            None => scrub_stream_text(text, &self.config.url),
+        }
+    }
+
+    /// The state a connection starts in before it delivers media.
+    fn waiting_state(&self) -> NetworkStreamState {
+        if self.listens() {
+            NetworkStreamState::Listening
+        } else {
+            NetworkStreamState::Connecting
+        }
+    }
 }
 
 /// A running network stream receiver; dropping it stops its child.
@@ -436,28 +518,29 @@ impl NetworkReceiver {
     /// A stream that does not connect is not an error: the receiver reports
     /// it through [`Self::status`] and keeps reconnecting.
     pub fn start(config: NetworkInputConfig) -> Result<Self, NetworkInputError> {
-        let protocol = match &config.device {
-            Some(device) => {
-                if device.path.is_empty() || device.format.is_empty() {
-                    return Err(NetworkInputError::InvalidFormat);
-                }
-                None
+        let (protocol, stream) = if let Some(device) = &config.device {
+            if device.path.is_empty() || device.format.is_empty() {
+                return Err(NetworkInputError::InvalidFormat);
             }
-            None => {
-                Some(validate_stream_url(&config.url).map_err(NetworkInputError::InvalidStream)?)
+            config
+                .settings
+                .validate()
+                .map_err(NetworkInputError::InvalidStream)?;
+            if config.settings.transport != RtspTransport::Auto
+                || config.settings.mode != StreamMode::Caller
+            {
+                return Err(NetworkInputError::InvalidStream(
+                    NetworkStreamError::TransportNotRtsp,
+                ));
             }
+            (None, None)
+        } else {
+            let stream = config.stream();
+            let protocol = stream
+                .validate()
+                .map_err(NetworkInputError::InvalidStream)?;
+            (Some(protocol), Some(stream))
         };
-        config
-            .settings
-            .validate()
-            .map_err(NetworkInputError::InvalidStream)?;
-        if config.settings.transport != RtspTransport::Auto
-            && protocol != Some(StreamProtocol::Rtsp)
-        {
-            return Err(NetworkInputError::InvalidStream(
-                NetworkStreamError::TransportNotRtsp,
-            ));
-        }
         if config.sample_rate == 0
             || config.channels == 0
             || config.channels > MAX_NETWORK_AUDIO_CHANNELS
@@ -482,15 +565,17 @@ impl NetworkReceiver {
         let plan = Arc::new(Plan {
             executable,
             protocol,
+            stream,
             bounds,
             frame_bytes,
             channels,
             token: random_token()?,
             config,
         });
+        let state = plan.waiting_state();
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
-                state: NetworkStreamState::Connecting,
+                state,
                 audio_absent,
                 audio: vec![VecDeque::new(); channels],
                 last_samples: vec![0.0; channels],
@@ -598,6 +683,7 @@ impl NetworkReceiver {
             dropped_frames: inner.dropped_frames,
             late_frames: inner.late_frames,
             reconnects: inner.reconnects,
+            source_channels: inner.source_channels,
             last_error: inner.last_error.clone(),
         }
     }
@@ -694,11 +780,13 @@ fn random_token() -> Result<String, NetworkInputError> {
 fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
     let config = &plan.config;
     let micros = (u64::from(config.settings.timeout_ms) * 1_000).to_string();
+    // Informational lines (tagged by level) name the source's audio layout;
+    // only errors become the reported error.
     let mut args: Vec<String> = [
         "-nostdin",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "level+info",
         "-nostats",
         "-analyzeduration",
         "1000000",
@@ -710,33 +798,16 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
         return device_arguments(plan, device, args, audio_port);
     }
     let protocol = plan.protocol.unwrap_or(StreamProtocol::Udp);
-    match protocol {
-        StreamProtocol::Rtsp => {
-            match config.settings.transport {
-                RtspTransport::Auto => {}
-                RtspTransport::Tcp => args.extend(["-rtsp_transport".into(), "tcp".into()]),
-                RtspTransport::Udp => args.extend(["-rtsp_transport".into(), "udp".into()]),
-            }
-            args.extend(["-timeout".into(), micros]);
-        }
-        StreamProtocol::Http | StreamProtocol::Hls => {
-            args.extend(["-re".into(), "-rw_timeout".into(), micros]);
-        }
-        StreamProtocol::Tcp => args.extend(["-rw_timeout".into(), micros]),
-        StreamProtocol::Rtp | StreamProtocol::Udp => {
-            // A listener that hears nothing gives up on its own, so a child
-            // the receiver can no longer kill frees its port in bounded time
-            // even where no parent-death signal exists.
-            let grace = u64::try_from(CONNECT_GRACE.as_micros()).unwrap_or(u64::MAX);
-            let micros = (u64::from(config.settings.timeout_ms) * 1_000).saturating_add(grace);
-            args.extend(["-timeout".into(), micros.to_string()]);
-        }
-    }
+    protocol_arguments(plan, protocol, &mut args, micros);
+    let url = plan
+        .stream
+        .as_ref()
+        .map_or_else(|| config.url.clone(), NetworkStreamConfig::connect_url);
     args.extend([
         "-protocol_whitelist".into(),
         protocol_whitelist(protocol).into(),
         "-i".into(),
-        child_url(&config.url),
+        child_url(&url),
     ]);
     let rate = config.frame_rate;
     args.extend([
@@ -761,7 +832,11 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
             "-map".into(),
             "0:a:0?".into(),
             "-af".into(),
-            format!("aresample={}:async=1:first_pts=0", config.sample_rate),
+            format!(
+                "{}aresample={}:async=1:first_pts=0",
+                pair_filter(config),
+                config.sample_rate
+            ),
             "-ac".into(),
             config.channels.to_string(),
             "-c:a".into(),
@@ -789,6 +864,92 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
     args.into_iter().map(OsString::from).collect()
 }
 
+/// The SRT input options: mode, latency, encryption, and timeouts (a
+/// listener waits [`LISTEN_CYCLE`] for its caller). The stream ID travels in
+/// the connect URL ([`NetworkStreamConfig::connect_url`]).
+/// The input options of a `protocol` stream: its transport hint and its
+/// connect, read, or listen timeouts.
+fn protocol_arguments(
+    plan: &Plan,
+    protocol: StreamProtocol,
+    args: &mut Vec<String>,
+    micros: String,
+) {
+    let config = &plan.config;
+    match protocol {
+        StreamProtocol::Rtsp => {
+            match config.settings.transport {
+                RtspTransport::Auto => {}
+                RtspTransport::Tcp => args.extend(["-rtsp_transport".into(), "tcp".into()]),
+                RtspTransport::Udp => args.extend(["-rtsp_transport".into(), "udp".into()]),
+            }
+            args.extend(["-timeout".into(), micros]);
+        }
+        StreamProtocol::Http | StreamProtocol::Hls => {
+            args.extend(["-re".into(), "-rw_timeout".into(), micros]);
+        }
+        StreamProtocol::Tcp => args.extend(["-rw_timeout".into(), micros]),
+        StreamProtocol::Rtp | StreamProtocol::Udp => {
+            // A listener that hears nothing gives up on its own, so a child
+            // the receiver can no longer kill frees its port in bounded time
+            // even where no parent-death signal exists.
+            let grace = u64::try_from(CONNECT_GRACE.as_micros()).unwrap_or(u64::MAX);
+            let micros = (u64::from(config.settings.timeout_ms) * 1_000).saturating_add(grace);
+            args.extend(["-timeout".into(), micros.to_string()]);
+        }
+        StreamProtocol::Rtmp => {
+            if config.settings.mode == StreamMode::Listener {
+                // `-timeout` is the listen timeout, in seconds.
+                args.extend([
+                    "-listen".into(),
+                    "1".into(),
+                    "-timeout".into(),
+                    LISTEN_CYCLE.as_secs().to_string(),
+                ]);
+            } else {
+                args.extend(["-rw_timeout".into(), micros]);
+            }
+        }
+        StreamProtocol::Srt => srt_arguments(plan, args, micros),
+    }
+}
+
+fn srt_arguments(plan: &Plan, args: &mut Vec<String>, micros: String) {
+    let config = &plan.config;
+    let settings = &config.settings;
+    args.extend([
+        "-mode".into(),
+        settings.mode.token().into(),
+        "-latency".into(),
+        (u64::from(settings.latency_ms) * 1_000).to_string(),
+    ]);
+    if let Some(passphrase) = &config.passphrase {
+        args.extend([
+            "-passphrase".into(),
+            passphrase.clone(),
+            "-pbkeylen".into(),
+            settings.key_length.bytes().to_string(),
+        ]);
+    }
+    if settings.mode == StreamMode::Listener {
+        let listen = u64::try_from(LISTEN_CYCLE.as_micros()).unwrap_or(u64::MAX);
+        args.extend(["-listen_timeout".into(), listen.to_string()]);
+    }
+    args.extend(["-timeout".into(), micros]);
+}
+
+/// The `pan` filter that picks the configured stereo pair of the source
+/// (empty for a downmix). A pair the source lacks is silent.
+fn pair_filter(config: &NetworkInputConfig) -> String {
+    config
+        .settings
+        .audio
+        .first_channel()
+        .filter(|_| config.device.is_none())
+        .map(|left| format!("pan=stereo|c0=c{left}|c1=c{},", left + 1))
+        .unwrap_or_default()
+}
+
 /// The only `ffmpeg` protocols the input of a `protocol` stream may open.
 ///
 /// Without an explicit list a stream inherits its first protocol's default
@@ -805,6 +966,8 @@ const fn protocol_whitelist(protocol: StreamProtocol) -> &'static str {
         StreamProtocol::Http => "http,https,tcp,tls",
         // AES-128 segments are read through `crypto`.
         StreamProtocol::Hls => "http,https,tcp,tls,crypto",
+        StreamProtocol::Rtmp => "rtmp,rtmps,tcp,tls",
+        StreamProtocol::Srt => "srt",
     }
 }
 
@@ -958,6 +1121,8 @@ fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
 /// How one connection ended.
 enum Ended {
     Shutdown,
+    /// A listener's wait or session ended: listen again at once.
+    Relisten,
     /// The connection ended; `delivered` if it delivered a picture.
     Dropped {
         delivered: bool,
@@ -971,6 +1136,24 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
     loop {
         match connect_once(shared, plan) {
             Ended::Shutdown => return,
+            Ended::Relisten => {
+                attempt = 0;
+                let mut inner = shared.lock();
+                inner.audio_absent = false;
+                inner.frames.clear();
+                inner.bitrate_bps = 0;
+                if inner.state == NetworkStreamState::Listening {
+                    // A wait that ran out its cycle is not an error; a
+                    // refused publisher or an ended session keeps its
+                    // reason.
+                    if !inner.rejected_peer {
+                        inner.last_error = None;
+                    }
+                } else {
+                    inner.reconnects = inner.reconnects.saturating_add(1);
+                }
+                continue;
+            }
             Ended::Dropped { delivered } => {
                 if delivered {
                     attempt = 0;
@@ -1057,6 +1240,11 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         inner.empty_pulls = 0;
         inner.saw_empty_output = false;
         inner.audio_input_failed = false;
+        inner.rejected_peer = false;
+        inner.in_input_dump = false;
+        if plan.listens() {
+            inner.state = NetworkStreamState::Listening;
+        }
         inner.window_bytes = 0;
         inner.window_start = None;
         (inner.generation, inner.audio_absent)
@@ -1104,6 +1292,7 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         }));
     }
     let ended = watch(shared, plan, &mut child, started);
+    let ran = started.elapsed();
     let _ = child.kill();
     let _ = child.wait();
     {
@@ -1114,7 +1303,16 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
     for reader in readers.into_iter().flatten() {
         let _ = reader.join();
     }
-    ended
+    match ended {
+        // A listener that waited out its cycle, or whose peer left (or was
+        // refused), listens again at once.
+        Ended::Dropped { delivered }
+            if plan.listens() && (delivered || ran >= LISTEN_FAILURE_WINDOW) =>
+        {
+            Ended::Relisten
+        }
+        ended => ended,
+    }
 }
 
 fn spawn_reader(
@@ -1142,13 +1340,18 @@ fn watch(shared: &Shared, plan: &Plan, child: &mut Child, started: Instant) -> E
         let now = Instant::now();
         inner.roll_bitrate(now);
         let delivered = inner.delivered;
+        if inner.rejected_peer {
+            return Ended::Dropped { delivered };
+        }
         let limit = if delivered {
             timeout
         } else {
             timeout + CONNECT_GRACE
         };
         let since = inner.last_data.unwrap_or(started);
-        if now.saturating_duration_since(since) >= limit {
+        // A listener waits for its peer as long as its child does.
+        let waiting = plan.listens() && inner.last_data.is_none();
+        if !waiting && now.saturating_duration_since(since) >= limit {
             inner.last_error = Some(format!("no media for {} ms", limit.as_millis()));
             return Ended::Dropped { delivered };
         }
@@ -1189,6 +1392,9 @@ fn read_video(shared: &Shared, plan: &Plan, generation: u64, mut stdout: ChildSt
         if inner.generation != generation || inner.shutdown {
             return;
         }
+        if inner.rejected_peer {
+            continue;
+        }
         admit_picture(&mut inner, plan, frame);
     }
 }
@@ -1211,6 +1417,7 @@ fn admit_picture(inner: &mut Inner, plan: &Plan, frame: Vec<u8>) {
     }
     match inner.state {
         NetworkStreamState::Connecting
+        | NetworkStreamState::Listening
         | NetworkStreamState::Reconnecting { .. }
         | NetworkStreamState::Stalled
         | NetworkStreamState::Idle => {
@@ -1269,6 +1476,29 @@ fn read_log(shared: &Shared, plan: &Plan, generation: u64, stderr: ChildStderr) 
             inner.roll_bitrate(Instant::now());
             continue;
         }
+        let (level, text) = split_level(text);
+        let text = text.as_str();
+        match level {
+            Some(LogLevel::Info) => {
+                note_input_dump(&mut inner, text);
+                continue;
+            }
+            Some(LogLevel::Warning) => {
+                // `ffmpeg`'s RTMP listener only warns about a publisher's
+                // other stream name: the stream key is the receiver's to
+                // enforce.
+                if plan.config.stream_key.is_some()
+                    && plan.listens()
+                    && text.contains("Unexpected stream")
+                {
+                    inner.rejected_peer = true;
+                    inner.frames.clear();
+                    inner.last_error = Some("a publisher used another stream key".to_owned());
+                }
+                continue;
+            }
+            Some(LogLevel::Error) | None => {}
+        }
         if text.contains("does not contain any stream") {
             inner.saw_empty_output = true;
         }
@@ -1282,12 +1512,104 @@ fn read_log(shared: &Shared, plan: &Plan, generation: u64, stderr: ChildStderr) 
             inner.audio_input_failed = true;
         }
         // The child echoes the URL it was given; the secrets are the same.
-        let scrubbed = scrub_stream_text(text, &child_url(&plan.config.url));
+        let scrubbed = plan.scrub(&lowercase_scheme_echo(text, plan));
         if !scrubbed.is_empty() {
             debug_assert!(scrubbed.len() <= MAX_STREAM_ERROR_BYTES);
             inner.last_error = Some(scrubbed);
         }
     }
+}
+
+/// The level tag `-loglevel level+...` puts on a log line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogLevel {
+    /// `info`, `verbose`, `debug`, or `trace`.
+    Info,
+    Warning,
+    /// `error`, `fatal`, or `panic`.
+    Error,
+}
+
+/// Splits a line's level tag off: `[ctx @ 0x..] [error] text` becomes the
+/// level and `[ctx @ 0x..] text`. A line without a tag (a library's own
+/// output) has no level and is treated as an error.
+fn split_level(line: &str) -> (Option<LogLevel>, String) {
+    for (tag, level) in [
+        ("[info] ", LogLevel::Info),
+        ("[verbose] ", LogLevel::Info),
+        ("[debug] ", LogLevel::Info),
+        ("[trace] ", LogLevel::Info),
+        ("[warning] ", LogLevel::Warning),
+        ("[error] ", LogLevel::Error),
+        ("[fatal] ", LogLevel::Error),
+        ("[panic] ", LogLevel::Error),
+    ] {
+        // The tag is the first or second bracketed group.
+        let at = line.find(tag).filter(|at| {
+            *at == 0 || line[..*at].starts_with('[') && line[..*at].trim_end().ends_with(']')
+        });
+        if let Some(at) = at {
+            let mut text = line[..at].to_owned();
+            text.push_str(&line[at + tag.len()..]);
+            return (Some(level), text);
+        }
+    }
+    (None, line.to_owned())
+}
+
+/// Follows the child's input dump and records its first audio stream's
+/// channel count.
+fn note_input_dump(inner: &mut Inner, text: &str) {
+    if text.starts_with("Input #0") {
+        inner.in_input_dump = true;
+    } else if text.starts_with("Output #") || text.starts_with("Stream mapping") {
+        inner.in_input_dump = false;
+    } else if inner.in_input_dump
+        && inner.source_channels == 0
+        && let Some(channels) = audio_stream_channels(text)
+    {
+        inner.source_channels = channels;
+    }
+}
+
+/// The channel count of a dumped audio stream line (`Stream #0:1: Audio:
+/// aac (LC), 48000 Hz, 5.1, fltp`), from its channel layout.
+fn audio_stream_channels(line: &str) -> Option<u16> {
+    let (_, audio) = line.trim_start().split_once("Audio: ")?;
+    if !line.trim_start().starts_with("Stream #") {
+        return None;
+    }
+    let fields = audio.split(", ").collect::<Vec<_>>();
+    let rate = fields.iter().position(|field| field.ends_with(" Hz"))?;
+    let layout = fields.get(rate + 1)?.trim();
+    let base = layout.split('(').next().unwrap_or(layout).trim();
+    let channels = match base {
+        "mono" => 1,
+        "stereo" | "downmix" => 2,
+        "quad" => 4,
+        "hexagonal" => 6,
+        "octagonal" | "cube" => 8,
+        "hexadecagonal" => 16,
+        other => {
+            if let Some(count) = other.strip_suffix(" channels") {
+                count.parse().ok()?
+            } else {
+                let (front, low) = other.split_once('.')?;
+                front.parse::<u16>().ok()? + low.parse::<u16>().ok()?
+            }
+        }
+    };
+    Some(channels)
+}
+
+/// `text` with the child's lowercase-scheme echo of the connect URL put
+/// back as configured, so scrubbing finds it.
+fn lowercase_scheme_echo(text: &str, plan: &Plan) -> String {
+    let Some(stream) = &plan.stream else {
+        return text.replace(&child_url(&plan.config.url), &plan.config.url);
+    };
+    let connect = stream.connect_url();
+    text.replace(&child_url(&connect), &connect)
 }
 
 /// The packet size of one frame CRC line (`stream, dts, pts, duration,
@@ -1416,10 +1738,15 @@ mod tests {
     fn plan(url: &str, transport: RtspTransport) -> Plan {
         let mut stream = NetworkStreamConfig::new(url);
         stream.settings.transport = transport;
-        let config = NetworkInputConfig::new(&stream, 64, 36, FrameRate::new(25, 1).unwrap());
+        stream_plan(&stream)
+    }
+
+    fn stream_plan(stream: &NetworkStreamConfig) -> Plan {
+        let config = NetworkInputConfig::new(stream, 64, 36, FrameRate::new(25, 1).unwrap());
         Plan {
             executable: "ffmpeg".into(),
-            protocol: Some(validate_stream_url(url).unwrap()),
+            protocol: Some(stream.validate().unwrap()),
+            stream: Some(stream.clone()),
             bounds: config.buffer_bounds().unwrap(),
             frame_bytes: config.frame_bytes().unwrap(),
             channels: 2,
@@ -1466,6 +1793,8 @@ mod tests {
                 "http://cdn.test/live/index.m3u8",
                 "http,https,tcp,tls,crypto",
             ),
+            ("rtmp://ingest.test/live/key", "rtmp,rtmps,tcp,tls"),
+            ("srt://enc.test:9000", "srt"),
         ] {
             let args = args(&plan(url, RtspTransport::Auto), Some(4000));
             let at = args
@@ -1568,6 +1897,7 @@ mod tests {
         );
         let mut plan = plan("udp://@:9000", RtspTransport::Auto);
         plan.protocol = None;
+        plan.stream = None;
         plan.config = config;
         let joined = args(&plan, Some(4000)).join(" ");
         assert!(joined.contains(
@@ -1661,5 +1991,137 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains("hunter2"));
         assert!(!debug.contains("admin"));
+    }
+
+    #[test]
+    fn rtmp_listener_arguments_listen_and_append_the_stream_key() {
+        let mut stream = NetworkStreamConfig::new("rtmp://0.0.0.0:19350/live");
+        stream.settings.mode = StreamMode::Listener;
+        stream.stream_key = Some("sk_9f8e".into());
+        let plan = stream_plan(&stream);
+        assert!(plan.listens());
+        let joined = args(&plan, None).join(" ");
+        assert!(
+            joined.contains(
+                "-listen 1 -timeout 30 -protocol_whitelist rtmp,rtmps,tcp,tls \
+                 -i rtmp://0.0.0.0:19350/live/sk_9f8e"
+            ),
+            "{joined}"
+        );
+        assert!(!joined.contains("-rw_timeout"));
+        let mut caller = NetworkStreamConfig::new("rtmp://ingest.test/live");
+        caller.stream_key = Some("k1".into());
+        let joined = args(&stream_plan(&caller), None).join(" ");
+        assert!(joined.contains("-rw_timeout 5000000 -protocol_whitelist"));
+        assert!(joined.contains("-i rtmp://ingest.test/live/k1"));
+        assert!(!joined.contains("-listen"));
+    }
+
+    #[test]
+    fn srt_arguments_carry_mode_latency_encryption_and_stream_id() {
+        let mut stream = NetworkStreamConfig::new("srt://0.0.0.0:9000");
+        stream.settings.mode = StreamMode::Listener;
+        stream.settings.latency_ms = 250;
+        stream.settings.key_length = fm_types::network_stream::SrtKeyLength::Aes256;
+        stream.passphrase = Some("0123456789abc".into());
+        stream.stream_id = Some("cam1".into());
+        let joined = args(&stream_plan(&stream), None).join(" ");
+        assert!(
+            joined.contains(
+                "-mode listener -latency 250000 -passphrase 0123456789abc -pbkeylen 32 \
+                 -listen_timeout 30000000 -timeout 5000000 \
+                 -protocol_whitelist srt -i srt://0.0.0.0:9000?streamid=cam1"
+            ),
+            "{joined}"
+        );
+        stream.settings.mode = StreamMode::Caller;
+        stream.passphrase = None;
+        let joined = args(&stream_plan(&stream), None).join(" ");
+        assert!(joined.contains("-mode caller -latency 250000 -timeout"));
+        assert!(!joined.contains("passphrase"));
+        assert!(!stream_plan(&stream).listens());
+    }
+
+    #[test]
+    fn a_stereo_pair_is_panned_out_of_the_source() {
+        let mut stream = NetworkStreamConfig::new("srt://enc.test:9000");
+        stream.settings.audio = fm_types::network_stream::AudioChannels::Pair56;
+        let joined = args(&stream_plan(&stream), Some(4000)).join(" ");
+        assert!(
+            joined.contains("-af pan=stereo|c0=c4|c1=c5,aresample=48000:async=1:first_pts=0"),
+            "{joined}"
+        );
+        stream.settings.audio = fm_types::network_stream::AudioChannels::Mix;
+        let joined = args(&stream_plan(&stream), Some(4000)).join(" ");
+        assert!(joined.contains("-af aresample=48000"));
+    }
+
+    #[test]
+    fn log_levels_split_and_audio_layouts_count_channels() {
+        assert_eq!(
+            split_level("[rtmp @ 0x1] [warning] Unexpected stream x, expecting y"),
+            (
+                Some(LogLevel::Warning),
+                "[rtmp @ 0x1] Unexpected stream x, expecting y".to_owned()
+            )
+        );
+        assert_eq!(
+            split_level("[error] Error opening input file"),
+            (Some(LogLevel::Error), "Error opening input file".to_owned())
+        );
+        assert_eq!(
+            split_level("12:00/SRT:RcvQ: rejected [info] BADSECRET"),
+            (None, "12:00/SRT:RcvQ: rejected [info] BADSECRET".to_owned())
+        );
+        for (line, channels) in [
+            (
+                "  Stream #0:1[0x101]: Audio: aac (LC) ([15][0][0][0] / 0x000F), 44100 Hz, 7.1, fltp, 180 kb/s",
+                Some(8),
+            ),
+            (
+                "  Stream #0:1: Audio: aac (LC), 48000 Hz, stereo, fltp",
+                Some(2),
+            ),
+            (
+                "  Stream #0:1: Audio: aac, 48000 Hz, 5.1(side), fltp",
+                Some(6),
+            ),
+            (
+                "  Stream #0:1: Audio: pcm_s16le, 48000 Hz, 4 channels, s16",
+                Some(4),
+            ),
+            ("  Stream #0:1: Audio: aac, 48000 Hz, mono, fltp", Some(1)),
+            ("  Stream #0:0: Video: h264, yuv420p, 1920x1080", None),
+        ] {
+            assert_eq!(audio_stream_channels(line), channels, "{line}");
+        }
+        let mut inner = Inner::default();
+        for line in [
+            "Input #0, flv, from 'rtmp://h/live/***':",
+            "  Stream #0:1: Audio: aac (LC), 48000 Hz, 5.1, fltp",
+            "Output #0, f32le, to 'http://127.0.0.1:1/t':",
+            "  Stream #0:1: Audio: pcm_f32le, 48000 Hz, stereo, flt",
+        ] {
+            note_input_dump(&mut inner, line);
+        }
+        assert_eq!(inner.source_channels, 6);
+    }
+
+    #[test]
+    fn debug_output_masks_the_stream_key_and_passphrase() {
+        let mut stream = NetworkStreamConfig::new("rtmp://ingest.test/live");
+        stream.stream_key = Some("sk_live_secret".into());
+        let config = NetworkInputConfig::new(&stream, 64, 36, FrameRate::new(25, 1).unwrap());
+        assert!(!format!("{config:?}").contains("sk_live_secret"));
+        let mut srt = NetworkStreamConfig::new("srt://enc.test:9000");
+        srt.passphrase = Some("hunter2hunter2".into());
+        let config = NetworkInputConfig::new(&srt, 64, 36, FrameRate::new(25, 1).unwrap());
+        assert!(!format!("{config:?}").contains("hunter2"));
+        let plan = stream_plan(&srt);
+        assert!(
+            !plan
+                .scrub("srt passphrase hunter2hunter2 rejected")
+                .contains("hunter2")
+        );
     }
 }

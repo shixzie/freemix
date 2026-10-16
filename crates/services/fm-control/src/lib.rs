@@ -1651,7 +1651,20 @@ impl<A: AuthorizationHook> ControlService<A> {
                 input,
                 url,
                 settings,
-            } => network_stream::engine_command(self.engine.show(), *input, url.as_ref(), settings),
+                stream_id,
+                stream_key,
+                passphrase,
+            } => network_stream::engine_command(
+                self.engine.show(),
+                *input,
+                &network_stream::StreamEdit {
+                    url: url.as_ref(),
+                    settings,
+                    stream_id: stream_id.as_deref(),
+                    stream_key,
+                    passphrase,
+                },
+            ),
             CommandPayload::SetCaptureSettings { input, settings } => {
                 capture::engine_command(*input, settings)
             }

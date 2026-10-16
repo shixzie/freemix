@@ -9,6 +9,11 @@
 //! input's settings (`input_stream_set`) reconnects it. The URL's secret
 //! never appears on the wire.
 //!
+//! IN-016/IN-017: a native daemon's RTMP listener takes an `ffmpeg` push
+//! with its stream key onto Program, and, reconfigured live as an encrypted
+//! SRT listener, an `ffmpeg` SRT caller with the passphrase; neither secret
+//! reaches the wire or the daemon's log.
+//!
 //! The test needs `FFmpeg` and a native GPU adapter (a software Vulkan
 //! driver such as lavapipe suffices). Without them it is skipped, unless
 //! `FM_REQUIRE_FFMPEG=1` or `FM_REQUIRE_NATIVE_MEDIA=1` makes that a failure.
@@ -36,7 +41,8 @@ use fm_protocol::{
     encode_line,
 };
 use fm_types::network_stream::{
-    NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus, StallSlate,
+    NetworkStreamConfig, NetworkStreamSettings, NetworkStreamState, NetworkStreamStatus,
+    SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamUrl,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -77,6 +83,17 @@ fn stream_url(port: u16) -> String {
 /// Input 1 is a silent solid generator on Preview, input 2 the network
 /// stream on Program.
 fn save_project(path: &Path, port: u16) {
+    let mut config = NetworkStreamConfig::new(stream_url(port));
+    config.settings.jitter_buffer_ms = 200;
+    config.settings.timeout_ms = 1_000;
+    config.settings.reconnect.backoff_min_ms = 200;
+    config.settings.reconnect.backoff_max_ms = 1_000;
+    config.settings.stall = StallSlate::Black;
+    save_project_with(path, config);
+}
+
+/// [`save_project`] with input 2 receiving `config`.
+fn save_project_with(path: &Path, config: NetworkStreamConfig) {
     let store = ProjectStore::new(path).unwrap();
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
@@ -107,12 +124,6 @@ fn save_project(path: &Path, port: u16) {
         )),
         required_capabilities: Vec::new(),
     });
-    let mut config = NetworkStreamConfig::new(stream_url(port));
-    config.settings.jitter_buffer_ms = 200;
-    config.settings.timeout_ms = 1_000;
-    config.settings.reconnect.backoff_min_ms = 200;
-    config.settings.reconnect.backoff_max_ms = 1_000;
-    config.settings.stall = StallSlate::Black;
     project.add_input(Input {
         id: input(2),
         name: "Camera".into(),
@@ -399,6 +410,58 @@ impl Client {
     }
 }
 
+/// A red test signal with a tone, published to `url` in `format`; killed
+/// on drop.
+struct Publisher(Child);
+
+impl Publisher {
+    fn start(format: &str, url: &str) -> Self {
+        Self(
+            Command::new("ffmpeg")
+                .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-re"])
+                .args(["-f", "lavfi", "-i", "color=c=red:s=320x180:r=25"])
+                .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
+                // FLV carries `flv1`; MPEG-TS needs an MPEG video codec.
+                .args(["-c:v", if format == "flv" { "flv" } else { "mpeg2video" }])
+                .args(["-g", "10", "-b:v", "400k", "-c:a", "aac", "-f", format, url])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+}
+
+impl Drop for Publisher {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// How long a listening receiver's child is given to bind its port.
+const LISTEN_SETTLE: Duration = Duration::from_secs(2);
+
+/// Whether `ffmpeg` has `libsrt`; its absence fails only under
+/// `FM_REQUIRE_FFMPEG_SRT=1`.
+fn srt_available() -> bool {
+    let available = Command::new("ffmpeg")
+        .args(["-hide_banner", "-protocols"])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.trim() == "srt")
+        });
+    assert!(
+        available || std::env::var("FM_REQUIRE_FFMPEG_SRT").as_deref() != Ok("1"),
+        "FM_REQUIRE_FFMPEG_SRT=1 but ffmpeg has no libsrt"
+    );
+    available
+}
+
 fn red(pixel: [u8; 4]) -> bool {
     pixel[0] > 160 && pixel[1] < 90 && pixel[2] < 90
 }
@@ -502,6 +565,9 @@ fn native_daemon_receives_a_network_stream_and_reports_its_status_over_the_wire(
         input: camera(),
         url: None,
         settings,
+        stream_id: None,
+        stream_key: SecretEdit::Keep,
+        passphrase: SecretEdit::Keep,
     });
     let changed = client.wait_for("a network_stream_changed event", |_, message| {
         if let WireMessage::Event(event) = message {
@@ -534,5 +600,147 @@ fn native_daemon_receives_a_network_stream_and_reports_its_status_over_the_wire(
     assert!(
         logged.iter().all(|line| !line.contains(SECRET)),
         "{logged:?}"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn native_daemon_listens_for_an_rtmp_push_and_an_encrypted_srt_caller() {
+    if !ffmpeg_available() {
+        eprintln!("native RTMP/SRT integration skipped: FFmpeg unavailable");
+        return;
+    }
+    let free_tcp = || {
+        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let rtmp_port = free_tcp();
+    let stream_key = format!("live_{SECRET}");
+    let passphrase = format!("pass-{SECRET}-phrase");
+    let mut config = NetworkStreamConfig::new(format!("rtmp://127.0.0.1:{rtmp_port}/live"));
+    config.settings.mode = StreamMode::Listener;
+    config.settings.jitter_buffer_ms = 200;
+    config.settings.timeout_ms = 2_000;
+    config.settings.reconnect.backoff_min_ms = 200;
+    config.settings.reconnect.backoff_max_ms = 1_000;
+    config.stream_key = Some(stream_key.clone());
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-rtmp-srt.freemix");
+    save_project_with(&project_path, config.clone());
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native RTMP/SRT integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "native-rtmp-srt-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Admin,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        client.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    let WireMessage::Snapshot(snapshot) = client.receive() else {
+        panic!("expected the snapshot");
+    };
+    let [entry] = snapshot.network_streams.as_slice() else {
+        panic!("one network stream: {:?}", snapshot.network_streams);
+    };
+    assert_eq!(entry.config.stream_key.as_deref(), Some("***"));
+    assert_eq!(entry.config.settings.mode, StreamMode::Listener);
+
+    // The listener waits for its publisher without reconnecting.
+    let listening = client.status("listening", |status| {
+        status.state == NetworkStreamState::Listening
+    });
+    assert_eq!(listening.reconnects, 0, "{listening:?}");
+
+    // The status turns `listening` as the child starts; give it a moment
+    // to bind before the publisher (which does not retry) connects.
+    thread::sleep(LISTEN_SETTLE);
+    let publisher = Publisher::start(
+        "flv",
+        &format!("rtmp://127.0.0.1:{rtmp_port}/live/{stream_key}"),
+    );
+    client.status("live from the RTMP push", |status| {
+        status.state == NetworkStreamState::Live
+    });
+    client.shows("the pushed red picture on Program", red);
+    drop(publisher);
+    client.status("listening again after the publisher left", |status| {
+        status.state == NetworkStreamState::Listening
+    });
+
+    if srt_available() {
+        // Reconfigured live as an encrypted SRT listener: the key is
+        // cleared, the passphrase set; the event masks the passphrase.
+        let srt_port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let settings = NetworkStreamSettings {
+            mode: StreamMode::Listener,
+            key_length: SrtKeyLength::Aes256,
+            latency_ms: 120,
+            ..config.settings
+        };
+        let mut events = client.accept(CommandPayload::SetNetworkStream {
+            input: camera(),
+            url: Some(StreamUrl::new(format!("srt://127.0.0.1:{srt_port}"))),
+            settings,
+            stream_id: Some("cam1".into()),
+            stream_key: SecretEdit::Clear,
+            passphrase: SecretEdit::Set(passphrase.clone()),
+        });
+        let changed = client.wait_for("the SRT network_stream_changed event", |_, message| {
+            if let WireMessage::Event(event) = message {
+                events.push(event.payload);
+            }
+            events.iter().find_map(|event| match event {
+                EventPayload::NetworkStreamChanged { input, config } if *input == camera() => {
+                    Some(config.clone())
+                }
+                _ => None,
+            })
+        });
+        assert_eq!(changed.passphrase.as_deref(), Some("***"));
+        assert_eq!(changed.stream_key, None);
+        assert_eq!(changed.stream_id.as_deref(), Some("cam1"));
+        client.status("the SRT listener listening", |status| {
+            status.state == NetworkStreamState::Listening
+        });
+        thread::sleep(LISTEN_SETTLE);
+        let _caller = Publisher::start(
+            "mpegts",
+            &format!(
+                "srt://127.0.0.1:{srt_port}?mode=caller&passphrase={passphrase}&pbkeylen=32&streamid=cam1"
+            ),
+        );
+        let live = client.status("live from the SRT caller", |status| {
+            status.state == NetworkStreamState::Live && status.bitrate_bps > 0
+        });
+        assert_eq!(live.source_channels, 1, "{live:?}");
+        client.shows("the SRT caller's red picture on Program", red);
+    }
+    drop(client);
+
+    let logged = daemon.log.try_iter().collect::<Vec<_>>();
+    assert!(
+        logged.iter().all(|line| !line.contains(SECRET)),
+        "a secret reached the log: {logged:?}"
     );
 }

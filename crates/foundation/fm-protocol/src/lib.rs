@@ -117,9 +117,10 @@ pub use monitor_image::{
     decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, monitor_frame_parts, title_preview_parts,
 };
 pub use network_stream::{
-    GiveUp, MAX_NETWORK_STREAM_INPUTS, MAX_STREAM_ERROR_BYTES, MAX_STREAM_URL_BYTES,
-    NetworkStreamConfig, NetworkStreamEntry, NetworkStreamError, NetworkStreamSettings,
-    NetworkStreamState, NetworkStreamStatus, ReconnectPolicy, RtspTransport, StallSlate,
+    AudioChannels, GiveUp, ListenEndpoint, ListenTransport, MAX_NETWORK_STREAM_INPUTS,
+    MAX_STREAM_ERROR_BYTES, MAX_STREAM_URL_BYTES, NetworkStreamConfig, NetworkStreamEntry,
+    NetworkStreamError, NetworkStreamSettings, NetworkStreamState, NetworkStreamStatus,
+    ReconnectPolicy, RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode,
     StreamProtocol, StreamUrl, redact_stream_url, validate_stream_url,
 };
 pub use scene_layer::{

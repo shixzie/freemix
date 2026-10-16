@@ -1871,13 +1871,18 @@ pub enum CommandPayload {
     ClearDisplayOutput {
         slot: crate::DisplayOutputSlot,
     },
-    /// Reconfigures network stream input `input` (Protocol 2.46, IN-015):
-    /// a new URL (`None` keeps the current one) and settings. A padlocked,
-    /// undoable project edit applied live.
+    /// Reconfigures network stream input `input` (Protocol 2.46, IN-015;
+    /// 2.49, IN-016/IN-017): a new URL (`None` keeps the current one),
+    /// settings, the SRT stream ID, and edits of the RTMP stream key and SRT
+    /// passphrase (which a client cannot read back, so it may keep them). A
+    /// padlocked, undoable project edit applied live.
     SetNetworkStream {
         input: WireInputId,
         url: Option<crate::StreamUrl>,
         settings: crate::NetworkStreamSettings,
+        stream_id: Option<String>,
+        stream_key: crate::SecretEdit,
+        passphrase: crate::SecretEdit,
     },
     /// Replaces capture input `input`'s settings (Protocol 2.47, IN-001).
     /// A padlocked, undoable project edit applied live.

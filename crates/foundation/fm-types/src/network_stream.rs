@@ -1,16 +1,23 @@
-//! Network stream input value types (IN-015).
+//! Network stream input value types (IN-015, IN-016, IN-017).
 //!
 //! A network stream input receives one RTSP, RTP, UDP, TCP, or HTTP(S)
-//! MPEG-TS stream, or an HLS playlist, by URL. Its
+//! MPEG-TS stream, an HLS playlist, an RTMP(S) stream (IN-016), or an SRT
+//! stream (IN-017), by URL. RTMP and SRT inputs connect as a caller (pull)
+//! or listen for a publisher on a local port ([`StreamMode`]); SRT also
+//! meets its peer in rendezvous mode, and carries an optional AES
+//! passphrase, stream ID, and receive latency. Its
 //! [`NetworkStreamSettings`] bound the receive jitter buffer, the reconnect
 //! policy (exponential backoff between a minimum and maximum delay, and
 //! whether to give up after a number of attempts), the no-data timeout, and
 //! what the input shows while the stream stalls.
 //!
-//! A URL may carry credentials (`rtsp://user:password@host/path`) or secret
-//! query parameters (`?token=...`). [`redact_stream_url`] masks both, and
+//! A URL may carry credentials (`rtsp://user:password@host/path`), secret
+//! query parameters (`?token=...`), or an RTMP stream key
+//! (`rtmp://host/app/<key>`). [`redact_stream_url`] masks all three, and
 //! everything that reports a URL to an operator (snapshots, events, logs,
-//! status text) reports only its redacted form.
+//! status text) reports only its redacted form. The separate RTMP stream key
+//! and SRT passphrase are secrets too: a report carries [`REDACTED`] in
+//! their place ([`NetworkStreamConfig::redacted`]).
 //!
 //! The runtime side reports each stream's [`NetworkStreamStatus`]: its
 //! [`NetworkStreamState`] (connecting, buffering, live, stalled,
@@ -44,6 +51,26 @@ pub const MIN_STREAM_TIMEOUT_MS: u32 = 500;
 pub const MAX_STREAM_TIMEOUT_MS: u32 = 60_000;
 /// The longest reported error text, in bytes.
 pub const MAX_STREAM_ERROR_BYTES: usize = 160;
+/// The shortest SRT receive latency, in milliseconds.
+pub const MIN_SRT_LATENCY_MS: u32 = 20;
+/// The longest SRT receive latency, in milliseconds.
+pub const MAX_SRT_LATENCY_MS: u32 = 8_000;
+/// The default SRT receive latency, in milliseconds (libsrt's default).
+pub const DEFAULT_SRT_LATENCY_MS: u32 = 120;
+/// The shortest SRT passphrase, in bytes.
+pub const MIN_SRT_PASSPHRASE_BYTES: usize = 10;
+/// The longest SRT passphrase, in bytes.
+pub const MAX_SRT_PASSPHRASE_BYTES: usize = 79;
+/// The longest SRT stream ID, in bytes.
+pub const MAX_SRT_STREAM_ID_BYTES: usize = 512;
+/// The longest RTMP stream key, in bytes.
+pub const MAX_STREAM_KEY_BYTES: usize = 256;
+/// The lowest port a listening input may bind (no privileged ports).
+pub const MIN_LISTEN_PORT: u16 = 1024;
+/// The port an `rtmp://` URL without one names.
+pub const DEFAULT_RTMP_PORT: u16 = 1935;
+/// The most source audio channels a stream input distinguishes.
+pub const MAX_STREAM_AUDIO_CHANNELS: u16 = 8;
 
 /// What masks a secret in a redacted URL.
 pub const REDACTED: &str = "***";
@@ -77,17 +104,23 @@ pub enum StreamProtocol {
     Http,
     /// An `http://` or `https://` URL whose path ends in `.m3u8`.
     Hls,
+    /// `rtmp://` or `rtmps://` (IN-016).
+    Rtmp,
+    /// `srt://` (IN-017).
+    Srt,
 }
 
 impl StreamProtocol {
     /// Every protocol, in token order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Rtsp,
         Self::Rtp,
         Self::Udp,
         Self::Tcp,
         Self::Http,
         Self::Hls,
+        Self::Rtmp,
+        Self::Srt,
     ];
 
     #[must_use]
@@ -99,6 +132,8 @@ impl StreamProtocol {
             Self::Tcp => "tcp",
             Self::Http => "http",
             Self::Hls => "hls",
+            Self::Rtmp => "rtmp",
+            Self::Srt => "srt",
         }
     }
 
@@ -138,6 +173,178 @@ impl RtspTransport {
     #[must_use]
     pub fn from_token(token: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|value| value.token() == token)
+    }
+}
+
+/// How an RTMP or SRT input meets its peer (IN-016, IN-017).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum StreamMode {
+    /// Connect to the URL's host and pull the stream.
+    #[default]
+    Caller,
+    /// Listen on the URL's local address and port for a publisher (an RTMP
+    /// push from an encoder, or an SRT caller).
+    Listener,
+    /// SRT only: both peers connect to each other on the same port.
+    Rendezvous,
+}
+
+impl StreamMode {
+    pub const ALL: [Self; 3] = [Self::Caller, Self::Listener, Self::Rendezvous];
+
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Caller => "caller",
+            Self::Listener => "listener",
+            Self::Rendezvous => "rendezvous",
+        }
+    }
+
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|value| value.token() == token)
+    }
+
+    /// Whether `protocol` connects in this mode: every protocol is a
+    /// caller, RTMP and SRT may listen, and only SRT meets in rendezvous.
+    #[must_use]
+    pub const fn supported_by(self, protocol: StreamProtocol) -> bool {
+        match self {
+            Self::Caller => true,
+            Self::Listener => matches!(protocol, StreamProtocol::Rtmp | StreamProtocol::Srt),
+            Self::Rendezvous => matches!(protocol, StreamProtocol::Srt),
+        }
+    }
+
+    /// Whether the input waits for its peer rather than dialling it.
+    #[must_use]
+    pub const fn waits_for_peer(self) -> bool {
+        matches!(self, Self::Listener | Self::Rendezvous)
+    }
+}
+
+/// The AES key length an SRT passphrase derives (IN-017).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SrtKeyLength {
+    /// AES-128 (16-byte key).
+    #[default]
+    Aes128,
+    /// AES-192 (24-byte key).
+    Aes192,
+    /// AES-256 (32-byte key).
+    Aes256,
+}
+
+impl SrtKeyLength {
+    pub const ALL: [Self; 3] = [Self::Aes128, Self::Aes192, Self::Aes256];
+
+    /// The key length in bytes (`pbkeylen`): 16, 24, or 32.
+    #[must_use]
+    pub const fn bytes(self) -> u8 {
+        match self {
+            Self::Aes128 => 16,
+            Self::Aes192 => 24,
+            Self::Aes256 => 32,
+        }
+    }
+
+    /// The token: `16`, `24`, or `32`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Aes128 => "16",
+            Self::Aes192 => "24",
+            Self::Aes256 => "32",
+        }
+    }
+
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|value| value.token() == token)
+    }
+}
+
+/// Which source audio channels an input hears (IN-017): a downmix of every
+/// channel, or one stereo pair of a multichannel source of up to
+/// [`MAX_STREAM_AUDIO_CHANNELS`], so split stereo pairs reach a mixer strip
+/// one pair per input.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AudioChannels {
+    /// Downmix every source channel to the program layout.
+    #[default]
+    Mix,
+    /// Source channels 1 and 2.
+    Pair12,
+    /// Source channels 3 and 4.
+    Pair34,
+    /// Source channels 5 and 6.
+    Pair56,
+    /// Source channels 7 and 8.
+    Pair78,
+}
+
+impl AudioChannels {
+    pub const ALL: [Self; 5] = [
+        Self::Mix,
+        Self::Pair12,
+        Self::Pair34,
+        Self::Pair56,
+        Self::Pair78,
+    ];
+
+    /// The token: `mix`, `1-2`, `3-4`, `5-6`, or `7-8`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Mix => "mix",
+            Self::Pair12 => "1-2",
+            Self::Pair34 => "3-4",
+            Self::Pair56 => "5-6",
+            Self::Pair78 => "7-8",
+        }
+    }
+
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|value| value.token() == token)
+    }
+
+    /// The zero-based source channel of the pair's left side, or `None`
+    /// for a downmix.
+    #[must_use]
+    pub const fn first_channel(self) -> Option<u16> {
+        match self {
+            Self::Mix => None,
+            Self::Pair12 => Some(0),
+            Self::Pair34 => Some(2),
+            Self::Pair56 => Some(4),
+            Self::Pair78 => Some(6),
+        }
+    }
+}
+
+/// The transport a listening input binds its port on.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ListenTransport {
+    Tcp,
+    Udp,
+}
+
+/// The local port a listening input binds: two inputs may not share one.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ListenEndpoint {
+    pub transport: ListenTransport,
+    pub port: u16,
+}
+
+impl fmt::Display for ListenEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let transport = match self.transport {
+            ListenTransport::Tcp => "TCP",
+            ListenTransport::Udp => "UDP",
+        };
+        write!(formatter, "{transport} port {}", self.port)
     }
 }
 
@@ -261,6 +468,15 @@ pub struct NetworkStreamSettings {
     pub timeout_ms: u32,
     /// What the input shows while it stalls.
     pub stall: StallSlate,
+    /// RTMP and SRT: caller, listener, or (SRT only) rendezvous. Must be
+    /// [`StreamMode::Caller`] for other protocols.
+    pub mode: StreamMode,
+    /// SRT receive latency, in milliseconds; other protocols ignore it.
+    pub latency_ms: u32,
+    /// The AES key length an SRT passphrase derives; ignored without one.
+    pub key_length: SrtKeyLength,
+    /// Which source audio channels the input hears.
+    pub audio: AudioChannels,
 }
 
 impl Default for NetworkStreamSettings {
@@ -271,6 +487,10 @@ impl Default for NetworkStreamSettings {
             reconnect: ReconnectPolicy::default(),
             timeout_ms: 5_000,
             stall: StallSlate::Freeze,
+            mode: StreamMode::Caller,
+            latency_ms: DEFAULT_SRT_LATENCY_MS,
+            key_length: SrtKeyLength::Aes128,
+            audio: AudioChannels::Mix,
         }
     }
 }
@@ -299,6 +519,9 @@ impl NetworkStreamSettings {
         }
         if !(MIN_STREAM_TIMEOUT_MS..=MAX_STREAM_TIMEOUT_MS).contains(&self.timeout_ms) {
             return Err(NetworkStreamError::Timeout);
+        }
+        if !(MIN_SRT_LATENCY_MS..=MAX_SRT_LATENCY_MS).contains(&self.latency_ms) {
+            return Err(NetworkStreamError::Latency);
         }
         Ok(())
     }
@@ -336,23 +559,37 @@ impl fmt::Debug for StreamUrl {
     }
 }
 
-/// A network stream input's source: its URL and settings.
+/// A network stream input's source: its URL, settings, and the RTMP and
+/// SRT connection fields.
 ///
-/// `Debug` shows only the redacted URL.
-#[derive(Clone, Eq, Hash, PartialEq)]
+/// `Debug` shows only the redacted URL and masks the stream key and the
+/// passphrase.
+#[derive(Clone, Default, Eq, Hash, PartialEq)]
 pub struct NetworkStreamConfig {
     /// The stream URL, credentials included. Report it only through
     /// [`Self::redacted_url`].
     pub url: String,
     pub settings: NetworkStreamSettings,
+    /// SRT stream ID passed to the peer (`streamid`); not a secret.
+    pub stream_id: Option<String>,
+    /// RTMP stream key (a secret): appended to the URL's application path
+    /// when calling, and required of a publisher when listening.
+    pub stream_key: Option<String>,
+    /// SRT AES passphrase (a secret), [`MIN_SRT_PASSPHRASE_BYTES`] to
+    /// [`MAX_SRT_PASSPHRASE_BYTES`] bytes.
+    pub passphrase: Option<String>,
 }
 
 impl fmt::Debug for NetworkStreamConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted = self.redacted();
         formatter
             .debug_struct("NetworkStreamConfig")
-            .field("url", &self.redacted_url())
+            .field("url", &redacted.url)
             .field("settings", &self.settings)
+            .field("stream_id", &self.stream_id)
+            .field("stream_key", &redacted.stream_key)
+            .field("passphrase", &redacted.passphrase)
             .finish()
     }
 }
@@ -363,12 +600,15 @@ impl NetworkStreamConfig {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            settings: NetworkStreamSettings::default(),
+            ..Self::default()
         }
     }
 
-    /// Validates the URL and settings, and that a transport hint is only
-    /// given for RTSP.
+    /// Validates the URL, settings, and connection fields: a transport
+    /// hint only for RTSP, a mode the protocol supports, a listening port
+    /// of at least [`MIN_LISTEN_PORT`], a stream key only for RTMP (and
+    /// then a URL naming just the application), and a passphrase and stream
+    /// ID only for SRT.
     ///
     /// # Errors
     ///
@@ -379,30 +619,243 @@ impl NetworkStreamConfig {
         if protocol != StreamProtocol::Rtsp && self.settings.transport != RtspTransport::Auto {
             return Err(NetworkStreamError::TransportNotRtsp);
         }
+        let mode = self.settings.mode;
+        if !mode.supported_by(protocol)
+            || (protocol == StreamProtocol::Rtmp
+                && mode == StreamMode::Listener
+                && scheme_of(&self.url).as_deref() == Some("rtmps"))
+        {
+            return Err(NetworkStreamError::ModeUnsupported);
+        }
+        if mode.waits_for_peer()
+            && listen_port(&self.url, protocol).is_none_or(|port| port < MIN_LISTEN_PORT)
+        {
+            return Err(NetworkStreamError::ListenPort);
+        }
+        if let Some(key) = &self.stream_key
+            && (protocol != StreamProtocol::Rtmp
+                || key.is_empty()
+                || key.len() > MAX_STREAM_KEY_BYTES
+                || key == REDACTED
+                || !key.bytes().all(|byte| byte.is_ascii_graphic())
+                || rtmp_path_segments(&self.url) != 1)
+        {
+            return Err(NetworkStreamError::StreamKey);
+        }
+        if let Some(passphrase) = &self.passphrase
+            && (protocol != StreamProtocol::Srt
+                || !(MIN_SRT_PASSPHRASE_BYTES..=MAX_SRT_PASSPHRASE_BYTES)
+                    .contains(&passphrase.len())
+                || !passphrase.bytes().all(|byte| (b' '..=b'~').contains(&byte)))
+        {
+            return Err(NetworkStreamError::Passphrase);
+        }
+        if let Some(stream_id) = &self.stream_id
+            && (protocol != StreamProtocol::Srt
+                || stream_id.is_empty()
+                || stream_id.len() > MAX_SRT_STREAM_ID_BYTES
+                || !stream_id.bytes().all(|byte| (b' '..=b'~').contains(&byte)))
+        {
+            return Err(NetworkStreamError::StreamId);
+        }
         Ok(protocol)
     }
 
-    /// The URL with its credentials and secret query values masked.
+    /// Validates a reported (redacted) configuration: as
+    /// [`Self::validate`], except that a stream key or passphrase that is
+    /// set must read exactly [`REDACTED`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`NetworkStreamError`] found.
+    pub fn validate_redacted(&self) -> Result<StreamProtocol, NetworkStreamError> {
+        let mut probe = self.clone();
+        for (secret, placeholder, error) in [
+            (&mut probe.stream_key, "k", NetworkStreamError::StreamKey),
+            (
+                &mut probe.passphrase,
+                "redacted-passphrase",
+                NetworkStreamError::Passphrase,
+            ),
+        ] {
+            if let Some(value) = secret {
+                if value != REDACTED {
+                    return Err(error);
+                }
+                placeholder.clone_into(value);
+            }
+        }
+        probe.validate()
+    }
+
+    /// The URL with its credentials, secret query values, and RTMP stream
+    /// key path masked.
     #[must_use]
     pub fn redacted_url(&self) -> String {
         redact_stream_url(&self.url)
     }
 
-    /// This configuration with its URL redacted, for reporting.
+    /// This configuration with its URL redacted and its stream key and
+    /// passphrase replaced by [`REDACTED`], for reporting.
     #[must_use]
     pub fn redacted(&self) -> Self {
         Self {
             url: self.redacted_url(),
             settings: self.settings,
+            stream_id: self.stream_id.clone(),
+            stream_key: self.stream_key.as_ref().map(|_| REDACTED.to_owned()),
+            passphrase: self.passphrase.as_ref().map(|_| REDACTED.to_owned()),
         }
     }
+
+    /// The URL the receiver opens: an RTMP stream key is appended to the
+    /// application path, and an SRT stream ID travels percent-encoded as the
+    /// `streamid` query parameter (`ffmpeg` decodes it there; its command
+    /// line has no input option of that name).
+    #[must_use]
+    pub fn connect_url(&self) -> String {
+        if let Some(key) = &self.stream_key {
+            return format!("{}/{key}", self.url.trim_end_matches('/'));
+        }
+        match &self.stream_id {
+            Some(stream_id) => {
+                use fmt::Write as _;
+                let mut url = format!("{}?streamid=", self.url.trim_end_matches('/'));
+                for byte in stream_id.bytes() {
+                    if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                        url.push(char::from(byte));
+                    } else {
+                        let _ = write!(url, "%{byte:02X}");
+                    }
+                }
+                url
+            }
+            None => self.url.clone(),
+        }
+    }
+
+    /// Every secret this configuration holds (URL secrets, the stream key,
+    /// and the passphrase), longest first, for scrubbing free text.
+    #[must_use]
+    pub fn secrets(&self) -> Vec<String> {
+        let mut secrets = stream_url_secrets(&self.connect_url());
+        secrets.extend(self.stream_key.iter().cloned());
+        secrets.extend(self.passphrase.iter().cloned());
+        secrets.retain(|secret| !secret.is_empty());
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        secrets.dedup();
+        secrets
+    }
+
+    /// `text` with the URLs and every secret masked, bounded as
+    /// [`scrub_stream_text`] bounds it.
+    #[must_use]
+    pub fn scrub(&self, text: &str) -> String {
+        let connect = self.connect_url();
+        let mut scrubbed = text.replace(&connect, &redact_stream_url(&connect));
+        for secret in self.secrets() {
+            scrubbed = scrubbed.replace(&secret, REDACTED);
+        }
+        scrub_stream_text(&scrubbed, &self.url)
+    }
+
+    /// The local port this input binds while it waits for its peer (an RTMP
+    /// or SRT listener, or an SRT rendezvous), or `None` for an input that
+    /// dials out. A UDP/RTP receiver is not counted: several may share a
+    /// (multicast) port, as IN-015 allows.
+    #[must_use]
+    pub fn listen_endpoint(&self) -> Option<ListenEndpoint> {
+        let protocol = validate_stream_url(&self.url).ok()?;
+        let port = listen_port(&self.url, protocol)?;
+        let transport = match (protocol, self.settings.mode) {
+            (StreamProtocol::Rtmp, StreamMode::Listener) => ListenTransport::Tcp,
+            (StreamProtocol::Srt, StreamMode::Listener | StreamMode::Rendezvous) => {
+                ListenTransport::Udp
+            }
+            _ => return None,
+        };
+        Some(ListenEndpoint { transport, port })
+    }
+}
+
+/// How an edit changes a secret (the RTMP stream key or SRT passphrase):
+/// keep the stored one (which a client cannot read back), clear it, or set
+/// a new one. `Debug` masks a new secret.
+#[derive(Clone, Default, Eq, Hash, PartialEq)]
+pub enum SecretEdit {
+    #[default]
+    Keep,
+    Clear,
+    Set(String),
+}
+
+impl fmt::Debug for SecretEdit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Keep => formatter.write_str("Keep"),
+            Self::Clear => formatter.write_str("Clear"),
+            Self::Set(_) => write!(formatter, "Set({REDACTED:?})"),
+        }
+    }
+}
+
+impl SecretEdit {
+    /// The secret after this edit, given the stored one.
+    #[must_use]
+    pub fn apply(&self, current: Option<&str>) -> Option<String> {
+        match self {
+            Self::Keep => current.map(str::to_owned),
+            Self::Clear => None,
+            Self::Set(secret) => Some(secret.clone()),
+        }
+    }
+
+    /// The edit that stores exactly `secret`.
+    #[must_use]
+    pub fn exact(secret: Option<&str>) -> Self {
+        secret.map_or(Self::Clear, |secret| Self::Set(secret.to_owned()))
+    }
+}
+
+/// The lowercase scheme of `url`.
+fn scheme_of(url: &str) -> Option<String> {
+    split_scheme(url).map(|(scheme, _)| scheme)
+}
+
+/// The port of `url`, or the protocol's default (RTMP's 1935).
+fn listen_port(url: &str, protocol: StreamProtocol) -> Option<u16> {
+    let (scheme, rest) = split_scheme(url)?;
+    let (authority, _) = split_authority(rest);
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let (_, port) = split_host_port(host_port)?;
+    port.or(match (protocol, scheme.as_str()) {
+        (StreamProtocol::Rtmp, "rtmp") => Some(DEFAULT_RTMP_PORT),
+        (StreamProtocol::Rtmp, _) => Some(443),
+        _ => None,
+    })
+}
+
+/// The non-empty path segments of an RTMP URL (`/app` is one, `/app/key`
+/// two).
+fn rtmp_path_segments(url: &str) -> usize {
+    let Some((_, rest)) = split_scheme(url) else {
+        return 0;
+    };
+    let (_, tail) = split_authority(rest);
+    let path = tail.split(['?', '#']).next().unwrap_or_default();
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .count()
 }
 
 /// Why a network stream configuration is unusable.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum NetworkStreamError {
     /// The URL is empty, too long, not ASCII, holds spaces or control
-    /// characters, or has no host.
+    /// characters, has no host, misses a required port or RTMP application,
+    /// or is an SRT URL with a query.
     InvalidUrl,
     /// The URL's scheme is not a supported stream protocol.
     UnsupportedScheme,
@@ -416,10 +869,26 @@ pub enum NetworkStreamError {
     GiveUp,
     /// The timeout is out of range.
     Timeout,
+    /// The protocol cannot connect in the chosen mode (a listener other
+    /// than RTMP or SRT, an RTMPS listener, or a rendezvous other than SRT).
+    ModeUnsupported,
+    /// A listening input names no port, or one below [`MIN_LISTEN_PORT`].
+    ListenPort,
+    /// The SRT latency is out of range.
+    Latency,
+    /// A stream key was given for a protocol other than RTMP, is empty, too
+    /// long, or not printable ASCII, or the URL already names a stream path.
+    StreamKey,
+    /// A passphrase was given for a protocol other than SRT, or is not 10 to
+    /// 79 printable ASCII characters.
+    Passphrase,
+    /// A stream ID was given for a protocol other than SRT, or is empty, too
+    /// long, or not printable ASCII.
+    StreamId,
 }
 
 impl NetworkStreamError {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 13] = [
         Self::InvalidUrl,
         Self::UnsupportedScheme,
         Self::TransportNotRtsp,
@@ -427,6 +896,12 @@ impl NetworkStreamError {
         Self::Backoff,
         Self::GiveUp,
         Self::Timeout,
+        Self::ModeUnsupported,
+        Self::ListenPort,
+        Self::Latency,
+        Self::StreamKey,
+        Self::Passphrase,
+        Self::StreamId,
     ];
 
     /// The stable code of the error.
@@ -440,6 +915,12 @@ impl NetworkStreamError {
             Self::Backoff => "backoff_out_of_range",
             Self::GiveUp => "give_up_out_of_range",
             Self::Timeout => "timeout_out_of_range",
+            Self::ModeUnsupported => "mode_unsupported",
+            Self::ListenPort => "listen_port_invalid",
+            Self::Latency => "latency_out_of_range",
+            Self::StreamKey => "invalid_stream_key",
+            Self::Passphrase => "invalid_passphrase",
+            Self::StreamId => "invalid_stream_id",
         }
     }
 
@@ -447,12 +928,17 @@ impl NetworkStreamError {
     #[must_use]
     pub const fn field(self) -> &'static str {
         match self {
-            Self::InvalidUrl | Self::UnsupportedScheme => "url",
+            Self::InvalidUrl | Self::UnsupportedScheme | Self::ListenPort => "url",
             Self::TransportNotRtsp => "transport",
             Self::JitterBuffer => "jitter_ms",
             Self::Backoff => "backoff",
             Self::GiveUp => "give_up",
             Self::Timeout => "timeout_ms",
+            Self::ModeUnsupported => "mode",
+            Self::Latency => "latency_ms",
+            Self::StreamKey => "stream_key",
+            Self::Passphrase => "passphrase",
+            Self::StreamId => "stream_id",
         }
     }
 }
@@ -461,10 +947,12 @@ impl fmt::Display for NetworkStreamError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidUrl => {
-                "the stream URL is empty, too long, not ASCII, contains spaces, or has no host"
+                "the stream URL is empty, too long, not ASCII, contains spaces, has no host, \
+                 or misses its port or RTMP application"
             }
             Self::UnsupportedScheme => {
-                "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)"
+                "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls, rtmp, rtmps, \
+                 srt)"
             }
             Self::TransportNotRtsp => "a transport hint applies only to RTSP streams",
             Self::JitterBuffer => "the jitter buffer must be 40 to 5000 ms",
@@ -473,6 +961,17 @@ impl fmt::Display for NetworkStreamError {
             }
             Self::GiveUp => "give up after 1 to 10000 attempts, or never",
             Self::Timeout => "the timeout must be 500 to 60000 ms",
+            Self::ModeUnsupported => {
+                "only RTMP and SRT may listen (RTMPS may not), and only SRT meets in rendezvous"
+            }
+            Self::ListenPort => "a listening input needs a port from 1024 to 65535",
+            Self::Latency => "the SRT latency must be 20 to 8000 ms",
+            Self::StreamKey => {
+                "a stream key is 1 to 256 printable characters, for RTMP only, with a URL \
+                 naming just the application"
+            }
+            Self::Passphrase => "an SRT passphrase is 10 to 79 printable characters, for SRT only",
+            Self::StreamId => "an SRT stream ID is 1 to 512 printable characters, for SRT only",
         })
     }
 }
@@ -521,7 +1020,7 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
     // wrong with it is the scheme.
     if !matches!(
         scheme.as_str(),
-        "rtsp" | "rtsps" | "rtp" | "udp" | "tcp" | "http" | "https"
+        "rtsp" | "rtsps" | "rtp" | "udp" | "tcp" | "http" | "https" | "rtmp" | "rtmps" | "srt"
     ) {
         return Err(NetworkStreamError::UnsupportedScheme);
     }
@@ -539,6 +1038,8 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
         "rtp" => StreamProtocol::Rtp,
         "udp" => StreamProtocol::Udp,
         "tcp" => StreamProtocol::Tcp,
+        "rtmp" | "rtmps" => StreamProtocol::Rtmp,
+        "srt" => StreamProtocol::Srt,
         "http" | "https" => {
             let path = path.split(['?', '#']).next().unwrap_or_default();
             if path.to_ascii_lowercase().ends_with(".m3u8") {
@@ -551,8 +1052,16 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
     };
     if matches!(
         protocol,
-        StreamProtocol::Tcp | StreamProtocol::Udp | StreamProtocol::Rtp
+        StreamProtocol::Tcp | StreamProtocol::Udp | StreamProtocol::Rtp | StreamProtocol::Srt
     ) && port.is_none()
+    {
+        return Err(NetworkStreamError::InvalidUrl);
+    }
+    // An SRT URL's options are the input's own fields (mode, passphrase,
+    // stream ID, latency), never query parameters that could contradict
+    // them; an RTMP URL names at least its application.
+    if (protocol == StreamProtocol::Srt && !path.is_empty() && path != "/")
+        || (protocol == StreamProtocol::Rtmp && rtmp_path_segments(url) == 0)
     {
         return Err(NetworkStreamError::InvalidUrl);
     }
@@ -604,7 +1113,7 @@ fn split_host_port(value: &str) -> Option<(&str, Option<u16>)> {
 /// contains `@`, and unchanged otherwise.
 #[must_use]
 pub fn redact_stream_url(url: &str) -> String {
-    let Some((_, rest)) = split_scheme(url) else {
+    let Some((scheme, rest)) = split_scheme(url) else {
         return if url.contains('@') {
             REDACTED.to_owned()
         } else {
@@ -627,9 +1136,18 @@ pub fn redact_stream_url(url: &str) -> String {
         Some((before, fragment)) => (before, Some(fragment)),
         None => (tail, None),
     };
+    let rtmp = matches!(scheme.as_str(), "rtmp" | "rtmps");
+    let push_path = |redacted: &mut String, path: &str| match rtmp_key_path(path).filter(|_| rtmp) {
+        Some((app, _)) => {
+            redacted.push_str(app);
+            redacted.push('/');
+            redacted.push_str(REDACTED);
+        }
+        None => redacted.push_str(path),
+    };
     match before_fragment.split_once('?') {
         Some((path, query)) => {
-            redacted.push_str(path);
+            push_path(&mut redacted, path);
             redacted.push('?');
             let parts = query
                 .split('&')
@@ -640,13 +1158,24 @@ pub fn redact_stream_url(url: &str) -> String {
                 .collect::<Vec<_>>();
             redacted.push_str(&parts.join("&"));
         }
-        None => redacted.push_str(before_fragment),
+        None => push_path(&mut redacted, before_fragment),
     }
     if let Some(fragment) = fragment {
         redacted.push('#');
         redacted.push_str(fragment);
     }
     redacted
+}
+
+/// An RTMP path's application (`/app`) and the stream path after it (the
+/// stream key), or `None` when the path names no stream.
+fn rtmp_key_path(path: &str) -> Option<(&str, &str)> {
+    let trimmed = path.strip_prefix('/')?;
+    let (app, key) = trimmed.split_once('/')?;
+    if app.is_empty() || key.trim_matches('/').is_empty() {
+        return None;
+    }
+    Some((&path[..=app.len()], key))
 }
 
 fn is_secret_key(key: &str) -> bool {
@@ -687,8 +1216,14 @@ fn percent_decode(text: &str) -> String {
 #[must_use]
 pub fn stream_url_secrets(url: &str) -> Vec<String> {
     let mut secrets = Vec::new();
-    if let Some((_, rest)) = split_scheme(url) {
+    if let Some((scheme, rest)) = split_scheme(url) {
         let (authority, tail) = split_authority(rest);
+        if matches!(scheme.as_str(), "rtmp" | "rtmps")
+            && let Some((_, key)) = rtmp_key_path(tail.split(['?', '#']).next().unwrap_or_default())
+        {
+            secrets.push(key.to_owned());
+            secrets.extend(key.split('/').map(str::to_owned));
+        }
         if let Some((userinfo, _)) = authority.rsplit_once('@') {
             secrets.push(userinfo.to_owned());
             if let Some((user, password)) = userinfo.split_once(':') {
@@ -753,6 +1288,9 @@ pub enum NetworkStreamState {
     Idle,
     /// The first connection is being made.
     Connecting,
+    /// A listener (or SRT rendezvous) waits for its peer to connect
+    /// (IN-016, IN-017).
+    Listening,
     /// Connected; filling the jitter buffer before going live.
     Buffering,
     /// Playing from the jitter buffer.
@@ -766,13 +1304,14 @@ pub enum NetworkStreamState {
 }
 
 impl NetworkStreamState {
-    /// The state's token: `idle`, `connecting`, `buffering`, `live`,
-    /// `stalled`, `reconnecting`, or `failed`.
+    /// The state's token: `idle`, `connecting`, `listening`, `buffering`,
+    /// `live`, `stalled`, `reconnecting`, or `failed`.
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Connecting => "connecting",
+            Self::Listening => "listening",
             Self::Buffering => "buffering",
             Self::Live => "live",
             Self::Stalled => "stalled",
@@ -797,6 +1336,9 @@ pub struct NetworkStreamStatus {
     pub late_frames: u64,
     /// Reconnect attempts made since the input opened.
     pub reconnects: u32,
+    /// Audio channels the source's first audio stream carries (up to
+    /// [`MAX_STREAM_AUDIO_CHANNELS`] are told apart), or 0 when unknown.
+    pub source_channels: u16,
     /// The last connection error, redacted and bounded to
     /// [`MAX_STREAM_ERROR_BYTES`].
     pub last_error: Option<String>,
@@ -856,7 +1398,7 @@ mod tests {
         }
         assert_eq!(
             NetworkStreamError::UnsupportedScheme.to_string(),
-            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)"
+            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls, rtmp, rtmps, srt)"
         );
         let long = format!("http://h/{}", "a".repeat(MAX_STREAM_URL_BYTES));
         assert_eq!(
@@ -981,5 +1523,175 @@ mod tests {
         assert_eq!(GiveUp::from_token("03"), None);
         assert_eq!(GiveUp::from_token("0"), None);
         assert_eq!(GiveUp::from_token("7").unwrap().token(), "7");
+    }
+
+    #[test]
+    fn rtmp_and_srt_urls_name_their_protocol() {
+        for (url, protocol) in [
+            ("rtmp://ingest.test/live", StreamProtocol::Rtmp),
+            ("RTMPS://ingest.test:443/app/key", StreamProtocol::Rtmp),
+            ("srt://10.0.0.5:9000", StreamProtocol::Srt),
+            ("srt://0.0.0.0:9000/", StreamProtocol::Srt),
+        ] {
+            assert_eq!(validate_stream_url(url), Ok(protocol), "{url}");
+        }
+        for url in [
+            "rtmp://ingest.test",
+            "rtmp://ingest.test/",
+            "srt://host",
+            "srt://host:9000?passphrase=abcdefghijk",
+            "srt://host:9000/path",
+        ] {
+            assert_eq!(
+                validate_stream_url(url),
+                Err(NetworkStreamError::InvalidUrl),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn modes_belong_to_their_protocols_and_listeners_need_a_free_port() {
+        let mut config = NetworkStreamConfig::new("rtmp://0.0.0.0:1935/live");
+        config.settings.mode = StreamMode::Listener;
+        assert_eq!(config.validate(), Ok(StreamProtocol::Rtmp));
+        assert_eq!(
+            config.listen_endpoint(),
+            Some(ListenEndpoint {
+                transport: ListenTransport::Tcp,
+                port: 1935
+            })
+        );
+        config.url = "rtmp://0.0.0.0/live".into();
+        assert_eq!(config.listen_endpoint().map(|end| end.port), Some(1935));
+        config.url = "rtmp://0.0.0.0:80/live".into();
+        assert_eq!(config.validate(), Err(NetworkStreamError::ListenPort));
+        config.url = "rtmps://0.0.0.0:1936/live".into();
+        assert_eq!(config.validate(), Err(NetworkStreamError::ModeUnsupported));
+        config.url = "rtsp://cam/s".into();
+        assert_eq!(config.validate(), Err(NetworkStreamError::ModeUnsupported));
+        config.settings.mode = StreamMode::Rendezvous;
+        config.url = "rtmp://h/live".into();
+        assert_eq!(config.validate(), Err(NetworkStreamError::ModeUnsupported));
+        config.url = "srt://203.0.113.9:9000".into();
+        assert_eq!(config.validate(), Ok(StreamProtocol::Srt));
+        assert_eq!(
+            config.listen_endpoint(),
+            Some(ListenEndpoint {
+                transport: ListenTransport::Udp,
+                port: 9000
+            })
+        );
+        config.settings.mode = StreamMode::Caller;
+        assert_eq!(config.listen_endpoint(), None);
+        assert_eq!(
+            NetworkStreamConfig::new("udp://@:1234").listen_endpoint(),
+            None
+        );
+        config.settings.latency_ms = MAX_SRT_LATENCY_MS + 1;
+        assert_eq!(config.validate(), Err(NetworkStreamError::Latency));
+    }
+
+    #[test]
+    fn secrets_belong_to_their_protocols_and_are_bounded() {
+        let mut rtmp = NetworkStreamConfig::new("rtmp://ingest.test/live");
+        rtmp.stream_key = Some("live_123-abc".into());
+        assert_eq!(rtmp.validate(), Ok(StreamProtocol::Rtmp));
+        assert_eq!(rtmp.connect_url(), "rtmp://ingest.test/live/live_123-abc");
+        let mut with_id = NetworkStreamConfig::new("srt://enc.test:9000/");
+        with_id.stream_id = Some("#!::r=live/a b,m=request".into());
+        assert_eq!(
+            with_id.connect_url(),
+            "srt://enc.test:9000?streamid=%23%21%3A%3Ar%3Dlive%2Fa%20b%2Cm%3Drequest"
+        );
+        for bad in [
+            "",
+            "has space",
+            REDACTED,
+            &"k".repeat(MAX_STREAM_KEY_BYTES + 1),
+        ] {
+            rtmp.stream_key = Some(bad.to_owned());
+            assert_eq!(rtmp.validate(), Err(NetworkStreamError::StreamKey), "{bad}");
+        }
+        rtmp.stream_key = Some("k".into());
+        rtmp.url = "rtmp://ingest.test/live/other".into();
+        assert_eq!(rtmp.validate(), Err(NetworkStreamError::StreamKey));
+        rtmp.stream_key = None;
+        rtmp.passphrase = Some("abcdefghijk".into());
+        assert_eq!(rtmp.validate(), Err(NetworkStreamError::Passphrase));
+
+        let mut srt = NetworkStreamConfig::new("srt://enc.test:9000");
+        srt.passphrase = Some("0123456789".into());
+        srt.stream_id = Some("#!::r=live/cam1,m=request".into());
+        srt.settings.key_length = SrtKeyLength::Aes256;
+        assert_eq!(srt.validate(), Ok(StreamProtocol::Srt));
+        srt.passphrase = Some("p".repeat(MAX_SRT_PASSPHRASE_BYTES));
+        assert_eq!(srt.validate(), Ok(StreamProtocol::Srt));
+        for bad in ["short", &"p".repeat(MAX_SRT_PASSPHRASE_BYTES + 1)] {
+            srt.passphrase = Some(bad.to_owned());
+            assert_eq!(srt.validate(), Err(NetworkStreamError::Passphrase));
+        }
+        srt.passphrase = None;
+        srt.stream_id = Some("s".repeat(MAX_SRT_STREAM_ID_BYTES + 1));
+        assert_eq!(srt.validate(), Err(NetworkStreamError::StreamId));
+        srt.stream_id = None;
+        srt.stream_key = Some("k".into());
+        assert_eq!(srt.validate(), Err(NetworkStreamError::StreamKey));
+    }
+
+    #[test]
+    fn stream_keys_and_passphrases_are_redacted_everywhere() {
+        assert_eq!(
+            redact_stream_url("rtmp://ingest.test/live/sk_live_9f8e7d"),
+            "rtmp://ingest.test/live/***"
+        );
+        assert_eq!(
+            redact_stream_url("rtmps://u:p@ingest.test:443/app/a/b?x=1"),
+            "rtmps://***@ingest.test:443/app/***?x=1"
+        );
+        assert_eq!(
+            redact_stream_url("rtmp://ingest.test/live"),
+            "rtmp://ingest.test/live"
+        );
+        let mut rtmp = NetworkStreamConfig::new("rtmp://ingest.test/live");
+        rtmp.stream_key = Some("sk_live_9f8e7d".into());
+        let mut srt = NetworkStreamConfig::new("srt://enc.test:9000");
+        srt.passphrase = Some("correct horse battery".into());
+        for (config, secret) in [(&rtmp, "sk_live_9f8e7d"), (&srt, "correct horse battery")] {
+            assert!(!format!("{config:?}").contains(secret));
+            let redacted = config.redacted();
+            assert!(!format!("{redacted:?}").contains(secret));
+            assert_eq!(redacted.validate_redacted(), config.validate());
+            assert!(redacted.validate().is_err());
+            let echoed = format!("failed to open {} with {secret}", config.connect_url());
+            assert!(!config.scrub(&echoed).contains(secret), "{echoed}");
+        }
+        let mut forged = rtmp.redacted();
+        forged.stream_key = Some("real".into());
+        assert_eq!(
+            forged.validate_redacted(),
+            Err(NetworkStreamError::StreamKey)
+        );
+        assert_eq!(
+            format!("{:?}", SecretEdit::Set("hunter2".into())),
+            "Set(\"***\")"
+        );
+        assert_eq!(SecretEdit::Keep.apply(Some("a")), Some("a".into()));
+        assert_eq!(SecretEdit::Clear.apply(Some("a")), None);
+        let caller = NetworkStreamConfig::new("rtmp://ingest.test/live/sk_1");
+        assert!(!caller.scrub("Unexpected stream sk_1").contains("sk_1"));
+    }
+
+    #[test]
+    fn audio_pairs_name_their_source_channels() {
+        assert_eq!(AudioChannels::Mix.first_channel(), None);
+        assert_eq!(AudioChannels::Pair78.first_channel(), Some(6));
+        for audio in AudioChannels::ALL {
+            assert_eq!(AudioChannels::from_token(audio.token()), Some(audio));
+        }
+        for length in SrtKeyLength::ALL {
+            assert_eq!(SrtKeyLength::from_token(length.token()), Some(length));
+            assert_eq!(length.token(), length.bytes().to_string());
+        }
     }
 }

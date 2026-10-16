@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.48 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.49 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1419,6 +1419,52 @@ Protocol 2.48 completes Fade to Black and the T-bar (SW-004).
   `ftb-curve <linear|ease>`, and their `remote-` forms; `tbar-start` takes
   any mix token or `stinger-<n> <frames>`.
 - 2.47 is refused.
+
+Protocol 2.49 adds RTMP and SRT network stream inputs (IN-016, IN-017).
+
+- The URL scheme may also be `rtmp`, `rtmps` (an application path segment
+  is required), or `srt` (a port is required; the path is empty or `/`).
+- A network stream configuration adds `mode` (`caller`, `listener`, or
+  `rendezvous`; RTMP takes `caller` or `listener`, `rtmps` only `caller`,
+  SRT all three, other protocols only `caller`), `latency_ms` (SRT receive
+  latency, 20..=8000, default 120), `key_length` (SRT AES key length in
+  bytes, `16`, `24`, or `32`), `audio` (`mix` downmixes every source
+  channel; `1-2`, `3-4`, `5-6`, `7-8` pick one stereo pair of up to eight
+  source channels, a missing pair is silent), and the optional
+  `stream_id` (SRT, 1..=512 printable bytes), `stream_key` (RTMP, 1..=256
+  printable bytes; a listener refuses a publisher using another key, a
+  caller appends it to the URL path), and `passphrase` (SRT, 10..=79
+  printable bytes; with it the stream is AES-encrypted). A listener or
+  rendezvous URL needs an explicit port of 1024 or above (RTMP defaults to
+  1935); its host is the local address to bind.
+- Two inputs never listen on one port: an `add_input`, `input_stream_set`,
+  or source replacement whose listener would bind the TCP (RTMP) or UDP
+  (SRT) port another input listens on is refused `conflict` with field
+  `url` code `listen_port_in_use`.
+- `payload=input_stream_set` adds the optional `stream_id` (absent clears
+  it) and secret edits `stream_key` and `passphrase`: absent keeps the
+  stored secret, empty clears it, any other value replaces it (`***` is
+  refused).
+- Secrets never leave the daemon: `input_added`, `network_stream_changed`,
+  and the snapshot carry `***` for a set stream key or passphrase; an RTMP
+  URL path after the application is redacted as `/app/***`; status errors
+  and logs are scrubbed of both secrets.
+- `event=network_stream_status` adds the state `listening` (a listener
+  waiting for its publisher; it listens again when the publisher leaves and
+  counts no reconnect) and `source_channels`, the audio channel count of
+  the received stream (0 until known).
+- The snapshot's `network_streams` entry becomes
+  `<input>~<transport>~<jitter_ms>~<backoff_min_ms>~<backoff_max_ms>~<give_up>~<timeout_ms>~<stall>~<mode>~<latency_ms>~<key_length>~<audio>~<key_set>~<passphrase_set>~<state>~<attempt>~<next_in_ms>~<bitrate_bps>~<buffer_ms>~<dropped>~<late>~<reconnects>~<source_channels>~<length>:<stream_id><length>:<url>`,
+  `key_set` and `passphrase_set` being `0` or `1` and the stream ID empty
+  for none.
+- Durability: `kind.network_stream` adds `mode`, `latency_ms`,
+  `key_length`, `audio`, and `stream_id`, `stream_key`, `passphrase`
+  (`null` or a string; the project keeps the secrets) (schema 46).
+- `freemix-cli` adds `--mode`, `--latency-ms`, `--key-length`, `--audio`,
+  `--stream-id`, `--stream-key`, and `--passphrase` to `input-add-stream`
+  and `input-stream-set` (and their `remote-` forms); the set commands also
+  take `--clear-stream-id`, `--clear-stream-key`, and `--clear-passphrase`.
+- 2.48 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

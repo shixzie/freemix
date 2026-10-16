@@ -6,8 +6,8 @@ use fm_types::capture::{
     CaptureSettings,
 };
 use fm_types::network_stream::{
-    GiveUp, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings, RtspTransport,
-    StallSlate, StreamUrl,
+    AudioChannels, GiveUp, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings,
+    RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamUrl,
 };
 
 /// How automatic Fade-to-Black moves ease (SW-004).
@@ -4581,6 +4581,21 @@ pub struct NetworkStreamOptions {
     pub give_up: Option<GiveUp>,
     pub timeout_ms: Option<u32>,
     pub stall: Option<StallSlate>,
+    /// RTMP/SRT connection mode (IN-016, IN-017).
+    pub mode: Option<StreamMode>,
+    /// SRT receive latency.
+    pub latency_ms: Option<u32>,
+    /// SRT AES key length.
+    pub key_length: Option<SrtKeyLength>,
+    /// Which source channels feed the input's stereo audio.
+    pub audio: Option<AudioChannels>,
+    /// The SRT stream ID edit (keep, clear, or set). The ID is not secret,
+    /// but shares the keep/clear/set shape; its `Debug` output is masked.
+    pub stream_id: SecretEdit,
+    /// The RTMP stream key edit; its `Debug` output is redacted.
+    pub stream_key: SecretEdit,
+    /// The SRT passphrase edit; its `Debug` output is redacted.
+    pub passphrase: SecretEdit,
 }
 
 impl NetworkStreamOptions {
@@ -4608,7 +4623,25 @@ impl NetworkStreamOptions {
         if let Some(stall) = self.stall {
             settings.stall = stall;
         }
+        if let Some(mode) = self.mode {
+            settings.mode = mode;
+        }
+        if let Some(latency) = self.latency_ms {
+            settings.latency_ms = latency;
+        }
+        if let Some(key_length) = self.key_length {
+            settings.key_length = key_length;
+        }
+        if let Some(audio) = self.audio {
+            settings.audio = audio;
+        }
         settings
+    }
+
+    /// The stream ID after this edit, given the current one.
+    #[must_use]
+    pub fn stream_id(&self, current: Option<&str>) -> Option<String> {
+        self.stream_id.apply(current)
     }
 
     /// `config` with every given option applied, validated.
@@ -4626,6 +4659,9 @@ impl NetworkStreamOptions {
                 .as_ref()
                 .map_or_else(|| config.url.clone(), |url| url.as_str().to_owned()),
             settings: self.apply(config.settings),
+            stream_id: self.stream_id(config.stream_id.as_deref()),
+            stream_key: self.stream_key.apply(config.stream_key.as_deref()),
+            passphrase: self.passphrase.apply(config.passphrase.as_deref()),
         };
         configured.validate()?;
         Ok(configured)
@@ -4635,7 +4671,13 @@ impl NetworkStreamOptions {
 /// Parses the network stream options and `--key`/`--expect`:
 /// `[--url <url>] [--transport auto|tcp|udp] [--jitter-ms <ms>]
 /// [--backoff-min-ms <ms>] [--backoff-max-ms <ms>] [--give-up never|<n>]
-/// [--timeout-ms <ms>] [--stall freeze|black]`.
+/// [--timeout-ms <ms>] [--stall freeze|black]
+/// [--mode caller|listener|rendezvous] [--latency-ms <ms>]
+/// [--key-length 16|24|32] [--audio mix|1-2|3-4|5-6|7-8]
+/// [--stream-id <id>] [--stream-key <key>] [--passphrase <passphrase>]`,
+/// and for an edit (`allow_url`) `--clear-stream-id`, `--clear-stream-key`,
+/// and `--clear-passphrase`. A secret option is never echoed.
+#[allow(clippy::too_many_lines)]
 fn network_stream_options(
     mut arguments: impl Iterator<Item = String>,
     allow_url: bool,
@@ -4694,6 +4736,91 @@ fn network_stream_options(
                     },
                 )?);
             }
+            "--mode" => {
+                let value = required(&mut arguments, "stream mode")?;
+                options.mode = Some(StreamMode::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "stream mode",
+                        value,
+                    },
+                )?);
+            }
+            "--latency-ms" => {
+                options.latency_ms =
+                    Some(number(&required(&mut arguments, "latency")?, "latency")?);
+            }
+            "--key-length" => {
+                let value = required(&mut arguments, "key length")?;
+                options.key_length = Some(SrtKeyLength::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "key length",
+                        value,
+                    },
+                )?);
+            }
+            "--audio" => {
+                let value = required(&mut arguments, "audio channels")?;
+                options.audio = Some(AudioChannels::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "audio channels",
+                        value,
+                    },
+                )?);
+            }
+            "--stream-id" => {
+                if options.stream_id == SecretEdit::Clear {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--stream-id",
+                        conflicts: "--clear-stream-id",
+                    });
+                }
+                options.stream_id = SecretEdit::Set(required(&mut arguments, "stream ID")?);
+            }
+            "--clear-stream-id" if allow_url => {
+                if matches!(options.stream_id, SecretEdit::Set(_)) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-stream-id",
+                        conflicts: "--stream-id",
+                    });
+                }
+                options.stream_id = SecretEdit::Clear;
+            }
+            "--stream-key" => {
+                if options.stream_key == SecretEdit::Clear {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--stream-key",
+                        conflicts: "--clear-stream-key",
+                    });
+                }
+                options.stream_key = SecretEdit::Set(required(&mut arguments, "stream key")?);
+            }
+            "--clear-stream-key" if allow_url => {
+                if matches!(options.stream_key, SecretEdit::Set(_)) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-stream-key",
+                        conflicts: "--stream-key",
+                    });
+                }
+                options.stream_key = SecretEdit::Clear;
+            }
+            "--passphrase" => {
+                if options.passphrase == SecretEdit::Clear {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--passphrase",
+                        conflicts: "--clear-passphrase",
+                    });
+                }
+                options.passphrase = SecretEdit::Set(required(&mut arguments, "passphrase")?);
+            }
+            "--clear-passphrase" if allow_url => {
+                if matches!(options.passphrase, SecretEdit::Set(_)) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-passphrase",
+                        conflicts: "--passphrase",
+                    });
+                }
+                options.passphrase = SecretEdit::Clear;
+            }
             "--key" => {
                 let value = required(&mut arguments, "idempotency key")?;
                 if value.trim().is_empty() {
@@ -4713,7 +4840,7 @@ fn network_stream_options(
     Ok((options, key, expected_revision))
 }
 
-/// Parses the network stream input commands (IN-015):
+/// Parses the network stream input commands (IN-015, IN-016, IN-017):
 /// `input-add-stream <project> <input> <name> <url> [options]`,
 /// `remote-input-add-stream <address> <input> <name> <url> [options]
 /// [--key <key>] [--expect <revision>]`,

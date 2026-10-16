@@ -110,6 +110,7 @@ fn device_settings() -> NetworkStreamSettings {
         },
         timeout_ms: DEVICE_TIMEOUT_MS,
         stall: StallSlate::Freeze,
+        ..NetworkStreamSettings::default()
     }
 }
 
@@ -151,6 +152,7 @@ impl Acquisition for FfmpegAcquisition {
         match status.state {
             NetworkStreamState::Idle
             | NetworkStreamState::Connecting
+            | NetworkStreamState::Listening
             | NetworkStreamState::Buffering => AcquisitionHealth::Starting,
             NetworkStreamState::Live => AcquisitionHealth::Live,
             NetworkStreamState::Stalled | NetworkStreamState::Reconnecting { .. } => {

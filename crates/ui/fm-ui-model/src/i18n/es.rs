@@ -2062,14 +2062,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::KindNetworkHover,
         t(
-            "Recibe un flujo RTSP, RTP, UDP, TCP o HTTP MPEG-TS, o una lista HLS, con un búfer de fluctuación acotado y reconexión automática",
+            "Recibe un flujo RTSP, RTP, UDP, TCP o HTTP MPEG-TS, una lista HLS, un flujo RTMP (recibido de un servidor o enviado por un codificador) o un flujo SRT, con un búfer de fluctuación acotado y reconexión automática",
         ),
     ),
     (Msg::NsUrl, t("URL del flujo")),
     (
         Msg::NsUrlHover,
         t(
-            "Dirección rtsp://, rtp://, udp://, tcp://, http:// o https:// del flujo (una dirección .m3u8 es HLS). Las credenciales de la URL se guardan con el proyecto pero no se vuelven a mostrar",
+            "Dirección rtsp://, rtp://, udp://, tcp://, http://, https://, rtmp://, rtmps:// o srt:// del flujo (una dirección .m3u8 es HLS). Para escuchar, indica la dirección y el puerto locales, como rtmp://0.0.0.0:1935/live o srt://0.0.0.0:9000. Las credenciales y claves de la URL se guardan con el proyecto pero no se vuelven a mostrar",
         ),
     ),
     (Msg::NsTransport, t("Transporte RTSP")),
@@ -2132,7 +2132,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::NsReasonUrlEmpty, t("escribe la URL del flujo")),
     (
         Msg::NsReasonUrlInvalid,
-        t("la URL no es una dirección de flujo rtsp, rtp, udp, tcp, http o https"),
+        t(
+            "la URL no es una dirección de flujo (una URL rtmp:// nombra su aplicación, una srt:// su puerto y ninguna consulta)",
+        ),
     ),
     (
         Msg::NsReasonTransport,
@@ -2149,6 +2151,115 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::NsBadgeIdle, t("INACTIVO")),
     (Msg::NsBadgeBuffering, t("ALMACENANDO")),
     (Msg::NsBadgeStalled, t("CORTADO")),
+    (Msg::NsBadgeListening, t("ESCUCHANDO")),
+    (Msg::NsMode, t("Conexión")),
+    (Msg::NsModeCaller, t("LLAMADA")),
+    (Msg::NsModeListener, t("ESCUCHA")),
+    (Msg::NsModeRendezvous, t("ENCUENTRO")),
+    (
+        Msg::NsModeCallerHover,
+        t("Se conecta a la dirección de la URL y recibe el flujo de ese servidor"),
+    ),
+    (
+        Msg::NsModeListenerHover,
+        t(
+            "Espera en la dirección y el puerto locales de la URL a que un codificador (como OBS) envíe el flujo; cada entrada necesita su propio puerto, 1024 o superior",
+        ),
+    ),
+    (
+        Msg::NsModeRendezvousHover,
+        t(
+            "Solo SRT: ambos extremos se conectan entre sí en el mismo puerto a la vez, lo que atraviesa cortafuegos sin un extremo a la escucha",
+        ),
+    ),
+    (Msg::NsStreamKey, t("Clave de transmisión")),
+    (
+        Msg::NsStreamKeyHover,
+        t(
+            "La clave RTMP tras la aplicación (rtmp://host/app/CLAVE): al recibir de un servidor nombra el flujo; al escuchar, quien publique debe usarla o se le desconecta. Se guarda con el proyecto y no se vuelve a mostrar",
+        ),
+    ),
+    (Msg::NsPassphrase, t("Frase de cifrado")),
+    (
+        Msg::NsPassphraseHover,
+        t(
+            "Frase de cifrado SRT, de 10 a 79 caracteres, igual en ambos extremos; déjala vacía para un flujo sin cifrar. Se guarda con el proyecto y no se vuelve a mostrar",
+        ),
+    ),
+    (Msg::NsKeyLength, t("Cifrado")),
+    (
+        Msg::NsKeyLengthHover,
+        t("La longitud de clave AES que deriva la frase SRT; ambos extremos deben coincidir"),
+    ),
+    (Msg::NsStreamId, t("ID de flujo")),
+    (
+        Msg::NsStreamIdHover,
+        t(
+            "El ID de flujo SRT que se envía al otro extremo, que algunos servidores usan para elegir o autorizar un flujo; hasta 512 caracteres, puede quedar vacío",
+        ),
+    ),
+    (Msg::NsLatency, t("Latencia SRT (ms)")),
+    (
+        Msg::NsLatencyHover,
+        t(
+            "Cuánto espera SRT para recuperar paquetes perdidos antes de descartarlos, de 20 a 8000 ms; unas cuatro veces el tiempo de ida y vuelta es un buen comienzo",
+        ),
+    ),
+    (Msg::NsAudio, t("Canales de audio")),
+    (Msg::NsAudioMix, t("MEZCLA")),
+    (
+        Msg::NsAudioMixHover,
+        t("Escucha todos los canales de la fuente mezclados en estéreo"),
+    ),
+    (
+        Msg::NsAudioPairHover,
+        t(
+            "Escucha solo los canales {left} y {right} de la fuente, como par estéreo; para una fuente con pares estéreo separados, añade una entrada por par",
+        ),
+    ),
+    (
+        Msg::NsReasonMode,
+        t(
+            "solo los flujos rtmp:// y srt:// pueden escuchar (rtmps:// no), y solo srt:// admite encuentro",
+        ),
+    ),
+    (
+        Msg::NsReasonListenPort,
+        t("una entrada a la escucha necesita su propio puerto, 1024 o superior"),
+    ),
+    (
+        Msg::NsReasonStreamKey,
+        t(
+            "una clave de transmisión es texto imprimible sin espacios, y entonces la URL solo nombra la aplicación",
+        ),
+    ),
+    (
+        Msg::NsReasonPassphrase,
+        t("una frase de cifrado SRT tiene de 10 a 79 caracteres"),
+    ),
+    (
+        Msg::NsReasonStreamId,
+        t("un ID de flujo SRT es texto imprimible de 512 caracteres como máximo"),
+    ),
+    (
+        Msg::NsReasonKeyLength,
+        t("escribe una frase de cifrado para cifrar el flujo"),
+    ),
+    (
+        Msg::NsDetailRtmp,
+        t("RTMP {mode}, clave de transmisión {key}"),
+    ),
+    (Msg::NsDetailKeySet, t("establecida")),
+    (Msg::NsDetailKeyNone, t("sin establecer")),
+    (
+        Msg::NsDetailSrt,
+        t("SRT {mode}, {latency} ms de latencia, {encryption}"),
+    ),
+    (Msg::NsDetailUnencrypted, t("sin cifrar")),
+    (
+        Msg::NsDetailAudio,
+        t("Audio de la fuente: {count} canales, se escucha {pair}"),
+    ),
     (Msg::NsBadgeReconnecting, t("RECONECTANDO {attempt}")),
     (Msg::NsDetailStream, t("Flujo de red {url}: {state}")),
     (Msg::NsDetailRates, t("{kbps} kb/s, {buffer} ms en búfer")),
@@ -2631,7 +2742,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::IdKindTitleNamed, t("Título «{name}»")),
     (
         Msg::RsnUnsupportedScheme,
-        t("esquema no admitido (admitidos: rtsp, rtp, udp, tcp, http, https, hls)"),
+        t(
+            "esquema no admitido (admitidos: rtsp, rtp, udp, tcp, http, https, hls, rtmp, rtmps, srt)",
+        ),
     ),
     (Msg::BoundsFieldInputs, t("Entradas del proyecto")),
     (Msg::BoundsFieldPlaylistEntries, t("Entradas de lista")),

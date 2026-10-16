@@ -263,7 +263,9 @@ fn model(variant: Variant) -> ClientModel {
         display_outputs: display_output_entries(),
         display_output_states: display_output_states(),
         // IN-015: a live stream and a reconnecting one, so the tile badges
-        // and their details are audited (Protocol 2.46).
+        // and their details are audited (Protocol 2.46); the second is an
+        // encrypted SRT listener (IN-017, Protocol 2.49), so its connection
+        // and source audio details are too.
         network_streams: vec![
             fm_protocol::NetworkStreamEntry {
                 input: wire(1),
@@ -277,13 +279,14 @@ fn model(variant: Variant) -> ClientModel {
             },
             fm_protocol::NetworkStreamEntry {
                 input: wire(2),
-                config: fm_protocol::NetworkStreamConfig::new("udp://@:9000"),
+                config: srt_listener(),
                 status: fm_protocol::NetworkStreamStatus {
                     state: fm_protocol::NetworkStreamState::Reconnecting {
                         attempt: 3,
                         next_in_ms: 2_000,
                     },
                     reconnects: 3,
+                    source_channels: 8,
                     last_error: Some("Connection refused".into()),
                     ..fm_protocol::NetworkStreamStatus::default()
                 },
@@ -1237,7 +1240,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         state
     }));
     let operator = ready(true, Variant::default());
-    let dialogs: [(&str, Configure); 12] = [
+    let dialogs: [(&str, Configure); 14] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
         ("about", &|shell| shell.show_about = true),
         ("preferences", &|shell| shell.show_preferences = true),
@@ -1249,6 +1252,31 @@ fn scenes(language: Language) -> Vec<Scene> {
             if let Some(draft) = shell.add_input.as_mut() {
                 draft.kind = crate::input_catalogue::NewInputKind::Network;
                 draft.stream.url = "rtsp://cam.local/live".into();
+            }
+        }),
+        // IN-016: an RTMP listener with a stream key, so the mode keys and
+        // the key field are audited.
+        ("add-input-rtmp", &|shell| {
+            shell.open_add_input(&operator);
+            if let Some(draft) = shell.add_input.as_mut() {
+                draft.kind = crate::input_catalogue::NewInputKind::Network;
+                draft.stream.url = "rtmp://0.0.0.0:1935/live".into();
+                draft.stream.settings.mode = fm_protocol::StreamMode::Listener;
+                draft.stream.stream_key = "obs-key".into();
+            }
+        }),
+        // IN-017: an encrypted SRT listener on a stereo pair, so the
+        // passphrase, key length, stream ID, latency, and audio keys are
+        // audited enabled.
+        ("add-input-srt", &|shell| {
+            shell.open_add_input(&operator);
+            if let Some(draft) = shell.add_input.as_mut() {
+                draft.kind = crate::input_catalogue::NewInputKind::Network;
+                draft.stream.url = "srt://0.0.0.0:9000".into();
+                draft.stream.settings.mode = fm_protocol::StreamMode::Listener;
+                draft.stream.settings.audio = fm_protocol::AudioChannels::Pair34;
+                draft.stream.passphrase = "correct-horse-battery".into();
+                draft.stream.stream_id = "cam1".into();
             }
         }),
         ("remove-input", &|shell| {
@@ -2617,4 +2645,15 @@ fn the_audit_detects_a_widget_without_help_and_ignores_egui_chrome() {
         assert!(has_tooltip("helped"));
         assert!(has_tooltip("off"));
     });
+}
+
+/// An encrypted SRT listener on the third and fourth channels, as a client
+/// sees it (passphrase masked).
+fn srt_listener() -> fm_protocol::NetworkStreamConfig {
+    let mut config = fm_protocol::NetworkStreamConfig::new("srt://0.0.0.0:9000");
+    config.settings.mode = fm_protocol::StreamMode::Listener;
+    config.settings.audio = fm_protocol::AudioChannels::Pair34;
+    config.passphrase = Some("***".into());
+    config.stream_id = Some("cam1".into());
+    config
 }

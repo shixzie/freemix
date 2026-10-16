@@ -1,7 +1,8 @@
 //! IN-015: network stream inputs are added live with their configuration,
 //! and `SetNetworkStream` edits are undoable project edits behind the
 //! project and input padlocks; refusals name the problem and change
-//! nothing.
+//! nothing. IN-016/IN-017: stream keys and passphrases are undone like any
+//! other field, and a second listener on a taken port is a conflict.
 
 use core::num::NonZeroU128;
 
@@ -12,7 +13,7 @@ use fm_engine::{
     EngineCommandOutcome, EngineEvent, EngineInputSource, ShowState,
 };
 use fm_types::network_stream::{
-    MAX_NETWORK_STREAM_INPUTS, NetworkStreamConfig, RtspTransport, StallSlate,
+    MAX_NETWORK_STREAM_INPUTS, NetworkStreamConfig, RtspTransport, StallSlate, StreamMode,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -262,4 +263,72 @@ fn edits_honour_the_project_and_input_padlocks() {
         engine.show().network_stream(input(5)),
         Some(&NetworkStreamConfig::new("udp://@:9000"))
     );
+}
+
+fn listener(url: &str) -> NetworkStreamConfig {
+    let mut config = NetworkStreamConfig::new(url);
+    config.settings.mode = StreamMode::Listener;
+    config
+}
+
+fn add_config(value: u128, config: NetworkStreamConfig) -> EngineCommand {
+    EngineCommand::AddInput {
+        input: input(value),
+        name: format!("Listener {value}"),
+        source: EngineInputSource::NetworkStream(Box::new(config)),
+    }
+}
+
+#[test]
+fn secrets_are_undoable_and_listen_ports_are_exclusive() {
+    let mut engine = engine();
+    let mut rtmp = listener("rtmp://0.0.0.0:1935/live");
+    rtmp.stream_key = Some("obs-key".into());
+    accept(&mut engine, "add-rtmp", add_config(5, rtmp.clone()));
+    let mut rekeyed = rtmp.clone();
+    rekeyed.stream_key = Some("new-key".into());
+    accept(&mut engine, "rekey", set(5, rekeyed.clone()));
+    assert_eq!(engine.show().network_stream(input(5)), Some(&rekeyed));
+    accept(
+        &mut engine,
+        "undo",
+        EngineCommand::Undo {
+            expected_edit: None,
+        },
+    );
+    assert_eq!(engine.show().network_stream(input(5)), Some(&rtmp));
+
+    // A second TCP listener on 1935 is refused.
+    let outcome = execute(
+        &mut engine,
+        "add-taken",
+        add_config(6, listener("rtmp://127.0.0.1:1935/other")),
+    );
+    let refused = rejection(&outcome);
+    assert_eq!(refused.code, RejectionCode::Conflict);
+    assert!(
+        refused
+            .fields
+            .iter()
+            .any(|issue| issue.field == "url" && issue.code == "listen_port_in_use"),
+        "{refused:?}"
+    );
+    assert!(!engine.show().inputs().contains(&input(6)));
+
+    // SRT on UDP 1935 is another port; moving it onto TCP 1935 is not.
+    let mut srt = listener("srt://0.0.0.0:1935");
+    srt.passphrase = Some("long-enough-secret".into());
+    accept(&mut engine, "add-srt", add_config(6, srt.clone()));
+    let outcome = execute(
+        &mut engine,
+        "move",
+        set(6, listener("rtmp://0.0.0.0:1935/cam")),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
+    assert!(outcome.events.is_empty(), "{:?}", outcome.events);
+    assert_eq!(engine.show().network_stream(input(6)), Some(&srt));
+    // An input may keep its own port.
+    let mut relatency = srt.clone();
+    relatency.settings.latency_ms = 400;
+    accept(&mut engine, "relatency", set(6, relatency));
 }

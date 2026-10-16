@@ -1,4 +1,5 @@
-//! Native realization of network stream inputs (IN-015).
+//! Native realization of network stream inputs (IN-015, with RTMP IN-016
+//! and SRT IN-017).
 //!
 //! Each open network stream input of a native project owns one
 //! [`NetworkReceiver`]: a supervised `ffmpeg` child that receives the stream,
@@ -15,14 +16,18 @@
 //! A network input starts on a transparent black picture. A closed input
 //! (IN-026) stops its receiver and shows no picture and no sound until it
 //! reopens, which reconnects. A configuration change (`input_stream_set`)
-//! restarts the input's receiver on the new URL and settings.
+//! restarts the input's receiver on the new URL and settings; the old
+//! child stops before the new one starts, so a listener can rebind its
+//! port. A listener (RTMP or SRT) waits for its publisher in `listening`
+//! and listens again when the publisher leaves, without counting attempts.
 //!
 //! Each receiver's status reaches clients as `network_stream_status`
 //! runtime events ([`NativeNetworkStreams::statuses`]): at once when its
 //! state changes or it first reports an error, and otherwise (a changing
 //! error text included) at most once a second. The daemon logs each
-//! state change on standard error with the URL redacted; credentials never
-//! leave the receiver.
+//! state change (and each new receiver) on standard error with the URL
+//! redacted; credentials, stream keys, and passphrases never leave the
+//! receiver.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -128,6 +133,8 @@ impl NativeNetworkStreams {
         );
         config.sample_rate = self.sample_rate.hertz();
         config.channels = 2;
+        // A new receiver reports (and logs its URL) afresh.
+        stream.reported = None;
         match NetworkReceiver::start(config) {
             Ok(receiver) => {
                 stream.receiver = Some(receiver);

@@ -622,7 +622,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -692,7 +692,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -848,7 +848,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 45"));
+    assert!(valid.contains("\"schema_version\": 46"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -864,7 +864,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 45", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 46", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1292,7 +1292,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1637,7 +1637,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1730,7 +1730,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -1871,7 +1871,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 45,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 46,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
@@ -1960,7 +1960,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 45", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 46", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -2091,7 +2091,7 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!("    {playlist},\n    \"luts\": [],")),
@@ -2221,7 +2221,7 @@ fn network_stream_inputs_round_trip_exactly_and_reject_malformed_values() {
         .kind;
     assert_eq!(*kind, InputKind::NetworkStream(config));
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    let object = "{\"type\": \"network_stream\", \"url\": \"rtsp://user:pass@example.test:554/stream?token=t0k\", \"transport\": \"tcp\", \"jitter_ms\": 750, \"reconnect\": {\"backoff_min_ms\": 250, \"backoff_max_ms\": 8000, \"give_up\": 12}, \"timeout_ms\": 3000, \"stall\": \"black\"}";
+    let object = "{\"type\": \"network_stream\", \"url\": \"rtsp://user:pass@example.test:554/stream?token=t0k\", \"transport\": \"tcp\", \"jitter_ms\": 750, \"reconnect\": {\"backoff_min_ms\": 250, \"backoff_max_ms\": 8000, \"give_up\": 12}, \"timeout_ms\": 3000, \"stall\": \"black\", \"mode\": \"caller\", \"latency_ms\": 120, \"key_length\": 16, \"audio\": \"mix\", \"stream_id\": null, \"stream_key\": null, \"passphrase\": null}";
     assert!(encoded.contains(object), "{encoded}");
 
     for (from, to) in [
@@ -2239,6 +2239,98 @@ fn network_stream_inputs_round_trip_exactly_and_reject_malformed_values() {
             "udp://example.test:9000",
         ),
         (", \"timeout_ms\": 3000", ""),
+    ] {
+        let invalid = encoded.replacen(from, to, 1);
+        assert_ne!(invalid, encoded, "{from}");
+        fs::write(store.manifest_path(), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}"
+        );
+    }
+}
+
+/// IN-016/IN-017 (schema 46): RTMP and SRT inputs round-trip their mode,
+/// latency, key length, audio pair, stream ID, and secrets (kept in
+/// `project.json`, which the receiver needs), and malformed or missing
+/// values are refused.
+#[test]
+fn rtmp_and_srt_inputs_round_trip_their_secrets_and_reject_malformed_values() {
+    use fm_types::network_stream::{AudioChannels, NetworkStreamConfig, SrtKeyLength, StreamMode};
+
+    let temp = TestDirectory::new("rtmp-srt-streams");
+    let store = temp.store("show");
+    let mut project = rich_project();
+    let network = project
+        .inputs()
+        .iter()
+        .find(|input| matches!(input.kind, InputKind::NetworkStream(_)))
+        .unwrap()
+        .id;
+    let mut config = NetworkStreamConfig::new("srt://0.0.0.0:9000");
+    config.settings.mode = StreamMode::Listener;
+    config.settings.latency_ms = 400;
+    config.settings.key_length = SrtKeyLength::Aes256;
+    config.settings.audio = AudioChannels::Pair56;
+    config.stream_id = Some("cam1".into());
+    config.passphrase = Some("long-enough-secret".into());
+    project
+        .replace_input_source(
+            network,
+            InputKind::NetworkStream(config.clone()),
+            Vec::new(),
+        )
+        .unwrap();
+    let stored = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+    let loaded = store.load().unwrap();
+    let kind = |loaded: &StoredProject| {
+        loaded
+            .project()
+            .inputs()
+            .iter()
+            .find(|input| input.id == network)
+            .unwrap()
+            .kind
+            .clone()
+    };
+    assert_eq!(kind(&loaded), InputKind::NetworkStream(config));
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    let fields = "\"mode\": \"listener\", \"latency_ms\": 400, \"key_length\": 32, \"audio\": \"5-6\", \"stream_id\": \"cam1\", \"stream_key\": null, \"passphrase\": \"long-enough-secret\"}";
+    assert!(encoded.contains(fields), "{encoded}");
+
+    // An RTMP listener keeps its stream key.
+    let mut rtmp = NetworkStreamConfig::new("rtmp://0.0.0.0:1935/live");
+    rtmp.settings.mode = StreamMode::Listener;
+    rtmp.stream_key = Some("obs-key".into());
+    let rtmp_encoded = encoded
+        .replace("srt://0.0.0.0:9000", "rtmp://0.0.0.0:1935/live")
+        .replace(
+            "\"latency_ms\": 400, \"key_length\": 32, \"audio\": \"5-6\", \"stream_id\": \"cam1\", \"stream_key\": null, \"passphrase\": \"long-enough-secret\"",
+            "\"latency_ms\": 120, \"key_length\": 16, \"audio\": \"mix\", \"stream_id\": null, \"stream_key\": \"obs-key\", \"passphrase\": null",
+        );
+    fs::write(store.manifest_path(), &rtmp_encoded).unwrap();
+    assert_eq!(kind(&store.load().unwrap()), InputKind::NetworkStream(rtmp));
+
+    for (from, to) in [
+        ("\"mode\": \"listener\"", "\"mode\": \"server\""),
+        ("\"latency_ms\": 400", "\"latency_ms\": 10"),
+        ("\"key_length\": 32", "\"key_length\": 8"),
+        ("\"key_length\": 32", "\"key_length\": \"32\""),
+        ("\"audio\": \"5-6\"", "\"audio\": \"9-10\""),
+        (
+            "\"passphrase\": \"long-enough-secret\"",
+            "\"passphrase\": \"short\"",
+        ),
+        ("\"stream_key\": null", "\"stream_key\": \"rtmp-only\""),
+        ("srt://0.0.0.0:9000", "srt://0.0.0.0:80"),
+        (", \"stream_id\": \"cam1\"", ""),
     ] {
         let invalid = encoded.replacen(from, to, 1);
         assert_ne!(invalid, encoded, "{from}");
@@ -2298,7 +2390,7 @@ fn capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         Some(("decklink:1", &settings))
     );
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 45"));
+    assert!(encoded.contains("\"schema_version\": 46"));
     let object = "{\"type\": \"device\", \"stable_key\": \"decklink:1\", \"capture\": {\"format\": \"1920x1080@30000/1001:yuyv:tff\", \"audio\": \"alsa:hw:CARD=C920,DEV=0\", \"loss\": \"black\"}}";
     assert!(encoded.contains(object), "{encoded}");
 

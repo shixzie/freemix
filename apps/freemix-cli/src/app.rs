@@ -1264,12 +1264,27 @@ pub fn run(command: Command) -> AppResult<()> {
             input,
             name,
             config,
-        } => add_input_with_kind(
-            &path,
-            input_id(input)?,
-            name,
-            InputKind::NetworkStream(*config),
-        )?,
+        } => {
+            // Name the input already listening on the port (IN-016/IN-017),
+            // as the engine does, rather than a bare validation count.
+            if let Some(endpoint) = config.listen_endpoint()
+                && let Some((holder, _)) = inspect_engine(&path)?
+                    .engine
+                    .show()
+                    .network_streams()
+                    .find(|(_, other)| other.listen_endpoint() == Some(endpoint))
+            {
+                return Err(
+                    AppFailure(format!("input {holder} already listens on {endpoint}")).into(),
+                );
+            }
+            add_input_with_kind(
+                &path,
+                input_id(input)?,
+                name,
+                InputKind::NetworkStream(*config),
+            )?;
+        }
         Command::RemoteNetworkStreamInputAdd {
             address,
             input,
@@ -5234,10 +5249,11 @@ Usage:
   freemix-cli display-output-set <show.freemix> <slot:1|2> <display=index:N|name:NAME|id:ID[,source=program|preview|output:ID][,mode=current|WxH[@HZ]][,scaling=fit|fill|stretch|1:1][,hdr=off|auto]> [--key <key>] [--expect <revision>]
   freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli display-output-list <show.freemix>
-  freemix-cli input-add-stream <show.freemix> <nonzero-input-id> <name> <rtsp|rtp|udp|tcp|http|https URL or .m3u8> [stream options]
+  freemix-cli input-add-stream <show.freemix> <nonzero-input-id> <name> <rtsp|rtp|udp|tcp|http|https|rtmp|rtmps|srt URL or .m3u8> [stream options]
   freemix-cli input-stream-set <show.freemix> <input> [--url <url>] [stream options] [--key <key>] [--expect <revision>]
   freemix-cli input-stream-status <show.freemix>
-    stream options: [--transport auto|tcp|udp] [--jitter-ms <40..=5000>] [--backoff-min-ms <100..=60000>] [--backoff-max-ms <100..=60000>] [--give-up never|<1..=10000>] [--timeout-ms <500..=60000>] [--stall freeze|black]
+    stream options: [--transport auto|tcp|udp] [--jitter-ms <40..=5000>] [--backoff-min-ms <100..=60000>] [--backoff-max-ms <100..=60000>] [--give-up never|<1..=10000>] [--timeout-ms <500..=60000>] [--stall freeze|black] [--mode caller|listener|rendezvous] [--latency-ms <20..=8000>] [--key-length 16|24|32] [--audio mix|1-2|3-4|5-6|7-8] [--stream-id <id>] [--stream-key <key>] [--passphrase <10..=79 chars>]
+    stream set options: [--clear-stream-id] [--clear-stream-key] [--clear-passphrase]; an omitted stream key or passphrase is kept
   freemix-cli input-add-capture <show.freemix> <nonzero-input-id> <name> <device-stable-key> [capture options]
   freemix-cli input-capture-set <show.freemix> <input> [capture options] [--key <key>] [--expect <revision>]
   freemix-cli input-capture-status <show.freemix>

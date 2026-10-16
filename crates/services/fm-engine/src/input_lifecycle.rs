@@ -519,6 +519,9 @@ pub(crate) fn apply(
                     ),
                 ));
             };
+            if let InputSourceSpec::Network(config) = source {
+                crate::engine::check_listen_port(state, *input, config)?;
+            }
             if matches!(source, InputSourceSpec::Device { .. })
                 && state.capture_settings(*input).is_none()
             {

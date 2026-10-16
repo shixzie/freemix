@@ -506,11 +506,14 @@ fn decode_command_payload(
         },
         "input_stream_set" => {
             let input = fields.canonical_input("input")?;
-            let (url, settings) = super::network_stream::decode_set(fields)?;
+            let set = super::network_stream::decode_set(fields)?;
             CommandPayload::SetNetworkStream {
                 input,
-                url,
-                settings,
+                url: set.url,
+                settings: set.settings,
+                stream_id: set.stream_id,
+                stream_key: set.stream_key,
+                passphrase: set.passphrase,
             }
         }
         layer if layer.starts_with("scene_layer_") => CommandPayload::SceneLayer(
@@ -1168,7 +1171,7 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
         }
         "bars" => Ok(LiveInputSource::Bars),
         "network_stream" => Ok(LiveInputSource::NetworkStream(Box::new(
-            super::network_stream::decode_config(fields)?,
+            super::network_stream::decode_config(fields, super::network_stream::Secrets::Exact)?,
         ))),
         "capture" => Ok(LiveInputSource::Capture(Box::new(
             super::capture::decode_config(fields)?,
@@ -2139,7 +2142,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             let (network_stream, capture) = match fields.optional("kind").as_deref() {
                 None => (None, None),
                 Some("network_stream") => (
-                    Some(Box::new(super::network_stream::decode_config(fields)?)),
+                    Some(Box::new(super::network_stream::decode_config(
+                        fields,
+                        super::network_stream::Secrets::Redacted,
+                    )?)),
                     None,
                 ),
                 Some("capture") => (None, Some(Box::new(super::capture::decode_config(fields)?))),
@@ -2215,7 +2221,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         },
         "network_stream_changed" => EventPayload::NetworkStreamChanged {
             input: fields.canonical_input("input")?,
-            config: Box::new(super::network_stream::decode_config(fields)?),
+            config: Box::new(super::network_stream::decode_config(
+                fields,
+                super::network_stream::Secrets::Redacted,
+            )?),
         },
         "display_output_changed" => {
             let (slot, config) = super::display_output::decode_changed(fields)?;

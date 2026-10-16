@@ -2119,12 +2119,12 @@ mod tests {
             add(5, "Cam"),
             Some("unsupported_scheme"),
             "invalid_command",
-            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls)",
+            "unsupported scheme (allowed: rtsp, rtp, udp, tcp, http, https, hls, rtmp, rtmps, srt)",
         );
         assert_eq!(
             catalogue_refusal_message(spanish, &scheme, "Cam"),
             "Alta rechazada (unsupported_scheme): esquema no admitido (admitidos: rtsp, rtp, \
-             udp, tcp, http, https, hls)"
+             udp, tcp, http, https, hls, rtmp, rtmps, srt)"
         );
         let full = refusal(add(5, "Cam"), None, "too_many_inputs", "m");
         assert!(

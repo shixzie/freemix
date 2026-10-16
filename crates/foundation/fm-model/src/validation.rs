@@ -778,7 +778,27 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
         );
     }
     validate_network_stream_count(project, errors);
+    validate_network_stream_listen_ports(project, errors);
     validate_capture_input_count(project, errors);
+}
+
+/// IN-016/IN-017: two network stream inputs never listen on the same local
+/// port (an RTMP listener's TCP port, or an SRT listener's, rendezvous's,
+/// or local UDP/RTP receiver's UDP port).
+fn validate_network_stream_listen_ports(project: &Project, errors: &mut Vec<ValidationError>) {
+    let mut bound = std::collections::BTreeSet::new();
+    for input in project.inputs() {
+        if let InputKind::NetworkStream(config) = &input.kind
+            && let Some(endpoint) = config.listen_endpoint()
+            && !bound.insert(endpoint)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(input.id)),
+                field: "kind.network_stream.url",
+                kind: ValidationErrorKind::DuplicateReference,
+            });
+        }
+    }
 }
 
 /// A capture input's stable key and settings are usable (IN-001).
@@ -846,6 +866,11 @@ fn validate_network_stream(
                 "jitter_ms" => "kind.network_stream.jitter_ms",
                 "backoff" => "kind.network_stream.backoff",
                 "give_up" => "kind.network_stream.give_up",
+                "mode" => "kind.network_stream.mode",
+                "latency_ms" => "kind.network_stream.latency_ms",
+                "stream_key" => "kind.network_stream.stream_key",
+                "passphrase" => "kind.network_stream.passphrase",
+                "stream_id" => "kind.network_stream.stream_id",
                 _ => "kind.network_stream.timeout_ms",
             },
             kind: ValidationErrorKind::OutOfRange,
