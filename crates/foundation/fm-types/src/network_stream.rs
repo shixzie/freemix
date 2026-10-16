@@ -501,7 +501,7 @@ fn split_authority(rest: &str) -> (&str, &str) {
 /// Validates a stream URL and returns the protocol it names.
 ///
 /// A URL is ASCII without spaces or control characters, at most
-/// [`MAX_STREAM_URL_BYTES`] long, with a supported scheme and a host. UDP and
+/// [`MAX_STREAM_URL_BYTES`] long (its redacted form too), with a supported scheme and a host. UDP and
 /// RTP URLs may leave the host empty (`udp://@:1234`, `udp://:1234`) to
 /// listen on every interface, but must then name a port.
 ///
@@ -546,6 +546,11 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
         StreamProtocol::Tcp | StreamProtocol::Udp | StreamProtocol::Rtp
     ) && port.is_none()
     {
+        return Err(NetworkStreamError::InvalidUrl);
+    }
+    // Masked secrets may be longer than the secrets: the redacted URL every
+    // report carries must fit the same bound.
+    if redact_stream_url(url).len() > MAX_STREAM_URL_BYTES {
         return Err(NetworkStreamError::InvalidUrl);
     }
     Ok(protocol)
@@ -637,10 +642,35 @@ pub fn redact_stream_url(url: &str) -> String {
 }
 
 fn is_secret_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
+    // A server percent-decodes the key: `%74oken` names `token`.
+    let key = percent_decode(key).to_ascii_lowercase();
     SECRET_QUERY_KEYS
         .iter()
         .any(|secret| key == *secret || key.ends_with(&format!("_{secret}")))
+}
+
+/// `text` with each `%XX` escape decoded; an invalid escape, or one that
+/// decodes to a byte that is not ASCII, is kept as written.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|hex| core::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            .filter(u8::is_ascii);
+        if let Some(byte) = escaped {
+            decoded.push(char::from(byte));
+            index += 3;
+        } else {
+            decoded.push(char::from(bytes[index]));
+            index += 1;
+        }
+    }
+    decoded
 }
 
 /// Every secret substring of `url` (its userinfo, the password alone, and
@@ -670,6 +700,12 @@ pub fn stream_url_secrets(url: &str) -> Vec<String> {
             }
         }
     }
+    // A tool may echo a secret percent-decoded.
+    let decoded = secrets
+        .iter()
+        .map(|secret| percent_decode(secret))
+        .collect::<Vec<_>>();
+    secrets.extend(decoded);
     secrets.retain(|secret| !secret.is_empty());
     secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     secrets.dedup();
@@ -811,6 +847,50 @@ mod tests {
     }
 
     #[test]
+    fn percent_encoded_secret_keys_are_redacted() {
+        // A server decodes `%74oken` to `token`: its value is just as secret.
+        for url in [
+            "http://cdn/live.ts?%74oken=s3cr3t",
+            "http://cdn/live.ts?TO%4Ben=s3cr3t",
+            "http://cdn/live.ts?stream%5Fkey=s3cr3t",
+        ] {
+            let redacted = redact_stream_url(url);
+            assert!(!redacted.contains("s3cr3t"), "{redacted}");
+            assert!(
+                !scrub_stream_text(&format!("error: s3cr3t {url}"), url).contains("s3cr3t"),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_valid_url_redacts_to_a_valid_url() {
+        // Short secrets grow when masked: a URL at the length bound whose
+        // redacted form overflows it could not be reported in a snapshot.
+        let pad = |url: &str| {
+            let fill = MAX_STREAM_URL_BYTES - url.len();
+            format!("{url}{}", "a".repeat(fill))
+        };
+        for url in [
+            pad("rtsp://u@cam/"),
+            pad("http://cam/live.ts?key=k&token=t&x="),
+            "rtsp://u:p@cam/s".to_owned(),
+        ] {
+            if validate_stream_url(&url).is_ok() {
+                let redacted = redact_stream_url(&url);
+                assert!(
+                    validate_stream_url(&redacted).is_ok(),
+                    "{url} redacts to the invalid {redacted}"
+                );
+            }
+        }
+        assert_eq!(
+            validate_stream_url(&pad("rtsp://u@cam/")),
+            Err(NetworkStreamError::InvalidUrl)
+        );
+    }
+
+    #[test]
     fn redaction_masks_credentials_and_secret_query_values() {
         assert_eq!(
             redact_stream_url("rtsp://admin:hunter2@cam.local:554/s?token=abc&x=1#f"),
@@ -832,6 +912,8 @@ mod tests {
     fn scrubbing_removes_every_secret() {
         let url = "rtsp://admin:hunter2@cam/s?auth=zz9";
         let text = format!("{url}: 401 Unauthorized for admin (hunter2) zz9\n");
+        let encoded = "rtsp://admin:hunt%65r2@cam/s";
+        assert!(!scrub_stream_text("auth hunter2 failed", encoded).contains("hunter2"));
         let scrubbed = scrub_stream_text(&text, url);
         for secret in ["hunter2", "admin", "zz9"] {
             assert!(!scrubbed.contains(secret), "{scrubbed}");

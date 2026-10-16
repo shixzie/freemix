@@ -19,7 +19,8 @@
 //!
 //! Each receiver's status reaches clients as `network_stream_status`
 //! runtime events ([`NativeNetworkStreams::statuses`]): at once when its
-//! state changes, and otherwise at most once a second. The daemon logs each
+//! state changes or it first reports an error, and otherwise (a changing
+//! error text included) at most once a second. The daemon logs each
 //! state change on standard error with the URL redacted; credentials never
 //! leave the receiver.
 
@@ -329,7 +330,10 @@ fn statuses(
                             NetworkStreamState::Reconnecting { attempt: after, .. },
                         ) if before != after
                     )
-                    || reported.last_error != status.last_error;
+                    // A first error is news; a changing error text (a
+                    // decoder reports one per damaged picture) waits its
+                    // interval like any other change.
+                    || (reported.last_error.is_none() && status.last_error.is_some());
                 state_changed
                     || (*reported != status
                         && now.saturating_duration_since(*at) >= STATUS_INTERVAL)
@@ -394,6 +398,42 @@ mod tests {
             (32, 18),
             SampleRate::new(48_000).unwrap(),
         )
+    }
+
+    #[test]
+    fn a_changing_error_text_is_reported_at_most_once_a_second() {
+        // A damaged stream makes the decoder report a new error line every
+        // few milliseconds; each must not become a runtime event and a
+        // snapshot refresh.
+        let mut map = BTreeMap::new();
+        map.insert(
+            input(),
+            Stream {
+                config: NetworkStreamConfig::new("udp://127.0.0.1:9"),
+                receiver: None,
+                start_error: Some("error while decoding MB 1 1".into()),
+                closed: false,
+                blank_pending: false,
+                reported: None,
+            },
+        );
+        let start = Instant::now();
+        assert_eq!(statuses(&mut map, start).len(), 1);
+        for (step, millis) in [(2_u64, 20_u64), (3, 40), (4, 60)] {
+            map.get_mut(&input()).unwrap().start_error =
+                Some(format!("error while decoding MB {step} 1"));
+            assert_eq!(
+                statuses(&mut map, start + Duration::from_millis(millis)),
+                [],
+                "reported again after {millis} ms"
+            );
+        }
+        let due = statuses(&mut map, start + STATUS_INTERVAL);
+        assert_eq!(due.len(), 1);
+        assert_eq!(
+            due[0].1.last_error.as_deref(),
+            Some("error while decoding MB 4 1")
+        );
     }
 
     #[test]

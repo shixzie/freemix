@@ -613,7 +613,7 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
         StreamProtocol::Tcp => args.extend(["-rw_timeout".into(), micros]),
         StreamProtocol::Rtp | StreamProtocol::Udp => {}
     }
-    args.extend(["-i".into(), config.url.clone()]);
+    args.extend(["-i".into(), child_url(&config.url)]);
     let rate = config.frame_rate;
     args.extend([
         "-map".into(),
@@ -663,6 +663,15 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
         "pipe:2".into(),
     ]);
     args.into_iter().map(OsString::from).collect()
+}
+
+/// `url` as the child receives it: with its scheme in lowercase, since
+/// `ffmpeg` matches protocol names case-sensitively.
+fn child_url(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
+        None => url.to_owned(),
+    }
 }
 
 fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
@@ -906,35 +915,57 @@ fn read_video(shared: &Shared, plan: &Plan, generation: u64, mut stdout: ChildSt
         if inner.generation != generation || inner.shutdown {
             return;
         }
-        inner.last_data = Some(Instant::now());
-        inner.delivered = true;
-        inner.frames.push_back(frame);
-        if inner.frames.len() > plan.bounds.capacity_frames {
-            inner.frames.pop_front();
-            inner.dropped_frames = inner.dropped_frames.saturating_add(1);
-            // The dropped picture's audio goes with it.
-            let samples = plan.samples_of(0);
-            for queue in &mut inner.audio {
-                let drop = samples.min(queue.len());
-                queue.drain(..drop);
-            }
+        admit_picture(&mut inner, plan, frame);
+    }
+}
+
+/// Queues one decoded picture: drops the oldest (and its audio) from a full
+/// buffer, and goes live once the buffer holds its target.
+fn admit_picture(inner: &mut Inner, plan: &Plan, frame: Vec<u8>) {
+    inner.last_data = Some(Instant::now());
+    inner.delivered = true;
+    inner.frames.push_back(frame);
+    if inner.frames.len() > plan.bounds.capacity_frames {
+        inner.frames.pop_front();
+        inner.dropped_frames = inner.dropped_frames.saturating_add(1);
+        // The dropped picture's audio goes with it.
+        let samples = plan.samples_of(0);
+        for queue in &mut inner.audio {
+            let drop = samples.min(queue.len());
+            queue.drain(..drop);
         }
-        match inner.state {
-            NetworkStreamState::Connecting
-            | NetworkStreamState::Reconnecting { .. }
-            | NetworkStreamState::Stalled
-            | NetworkStreamState::Idle => {
-                inner.state = NetworkStreamState::Buffering;
-                inner.last_error = None;
-            }
-            _ => {}
+    }
+    match inner.state {
+        NetworkStreamState::Connecting
+        | NetworkStreamState::Reconnecting { .. }
+        | NetworkStreamState::Stalled
+        | NetworkStreamState::Idle => {
+            inner.state = NetworkStreamState::Buffering;
+            inner.last_error = None;
         }
-        if inner.state == NetworkStreamState::Buffering
-            && inner.frames.len() >= plan.bounds.target_frames
-        {
-            inner.state = NetworkStreamState::Live;
-            inner.empty_pulls = 0;
-        }
+        _ => {}
+    }
+    if inner.state == NetworkStreamState::Buffering
+        && inner.frames.len() >= plan.bounds.target_frames
+    {
+        inner.state = NetworkStreamState::Live;
+        inner.empty_pulls = 0;
+        align_audio(inner, plan);
+    }
+}
+
+/// Drops the audio queued beyond the queued pictures' samples, oldest
+/// first, so the next pull's audio is the audio of its picture. Audio that
+/// kept arriving while the pictures stalled would otherwise lag the
+/// pictures for the rest of the connection.
+fn align_audio(inner: &mut Inner, plan: &Plan) {
+    let pictures = u64::try_from(inner.frames.len()).unwrap_or(u64::MAX);
+    let wanted = (0..pictures)
+        .map(|offset| plan.samples_of(inner.pulled.wrapping_add(offset)))
+        .fold(0_usize, usize::saturating_add);
+    for queue in &mut inner.audio {
+        let excess = queue.len().saturating_sub(wanted);
+        queue.drain(..excess);
     }
 }
 
@@ -967,7 +998,8 @@ fn read_log(shared: &Shared, plan: &Plan, generation: u64, stderr: ChildStderr) 
         if text.contains("does not contain any stream") {
             inner.saw_empty_output = true;
         }
-        let scrubbed = scrub_stream_text(text, &plan.config.url);
+        // The child echoes the URL it was given; the secrets are the same.
+        let scrubbed = scrub_stream_text(text, &child_url(&plan.config.url));
         if !scrubbed.is_empty() {
             debug_assert!(scrubbed.len() <= MAX_STREAM_ERROR_BYTES);
             inner.last_error = Some(scrubbed);
@@ -1136,6 +1168,20 @@ mod tests {
     }
 
     #[test]
+    fn the_child_receives_the_scheme_in_lowercase() {
+        // `ffmpeg` matches protocol names case-sensitively: `RTSP://` would
+        // never connect, and the receiver would reconnect forever.
+        let args = args(
+            &plan("RTSPS://u:p@Cam.Test/Live", RtspTransport::Auto),
+            None,
+        );
+        assert!(
+            args.iter().any(|arg| arg == "rtsps://u:p@Cam.Test/Live"),
+            "{args:?}"
+        );
+    }
+
+    #[test]
     fn paced_protocols_read_at_native_rate_and_audio_is_optional() {
         let args = args(
             &plan("https://cdn.test/live/index.m3u8", RtspTransport::Auto),
@@ -1211,6 +1257,32 @@ mod tests {
         let mut planes = vec![vec![1.0; 4]];
         shape_audio(&mut inner, &mut planes, 4);
         assert_eq!(planes[0], [0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn audio_that_ran_on_through_a_stall_is_cut_back_to_the_pictures() {
+        let plan = plan("udp://@:9000", RtspTransport::Auto);
+        let per_frame = plan.samples_of(0);
+        let mut inner = Inner {
+            state: NetworkStreamState::Stalled,
+            audio: vec![VecDeque::new(); 2],
+            last_samples: vec![0.0; 2],
+            ..Inner::default()
+        };
+        // The pictures stalled while audio kept arriving up to its cap; the
+        // newest sample is 1.0, the older ones 0.0.
+        for queue in &mut inner.audio {
+            queue.extend(core::iter::repeat_n(0.0, plan.audio_capacity() - 1));
+            queue.push_back(1.0);
+        }
+        for _ in 0..plan.bounds.target_frames {
+            admit_picture(&mut inner, &plan, vec![0; plan.frame_bytes]);
+        }
+        assert_eq!(inner.state, NetworkStreamState::Live);
+        for queue in &inner.audio {
+            assert_eq!(queue.len(), plan.bounds.target_frames * per_frame);
+            assert_eq!(queue.back(), Some(&1.0));
+        }
     }
 
     #[test]

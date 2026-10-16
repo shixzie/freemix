@@ -268,6 +268,19 @@ fn udp_mpegts_goes_live_reconnects_when_the_sender_dies_and_recovers() {
 }
 
 #[test]
+fn an_uppercase_scheme_goes_live() {
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    let port = free_udp_port();
+    let receiver = receiver(&stream(&format!("UDP://127.0.0.1:{port}")));
+    let _sender = Sender::mpegts(&format!("udp://127.0.0.1:{port}?pkt_size=1316"));
+    let mut observed = Observed::default();
+    expect_playing(&receiver, &mut observed, "UDP://");
+}
+
+#[test]
 fn tcp_mpegts_reconnects_after_the_server_restarts() {
     let _serial = serialize();
     if !tools_available() {
