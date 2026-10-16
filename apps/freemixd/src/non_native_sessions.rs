@@ -1597,23 +1597,26 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
 /// peer record after record (queued records first, then the lossy slots,
 /// each started record finished before another starts) until its socket
 /// would block, nothing is left, or [`WRITE_BUDGET_PER_PASS`] is spent.
+///
+/// A pass also ends as soon as the handshake response is written, so the
+/// caller always observes [`WriteOutcome::HandshakeResponseWritten`]: a later
+/// write failing in the same pass must not hide it, or a `--once` daemon never
+/// learns its one peer and keeps waiting for another after that peer closes.
 fn write_peer_pass(peer: &mut Peer) -> WriteOutcome {
     let started = peer.written;
-    let mut outcome = WriteOutcome::Pending;
     loop {
         let before = peer.written;
         match write_peer(peer) {
             WriteOutcome::Pending => {}
-            WriteOutcome::HandshakeResponseWritten => {
-                outcome = WriteOutcome::HandshakeResponseWritten;
+            outcome @ (WriteOutcome::HandshakeResponseWritten | WriteOutcome::Failed) => {
+                return outcome;
             }
-            WriteOutcome::Failed => return WriteOutcome::Failed,
         }
         if peer.transport.is_web()
             || peer.written == before
             || peer.written - started >= WRITE_BUDGET_PER_PASS
         {
-            return outcome;
+            return WriteOutcome::Pending;
         }
     }
 }
@@ -2146,6 +2149,30 @@ mod tests {
             .collect::<Vec<_>>()
             .concat();
         assert_eq!(read_exact(&mut client, expected.len()), expected);
+    }
+
+    /// Regression: a pass that wrote the handshake response and then failed
+    /// a later write reported only the failure, so a `--once` daemon never
+    /// recorded its one peer and, after that peer closed, waited for another
+    /// connection instead of exiting.
+    #[test]
+    fn a_pass_ends_at_the_handshake_response_so_the_caller_sees_it() {
+        let (mut peer, mut client) = raw_peer();
+        for index in 0..3 {
+            peer.queue(&filler(index), Accounting::Raw).unwrap();
+        }
+        peer.outbound.front_mut().unwrap().handshake_response = true;
+        assert!(matches!(
+            write_peer_pass(&mut peer),
+            WriteOutcome::HandshakeResponseWritten
+        ));
+        assert_eq!(
+            peer.outbound.len(),
+            2,
+            "the pass continued past the response"
+        );
+        let first = encode_line(&filler(0)).unwrap().into_bytes();
+        assert_eq!(read_exact(&mut client, first.len()), first);
     }
 
     #[test]
