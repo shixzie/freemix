@@ -709,7 +709,8 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
     if let Some(device) = &config.device {
         return device_arguments(plan, device, args, audio_port);
     }
-    match plan.protocol.unwrap_or(StreamProtocol::Udp) {
+    let protocol = plan.protocol.unwrap_or(StreamProtocol::Udp);
+    match protocol {
         StreamProtocol::Rtsp => {
             match config.settings.transport {
                 RtspTransport::Auto => {}
@@ -733,7 +734,7 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
     }
     args.extend([
         "-protocol_whitelist".into(),
-        protocol_whitelist(plan.protocol).into(),
+        protocol_whitelist(protocol).into(),
         "-i".into(),
         child_url(&config.url),
     ]);
