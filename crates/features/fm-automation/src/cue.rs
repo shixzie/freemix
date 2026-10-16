@@ -335,20 +335,45 @@ impl<A: Clone> CueStack<A> {
     }
 
     /// The state carried across an edit that replaced `previous` (the old
-    /// cue order) with this stack: a removed standby cue is replaced by the
-    /// first surviving cue at or after its old position, references to
-    /// removed cues are dropped, and a waiting cue keeps waiting while it
-    /// still holds the step it resumes at (after a wait).
+    /// cue order) with this stack. A removed standby cue is replaced by the
+    /// new cue now at its old position when that cue was added by the edit,
+    /// else by the first surviving cue after its old position. A list with
+    /// nothing on standby (it ran off its end, or was empty) or whose
+    /// standby cue was removed with no surviving cue after it puts the
+    /// first cue added after its last surviving cue on standby. References
+    /// to removed cues are dropped, and a waiting cue keeps waiting while
+    /// it still holds the step it resumes at (after a wait).
     #[must_use]
     pub fn reconcile(&self, previous: &[u64], state: &CueStackState) -> CueStackState {
         let holds = |cue: u64| self.position(cue).is_some();
-        let standby = state.standby.and_then(|standby| {
-            if holds(standby) {
-                return Some(standby);
-            }
-            let old = previous.iter().position(|cue| *cue == standby)?;
-            previous[old..].iter().copied().find(|cue| holds(*cue))
-        });
+        let added = |cue: u64| !previous.contains(&cue);
+        // The first added cue after every surviving old cue.
+        let after_end = || {
+            let start = self
+                .cues
+                .iter()
+                .rposition(|cue| !added(cue.id))
+                .map_or(0, |last| last + 1);
+            self.cues[start..]
+                .iter()
+                .map(|cue| cue.id)
+                .find(|cue| added(*cue))
+        };
+        let standby = match state.standby {
+            Some(standby) if holds(standby) => Some(standby),
+            Some(standby) => previous
+                .iter()
+                .position(|cue| *cue == standby)
+                .and_then(|old| {
+                    self.cues
+                        .get(old)
+                        .map(|cue| cue.id)
+                        .filter(|cue| added(*cue))
+                        .or_else(|| previous[old..].iter().copied().find(|cue| holds(*cue)))
+                })
+                .or_else(after_end),
+            None => after_end(),
+        };
         let pending = state.pending.filter(|pending| {
             self.position(pending.cue).is_some_and(|index| {
                 let steps = &self.cues[index].steps;

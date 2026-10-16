@@ -1477,7 +1477,12 @@ Protocol 2.50 adds operator cue lists with a GO key (RC-017).
   on, title text (up to 128 bytes), title off, Fade to Black, playlist
   start and stop, a strip fader level or mute, recorder 1 or 2 start or
   stop, stream target start or stop, and `wait` (1..=216000 frames). A cue
-  takes Program at most once between waits.
+  takes Program at most once between waits, and a cue that auto-follows
+  with no trailing wait shares its last frame with the next cue's actions
+  up to that cue's first wait, so that run takes Program at most once too:
+  a list breaking either rule is refused `invalid_command` (field `cues`,
+  code `conflicting_follow_takes` naming both cues for the auto-follow
+  case).
 - `payload=cue_list_set` with `list`, `name`, and `cues` creates or replaces
   one list; `payload=cue_list_remove` with `list` deletes one. Both are
   `edit_project`-class, undoable project edits that honour the project
@@ -1486,8 +1491,12 @@ Protocol 2.50 adds operator cue lists with a GO key (RC-017).
   (`invalid_command`), and a cue that is waiting on its next actions cannot
   be changed or removed (`conflict`, reason `cue_running:<cue>`). An edit
   keeps the run state of the cues it keeps; a new list puts its first cue
-  on standby. Removing an input a cue names is refused `conflict` with the
-  usage `cue_action:<list>:<cue>`.
+  on standby. A standby cue the edit removes passes to the new cue now at
+  its position, else to the next surviving cue; a list with nothing on
+  standby (played out or empty) puts the first cue added after its last
+  surviving cue on standby. Removing an input a cue names is refused
+  `conflict` with the usage `cue_action:<list>:<cue>`; a stream target a
+  cue names cannot be removed from the project either.
 - `payload=cue_go` with `list` and an optional `cue` fires the cue on
   standby (or `cue`): its actions up to the first `wait` run in order on
   one frame, as one revision; standby moves to the next cue. With nothing on

@@ -89,6 +89,9 @@
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
   const HEARTBEAT_ACK_TIMEOUT_MS = 5000;
+  // How long a GO refused as stale waits for the page to catch up before
+  // it is dropped instead of retried.
+  const GO_RETRY_TIMEOUT_MS = 2000;
   const SYNC_TIMEOUT_MS = 5000;
   const INITIAL_BACKOFF_MS = 500;
   const MAX_BACKOFF_MS = 10000;
@@ -133,6 +136,12 @@
   let selected = store.getItem("freemix.tally.input") || "";
   let choosing = !selected;
   let commandCounter = 0;
+  // The GO this page sent and has not seen resolve: its command id, list,
+  // the standby cue the operator saw, and whether it is already the retry.
+  let goSent = null;
+  // A GO refused as stale, waiting for the page to reach the revision it
+  // was refused at before it is retried or dropped.
+  let goRetry = null;
   let wakeLock = null;
   const sessionNonce = Array.from(crypto.getRandomValues(new Uint8Array(8)),
     (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -252,6 +261,7 @@
     link.syncDeadline = link.nextHeartbeat = link.heartbeatDeadline = 0;
     link.pendingHeartbeat = 0;
     link.server = null;
+    goSent = goRetry = null;
     link.permissions = [];
     if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
     link.attempt += 1;
@@ -381,6 +391,7 @@
             if (locked) show.locks.inputs.add(id); else show.locks.inputs.delete(id);
           } else throw new Error("unknown edit lock scope");
         }
+        settleGoRetry();
         return;
       }
       case "runtime_event": {
@@ -405,11 +416,26 @@
           link.nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
         }
         return;
-      case "command_result":
+      case "command_result": {
+        const sent = goSent && goSent.id === required(record, "id") ? goSent : null;
+        if (sent) goSent = null;
         if (record.fields.get("status") === "rejected") {
-          ui.status.textContent = "Shortcut rejected: " + required(record, "code");
+          const code = required(record, "code");
+          // A GO that lost a race with another command: retry it once the
+          // page has caught up, if the same cue is still on standby.
+          if (sent && !sent.retried && code === "revision_conflict") {
+            goRetry = {
+              list: sent.list, cue: sent.cue,
+              revision: Number(required(record, "current_revision")),
+              deadline: Date.now() + GO_RETRY_TIMEOUT_MS,
+            };
+            settleGoRetry();
+            return;
+          }
+          ui.status.textContent = "Shortcut rejected: " + code;
         }
         return;
+      }
       case "error":
         // Includes server_shutting_down: reconnect after backoff.
         closeSocket();
@@ -434,6 +460,10 @@
           ["sequence", link.pendingHeartbeat], ["sent_at_ms", now], ["applied", "0"],
         ]));
       }
+    }
+    if (goRetry && now >= goRetry.deadline) {
+      goRetry = null;
+      ui.status.textContent = "GO not sent: the show changed; press GO again";
     }
     if (link.phase === "waiting") render();
   }
@@ -560,6 +590,7 @@
     send(encodeRecord("command", [
       ["protocol", PROTOCOL], ["id", id], ["idempotency_key", id], ...payload,
     ]));
+    return id;
   }
   function previewSelected() {
     if (ui.preview.hidden || ui.preview.disabled || !selected) return;
@@ -573,11 +604,30 @@
   // standby to the cue after it (the first cue when none is on standby).
   // GO expects the revision it was pressed at: a second press, or another
   // tally's GO, before the first GO is replicated is refused instead of
-  // firing the next cue as well.
+  // firing the next cue as well. A GO refused that way because another
+  // command landed first is retried once, after the page has caught up to
+  // the revision it was refused at, and only while the cue on standby is
+  // still the one the operator saw; the retry names that cue (and the new
+  // revision), so it never fires a cue the page did not show. A double
+  // press is not retried: by then its first GO has moved standby on.
   function go() {
     const cues = goList();
     if (ui.go.hidden || ui.go.disabled || !cues) return;
-    sendCommand([["payload", "cue_go"], ["list", cues.id], ["expected_revision", String(link.revision)]]);
+    goRetry = null;
+    const id = sendCommand([["payload", "cue_go"], ["list", cues.id], ["expected_revision", String(link.revision)]]);
+    goSent = { id, list: cues.id, cue: cues.standby, retried: false };
+  }
+  function settleGoRetry() {
+    if (!goRetry || link.phase !== "live" || link.revision < goRetry.revision) return;
+    const retry = goRetry;
+    goRetry = null;
+    const cues = goList();
+    if (retry.cue && cues && cues.id === retry.list && cues.standby === retry.cue) {
+      const id = sendCommand([["payload", "cue_go"], ["list", retry.list], ["cue", retry.cue], ["expected_revision", String(link.revision)]]);
+      goSent = { id, list: retry.list, cue: retry.cue, retried: true };
+    } else {
+      ui.status.textContent = "GO not sent: the cue on standby changed";
+    }
   }
   function standbyNext() {
     const cues = goList();

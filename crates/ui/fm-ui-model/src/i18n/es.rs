@@ -6165,6 +6165,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::CueFaultNote,
         t("El cue {cue} se detuvo en la acción {action}: la autoridad la rechazó."),
     ),
+    (
+        Msg::CueTakeFollowNote,
+        t(
+            "Toma Programa en el mismo fotograma que el cue \"{name}\", que pasa a este automáticamente: añade una espera o desmarca su Seguir. No se guarda hasta corregirlo.",
+        ),
+    ),
+    (
+        Msg::CueTakeTwiceNote,
+        t(
+            "Toma Programa dos veces en un fotograma: añade una espera entre las tomas. No se guarda hasta corregirlo.",
+        ),
+    ),
     (Msg::CueActionAdd, t("Añadir acción")),
     (Msg::CueActionAddHover, t("Añadir una acción a este cue")),
     (Msg::CueActionKindHover, t("Qué hace esta acción")),

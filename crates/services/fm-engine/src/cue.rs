@@ -273,6 +273,10 @@ pub(crate) fn apply_set(
                     kind: IdKind::Cue,
                     id: u128::from(cue),
                 },
+                fm_model::CueListError::ConflictingFollowTakes { .. } => {
+                    return Rejection::new(RejectionCode::InvalidCommand, message.clone())
+                        .with_field(FieldIssue::new("cues", "conflicting_follow_takes", message));
+                }
                 fm_model::CueListError::InvalidAction { .. }
                 | fm_model::CueListError::ConflictingTakes { .. }
                 | fm_model::CueListError::InvalidState => {

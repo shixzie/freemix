@@ -173,12 +173,16 @@ fn lists() -> Vec<CueList> {
                 Cue {
                     id: 4,
                     name: "Close".into(),
+                    // Cue 1 follows on into this cue on its last frame,
+                    // which already takes Program: this cue takes it only
+                    // after its own first wait.
                     actions: vec![
-                        CueAction::PlaylistStart,
                         CueAction::FadeToBlack {
                             active: true,
                             duration_frames: 50,
                         },
+                        CueAction::Wait { frames: 2 },
+                        CueAction::PlaylistStart,
                         CueAction::Wait { frames: 2 },
                         CueAction::PlaylistStop,
                         CueAction::Take {

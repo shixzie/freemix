@@ -8,7 +8,11 @@
 //! when its cue fires, rounded up to the next whole frame (so a delay never
 //! ends early) and at least one frame; see [`delay_frames`]. A cue that follows on
 //! (`auto_follow`) fires the next cue as soon as its own last action has
-//! run, on the same frame when it ends without a wait. Time is measured in
+//! run, on the same frame when it ends without a wait. That frame's
+//! actions are one frame's actions across both cues: a list whose
+//! waitless follow would take Program twice on one frame is refused
+//! ([`CueListError::ConflictingFollowTakes`]) rather than deferring the
+//! second take. Time is measured in
 //! engine frames, so every deferred action lands on an exact frame number
 //! and the state is persisted so a restarted authority resumes it.
 //!
@@ -260,6 +264,13 @@ pub enum CueListError {
     ConflictingTakes {
         cue: u64,
     },
+    /// Cue `cue` takes Program and auto-follows, with no wait between, into
+    /// cue `follower`, which takes Program again before its first wait:
+    /// both takes would land on one frame.
+    ConflictingFollowTakes {
+        cue: u64,
+        follower: u64,
+    },
     /// The run state names a cue the list does not hold, or is inconsistent.
     InvalidState,
 }
@@ -301,6 +312,10 @@ impl fmt::Display for CueListError {
             Self::ConflictingTakes { cue } => write!(
                 formatter,
                 "cue {cue} takes Program more than once on one frame"
+            ),
+            Self::ConflictingFollowTakes { cue, follower } => write!(
+                formatter,
+                "cue {cue} auto-follows into cue {follower} and both take Program on one frame"
             ),
             Self::InvalidState => formatter.write_str("cue list run state is inconsistent"),
         }
@@ -356,7 +371,11 @@ fn action_is_valid(action: &CueAction) -> bool {
 
 /// Checks the structural bounds of a list definition: its name, cue count,
 /// unique cue ids, names, action counts and ranges, its text budget, and
-/// that no cue takes Program twice between two waits. Whether each
+/// that Program is taken at most once per frame. The actions up to a
+/// cue's first wait run on one frame, and so do the actions after its last
+/// wait together with the cue it auto-follows into (up to that cue's first
+/// wait, and on through further waitless follows): one take per such run.
+/// Whether each
 /// referenced input or stream target exists is checked against the owning
 /// project or show.
 ///
@@ -372,6 +391,9 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
     }
     let mut actions = 0_usize;
     let mut text = 0_usize;
+    // The cue that took Program on the frame an auto-follow carries into
+    // the next cue, if any.
+    let mut carried: Option<u64> = None;
     for (index, cue) in cues.iter().enumerate() {
         if cues[..index].iter().any(|other| other.id == cue.id) {
             return Err(CueListError::DuplicateCue(cue.id));
@@ -383,7 +405,7 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
             return Err(CueListError::TooManyActions { cue: cue.id });
         }
         actions += cue.actions.len();
-        let mut takes = 0_usize;
+        let mut taker = carried;
         for (position, action) in cue.actions.iter().enumerate() {
             if !action_is_valid(action) {
                 return Err(CueListError::InvalidAction {
@@ -395,14 +417,23 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
                 text += value.len();
             }
             if action.is_wait() {
-                takes = 0;
+                taker = None;
             } else if action.takes_program() {
-                takes += 1;
-                if takes > 1 {
-                    return Err(CueListError::ConflictingTakes { cue: cue.id });
+                match taker {
+                    Some(leader) if leader == cue.id => {
+                        return Err(CueListError::ConflictingTakes { cue: cue.id });
+                    }
+                    Some(leader) => {
+                        return Err(CueListError::ConflictingFollowTakes {
+                            cue: leader,
+                            follower: cue.id,
+                        });
+                    }
+                    None => taker = Some(cue.id),
                 }
             }
         }
+        carried = if cue.auto_follow { taker } else { None };
     }
     if actions > MAX_CUE_LIST_ACTIONS {
         return Err(CueListError::TooManyListActions { count: actions });

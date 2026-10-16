@@ -400,6 +400,12 @@ pub enum UpdateStreamTargetError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoveStreamTargetError {
     UnknownStreamTarget(StreamTargetId),
+    /// Cue `cue` of cue list `list` starts or stops the target (RC-017).
+    CueReference {
+        target: StreamTargetId,
+        list: u64,
+        cue: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -808,6 +814,10 @@ impl std::fmt::Display for RemoveStreamTargetError {
             Self::UnknownStreamTarget(id) => {
                 write!(formatter, "unknown stream destination {id}")
             }
+            Self::CueReference { target, list, cue } => write!(
+                formatter,
+                "stream destination {target} is in use by cue {cue} of cue list {list}"
+            ),
         }
     }
 }
@@ -3548,12 +3558,29 @@ impl Project {
         Ok(())
     }
 
+    /// The first `(list, cue)` whose actions start or stop stream target
+    /// `target` (RC-017).
+    #[must_use]
+    pub fn stream_target_cue(&self, target: StreamTargetId) -> Option<(u64, u64)> {
+        self.cue_lists.iter().find_map(|list| {
+            list.cues
+                .iter()
+                .find(|cue| {
+                    cue.actions.iter().any(|action| {
+                        matches!(action, crate::CueAction::Stream { target: named, .. } if *named == target)
+                    })
+                })
+                .map(|cue| (list.id, cue.id))
+        })
+    }
+
     /// Removes a destination.
     ///
     /// # Errors
     ///
     /// Returns [`RemoveStreamTargetError::UnknownStreamTarget`] when the id
-    /// does not exist.
+    /// does not exist and [`RemoveStreamTargetError::CueReference`] when a
+    /// cue starts or stops it.
     pub fn remove_stream_target(
         &mut self,
         target: StreamTargetId,
@@ -3564,6 +3591,9 @@ impl Project {
             .any(|candidate| candidate.id() == target)
         {
             return Err(RemoveStreamTargetError::UnknownStreamTarget(target));
+        }
+        if let Some((list, cue)) = self.stream_target_cue(target) {
+            return Err(RemoveStreamTargetError::CueReference { target, list, cue });
         }
         self.stream_targets
             .retain(|candidate| candidate.id() != target);

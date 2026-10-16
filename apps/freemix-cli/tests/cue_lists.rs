@@ -171,6 +171,70 @@ fn refused_cue_edits_leave_the_project_unchanged() {
     assert_eq!(succeed(&["cue-lists", &project]), before);
 }
 
+/// A stream destination a cue starts cannot be removed: the refusal names
+/// the cue and the project is unchanged.
+#[test]
+fn a_stream_destination_a_cue_names_cannot_be_removed() {
+    let root = Root::new("stream");
+    let project = root.project();
+    succeed(&["scene-input-add", &project, "10", "10", "Program"]);
+    succeed(&["audio-bus-add", &project, "20", "Master"]);
+    succeed(&["output-add", &project, "30", "10", "20", "Primary"]);
+    succeed(&[
+        "stream-add",
+        &project,
+        "40",
+        "30",
+        "rtmps://ingest.example.test/live",
+        "live-7c2a-secret-key",
+        "Main",
+    ]);
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "7",
+        "Show",
+        "10:Live:0:stream.40.1",
+    ]);
+    let before = fs::read(PathBuf::from(&project).join("project.json")).unwrap();
+    fail(
+        &["stream-remove", &project, "40"],
+        "stream destination 40 is in use by cue 10 of cue list 7",
+    );
+    assert_eq!(
+        fs::read(PathBuf::from(&project).join("project.json")).unwrap(),
+        before
+    );
+    // Once no cue names it, it can go.
+    succeed(&["cue-list-remove", &project, "7"]);
+    succeed(&["stream-remove", &project, "40"]);
+}
+
+/// An auto-follow that would take Program twice on one frame is refused
+/// at authoring, naming both cues.
+#[test]
+fn a_waitless_follow_into_a_second_take_is_refused() {
+    let root = Root::new("follow-takes");
+    let project = root.project();
+    fail(
+        &[
+            "cue-list-set",
+            &project,
+            "7",
+            "Show",
+            "10:Open:1:take.2.cut.0;20:Close:0:take.1.cut.0",
+        ],
+        "cue 10 auto-follows into cue 20 and both take Program on one frame",
+    );
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "7",
+        "Show",
+        "10:Open:1:take.2.cut.0;20:Close:0:wait.1,take.1.cut.0",
+    ]);
+}
+
 /// A `.fmtitle` source document that needs no font (see `e2e.rs`).
 const SHAPE_TITLE_SOURCE: &str = r##"{
   "schema_version": 48,

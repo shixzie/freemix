@@ -42,6 +42,39 @@ use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 const MIN_GAIN_MILLIDB: i32 = -96_000;
 const MAX_GAIN_MILLIDB: i32 = 24_000;
 
+/// Every cue that would take Program a second time on one frame, with the
+/// cue whose take it collides with: `(offending cue, earlier taker)`, the
+/// two equal when one cue takes twice between waits. The actions up to a
+/// cue's first wait run on one frame, and a cue that auto-follows without
+/// a trailing wait carries its last frame into the next cue, so the engine
+/// refuses such a list; the editor holds it as a draft and says why.
+#[must_use]
+pub fn take_conflicts(cues: &[WireCue]) -> Vec<(u64, u64)> {
+    let mut conflicts = Vec::new();
+    let mut carried = None;
+    for cue in cues {
+        let mut taker = carried;
+        let mut conflict = None;
+        for action in &cue.actions {
+            match action {
+                WireCueAction::Wait { .. } | WireCueAction::Delay { .. } => taker = None,
+                WireCueAction::Take { .. } | WireCueAction::PlaylistStart => match taker {
+                    Some(earlier) => {
+                        conflict.get_or_insert(earlier);
+                    }
+                    None => taker = Some(cue.id),
+                },
+                _ => {}
+            }
+        }
+        if let Some(earlier) = conflict {
+            conflicts.push((cue.id, earlier));
+        }
+        carried = if cue.auto_follow { taker } else { None };
+    }
+    conflicts
+}
+
 /// A cue list operator action. Studio maps each to one protocol command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CueIntent {
@@ -450,10 +483,14 @@ impl CuePanel {
         }
     }
 
-    /// The edit that sends the working copy, unless it holds nothing new.
+    /// The edit that sends the working copy, unless it holds nothing new
+    /// or would take Program twice on one frame (see [`take_conflicts`];
+    /// the rows say why and the copy stays drafted until it is fixed).
     fn commit_draft(&mut self) -> Option<CueIntent> {
         let draft = self.draft.as_mut()?;
-        if draft.spec == *draft.sent.last().unwrap_or(&draft.seen) {
+        if draft.spec == *draft.sent.last().unwrap_or(&draft.seen)
+            || !take_conflicts(&draft.spec.cues).is_empty()
+        {
             return None;
         }
         draft.sent.push(draft.spec.clone());
@@ -640,14 +677,30 @@ impl CuePanel {
         }
         let names = Names { l, view, project };
         let mut edit_row = None;
+        let conflicts = take_conflicts(&draft.spec.cues);
         for index in 0..draft.spec.cues.len() {
+            // A row removed this frame shortens the list.
+            let Some(id) = draft.spec.cues.get(index).map(|cue| cue.id) else {
+                break;
+            };
+            let conflict = conflicts
+                .iter()
+                .find(|(cue, _)| *cue == id)
+                .and_then(|(_, earlier)| {
+                    draft
+                        .spec
+                        .cues
+                        .iter()
+                        .find(|cue| cue.id == *earlier)
+                        .map(|cue| (cue.id, cue.name.clone()))
+                });
             let row = draw_cue_row(
                 ui,
                 &names,
                 &list,
                 (&mut draft.spec.cues, index),
                 (control, list_edit),
-                self.expanded,
+                (self.expanded, conflict),
                 intents,
             );
             if let Some(row) = row {
@@ -722,7 +775,7 @@ fn draw_cue_row(
     list: &CueListStatus,
     (cues, index): (&mut Vec<WireCue>, usize),
     (control, edit): (Option<&'static str>, Option<&'static str>),
-    expanded: Option<u64>,
+    (expanded, conflict): (Option<u64>, Option<(u64, String)>),
     intents: &mut Vec<StudioIntent>,
 ) -> Option<RowEdit> {
     let l = names.l;
@@ -849,6 +902,14 @@ fn draw_cue_row(
                         result = Some(RowEdit::Expand(id));
                     }
                 });
+                if let Some((earlier, name)) = &conflict {
+                    let note = if *earlier == id {
+                        l.text(Msg::CueTakeTwiceNote).to_owned()
+                    } else {
+                        l.format(Msg::CueTakeFollowNote, &[("name", Arg::Str(name))])
+                    };
+                    ui.label(RichText::new(note).size(legible(11.0)).color(ERROR));
+                }
                 if expanded == Some(id)
                     && index < cues.len()
                     && let Some(change) = draw_actions(ui, names, &mut cues[index], edit)
@@ -1457,6 +1518,44 @@ mod tests {
         // So does showing another list.
         panel.sync_draft(&named(2, "Other"), false);
         assert_eq!(drafted(&panel), "Other");
+    }
+
+    /// A draft whose waitless auto-follow (or one cue) would take Program
+    /// twice on one frame flags the offending cue with the cue whose take
+    /// it collides with, and is held as a draft rather than sent.
+    #[test]
+    fn a_draft_taking_program_twice_on_one_frame_is_flagged_and_held() {
+        let take = WireCueAction::Take {
+            input: None,
+            effect: TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        };
+        let wait = WireCueAction::Wait { frames: 1 };
+        let mut cues = vec![cue(10), cue(20), cue(30), cue(40)];
+        cues[0].actions = vec![take.clone()];
+        cues[0].auto_follow = true;
+        cues[1].actions = vec![WireCueAction::PlaylistStop];
+        cues[1].auto_follow = true;
+        cues[2].actions = vec![WireCueAction::PlaylistStart, wait.clone(), take.clone()];
+        cues[3].actions = vec![take.clone(), take.clone()];
+        assert_eq!(
+            take_conflicts(&cues),
+            vec![(30, 10), (40, 40)],
+            "(offending cue, cue it collides with)"
+        );
+        cues[1].actions.push(wait);
+        cues[3].actions.pop();
+        assert_eq!(take_conflicts(&cues), Vec::new());
+
+        let mut panel = CuePanel::default();
+        panel.sync_draft(&list(1, CueRunStatus::default()), false);
+        let draft = &mut panel.draft.as_mut().unwrap().spec.cues;
+        draft[0].actions = vec![take.clone()];
+        draft[0].auto_follow = true;
+        draft[1].actions = vec![take];
+        assert_eq!(panel.commit_draft(), None, "a conflicting draft is held");
+        panel.draft.as_mut().unwrap().spec.cues[0].auto_follow = false;
+        assert!(panel.commit_draft().is_some());
     }
 
     #[test]

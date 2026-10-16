@@ -1150,6 +1150,47 @@ fn stream_destinations_refuse_bad_urls_credentials_duplicate_ids_and_dangling_ou
 }
 
 #[test]
+fn a_stream_destination_a_cue_names_cannot_be_removed() {
+    // A destination a cue starts or stops cannot be removed either; the
+    // refusal names the cue (RC-017).
+    let mut cued = valid_project();
+    cued.add_stream_target_checked(stream_target(1, "Primary", output_id(1)))
+        .unwrap();
+    cued.set_cue_lists(vec![fm_model::CueList {
+        id: 7,
+        name: "Show".into(),
+        cues: vec![fm_model::Cue {
+            id: 10,
+            name: "Go live".into(),
+            actions: vec![fm_model::CueAction::Stream {
+                target: stream_target_id(1),
+                start: true,
+            }],
+            auto_follow: false,
+        }],
+        state: fm_model::CueRunState {
+            standby: Some(10),
+            ..fm_model::CueRunState::default()
+        },
+    }]);
+    assert!(cued.validate().is_ok());
+    let refused = cued.remove_stream_target(stream_target_id(1));
+    assert_eq!(
+        refused,
+        Err(fm_model::RemoveStreamTargetError::CueReference {
+            target: stream_target_id(1),
+            list: 7,
+            cue: 10,
+        })
+    );
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "stream destination 1 is in use by cue 10 of cue list 7"
+    );
+    assert_eq!(cued.stream_targets().len(), 1);
+}
+
+#[test]
 fn srt_endpoints_take_host_port_only_and_recompose_through_a_streamid_query() {
     const KEY: &str = "srt-live-9f3c-key";
 

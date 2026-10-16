@@ -224,3 +224,80 @@ fn projects_hold_a_bounded_set_of_uniquely_numbered_lists() {
         Err(Some(CueListError::InvalidName { cue: None }))
     );
 }
+
+fn following(id: u64, actions: Vec<CueAction>) -> Cue {
+    Cue {
+        auto_follow: true,
+        ..cue(id, actions)
+    }
+}
+
+/// The actions up to the first wait run on one frame, and an auto-follow
+/// with no wait before it carries that frame into the next cue: two takes
+/// on that frame are refused naming both cues.
+#[test]
+fn auto_follow_chains_take_program_at_most_once_per_frame() {
+    assert_eq!(
+        validate_cue_list_definition("Show", &[following(1, vec![cut(1)]), cue(2, vec![cut(2)])]),
+        Err(CueListError::ConflictingFollowTakes {
+            cue: 1,
+            follower: 2
+        })
+    );
+    // Through a cue without a take, and into a playlist start.
+    assert_eq!(
+        validate_cue_list_definition(
+            "Show",
+            &[
+                following(1, vec![cut(1)]),
+                following(2, vec![CueAction::OverlayOff { channel: 1 }]),
+                cue(
+                    3,
+                    vec![CueAction::PlaylistStart, CueAction::Wait { frames: 1 }]
+                ),
+            ]
+        ),
+        Err(CueListError::ConflictingFollowTakes {
+            cue: 1,
+            follower: 3
+        })
+    );
+    // The follower's take after its own first wait, the leader's take
+    // before its last wait, a trailing wait, or no auto-follow: all valid.
+    for cues in [
+        vec![
+            following(1, vec![cut(1)]),
+            cue(2, vec![CueAction::Wait { frames: 1 }, cut(2)]),
+        ],
+        vec![
+            following(
+                1,
+                vec![
+                    cut(1),
+                    CueAction::Wait { frames: 1 },
+                    CueAction::PlaylistStop,
+                ],
+            ),
+            cue(2, vec![cut(2)]),
+        ],
+        vec![
+            following(1, vec![cut(1), CueAction::Delay { millis: 40 }]),
+            cue(2, vec![cut(2)]),
+        ],
+        vec![cue(1, vec![cut(1)]), cue(2, vec![cut(2)])],
+    ] {
+        assert_eq!(
+            validate_cue_list_definition("Show", &cues),
+            Ok(()),
+            "{cues:?}"
+        );
+    }
+    assert_eq!(
+        CueListError::ConflictingFollowTakes {
+            cue: 1,
+            follower: 2
+        }
+        .to_string(),
+        "cue 1 auto-follows into cue 2 and both take Program on one frame"
+    );
+}

@@ -517,6 +517,16 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     assert!(page.contains(
         "[\"payload\", \"cue_go\"], [\"list\", cues.id], [\"expected_revision\", String(link.revision)]"
     ));
+    // A GO refused as stale is retried once, only after the page has caught
+    // up to the revision it was refused at and only while the cue on
+    // standby is still the one the operator saw; the retry names that cue,
+    // so it can never fire another.
+    assert!(page.contains("sent && !sent.retried && code === \"revision_conflict\""));
+    assert!(page.contains("link.revision < goRetry.revision"));
+    assert!(page.contains("cues.id === retry.list && cues.standby === retry.cue"));
+    assert!(page.contains(
+        "[\"payload\", \"cue_go\"], [\"list\", retry.list], [\"cue\", retry.cue], [\"expected_revision\", String(link.revision)]"
+    ));
     assert!(page.contains("[\"payload\", \"cue_standby\"]"));
     assert!(page.contains("id=\"go\""));
     assert!(page.contains("id=\"standby\""));

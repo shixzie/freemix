@@ -593,3 +593,88 @@ fn media_actions_on_other_inputs_are_refused() {
     assert_eq!(refusal(&outcome).0, RejectionCode::InvalidCommand);
     assert_eq!(engine.show().cue_lists().len(), 0);
 }
+
+/// A take that auto-follows, with no wait, into another take would put two
+/// takes on one frame, which every GO would refuse: the list edit is
+/// refused instead, naming both cues.
+#[test]
+fn an_auto_follow_into_a_second_take_on_one_frame_is_refused_at_edit() {
+    let mut engine = engine();
+    let outcome = submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![cue(1, vec![cut(2)], true), cue(2, vec![cut(3)], false)],
+        ),
+    );
+    let rejection = &outcome.receipt.rejected().unwrap().rejection;
+    assert_eq!(rejection.code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection.fields[0].field, "cues");
+    assert_eq!(rejection.fields[0].code, "conflicting_follow_takes");
+    assert!(rejection.message.contains("cue 1"), "{}", rejection.message);
+    assert!(rejection.message.contains("cue 2"), "{}", rejection.message);
+    assert!(engine.show().cue_list(1).is_none());
+
+    // With a wait between the takes the chain runs on two frames.
+    accepted(&submit(
+        &mut engine,
+        "set-wait",
+        set(
+            1,
+            vec![
+                cue(1, vec![cut(2)], true),
+                cue(2, vec![CueAction::Wait { frames: 1 }, cut(3)], false),
+            ],
+        ),
+    ));
+    accepted(&submit(&mut engine, "go", control(1, GO)));
+    let changes = program_changes(&drive(&mut engine, 4));
+    assert_eq!(
+        changes.iter().map(|(_, input)| *input).collect::<Vec<_>>(),
+        vec![input(2), input(3)]
+    );
+}
+
+/// List edits move standby onto new cues: the first cue added after the
+/// end of a played-out list, and a cue replacing the standby cue at its
+/// position.
+#[test]
+fn list_edits_put_new_cues_on_standby() {
+    let overlay = |channel| CueAction::OverlayOff { channel };
+    let mut engine = engine();
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(1, vec![cue(1, vec![overlay(1)], false)]),
+    ));
+    accepted(&submit(&mut engine, "go", control(1, GO)));
+    engine.tick().unwrap();
+    assert_eq!(engine.show().cue_list(1).unwrap().state.standby, None);
+    accepted(&submit(
+        &mut engine,
+        "append",
+        set(
+            1,
+            vec![
+                cue(1, vec![overlay(1)], false),
+                cue(2, vec![overlay(2)], false),
+                cue(3, vec![overlay(3)], false),
+            ],
+        ),
+    ));
+    assert_eq!(engine.show().cue_list(1).unwrap().state.standby, Some(2));
+    accepted(&submit(
+        &mut engine,
+        "replace",
+        set(
+            1,
+            vec![
+                cue(1, vec![overlay(1)], false),
+                cue(9, vec![overlay(4)], false),
+                cue(3, vec![overlay(3)], false),
+            ],
+        ),
+    ));
+    assert_eq!(engine.show().cue_list(1).unwrap().state.standby, Some(9));
+}

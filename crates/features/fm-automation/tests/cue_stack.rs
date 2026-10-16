@@ -140,3 +140,62 @@ fn reconcile_carries_the_run_state_across_an_edit() {
         Err(CueStackError::ZeroWait { cue: 1 })
     ));
 }
+
+fn single_steps(ids: &[u64]) -> CueStack<&'static str> {
+    CueStack::new(
+        ids.iter()
+            .map(|id| StackCue {
+                id: *id,
+                steps: vec![CueStep::Action("x")],
+                auto_follow: false,
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn reconcile_puts_the_first_cue_added_after_the_end_on_standby() {
+    let stack = single_steps(&[1, 2]);
+    let mut state = stack.initial_state();
+    for _ in 0..2 {
+        state = stack.go(&state, None, 0).unwrap().state;
+    }
+    assert_eq!(state.standby, None, "the list ran off its end");
+
+    // A cue inserted before the end does not reopen the list; the first cue
+    // added after the old last cue goes on standby.
+    let edited = single_steps(&[5, 1, 2, 3, 4]);
+    let carried = edited.reconcile(&[1, 2], &state);
+    assert_eq!(carried.standby, Some(3));
+    assert_eq!(carried.live, Some(2));
+    assert_eq!(carried.played, vec![1, 2]);
+
+    // Re-saving the same cues keeps the list played out.
+    assert_eq!(stack.reconcile(&[1, 2], &state).standby, None);
+    // An empty list that gains cues puts the first one on standby.
+    let empty = CueStack::<&'static str>::new(Vec::new()).unwrap();
+    let carried = stack.reconcile(&[], &empty.initial_state());
+    assert_eq!(carried.standby, Some(1));
+}
+
+#[test]
+fn reconcile_moves_standby_to_the_cue_replacing_it_at_its_position() {
+    let stack = single_steps(&[1, 2, 3]);
+    let state = stack.go(&stack.initial_state(), None, 0).unwrap().state;
+    assert_eq!(state.standby, Some(2));
+
+    // Cue 2 is replaced by new cue 9 at the same position.
+    let carried = single_steps(&[1, 9, 3]).reconcile(&[1, 2, 3], &state);
+    assert_eq!(carried.standby, Some(9));
+    // Removed outright: the next surviving cue takes its place.
+    let carried = single_steps(&[1, 3, 9]).reconcile(&[1, 2, 3], &state);
+    assert_eq!(carried.standby, Some(3));
+    // The standby cue was the last and is removed: a cue added after the
+    // end takes its place.
+    let last = stack.standby(&state, 3).unwrap();
+    let carried = single_steps(&[1, 2, 8]).reconcile(&[1, 2, 3], &last);
+    assert_eq!(carried.standby, Some(8));
+    let carried = single_steps(&[1, 2]).reconcile(&[1, 2, 3], &last);
+    assert_eq!(carried.standby, None);
+}
