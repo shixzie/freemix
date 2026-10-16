@@ -981,8 +981,12 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
             let mut inner = shared.lock();
             if inner.audio_input_failed && !inner.audio_absent && !inner.delivered {
                 // The audio input kept the device from opening: reopen it
-                // without audio.
+                // without audio at once, before the reconnect below asks
+                // for audio again.
                 inner.audio_absent = true;
+                inner.audio_input_failed = false;
+                inner.last_error = None;
+                continue;
             }
             if inner.saw_empty_output && !inner.audio_absent && !inner.delivered {
                 // No audio stream: connect again at once, without audio.
