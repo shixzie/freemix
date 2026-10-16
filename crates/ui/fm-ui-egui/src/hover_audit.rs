@@ -14,8 +14,9 @@
 //! strip with its solo-mode keys, the Fade-to-Black output menu, the
 //! Fullscreen outputs dialog (with and without a display list or a
 //! presenter, with a draft, changed elsewhere, refused, applying, for a
-//! viewer, and locked), and a
-//! disconnected console) in English
+//! viewer, and locked), the stream destinations' group and row keys with
+//! the Add / Edit destination dialog and its Remove confirmation (OR-006),
+//! and a disconnected console) in English
 //! and Spanish, and inspects what egui itself recorded for the pass, so no
 //! drawing code has to opt in and a widget added without help cannot slip
 //! past:
@@ -296,6 +297,11 @@ fn model(variant: Variant) -> ClientModel {
         // SIGNAL LOST banner, the corner badge, and their details are
         // audited (Protocol 2.47).
         capture_inputs: capture_entries(),
+        // OR-006: the two roster targets' settings (a running local HLS
+        // ladder and a stopped keyed RTMP destination with a backup), so
+        // the rows' Retry / Edit / Remove keys and the destination dialog
+        // are audited enabled and disabled.
+        stream_targets: stream_target_entries(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -802,6 +808,74 @@ struct Variant {
 /// OR-011: slot 1 shows Clean Feed on a connected display (remembered by
 /// id and name, at an exact mode, filled, HDR auto) and is active; slot 2
 /// shows Preview on a display named `Projector` that is unplugged.
+/// The fixture's configured stream destinations (OR-006).
+fn stream_target_entries() -> Vec<fm_protocol::StreamTargetEntry> {
+    use fm_protocol::{
+        StreamReconnect, StreamTargetConfig, StreamTargetEntry, StreamTargetProtocol,
+    };
+    vec![
+        StreamTargetEntry {
+            target: WireStreamTargetId::new(NonZeroU128::new(1).unwrap()),
+            config: StreamTargetConfig {
+                name: "Local HLS Ladder".into(),
+                protocol: StreamTargetProtocol::Hls,
+                endpoint: "/var/www/hls/show".into(),
+                backup_endpoint: None,
+                output: output(1),
+                reconcile_on_startup: true,
+                video_bitrate_kbps: 6_000,
+                reconnect: StreamReconnect::DEFAULT,
+            },
+            has_key: false,
+            ladder_rungs: 3,
+        },
+        StreamTargetEntry {
+            target: WireStreamTargetId::new(NonZeroU128::new(2).unwrap()),
+            config: StreamTargetConfig {
+                name: "RTMP Backup".into(),
+                protocol: StreamTargetProtocol::Rtmps,
+                endpoint: "live.example.com/app".into(),
+                backup_endpoint: Some("backup.example.com/app".into()),
+                output: output(2),
+                reconcile_on_startup: false,
+                video_bitrate_kbps: 4_500,
+                reconnect: StreamReconnect {
+                    max_attempts: None,
+                    ..StreamReconnect::DEFAULT
+                },
+            },
+            has_key: true,
+            ladder_rungs: 0,
+        },
+    ]
+}
+
+/// The latest transport sample of the running HLS destination.
+fn stream_status() -> fm_protocol::StreamStatusMessage {
+    fm_protocol::StreamStatusMessage {
+        server: ServerIdentity {
+            engine_id: "e".into(),
+            project_id: "1".into(),
+            state_epoch: 1,
+            log_id: "l".into(),
+        },
+        sequence: 1,
+        samples: vec![fm_protocol::StreamStatusSample {
+            target: WireStreamTargetId::new(NonZeroU128::new(1).unwrap()),
+            realized: StreamRealizedState::WaitingToReconnect,
+            connected: false,
+            muxed_bytes: 12 * 1_024 * 1_024,
+            enqueued_pairs: 3,
+            dropped_pairs: 17,
+            failure: Some("disk_full".into()),
+            local: None,
+            bitrate_kbps: 5_800,
+            reconnects: 2,
+            uptime_ms: 3_725_000,
+        }],
+    }
+}
+
 fn display_output_entries() -> Vec<fm_protocol::DisplayOutputEntry> {
     use fm_protocol::{
         DisplayId, DisplayMode, DisplayOutputConfig, DisplayOutputEntry, DisplayOutputSlot,
@@ -1275,6 +1349,7 @@ fn ready(operator: bool, variant: Variant) -> StudioUiState {
     state
         .streams
         .clone_from(&state.view.as_ref().unwrap().streams);
+    state.stream_status = Some(stream_status());
     state.audio_meters = Some(meters());
     state
 }
@@ -1517,6 +1592,45 @@ fn scenes(language: Language) -> Vec<Scene> {
         }),
     ];
     for (name, open) in dialogs {
+        scenes.push(Scene::console(
+            format!("dialog/{name}"),
+            shell(open),
+            operator.clone(),
+        ));
+    }
+    // OR-006: the destination dialog adding (fresh, then with a bad server
+    // and the key shown), editing the stopped keyed destination, editing the
+    // running HLS one (Save refused, the key and backup disabled), and the
+    // Remove confirmation.
+    let destinations: [(&str, Configure); 5] = [
+        ("stream-add", &|shell| {
+            shell.stream_targets.open_add(locale, &operator);
+        }),
+        ("stream-add-invalid", &|shell| {
+            shell.stream_targets.open_add(locale, &operator);
+            if let Some(draft) = shell.stream_targets.dialog.as_mut() {
+                draft.endpoint = "rtmp://live.example.com".into();
+                draft.key = "typed-key".into();
+                draft.reveal_key = true;
+                draft.initial_delay_ms = 5_000;
+                draft.max_delay_ms = 1_000;
+                draft.unlimited = true;
+            }
+        }),
+        ("stream-edit", &|shell| {
+            let target = WireStreamTargetId::new(NonZeroU128::new(2).unwrap());
+            shell.stream_targets.open_edit(&operator, target);
+        }),
+        ("stream-edit-running", &|shell| {
+            let entry = &stream_target_entries()[0];
+            shell.stream_targets.dialog = Some(crate::stream_targets::TargetDraft::edit(entry));
+        }),
+        ("stream-remove", &|shell| {
+            let target = WireStreamTargetId::new(NonZeroU128::new(2).unwrap());
+            shell.stream_targets.open_remove(&operator, target);
+        }),
+    ];
+    for (name, open) in destinations {
         scenes.push(Scene::console(
             format!("dialog/{name}"),
             shell(open),

@@ -537,6 +537,66 @@ impl SwitcherState {
         }])
     }
 
+    /// Adds stream target `target` at the end of the inventory, or renames it
+    /// in place when it is already inventoried; its running flag is kept (a
+    /// new target is not running).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SwitcherError::TooManyStreams`] when a new target would
+    /// exceed [`crate::MAX_STREAM_COUNT`] and
+    /// [`SwitcherError::InvalidStreamName`] for a blank or oversized name.
+    /// The inventory is unchanged on error.
+    pub fn upsert_stream(
+        &mut self,
+        target: StreamTargetId,
+        name: String,
+    ) -> Result<(), SwitcherError> {
+        let mut streams = self
+            .streams
+            .iter()
+            .map(|stream| (stream.id(), stream.name().to_owned()))
+            .collect::<Vec<_>>();
+        match streams.iter_mut().find(|(id, _)| *id == target) {
+            Some((_, existing)) => *existing = name,
+            None => streams.push((target, name)),
+        }
+        self.streams = collect_desired_streams(streams)?;
+        Ok(())
+    }
+
+    /// Removes stream target `target` and its running flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SwitcherError::UnknownStreamTarget`] when it is not
+    /// inventoried.
+    pub fn remove_stream(&mut self, target: StreamTargetId) -> Result<(), SwitcherError> {
+        if !self.streams.iter().any(|stream| stream.id() == target) {
+            return Err(SwitcherError::UnknownStreamTarget(target));
+        }
+        self.streams.retain(|stream| stream.id() != target);
+        self.streams_running.remove(&target);
+        Ok(())
+    }
+
+    /// Sets every inventoried stream target's desired running flag at once
+    /// (OR-006 group start/stop). Recording flags are untouched.
+    pub fn set_all_streams_running(&mut self, running: bool) -> Vec<SwitcherEvent> {
+        self.streams
+            .iter()
+            .map(|stream| {
+                let target = stream.id();
+                if running {
+                    self.streams_running.insert(target);
+                } else {
+                    self.streams_running.remove(&target);
+                }
+                SwitcherEvent::StreamRunningChanged { target, running }
+            })
+            .collect()
+    }
+
     #[must_use]
     pub const fn recording_desired(&self, slot: RecorderSlot) -> bool {
         self.recording_desired[slot.index()]

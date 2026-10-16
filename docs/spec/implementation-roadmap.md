@@ -1867,6 +1867,70 @@ status; Studio swallows the records beside meters and renders the roster with
 live samples. Snapshots still project only desired state; the lossy record is
 transport state and never durable.
 
+Current implementation boundary for item 2 (`OR-006`): five simultaneous
+destinations with independent control (schema 49, Protocol 2.52). Every
+destination persists its own reconnect policy: first delay, maximum delay,
+and an attempt budget or unlimited, bounded 100 ms–300 s and 1–10,000
+attempts, with a default of 250 ms / 2 s / 40. The native output set backs
+off exponentially (doubling) within that policy and then latches the
+destination `Failed`. Each destination keeps its own FFmpeg child and a
+bounded four-pair queue that drops when full, so a dead ingest never stalls
+Program, the recorders, or the other destinations. Destinations with the
+same encoder identity still share one readback and packed pair.
+Protocol 2.52 adds:
+- `stream_retry`, which is refused unless the destination is desired
+  running. It stops the destination, clears a latched failure, and restarts
+  it on the next frame with a fresh budget.
+- `stream_start_all` and `stream_stop_all`. These change only destination
+  desired state and are never seen by a recorder.
+- `stream_target_set` and `stream_target_remove`. These are undoable,
+  padlock-guarded project edits, refused while the destination is desired
+  running and for a sixth destination, a duplicate name, an unknown output,
+  or (for removal) a destination a cue list uses. The stream key is a
+  `SecretEdit`: absent keeps it, empty clears it, and `***` is refused.
+- The snapshot's `stream_targets` and the durable `stream_target_changed`
+  event. Both carry each configuration with only `has_key`, never the key.
+- Reconnect count, current-session uptime, and the encoded bitrate over a
+  two-second window in each `stream_status` sample.
+
+Native `freemixd` realizes destination edits live. A removed or edited
+destination's runtime retires. A new or changed one takes a free output-set
+slot and joins its encoder-identity group (or an emptied or new group),
+while running destinations keep their rendition ids. Failure text in a
+sample is clamped to the wire's detail bound.
+
+Studio's Recording & streams panel lists every destination with:
+- per-row start, stop, and retry;
+- a status chip whose hover shows state, bitrate, dropped frames,
+  reconnects, uptime, and last error;
+- edit and remove, disabled while the destination runs;
+- Start all and Stop all;
+- an add/edit dialog whose stream key is masked behind an eye toggle.
+
+All of this has English and Spanish hover help. `freemix-cli` has local
+`stream-start-all`/`stream-stop-all` and `--reconnect` on
+`stream-add`/`stream-update`, plus `remote-stream-retry`,
+`remote-stream-start-all`, `remote-stream-stop-all`, `remote-stream-set`,
+`remote-stream-remove`, and `remote-streams`.
+
+A native process test covers the full run:
+- four FFmpeg RTMP listeners plus a local HLS destination run at once, two
+  of them added live;
+- one killed ingest gives up within its budget while the others and a
+  concurrent recording keep going;
+- a retry brings it back;
+- a group stop leaves the recording running;
+- no key appears on the wire, in snapshots, or on stderr.
+
+Remaining gaps:
+- the LAN HLS server's routes are fixed at startup, so an HLS destination
+  added live is written but not served until restart;
+- a running destination must be stopped before it can be edited;
+- there is no per-destination encoder override beyond bitrate;
+- the simulated daemon accepts every command but realizes no transport.
+
+`OR-006` remains planned.
+
 Current implementation boundary for SRT sessions (`IN-017`): `fm-io-srt` is a
 deterministic, socket-free SRT configuration and session contract with caller,
 listener, and rendezvous modes (listener stream-ID selection, rendezvous peer

@@ -486,6 +486,26 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         payload @ (CommandPayload::StreamStart { .. } | CommandPayload::StreamStop { .. }) => {
             encode_stream_command(record, payload)?;
         }
+        CommandPayload::StreamRetry { target } => {
+            record.field("payload", "stream_retry")?;
+            record.field("target", *target)?;
+        }
+        CommandPayload::StreamStartAll => record.field("payload", "stream_start_all")?,
+        CommandPayload::StreamStopAll => record.field("payload", "stream_stop_all")?,
+        CommandPayload::SetStreamTarget {
+            target,
+            config,
+            stream_key,
+        } => {
+            record.field("payload", "stream_target_set")?;
+            super::stream_target::encode_set(*target, config, stream_key, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::RemoveStreamTarget { target } => {
+            record.field("payload", "stream_target_remove")?;
+            record.field("target", *target)?;
+        }
         payload @ (CommandPayload::RecordStart { .. } | CommandPayload::RecordStop { .. }) => {
             encode_record_command(record, payload)?;
         }
@@ -1493,6 +1513,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "capture_inputs",
         super::capture::encode_entries(&message.capture_inputs)?,
+    )?;
+    record.field_string(
+        "stream_targets",
+        super::stream_target::encode_entries(&message.stream_targets)?,
     )
 }
 
@@ -2008,6 +2032,17 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             encode_stingers(record, stingers)?;
             encode_overlays(record, "overlays", overlays)?;
             encode_input_audio_strips(record, input_audio_strips)?;
+        }
+        EventPayload::StreamTargetChanged {
+            target,
+            entry,
+            streams,
+        } => {
+            record.field("event", "stream_target_changed")?;
+            super::stream_target::encode_changed(*target, entry.as_deref(), &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+            record.field_string("streams", stream_statuses(streams)?)?;
         }
         EventPayload::StreamsChanged { streams } => {
             record.field("event", "streams_changed")?;
@@ -2601,13 +2636,16 @@ fn encode_stream_status(
                 None => String::new(),
             };
             Ok(format!(
-                "{}:{}:{}:{}:{}:{}:{}{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}{}",
                 sample.target,
                 stream_realized_state(sample.realized),
                 u8::from(sample.connected),
                 sample.muxed_bytes,
                 sample.enqueued_pairs,
                 sample.dropped_pairs,
+                sample.reconnects,
+                sample.uptime_ms,
+                sample.bitrate_kbps,
                 match &sample.failure {
                     Some(failure) => escape_stream_failure(failure)?,
                     None => String::new(),

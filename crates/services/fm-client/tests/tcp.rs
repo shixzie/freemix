@@ -167,6 +167,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         cue_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+        stream_targets: Vec::new(),
     }
 }
 
@@ -247,6 +248,9 @@ fn stream_status(sequence: u64) -> StreamStatusMessage {
             dropped_pairs: 0,
             failure: None,
             local: None,
+            bitrate_kbps: 0,
+            reconnects: 0,
+            uptime_ms: 0,
         }],
     }
 }

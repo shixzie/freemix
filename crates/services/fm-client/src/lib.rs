@@ -1570,6 +1570,11 @@ impl Client {
             | CommandPayload::CancelManualTransition
             | CommandPayload::StreamStart { .. }
             | CommandPayload::StreamStop { .. }
+            | CommandPayload::StreamRetry { .. }
+            | CommandPayload::StreamStartAll
+            | CommandPayload::StreamStopAll
+            | CommandPayload::SetStreamTarget { .. }
+            | CommandPayload::RemoveStreamTarget { .. }
             | CommandPayload::RecordStart { .. }
             | CommandPayload::RecordStop { .. }
             | CommandPayload::Undo { .. }

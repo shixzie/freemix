@@ -270,7 +270,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 48"));
+    assert!(text.contains("\"schema_version\": 49"));
     assert!(text.contains("\"cue_lists\": ["), "{text}");
     assert!(
         text.contains("{\"type\": \"wait\", \"frames\": 30}"),

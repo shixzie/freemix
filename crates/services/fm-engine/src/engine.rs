@@ -329,6 +329,18 @@ pub enum EngineCommand {
     StreamStop {
         target: StreamTargetId,
     },
+    /// Starts or stops every destination at once, or reconnects one now
+    /// (OR-006). A live operation like [`Self::StreamStart`]; never affects
+    /// recording.
+    StreamControl(EngineStreamControl),
+    /// Adds or reconfigures (`Some`) or removes (`None`) stream destination
+    /// `target` (OR-006). A project edit honouring the project padlock,
+    /// undone by restoring the previous configuration; refused while the
+    /// destination is desired running.
+    SetStreamTarget {
+        target: StreamTargetId,
+        spec: Option<Box<crate::EngineStreamTargetSpec>>,
+    },
     RecordStart {
         recorder: RecorderSlot,
     },
@@ -559,6 +571,13 @@ pub enum EngineEvent {
     StreamsChanged {
         streams: Vec<EngineStreamStatus>,
     },
+    /// A stream destination was added, reconfigured, or removed (or the
+    /// edit was undone or redone) (OR-006), with the resulting roster.
+    StreamTargetChanged {
+        target: StreamTargetId,
+        config: Option<Box<fm_model::StreamTarget>>,
+        streams: Vec<EngineStreamStatus>,
+    },
     RecordingChanged {
         recorder: RecorderSlot,
         active: bool,
@@ -685,6 +704,19 @@ pub enum EngineEvent {
         title_texts: Vec<(InputId, FieldId, String)>,
         applied: Vec<EngineCommand>,
     },
+}
+
+/// A group or recovery operation on the stream destinations (OR-006).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineStreamControl {
+    /// Every destination becomes desired running.
+    StartAll,
+    /// Every destination becomes desired stopped.
+    StopAll,
+    /// Destination `target`, which must be desired running, reconnects now
+    /// with a fresh reconnect budget. Desired state is unchanged; the media
+    /// plane realizes the retry.
+    Retry { target: StreamTargetId },
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -2768,7 +2800,10 @@ impl EngineMutation {
         }
         if matches!(
             &self.command,
-            EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
+            EngineCommand::StreamStart { .. }
+                | EngineCommand::StreamStop { .. }
+                | EngineCommand::StreamControl(_)
+                | EngineCommand::SetStreamTarget { .. }
         ) {
             return apply_stream_mutation(state, events, self);
         }
@@ -2912,7 +2947,10 @@ impl EngineMutation {
             }
             EngineCommand::CommitManualTransition => SwitcherCommand::CommitTBar,
             EngineCommand::CancelManualTransition => SwitcherCommand::CancelTBar,
-            EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. } => {
+            EngineCommand::StreamStart { .. }
+            | EngineCommand::StreamStop { .. }
+            | EngineCommand::StreamControl(_)
+            | EngineCommand::SetStreamTarget { .. } => {
                 unreachable!("stream mutations return before switcher command mapping")
             }
             EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. } => {
@@ -3174,15 +3212,52 @@ fn apply_stream_mutation(
         target_frame,
         ..
     } = mutation;
-    let running = matches!(command, EngineCommand::StreamStart { .. });
-    let target = match &command {
-        EngineCommand::StreamStart { target } | EngineCommand::StreamStop { target } => *target,
+    match command {
+        EngineCommand::StreamStart { target } | EngineCommand::StreamStop { target } => {
+            let running = matches!(command, EngineCommand::StreamStart { .. });
+            state
+                .desired_switcher_mut()
+                .set_stream_running(target, running)
+                .map_err(switcher_rejection)?;
+        }
+        EngineCommand::StreamControl(EngineStreamControl::StartAll) => {
+            let _ = state.desired_switcher_mut().set_all_streams_running(true);
+        }
+        EngineCommand::StreamControl(EngineStreamControl::StopAll) => {
+            let _ = state.desired_switcher_mut().set_all_streams_running(false);
+        }
+        EngineCommand::StreamControl(EngineStreamControl::Retry { target }) => {
+            match state.stream_running(target) {
+                None => {
+                    return Err(switcher_rejection(SwitcherError::UnknownStreamTarget(
+                        target,
+                    )));
+                }
+                Some(false) => {
+                    return Err(Rejection::new(
+                        RejectionCode::Conflict,
+                        format!("stream target {target} is not running; start it instead"),
+                    )
+                    .with_field(FieldIssue::new(
+                        "target",
+                        "stream_not_running",
+                        "only a running destination can be retried",
+                    )));
+                }
+                Some(true) => {}
+            }
+        }
+        EngineCommand::SetStreamTarget { target, spec } => {
+            let config = crate::stream_target::apply(state, target, spec.as_deref())?;
+            events.push(EngineEvent::StreamTargetChanged {
+                target,
+                config: config.map(Box::new),
+                streams: desired_stream_statuses(state),
+            });
+            return Ok(EngineAcceptance { target_frame });
+        }
         _ => unreachable!("only stream mutations are delegated"),
-    };
-    state
-        .desired_switcher_mut()
-        .set_stream_running(target, running)
-        .map_err(switcher_rejection)?;
+    }
     events.push(EngineEvent::StreamsChanged {
         streams: desired_stream_statuses(state),
     });
@@ -3532,7 +3607,10 @@ fn apply_runtime(
         }
         EngineCommand::CommitManualTransition => SwitcherCommand::CommitTBar,
         EngineCommand::CancelManualTransition => SwitcherCommand::CancelTBar,
-        EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. } => {
+        EngineCommand::StreamStart { .. }
+        | EngineCommand::StreamStop { .. }
+        | EngineCommand::StreamControl(_)
+        | EngineCommand::SetStreamTarget { .. } => {
             unreachable!("stream commands return before switcher command mapping")
         }
         EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. } => {
@@ -3618,6 +3696,20 @@ fn apply_runtime_stream(
     match command {
         EngineCommand::StreamStart { target } => Some(switcher.set_stream_running(*target, true)),
         EngineCommand::StreamStop { target } => Some(switcher.set_stream_running(*target, false)),
+        EngineCommand::StreamControl(EngineStreamControl::StartAll) => {
+            Some(Ok(switcher.set_all_streams_running(true)))
+        }
+        EngineCommand::StreamControl(EngineStreamControl::StopAll) => {
+            Some(Ok(switcher.set_all_streams_running(false)))
+        }
+        EngineCommand::StreamControl(EngineStreamControl::Retry { .. }) => Some(Ok(Vec::new())),
+        EngineCommand::SetStreamTarget { target, spec } => Some(match spec {
+            Some(spec) => switcher
+                .upsert_stream(*target, spec.name.clone())
+                .map(|()| Vec::new()),
+
+            None => switcher.remove_stream(*target).map(|()| Vec::new()),
+        }),
         _ => None,
     }
 }
@@ -3723,6 +3815,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::CancelManualTransition
         | EngineCommand::StreamStart { .. }
         | EngineCommand::StreamStop { .. }
+        | EngineCommand::StreamControl(_)
+        | EngineCommand::SetStreamTarget { .. }
         | EngineCommand::RecordStart { .. }
         | EngineCommand::RecordStop { .. }
         | EngineCommand::Undo { .. }
@@ -3791,7 +3885,10 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         )
         && !matches!(
             command,
-            EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
+            EngineCommand::StreamStart { .. }
+                | EngineCommand::StreamStop { .. }
+                | EngineCommand::StreamControl(_)
+                | EngineCommand::SetStreamTarget { .. }
         )
         && !matches!(
             command,

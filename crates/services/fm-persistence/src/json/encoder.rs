@@ -479,6 +479,20 @@ fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
         )
         .expect("writing to a string cannot fail");
         write_stream_ladder(output, target.ladder());
+        let reconnect = target.reconnect();
+        write!(
+            output,
+            ",\n        \"reconnect\": {{\"initial_delay_ms\": {}, \"max_delay_ms\": {}, \"max_attempts\": ",
+            reconnect.initial_delay_ms(),
+            reconnect.max_delay_ms(),
+        )
+        .expect("writing to a string cannot fail");
+        match reconnect.max_attempts() {
+            Some(attempts) => {
+                write!(output, "{attempts}}}").expect("writing to a string cannot fail");
+            }
+            None => output.push_str("null}"),
+        }
         output.push_str("\n      }");
     }
     array_end(output, project.stream_targets().is_empty(), 4);

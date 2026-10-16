@@ -350,6 +350,9 @@ mod tests {
             dropped_pairs: 0,
             failure: None,
             local: None,
+            bitrate_kbps: 0,
+            reconnects: 0,
+            uptime_ms: 0,
         }
     }
 

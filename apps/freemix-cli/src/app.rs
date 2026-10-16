@@ -15,7 +15,8 @@ use fm_command::{
 };
 use fm_engine::{
     Engine, EngineAcceptance, EngineCommand, EngineFadeToBlackState, EngineInputAudioStripState,
-    EngineManualTransitionKind, EngineManualTransitionPosition, EngineRestoreState, ShowState,
+    EngineManualTransitionKind, EngineManualTransitionPosition, EngineRestoreState,
+    EngineStreamControl, ShowState,
 };
 use fm_model::{
     AudioBus, CropRect, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
@@ -203,6 +204,8 @@ pub fn run(command: Command) -> AppResult<()> {
                 false,
             )?;
         }
+        Command::StreamStartAll { path } => set_all_streams_running(&path, true)?,
+        Command::StreamStopAll { path } => set_all_streams_running(&path, false)?,
         Command::RecordStart { path, recorder } => set_recording_desired(&path, recorder, true)?,
         Command::RecordStop { path, recorder } => set_recording_desired(&path, recorder, false)?,
         Command::Streams { path } => {
@@ -1979,6 +1982,66 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::RemoteStreamRetry {
+            address,
+            stream,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::StreamRetry {
+                target: wire_stream_target(stream)?,
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteStreamStartAll {
+            address,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::StreamStartAll,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteStreamStopAll {
+            address,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::StreamStopAll,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteStreamSet {
+            address,
+            stream,
+            options,
+            key,
+            expected_revision,
+        } => remote::set_stream_target(
+            address,
+            wire_stream_target(stream)?,
+            &options,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteStreamRemove {
+            address,
+            stream,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::RemoveStreamTarget {
+                target: wire_stream_target(stream)?,
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteStreams { address } => remote::stream_targets(address)?,
         Command::RemoteRecordStart {
             address,
             recorder,
@@ -2213,12 +2276,7 @@ fn engine_from_project(project: Project) -> AppResult<ProjectEngine> {
             .map(|output| (output.id, output.name.clone()))
             .collect(),
     )?
-    .with_streams(project.stream_targets().iter().map(|target| {
-        (
-            switcher_stream_target(target.id()),
-            target.name().to_owned(),
-        )
-    }))?;
+    .with_stream_targets(project.stream_targets())?;
     restore_input_audio_strips(&mut show, &project)?;
     restore_display_outputs(&mut show, &project)?;
     let engine = Engine::new(show, project.settings().frame_rate, clock_domain());
@@ -3071,7 +3129,9 @@ fn stream_target(spec: &StreamSpec) -> AppResult<StreamTarget> {
     let target = target
         .with_ladder(spec.ladder.clone())
         .map_err(|error| AppFailure(error.to_string()))?;
-    Ok(target.with_startup(spec.startup))
+    Ok(target
+        .with_startup(spec.startup)
+        .with_reconnect(spec.reconnect))
 }
 
 fn add_stream_target(path: &Path, spec: &StreamSpec) -> AppResult<()> {
@@ -3134,6 +3194,34 @@ fn set_stream_running(
     } else {
         EngineCommand::StreamStop { target }
     };
+    let result = execute(&mut project_engine.engine, command, 1, None, None)?;
+    if let Some(rejection) = result.rejection {
+        return Err(rejection.into());
+    }
+    if !result.replayed {
+        save_engine(path, &project_engine)?;
+    }
+    print_status(&project_engine);
+    Ok(())
+}
+
+/// Starts or stops every inventoried stream destination at once (OR-006).
+///
+/// Like [`set_stream_running`] this is one instant switcher mutation,
+/// [`EngineStreamControl::StartAll`] or [`EngineStreamControl::StopAll`],
+/// that toggles only the destinations' desired running flags: the recorder
+/// slots are never touched. A show without destinations is refused before any
+/// engine work so the bundle stays byte-identical.
+fn set_all_streams_running(path: &Path, running: bool) -> AppResult<()> {
+    let mut project_engine = load_engine(path)?;
+    if project_engine.engine.show().streams().is_empty() {
+        return Err(AppFailure("the show has no stream destinations".into()).into());
+    }
+    let command = EngineCommand::StreamControl(if running {
+        EngineStreamControl::StartAll
+    } else {
+        EngineStreamControl::StopAll
+    });
     let result = execute(&mut project_engine.engine, command, 1, None, None)?;
     if let Some(rejection) = result.rejection {
         return Err(rejection.into());
@@ -3891,12 +3979,7 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
             .map(|output| (output.id, output.name.clone()))
             .collect(),
     )?
-    .with_streams(project.stream_targets().iter().map(|target| {
-        (
-            switcher_stream_target(target.id()),
-            target.name().to_owned(),
-        )
-    }))?;
+    .with_stream_targets(project.stream_targets())?;
     for target in project
         .stream_targets()
         .iter()
@@ -4917,7 +5000,7 @@ fn print_stream_targets(project: &Project) {
             StartupPolicy::ReconcileDesiredState => "reconcile-desired-state",
         };
         println!(
-            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} ladder={} running={}",
+            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} ladder={} reconnect={} running={}",
             target.id(),
             target.name(),
             target.protocol(),
@@ -4931,9 +5014,27 @@ fn print_stream_targets(project: &Project) {
             target
                 .ladder()
                 .map_or_else(|| "none".to_owned(), ToString::to_string),
+            format_reconnect(
+                target.reconnect().initial_delay_ms(),
+                target.reconnect().max_delay_ms(),
+                target.reconnect().max_attempts(),
+            ),
             target.running(),
         );
     }
+}
+
+/// Renders a reconnect policy in the `--reconnect` syntax it is authored in:
+/// `<initial_ms>:<max_ms>:<attempts|none>`.
+pub(crate) fn format_reconnect(
+    initial_delay_ms: u32,
+    max_delay_ms: u32,
+    max_attempts: Option<u32>,
+) -> String {
+    format!(
+        "{initial_delay_ms}:{max_delay_ms}:{}",
+        max_attempts.map_or_else(|| "none".to_owned(), |attempts| attempts.to_string())
+    )
 }
 
 fn print_audio_buses(project: &Project) {
@@ -5280,11 +5381,19 @@ Usage:
   freemix-cli output-rename <show.freemix> <existing-output-id> <name>
   freemix-cli output-startup <show.freemix> <existing-output-id> <stopped|reconcile-desired-state>
   freemix-cli output-remove <show.freemix> <existing-output-id>
-  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)]
-  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)]
+  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)] [--reconnect <initial_ms>:<max_ms>:<attempts|none>]
+  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)] [--reconnect <initial_ms>:<max_ms>:<attempts|none>]
   freemix-cli stream-remove <show.freemix> <existing-stream-id>
   freemix-cli stream-start <show.freemix> <existing-stream-id>
   freemix-cli stream-stop <show.freemix> <existing-stream-id>
+  freemix-cli stream-start-all <show.freemix>
+  freemix-cli stream-stop-all <show.freemix>
+      Starts or stops every destination at once (up to five, each otherwise
+      independent); recording is never affected. --reconnect sets how a
+      destination reconnects after a drop: the first retry waits initial_ms
+      (100..=300000), each later one doubles up to max_ms, and after
+      1..=10000 undelivered attempts it gives up (`none` retries forever);
+      the default is 250:2000:40, printed by `streams` as reconnect=...
   freemix-cli record-start <show.freemix> [--recorder <1|2>]
   freemix-cli record-stop <show.freemix> [--recorder <1|2>]
       The stream key is a positional argument and is therefore visible in this
@@ -5487,6 +5596,18 @@ Usage:
   freemix-cli remote-display-inventory <127.0.0.1:port>
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
+  freemix-cli remote-stream-retry <127.0.0.1:port> <running-stream-id> [--key <key>] [--expect <revision>]
+  freemix-cli remote-stream-start-all <127.0.0.1:port> [--key <key>] [--expect <revision>]
+  freemix-cli remote-stream-stop-all <127.0.0.1:port> [--key <key>] [--expect <revision>]
+  freemix-cli remote-stream-set <127.0.0.1:port> <nonzero-stream-id> [--name <name>] [--protocol rtmp|rtmps|srt|hls] [--endpoint <host/app|host:port|/abs/dir or full URL>] [--backup-endpoint <endpoint> | --clear-backup-endpoint] [--output <id>] [--bitrate-kbps <1000..=100000>] [--startup stopped|reconcile] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--stream-key <key> | --clear-stream-key] [--key <key>] [--expect <revision>]
+      Adds or reconfigures a destination of a stopped stream. A new one needs
+      --name, --protocol (or a full endpoint URL), --endpoint and --output;
+      for an existing one every omitted option keeps the daemon's value and
+      an omitted stream key is kept. The key is never printed.
+  freemix-cli remote-stream-remove <127.0.0.1:port> <stopped-stream-id> [--key <key>] [--expect <revision>]
+  freemix-cli remote-streams <127.0.0.1:port>
+      Lists each destination's configuration (URL without key, key=yes|no)
+      and its latest status: state, kbps, dropped, reconnects, uptime, error.
   freemix-cli remote-record-start <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]
   freemix-cli remote-record-stop <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]
   freemix-cli render <show.freemix> <output.ppm> [--width <px>] [--height <px>]

@@ -760,6 +760,29 @@ impl OutputSet {
         Ok(())
     }
 
+    /// Removes one destination with its queue and telemetry, freeing its slot
+    /// for a later [`Self::add_destination`]. The caller disconnects the
+    /// destination's transport first; every other destination is untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OutputError::UnknownDestination`] for an unconfigured slot.
+    pub fn remove_destination(
+        &mut self,
+        destination: DestinationId,
+    ) -> Result<DestinationConfig, OutputError> {
+        self.destinations
+            .remove(&destination)
+            .map(|output| output.config)
+            .ok_or(OutputError::UnknownDestination(destination))
+    }
+
+    /// Whether `destination` names a configured slot.
+    #[must_use]
+    pub fn contains(&self, destination: DestinationId) -> bool {
+        self.destinations.contains_key(&destination)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.destinations.len()

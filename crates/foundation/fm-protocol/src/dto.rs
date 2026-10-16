@@ -1622,6 +1622,33 @@ pub enum CommandPayload {
     StreamStop {
         target: WireStreamTargetId,
     },
+    /// Reconnects a desired-running destination now (Protocol 2.52,
+    /// OR-006): clears a latched failure or a pending backoff and restarts
+    /// its reconnect budget. A live operation like `stream_start`.
+    StreamRetry {
+        target: WireStreamTargetId,
+    },
+    /// Starts every configured destination (Protocol 2.52, OR-006). Never
+    /// affects recording.
+    StreamStartAll,
+    /// Stops every configured destination (Protocol 2.52, OR-006). Never
+    /// affects recording.
+    StreamStopAll,
+    /// Adds or reconfigures destination `target` (Protocol 2.52, OR-006).
+    /// The stream key is kept, cleared, or replaced by `stream_key`; a client
+    /// cannot read it back. A padlocked, undoable project edit, refused while
+    /// the destination is desired running.
+    SetStreamTarget {
+        target: WireStreamTargetId,
+        config: Box<crate::StreamTargetConfig>,
+        stream_key: crate::SecretEdit,
+    },
+    /// Removes destination `target` (Protocol 2.52, OR-006). A padlocked,
+    /// undoable project edit, refused while it is desired running or a cue
+    /// list starts or stops it.
+    RemoveStreamTarget {
+        target: WireStreamTargetId,
+    },
     RecordStart {
         recorder: WireRecorderSlot,
     },
@@ -2341,6 +2368,9 @@ pub struct SnapshotMessage {
     /// Every capture input, ascending, with its stable key, settings, and
     /// latest status (Protocol 2.47).
     pub capture_inputs: Vec<crate::CaptureInputEntry>,
+    /// Every configured stream destination in authored order, without its
+    /// stream key (Protocol 2.52, OR-006).
+    pub stream_targets: Vec<crate::StreamTargetEntry>,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2408,6 +2438,13 @@ pub enum EventPayload {
         input_audio_strips: Vec<InputAudioStripStatus>,
     },
     StreamsChanged {
+        streams: Vec<StreamStatus>,
+    },
+    /// Destination `target` was added, reconfigured (`entry` is `Some`), or
+    /// removed (`None`), with the resulting roster (Protocol 2.52, OR-006).
+    StreamTargetChanged {
+        target: WireStreamTargetId,
+        entry: Option<Box<crate::StreamTargetEntry>>,
         streams: Vec<StreamStatus>,
     },
     RecordingChanged {
@@ -2745,6 +2782,15 @@ pub struct StreamStatusSample {
     pub muxed_bytes: u64,
     pub enqueued_pairs: u64,
     pub dropped_pairs: u64,
+    /// Reconnects that delivered media again since the last start
+    /// (Protocol 2.52).
+    pub reconnects: u64,
+    /// Milliseconds the current session has been delivering media, `0` when
+    /// it is not (Protocol 2.52).
+    pub uptime_ms: u64,
+    /// Measured outgoing bitrate in kilobits per second over the last
+    /// sampling window, `0` when nothing is flowing (Protocol 2.52).
+    pub bitrate_kbps: u32,
     pub failure: Option<String>,
     pub local: Option<StreamLocalStatus>,
 }

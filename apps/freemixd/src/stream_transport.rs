@@ -184,6 +184,15 @@ impl<S: TransportSink + 'static> BackgroundTransport<S> {
         self.home.as_ref()
     }
 
+    /// The sink while no worker job holds it, for read-only telemetry.
+    pub(crate) fn idle_sink(&self) -> Option<&S> {
+        if self.in_flight.is_none() {
+            self.home.as_ref()
+        } else {
+            None
+        }
+    }
+
     /// Whether the worker currently holds the sink.
     #[cfg(test)]
     pub(crate) const fn busy(&self) -> bool {

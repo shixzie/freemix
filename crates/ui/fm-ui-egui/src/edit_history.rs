@@ -633,6 +633,7 @@ mod tests {
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         };
         snapshot.edit_locks.project = locks.project;
         snapshot.edit_locks.inputs = locks

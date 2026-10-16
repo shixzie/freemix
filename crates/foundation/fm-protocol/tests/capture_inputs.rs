@@ -18,7 +18,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.51\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.52\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -113,7 +113,7 @@ const SETTINGS: &str = "format=1920x1080%4030000%2F1001%3Ayuyv%3Atff\taudio=alsa
 
 #[test]
 fn the_current_protocol_is_2_47() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 51));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 52));
 }
 
 #[test]
@@ -508,7 +508,7 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     assert_eq!(decoded.capture_inputs, entries);
     assert!(
         line.ends_with(
-            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\n"
+            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tstream_targets=\n"
                 .replace('~', "%7E")
                 .as_str()
         ),
@@ -614,5 +614,6 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
         capture_inputs,
+        stream_targets: Vec::new(),
     })
 }

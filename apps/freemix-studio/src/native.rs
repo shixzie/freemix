@@ -25,8 +25,8 @@ use fm_types::OutputId;
 use fm_ui_egui::{
     CatalogueRefusal, CatalogueRequest, CommandRefusalNotice, ExternalStudioAction, GradeLutFile,
     GradeRefusal, InputAudioStripUpdate, InputMoveDirection, PlaylistIntent, ReconnectStatus,
-    RecordingAction, StreamAction, StudioConnectionStatus, StudioIntent, StudioShell,
-    StudioUiState, TerminalUncertaintyNotice, TitleUpdate, external_intent,
+    RecordingAction, StreamAction, StreamGroupAction, StudioConnectionStatus, StudioIntent,
+    StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate, external_intent,
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::grade_editor::GradeCommand;
@@ -1825,7 +1825,68 @@ fn resolve_stream_action(
     Ok(match action {
         StreamAction::Start(target) => CommandPayload::StreamStart { target },
         StreamAction::Stop(target) => CommandPayload::StreamStop { target },
+        StreamAction::Retry(target) => CommandPayload::StreamRetry { target },
     })
+}
+
+/// Resolves Start all / Stop all against the latest confirmed roster.
+fn resolve_stream_group(
+    view: Option<&ClientView>,
+    action: StreamGroupAction,
+) -> Result<CommandPayload, String> {
+    let view = view
+        .ok_or_else(|| "Cannot control streams before project state is synchronized".to_owned())?;
+    if view.streams.is_empty() {
+        return Err("No stream targets are configured".to_owned());
+    }
+    Ok(match action {
+        StreamGroupAction::StartAll => CommandPayload::StreamStartAll,
+        StreamGroupAction::StopAll => CommandPayload::StreamStopAll,
+    })
+}
+
+/// Resolves a destination add or edit against the latest confirmed view: its
+/// output must still exist.
+fn resolve_set_stream_target(
+    view: Option<&ClientView>,
+    target: WireStreamTargetId,
+    config: Box<fm_protocol::StreamTargetConfig>,
+    stream_key: fm_protocol::SecretEdit,
+) -> Result<CommandPayload, String> {
+    let view = view.ok_or_else(|| {
+        "Cannot configure a stream target before project state is synchronized".to_owned()
+    })?;
+    if !view
+        .outputs
+        .iter()
+        .any(|output| output.output == config.output.to_domain())
+    {
+        return Err("Stream target output no longer exists".to_owned());
+    }
+    Ok(CommandPayload::SetStreamTarget {
+        target,
+        config,
+        stream_key,
+    })
+}
+
+/// Resolves a destination removal against the latest confirmed view.
+fn resolve_remove_stream_target(
+    view: Option<&ClientView>,
+    target: WireStreamTargetId,
+) -> Result<CommandPayload, String> {
+    let view = view.ok_or_else(|| {
+        "Cannot remove a stream target before project state is synchronized".to_owned()
+    })?;
+    if view.stream_target(target.get()).is_none()
+        && !view
+            .streams
+            .iter()
+            .any(|stream| stream.target == target.get())
+    {
+        return Err("Stream target no longer exists".to_owned());
+    }
+    Ok(CommandPayload::RemoveStreamTarget { target })
 }
 
 /// Studio's descriptor for a Stinger slot that has no configuration yet.
@@ -2506,6 +2567,15 @@ fn intent_payload(
             RecordingAction::Stop(recorder) => CommandPayload::RecordStop { recorder },
         },
         StudioIntent::Stream(action) => return resolve_stream_action(view, action),
+        StudioIntent::StreamGroup(action) => return resolve_stream_group(view, action),
+        StudioIntent::SetStreamTarget {
+            target,
+            config,
+            stream_key,
+        } => return resolve_set_stream_target(view, target, config, stream_key),
+        StudioIntent::RemoveStreamTarget { target } => {
+            return resolve_remove_stream_target(view, target);
+        }
         StudioIntent::AssignStingerMedia {
             slot,
             media_input,
@@ -2851,6 +2921,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);
     state.stream_pending = stream_command_pending_targets(client);
+    state.stream_group_pending = stream_group_command_pending(client);
     state.catalogue_pending = catalogue_pending_requests(client);
     state.error = error.or(lifecycle_error);
     state.title_updates = runtime.take_title_updates(ready);
@@ -2922,9 +2993,11 @@ fn stream_command_pending_targets(client: &Client) -> Vec<WireStreamTargetId> {
             continue;
         };
         let target = match &record.command.payload {
-            CommandPayload::StreamStart { target } | CommandPayload::StreamStop { target } => {
-                *target
-            }
+            CommandPayload::StreamStart { target }
+            | CommandPayload::StreamStop { target }
+            | CommandPayload::StreamRetry { target }
+            | CommandPayload::SetStreamTarget { target, .. }
+            | CommandPayload::RemoveStreamTarget { target } => *target,
             _ => continue,
         };
         if !pending.contains(&target) {
@@ -2932,6 +3005,18 @@ fn stream_command_pending_targets(client: &Client) -> Vec<WireStreamTargetId> {
         }
     }
     pending
+}
+
+/// Whether a Start all or Stop all command is still unresolved.
+fn stream_group_command_pending(client: &Client) -> bool {
+    client.model().pending_commands().iter().any(|command| {
+        client.command(command.id.as_str()).is_some_and(|record| {
+            matches!(
+                record.command.payload,
+                CommandPayload::StreamStartAll | CommandPayload::StreamStopAll
+            )
+        })
+    })
 }
 
 fn switcher_permissions(permissions: Option<&[String]>) -> (bool, bool) {
@@ -3304,6 +3389,7 @@ mod tests {
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         }
     }
 
@@ -3344,6 +3430,9 @@ mod tests {
                 dropped_pairs: 3,
                 failure: None,
                 local: None,
+                bitrate_kbps: 0,
+                reconnects: 0,
+                uptime_ms: 0,
             }],
         }
     }
@@ -5985,6 +6074,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one table of intent mappings
     fn stream_intents_map_to_target_payloads_from_the_confirmed_roster() {
         let project = ProjectId::new(NonZeroU128::new(7).unwrap());
         let mut model = ClientModel::new(project);
@@ -6027,6 +6117,89 @@ mod tests {
                 None
             )
             .is_err()
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Stream(StreamAction::Retry(stream_target_40())),
+                Some(&view)
+            ),
+            Ok(CommandPayload::StreamRetry {
+                target: stream_target_40()
+            })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::StreamGroup(StreamGroupAction::StartAll),
+                Some(&view)
+            ),
+            Ok(CommandPayload::StreamStartAll)
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::StreamGroup(StreamGroupAction::StopAll),
+                Some(&view)
+            ),
+            Ok(CommandPayload::StreamStopAll)
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::RemoveStreamTarget {
+                    target: stream_target_40()
+                },
+                Some(&view)
+            ),
+            Ok(CommandPayload::RemoveStreamTarget {
+                target: stream_target_40()
+            })
+        );
+        assert!(
+            intent_payload(
+                StudioIntent::RemoveStreamTarget { target: missing },
+                Some(&view)
+            )
+            .is_err()
+        );
+        // A destination whose output is gone is reported, not sent.
+        let config = fm_protocol::StreamTargetConfig {
+            name: "New".to_owned(),
+            protocol: fm_protocol::StreamTargetProtocol::Rtmp,
+            endpoint: "ingest.example/live".to_owned(),
+            backup_endpoint: None,
+            output: fm_protocol::WireOutputId::new(NonZeroU128::new(99).unwrap()),
+            reconcile_on_startup: false,
+            video_bitrate_kbps: 6_000,
+            reconnect: fm_protocol::StreamReconnect::DEFAULT,
+        };
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetStreamTarget {
+                    target: missing,
+                    config: Box::new(config.clone()),
+                    stream_key: fm_protocol::SecretEdit::Set("k".to_owned()),
+                },
+                Some(&view)
+            ),
+            Err("Stream target output no longer exists".to_owned())
+        );
+        let mut with_output = view.clone();
+        with_output.outputs.push(fm_ui_model::OutputStatus {
+            output: config.output.to_domain(),
+            name: "Program".to_owned(),
+        });
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetStreamTarget {
+                    target: missing,
+                    config: Box::new(config.clone()),
+                    stream_key: fm_protocol::SecretEdit::Keep,
+                },
+                Some(&with_output)
+            ),
+            Ok(CommandPayload::SetStreamTarget {
+                target: missing,
+                config: Box::new(config),
+                stream_key: fm_protocol::SecretEdit::Keep,
+            })
         );
     }
 

@@ -622,7 +622,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -692,7 +692,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -848,7 +848,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 48"));
+    assert!(valid.contains("\"schema_version\": 49"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -864,11 +864,76 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 48", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 49", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
     assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+}
+
+/// OR-006 (schema 49): each destination's reconnect policy is stored
+/// exactly — a finite or unlimited attempt budget — and is a required,
+/// bounded part of the current contract.
+#[test]
+fn stream_target_reconnect_policy_round_trips_and_is_strict_at_the_current_schema() {
+    let temp = TestDirectory::new("stream-target-reconnect");
+    let store = temp.store("show");
+    for (policy, attempts) in [
+        (
+            fm_model::StreamReconnectPolicy::new(500, 8_000, Some(12)).unwrap(),
+            "12",
+        ),
+        (
+            fm_model::StreamReconnectPolicy::new(100, 300_000, None).unwrap(),
+            "null",
+        ),
+    ] {
+        let mut project = rich_project();
+        let target = project.stream_targets()[0].clone().with_reconnect(policy);
+        project.replace_stream_target(target).unwrap();
+        let expected = StoredProject::from_project(
+            project,
+            RuntimeRouting::default(),
+            ProjectPosition::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        store.save(&expected).unwrap();
+        let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+        assert!(
+            encoded.contains(&format!(
+                "\"reconnect\": {{\"initial_delay_ms\": {}, \"max_delay_ms\": {}, \"max_attempts\": {attempts}}}",
+                policy.initial_delay_ms(),
+                policy.max_delay_ms()
+            )),
+            "{encoded}"
+        );
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded, expected);
+        assert_eq!(loaded.project().stream_targets()[0].reconnect(), policy);
+    }
+
+    store.save(&stored_rich_project()).unwrap();
+    let valid = fs::read_to_string(store.manifest_path()).unwrap();
+    let default =
+        "\"reconnect\": {\"initial_delay_ms\": 250, \"max_delay_ms\": 2000, \"max_attempts\": 40}";
+    assert!(valid.contains(default), "{valid}");
+    for malformed in [
+        valid.replacen(&format!(",\n        {default}"), "", 1),
+        valid.replacen("\"initial_delay_ms\": 250", "\"initial_delay_ms\": 99", 1),
+        valid.replacen("\"max_delay_ms\": 2000", "\"max_delay_ms\": 200", 1),
+        valid.replacen("\"max_attempts\": 40", "\"max_attempts\": 0", 1),
+        valid.replacen("\"max_attempts\": 40", "\"max_attempts\": \"40\"", 1),
+        valid.replacen(
+            "\"max_attempts\": 40}",
+            "\"max_attempts\": 40, \"extra\": 1}",
+            1,
+        ),
+    ] {
+        assert_ne!(malformed, valid);
+        fs::write(store.manifest_path(), malformed).unwrap();
+        assert!(store.load().is_err());
+    }
 }
 
 #[test]
@@ -1292,7 +1357,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1637,7 +1702,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1730,7 +1795,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -1871,7 +1936,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 48,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 49,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
@@ -1960,7 +2025,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 48", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 49", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -2091,7 +2156,7 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!(
@@ -2392,7 +2457,7 @@ fn capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         Some(("decklink:1", &settings))
     );
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 48"));
+    assert!(encoded.contains("\"schema_version\": 49"));
     let object = "{\"type\": \"device\", \"stable_key\": \"decklink:1\", \"capture\": {\"format\": \"1920x1080@30000/1001:yuyv:tff\", \"audio\": \"alsa:hw:CARD=C920,DEV=0\", \"loss\": \"black\"}}";
     assert!(encoded.contains(object), "{encoded}");
 

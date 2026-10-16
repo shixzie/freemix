@@ -2615,7 +2615,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::StreamDiagConnected, t("conectado")),
     (Msg::StreamDiagDisconnected, t("sin conexión")),
-    (Msg::StreamDiagFailure, t("Fallo: {failure}")),
+    (Msg::StreamDiagFailure, t("Último error: {failure}")),
     (
         Msg::StreamDiagLocal,
         plural(
@@ -6279,4 +6279,297 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("el show no tiene nada que esta acción pueda nombrar"),
     ),
     (Msg::CueReasonNoStandby, t("no hay ningún cue en espera")),
+    // Stream destinations (OR-006).
+    (Msg::StreamStartAllKey, t("INICIAR TODO")),
+    (Msg::StreamStopAllKey, t("DETENER TODO")),
+    (
+        Msg::StreamStartAllHover,
+        t("Iniciar todos los destinos que no están en marcha. La grabación no se ve afectada."),
+    ),
+    (
+        Msg::StreamStopAllHover,
+        t("Detener todos los destinos en marcha. La grabación no se ve afectada."),
+    ),
+    (Msg::StreamAddKey, t("AÑADIR…")),
+    (
+        Msg::StreamAddHover,
+        t("Añadir un destino de transmisión: RTMP, RTMPS, SRT o HLS local (como máximo {limit})"),
+    ),
+    (Msg::StreamRetryKey, t("REINTENTAR")),
+    (
+        Msg::StreamRetryHover,
+        t("Reconectar «{name}» ahora en lugar de esperar al próximo reintento"),
+    ),
+    (Msg::StreamEditKey, t("EDITAR…")),
+    (Msg::StreamEditHover, t("Cambiar los ajustes de «{name}»")),
+    (
+        Msg::StreamRemoveHover,
+        t("Quitar el destino «{name}» del show"),
+    ),
+    (Msg::StreamRemoveName, t("Quitar destino")),
+    (Msg::StreamStatState, t("Estado: {state}")),
+    (Msg::StreamStatUrl, t("Destino: {url}")),
+    (Msg::StreamStatBackup, t("Respaldo: {url}")),
+    (
+        Msg::StreamStatOutput,
+        t("Salida: {output} · objetivo {target} kb/s"),
+    ),
+    (
+        Msg::StreamStatKeyStored,
+        t("Clave de transmisión: guardada (nunca se muestra)"),
+    ),
+    (
+        Msg::StreamStatKeyMissing,
+        t("Clave de transmisión: ninguna guardada"),
+    ),
+    (
+        Msg::StreamStatLive,
+        t(
+            "Tasa {kbps} kb/s · {dropped} fotogramas descartados · {reconnects} reconexiones · en marcha {uptime}",
+        ),
+    ),
+    (
+        Msg::ReasonStreamNotStarted,
+        t("el destino no está iniciado; Iniciar lo conecta"),
+    ),
+    (
+        Msg::ReasonStreamRunning,
+        t("detenga primero el destino; un destino en marcha no se puede cambiar"),
+    ),
+    (
+        Msg::ReasonStreamInCue,
+        t("una lista de cues inicia o detiene este destino; quite primero esas acciones"),
+    ),
+    (
+        Msg::ReasonStreamNoConfig,
+        t("los ajustes de este destino aún no están sincronizados"),
+    ),
+    (
+        Msg::ReasonStreamTargetsFull,
+        t("el show ya tiene el máximo de 5 destinos"),
+    ),
+    (
+        Msg::ReasonAllStreamsStarted,
+        t("todos los destinos ya están iniciados"),
+    ),
+    (
+        Msg::ReasonNoStreamsStarted,
+        t("ningún destino está iniciado"),
+    ),
+    (
+        Msg::ReasonStreamGroupPending,
+        t("un Iniciar todo o Detener todo anterior sigue pendiente"),
+    ),
+    (
+        Msg::ReasonStreamNoOutputs,
+        t("el show no tiene ninguna salida que publicar"),
+    ),
+    (
+        Msg::ReasonHlsNoBackup,
+        t("el HLS local no tiene servidor de respaldo"),
+    ),
+    (
+        Msg::ReasonHlsNoKey,
+        t("el HLS local no usa clave de transmisión"),
+    ),
+    (Msg::ReasonStreamUnchanged, t("aún no ha cambiado nada")),
+    (Msg::StreamDialogAddTitle, t("Añadir destino")),
+    (Msg::StreamDialogEditTitle, t("Editar destino")),
+    (
+        Msg::StreamDialogIntro,
+        t(
+            "Un destino publica una salida en un servicio de streaming, un receptor SRT o segmentos HLS locales. Cada destino se inicia, se detiene y se reconecta por su cuenta.",
+        ),
+    ),
+    (Msg::StreamSectionDestination, t("Destino")),
+    (Msg::StreamSectionVideo, t("Salida y vídeo")),
+    (Msg::StreamSectionReconnect, t("Reconexión")),
+    (
+        Msg::StreamFieldNameHover,
+        t(
+            "Cómo nombran este destino la consola y las listas de cues: único, como máximo 128 bytes",
+        ),
+    ),
+    (Msg::StreamFieldProtocol, t("Protocolo")),
+    (
+        Msg::StreamProtoRtmpHover,
+        t("Publicar en un servidor de ingesta RTMP (rtmp://)"),
+    ),
+    (
+        Msg::StreamProtoRtmpsHover,
+        t("Publicar por RTMP cifrado con TLS (rtmps://), como prefieren la mayoría de plataformas"),
+    ),
+    (
+        Msg::StreamProtoSrtHover,
+        t("Enviar a un receptor SRT en host:puerto (srt://)"),
+    ),
+    (
+        Msg::StreamProtoHlsHover,
+        t("Escribir segmentos HLS y una lista de reproducción en un directorio local; sin clave"),
+    ),
+    (Msg::StreamFieldEndpoint, t("Servidor")),
+    (Msg::StreamFieldDirectory, t("Directorio")),
+    (
+        Msg::StreamEndpointRtmpHover,
+        t(
+            "Host, puerto opcional y ruta de aplicación, sin el esquema ni la clave: live.example.com/app",
+        ),
+    ),
+    (
+        Msg::StreamEndpointSrtHover,
+        t("Host y puerto opcional, sin el esquema: srt.example.com:9000"),
+    ),
+    (
+        Msg::StreamEndpointHlsHover,
+        t("Un directorio absoluto para los segmentos y la lista: /var/www/hls/show"),
+    ),
+    (Msg::StreamFieldBackup, t("Servidor de respaldo")),
+    (
+        Msg::StreamFieldBackupHover,
+        t(
+            "Segundo servidor opcional al que el destino conmuta, escrito como el servidor; déjelo vacío si no hay",
+        ),
+    ),
+    (
+        Msg::StreamFieldKeyHover,
+        t(
+            "La clave secreta que le da su servicio. Se guarda con el proyecto y nunca se vuelve a mostrar",
+        ),
+    ),
+    (
+        Msg::StreamKeyKeepHint,
+        t("guardada — déjela vacía para conservarla"),
+    ),
+    (
+        Msg::StreamKeyKeepCaption,
+        t("Hay una clave guardada; escriba otra solo para sustituirla"),
+    ),
+    (
+        Msg::StreamKeyClearCaption,
+        t("La clave guardada se quita: el HLS local no usa ninguna"),
+    ),
+    (
+        Msg::StreamFieldOutputHover,
+        t("Publicar la imagen y el sonido de esta salida"),
+    ),
+    (Msg::StreamFieldBitrate, t("Tasa de vídeo (kb/s)")),
+    (
+        Msg::StreamFieldBitrateHover,
+        t("Tasa de vídeo del codificador, de 1000 a 100000 kb/s"),
+    ),
+    (Msg::StreamFieldStartup, t("Iniciar al arrancar")),
+    (
+        Msg::StreamFieldStartupHover,
+        t(
+            "Al arrancar el servidor, reanudar este destino si estaba en marcha; sin marcar, siempre arranca detenido",
+        ),
+    ),
+    (
+        Msg::StreamFieldFirstDelayHover,
+        t(
+            "Espera antes de la primera reconexión; cada espera siguiente se duplica. De 100 a 300000 ms",
+        ),
+    ),
+    (Msg::StreamFieldMaxDelay, t("Espera máxima (ms)")),
+    (
+        Msg::StreamFieldMaxDelayHover,
+        t("La espera más larga entre reconexiones, al menos la primera. Hasta 300000 ms"),
+    ),
+    (Msg::StreamFieldAttempts, t("Intentos")),
+    (
+        Msg::StreamFieldAttemptsHover,
+        t("Intentos de reconexión antes de que el destino se rinda, de 1 a 10000"),
+    ),
+    (Msg::StreamFieldUnlimited, t("Ilimitados")),
+    (
+        Msg::StreamFieldUnlimitedHover,
+        t("No dejar nunca de reconectar mientras el destino esté iniciado"),
+    ),
+    (
+        Msg::ReasonStreamUnlimited,
+        t("los intentos son ilimitados; desmarque Ilimitados para fijar un número"),
+    ),
+    (Msg::StreamDialogAddKey, t("AÑADIR")),
+    (
+        Msg::StreamDialogAddKeyHover,
+        t("Añadir este destino al show"),
+    ),
+    (
+        Msg::StreamDialogSaveKeyHover,
+        t("Guardar los cambios de este destino"),
+    ),
+    (Msg::StreamDialogCancelHover, t("Cerrar sin guardar")),
+    (
+        Msg::StreamDialogNote,
+        t("Deshacer revierte este cambio; la clave nunca se muestra"),
+    ),
+    (Msg::StreamErrNameEmpty, t("escriba un nombre")),
+    (Msg::StreamErrNameLong, t("use como máximo 128 bytes")),
+    (
+        Msg::StreamErrNameTaken,
+        t("otro destino ya tiene este nombre"),
+    ),
+    (Msg::StreamErrEndpointEmpty, t("escriba dónde publicar")),
+    (Msg::StreamErrEndpointLong, t("use como máximo 1024 bytes")),
+    (
+        Msg::StreamErrEndpointChars,
+        t("use caracteres imprimibles sin espacios"),
+    ),
+    (
+        Msg::StreamErrEndpointScheme,
+        t("omita el esquema; lo eligen las teclas de protocolo"),
+    ),
+    (
+        Msg::StreamErrEndpointQuery,
+        t("omita ? y #; ponga los tokens en la clave"),
+    ),
+    (
+        Msg::StreamErrEndpointApp,
+        t("añada la ruta de aplicación: host/app"),
+    ),
+    (Msg::StreamErrEndpointHost, t("indique un host")),
+    (
+        Msg::StreamErrEndpointCredentials,
+        t("omita usuario:contraseña@; los secretos van en la clave"),
+    ),
+    (
+        Msg::StreamErrEndpointSrtPath,
+        t("SRT solo admite host[:puerto], sin ruta"),
+    ),
+    (
+        Msg::StreamErrEndpointAbsolute,
+        t("use un directorio absoluto que empiece por /"),
+    ),
+    (
+        Msg::StreamErrEndpointSegments,
+        t("quite los segmentos de ruta vacíos, . o .."),
+    ),
+    (
+        Msg::StreamErrKeyRequired,
+        t("escriba la clave de transmisión"),
+    ),
+    (
+        Msg::StreamErrKeyChars,
+        t("use caracteres imprimibles sin espacios, como máximo 512 bytes"),
+    ),
+    (
+        Msg::StreamErrKeySrt,
+        t("una clave SRT no puede contener & ni ?"),
+    ),
+    (Msg::StreamErrBitrate, t("use de 1000 a 100000 kb/s")),
+    (
+        Msg::StreamErrDelays,
+        t("la espera máxima debe ser al menos la primera, de 100 a 300000 ms"),
+    ),
+    (Msg::StreamErrAttempts, t("use de 1 a 10000 intentos")),
+    (Msg::StreamErrOutput, t("elija una salida")),
+    (Msg::StreamRemoveQuestion, t("¿Quitar «{name}» ({url})?")),
+    (
+        Msg::StreamRemoveWarning,
+        t(
+            "Sus ajustes y su clave guardada se van con él. La grabación y los demás destinos no se ven afectados.",
+        ),
+    ),
+    (Msg::StreamRemoveKeyHover, t("Quitar este destino")),
+    (Msg::StreamRemoveCancelHover, t("Conservar este destino")),
 ];

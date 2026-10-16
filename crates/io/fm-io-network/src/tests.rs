@@ -1476,3 +1476,38 @@ fn hls_uris_and_codecs_that_would_restructure_rendered_playlists_are_refused() {
         Err(HlsError::InvalidUri)
     );
 }
+
+/// Removing one destination frees its slot for a new destination while the other
+/// four keep their state and queues (OR-006).
+#[test]
+fn remove_destination_frees_one_slot_and_leaves_the_others_untouched() {
+    let mut set = OutputSet::new();
+    for id in 1..=5 {
+        set.add_destination(config(id, 4, OutputProtocol::Rtmp))
+            .unwrap();
+    }
+    assert_eq!(
+        set.add_destination(config(3, 4, OutputProtocol::Rtmp)),
+        Err(OutputError::TooManyDestinations)
+    );
+    set.start(destination_id(2)).unwrap();
+    let removed = set.remove_destination(destination_id(3)).unwrap();
+    assert_eq!(removed.id(), destination_id(3));
+    assert!(!set.contains(destination_id(3)));
+    assert_eq!(
+        set.remove_destination(destination_id(3)).err(),
+        Some(OutputError::UnknownDestination(destination_id(3)))
+    );
+    assert_eq!(set.len(), 4);
+    assert_eq!(
+        set.state(destination_id(2)),
+        Some(DestinationState::Connecting)
+    );
+    set.add_destination(config(3, 4, OutputProtocol::Srt))
+        .unwrap();
+    assert_eq!(set.len(), 5);
+    assert_eq!(
+        set.state(destination_id(3)),
+        Some(DestinationState::Stopped)
+    );
+}

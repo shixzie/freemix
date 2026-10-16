@@ -9,8 +9,8 @@ use fm_model::{
     RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
     SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
-    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId, TitleFieldEntry, TitleFieldId,
-    TitleFieldValue, TitleInput,
+    StreamLadderRung, StreamProtocol, StreamReconnectPolicy, StreamTarget, StreamTargetId,
+    TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleInput,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
@@ -857,6 +857,7 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let running = object.boolean("running")?;
     let video_bitrate_kbps = object.u32("video_bitrate_kbps")?;
     let ladder = parse_optional(object.take("ladder")?, parse_stream_ladder)?;
+    let reconnect = parse_stream_reconnect(object.take("reconnect")?)?;
     object.finish()?;
     let target = StreamTarget::new(id, name, protocol, endpoint, key, output)
         .and_then(|target| target.with_backup_endpoint(backup_endpoint))
@@ -867,7 +868,29 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let target = target
         .with_ladder(ladder)
         .map_err(|error| syntax(format!("stream target is invalid: {error}")))?;
-    Ok(target.with_startup(startup).set_running(running))
+    Ok(target
+        .with_startup(startup)
+        .with_reconnect(reconnect)
+        .set_running(running))
+}
+
+/// Parses one destination's authored reconnect policy (schema 49):
+/// `{"initial_delay_ms": u32, "max_delay_ms": u32, "max_attempts": u32|null}`.
+fn parse_stream_reconnect(value: Value) -> Result<StreamReconnectPolicy, DecodeError> {
+    let mut object = Object::new(value, "stream reconnect policy")?;
+    let initial_delay_ms = object.u32("initial_delay_ms")?;
+    let max_delay_ms = object.u32("max_delay_ms")?;
+    let max_attempts = parse_optional(object.take("max_attempts")?, |value| {
+        let Value::Number(value) = value else {
+            return Err(syntax(
+                "field `max_attempts` must be an unsigned integer or null".to_owned(),
+            ));
+        };
+        u32::try_from(value).map_err(|_| syntax("field `max_attempts` exceeds u32".to_owned()))
+    })?;
+    object.finish()?;
+    StreamReconnectPolicy::new(initial_delay_ms, max_delay_ms, max_attempts)
+        .map_err(|error| syntax(format!("field `reconnect` is invalid: {error}")))
 }
 
 /// Parses one authored ladder: an array of rung objects from lowest to

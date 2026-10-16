@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use fm_model::{DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy, StreamLadder, StreamLadderRung};
+use fm_model::{
+    DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy, StreamLadder, StreamLadderRung,
+    StreamReconnectError, StreamReconnectPolicy,
+};
 use fm_types::capture::{
     CaptureAudio, CaptureError, CaptureFormat, CaptureInputConfig, CaptureLossSlate,
     CaptureSettings,
@@ -153,6 +156,32 @@ pub struct StreamSpec {
     pub startup: StartupPolicy,
     pub video_bitrate_kbps: u32,
     pub ladder: Option<fm_model::StreamLadder>,
+    /// The authored reconnect policy (OR-006); `--reconnect` or the default.
+    pub reconnect: StreamReconnectPolicy,
+}
+
+/// The options of `remote-stream-set` (OR-006): every field a destination
+/// carries on the wire, each optional. For an existing destination an
+/// omitted field keeps the daemon's current value; a new destination needs
+/// `--name`, `--protocol` (or an endpoint URL with a scheme), `--endpoint`,
+/// and `--output`. `--endpoint`/`--backup-endpoint` accept either the
+/// scheme-relative endpoint (`host/app`, `/abs/dir`) or a full URL whose
+/// scheme names the protocol. `stream_key` keeps, clears, or replaces the
+/// stored key; `Debug` redacts a new key.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RemoteStreamTargetOptions {
+    pub name: Option<String>,
+    pub protocol: Option<fm_protocol::StreamTargetProtocol>,
+    pub endpoint: Option<String>,
+    /// A new backup endpoint (`--backup-endpoint`).
+    pub backup_endpoint: Option<String>,
+    /// `--clear-backup-endpoint`: remove the backup endpoint.
+    pub clear_backup_endpoint: bool,
+    pub output: Option<u128>,
+    pub video_bitrate_kbps: Option<u32>,
+    pub reconcile_on_startup: Option<bool>,
+    pub reconnect: Option<StreamReconnectPolicy>,
+    pub stream_key: SecretEdit,
 }
 
 impl std::fmt::Debug for StreamSpec {
@@ -168,6 +197,7 @@ impl std::fmt::Debug for StreamSpec {
             .field("startup", &self.startup)
             .field("video_bitrate_kbps", &self.video_bitrate_kbps)
             .field("ladder", &self.ladder)
+            .field("reconnect", &self.reconnect)
             .finish()
     }
 }
@@ -398,6 +428,14 @@ pub enum Command {
     StreamStop {
         path: PathBuf,
         stream: u128,
+    },
+    /// Starts every stream destination at once (OR-006); never recording.
+    StreamStartAll {
+        path: PathBuf,
+    },
+    /// Stops every stream destination at once (OR-006); never recording.
+    StreamStopAll {
+        path: PathBuf,
     },
     RecordStart {
         path: PathBuf,
@@ -1327,6 +1365,44 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Reconnects one desired-running destination now (OR-006).
+    RemoteStreamRetry {
+        address: SocketAddr,
+        stream: u128,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Starts every destination of a running daemon (OR-006).
+    RemoteStreamStartAll {
+        address: SocketAddr,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Stops every destination of a running daemon (OR-006).
+    RemoteStreamStopAll {
+        address: SocketAddr,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Adds or reconfigures one destination of a running daemon (OR-006).
+    RemoteStreamSet {
+        address: SocketAddr,
+        stream: u128,
+        options: Box<RemoteStreamTargetOptions>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Removes one destination of a running daemon (OR-006).
+    RemoteStreamRemove {
+        address: SocketAddr,
+        stream: u128,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists a running daemon's destinations with their latest status.
+    RemoteStreams {
+        address: SocketAddr,
+    },
     RemoteRecordStart {
         address: SocketAddr,
         /// One-based recorder slot, validated to `1..=2` while parsing.
@@ -1415,6 +1491,8 @@ pub enum ArgsError {
     LadderNotAllowed,
     /// The authored rungs are individually shaped but invalid as a ladder.
     InvalidLadder(fm_model::StreamLadderError),
+    /// A well-shaped `--reconnect` policy is out of bounds (OR-006).
+    InvalidReconnect(StreamReconnectError),
     InvalidNumber {
         field: &'static str,
         value: String,
@@ -1468,6 +1546,7 @@ impl core::fmt::Display for ArgsError {
                 formatter.write_str("only hls:// stream destinations support --rung")
             }
             Self::InvalidLadder(error) => write!(formatter, "{error}"),
+            Self::InvalidReconnect(error) => write!(formatter, "{error}"),
             Self::InvalidDisplayOutput(error) => {
                 write!(formatter, "invalid display-output spec: {error}")
             }
@@ -1566,6 +1645,15 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "stream-remove" => parse_stream_remove(arguments),
         "stream-start" => parse_stream_running(arguments, true),
         "stream-stop" => parse_stream_running(arguments, false),
+        "stream-start-all" | "stream-stop-all" => {
+            let path = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(if command == "stream-start-all" {
+                Command::StreamStartAll { path }
+            } else {
+                Command::StreamStopAll { path }
+            })
+        }
         "record-start" => parse_record_desired(arguments, true),
         "record-stop" => parse_record_desired(arguments, false),
         "scene-input-add" => parse_scene_input_add(arguments),
@@ -1837,6 +1925,49 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-ftb" => parse_remote_fade_to_black(arguments),
         "remote-stream-start" => parse_remote_stream_running(arguments, true),
         "remote-stream-stop" => parse_remote_stream_running(arguments, false),
+        "remote-stream-retry" | "remote-stream-remove" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let stream = number(&required(&mut arguments, "stream")?, "stream")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(if command == "remote-stream-retry" {
+                Command::RemoteStreamRetry {
+                    address,
+                    stream,
+                    key,
+                    expected_revision,
+                }
+            } else {
+                Command::RemoteStreamRemove {
+                    address,
+                    stream,
+                    key,
+                    expected_revision,
+                }
+            })
+        }
+        "remote-stream-start-all" | "remote-stream-stop-all" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(if command == "remote-stream-start-all" {
+                Command::RemoteStreamStartAll {
+                    address,
+                    key,
+                    expected_revision,
+                }
+            } else {
+                Command::RemoteStreamStopAll {
+                    address,
+                    key,
+                    expected_revision,
+                }
+            })
+        }
+        "remote-stream-set" => parse_remote_stream_set(arguments),
+        "remote-streams" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RemoteStreams { address })
+        }
         "remote-record-start" => parse_remote_record_desired(arguments, true),
         "remote-record-stop" => parse_remote_record_desired(arguments, false),
         "render" => {
@@ -2013,8 +2144,12 @@ fn parse_stream(
     let mut startup = StartupPolicy::Stopped;
     let mut video_bitrate_kbps = DEFAULT_VIDEO_BITRATE_KBPS;
     let mut rungs = Vec::new();
+    let mut reconnect = StreamReconnectPolicy::DEFAULT;
     while let Some(option) = arguments.next() {
         match option.as_str() {
+            "--reconnect" => {
+                reconnect = reconnect_policy(&required(&mut arguments, "stream reconnect")?)?;
+            }
             "--backup" => {
                 if hls {
                     return Err(ArgsError::BackupNotAllowed);
@@ -2066,8 +2201,149 @@ fn parse_stream(
             startup,
             video_bitrate_kbps,
             ladder,
+            reconnect,
         },
     ))
+}
+
+/// Parses one `--reconnect <initial_ms>:<max_ms>:<attempts|none>` value
+/// (OR-006), for example `500:10000:20` or `250:2000:none` (retry forever).
+///
+/// A value of any other shape is an [`ArgsError::InvalidNumber`]; a
+/// well-shaped policy is validated by [`StreamReconnectPolicy::new`].
+fn reconnect_policy(value: &str) -> Result<StreamReconnectPolicy, ArgsError> {
+    let invalid = || ArgsError::InvalidNumber {
+        field: "stream reconnect (<initial_ms>:<max_ms>:<attempts|none>)",
+        value: value.to_owned(),
+    };
+    let mut parts = value.split(':');
+    let (Some(initial), Some(max), Some(attempts), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid());
+    };
+    let initial = initial.parse::<u32>().map_err(|_| invalid())?;
+    let max = max.parse::<u32>().map_err(|_| invalid())?;
+    let attempts = if attempts == "none" {
+        None
+    } else {
+        Some(attempts.parse::<u32>().map_err(|_| invalid())?)
+    };
+    StreamReconnectPolicy::new(initial, max, attempts).map_err(ArgsError::InvalidReconnect)
+}
+
+/// Parses `remote-stream-set <address> <stream> [options] [--key <key>]
+/// [--expect <revision>]` (OR-006). See [`RemoteStreamTargetOptions`].
+#[allow(clippy::too_many_lines)] // one arm per option
+fn parse_remote_stream_set(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let stream = number(&required(&mut arguments, "stream")?, "stream")?;
+    let mut options = RemoteStreamTargetOptions::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--name" => options.name = Some(nonblank(&mut arguments, "stream name")?),
+            "--protocol" => {
+                let value = required(&mut arguments, "stream protocol")?;
+                options.protocol =
+                    Some(fm_protocol::StreamTargetProtocol::from_token(&value).ok_or(
+                        ArgsError::InvalidChoice {
+                            field: "stream protocol",
+                            value,
+                        },
+                    )?);
+            }
+            "--endpoint" => options.endpoint = Some(nonblank(&mut arguments, "stream endpoint")?),
+            "--backup-endpoint" => {
+                if options.clear_backup_endpoint {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--backup-endpoint",
+                        conflicts: "--clear-backup-endpoint",
+                    });
+                }
+                options.backup_endpoint = Some(nonblank(&mut arguments, "backup stream endpoint")?);
+            }
+            "--clear-backup-endpoint" => {
+                if options.backup_endpoint.is_some() {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-backup-endpoint",
+                        conflicts: "--backup-endpoint",
+                    });
+                }
+                options.clear_backup_endpoint = true;
+            }
+            "--output" => {
+                options.output = Some(number(&required(&mut arguments, "output")?, "output")?);
+            }
+            "--bitrate-kbps" | "--video-bitrate-kbps" => {
+                options.video_bitrate_kbps = Some(number(
+                    &required(&mut arguments, "video bitrate kbps")?,
+                    "video bitrate",
+                )?);
+            }
+            "--startup" => {
+                let value = required(&mut arguments, "startup policy")?;
+                options.reconcile_on_startup = Some(match value.as_str() {
+                    "stopped" => false,
+                    "reconcile" | "reconcile-desired-state" => true,
+                    _ => {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "startup policy",
+                            value,
+                        });
+                    }
+                });
+            }
+            "--reconnect" => {
+                options.reconnect = Some(reconnect_policy(&required(
+                    &mut arguments,
+                    "stream reconnect",
+                )?)?);
+            }
+            "--stream-key" => {
+                if options.stream_key == SecretEdit::Clear {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--stream-key",
+                        conflicts: "--clear-stream-key",
+                    });
+                }
+                options.stream_key = SecretEdit::Set(nonblank(&mut arguments, "stream key")?);
+            }
+            "--clear-stream-key" => {
+                if matches!(options.stream_key, SecretEdit::Set(_)) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-stream-key",
+                        conflicts: "--stream-key",
+                    });
+                }
+                options.stream_key = SecretEdit::Clear;
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::RemoteStreamSet {
+        address,
+        stream,
+        options: Box::new(options),
+        key,
+        expected_revision,
+    })
 }
 
 /// Parses one repeated `--rung` value:

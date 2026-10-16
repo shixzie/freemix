@@ -154,6 +154,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         cue_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+        stream_targets: Vec::new(),
     };
     let mut model = ClientModel::new(project);
     model
@@ -759,6 +760,7 @@ mod scenes {
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         };
         let mut model = ClientModel::new(project);
         model

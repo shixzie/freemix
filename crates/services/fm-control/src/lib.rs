@@ -28,6 +28,7 @@ mod network_stream;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
+mod stream_target;
 mod title_animation;
 mod title_layout;
 mod transition;
@@ -1721,7 +1722,8 @@ impl<A: AuthorizationHook> ControlService<A> {
             CommandPayload::SetCaptureSettings { input, settings } => {
                 capture::engine_command(*input, settings)
             }
-            payload => engine_command(payload),
+            payload => stream_target::engine_command(self.engine.show(), payload)
+                .unwrap_or_else(|| engine_command(payload)),
         };
         let replay_payload = history_target
             .as_ref()
@@ -2160,7 +2162,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetNetworkStream { .. }
-        | EngineCommand::SetCaptureSettings { .. } => "project",
+        | EngineCommand::SetCaptureSettings { .. }
+        | EngineCommand::SetStreamTarget { .. } => "project",
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::Media(_) => "media",
@@ -2236,7 +2239,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetNetworkStream { .. }
-        | CommandPayload::SetCaptureSettings { .. } => CommandClass::EditProject,
+        | CommandPayload::SetCaptureSettings { .. }
+        | CommandPayload::SetStreamTarget { .. }
+        | CommandPayload::RemoveStreamTarget { .. } => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -2277,6 +2282,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::CancelManualTransition
         | CommandPayload::StreamStart { .. }
         | CommandPayload::StreamStop { .. }
+        | CommandPayload::StreamRetry { .. }
+        | CommandPayload::StreamStartAll
+        | CommandPayload::StreamStopAll
         | CommandPayload::RecordStart { .. }
         | CommandPayload::RecordStop { .. }
         | CommandPayload::PlaylistControl { .. }
@@ -2392,6 +2400,13 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         }
         CommandPayload::SetNetworkStream { .. } => {
             unreachable!("network stream edits resolve their URL against the show")
+        }
+        CommandPayload::StreamRetry { .. }
+        | CommandPayload::StreamStartAll
+        | CommandPayload::StreamStopAll
+        | CommandPayload::SetStreamTarget { .. }
+        | CommandPayload::RemoveStreamTarget { .. } => {
+            unreachable!("stream destination commands resolve against the show")
         }
         CommandPayload::SetCaptureSettings { input, settings } => {
             capture::engine_command(*input, settings)
@@ -2843,6 +2858,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetNetworkStream { .. } => {
             return network_stream::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetStreamTarget { .. } => {
+            return stream_target::wire_edit_payload(command);
+        }
         command @ EngineCommand::SetCaptureSettings { .. } => {
             return capture::wire_edit_payload(command);
         }
@@ -3276,6 +3294,13 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
             locked,
         };
     }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| stream_target::changed(&event.payload))
+    {
+        return payload;
+    }
     let streams_changed = outcome
         .events
         .iter()
@@ -3476,7 +3501,9 @@ fn snapshot_record(
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),
         capture_inputs: capture::wire_entries(engine.show(), capture_states),
+        stream_targets: stream_target::wire_entries(engine.show()),
     };
+
     SnapshotRecord {
         cursor: EventCursor {
             engine: identity.clone(),

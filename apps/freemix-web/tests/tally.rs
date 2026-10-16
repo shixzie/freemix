@@ -205,6 +205,7 @@ fn snapshot_locked(
         cue_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+        stream_targets: Vec::new(),
     }))
 }
 

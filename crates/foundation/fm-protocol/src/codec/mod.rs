@@ -14,6 +14,7 @@ mod playlist;
 mod refusal;
 mod scene_layer;
 mod scene_layout;
+mod stream_target;
 mod title;
 mod transition;
 mod value;

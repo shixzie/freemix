@@ -14,6 +14,7 @@ mod playlist;
 mod scene_animation;
 mod scene_layer;
 mod state;
+mod stream_target;
 mod title_animation;
 
 pub use animation_preset::EngineAnimationPresetEdit;
@@ -26,10 +27,11 @@ pub use engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
     EngineFadeToBlackState, EngineManualTransitionKind, EngineManualTransitionPosition,
     EngineManualTransitionState, EnginePrepareOutcome, EngineRestoreState, EngineSnapshot,
-    EngineStreamStatus, EngineTitleAir, FrameResult, MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS,
-    MAX_INPUT_AUDIO_DELAY_SAMPLES, MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS,
-    MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS, MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution,
-    TitleAirRequirement, TitleCue, TitleCueAction,
+    EngineStreamControl, EngineStreamStatus, EngineTitleAir, FrameResult,
+    MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS, MAX_INPUT_AUDIO_DELAY_SAMPLES,
+    MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS, MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS,
+    MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution, TitleAirRequirement, TitleCue,
+    TitleCueAction,
 };
 pub use error::{
     EngineError, EngineMediaError, InputCatalogueError, ShowError, SnapshotError, TitleRejection,
@@ -63,6 +65,7 @@ pub use scene_layer::{
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,
 };
+pub use stream_target::EngineStreamTargetSpec;
 pub use title_animation::{
     EngineTitleAnimationEdit, EngineTitleTemplate, TitleAnimationChange, TitleClipBound,
     title_template_inputs,

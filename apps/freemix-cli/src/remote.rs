@@ -185,6 +185,267 @@ pub fn set_network_stream(
     remote.execute(payload, key, expected_revision, CommandCompletion::Project)
 }
 
+/// Adds or reconfigures stream destination `target` of the daemon at
+/// `address` (OR-006). For an existing destination every option left out
+/// keeps the daemon's current value; the stored stream key, which the daemon
+/// never reveals, is kept unless `--stream-key` or `--clear-stream-key` is
+/// given.
+pub fn set_stream_target(
+    address: SocketAddr,
+    target: fm_protocol::WireStreamTargetId,
+    options: &crate::args::RemoteStreamTargetOptions,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let current = remote
+        .client
+        .model()
+        .view()
+        .ok_or_else(|| RemoteFailure("remote project view is unavailable".into()))?
+        .stream_target(target.get())
+        .map(|entry| entry.config.clone());
+    let config = stream_target_config(current.as_ref(), options)?;
+    if let fm_protocol::SecretEdit::Set(secret) = &options.stream_key
+        && !fm_protocol::stream_key_is_valid(secret)
+    {
+        return Err(RemoteFailure(format!(
+            "invalid stream key: it must be 1..={} bytes of printable ASCII without spaces",
+            fm_protocol::MAX_STREAM_TARGET_KEY_BYTES
+        ))
+        .into());
+    }
+    let payload = CommandPayload::SetStreamTarget {
+        target,
+        config: Box::new(config),
+        stream_key: options.stream_key.clone(),
+    };
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.execute(payload, key, expected_revision, CommandCompletion::Project)?;
+    print_stream_targets(remote.stream_target_rows()?);
+    Ok(())
+}
+
+/// Splits an authored endpoint into its scheme's protocol, if it is a full
+/// URL, and its scheme-relative part. No error repeats the endpoint text.
+fn split_endpoint(
+    text: &str,
+    field: &str,
+) -> RemoteResult<(Option<fm_protocol::StreamTargetProtocol>, String)> {
+    match text.split_once("://") {
+        Some((scheme, rest)) => {
+            let protocol =
+                fm_protocol::StreamTargetProtocol::from_token(scheme).ok_or_else(|| {
+                    RemoteFailure(format!(
+                        "{field} must use rtmp://, rtmps://, srt:// or hls://"
+                    ))
+                })?;
+            Ok((Some(protocol), rest.to_owned()))
+        }
+        None => Ok((None, text.to_owned())),
+    }
+}
+
+/// The configuration `remote-stream-set` sends: each given option, else the
+/// daemon's current value, else (for a new destination) the default or a
+/// refusal naming the missing option.
+#[allow(clippy::too_many_lines)] // one resolution per configuration field
+fn stream_target_config(
+    current: Option<&fm_protocol::StreamTargetConfig>,
+    options: &crate::args::RemoteStreamTargetOptions,
+) -> RemoteResult<fm_protocol::StreamTargetConfig> {
+    let missing =
+        |option: &str| RemoteFailure(format!("a new stream destination requires {option}"));
+    let (endpoint_protocol, endpoint) = match options.endpoint.as_deref() {
+        Some(text) => {
+            let (protocol, endpoint) = split_endpoint(text, "--endpoint")?;
+            (protocol, Some(endpoint))
+        }
+        None => (None, None),
+    };
+    let protocol = match (options.protocol, endpoint_protocol) {
+        (Some(given), Some(scheme)) if given != scheme => {
+            return Err(RemoteFailure(
+                "--protocol does not match the --endpoint URL scheme".into(),
+            )
+            .into());
+        }
+        (Some(protocol), _) | (None, Some(protocol)) => protocol,
+        (None, None) => current
+            .map(|config| config.protocol)
+            .ok_or_else(|| missing("--protocol"))?,
+    };
+    let endpoint = match endpoint {
+        Some(endpoint) => endpoint,
+        None => current
+            .map(|config| config.endpoint.clone())
+            .ok_or_else(|| missing("--endpoint"))?,
+    };
+    let backup_endpoint = match &options.backup_endpoint {
+        Some(text) => {
+            let (scheme, backup) = split_endpoint(text, "--backup-endpoint")?;
+            if scheme.is_some_and(|scheme| scheme != protocol) {
+                return Err(RemoteFailure(format!(
+                    "--backup-endpoint must use {}://, matching the primary",
+                    protocol.token()
+                ))
+                .into());
+            }
+            Some(backup)
+        }
+        None if options.clear_backup_endpoint => None,
+        None => current.and_then(|config| config.backup_endpoint.clone()),
+    };
+    let name = match &options.name {
+        Some(name) => name.clone(),
+        None => current
+            .map(|config| config.name.clone())
+            .ok_or_else(|| missing("--name"))?,
+    };
+    let output = match options.output {
+        Some(output) => fm_protocol::WireOutputId::new(
+            NonZeroU128::new(output)
+                .ok_or_else(|| RemoteFailure("output ID must be nonzero".into()))?,
+        ),
+        None => current
+            .map(|config| config.output)
+            .ok_or_else(|| missing("--output"))?,
+    };
+    let config = fm_protocol::StreamTargetConfig {
+        name,
+        protocol,
+        endpoint,
+        backup_endpoint,
+        output,
+        reconcile_on_startup: options
+            .reconcile_on_startup
+            .or(current.map(|config| config.reconcile_on_startup))
+            .unwrap_or(false),
+        video_bitrate_kbps: options
+            .video_bitrate_kbps
+            .or(current.map(|config| config.video_bitrate_kbps))
+            .unwrap_or(fm_model::DEFAULT_VIDEO_BITRATE_KBPS),
+        reconnect: options.reconnect.map_or_else(
+            || {
+                current.map_or(fm_protocol::StreamReconnect::DEFAULT, |config| {
+                    config.reconnect
+                })
+            },
+            |policy| fm_protocol::StreamReconnect {
+                initial_delay_ms: policy.initial_delay_ms(),
+                max_delay_ms: policy.max_delay_ms(),
+                max_attempts: policy.max_attempts(),
+            },
+        ),
+    };
+    if !(fm_protocol::MIN_STREAM_TARGET_BITRATE_KBPS..=fm_protocol::MAX_STREAM_TARGET_BITRATE_KBPS)
+        .contains(&config.video_bitrate_kbps)
+    {
+        return Err(RemoteFailure(format!(
+            "video bitrate must be in {}..={} kbps",
+            fm_protocol::MIN_STREAM_TARGET_BITRATE_KBPS,
+            fm_protocol::MAX_STREAM_TARGET_BITRATE_KBPS
+        ))
+        .into());
+    }
+    if !config.is_valid() {
+        return Err(RemoteFailure(format!(
+            "invalid stream destination: the name must be 1..={} bytes and each endpoint \
+             1..={} bytes of printable ASCII without spaces",
+            fm_protocol::MAX_STREAM_TARGET_NAME_BYTES,
+            fm_protocol::MAX_STREAM_TARGET_ENDPOINT_BYTES
+        ))
+        .into());
+    }
+    Ok(config)
+}
+
+/// Prints every stream destination of the daemon at `address` with its
+/// configuration (URL without key, whether a key is stored) and its latest
+/// status sample (OR-006). When a destination is desired running the
+/// command waits briefly for the daemon's next status sample.
+pub fn stream_targets(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let running = remote
+        .client
+        .model()
+        .state()
+        .is_some_and(|state| state.streams().iter().any(|stream| stream.desired_running));
+    if running {
+        remote.await_stream_status(STREAM_STATUS_WAIT);
+    }
+    print_stream_targets(remote.stream_target_rows()?);
+    Ok(())
+}
+
+/// How long `remote-streams` waits for a status sample of a running
+/// destination before listing it without one.
+const STREAM_STATUS_WAIT: Duration = Duration::from_millis(1_500);
+
+/// One destination row: its configuration, the durable stream roster entry,
+/// and the latest lossy status sample, if any.
+struct StreamTargetRow {
+    entry: fm_protocol::StreamTargetEntry,
+    desired_running: Option<bool>,
+    sample: Option<fm_protocol::StreamStatusSample>,
+}
+
+/// Prints one `StreamTarget(...)` line per destination, or
+/// `StreamTargets=none`. The URL never carries the key: only `key=yes|no`.
+fn print_stream_targets(rows: Vec<StreamTargetRow>) {
+    if rows.is_empty() {
+        println!("StreamTargets=none");
+    }
+    for row in rows {
+        let config = &row.entry.config;
+        let status = row.sample.as_ref().map_or_else(
+            || "status=none".to_owned(),
+            |sample| {
+                format!(
+                    "state={}, connected={}, kbps={}, dropped={}, reconnects={}, uptime_ms={}, last_error={}",
+                    stream_realized_name(sample.realized),
+                    sample.connected,
+                    sample.bitrate_kbps,
+                    sample.dropped_pairs,
+                    sample.reconnects,
+                    sample.uptime_ms,
+                    sample.failure.as_deref().unwrap_or("none"),
+                )
+            },
+        );
+        println!(
+            "StreamTarget(id={}, name={:?}, protocol={}, url={:?}, backup_url={}, output={}, startup={}, video_bitrate_kbps={}, reconnect={}, key={}, ladder_rungs={}, desired={}, {status})",
+            row.entry.target,
+            config.name,
+            config.protocol.token(),
+            config.display_url(),
+            config.backup_endpoint.as_ref().map_or_else(
+                || "none".to_owned(),
+                |backup| format!("{:?}", format!("{}://{backup}", config.protocol.token()))
+            ),
+            config.output,
+            if config.reconcile_on_startup {
+                "reconcile"
+            } else {
+                "stopped"
+            },
+            config.video_bitrate_kbps,
+            crate::app::format_reconnect(
+                config.reconnect.initial_delay_ms,
+                config.reconnect.max_delay_ms,
+                config.reconnect.max_attempts,
+            ),
+            if row.entry.has_key { "yes" } else { "no" },
+            row.entry.ladder_rungs,
+            row.desired_running
+                .map_or_else(|| "unknown".to_owned(), |desired| desired.to_string()),
+        );
+    }
+}
+
 /// Prints one `NetworkStream(...)` line per network stream input, or
 /// `NetworkStreams=none`. The URL is the redacted one.
 pub(crate) fn print_network_streams(
@@ -697,6 +958,8 @@ impl CommandCompletion {
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetNetworkStream { .. }
             | CommandPayload::SetCaptureSettings { .. }
+            | CommandPayload::SetStreamTarget { .. }
+            | CommandPayload::RemoveStreamTarget { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
@@ -972,7 +1235,8 @@ impl Remote {
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }
                         | EventPayload::NetworkStreamChanged { .. }
-                        | EventPayload::CaptureSettingsChanged { .. } => matches!(
+                        | EventPayload::CaptureSettingsChanged { .. }
+                        | EventPayload::StreamTargetChanged { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),
@@ -1118,18 +1382,68 @@ impl Remote {
         if let Some(status) = &self.latest_stream_status {
             for sample in &status.samples {
                 println!(
-                    "StreamStatus(target={}, realized={}, connected={}, muxed_bytes={}, enqueued_pairs={}, dropped_pairs={}, failure={})",
+                    "StreamStatus(target={}, realized={}, connected={}, muxed_bytes={}, enqueued_pairs={}, dropped_pairs={}, bitrate_kbps={}, reconnects={}, uptime_ms={}, failure={})",
                     sample.target,
                     stream_realized_name(sample.realized),
                     sample.connected,
                     sample.muxed_bytes,
                     sample.enqueued_pairs,
                     sample.dropped_pairs,
+                    sample.bitrate_kbps,
+                    sample.reconnects,
+                    sample.uptime_ms,
                     sample.failure.as_deref().unwrap_or("none"),
                 );
             }
         }
         Ok(())
+    }
+
+    /// Every configured destination with its durable roster entry and the
+    /// latest status sample this session retained (OR-006).
+    fn stream_target_rows(&self) -> RemoteResult<Vec<StreamTargetRow>> {
+        let state = self
+            .client
+            .model()
+            .state()
+            .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+        Ok(state
+            .stream_targets()
+            .iter()
+            .map(|entry| StreamTargetRow {
+                entry: entry.clone(),
+                desired_running: state
+                    .streams()
+                    .iter()
+                    .find(|stream| stream.target == entry.target.get())
+                    .map(|stream| stream.desired_running),
+                sample: self.latest_stream_status.as_ref().and_then(|status| {
+                    status
+                        .samples
+                        .iter()
+                        .find(|sample| sample.target == entry.target)
+                        .cloned()
+                }),
+            })
+            .collect())
+    }
+
+    /// Reads (and replicates) daemon messages until the next stream status
+    /// sample arrives or `wait` elapses. A timeout or closed connection only
+    /// ends the wait: the listing then shows no sample.
+    fn await_stream_status(&mut self, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        loop {
+            match self.read_until_inner(Some(deadline), true) {
+                Ok(WireMessage::StreamStatus(_)) | Err(_) => return,
+                Ok(message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_))) => {
+                    if self.client.intake(message).is_err() {
+                        return;
+                    }
+                }
+                Ok(_) => {}
+            }
+        }
     }
 
     /// Validates and retains one lossy stream-status record. Identity must
@@ -1162,14 +1476,20 @@ impl Remote {
     }
 
     fn read(&mut self) -> RemoteResult<WireMessage> {
-        self.read_until_inner(None)
+        self.read_until_inner(None, false)
     }
 
     fn read_until(&mut self, deadline: Instant) -> RemoteResult<WireMessage> {
-        self.read_until_inner(Some(deadline))
+        self.read_until_inner(Some(deadline), false)
     }
 
-    fn read_until_inner(&mut self, deadline: Option<Instant>) -> RemoteResult<WireMessage> {
+    /// Reads the next message. A stream status record is always absorbed;
+    /// with `yield_stream_status` it is also returned instead of skipped.
+    fn read_until_inner(
+        &mut self,
+        deadline: Option<Instant>,
+        yield_stream_status: bool,
+    ) -> RemoteResult<WireMessage> {
         let mut line = Vec::with_capacity(MAX_LINE_BYTES);
         loop {
             if let Some(deadline) = deadline {
@@ -1208,6 +1528,10 @@ impl Remote {
             if complete {
                 let message = decode_line(core::str::from_utf8(&line)?)?;
                 if let WireMessage::StreamStatus(status) = message {
+                    if yield_stream_status {
+                        self.absorb_stream_status(status.clone())?;
+                        return Ok(WireMessage::StreamStatus(status));
+                    }
                     self.absorb_stream_status(status)?;
                     line.clear();
                     continue;

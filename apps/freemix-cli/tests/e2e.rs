@@ -583,6 +583,9 @@ fn serve_stream_start(listener: &TcpListener) {
                 dropped_pairs: 3,
                 failure: None,
                 local: None,
+                bitrate_kbps: 0,
+                reconnects: 0,
+                uptime_ms: 0,
             }],
         }),
     );
@@ -795,6 +798,7 @@ fn serve_streams_snapshot_peer(
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         }),
     );
 }
@@ -1586,6 +1590,14 @@ std::thread_local! {
     /// (IN-001).
     static SNAPSHOT_CAPTURE_INPUTS: std::cell::RefCell<Vec<fm_protocol::CaptureInputEntry>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Stream destinations the fake daemon's snapshot lists on this thread
+    /// (OR-006).
+    static SNAPSHOT_STREAM_TARGETS: std::cell::RefCell<Vec<fm_protocol::StreamTargetEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The durable stream roster the fake daemon's snapshot lists on this
+    /// thread (OR-006).
+    static SNAPSHOT_STREAMS: std::cell::RefCell<Vec<fm_protocol::StreamStatus>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// [`serve_edit`] with scene layouts in the snapshot, so a
@@ -1655,7 +1667,7 @@ fn write_handshake_snapshot(
             desired_fade_to_black: live_fade_to_black(),
             realized_fade_to_black: live_fade_to_black(),
             stingers: Vec::new(),
-            streams: Vec::new(),
+            streams: SNAPSHOT_STREAMS.with(|cell| cell.borrow().clone()),
             recordings: recording_roster([false, false]),
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
@@ -1676,6 +1688,7 @@ fn write_handshake_snapshot(
                 name: "Cameras".into(),
             }],
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: SNAPSHOT_STREAM_TARGETS.with(|cell| cell.borrow().clone()),
         }),
     );
     for (scene, layout) in SNAPSHOT_LAYOUTS.with(|cell| cell.borrow().clone()) {
@@ -1772,7 +1785,7 @@ fn write_handshake_version_with_fade_to_black(
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             stingers: Vec::new(),
-            streams: Vec::new(),
+            streams: SNAPSHOT_STREAMS.with(|cell| cell.borrow().clone()),
             recordings: recording_roster([false, false]),
             titles: Vec::new(),
             scenes: Vec::new(),
@@ -1785,6 +1798,7 @@ fn write_handshake_version_with_fade_to_black(
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         }),
     );
 }
@@ -3827,7 +3841,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 48,
+  "schema_version": 49,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4034,7 +4048,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 48", "\"schema_version\": 47"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 49", "\"schema_version\": 47"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4048,7 +4062,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 47 is unsupported; expected 48",
+        "title template schema 47 is unsupported; expected 49",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4066,7 +4080,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 48,
+  "schema_version": 49,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4329,7 +4343,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 48,
+  "schema_version": 49,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4559,7 +4573,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 48,
+  "schema_version": 49,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4656,7 +4670,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 48,
+  "schema_version": 49,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5304,7 +5318,7 @@ fn local_stream_destinations_are_authored_offline_and_never_print_the_stream_key
             "url=\"rtmps://ingest.example.test:443/live/****\" ",
             "backup_url=\"rtmps://backup.example.test/live/****\" ",
             "output=30 output_name=\"Primary\" startup=reconcile-desired-state ",
-            "video_bitrate_kbps=4500 ladder=none running=false"
+            "video_bitrate_kbps=4500 ladder=none reconnect=250:2000:40 running=false"
         )
     );
 
@@ -5411,7 +5425,7 @@ fn author_srt_stream_destination(context: &ContractContext) {
             "url=\"srt://relay.example.test:9710?streamid=****\" ",
             "backup_url=\"none\" ",
             "output=30 output_name=\"Primary\" startup=stopped ",
-            "video_bitrate_kbps=4500 ladder=none running=false"
+            "video_bitrate_kbps=4500 ladder=none reconnect=250:2000:40 running=false"
         )
     );
     assert_success(&invoke_bounded(&[
@@ -5476,7 +5490,7 @@ fn hls_stream_destination_is_authored_offline_and_prints_its_path_and_bitrate() 
             "url=\"hls:///var/lib/freemix/live/hls\" ",
             "backup_url=\"none\" ",
             "output=30 output_name=\"Primary\" startup=stopped ",
-            "video_bitrate_kbps=6000 ladder=none running=false"
+            "video_bitrate_kbps=6000 ladder=none reconnect=250:2000:40 running=false"
         )
     );
     assert!(!hls_line.contains("****"));
@@ -5634,7 +5648,7 @@ fn hls_stream_destination_ladder_is_authored_offline_and_printed() {
             "backup_url=\"none\" ",
             "output=30 output_name=\"Primary\" startup=stopped ",
             "video_bitrate_kbps=2500 ladder=640x360@1000,1280x720@2500 ",
-            "running=false"
+            "reconnect=250:2000:40 running=false"
         )
     );
     assert!(!hls_line.contains("****"));
@@ -5731,13 +5745,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        48
+        49
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 48);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 49);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5750,7 +5764,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 48);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 49);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5804,7 +5818,7 @@ fn remote_stream_start_is_accepted_and_replicates_the_streams_roster() {
     ));
     assert!(
         status.contains(
-            "StreamStatus(target=40, realized=starting, connected=false, muxed_bytes=2048, enqueued_pairs=12, dropped_pairs=3, failure=none)"
+            "StreamStatus(target=40, realized=starting, connected=false, muxed_bytes=2048, enqueued_pairs=12, dropped_pairs=3, bitrate_kbps=0, reconnects=0, uptime_ms=0, failure=none)"
         ),
         "status output should surface the validated stream-status sample: {status}"
     );
@@ -5826,7 +5840,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        48
+        49
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5834,7 +5848,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 48);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 49);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5844,7 +5858,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 48);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 49);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5852,7 +5866,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 48);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 49);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -13099,5 +13113,701 @@ fn remote_cue_list_set_sends_the_exact_definition() {
         "0",
     ]);
     assert_success(&output);
+    server.finish();
+}
+
+/// OR-006: `stream-start-all`/`stream-stop-all` toggle every destination's
+/// desired running flag in one engine command and never touch recording; a
+/// show without destinations is refused without touching the bundle.
+#[test]
+fn local_stream_start_all_and_stop_all_toggle_every_destination_but_not_recording() {
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    assert_success(&invoke_bounded(&[
+        "stream-add",
+        context.project_path(),
+        "41",
+        "30",
+        "srt://relay.example.test:9710",
+        STREAM_KEY,
+        "SRT relay",
+    ]));
+    assert_success(&invoke_bounded(&[
+        "record-start",
+        context.project_path(),
+        "--recorder",
+        "2",
+    ]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let running = |store: &ProjectStore| {
+        store
+            .load()
+            .unwrap()
+            .project()
+            .stream_targets()
+            .iter()
+            .map(fm_model::StreamTarget::running)
+            .collect::<Vec<_>>()
+    };
+    let recording =
+        |store: &ProjectStore| store.load().unwrap().project().recording_desired_slots();
+    assert_eq!(running(&store), [false, false]);
+    assert_eq!(recording(&store), [false, true]);
+
+    let started = invoke_bounded(&["stream-start-all", context.project_path()]);
+    assert_success(&started);
+    assert_no_secrets(&started, &[STREAM_KEY]);
+    assert_eq!(running(&store), [true, true]);
+    assert_eq!(recording(&store), [false, true]);
+    let streams = stdout(&invoke_bounded(&["streams", context.project_path()]));
+    assert_eq!(streams.matches("running=true").count(), 2, "{streams}");
+
+    // Stopping one leaves the other running: each stays independent.
+    assert_success(&invoke_bounded(&[
+        "stream-stop",
+        context.project_path(),
+        "41",
+    ]));
+    assert_eq!(running(&store), [true, false]);
+
+    let stopped = invoke_bounded(&["stream-stop-all", context.project_path()]);
+    assert_success(&stopped);
+    assert_eq!(running(&store), [false, false]);
+    assert_eq!(recording(&store), [false, true]);
+
+    assert_failure_contains(
+        &invoke_bounded(&["stream-start-all", context.project_path(), "40"]),
+        "unexpected argument `40`",
+    );
+
+    // A show without destinations refuses the group command atomically.
+    for stream in ["40", "41"] {
+        assert_success(&invoke_bounded(&[
+            "stream-remove",
+            context.project_path(),
+            stream,
+        ]));
+    }
+    let manifest_before = fs::read(context.project.join("project.json")).unwrap();
+    let journal_before = journal_bytes(&store);
+    assert_failure_contains(
+        &invoke_bounded(&["stream-start-all", context.project_path()]),
+        "the show has no stream destinations",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(journal_bytes(&store), journal_before);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-006: `--reconnect <initial_ms>:<max_ms>:<attempts|none>` is parsed,
+/// validated against the model's bounds, persisted, printed in the same
+/// syntax, and refused atomically when out of range or misshapen.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn local_stream_reconnect_policy_is_validated_persisted_and_printed() {
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    let store = ProjectStore::new(&context.project).unwrap();
+    let stored_policy =
+        |store: &ProjectStore| store.load().unwrap().project().stream_targets()[0].reconnect();
+    assert_eq!(
+        stored_policy(&store),
+        fm_model::StreamReconnectPolicy::DEFAULT
+    );
+
+    assert_success(&invoke_bounded(&[
+        "stream-update",
+        context.project_path(),
+        "40",
+        "30",
+        "rtmps://ingest.example.test:443/live",
+        STREAM_KEY,
+        "Main ingest",
+        "--reconnect",
+        "500:10000:none",
+    ]));
+    assert_eq!(
+        stored_policy(&store),
+        fm_model::StreamReconnectPolicy::new(500, 10_000, None).unwrap()
+    );
+    let streams = invoke_bounded(&["streams", context.project_path()]);
+    assert_success(&streams);
+    assert!(
+        stdout(&streams).contains(" reconnect=500:10000:none running=false"),
+        "{}",
+        stdout(&streams)
+    );
+
+    assert_success(&invoke_bounded(&[
+        "stream-add",
+        context.project_path(),
+        "41",
+        "30",
+        "hls:///var/lib/freemix/hls",
+        "Local HLS",
+        "--reconnect",
+        "100:300000:10000",
+    ]));
+    // The policy survives a reload from disk.
+    let reloaded = store.load().unwrap();
+    assert_eq!(
+        reloaded.project().stream_targets()[1].reconnect(),
+        fm_model::StreamReconnectPolicy::new(100, 300_000, Some(10_000)).unwrap()
+    );
+    assert!(
+        stdout(&invoke_bounded(&["streams", context.project_path()]))
+            .contains(" reconnect=100:300000:10000 running=false")
+    );
+
+    for (value, expected) in [
+        (
+            "99:2000:4",
+            "stream reconnect delays must be between 100 and 300000 ms",
+        ),
+        (
+            "250:300001:4",
+            "stream reconnect delays must be between 100 and 300000 ms",
+        ),
+        (
+            "2000:1000:4",
+            "maximum delay must not be below the first delay",
+        ),
+        (
+            "250:2000:0",
+            "stream reconnect attempts must be between 1 and 10000",
+        ),
+        (
+            "250:2000:10001",
+            "stream reconnect attempts must be between 1 and 10000",
+        ),
+        ("250:2000", "invalid stream reconnect"),
+        ("250:2000:4:1", "invalid stream reconnect"),
+        ("fast:2000:4", "invalid stream reconnect"),
+        ("250:2000:forever", "invalid stream reconnect"),
+    ] {
+        let manifest_before = fs::read(context.project.join("project.json")).unwrap();
+        let failure = invoke_bounded(&[
+            "stream-update",
+            context.project_path(),
+            "40",
+            "30",
+            "rtmps://ingest.example.test:443/live",
+            STREAM_KEY,
+            "Main ingest",
+            "--reconnect",
+            value,
+        ]);
+        assert_failure_contains(&failure, expected);
+        assert_no_secrets(&failure, &[STREAM_KEY]);
+        assert_eq!(
+            fs::read(context.project.join("project.json")).unwrap(),
+            manifest_before
+        );
+    }
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "stream-add",
+            context.project_path(),
+            "42",
+            "30",
+            "rtmp://relay.example.test/live",
+            STREAM_KEY,
+            "Relay",
+            "--reconnect",
+        ]),
+        "missing value for stream reconnect",
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+const REMOTE_STREAM_KEY: &str = "remote-live-9f3Kq7Zx";
+
+fn remote_stream_target(id: u128) -> fm_protocol::WireStreamTargetId {
+    fm_protocol::WireStreamTargetId::new(NonZeroU128::new(id).unwrap())
+}
+
+fn remote_output(id: u128) -> fm_protocol::WireOutputId {
+    fm_protocol::WireOutputId::new(NonZeroU128::new(id).unwrap())
+}
+
+/// The destination configuration the remote stream tests start from.
+fn remote_stream_config() -> fm_protocol::StreamTargetConfig {
+    fm_protocol::StreamTargetConfig {
+        name: "Main ingest".into(),
+        protocol: fm_protocol::StreamTargetProtocol::Rtmps,
+        endpoint: "ingest.example.test:443/live".into(),
+        backup_endpoint: None,
+        output: remote_output(1),
+        reconcile_on_startup: false,
+        video_bitrate_kbps: 6_000,
+        reconnect: fm_protocol::StreamReconnect {
+            initial_delay_ms: 500,
+            max_delay_ms: 10_000,
+            max_attempts: None,
+        },
+    }
+}
+
+fn remote_stream_entry(
+    config: fm_protocol::StreamTargetConfig,
+    has_key: bool,
+) -> fm_protocol::StreamTargetEntry {
+    fm_protocol::StreamTargetEntry {
+        target: remote_stream_target(40),
+        config,
+        has_key,
+        ladder_rungs: 0,
+    }
+}
+
+fn remote_stream_roster(desired_running: bool) -> Vec<fm_protocol::StreamStatus> {
+    vec![fm_protocol::StreamStatus {
+        target: remote_stream_target(40),
+        name: "Main ingest".into(),
+        desired_running,
+        realized: fm_protocol::StreamRealizedState::Stopped,
+        detail: None,
+    }]
+}
+
+/// Serves `edit` with `targets` and `streams` in the handshake snapshot.
+fn start_stream_target_edit(
+    edit: RemoteEdit,
+    targets: Vec<fm_protocol::StreamTargetEntry>,
+    streams: Vec<fm_protocol::StreamStatus>,
+) -> FakeRemoteServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let worker = thread::spawn(move || {
+        SNAPSHOT_STREAM_TARGETS.with(|cell| *cell.borrow_mut() = targets);
+        SNAPSHOT_STREAMS.with(|cell| *cell.borrow_mut() = streams);
+        serve_edit(&listener, &edit);
+    });
+    FakeRemoteServer { address, worker }
+}
+
+/// OR-006, Protocol 2.52: `remote-stream-set` sends the exact configuration
+/// and key edit (a new destination from its options; an edit keeping every
+/// field it does not name from the daemon's snapshot), and
+/// `remote-stream-remove` sends the removal. The stream key never appears in
+/// any output.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
+    let config = remote_stream_config();
+    let added = remote_stream_entry(config.clone(), true);
+    let server = start_stream_target_edit(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-stream-add",
+            payload: CommandPayload::SetStreamTarget {
+                target: remote_stream_target(40),
+                config: Box::new(config.clone()),
+                stream_key: fm_protocol::SecretEdit::Set(REMOTE_STREAM_KEY.into()),
+            },
+            event: EventPayload::StreamTargetChanged {
+                target: remote_stream_target(40),
+                entry: Some(Box::new(added.clone())),
+                streams: remote_stream_roster(false),
+            },
+            domain: "project",
+        },
+        Vec::new(),
+        Vec::new(),
+    );
+    let output = invoke_bounded(&[
+        "remote-stream-set",
+        &server.address(),
+        "40",
+        "--name",
+        "Main ingest",
+        "--endpoint",
+        "rtmps://ingest.example.test:443/live",
+        "--output",
+        "1",
+        "--bitrate-kbps",
+        "6000",
+        "--reconnect",
+        "500:10000:none",
+        "--stream-key",
+        REMOTE_STREAM_KEY,
+        "--key",
+        "remote-stream-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert_no_secrets(&output, &[REMOTE_STREAM_KEY]);
+    let text = stdout(&output);
+    assert!(
+        text.contains(
+            "StreamTarget(id=40, name=\"Main ingest\", protocol=rtmps, \
+             url=\"rtmps://ingest.example.test:443/live\", backup_url=none, output=1, \
+             startup=stopped, video_bitrate_kbps=6000, reconnect=500:10000:none, key=yes, \
+             ladder_rungs=0, desired=false, status=none)"
+        ),
+        "{text}"
+    );
+    server.finish();
+
+    // An edit names only what changes; the rest, and the key, are kept.
+    let mut edited = config.clone();
+    edited.backup_endpoint = Some("backup.example.test/live".into());
+    edited.reconcile_on_startup = true;
+    let server = start_stream_target_edit(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-stream-edit",
+            payload: CommandPayload::SetStreamTarget {
+                target: remote_stream_target(40),
+                config: Box::new(edited.clone()),
+                stream_key: fm_protocol::SecretEdit::Keep,
+            },
+            event: EventPayload::StreamTargetChanged {
+                target: remote_stream_target(40),
+                entry: Some(Box::new(remote_stream_entry(edited.clone(), true))),
+                streams: remote_stream_roster(false),
+            },
+            domain: "project",
+        },
+        vec![added.clone()],
+        remote_stream_roster(false),
+    );
+    let output = invoke_bounded(&[
+        "remote-stream-set",
+        &server.address(),
+        "40",
+        "--backup-endpoint",
+        "rtmps://backup.example.test/live",
+        "--startup",
+        "reconcile",
+        "--key",
+        "remote-stream-edit",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains(
+            "backup_url=\"rtmps://backup.example.test/live\", output=1, startup=reconcile"
+        ),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    // Moving to keyless HLS with --clear-stream-key clears the key; a full
+    // endpoint URL names the protocol. The listing then says key=no.
+    let mut hls = config.clone();
+    hls.protocol = fm_protocol::StreamTargetProtocol::Hls;
+    hls.endpoint = "/var/lib/freemix/hls".into();
+    let server = start_stream_target_edit(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-stream-clear",
+            payload: CommandPayload::SetStreamTarget {
+                target: remote_stream_target(40),
+                config: Box::new(hls.clone()),
+                stream_key: fm_protocol::SecretEdit::Clear,
+            },
+            event: EventPayload::StreamTargetChanged {
+                target: remote_stream_target(40),
+                entry: Some(Box::new(remote_stream_entry(hls, false))),
+                streams: remote_stream_roster(false),
+            },
+            domain: "project",
+        },
+        vec![added.clone()],
+        remote_stream_roster(false),
+    );
+    let output = invoke_bounded(&[
+        "remote-stream-set",
+        &server.address(),
+        "40",
+        "--endpoint",
+        "hls:///var/lib/freemix/hls",
+        "--clear-stream-key",
+        "--key",
+        "remote-stream-clear",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("key=no"), "{}", stdout(&output));
+    server.finish();
+
+    let server = start_stream_target_edit(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-stream-remove",
+            payload: CommandPayload::RemoveStreamTarget {
+                target: remote_stream_target(40),
+            },
+            event: EventPayload::StreamTargetChanged {
+                target: remote_stream_target(40),
+                entry: None,
+                streams: Vec::new(),
+            },
+            domain: "project",
+        },
+        vec![added],
+        remote_stream_roster(false),
+    );
+    let output = invoke_bounded(&[
+        "remote-stream-remove",
+        &server.address(),
+        "40",
+        "--key",
+        "remote-stream-remove",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Streams=[]"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    // Refusals before any connection: none repeats the key.
+    for (arguments, expected) in [
+        (
+            vec![
+                "remote-stream-set",
+                "127.0.0.1:9",
+                "40",
+                "--protocol",
+                "http",
+            ],
+            "invalid stream protocol value `http`",
+        ),
+        (
+            vec![
+                "remote-stream-set",
+                "127.0.0.1:9",
+                "40",
+                "--stream-key",
+                REMOTE_STREAM_KEY,
+                "--clear-stream-key",
+            ],
+            "--clear-stream-key cannot be combined with --stream-key",
+        ),
+        (
+            vec![
+                "remote-stream-set",
+                "127.0.0.1:9",
+                "40",
+                "--reconnect",
+                "50:100:1",
+            ],
+            "stream reconnect delays must be between",
+        ),
+        (
+            vec!["remote-stream-retry", "127.0.0.1:9"],
+            "missing value for stream",
+        ),
+    ] {
+        let failure = invoke_bounded(&arguments);
+        assert_failure_contains(&failure, expected);
+        assert_no_secrets(&failure, &[REMOTE_STREAM_KEY]);
+    }
+}
+
+/// OR-006: a new destination without its required options is refused
+/// locally after reading the daemon's snapshot, naming the missing option.
+#[test]
+fn remote_stream_set_refuses_an_incomplete_new_destination() {
+    let server = FakeRemoteServer::start_test_peer(|stream| {
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
+        let mut rest = Vec::new();
+        let _ = reader.read_to_end(&mut rest);
+        assert!(rest.is_empty(), "no command may be sent");
+    });
+    let failure = invoke_bounded(&[
+        "remote-stream-set",
+        &server.address(),
+        "41",
+        "--name",
+        "Backup",
+        "--stream-key",
+        REMOTE_STREAM_KEY,
+    ]);
+    assert_failure_contains(&failure, "a new stream destination requires --protocol");
+    assert_no_secrets(&failure, &[REMOTE_STREAM_KEY]);
+    server.finish();
+}
+
+/// OR-006: retry, start-all, and stop-all are Operator switcher commands
+/// that send exact payloads and replicate the resulting roster.
+#[test]
+fn remote_stream_retry_start_all_and_stop_all_send_exact_payloads() {
+    for (command, payload, desired) in [
+        (
+            "remote-stream-retry",
+            CommandPayload::StreamRetry {
+                target: remote_stream_target(40),
+            },
+            true,
+        ),
+        (
+            "remote-stream-start-all",
+            CommandPayload::StreamStartAll,
+            true,
+        ),
+        (
+            "remote-stream-stop-all",
+            CommandPayload::StreamStopAll,
+            false,
+        ),
+    ] {
+        let server = start_stream_target_edit(
+            RemoteEdit {
+                role: Role::Operator,
+                key: command,
+                payload,
+                event: EventPayload::StreamsChanged {
+                    streams: remote_stream_roster(desired),
+                },
+                domain: "switcher",
+            },
+            vec![remote_stream_entry(remote_stream_config(), true)],
+            remote_stream_roster(!desired || command == "remote-stream-retry"),
+        );
+        let address = server.address();
+        let mut arguments = vec![command, address.as_str()];
+        if command == "remote-stream-retry" {
+            arguments.push("40");
+        }
+        arguments.extend(["--key", command, "--expect", "0"]);
+        let output = invoke_bounded(&arguments);
+        assert_success(&output);
+        assert!(
+            stdout(&output).contains(&format!(
+                "Streams=[40:\"Main ingest\":desired={desired}:realized=stopped:detail=none]"
+            )),
+            "{command}: {}",
+            stdout(&output)
+        );
+        server.finish();
+    }
+}
+
+/// OR-006: `remote-streams` lists each destination's configuration without
+/// its key and, for a running destination, waits for and prints the latest
+/// status sample.
+#[test]
+fn remote_streams_lists_destinations_with_their_latest_status_sample() {
+    let server = FakeRemoteServer::start_test_peer(|stream| {
+        SNAPSHOT_STREAM_TARGETS.with(|cell| {
+            *cell.borrow_mut() = vec![
+                remote_stream_entry(remote_stream_config(), true),
+                fm_protocol::StreamTargetEntry {
+                    target: remote_stream_target(41),
+                    config: fm_protocol::StreamTargetConfig {
+                        name: "Local HLS".into(),
+                        protocol: fm_protocol::StreamTargetProtocol::Hls,
+                        endpoint: "/var/lib/freemix/hls".into(),
+                        backup_endpoint: None,
+                        output: remote_output(1),
+                        reconcile_on_startup: true,
+                        video_bitrate_kbps: 2_500,
+                        reconnect: fm_protocol::StreamReconnect::DEFAULT,
+                    },
+                    has_key: false,
+                    ladder_rungs: 2,
+                },
+            ];
+        });
+        SNAPSHOT_STREAMS.with(|cell| {
+            let mut roster = remote_stream_roster(true);
+            roster.push(fm_protocol::StreamStatus {
+                target: remote_stream_target(41),
+                name: "Local HLS".into(),
+                desired_running: false,
+                realized: fm_protocol::StreamRealizedState::Stopped,
+                detail: None,
+            });
+            *cell.borrow_mut() = roster;
+        });
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        write_message(
+            &mut writer,
+            &WireMessage::StreamStatus(fm_protocol::StreamStatusMessage {
+                server: server_identity(&engine),
+                sequence: 1,
+                samples: vec![fm_protocol::StreamStatusSample {
+                    target: remote_stream_target(40),
+                    realized: fm_protocol::StreamRealizedState::Live,
+                    connected: true,
+                    muxed_bytes: 1 << 20,
+                    enqueued_pairs: 900,
+                    dropped_pairs: 3,
+                    failure: Some("ingest dropped the connection".into()),
+                    local: None,
+                    bitrate_kbps: 5_800,
+                    reconnects: 2,
+                    uptime_ms: 12_000,
+                }],
+            }),
+        );
+        let mut rest = Vec::new();
+        let _ = reader.read_to_end(&mut rest);
+    });
+    let output = invoke_bounded(&["remote-streams", &server.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert_eq!(
+        text,
+        concat!(
+            "StreamTarget(id=40, name=\"Main ingest\", protocol=rtmps, ",
+            "url=\"rtmps://ingest.example.test:443/live\", backup_url=none, output=1, ",
+            "startup=stopped, video_bitrate_kbps=6000, reconnect=500:10000:none, key=yes, ",
+            "ladder_rungs=0, desired=true, state=live, connected=true, kbps=5800, dropped=3, ",
+            "reconnects=2, uptime_ms=12000, last_error=ingest dropped the connection)\n",
+            "StreamTarget(id=41, name=\"Local HLS\", protocol=hls, ",
+            "url=\"hls:///var/lib/freemix/hls\", backup_url=none, output=1, ",
+            "startup=reconcile, video_bitrate_kbps=2500, reconnect=250:2000:40, key=no, ",
+            "ladder_rungs=2, desired=false, status=none)"
+        )
+    );
+    server.finish();
+
+    // A daemon without destinations says so.
+    let server = FakeRemoteServer::start_test_peer(|stream| {
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        let mut rest = Vec::new();
+        let _ = reader.read_to_end(&mut rest);
+    });
+    let output = invoke_bounded(&["remote-streams", &server.address()]);
+    assert_success(&output);
+    assert_eq!(stdout(&output), "StreamTargets=none");
     server.finish();
 }

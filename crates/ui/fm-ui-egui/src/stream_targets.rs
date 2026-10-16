@@ -1,0 +1,1824 @@
+//! Stream destinations in the console (OR-006): the Recording & streams
+//! panel's group keys and per-row Retry / Edit / Remove keys, and the Add /
+//! Edit destination dialog with its Remove confirmation.
+//!
+//! A destination's stream key is a secret. The replicated view carries only
+//! whether one is stored; the dialog types a new key into a masked field
+//! (with the same eye key as the Add input dialog's secrets) and sends it as
+//! a [`SecretEdit`]: leaving the field empty while editing keeps the stored
+//! key. No tooltip, label, or status line ever shows a key: destinations are
+//! shown by [`fm_protocol::StreamTargetConfig::display_url`], which has none.
+//!
+//! The dialog validates as the operator types, with the bounds the daemon
+//! applies, so its Add / Save key is only enabled for a destination the
+//! daemon accepts; a refusal the console cannot foresee (a name taken by an
+//! edit that has not arrived yet) comes back as a refusal toast.
+
+use core::fmt;
+use core::num::NonZeroU128;
+
+use egui::{Button, DragValue, RichText, Sense, Stroke, Ui, Vec2};
+use fm_protocol::{
+    MAX_STREAM_RECONNECT_ATTEMPTS, MAX_STREAM_RECONNECT_DELAY_MS, MAX_STREAM_TARGET_BITRATE_KBPS,
+    MAX_STREAM_TARGET_ENDPOINT_BYTES, MAX_STREAM_TARGET_KEY_BYTES, MAX_STREAM_TARGET_NAME_BYTES,
+    MAX_STREAM_TARGETS, MIN_STREAM_RECONNECT_DELAY_MS, MIN_STREAM_TARGET_BITRATE_KBPS, SecretEdit,
+    StreamReconnect, StreamTargetConfig, StreamTargetEntry, StreamTargetProtocol, WireCueAction,
+    WireOutputId, WireStreamTargetId, stream_key_is_valid,
+};
+
+use crate::edit_history::stinger_edit_lock_reason;
+use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::input_catalogue::{anchored_modal, capitalized, kind_key};
+use crate::l10n::{self, Arg, Locale, Msg, with_key};
+use crate::network_stream_ui::{
+    FieldProblem, field_error, hint_slot, mark_invalid, reveal_key, section_heading, sub_label,
+};
+use crate::stream_control::{
+    StreamAction, StreamGroupAction, group_unavailable_reason, retry_unavailable_reason,
+    stream_action, stream_command_pending, stream_group_action,
+};
+use crate::theme::{
+    ACCENT_FILL, AMBER, KeyIcon, PROGRAM, PROGRAM_FILL, Tone, accent_color, add_icon_button,
+    caption, paint_lamp, small_button, text_color, text_dim_color,
+};
+use crate::{StudioIntent, StudioShell, StudioUiState};
+
+/// Default video bitrate of a new destination, in kilobits per second.
+const DEFAULT_BITRATE_KBPS: u32 = 6_000;
+/// Width of the Add / Edit destination dialog.
+const DIALOG_WIDTH: f32 = 480.0;
+
+// ---------------------------------------------------------------------------
+// Gating
+// ---------------------------------------------------------------------------
+
+/// Why project edits of destinations are unavailable this frame: a session
+/// gate (connection, synchronized state, the project-edit permission), then
+/// the project padlock.
+fn edit_session_reason(state: &StudioUiState) -> Option<&'static str> {
+    if state.connection_status.controls_enabled() && state.view.is_some() && state.can_edit_project
+    {
+        stinger_edit_lock_reason(state)
+    } else {
+        Some(unavailable_reason(state, Capability::EditProject))
+    }
+}
+
+/// Every destination id the console knows: the roster, the configured
+/// entries, and targets of commands still in flight (a new destination's
+/// add is pending before it is in the roster).
+fn known_targets(state: &StudioUiState) -> Vec<NonZeroU128> {
+    let mut ids: Vec<NonZeroU128> = state.streams.iter().map(|stream| stream.target).collect();
+    if let Some(view) = &state.view {
+        ids.extend(view.stream_targets.iter().map(|entry| entry.target.get()));
+    }
+    ids.extend(state.stream_pending.iter().map(|target| target.get()));
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Why Add destination is unavailable, if it is.
+pub(crate) fn add_block(state: &StudioUiState) -> Option<&'static str> {
+    if let Some(reason) = edit_session_reason(state) {
+        return Some(reason);
+    }
+    if state
+        .view
+        .as_ref()
+        .is_some_and(|view| view.outputs.is_empty())
+    {
+        return Some(Msg::ReasonStreamNoOutputs.en());
+    }
+    (known_targets(state).len() >= MAX_STREAM_TARGETS).then_some(Msg::ReasonStreamTargetsFull.en())
+}
+
+/// Why destination `target` cannot be edited, if it cannot: a session gate,
+/// the padlock, an unresolved command for it, settings not replicated yet,
+/// or the destination is desired running (the daemon refuses a running
+/// destination's edit with `stream_running`).
+pub(crate) fn edit_block(
+    state: &StudioUiState,
+    target: WireStreamTargetId,
+) -> Option<&'static str> {
+    if let Some(reason) = edit_session_reason(state) {
+        return Some(reason);
+    }
+    if stream_command_pending(state, target) {
+        return Some(Msg::ReasonStreamPending.en());
+    }
+    let configured = state
+        .view
+        .as_ref()
+        .and_then(|view| view.stream_target(target.get()))
+        .is_some();
+    if !configured {
+        return Some(Msg::ReasonStreamNoConfig.en());
+    }
+    state
+        .streams
+        .iter()
+        .any(|stream| stream.target == target.get() && stream.desired_running)
+        .then_some(Msg::ReasonStreamRunning.en())
+}
+
+/// Whether a cue list starts or stops destination `target`.
+fn used_by_cue(state: &StudioUiState, target: WireStreamTargetId) -> bool {
+    state.project_state.as_ref().is_some_and(|project| {
+        project.cue_lists().iter().any(|list| {
+            list.spec.cues.iter().any(|cue| {
+                cue.actions.iter().any(|action| {
+                    matches!(action, WireCueAction::Stream { target: used, .. } if *used == target)
+                })
+            })
+        })
+    })
+}
+
+/// Why destination `target` cannot be removed, if it cannot: as for an
+/// edit, and also while a cue list names it (`stream_in_use`).
+pub(crate) fn remove_block(
+    state: &StudioUiState,
+    target: WireStreamTargetId,
+) -> Option<&'static str> {
+    if let Some(reason) = edit_block(state, target) {
+        return Some(reason);
+    }
+    used_by_cue(state, target).then_some(Msg::ReasonStreamInCue.en())
+}
+
+/// The id a new destination takes: one past the highest id the console
+/// knows, so it never collides with a destination or an add in flight.
+pub(crate) fn next_target_id(state: &StudioUiState) -> Option<WireStreamTargetId> {
+    let next = known_targets(state)
+        .last()
+        .map_or(Some(1), |highest| highest.get().checked_add(1))?;
+    NonZeroU128::new(next).map(WireStreamTargetId::new)
+}
+
+// ---------------------------------------------------------------------------
+// The dialog's draft and its validation
+// ---------------------------------------------------------------------------
+
+/// A field of the destination form, so a problem shows under it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetField {
+    Name,
+    Endpoint,
+    Backup,
+    Key,
+    Output,
+    Bitrate,
+    /// The first and longest reconnect waits, checked together.
+    Delays,
+    Attempts,
+}
+
+impl TargetField {
+    /// The field's label, as the form shows it.
+    pub(crate) const fn label(self, protocol: StreamTargetProtocol) -> Msg {
+        match self {
+            Self::Name => Msg::AddInputName,
+            Self::Endpoint if matches!(protocol, StreamTargetProtocol::Hls) => {
+                Msg::StreamFieldDirectory
+            }
+            Self::Endpoint => Msg::StreamFieldEndpoint,
+            Self::Backup => Msg::StreamFieldBackup,
+            Self::Key => Msg::NsStreamKey,
+            Self::Output => Msg::MenuOutput,
+            Self::Bitrate => Msg::StreamFieldBitrate,
+            Self::Delays => Msg::StreamFieldMaxDelay,
+            Self::Attempts => Msg::StreamFieldAttempts,
+        }
+    }
+}
+
+/// The Add / Edit destination form. `Debug` never prints the typed key.
+#[allow(clippy::struct_excessive_bools)] // each bool is one form toggle
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct TargetDraft {
+    pub(crate) target: WireStreamTargetId,
+    /// The configuration being edited; `None` while adding.
+    pub(crate) original: Option<StreamTargetConfig>,
+    /// Whether the edited destination has a stored key.
+    pub(crate) stored_key: bool,
+    pub(crate) name: String,
+    pub(crate) protocol: StreamTargetProtocol,
+    pub(crate) endpoint: String,
+    pub(crate) backup: String,
+    pub(crate) output: Option<WireOutputId>,
+    pub(crate) reconcile_on_startup: bool,
+    pub(crate) bitrate_kbps: u32,
+    pub(crate) initial_delay_ms: u32,
+    pub(crate) max_delay_ms: u32,
+    pub(crate) attempts: u32,
+    pub(crate) unlimited: bool,
+    /// A newly typed stream key; empty keeps a stored one when editing.
+    pub(crate) key: String,
+    /// Whether the key field shows what was typed.
+    pub(crate) reveal_key: bool,
+}
+
+impl fmt::Debug for TargetDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TargetDraft")
+            .field("target", &self.target)
+            .field("name", &self.name)
+            .field("protocol", &self.protocol)
+            .field("endpoint", &self.endpoint)
+            .field("stored_key", &self.stored_key)
+            .field("key", &if self.key.is_empty() { "" } else { "***" })
+            .finish_non_exhaustive()
+    }
+}
+
+impl TargetDraft {
+    /// A fresh destination with id `target`, publishing `output`.
+    pub(crate) fn new(
+        l: Locale,
+        target: WireStreamTargetId,
+        output: Option<WireOutputId>,
+        position: usize,
+    ) -> Self {
+        let reconnect = StreamReconnect::DEFAULT;
+        Self {
+            target,
+            original: None,
+            stored_key: false,
+            name: format!("{} {position}", l.text(Msg::StreamSectionDestination)),
+            protocol: StreamTargetProtocol::Rtmp,
+            endpoint: String::new(),
+            backup: String::new(),
+            output,
+            reconcile_on_startup: false,
+            bitrate_kbps: DEFAULT_BITRATE_KBPS,
+            initial_delay_ms: reconnect.initial_delay_ms,
+            max_delay_ms: reconnect.max_delay_ms,
+            attempts: reconnect.max_attempts.unwrap_or(40),
+            unlimited: reconnect.max_attempts.is_none(),
+            key: String::new(),
+            reveal_key: false,
+        }
+    }
+
+    /// The form for editing one configured destination.
+    pub(crate) fn edit(entry: &StreamTargetEntry) -> Self {
+        let config = &entry.config;
+        Self {
+            target: entry.target,
+            original: Some(config.clone()),
+            stored_key: entry.has_key,
+            name: config.name.clone(),
+            protocol: config.protocol,
+            endpoint: config.endpoint.clone(),
+            backup: config.backup_endpoint.clone().unwrap_or_default(),
+            output: Some(config.output),
+            reconcile_on_startup: config.reconcile_on_startup,
+            bitrate_kbps: config.video_bitrate_kbps,
+            initial_delay_ms: config.reconnect.initial_delay_ms,
+            max_delay_ms: config.reconnect.max_delay_ms,
+            attempts: config.reconnect.max_attempts.unwrap_or(40),
+            unlimited: config.reconnect.max_attempts.is_none(),
+            key: String::new(),
+            reveal_key: false,
+        }
+    }
+
+    /// Whether this form edits an existing destination.
+    pub(crate) const fn editing(&self) -> bool {
+        self.original.is_some()
+    }
+
+    /// Switches the protocol; HLS keeps neither a backup server nor a key.
+    pub(crate) fn set_protocol(&mut self, protocol: StreamTargetProtocol) {
+        self.protocol = protocol;
+        if !protocol.carries_key() {
+            self.key.clear();
+            self.backup.clear();
+        }
+    }
+
+    /// The key edit the form describes, or why the daemon would refuse it.
+    fn key_edit(&self) -> Result<SecretEdit, FieldProblem<TargetField>> {
+        if !self.protocol.carries_key() {
+            return Ok(if self.stored_key {
+                SecretEdit::Clear
+            } else {
+                SecretEdit::Keep
+            });
+        }
+        if self.key.is_empty() {
+            return if self.editing() && self.stored_key {
+                Ok(SecretEdit::Keep)
+            } else {
+                Err(FieldProblem::prompt(
+                    TargetField::Key,
+                    Msg::StreamErrKeyRequired.en(),
+                ))
+            };
+        }
+        if !stream_key_is_valid(&self.key) || self.key.len() > MAX_STREAM_TARGET_KEY_BYTES {
+            return Err(FieldProblem::error(
+                TargetField::Key,
+                Msg::StreamErrKeyChars.en(),
+            ));
+        }
+        if self.protocol == StreamTargetProtocol::Srt && self.key.contains(['&', '?']) {
+            return Err(FieldProblem::error(
+                TargetField::Key,
+                Msg::StreamErrKeySrt.en(),
+            ));
+        }
+        Ok(SecretEdit::Set(self.key.clone()))
+    }
+
+    /// The configuration and key edit the form describes, or the first
+    /// problem (top to bottom) the daemon would refuse. `taken` holds the
+    /// other destinations' names; `outputs` the show's outputs.
+    pub(crate) fn checked(
+        &self,
+        taken: &[&str],
+        outputs: &[WireOutputId],
+    ) -> Result<(StreamTargetConfig, SecretEdit), FieldProblem<TargetField>> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(FieldProblem::prompt(
+                TargetField::Name,
+                Msg::StreamErrNameEmpty.en(),
+            ));
+        }
+        if name.len() > MAX_STREAM_TARGET_NAME_BYTES {
+            return Err(FieldProblem::error(
+                TargetField::Name,
+                Msg::StreamErrNameLong.en(),
+            ));
+        }
+        if taken.iter().any(|other| other.eq_ignore_ascii_case(name)) {
+            return Err(FieldProblem::error(
+                TargetField::Name,
+                Msg::StreamErrNameTaken.en(),
+            ));
+        }
+        let endpoint = self.endpoint.trim();
+        if let Some(reason) = endpoint_problem(self.protocol, endpoint) {
+            return Err(if endpoint.is_empty() {
+                FieldProblem::prompt(TargetField::Endpoint, reason.en())
+            } else {
+                FieldProblem::error(TargetField::Endpoint, reason.en())
+            });
+        }
+        let backup = self.backup.trim();
+        let backup_endpoint = if self.protocol.carries_key() && !backup.is_empty() {
+            if let Some(reason) = endpoint_problem(self.protocol, backup) {
+                return Err(FieldProblem::error(TargetField::Backup, reason.en()));
+            }
+            Some(backup.to_owned())
+        } else {
+            None
+        };
+        let stream_key = self.key_edit()?;
+        let output = self
+            .output
+            .filter(|output| outputs.contains(output))
+            .ok_or(FieldProblem::prompt(
+                TargetField::Output,
+                Msg::StreamErrOutput.en(),
+            ))?;
+        if !(MIN_STREAM_TARGET_BITRATE_KBPS..=MAX_STREAM_TARGET_BITRATE_KBPS)
+            .contains(&self.bitrate_kbps)
+        {
+            return Err(FieldProblem::error(
+                TargetField::Bitrate,
+                Msg::StreamErrBitrate.en(),
+            ));
+        }
+        let reconnect = StreamReconnect {
+            initial_delay_ms: self.initial_delay_ms,
+            max_delay_ms: self.max_delay_ms,
+            max_attempts: (!self.unlimited).then_some(self.attempts),
+        };
+        if !(StreamReconnect {
+            max_attempts: None,
+            ..reconnect
+        })
+        .is_valid()
+        {
+            return Err(FieldProblem::error(
+                TargetField::Delays,
+                Msg::StreamErrDelays.en(),
+            ));
+        }
+        if !reconnect.is_valid() {
+            return Err(FieldProblem::error(
+                TargetField::Attempts,
+                Msg::StreamErrAttempts.en(),
+            ));
+        }
+        let config = StreamTargetConfig {
+            name: name.to_owned(),
+            protocol: self.protocol,
+            endpoint: endpoint.to_owned(),
+            backup_endpoint,
+            output,
+            reconcile_on_startup: self.reconcile_on_startup,
+            video_bitrate_kbps: self.bitrate_kbps,
+            reconnect,
+        };
+        debug_assert!(config.is_valid());
+        Ok((config, stream_key))
+    }
+}
+
+/// Why `endpoint` is not a valid scheme-relative endpoint for `protocol`,
+/// mirroring the daemon's rules: `host[:port]/app[/path]` for RTMP/RTMPS,
+/// `host[:port]` for SRT, and an absolute directory for HLS.
+pub(crate) fn endpoint_problem(protocol: StreamTargetProtocol, endpoint: &str) -> Option<Msg> {
+    if endpoint.is_empty() {
+        return Some(Msg::StreamErrEndpointEmpty);
+    }
+    if endpoint.len() > MAX_STREAM_TARGET_ENDPOINT_BYTES {
+        return Some(Msg::StreamErrEndpointLong);
+    }
+    if !endpoint.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+        return Some(Msg::StreamErrEndpointChars);
+    }
+    if endpoint.contains("://") {
+        return Some(Msg::StreamErrEndpointScheme);
+    }
+    if endpoint.contains(['?', '#']) {
+        return Some(Msg::StreamErrEndpointQuery);
+    }
+    match protocol {
+        StreamTargetProtocol::Rtmp | StreamTargetProtocol::Rtmps => {
+            let Some((authority, path)) = endpoint.split_once('/') else {
+                return Some(Msg::StreamErrEndpointApp);
+            };
+            if authority.is_empty() || authority.starts_with(':') {
+                return Some(Msg::StreamErrEndpointHost);
+            }
+            if authority.contains('@') {
+                return Some(Msg::StreamErrEndpointCredentials);
+            }
+            if path.split('/').any(str::is_empty) {
+                return Some(Msg::StreamErrEndpointSegments);
+            }
+        }
+        StreamTargetProtocol::Srt => {
+            if endpoint.contains('/') {
+                return Some(Msg::StreamErrEndpointSrtPath);
+            }
+            if endpoint.split(':').next().is_none_or(str::is_empty) {
+                return Some(Msg::StreamErrEndpointHost);
+            }
+            if endpoint.contains('@') {
+                return Some(Msg::StreamErrEndpointCredentials);
+            }
+        }
+        StreamTargetProtocol::Hls => {
+            let Some(path) = endpoint.strip_prefix('/') else {
+                return Some(Msg::StreamErrEndpointAbsolute);
+            };
+            if path
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+            {
+                return Some(Msg::StreamErrEndpointSegments);
+            }
+        }
+    }
+    None
+}
+
+/// The names of every destination but `target`.
+fn other_names(state: &StudioUiState, target: WireStreamTargetId) -> Vec<String> {
+    let mut names: Vec<String> = state
+        .streams
+        .iter()
+        .filter(|stream| stream.target != target.get())
+        .map(|stream| stream.name.clone())
+        .collect();
+    if let Some(view) = &state.view {
+        names.extend(
+            view.stream_targets
+                .iter()
+                .filter(|entry| entry.target != target)
+                .map(|entry| entry.config.name.clone()),
+        );
+    }
+    names
+}
+
+/// The show's output ids.
+fn output_ids(state: &StudioUiState) -> Vec<WireOutputId> {
+    state.view.as_ref().map_or_else(Vec::new, |view| {
+        view.outputs
+            .iter()
+            .map(|status| WireOutputId::from_domain(status.output))
+            .collect()
+    })
+}
+
+/// Why the dialog cannot submit, in the order the operator fixes it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Blocked {
+    /// A session gate, the padlock, or the destination's state.
+    Gate(&'static str),
+    /// A form field to fill in or fix.
+    Field(FieldProblem<TargetField>),
+    /// An edit that changes nothing.
+    Unchanged,
+}
+
+impl Blocked {
+    /// The English catalog reason.
+    pub(crate) const fn reason(self) -> &'static str {
+        match self {
+            Self::Gate(reason) => reason,
+            Self::Field(problem) => problem.reason,
+            Self::Unchanged => Msg::ReasonStreamUnchanged.en(),
+        }
+    }
+}
+
+/// The intent the dialog submits this frame, or why it cannot.
+pub(crate) fn submission(
+    draft: &TargetDraft,
+    state: &StudioUiState,
+) -> Result<StudioIntent, Blocked> {
+    let gate = if draft.editing() {
+        edit_block(state, draft.target)
+    } else {
+        add_block(state)
+    };
+    if let Some(reason) = gate {
+        return Err(Blocked::Gate(reason));
+    }
+    let names = other_names(state, draft.target);
+    let taken: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (config, stream_key) = draft
+        .checked(&taken, &output_ids(state))
+        .map_err(Blocked::Field)?;
+    if draft.original.as_ref() == Some(&config) && stream_key == SecretEdit::Keep {
+        return Err(Blocked::Unchanged);
+    }
+    Ok(StudioIntent::SetStreamTarget {
+        target: draft.target,
+        config: Box::new(config),
+        stream_key,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Console state
+// ---------------------------------------------------------------------------
+
+/// A Remove confirmation for one destination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RemoveConfirm {
+    pub(crate) target: WireStreamTargetId,
+    pub(crate) name: String,
+    /// The destination's URL without its key.
+    pub(crate) url: String,
+}
+
+/// The destination dialogs open in the console.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StreamTargetsUi {
+    pub(crate) dialog: Option<TargetDraft>,
+    pub(crate) remove: Option<RemoveConfirm>,
+}
+
+impl StreamTargetsUi {
+    /// Opens the Add destination dialog when adding is available.
+    pub(crate) fn open_add(&mut self, l: Locale, state: &StudioUiState) {
+        if add_block(state).is_some() {
+            return;
+        }
+        let Some(target) = next_target_id(state) else {
+            return;
+        };
+        let output = output_ids(state).first().copied();
+        self.dialog = Some(TargetDraft::new(
+            l,
+            target,
+            output,
+            known_targets(state).len() + 1,
+        ));
+    }
+
+    /// Opens the Edit dialog for `target` when editing is available.
+    pub(crate) fn open_edit(&mut self, state: &StudioUiState, target: WireStreamTargetId) {
+        if edit_block(state, target).is_some() {
+            return;
+        }
+        if let Some(entry) = state
+            .view
+            .as_ref()
+            .and_then(|view| view.stream_target(target.get()))
+        {
+            self.dialog = Some(TargetDraft::edit(entry));
+        }
+    }
+
+    /// Opens the Remove confirmation for `target`.
+    pub(crate) fn open_remove(&mut self, state: &StudioUiState, target: WireStreamTargetId) {
+        let Some(view) = state.view.as_ref() else {
+            return;
+        };
+        let name = state
+            .streams
+            .iter()
+            .find(|stream| stream.target == target.get())
+            .map(|stream| stream.name.clone());
+        let entry = view.stream_target(target.get());
+        let Some(name) = name.or_else(|| entry.map(|entry| entry.config.name.clone())) else {
+            return;
+        };
+        self.remove = Some(RemoveConfirm {
+            target,
+            name,
+            url: entry.map_or_else(String::new, |entry| entry.config.display_url()),
+        });
+    }
+
+    /// Closes dialogs whose destination is gone.
+    fn reconcile(&mut self, state: &StudioUiState) {
+        let Some(view) = state.view.as_ref() else {
+            return;
+        };
+        let gone = |target: WireStreamTargetId| {
+            view.stream_target(target.get()).is_none()
+                && !state
+                    .streams
+                    .iter()
+                    .any(|stream| stream.target == target.get())
+        };
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|draft| draft.editing() && gone(draft.target))
+        {
+            self.dialog = None;
+        }
+        if self
+            .remove
+            .as_ref()
+            .is_some_and(|confirm| gone(confirm.target))
+        {
+            self.remove = None;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The panel's keys
+// ---------------------------------------------------------------------------
+
+/// The Start all / Stop all / Add keys under the Streams heading.
+pub(crate) fn draw_group_keys(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    dialogs: &mut StreamTargetsUi,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+        for (action, label, hover) in [
+            (
+                StreamGroupAction::StartAll,
+                Msg::StreamStartAllKey,
+                Msg::StreamStartAllHover,
+            ),
+            (
+                StreamGroupAction::StopAll,
+                Msg::StreamStopAllKey,
+                Msg::StreamStopAllHover,
+            ),
+        ] {
+            let reason = group_unavailable_reason(state, action);
+            if ui
+                .add_enabled(reason.is_none(), small_button(l.text(label)))
+                .hint(l.text(hover), reason.unwrap_or(""))
+                .clicked()
+                && let Some(action) = stream_group_action(state, action)
+            {
+                intents.push(StudioIntent::StreamGroup(action));
+            }
+        }
+        let reason = add_block(state);
+        if ui
+            .add_enabled(reason.is_none(), small_button(l.text(Msg::StreamAddKey)))
+            .hint(
+                &l.format(
+                    Msg::StreamAddHover,
+                    &[("limit", Arg::from(MAX_STREAM_TARGETS))],
+                ),
+                reason.unwrap_or(""),
+            )
+            .clicked()
+        {
+            dialogs.open_add(l, state);
+        }
+    });
+    ui.add_space(4.0);
+}
+
+/// The Retry / Edit / Remove keys under one destination's row.
+pub(crate) fn draw_row_keys(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    target: WireStreamTargetId,
+    name: &str,
+    dialogs: &mut StreamTargetsUi,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let Some(stream) = state
+        .streams
+        .iter()
+        .find(|stream| stream.target == target.get())
+    else {
+        return;
+    };
+    let name_arg = [("name", Arg::Str(name))];
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.add_space(26.0);
+        let retry = stream_action(state, StreamAction::Retry(target));
+        if ui
+            .add_enabled(retry.is_some(), small_button(l.text(Msg::StreamRetryKey)))
+            .hint(
+                &l.format(Msg::StreamRetryHover, &name_arg),
+                retry_unavailable_reason(state, stream),
+            )
+            .clicked()
+            && let Some(action) = retry
+        {
+            intents.push(StudioIntent::Stream(action));
+        }
+        let edit = edit_block(state, target);
+        if ui
+            .add_enabled(edit.is_none(), small_button(l.text(Msg::StreamEditKey)))
+            .hint(
+                &l.format(Msg::StreamEditHover, &name_arg),
+                edit.unwrap_or(""),
+            )
+            .clicked()
+        {
+            dialogs.open_edit(state, target);
+        }
+        let remove = remove_block(state, target);
+        if add_icon_button(
+            ui,
+            remove.is_none(),
+            Button::new("").min_size(Vec2::new(crate::theme::MIN_TARGET, 20.0)),
+            KeyIcon::Remove,
+            l.text(Msg::StreamRemoveName),
+        )
+        .hint(
+            &l.format(Msg::StreamRemoveHover, &name_arg),
+            remove.unwrap_or(""),
+        )
+        .clicked()
+        {
+            dialogs.open_remove(state, target);
+        }
+    });
+    ui.add_space(3.0);
+}
+
+// ---------------------------------------------------------------------------
+// The dialogs
+// ---------------------------------------------------------------------------
+
+/// The key a protocol button shows, and its hover help.
+const fn protocol_key(protocol: StreamTargetProtocol) -> (&'static str, Msg) {
+    match protocol {
+        StreamTargetProtocol::Rtmp => ("RTMP", Msg::StreamProtoRtmpHover),
+        StreamTargetProtocol::Rtmps => ("RTMPS", Msg::StreamProtoRtmpsHover),
+        StreamTargetProtocol::Srt => ("SRT", Msg::StreamProtoSrtHover),
+        StreamTargetProtocol::Hls => ("HLS", Msg::StreamProtoHlsHover),
+    }
+}
+
+/// The endpoint field's hover help and placeholder for `protocol`.
+const fn endpoint_help(protocol: StreamTargetProtocol) -> (Msg, &'static str) {
+    match protocol {
+        StreamTargetProtocol::Rtmp | StreamTargetProtocol::Rtmps => {
+            (Msg::StreamEndpointRtmpHover, "live.example.com/app")
+        }
+        StreamTargetProtocol::Srt => (Msg::StreamEndpointSrtHover, "srt.example.com:9000"),
+        StreamTargetProtocol::Hls => (Msg::StreamEndpointHlsHover, "/var/www/hls/show"),
+    }
+}
+
+/// The caption under a field: its problem in red, a prompt in grey, or
+/// `fallback`.
+fn field_hint(
+    l: Locale,
+    problem: Option<FieldProblem<TargetField>>,
+    field: TargetField,
+    fallback: Option<RichText>,
+) -> Option<RichText> {
+    match problem {
+        Some(problem) if problem.field == field => Some(if problem.prompt {
+            caption(capitalized(l.tr(problem.reason)))
+        } else {
+            field_error(l, problem.reason)
+        }),
+        _ => fallback,
+    }
+}
+
+/// A labelled number field in a grid; a problem outlines it in red.
+#[allow(clippy::too_many_arguments)] // one grid row
+fn number_row(
+    ui: &mut Ui,
+    l: Locale,
+    (label, hover): (Msg, Msg),
+    value: &mut u32,
+    range: core::ops::RangeInclusive<u32>,
+    invalid: bool,
+    disabled: Option<&str>,
+) {
+    ui.label(
+        RichText::new(l.text(label))
+            .size(crate::theme::legible(11.0))
+            .color(text_dim_color()),
+    )
+    .on_hover_text(l.text(hover));
+    let response = ui
+        .add_enabled(
+            disabled.is_none(),
+            DragValue::new(value).range(range).speed(10.0),
+        )
+        .hint(l.text(hover), disabled.unwrap_or(""));
+    if invalid {
+        mark_invalid(ui, response.rect);
+    }
+    ui.end_row();
+}
+
+/// The dialog's body: the Destination, Output and video, and Reconnect
+/// sections.
+#[allow(clippy::too_many_lines)] // one form
+fn draw_form(ui: &mut Ui, l: Locale, state: &StudioUiState, draft: &mut TargetDraft) {
+    let names = other_names(state, draft.target);
+    let taken: Vec<&str> = names.iter().map(String::as_str).collect();
+    let problem = draft.checked(&taken, &output_ids(state)).err();
+    let error = problem.filter(|problem| !problem.prompt);
+    let invalid = |field: TargetField| error.is_some_and(|problem| problem.field == field);
+    ui.add(
+        egui::Label::new(
+            RichText::new(l.text(Msg::StreamDialogIntro))
+                .size(crate::theme::legible(11.0))
+                .color(text_dim_color()),
+        )
+        .wrap(),
+    );
+
+    section_heading(ui, l, Msg::StreamSectionDestination, None);
+    sub_label(ui, l, Msg::AddInputName);
+    let response = ui
+        .add(
+            egui::TextEdit::singleline(&mut draft.name)
+                .id(egui::Id::new("studio-stream-target-name"))
+                .char_limit(MAX_STREAM_TARGET_NAME_BYTES)
+                .desired_width(ui.available_width()),
+        )
+        .on_hover_text(l.text(Msg::StreamFieldNameHover));
+    if invalid(TargetField::Name) {
+        mark_invalid(ui, response.rect);
+    }
+    hint_slot(ui, field_hint(l, problem, TargetField::Name, None));
+
+    sub_label(ui, l, Msg::StreamFieldProtocol);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        for protocol in StreamTargetProtocol::ALL {
+            let (label, hover) = protocol_key(protocol);
+            let selected = draft.protocol == protocol;
+            if ui
+                .add(kind_key(label, selected).min_size(Vec2::new(72.0, 26.0)))
+                .on_hover_text(l.text(hover))
+                .clicked()
+                && !selected
+            {
+                draft.set_protocol(protocol);
+            }
+        }
+    });
+    ui.add_space(4.0);
+
+    let hls = !draft.protocol.carries_key();
+    let (endpoint_hover, placeholder) = endpoint_help(draft.protocol);
+    sub_label(ui, l, TargetField::Endpoint.label(draft.protocol));
+    let response = ui
+        .add(
+            egui::TextEdit::singleline(&mut draft.endpoint)
+                .id(egui::Id::new("studio-stream-target-endpoint"))
+                .hint_text(placeholder)
+                .char_limit(MAX_STREAM_TARGET_ENDPOINT_BYTES)
+                .desired_width(ui.available_width()),
+        )
+        .on_hover_text(l.text(endpoint_hover));
+    if invalid(TargetField::Endpoint) {
+        mark_invalid(ui, response.rect);
+    }
+    let url = (!draft.endpoint.trim().is_empty()).then(|| {
+        caption(format!(
+            "{}://{}",
+            draft.protocol.token(),
+            draft.endpoint.trim()
+        ))
+    });
+    hint_slot(ui, field_hint(l, problem, TargetField::Endpoint, url));
+
+    sub_label(ui, l, Msg::StreamFieldBackup);
+    let response = ui
+        .add_enabled(
+            !hls,
+            egui::TextEdit::singleline(&mut draft.backup)
+                .id(egui::Id::new("studio-stream-target-backup"))
+                .hint_text(if hls { "" } else { placeholder })
+                .char_limit(MAX_STREAM_TARGET_ENDPOINT_BYTES)
+                .desired_width(ui.available_width()),
+        )
+        .hint(
+            l.text(Msg::StreamFieldBackupHover),
+            Msg::ReasonHlsNoBackup.en(),
+        );
+    if invalid(TargetField::Backup) {
+        mark_invalid(ui, response.rect);
+    }
+    hint_slot(ui, field_hint(l, problem, TargetField::Backup, None));
+
+    sub_label(ui, l, Msg::NsStreamKey);
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - crate::theme::MIN_TARGET - ui.spacing().item_spacing.x)
+            .max(60.0);
+        let keep = draft.editing() && draft.stored_key;
+        let response = ui
+            .add_enabled(
+                !hls,
+                egui::TextEdit::singleline(&mut draft.key)
+                    .id(egui::Id::new("studio-stream-target-key"))
+                    .password(!draft.reveal_key)
+                    .hint_text(if keep && !hls {
+                        l.text(Msg::StreamKeyKeepHint)
+                    } else {
+                        ""
+                    })
+                    .char_limit(MAX_STREAM_TARGET_KEY_BYTES)
+                    .desired_width(width),
+            )
+            .hint(l.text(Msg::StreamFieldKeyHover), Msg::ReasonHlsNoKey.en());
+        if invalid(TargetField::Key) {
+            mark_invalid(ui, response.rect);
+        }
+        if hls {
+            ui.allocate_exact_size(Vec2::splat(crate::theme::MIN_TARGET), Sense::hover());
+        } else {
+            reveal_key(ui, l, &mut draft.reveal_key);
+        }
+    });
+    let key_caption = if hls && draft.stored_key {
+        Some(caption(l.text(Msg::StreamKeyClearCaption)))
+    } else if !hls && draft.editing() && draft.stored_key && draft.key.is_empty() {
+        Some(caption(l.text(Msg::StreamKeyKeepCaption)))
+    } else {
+        None
+    };
+    hint_slot(ui, field_hint(l, problem, TargetField::Key, key_caption));
+
+    section_heading(ui, l, Msg::StreamSectionVideo, None);
+    sub_label(ui, l, Msg::MenuOutput);
+    let outputs: Vec<(WireOutputId, String)> = state.view.as_ref().map_or_else(Vec::new, |view| {
+        view.outputs
+            .iter()
+            .map(|status| {
+                (
+                    WireOutputId::from_domain(status.output),
+                    status.name.clone(),
+                )
+            })
+            .collect()
+    });
+    let row = ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        for (output, name) in &outputs {
+            let selected = draft.output == Some(*output);
+            if ui
+                .add(kind_key(name, selected).min_size(Vec2::new(96.0, 26.0)))
+                .on_hover_text(l.text(Msg::StreamFieldOutputHover))
+                .clicked()
+            {
+                draft.output = Some(*output);
+            }
+        }
+    });
+    if invalid(TargetField::Output) {
+        mark_invalid(ui, row.response.rect);
+    }
+    hint_slot(ui, field_hint(l, problem, TargetField::Output, None));
+    egui::Grid::new("studio-stream-target-video")
+        .num_columns(2)
+        .spacing(Vec2::new(10.0, 4.0))
+        .show(ui, |ui| {
+            number_row(
+                ui,
+                l,
+                (Msg::StreamFieldBitrate, Msg::StreamFieldBitrateHover),
+                &mut draft.bitrate_kbps,
+                MIN_STREAM_TARGET_BITRATE_KBPS..=MAX_STREAM_TARGET_BITRATE_KBPS,
+                invalid(TargetField::Bitrate),
+                None,
+            );
+        });
+    if let Some(problem) = error.filter(|problem| problem.field == TargetField::Bitrate) {
+        ui.add(egui::Label::new(field_error(l, problem.reason)).wrap());
+    }
+    ui.checkbox(
+        &mut draft.reconcile_on_startup,
+        l.text(Msg::StreamFieldStartup),
+    )
+    .on_hover_text(l.text(Msg::StreamFieldStartupHover));
+
+    section_heading(ui, l, Msg::StreamSectionReconnect, None);
+    egui::Grid::new("studio-stream-target-reconnect")
+        .num_columns(2)
+        .spacing(Vec2::new(10.0, 4.0))
+        .show(ui, |ui| {
+            let delays = invalid(TargetField::Delays);
+            number_row(
+                ui,
+                l,
+                (Msg::NsBackoffMin, Msg::StreamFieldFirstDelayHover),
+                &mut draft.initial_delay_ms,
+                MIN_STREAM_RECONNECT_DELAY_MS..=MAX_STREAM_RECONNECT_DELAY_MS,
+                delays,
+                None,
+            );
+            number_row(
+                ui,
+                l,
+                (Msg::StreamFieldMaxDelay, Msg::StreamFieldMaxDelayHover),
+                &mut draft.max_delay_ms,
+                MIN_STREAM_RECONNECT_DELAY_MS..=MAX_STREAM_RECONNECT_DELAY_MS,
+                delays,
+                None,
+            );
+            number_row(
+                ui,
+                l,
+                (Msg::StreamFieldAttempts, Msg::StreamFieldAttemptsHover),
+                &mut draft.attempts,
+                1..=MAX_STREAM_RECONNECT_ATTEMPTS,
+                invalid(TargetField::Attempts),
+                draft.unlimited.then_some(Msg::ReasonStreamUnlimited.en()),
+            );
+        });
+    ui.checkbox(&mut draft.unlimited, l.text(Msg::StreamFieldUnlimited))
+        .on_hover_text(l.text(Msg::StreamFieldUnlimitedHover));
+    if let Some(problem) =
+        error.filter(|problem| matches!(problem.field, TargetField::Delays | TargetField::Attempts))
+    {
+        ui.add(egui::Label::new(field_error(l, problem.reason)).wrap());
+    }
+}
+
+/// The footer line for a blocked submission: a short pointer and the full
+/// reason on hover.
+fn footer_text(l: Locale, protocol: StreamTargetProtocol, blocked: Blocked) -> (String, String) {
+    match blocked {
+        Blocked::Gate(reason) => {
+            let text = l10n::unavailable(l, reason);
+            (text.clone(), text)
+        }
+        Blocked::Field(problem) => {
+            let full = capitalized(l.tr(problem.reason));
+            let short = if problem.prompt {
+                full.clone()
+            } else {
+                l.format(
+                    Msg::AddInputFixField,
+                    &[("field", Arg::Str(l.text(problem.field.label(protocol))))],
+                )
+            };
+            (short, full)
+        }
+        Blocked::Unchanged => {
+            let text = capitalized(l.tr(Msg::ReasonStreamUnchanged.en()));
+            (text.clone(), text)
+        }
+    }
+}
+
+impl StudioShell {
+    /// Draws the Add / Edit destination dialog and the Remove confirmation
+    /// when open.
+    pub(crate) fn draw_stream_target_dialogs(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        self.stream_targets.reconcile(state);
+        self.draw_stream_target_dialog(context, state, intents);
+        self.draw_stream_remove_dialog(context, state, intents);
+    }
+
+    #[allow(clippy::too_many_lines)] // one modal dialog
+    fn draw_stream_target_dialog(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let Some(mut draft) = self.stream_targets.dialog.take() else {
+            return;
+        };
+        let l = self.locale;
+        let editing = draft.editing();
+        let mut submit = false;
+        let mut cancel = false;
+        let closed = anchored_modal(
+            context,
+            "studio-stream-target-window",
+            l.text(if editing {
+                Msg::StreamDialogEditTitle
+            } else {
+                Msg::StreamDialogAddTitle
+            }),
+            DIALOG_WIDTH,
+            |ui, body_height| {
+                egui::ScrollArea::vertical()
+                    .id_salt("studio-stream-target-body")
+                    .max_height(body_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| draw_form(ui, l, state, &mut draft));
+                let result = submission(&draft, state);
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal_top(|ui| match result {
+                    Err(blocked) => {
+                        let (short, full) = footer_text(l, draft.protocol, blocked);
+                        let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                        paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(short)
+                                    .size(crate::theme::legible(10.5))
+                                    .color(AMBER),
+                            )
+                            .wrap(),
+                        )
+                        .on_hover_text(full);
+                    }
+                    Ok(_) => {
+                        ui.add(egui::Label::new(caption(l.text(Msg::StreamDialogNote))).wrap());
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // The submit key sits right of Cancel but is created
+                        // after it, so Tab runs Cancel, then submit.
+                        let slot = ui
+                            .allocate_exact_size(Vec2::new(104.0, 26.0), Sense::hover())
+                            .0;
+                        if ui
+                            .add(
+                                Button::new(
+                                    RichText::new(l.text(Msg::CancelKey))
+                                        .size(12.0)
+                                        .color(text_dim_color()),
+                                )
+                                .min_size(Vec2::new(84.0, 26.0)),
+                            )
+                            .on_hover_text(with_key(l, l.text(Msg::StreamDialogCancelHover), "Esc"))
+                            .clicked()
+                        {
+                            cancel = true;
+                        }
+                        let (label, hover) = if editing {
+                            (Msg::LayoutNameConfirm, Msg::StreamDialogSaveKeyHover)
+                        } else {
+                            (Msg::StreamDialogAddKey, Msg::StreamDialogAddKeyHover)
+                        };
+                        let key = ui
+                            .add_enabled_ui(result.is_ok(), |ui| {
+                                ui.put(
+                                    slot,
+                                    Button::new(
+                                        RichText::new(l.text(label))
+                                            .size(12.0)
+                                            .strong()
+                                            .color(text_color()),
+                                    )
+                                    .fill(ACCENT_FILL)
+                                    .stroke(Stroke::new(1.0, accent_color()))
+                                    .min_size(Vec2::new(104.0, 26.0)),
+                                )
+                            })
+                            .inner
+                            .hint(
+                                l.text(hover),
+                                result.as_ref().err().map_or("", |blocked| blocked.reason()),
+                            );
+                        if key.clicked() {
+                            submit = true;
+                        }
+                    });
+                });
+            },
+        );
+        if submit && let Ok(intent) = submission(&draft, state) {
+            intents.push(intent);
+            return;
+        }
+        if !(closed || cancel) {
+            self.stream_targets.dialog = Some(draft);
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // one modal dialog
+    fn draw_stream_remove_dialog(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let Some(confirm) = self.stream_targets.remove.clone() else {
+            return;
+        };
+        let l = self.locale;
+        let blocked = remove_block(state, confirm.target);
+        let mut remove = false;
+        let mut cancel = false;
+        let question = l.format(
+            Msg::StreamRemoveQuestion,
+            &[
+                ("name", Arg::Str(&confirm.name)),
+                ("url", Arg::Str(&confirm.url)),
+            ],
+        );
+        let closed = crate::menu::help_modal(
+            context,
+            "studio-stream-remove-window",
+            l.text(Msg::StreamRemoveName),
+            420.0,
+            |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(question).size(13.0).color(text_color())).wrap(),
+                );
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(l.text(Msg::StreamRemoveWarning))
+                            .size(crate::theme::legible(11.0))
+                            .color(text_dim_color()),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                if let Some(reason) = blocked {
+                    ui.horizontal_top(|ui| {
+                        let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                        paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(l10n::unavailable(l, reason))
+                                    .size(crate::theme::legible(10.5))
+                                    .color(AMBER),
+                            )
+                            .wrap(),
+                        );
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Remove is created after Cancel, which takes the
+                        // focus, so a stray Enter never removes.
+                        let slot = ui
+                            .allocate_exact_size(Vec2::new(96.0, 26.0), Sense::hover())
+                            .0;
+                        let cancel_key = ui
+                            .add(
+                                Button::new(
+                                    RichText::new(l.text(Msg::CancelKey))
+                                        .size(12.0)
+                                        .color(text_dim_color()),
+                                )
+                                .min_size(Vec2::new(84.0, 26.0)),
+                            )
+                            .on_hover_text(with_key(
+                                l,
+                                l.text(Msg::StreamRemoveCancelHover),
+                                "Esc",
+                            ));
+                        if cancel_key.clicked() {
+                            cancel = true;
+                        }
+                        if ui.ctx().memory(|memory| memory.focused().is_none()) {
+                            cancel_key.request_focus();
+                        }
+                        if ui
+                            .add_enabled_ui(blocked.is_none(), |ui| {
+                                ui.put(
+                                    slot,
+                                    Button::new(
+                                        RichText::new(l.text(Msg::RemoveKey))
+                                            .size(12.0)
+                                            .strong()
+                                            .color(text_color()),
+                                    )
+                                    .fill(PROGRAM_FILL)
+                                    .stroke(Stroke::new(1.0, PROGRAM))
+                                    .min_size(Vec2::new(96.0, 26.0)),
+                                )
+                            })
+                            .inner
+                            .hint(l.text(Msg::StreamRemoveKeyHover), blocked.unwrap_or(""))
+                            .clicked()
+                        {
+                            remove = true;
+                        }
+                    });
+                });
+            },
+        );
+        if remove && blocked.is_none() {
+            intents.push(StudioIntent::RemoveStreamTarget {
+                target: confirm.target,
+            });
+            self.stream_targets.remove = None;
+        } else if closed || cancel {
+            self.stream_targets.remove = None;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use fm_protocol::{StreamRealizedState, StreamTargetEntry};
+    use fm_types::OutputId;
+    use fm_ui_model::{OutputStatus, StreamStatus};
+
+    use super::*;
+    use crate::StudioConnectionStatus;
+
+    const SECRET: &str = "sk_live_TOPSECRET_42";
+
+    fn target(value: u128) -> WireStreamTargetId {
+        WireStreamTargetId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn output(value: u128) -> WireOutputId {
+        WireOutputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    pub(crate) fn entry(
+        value: u128,
+        name: &str,
+        protocol: StreamTargetProtocol,
+    ) -> StreamTargetEntry {
+        StreamTargetEntry {
+            target: target(value),
+            config: StreamTargetConfig {
+                name: name.to_owned(),
+                protocol,
+                endpoint: if protocol == StreamTargetProtocol::Hls {
+                    "/var/hls/show".to_owned()
+                } else if protocol == StreamTargetProtocol::Srt {
+                    "srt.example:9000".to_owned()
+                } else {
+                    "ingest.example/live".to_owned()
+                },
+                backup_endpoint: None,
+                output: output(1),
+                reconcile_on_startup: false,
+                video_bitrate_kbps: 6_000,
+                reconnect: StreamReconnect::DEFAULT,
+            },
+            has_key: protocol.carries_key(),
+            ladder_rungs: 0,
+        }
+    }
+
+    /// A ready operator session with one output and `targets` configured
+    /// (stopped).
+    pub(crate) fn fixture(targets: &[StreamTargetEntry]) -> StudioUiState {
+        let mut view = crate::tests::recording_view([false, false]);
+        view.outputs = vec![OutputStatus {
+            output: OutputId::new(NonZeroU128::new(1).unwrap()),
+            name: "Program".to_owned(),
+        }];
+        view.stream_targets = targets.to_vec();
+        view.streams = targets
+            .iter()
+            .map(|entry| StreamStatus {
+                target: entry.target.get(),
+                name: entry.config.name.clone(),
+                desired_running: false,
+                realized: StreamRealizedState::Stopped,
+                detail: None,
+            })
+            .collect();
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_switcher_permissions(true, true)
+            .with_edit_project_permission(true);
+        state.streams.clone_from(&view.streams);
+        state.view = Some(view);
+        state
+    }
+
+    fn set_running(state: &mut StudioUiState, value: u128, running: bool) {
+        for streams in [
+            &mut state.streams,
+            &mut state.view.as_mut().unwrap().streams,
+        ] {
+            for stream in streams.iter_mut() {
+                if stream.target.get() == value {
+                    stream.desired_running = running;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn edit_and_remove_are_refused_while_running_pending_or_without_permission() {
+        let mut state = fixture(&[entry(1, "Twitch", StreamTargetProtocol::Rtmp)]);
+        assert_eq!(edit_block(&state, target(1)), None);
+        assert_eq!(remove_block(&state, target(1)), None);
+        set_running(&mut state, 1, true);
+        assert_eq!(
+            edit_block(&state, target(1)),
+            Some(Msg::ReasonStreamRunning.en())
+        );
+        assert_eq!(
+            remove_block(&state, target(1)),
+            Some(Msg::ReasonStreamRunning.en())
+        );
+        set_running(&mut state, 1, false);
+        state.stream_pending = vec![target(1)];
+        assert_eq!(
+            edit_block(&state, target(1)),
+            Some(Msg::ReasonStreamPending.en())
+        );
+        state.stream_pending.clear();
+        state.can_edit_project = false;
+        assert_eq!(
+            remove_block(&state, target(1)),
+            Some(Msg::ReasonNoEditProject.en())
+        );
+        state.can_edit_project = true;
+        state.view.as_mut().unwrap().edit_locks.project = true;
+        assert_eq!(
+            edit_block(&state, target(1)),
+            Some(Msg::ReasonProjectLocked.en())
+        );
+        state.view.as_mut().unwrap().edit_locks.project = false;
+        // A roster entry whose settings have not arrived cannot be edited.
+        assert_eq!(
+            edit_block(&state, target(9)),
+            Some(Msg::ReasonStreamNoConfig.en())
+        );
+        // Opening respects the gate.
+        let mut ui = StreamTargetsUi::default();
+        set_running(&mut state, 1, true);
+        ui.open_edit(&state, target(1));
+        assert!(ui.dialog.is_none());
+        set_running(&mut state, 1, false);
+        ui.open_edit(&state, target(1));
+        assert_eq!(ui.dialog.as_ref().unwrap().name, "Twitch");
+    }
+
+    #[test]
+    fn add_is_refused_at_five_destinations_and_ids_never_collide() {
+        let four: Vec<_> = (1..=4)
+            .map(|value| entry(value, &format!("T{value}"), StreamTargetProtocol::Rtmp))
+            .collect();
+        let mut state = fixture(&four);
+        assert_eq!(add_block(&state), None);
+        assert_eq!(next_target_id(&state), Some(target(5)));
+        // An add in flight counts against the limit and its id is taken.
+        state.stream_pending = vec![target(7)];
+        assert_eq!(add_block(&state), Some(Msg::ReasonStreamTargetsFull.en()));
+        assert_eq!(next_target_id(&state), Some(target(8)));
+        state.stream_pending.clear();
+        let five: Vec<_> = (1..=5)
+            .map(|value| entry(value, &format!("T{value}"), StreamTargetProtocol::Rtmp))
+            .collect();
+        let full = fixture(&five);
+        assert_eq!(add_block(&full), Some(Msg::ReasonStreamTargetsFull.en()));
+        let mut ui = StreamTargetsUi::default();
+        ui.open_add(Locale::ENGLISH, &full);
+        assert!(ui.dialog.is_none());
+        ui.open_add(Locale::ENGLISH, &state);
+        let draft = ui.dialog.unwrap();
+        assert_eq!(draft.target, target(5));
+        assert_eq!(draft.output, Some(output(1)));
+        let mut no_outputs = fixture(&[]);
+        no_outputs.view.as_mut().unwrap().outputs.clear();
+        assert_eq!(
+            add_block(&no_outputs),
+            Some(Msg::ReasonStreamNoOutputs.en())
+        );
+    }
+
+    #[test]
+    fn a_cue_naming_the_destination_blocks_its_removal_only() {
+        let state = fixture(&[entry(1, "Twitch", StreamTargetProtocol::Rtmp)]);
+        assert!(!used_by_cue(&state, target(1)));
+        // Without replicated cue lists nothing blocks; the daemon still
+        // refuses with `stream_in_use`.
+        assert_eq!(remove_block(&state, target(1)), None);
+    }
+
+    fn new_draft(protocol: StreamTargetProtocol, endpoint: &str, key: &str) -> TargetDraft {
+        let mut draft = TargetDraft::new(Locale::ENGLISH, target(3), Some(output(1)), 3);
+        draft.set_protocol(protocol);
+        draft.endpoint = endpoint.to_owned();
+        draft.key = key.to_owned();
+        draft
+    }
+
+    fn check(
+        draft: &TargetDraft,
+    ) -> Result<(StreamTargetConfig, SecretEdit), FieldProblem<TargetField>> {
+        draft.checked(&["Twitch"], &[output(1)])
+    }
+
+    #[test]
+    fn a_new_network_destination_needs_a_key_and_hls_takes_none() {
+        let missing = check(&new_draft(
+            StreamTargetProtocol::Rtmp,
+            "ingest.example/live",
+            "",
+        ))
+        .unwrap_err();
+        assert_eq!(missing.field, TargetField::Key);
+        assert!(missing.prompt);
+        let (config, key) = check(&new_draft(
+            StreamTargetProtocol::Rtmps,
+            "ingest.example/live",
+            SECRET,
+        ))
+        .unwrap();
+        assert_eq!(key, SecretEdit::Set(SECRET.to_owned()));
+        assert_eq!(config.display_url(), "rtmps://ingest.example/live");
+        assert!(!config.display_url().contains(SECRET));
+        // HLS: switching clears a typed key and the backup server.
+        let mut hls = new_draft(StreamTargetProtocol::Rtmp, "/var/hls", SECRET);
+        hls.backup = "backup.example/live".into();
+        hls.set_protocol(StreamTargetProtocol::Hls);
+        assert!(hls.key.is_empty() && hls.backup.is_empty());
+        let (config, key) = check(&hls).unwrap();
+        assert_eq!(key, SecretEdit::Keep);
+        assert_eq!(config.backup_endpoint, None);
+        // An SRT key cannot carry query separators.
+        assert_eq!(
+            check(&new_draft(
+                StreamTargetProtocol::Srt,
+                "srt.example:9000",
+                "a&b"
+            ))
+            .unwrap_err()
+            .reason,
+            Msg::StreamErrKeySrt.en()
+        );
+        assert_eq!(
+            check(&new_draft(
+                StreamTargetProtocol::Rtmp,
+                "ingest.example/live",
+                "has space"
+            ))
+            .unwrap_err()
+            .field,
+            TargetField::Key
+        );
+    }
+
+    #[test]
+    fn editing_a_keyed_destination_keeps_its_key_unless_one_is_typed() {
+        let stored = entry(1, "Twitch", StreamTargetProtocol::Rtmp);
+        let state = fixture(core::slice::from_ref(&stored));
+        let mut draft = TargetDraft::edit(&stored);
+        assert_eq!(draft.key, "");
+        // Nothing changed: Save is refused with a reason.
+        assert_eq!(submission(&draft, &state), Err(Blocked::Unchanged));
+        draft.bitrate_kbps = 8_000;
+        let Ok(StudioIntent::SetStreamTarget {
+            target: sent,
+            config,
+            stream_key,
+        }) = submission(&draft, &state)
+        else {
+            panic!("an edited destination submits");
+        };
+        assert_eq!(sent, target(1));
+        assert_eq!(config.video_bitrate_kbps, 8_000);
+        assert_eq!(stream_key, SecretEdit::Keep);
+        draft.key = SECRET.into();
+        let Ok(StudioIntent::SetStreamTarget { stream_key, .. }) = submission(&draft, &state)
+        else {
+            panic!("a new key submits");
+        };
+        assert_eq!(stream_key, SecretEdit::Set(SECRET.into()));
+        // Switching a keyed destination to HLS clears its key.
+        draft.set_protocol(StreamTargetProtocol::Hls);
+        draft.endpoint = "/var/hls".into();
+        let Ok(StudioIntent::SetStreamTarget { stream_key, .. }) = submission(&draft, &state)
+        else {
+            panic!("an HLS edit submits");
+        };
+        assert_eq!(stream_key, SecretEdit::Clear);
+        // An HLS destination becoming RTMP needs a key.
+        let hls = entry(2, "Local", StreamTargetProtocol::Hls);
+        let mut draft = TargetDraft::edit(&hls);
+        draft.set_protocol(StreamTargetProtocol::Rtmp);
+        draft.endpoint = "ingest.example/live".into();
+        assert_eq!(check(&draft).unwrap_err().field, TargetField::Key);
+        // The draft's debug form never shows a typed key.
+        draft.key = SECRET.into();
+        assert!(!format!("{draft:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn running_destinations_cannot_be_saved() {
+        let stored = entry(1, "Twitch", StreamTargetProtocol::Rtmp);
+        let mut state = fixture(core::slice::from_ref(&stored));
+        let mut draft = TargetDraft::edit(&stored);
+        draft.bitrate_kbps = 9_000;
+        set_running(&mut state, 1, true);
+        assert_eq!(
+            submission(&draft, &state),
+            Err(Blocked::Gate(Msg::ReasonStreamRunning.en()))
+        );
+    }
+
+    #[test]
+    fn form_problems_name_their_field_with_the_daemons_bounds() {
+        let ok = new_draft(StreamTargetProtocol::Rtmp, "ingest.example/live", "k");
+        assert!(check(&ok).is_ok());
+        let mut taken = ok.clone();
+        taken.name = "TWITCH".into();
+        assert_eq!(
+            check(&taken).unwrap_err().reason,
+            Msg::StreamErrNameTaken.en()
+        );
+        let mut blank = ok.clone();
+        blank.name = "  ".into();
+        assert!(check(&blank).unwrap_err().prompt);
+        for (protocol, endpoint, reason) in [
+            (
+                StreamTargetProtocol::Rtmp,
+                "ingest.example",
+                Msg::StreamErrEndpointApp,
+            ),
+            (
+                StreamTargetProtocol::Rtmp,
+                "rtmp://x/live",
+                Msg::StreamErrEndpointScheme,
+            ),
+            (
+                StreamTargetProtocol::Rtmp,
+                "u:p@x/live",
+                Msg::StreamErrEndpointCredentials,
+            ),
+            (
+                StreamTargetProtocol::Rtmp,
+                "x/live?token",
+                Msg::StreamErrEndpointQuery,
+            ),
+            (
+                StreamTargetProtocol::Rtmp,
+                "x//live",
+                Msg::StreamErrEndpointSegments,
+            ),
+            (
+                StreamTargetProtocol::Srt,
+                "x:9000/app",
+                Msg::StreamErrEndpointSrtPath,
+            ),
+            (
+                StreamTargetProtocol::Srt,
+                ":9000",
+                Msg::StreamErrEndpointHost,
+            ),
+            (
+                StreamTargetProtocol::Hls,
+                "var/hls",
+                Msg::StreamErrEndpointAbsolute,
+            ),
+            (
+                StreamTargetProtocol::Hls,
+                "/var/../etc",
+                Msg::StreamErrEndpointSegments,
+            ),
+            (
+                StreamTargetProtocol::Hls,
+                "/var/hls dir",
+                Msg::StreamErrEndpointChars,
+            ),
+        ] {
+            let problem = check(&new_draft(protocol, endpoint, "k")).unwrap_err();
+            assert_eq!(
+                (problem.field, problem.reason),
+                (TargetField::Endpoint, reason.en()),
+                "{endpoint}"
+            );
+        }
+        let mut backup = ok.clone();
+        backup.backup = "backup.example".into();
+        assert_eq!(check(&backup).unwrap_err().field, TargetField::Backup);
+        let mut bitrate = ok.clone();
+        bitrate.bitrate_kbps = 999;
+        assert_eq!(check(&bitrate).unwrap_err().field, TargetField::Bitrate);
+        let mut delays = ok.clone();
+        delays.initial_delay_ms = 5_000;
+        delays.max_delay_ms = 1_000;
+        assert_eq!(check(&delays).unwrap_err().field, TargetField::Delays);
+        let mut attempts = ok.clone();
+        attempts.attempts = 0;
+        assert_eq!(check(&attempts).unwrap_err().field, TargetField::Attempts);
+        // Unlimited ignores the count and retries forever.
+        attempts.unlimited = true;
+        assert_eq!(check(&attempts).unwrap().0.reconnect.max_attempts, None);
+        let mut no_output = ok;
+        no_output.output = Some(output(9));
+        assert_eq!(check(&no_output).unwrap_err().field, TargetField::Output);
+    }
+
+    fn painted_texts(output: &egui::FullOutput) -> Vec<String> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// With every tooltip shown and the Edit dialog open over a typed key,
+    /// no painted label or tooltip, in either language, shows the key.
+    #[test]
+    fn no_painted_text_or_tooltip_shows_a_stream_key() {
+        use fm_ui_model::i18n::Language;
+        let stored = entry(1, "Twitch", StreamTargetProtocol::Rtmp);
+        let mut state = fixture(&[stored.clone(), entry(2, "Local", StreamTargetProtocol::Hls)]);
+        set_running(&mut state, 2, true);
+        for language in [Language::English, Language::Spanish] {
+            let context = egui::Context::default();
+            context.memory_mut(|memory| memory.set_everything_is_visible(true));
+            let mut shell = StudioShell::default();
+            shell.set_locale(Locale::new(language));
+            let mut draft = TargetDraft::edit(&stored);
+            draft.key = SECRET.into();
+            shell.stream_targets.dialog = Some(draft);
+            let mut texts = Vec::new();
+            for _ in 0..4 {
+                context.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1_920.0, 1_080.0),
+                    )),
+                    ..egui::RawInput::default()
+                });
+                let mut ui = Ui::new(
+                    context.clone(),
+                    egui::Id::new("fm-stream-target-test"),
+                    egui::UiBuilder::new()
+                        .layer_id(egui::LayerId::background())
+                        .max_rect(context.viewport_rect()),
+                );
+                let _ = shell.draw(&mut ui, &state);
+                drop(ui);
+                texts = painted_texts(&context.end_pass());
+            }
+            let all = texts.join("\n");
+            assert!(
+                all.contains("rtmp://ingest.example/live"),
+                "{language:?}: the destination URL is shown"
+            );
+            assert!(!all.contains(SECRET), "{language:?}: a key was painted");
+            assert!(
+                !all.contains("TOPSECRET"),
+                "{language:?}: a key was painted"
+            );
+        }
+    }
+}

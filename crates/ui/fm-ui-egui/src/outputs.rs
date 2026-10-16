@@ -411,8 +411,102 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
     selected
 }
 
-/// Draws the stream target rows and pushes clicked Start/Stop intents.
-pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+/// `H:MM:SS` for a duration in milliseconds.
+pub(crate) fn uptime_text(milliseconds: u64) -> String {
+    let seconds = milliseconds / 1_000;
+    format!(
+        "{}:{:02}:{:02}",
+        seconds / 3_600,
+        (seconds / 60) % 60,
+        seconds % 60
+    )
+}
+
+/// The destination statistics in a stream row's tooltip (OR-006): its
+/// URL without the key, the output and target bitrate, whether a key is
+/// stored, and from the latest sample the measured bitrate, dropped frames,
+/// reconnects, uptime, and last error. Never any key text.
+pub(crate) fn stream_stats_text(
+    l: Locale,
+    state: &StudioUiState,
+    stream: &StreamStatus,
+    status: &str,
+    sample: Option<&StreamStatusSample>,
+) -> String {
+    let mut lines = vec![l.format(Msg::StreamStatState, &[("state", Arg::Str(status))])];
+    let entry = state
+        .view
+        .as_ref()
+        .and_then(|view| view.stream_target(stream.target));
+    if let Some(entry) = entry {
+        let config = &entry.config;
+        lines.push(l.format(
+            Msg::StreamStatUrl,
+            &[("url", Arg::Str(&config.display_url()))],
+        ));
+        if let Some(backup) = &config.backup_endpoint {
+            lines.push(l.format(
+                Msg::StreamStatBackup,
+                &[(
+                    "url",
+                    Arg::Str(&format!("{}://{backup}", config.protocol.token())),
+                )],
+            ));
+        }
+        let output = state
+            .view
+            .as_ref()
+            .and_then(|view| {
+                view.outputs
+                    .iter()
+                    .find(|candidate| candidate.output == config.output.to_domain())
+            })
+            .map_or_else(
+                || config.output.get().to_string(),
+                |found| found.name.clone(),
+            );
+        lines.push(l.format(
+            Msg::StreamStatOutput,
+            &[
+                ("output", Arg::Str(&output)),
+                ("target", Arg::Count(u64::from(config.video_bitrate_kbps))),
+            ],
+        ));
+        if config.protocol.carries_key() {
+            lines.push(
+                l.text(if entry.has_key {
+                    Msg::StreamStatKeyStored
+                } else {
+                    Msg::StreamStatKeyMissing
+                })
+                .to_owned(),
+            );
+        }
+    }
+    if let Some(sample) = sample {
+        lines.push(l.format(
+            Msg::StreamStatLive,
+            &[
+                ("kbps", Arg::Count(u64::from(sample.bitrate_kbps))),
+                ("dropped", Arg::Count(sample.dropped_pairs)),
+                ("reconnects", Arg::Count(sample.reconnects)),
+                ("uptime", Arg::Str(&uptime_text(sample.uptime_ms))),
+            ],
+        ));
+        // The last error follows in the transport diagnostics.
+    }
+    lines.join("\n")
+}
+
+/// Draws the stream target rows: Start all / Stop all / Add keys, then per
+/// row its Start/Stop key and its Retry / Edit / Remove keys.
+#[allow(clippy::too_many_lines)] // one panel section
+pub(crate) fn draw_streams(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    dialogs: &mut crate::stream_targets::StreamTargetsUi,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = l10n::locale(ui.ctx());
     let samples: Vec<_> = state
         .streams
@@ -444,6 +538,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             .color(if live > 0 { PROGRAM } else { text_dim_color() }),
         );
     });
+    crate::stream_targets::draw_group_keys(ui, state, dialogs, intents);
     if state.streams.is_empty() {
         let text = if crate::panels::streams_show_none_configured(
             state.connection_status,
@@ -484,7 +579,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             &stream.name,
             row,
             &format!(
-                "{}\n{}",
+                "{}\n{}\n{}",
                 l.format(
                     Msg::StreamRowHover,
                     &[
@@ -500,6 +595,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                         ("realized", Arg::Str(&l.tr(row.status).to_lowercase())),
                     ],
                 ),
+                stream_stats_text(l, state, stream, l.tr(row.status), sample),
                 stream_row_text(l, sample)
             ),
             &RowKey {
@@ -512,6 +608,14 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         {
             intents.push(StudioIntent::Stream(action));
         }
+        crate::stream_targets::draw_row_keys(
+            ui,
+            state,
+            WireStreamTargetId::new(stream.target),
+            &stream.name,
+            dialogs,
+            intents,
+        );
     }
 }
 
@@ -543,6 +647,9 @@ mod tests {
             dropped_pairs: 2,
             failure: None,
             local: None,
+            bitrate_kbps: 0,
+            reconnects: 0,
+            uptime_ms: 0,
         }
     }
 

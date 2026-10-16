@@ -250,17 +250,18 @@ const PROGRAM_RECORDER_KILL_TIMEOUT: Duration = Duration::from_secs(2);
 const PROGRAM_STREAM_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(feature = "native-media")]
 const PROGRAM_STREAM_KILL_TIMEOUT: Duration = Duration::from_secs(2);
-/// Reconnect backoff every stream destination gets from the shared
-/// [`fm_io_network::OutputSet`]: first retry after 250 ms, doubling to at most
-/// 2 s, giving up after 40 attempts (~70 s of backoff) and latching the target
-/// failed.
-#[cfg(feature = "native-media")]
-const PROGRAM_STREAM_RECONNECT_INITIAL_DELAY_MS: u64 = 250;
-#[cfg(feature = "native-media")]
-const PROGRAM_STREAM_RECONNECT_MAX_DELAY_MS: u64 = 2_000;
+/// Reconnect backoff growth for every stream destination in the shared
+/// [`fm_io_network::OutputSet`]: each retry waits twice the previous delay,
+/// within the target's authored initial and maximum delays and attempt
+/// budget (OR-006).
 #[cfg(feature = "native-media")]
 const PROGRAM_STREAM_RECONNECT_MULTIPLIER: u32 = 2;
-#[cfg(feature = "native-media")]
+/// The authored default reconnect policy, for unit-test destinations.
+#[cfg(all(test, feature = "native-media"))]
+const PROGRAM_STREAM_RECONNECT_INITIAL_DELAY_MS: u64 = 250;
+#[cfg(all(test, feature = "native-media"))]
+const PROGRAM_STREAM_RECONNECT_MAX_DELAY_MS: u64 = 2_000;
+#[cfg(all(test, feature = "native-media"))]
 const PROGRAM_STREAM_RECONNECT_ATTEMPTS: u32 = 40;
 /// Every destination's feed queue depth in frame pairs. Four pairs ride out a
 /// short reconnect without unbounding the render loop's enqueue cost.
@@ -3085,7 +3086,15 @@ struct StreamRenditionGroup {
     core: StreamRenditionCore,
     format: RecordFormat,
     readback: NativeProgramReadback,
+    /// The encoder identity every member shares: authored output, output
+    /// protocol, and authored video bitrate.
+    key: StreamGroupKey,
 }
+
+/// A rendition group's encoder identity: authored project output, output
+/// protocol, and authored video bitrate in kbps.
+#[cfg(feature = "native-media")]
+type StreamGroupKey = (fm_types::OutputId, OutputProtocol, u32);
 
 /// Builds one group's exact rendition identity from the project-wide format
 /// plus its authored video bitrate. `bitrate_step` offsets the video bitrate
@@ -3214,6 +3223,12 @@ struct NativeProgramStream {
     /// Whether this target was ever asked to run. Never-started targets stay
     /// off the wire entirely.
     started: bool,
+    /// Uptime and encoded bitrate for the status record.
+    meter: StreamLinkMeter,
+    /// The authored configuration this runtime realizes, with its running
+    /// flag cleared: a destination edit that changes it rebuilds the runtime
+    /// (OR-006).
+    authored: fm_model::StreamTarget,
 }
 
 /// Compiles one target's authored video bitrate into the sink's encoder
@@ -3224,6 +3239,38 @@ fn stream_encoder_settings(video_bitrate_kbps: u32) -> EncoderSettings {
         video_bitrate_kbps,
         ..EncoderSettings::default()
     }
+}
+
+/// One target's authored reconnect policy (OR-006) as the shared output
+/// set's backoff: the first retry after the authored initial delay, doubling
+/// up to the authored maximum, and giving up after the authored attempt
+/// budget (none retries forever), which latches the target failed.
+#[cfg(feature = "native-media")]
+fn stream_reconnect_policy(policy: fm_model::StreamReconnectPolicy) -> ReconnectPolicy {
+    ReconnectPolicy::new(
+        u64::from(policy.initial_delay_ms()),
+        u64::from(policy.max_delay_ms()),
+        PROGRAM_STREAM_RECONNECT_MULTIPLIER,
+        policy.max_attempts(),
+    )
+    .expect("the model bounds every authored reconnect policy")
+}
+
+/// The record format every stream pair packs with: the project picture,
+/// cadence, and audio layout, numbering from `first_sequence`.
+#[cfg(feature = "native-media")]
+fn stream_record_format(
+    settings: &fm_model::ProjectSettings,
+    first_sequence: u64,
+) -> AppResult<RecordFormat> {
+    Ok(RecordFormat::new(
+        settings.video.dimensions.width(),
+        settings.video.dimensions.height(),
+        settings.frame_rate,
+        settings.audio.sample_rate,
+        settings.audio.channels.clone(),
+        SequenceNumber::new(first_sequence),
+    )?)
 }
 
 /// Compiles one target's authored HLS ladder into the sink's own rung type.
@@ -3614,32 +3661,60 @@ fn build_stream_groups(
     next_sequence: u64,
 ) -> AppResult<Vec<StreamRenditionGroup>> {
     let mut groups = Vec::with_capacity(group_keys.len());
-    for (group_index, (output, _, video_bitrate_kbps)) in group_keys.iter().enumerate() {
-        let readback = runtime.create_program_readback_blocking(width, height)?;
-        groups.push(StreamRenditionGroup {
-            core: StreamRenditionCore {
-                output: *output,
-                members: Vec::new(),
-                rendition: RenditionId::new(
-                    NonZeroU32::new(
-                        u32::try_from(group_index + 1)
-                            .expect("bounded group count fits a rendition ordinal"),
-                    )
-                    .expect("rendition ordinals start at one"),
-                ),
-                variants: pinned_rendition_variants(
-                    format,
-                    *video_bitrate_kbps,
-                    group_index,
-                    group_keys.len(),
-                )?,
-                next_sequence,
-            },
-            format: format.clone(),
-            readback,
-        });
+    for (group_index, key) in group_keys.iter().enumerate() {
+        groups.push(new_stream_group(
+            runtime,
+            format,
+            (width, height),
+            *key,
+            (group_index, group_keys.len()),
+            next_sequence,
+        )?);
     }
     Ok(groups)
+}
+
+/// Builds one rendition group: its own readback owner, and the planner
+/// variants pinning its rendition id at `position.0 + 1` among
+/// `position.1` groups.
+///
+/// # Errors
+///
+/// Returns any GPU readback-owner or rendition-identity failure.
+#[cfg(feature = "native-media")]
+fn new_stream_group(
+    runtime: &NativeMediaRuntime,
+    format: &RecordFormat,
+    (width, height): (NonZeroU32, NonZeroU32),
+    key: StreamGroupKey,
+    (group_index, group_count): (usize, usize),
+    next_sequence: u64,
+) -> AppResult<StreamRenditionGroup> {
+    let (output, _, video_bitrate_kbps) = key;
+    let readback = runtime.create_program_readback_blocking(width, height)?;
+    Ok(StreamRenditionGroup {
+        core: StreamRenditionCore {
+            output,
+            members: Vec::new(),
+            rendition: RenditionId::new(
+                NonZeroU32::new(
+                    u32::try_from(group_index + 1)
+                        .expect("bounded group count fits a rendition ordinal"),
+                )
+                .expect("rendition ordinals start at one"),
+            ),
+            variants: pinned_rendition_variants(
+                format,
+                video_bitrate_kbps,
+                group_index,
+                group_count,
+            )?,
+            next_sequence,
+        },
+        format: format.clone(),
+        readback,
+        key,
+    })
 }
 
 /// The Program audio of one realized frame: the faded mix every output Fade
@@ -3819,24 +3894,10 @@ impl NativeProgramStream {
         }
         let settings = stored.project().settings();
         let frames_rendered = stored.position().frames_rendered;
-        let reconnect = ReconnectPolicy::new(
-            PROGRAM_STREAM_RECONNECT_INITIAL_DELAY_MS,
-            PROGRAM_STREAM_RECONNECT_MAX_DELAY_MS,
-            PROGRAM_STREAM_RECONNECT_MULTIPLIER,
-            Some(PROGRAM_STREAM_RECONNECT_ATTEMPTS),
-        )
-        .expect("the daemon reconnect policy constants are valid");
         // The record format derives from project settings alone, so it is
         // identical across every target by construction; each group packs its
         // pairs with a clone of this one format.
-        let format = RecordFormat::new(
-            settings.video.dimensions.width(),
-            settings.video.dimensions.height(),
-            settings.frame_rate,
-            settings.audio.sample_rate,
-            settings.audio.channels.clone(),
-            SequenceNumber::new(frames_rendered),
-        )?;
+        let format = stream_record_format(settings, frames_rendered)?;
         let split_targets = split_and_group_targets(targets)?;
         let local_output_dirs = local_output_directories(&split_targets.splits);
         let mut groups = build_stream_groups(
@@ -3860,54 +3921,85 @@ impl NativeProgramStream {
             )
             .expect("bounded target count yields a valid slot");
             let group = &mut groups[split.group_index];
-            group.core.members.push(destination_id);
-            let mut sink_config = RtmpSinkConfig::new(group.core.rendition, format.clone());
-            sink_config.limits.stop_timeout = PROGRAM_STREAM_STOP_TIMEOUT;
-            sink_config.limits.kill_timeout = PROGRAM_STREAM_KILL_TIMEOUT;
-            sink_config.encoder = stream_encoder_settings(split.target.video_bitrate_kbps());
-            sink_config.stream_key = split.stream_key;
-            sink_config.ladder = stream_ladder(split.target);
-            output_set
-                .add_destination(
-                    DestinationConfig::new(
-                        destination_id,
-                        split.protocol,
-                        split.endpoint.clone(),
-                        split.backup_endpoint,
-                        // TLS policy was already settled by the protocol rules:
-                        // plain RTMP and SRT refuse it and RTMPS uses the
-                        // child's default trust, so no daemon-side TLS exists.
-                        None,
-                        None,
-                        QueueCapacity::new(PROGRAM_STREAM_QUEUE_CAPACITY)
-                            .expect("the feed queue capacity is nonzero"),
-                        reconnect,
-                    )
-                    .expect("compiled destinations satisfy every configuration rule"),
-                )
-                .expect("one output-set slot per compiled target");
-            streams.push(Self {
-                target: SwitcherStreamTargetId::from_non_zero(split.target.id().get()),
+            streams.push(Self::realize(
+                split,
                 destination_id,
-                redacted_destination: redacted_destination_url(
-                    split.protocol,
-                    &split.endpoint,
-                    sink_config.stream_key.is_some(),
-                ),
-                sink: stream_transport::BackgroundTransport::new(
-                    FfmpegRtmpSink::new(sink_config),
-                    format!("freemix-native-stream-{ordinal}"),
-                ),
-                ledger: StreamPairLedger {
-                    next_sequence: frames_rendered,
-                    ..StreamPairLedger::default()
-                },
-                first_failure: None,
-                enqueue_backpressure: false,
-                started: false,
-            });
+                group,
+                &format,
+                frames_rendered,
+                output_set,
+            ));
         }
         Ok((streams, groups, local_output_dirs))
+    }
+
+    /// Realizes one validated target as destination slot `destination_id`
+    /// in `group`: its own sink under the group's rendition identity, its own
+    /// bounded queue and reconnect policy in the shared output set, and fresh
+    /// feed bookkeeping starting at `next_sequence`.
+    fn realize(
+        split: SplitStreamTarget<'_>,
+        destination_id: DestinationId,
+        group: &mut StreamRenditionGroup,
+        format: &RecordFormat,
+        next_sequence: u64,
+        output_set: &mut OutputSet,
+    ) -> Self {
+        group.core.members.push(destination_id);
+        let mut sink_config = RtmpSinkConfig::new(group.core.rendition, format.clone());
+        sink_config.limits.stop_timeout = PROGRAM_STREAM_STOP_TIMEOUT;
+        sink_config.limits.kill_timeout = PROGRAM_STREAM_KILL_TIMEOUT;
+        sink_config.encoder = stream_encoder_settings(split.target.video_bitrate_kbps());
+        sink_config.stream_key = split.stream_key;
+        sink_config.ladder = stream_ladder(split.target);
+        output_set
+            .add_destination(
+                DestinationConfig::new(
+                    destination_id,
+                    split.protocol,
+                    split.endpoint.clone(),
+                    split.backup_endpoint,
+                    // TLS policy was already settled by the protocol rules:
+                    // plain RTMP and SRT refuse it and RTMPS uses the
+                    // child's default trust, so no daemon-side TLS exists.
+                    None,
+                    None,
+                    QueueCapacity::new(PROGRAM_STREAM_QUEUE_CAPACITY)
+                        .expect("the feed queue capacity is nonzero"),
+                    stream_reconnect_policy(split.target.reconnect()),
+                )
+                .expect("compiled destinations satisfy every configuration rule"),
+            )
+            .expect("one free output-set slot per realized target");
+        Self {
+            target: SwitcherStreamTargetId::from_non_zero(split.target.id().get()),
+            destination_id,
+            redacted_destination: redacted_destination_url(
+                split.protocol,
+                &split.endpoint,
+                sink_config.stream_key.is_some(),
+            ),
+            sink: stream_transport::BackgroundTransport::new(
+                FfmpegRtmpSink::new(sink_config),
+                format!("freemix-native-stream-{}", destination_id.get()),
+            ),
+            ledger: StreamPairLedger {
+                next_sequence,
+                ..StreamPairLedger::default()
+            },
+            first_failure: None,
+            enqueue_backpressure: false,
+            started: false,
+            meter: StreamLinkMeter::default(),
+            authored: split.target.clone().set_running(false),
+        }
+    }
+
+    /// Clears a latched failure and reconnects this target from the first
+    /// attempt (OR-006 retry): the transport stops, and the next frame
+    /// boundary starts it again with a fresh reconnect budget.
+    fn retry(&mut self, output_set: &mut OutputSet) {
+        self.stop_requested(output_set);
     }
 
     /// Marks this target running in the shared output set. Connection trouble
@@ -4281,6 +4373,57 @@ struct StreamRuntimeSnapshot<'a> {
     /// Latest cached local HLS output health for this target's slot; always
     /// `None` for a network target.
     local: Option<StreamLocalStatus>,
+    /// How long the current session has delivered media, in milliseconds.
+    uptime_ms: u64,
+    /// The encoded outgoing bitrate over the last meter window.
+    bitrate_kbps: u32,
+}
+
+/// How long one bitrate window spans: two seconds smooths the encoder's
+/// progress reports without hiding a stalled link for long.
+#[cfg(feature = "native-media")]
+const STREAM_BITRATE_WINDOW_MS: u64 = 2_000;
+
+/// Per-target link meter for the lossy status record (OR-006): when the
+/// current session started delivering media, and the encoded bitrate the
+/// child reports muxing over the last window. Everything resets when the
+/// session stops delivering.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct StreamLinkMeter {
+    live_since_ms: Option<u64>,
+    /// `(at_ms, muxed_bytes)` at the start of the current window.
+    window: Option<(u64, u64)>,
+    bitrate_kbps: u32,
+}
+
+#[cfg(feature = "native-media")]
+impl StreamLinkMeter {
+    /// Advances the meter to `now_ms` and returns `(uptime_ms, bitrate_kbps)`.
+    /// `muxed_bytes` is the open session's cumulative encoded output; a value
+    /// below the window's start (a new session) restarts the window.
+    fn observe(&mut self, now_ms: u64, delivering: bool, muxed_bytes: Option<u64>) -> (u64, u32) {
+        if !delivering {
+            *self = Self::default();
+            return (0, 0);
+        }
+        let since = *self.live_since_ms.get_or_insert(now_ms);
+        if let Some(bytes) = muxed_bytes {
+            match self.window {
+                Some((at, start)) if bytes >= start => {
+                    let elapsed = now_ms.saturating_sub(at);
+                    if elapsed >= STREAM_BITRATE_WINDOW_MS {
+                        // Bits per millisecond is kilobits per second.
+                        let kbps = (bytes - start).saturating_mul(8) / elapsed;
+                        self.bitrate_kbps = u32::try_from(kbps).unwrap_or(u32::MAX);
+                        self.window = Some((now_ms, bytes));
+                    }
+                }
+                _ => self.window = Some((now_ms, bytes)),
+            }
+        }
+        (now_ms.saturating_sub(since), self.bitrate_kbps)
+    }
 }
 
 /// One local HLS output's latest bounded health, or `None` when its published
@@ -4389,18 +4532,39 @@ fn native_stream_snapshots<'a>(
     output_set: &'a OutputSet,
     streams: &'a mut [NativeProgramStream],
     local_output_status: &[Option<StreamLocalStatus>; fm_switcher::MAX_STREAM_COUNT],
+    now_ms: u64,
 ) -> Vec<StreamRuntimeSnapshot<'a>> {
     streams
         .iter_mut()
-        .map(|stream| StreamRuntimeSnapshot {
-            congested: std::mem::take(&mut stream.enqueue_backpressure),
-            target: stream.target,
-            ledger: stream.ledger,
-            first_failure: stream.first_failure.as_deref(),
-            started: stream.started,
-            state: output_set.state(stream.destination_id),
-            network: output_set.telemetry(stream.destination_id).cloned(),
-            local: cached_local_hls_status(output_set, local_output_status, stream.destination_id),
+        .map(|stream| {
+            let state = output_set.state(stream.destination_id);
+            let delivering = stream.first_failure.is_none()
+                && matches!(
+                    state,
+                    Some(DestinationState::Live | DestinationState::Congested)
+                );
+            let muxed_bytes = stream
+                .sink
+                .idle_sink()
+                .and_then(FfmpegRtmpSink::stream_telemetry)
+                .map(|telemetry| telemetry.muxed_bytes);
+            let (uptime_ms, bitrate_kbps) = stream.meter.observe(now_ms, delivering, muxed_bytes);
+            StreamRuntimeSnapshot {
+                congested: std::mem::take(&mut stream.enqueue_backpressure),
+                target: stream.target,
+                ledger: stream.ledger,
+                first_failure: stream.first_failure.as_deref(),
+                started: stream.started,
+                state,
+                network: output_set.telemetry(stream.destination_id).cloned(),
+                local: cached_local_hls_status(
+                    output_set,
+                    local_output_status,
+                    stream.destination_id,
+                ),
+                uptime_ms,
+                bitrate_kbps,
+            }
         })
         .collect()
 }
@@ -4424,6 +4588,22 @@ fn stream_status_samples<'a>(
     samples
 }
 
+/// Shortens a sanitized failure to the wire's detail bound on a character
+/// boundary: a latched transport failure reads
+/// `transport:<stage>:<message>` and can exceed it, and one oversized sample
+/// would otherwise make the whole lossy status record unencodable.
+#[cfg(feature = "native-media")]
+fn clamp_stream_failure(mut failure: String) -> String {
+    if failure.len() > fm_protocol::MAX_STREAM_DETAIL_BYTES {
+        let mut end = fm_protocol::MAX_STREAM_DETAIL_BYTES;
+        while !failure.is_char_boundary(end) {
+            end -= 1;
+        }
+        failure.truncate(end);
+    }
+    failure
+}
+
 /// Maps one target's runtime onto its protocol sample.
 ///
 /// Counters come from the per-target feed ledger; `connected` and muxed bytes
@@ -4442,17 +4622,22 @@ fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStat
         state,
         network,
         local,
+        uptime_ms,
+        bitrate_kbps,
     } = runtime;
     if !started && first_failure.is_none() {
         // Configured but never started: an inactive target stays off the wire.
         return None;
     }
     let network = network.as_ref();
-    let failure = first_failure.map(str::to_owned).or_else(|| {
-        network
-            .and_then(|telemetry| telemetry.latest_failure())
-            .map(|failure| format!("{:?}:{}", failure.stage, failure.message))
-    });
+    let failure = first_failure
+        .map(str::to_owned)
+        .or_else(|| {
+            network
+                .and_then(|telemetry| telemetry.latest_failure())
+                .map(|failure| format!("{:?}:{}", failure.stage, failure.message))
+        })
+        .map(clamp_stream_failure);
     Some(StreamStatusSample {
         target: WireStreamTargetId::new(target.get()),
         realized: realized_stream_state(first_failure.is_some(), congested, state),
@@ -4467,6 +4652,9 @@ fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStat
         muxed_bytes: network.map_or(0, NetworkTelemetry::bytes_sent),
         enqueued_pairs: ledger.enqueued_pairs,
         dropped_pairs: ledger.dropped_pairs,
+        reconnects: network.map_or(0, NetworkTelemetry::reconnects),
+        uptime_ms,
+        bitrate_kbps,
         failure,
         local,
     })
@@ -5346,31 +5534,217 @@ impl NativeDaemon {
     /// Starts wait for the next frame boundary; stops take effect off the
     /// render path immediately: the shared output set drops queued pairs and
     /// disconnects the transport under its bounded deadlines.
+    ///
+    /// The group start and stop (OR-006) do exactly that for every
+    /// destination and nothing else: recorders are separate workers no stream
+    /// command reaches. A retry stops the destination now, clearing a latched
+    /// failure, and starts it again at the next frame boundary with a fresh
+    /// reconnect budget.
     fn observe_stream_command(&mut self, command: &CommandMessage, result: &CommandResult) {
-        let (target, running) = match command.payload {
-            CommandPayload::StreamStart { target } => (target, true),
-            CommandPayload::StreamStop { target } => (target, false),
-            _ => return,
-        };
         if !matches!(result, CommandResult::Accepted { .. }) {
             return;
         }
-        let target_id = SwitcherStreamTargetId::from_non_zero(target.get());
-        if running {
-            if !self.pending_stream_starts.contains(&target_id) {
-                self.pending_stream_starts.push(target_id);
+        let target_id =
+            |target: WireStreamTargetId| SwitcherStreamTargetId::from_non_zero(target.get());
+        match command.payload {
+            CommandPayload::StreamStart { target } => self.request_stream_start(target_id(target)),
+            CommandPayload::StreamStop { target } => self.request_stream_stop(target_id(target)),
+            CommandPayload::StreamRetry { target } => {
+                let target = target_id(target);
+                if let Some(stream) = self
+                    .streams
+                    .iter_mut()
+                    .find(|stream| stream.target == target)
+                {
+                    stream.retry(&mut self.output_set);
+                }
+                self.request_stream_start(target);
             }
-            return;
+            CommandPayload::StreamStartAll => {
+                let targets: Vec<_> = self.streams.iter().map(|stream| stream.target).collect();
+                for target in targets {
+                    self.request_stream_start(target);
+                }
+            }
+            CommandPayload::StreamStopAll => {
+                let targets: Vec<_> = self.streams.iter().map(|stream| stream.target).collect();
+                for target in targets {
+                    self.request_stream_stop(target);
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// Queues one destination's start for the next frame boundary.
+    fn request_stream_start(&mut self, target: SwitcherStreamTargetId) {
+        if !self.pending_stream_starts.contains(&target) {
+            self.pending_stream_starts.push(target);
+        }
+    }
+
+    /// Stops one destination off the render path now.
+    fn request_stream_stop(&mut self, target: SwitcherStreamTargetId) {
         self.pending_stream_starts
-            .retain(|pending| *pending != target_id);
+            .retain(|pending| *pending != target);
         if let Some(stream) = self
             .streams
             .iter_mut()
-            .find(|stream| stream.target == target_id)
+            .find(|stream| stream.target == target)
         {
             stream.stop_requested(&mut self.output_set);
         }
+    }
+
+    /// Follows the stored project's stream destinations after a committed
+    /// command (OR-006): a removed or edited destination's runtime retires —
+    /// the engine refuses both while it is desired running, so its transport
+    /// is already stopping — and every destination without a runtime gets
+    /// one in a free output-set slot, joining the rendition group of its
+    /// encoder identity or a new one. Running destinations, their groups, and
+    /// recorders are untouched.
+    ///
+    /// An authored destination the codec parser refuses is unreachable (the
+    /// model validates the same rules) and is reported and left unrealized
+    /// rather than stopping the show.
+    fn sync_stream_targets(
+        &mut self,
+        project: &fm_model::Project,
+        frames_rendered: u64,
+    ) -> AppResult<()> {
+        let targets = project.stream_targets();
+        let mut index = 0;
+        while index < self.streams.len() {
+            let current = &self.streams[index];
+            if targets
+                .iter()
+                .any(|target| target.clone().set_running(false) == current.authored)
+            {
+                index += 1;
+                continue;
+            }
+            let mut retired = self.streams.remove(index);
+            self.pending_stream_starts
+                .retain(|pending| *pending != retired.target);
+            retired.stop_live(&mut self.output_set);
+            if retired.started {
+                retired.emit_final_record(&self.output_set);
+            }
+            let _ = self.output_set.remove_destination(retired.destination_id);
+            self.local_output_status[usize::from(retired.destination_id.get()) - 1] = None;
+            for group in &mut self.stream_groups {
+                group
+                    .core
+                    .members
+                    .retain(|member| *member != retired.destination_id);
+            }
+            // Dropping the transport hands any outstanding stop to its worker
+            // thread, which reaps the child off the daemon loop.
+        }
+        for target in targets {
+            let switcher_id = SwitcherStreamTargetId::from_non_zero(target.id().get());
+            if self
+                .streams
+                .iter()
+                .any(|stream| stream.target == switcher_id)
+            {
+                continue;
+            }
+            let (protocol, endpoint, stream_key, backup_endpoint) =
+                match split_target_endpoints(target) {
+                    Ok(split) => split,
+                    Err(error) => {
+                        eprintln!(
+                            "FREEMIXD_STREAM_FAILURE\tv=1\ttarget={switcher_id}\tfailure={}",
+                            diagnostic_field(&format!("configure:{error}"))
+                        );
+                        continue;
+                    }
+                };
+            let Some(destination_id) = (1..=fm_io_network::MAX_DESTINATIONS)
+                .filter_map(|slot| DestinationId::new(u8::try_from(slot).ok()?).ok())
+                .find(|slot| !self.output_set.contains(*slot))
+            else {
+                // The engine caps destinations at the output set's size.
+                continue;
+            };
+            let format = stream_record_format(project.settings(), frames_rendered)?;
+            let key = (target.output(), protocol, target.video_bitrate_kbps());
+            let group_index = self.stream_group_for(key, &format, frames_rendered)?;
+            let stream = NativeProgramStream::realize(
+                SplitStreamTarget {
+                    target,
+                    protocol,
+                    endpoint,
+                    stream_key,
+                    backup_endpoint,
+                    group_index,
+                },
+                destination_id,
+                &mut self.stream_groups[group_index],
+                &format,
+                frames_rendered,
+                &mut self.output_set,
+            );
+            self.streams.push(stream);
+        }
+        self.local_output_dirs = self.local_hls_directories();
+        Ok(())
+    }
+
+    /// The group a new destination with encoder identity `key` joins: the
+    /// group already carrying that identity, else an emptied group rebuilt
+    /// for it in place, else a new group. Rendition ids stay each group's
+    /// one-based position, so running members never change rendition.
+    fn stream_group_for(
+        &mut self,
+        key: StreamGroupKey,
+        format: &RecordFormat,
+        frames_rendered: u64,
+    ) -> AppResult<usize> {
+        if let Some(index) = self.stream_groups.iter().position(|group| group.key == key) {
+            return Ok(index);
+        }
+        let (width, height) = self.picture_size;
+        let size = (
+            NonZeroU32::new(width).expect("project width is nonzero"),
+            NonZeroU32::new(height).expect("project height is nonzero"),
+        );
+        if let Some(index) = self
+            .stream_groups
+            .iter()
+            .position(|group| group.core.members.is_empty())
+        {
+            self.stream_groups[index] = new_stream_group(
+                &self.runtime,
+                format,
+                size,
+                key,
+                (index, index + 1),
+                frames_rendered,
+            )?;
+            return Ok(index);
+        }
+        let index = self.stream_groups.len();
+        self.stream_groups.push(new_stream_group(
+            &self.runtime,
+            format,
+            size,
+            key,
+            (index, index + 1),
+            frames_rendered,
+        )?);
+        Ok(index)
+    }
+
+    /// The absolute directory of every realized local HLS destination.
+    fn local_hls_directories(&self) -> Vec<PathBuf> {
+        self.streams
+            .iter()
+            .filter_map(|stream| self.output_set.config(stream.destination_id))
+            .filter(|config| config.protocol() == OutputProtocol::Hls)
+            .map(|config| PathBuf::from(config.endpoint().path()))
+            .collect()
     }
 
     /// Consumes pending `StreamStart` requests at a frame boundary.
@@ -5568,6 +5942,7 @@ impl NativeDaemon {
                     core,
                     readback,
                     format,
+                    ..
                 } = group;
                 let StreamRenditionCore {
                     members,
@@ -5651,6 +6026,7 @@ impl NativeDaemon {
             &self.output_set,
             &mut self.streams,
             &self.local_output_status,
+            now_ms,
         ));
         if let Some(status) =
             stream_status_message(server, self.stream_status_sequence, status_samples)?
@@ -10620,8 +10996,9 @@ fn restore_engine_with_titles(
             .map(|output| (output.id, output.name.clone()))
             .collect(),
     )?
-    .with_streams(stream_inventory.clone())?;
+    .with_stream_targets(canonical.stream_targets())?;
     restore_input_audio_strips(&mut show, canonical)?;
+
     restore_display_outputs(&mut show, canonical)?;
     let mut realized = SwitcherState::new(input_ids, realized_program, realized_preview)?
         .with_streams(stream_inventory)?;
@@ -11735,6 +12112,9 @@ fn execute_native_authority_command(
     native.titles.observe_templates(&control.title_templates());
     #[cfg(feature = "native-media")]
     native.sync_input_catalogue(control, durable.project())?;
+    // Destination edits (OR-006) rebuild only the edited destination.
+    #[cfg(feature = "native-media")]
+    native.sync_stream_targets(durable.project(), durable.position().frames_rendered)?;
     #[cfg(feature = "native-media")]
     native.sync_input_lifecycle(control)?;
     imported.discard_unused(store, durable.project());
@@ -12725,6 +13105,11 @@ fn command_base_ticks(
         | CommandPayload::CancelManualTransition
         | CommandPayload::StreamStart { .. }
         | CommandPayload::StreamStop { .. }
+        | CommandPayload::StreamRetry { .. }
+        | CommandPayload::StreamStartAll
+        | CommandPayload::StreamStopAll
+        | CommandPayload::SetStreamTarget { .. }
+        | CommandPayload::RemoveStreamTarget { .. }
         | CommandPayload::RecordStart { .. }
         | CommandPayload::RecordStop { .. }
         | CommandPayload::Undo { .. }
@@ -12884,7 +13269,7 @@ fn stored_project_with_receipts(
         }
     }
     sync_project_stingers(&mut project, desired, realized)?;
-    sync_project_streams(&mut project, desired)?;
+    sync_project_streams(&mut project, show)?;
     sync_project_recording(&mut project, desired);
     sync_project_edit_locks(&mut project, show)?;
     sync_project_titles(&mut project, show)?;
@@ -13163,35 +13548,61 @@ fn sync_project_input_lifecycle(
     Ok(())
 }
 
-/// Folds the desired stream running flags into the stored project.
+/// Folds the show's stream destinations and their desired running flags into
+/// the stored project.
 ///
-/// StreamStart/StreamStop are engine commands, so the projected snapshot's
-/// desired switcher is the authority; mirroring them here makes an accepted
-/// command survive restart through journal replay and checkpoint, exactly as
-/// renames and audio strips do.
-fn sync_project_streams(project: &mut fm_model::Project, desired: &SwitcherState) -> AppResult<()> {
-    let updates = project
+/// StreamStart/StreamStop, the group start/stop, and destination edits
+/// (OR-006) are engine commands, so the projected show is the authority for
+/// both the configurations and the desired switcher's running flags;
+/// mirroring them here makes an accepted command survive restart through
+/// journal replay and checkpoint, exactly as renames and audio strips do.
+/// Removed destinations leave first, then every remaining one is replaced or
+/// appended in the show's order.
+fn sync_project_streams(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
+    let desired = show.desired_switcher();
+    let stale = project
         .stream_targets()
         .iter()
-        .map(|target| {
-            let target_id = SwitcherStreamTargetId::from_non_zero(target.id().get());
-            let running = desired.stream_running(target_id).ok_or_else(|| {
-                AppFailure(format!(
-                    "projected engine snapshot is missing stream target {target_id}"
-                ))
-            })?;
-            let changed = target.running() != running;
-            AppResult::Ok((target.clone().set_running(running), changed))
+        .map(fm_model::StreamTarget::id)
+        .filter(|id| {
+            !show
+                .stream_targets()
+                .iter()
+                .any(|target| target.id() == *id)
         })
-        .collect::<AppResult<Vec<_>>>()?;
-    for (target, changed) in updates {
-        if changed {
-            let target_id = target.id();
-            project.replace_stream_target(target).map_err(|error| {
+        .collect::<Vec<_>>();
+    for target_id in stale {
+        project.remove_stream_target(target_id).map_err(|error| {
+            AppFailure(format!(
+                "stream target {target_id} could not be removed: {error}"
+            ))
+        })?;
+    }
+    for target in show.stream_targets() {
+        let target_id = SwitcherStreamTargetId::from_non_zero(target.id().get());
+        let running = desired.stream_running(target_id).ok_or_else(|| {
+            AppFailure(format!(
+                "projected engine snapshot is missing stream target {target_id}"
+            ))
+        })?;
+        let target = target.clone().set_running(running);
+        let target_id = target.id();
+        match project
+            .stream_targets()
+            .iter()
+            .find(|existing| existing.id() == target_id)
+        {
+            Some(existing) if *existing == target => {}
+            Some(_) => project.replace_stream_target(target).map_err(|error| {
                 AppFailure(format!(
                     "stream target {target_id} could not be persisted: {error}"
                 ))
-            })?;
+            })?,
+            None => project.add_stream_target_checked(target).map_err(|error| {
+                AppFailure(format!(
+                    "stream target {target_id} could not be persisted: {error}"
+                ))
+            })?,
         }
     }
     Ok(())
@@ -21656,6 +22067,8 @@ mod tests {
             state,
             network,
             local: None,
+            uptime_ms: 0,
+            bitrate_kbps: 0,
         }
     }
 
@@ -21675,6 +22088,8 @@ mod tests {
             state: Some(DestinationState::Live),
             network: None,
             local: Some(local),
+            uptime_ms: 0,
+            bitrate_kbps: 0,
         }
     }
 
@@ -22416,6 +22831,8 @@ mod tests {
             first_failure: None,
             enqueue_backpressure: false,
             started: false,
+            meter: StreamLinkMeter::default(),
+            authored: test_authored_target(7),
         };
         stream.start(&mut set);
         stream.fail("transport:budget_exhausted", &mut set);
@@ -22429,6 +22846,24 @@ mod tests {
             Some(DestinationState::Connecting)
         );
         assert!(route_active(&stream, &set));
+    }
+
+    /// One authored RTMP destination for runtime unit tests.
+    #[cfg(feature = "native-media")]
+    fn test_authored_target(id: u128) -> fm_model::StreamTarget {
+        fm_model::StreamTarget::new(
+            fm_model::StreamTargetId::new(NonZeroU128::new(id).unwrap()),
+            format!("Destination {id}"),
+            fm_model::StreamProtocol::Rtmp,
+            fm_model::StreamEndpoint::parse_for(
+                fm_model::StreamProtocol::Rtmp,
+                "primary.example.test:1935/live",
+            )
+            .unwrap(),
+            Some(fm_model::StreamKey::parse("live-key-0001").unwrap()),
+            fm_types::OutputId::new(NonZeroU128::new(30).unwrap()),
+        )
+        .unwrap()
     }
 
     #[cfg(feature = "native-media")]
@@ -23329,6 +23764,27 @@ mod tests {
         );
     }
 
+    /// A latched transport failure longer than the wire's detail bound is
+    /// shortened on a character boundary instead of making the status record
+    /// unencodable (OR-006).
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn stream_failures_are_clamped_to_the_wire_detail_bound() {
+        let long = "transport:Connect:ffmpeg exited: ChildExited { status: Some(145) }";
+        assert!(long.len() > fm_protocol::MAX_STREAM_DETAIL_BYTES);
+        let clamped = clamp_stream_failure(long.to_owned());
+        assert_eq!(clamped.len(), fm_protocol::MAX_STREAM_DETAIL_BYTES);
+        assert!(long.starts_with(&clamped));
+        let wide = "é".repeat(40);
+        let clamped = clamp_stream_failure(wide.clone());
+        assert!(clamped.len() <= fm_protocol::MAX_STREAM_DETAIL_BYTES);
+        assert!(wide.starts_with(&clamped));
+        assert_eq!(
+            clamp_stream_failure("connect:refused".into()),
+            "connect:refused"
+        );
+    }
+
     #[cfg(feature = "native-media")]
     #[test]
     fn stream_status_message_sequence_starts_at_one_and_skips_empty_passes() {
@@ -23369,6 +23825,9 @@ mod tests {
             muxed_bytes: 0,
             enqueued_pairs: 0,
             dropped_pairs: 0,
+            reconnects: 0,
+            uptime_ms: 0,
+            bitrate_kbps: 0,
             failure: None,
             local: None,
         }

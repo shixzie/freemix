@@ -469,6 +469,9 @@ pub struct ProjectSnapshot {
     /// Every capture input, ascending, with its stable key, settings, and
     /// status (Protocol 2.47).
     pub capture_inputs: Vec<fm_protocol::CaptureInputEntry>,
+    /// Every configured stream destination in authored order, without its
+    /// key (Protocol 2.52).
+    pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
 }
 
 impl ProjectSnapshot {
@@ -571,6 +574,7 @@ impl ProjectSnapshot {
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
             capture_inputs: message.capture_inputs,
+            stream_targets: message.stream_targets,
         }
     }
 }
@@ -617,6 +621,13 @@ pub enum DurableChange {
         input_audio_strips: Vec<InputAudioStripStatus>,
     },
     StreamsChanged {
+        streams: Vec<StreamStatus>,
+    },
+    /// A stream destination was added, reconfigured, or removed, with the
+    /// resulting roster (Protocol 2.52).
+    StreamTargetChanged {
+        target: NonZeroU128,
+        entry: Option<Box<fm_protocol::StreamTargetEntry>>,
         streams: Vec<StreamStatus>,
     },
     RecordingChanged {
@@ -852,6 +863,15 @@ impl DurableProjectEvent {
             EventPayload::StreamsChanged { streams } => DurableChange::StreamsChanged {
                 streams: protocol_streams(streams),
             },
+            EventPayload::StreamTargetChanged {
+                target,
+                entry,
+                streams,
+            } => DurableChange::StreamTargetChanged {
+                target: target.get(),
+                entry,
+                streams: protocol_streams(streams),
+            },
             EventPayload::RecordingChanged { recorder, active } => {
                 DurableChange::RecordingChanged { recorder, active }
             }
@@ -1066,6 +1086,9 @@ pub struct ProjectState {
     /// Every capture input's stable key, settings, and latest status
     /// (Protocol 2.47).
     capture_inputs: BTreeMap<InputId, fm_protocol::CaptureInputEntry>,
+    /// Every configured stream destination in authored order (Protocol
+    /// 2.52).
+    stream_targets: Vec<fm_protocol::StreamTargetEntry>,
 }
 
 impl ProjectState {
@@ -1372,6 +1395,13 @@ impl ProjectState {
         &self.streams
     }
 
+    /// Every configured stream destination in authored order, without its
+    /// key (Protocol 2.52).
+    #[must_use]
+    pub fn stream_targets(&self) -> &[fm_protocol::StreamTargetEntry] {
+        &self.stream_targets
+    }
+
     /// Returns the latest replicated two-slot recorder roster in canonical order.
     #[must_use]
     pub fn recordings(&self) -> &[RecordingStatus] {
@@ -1453,9 +1483,21 @@ pub struct ClientView {
     /// The capture devices as the daemon last reported them (Protocol
     /// 2.47); `None` until a `capture_devices` reply or event arrives.
     pub capture_inventory: Option<fm_protocol::CaptureInventory>,
+    /// Every configured stream destination in authored order, without its
+    /// key (Protocol 2.52).
+    pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
 }
 
 impl ClientView {
+    /// Stream destination `target`'s configuration, if it is configured
+    /// (Protocol 2.52).
+    #[must_use]
+    pub fn stream_target(&self, target: NonZeroU128) -> Option<&fm_protocol::StreamTargetEntry> {
+        self.stream_targets
+            .iter()
+            .find(|entry| entry.target.get() == target)
+    }
+
     /// Capture input `input`'s stable key, settings, and latest status, if
     /// it is a capture input (Protocol 2.47).
     #[must_use]
@@ -2273,6 +2315,7 @@ impl ClientModel {
                 .cloned()
                 .collect(),
             capture_inventory: self.capture_inventory.clone(),
+            stream_targets: state.stream_targets.clone(),
         })
     }
 
@@ -2509,6 +2552,7 @@ impl ClientModel {
                 .into_iter()
                 .map(|entry| (entry.input.to_domain(), entry))
                 .collect(),
+            stream_targets: snapshot.stream_targets,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -3806,7 +3850,8 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             overlays,
             input_audio_strips,
         ),
-        DurableChange::StreamsChanged { streams } => {
+        DurableChange::StreamsChanged { streams }
+        | DurableChange::StreamTargetChanged { streams, .. } => {
             validate_streams(streams)?;
             return Ok(());
         }
@@ -4192,6 +4237,27 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::StreamsChanged { streams } => {
             state.streams = streams;
         }
+        DurableChange::StreamTargetChanged {
+            target,
+            entry,
+            streams,
+        } => {
+            state.streams = streams;
+            match entry {
+                Some(entry) => match state
+                    .stream_targets
+                    .iter_mut()
+                    .find(|existing| existing.target.get() == target)
+                {
+                    Some(existing) => *existing = *entry,
+                    None => state.stream_targets.push(*entry),
+                },
+                None => state
+                    .stream_targets
+                    .retain(|existing| existing.target.get() != target),
+            }
+        }
+
         DurableChange::RecordingChanged { recorder, active } => {
             let status = state
                 .recordings

@@ -141,6 +141,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         input_lifecycle: vec![fm_protocol::InputLifecycleStatus::default(); 3],
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+        stream_targets: Vec::new(),
     }
 }
 
@@ -887,6 +888,132 @@ fn streams_changed_events_replace_the_latest_replicated_projection() {
     );
 }
 
+fn stream_target_entry(value: u128, name: &str, has_key: bool) -> fm_protocol::StreamTargetEntry {
+    fm_protocol::StreamTargetEntry {
+        target: fm_protocol::WireStreamTargetId::new(NonZeroU128::new(value).unwrap()),
+        config: fm_protocol::StreamTargetConfig {
+            name: name.to_owned(),
+            protocol: fm_protocol::StreamTargetProtocol::Rtmp,
+            endpoint: "ingest.example/live".to_owned(),
+            backup_endpoint: None,
+            output: fm_protocol::WireOutputId::from_domain(output(1)),
+            reconcile_on_startup: false,
+            video_bitrate_kbps: 6_000,
+            reconnect: fm_protocol::StreamReconnect::DEFAULT,
+        },
+        has_key,
+        ladder_rungs: 0,
+    }
+}
+
+#[test]
+fn snapshot_stream_targets_install_into_state_and_view() {
+    let project_id = project(10);
+    let mut initial = snapshot(project_id, 1);
+    initial.streams = vec![stream(5, "Twitch", false), stream(9, "YouTube", true)];
+    initial.stream_targets = vec![
+        stream_target_entry(5, "Twitch", true),
+        stream_target_entry(9, "YouTube", false),
+    ];
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(initial.clone()).unwrap();
+    assert_eq!(
+        model.state().unwrap().stream_targets(),
+        initial.stream_targets.as_slice()
+    );
+    let view = model.view().unwrap();
+    assert_eq!(view.stream_targets, initial.stream_targets);
+    assert!(
+        view.stream_target(NonZeroU128::new(5).unwrap())
+            .unwrap()
+            .has_key
+    );
+    assert!(view.stream_target(NonZeroU128::new(7).unwrap()).is_none());
+}
+
+#[test]
+fn stream_target_changed_events_add_replace_and_remove_destinations() {
+    let project_id = project(10);
+    let mut initial = snapshot(project_id, 4);
+    initial.streams = vec![stream(5, "Twitch", false)];
+    initial.stream_targets = vec![stream_target_entry(5, "Twitch", true)];
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(initial).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+
+    // Add: the entry is appended in authored order with the new roster.
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            5,
+            DurableChange::StreamTargetChanged {
+                target: NonZeroU128::new(9).unwrap(),
+                entry: Some(Box::new(stream_target_entry(9, "YouTube", true))),
+                streams: vec![stream(5, "Twitch", false), stream(9, "YouTube", false)],
+            },
+        ))
+        .unwrap();
+    let names = |model: &ClientModel| -> Vec<String> {
+        model
+            .view()
+            .unwrap()
+            .stream_targets
+            .iter()
+            .map(|entry| entry.config.name.clone())
+            .collect()
+    };
+    assert_eq!(names(&model), ["Twitch", "YouTube"]);
+    assert_eq!(model.view().unwrap().streams.len(), 2);
+
+    // Replace in place: order is kept, the key flag follows the entry.
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            6,
+            DurableChange::StreamTargetChanged {
+                target: NonZeroU128::new(5).unwrap(),
+                entry: Some(Box::new(stream_target_entry(5, "Twitch backup", false))),
+                streams: vec![
+                    stream(5, "Twitch backup", false),
+                    stream(9, "YouTube", false),
+                ],
+            },
+        ))
+        .unwrap();
+    assert_eq!(names(&model), ["Twitch backup", "YouTube"]);
+    assert!(
+        !model
+            .view()
+            .unwrap()
+            .stream_target(NonZeroU128::new(5).unwrap())
+            .unwrap()
+            .has_key
+    );
+    assert_eq!(model.state().unwrap().streams()[0].name, "Twitch backup");
+
+    // Remove: the entry and its roster row go.
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            7,
+            DurableChange::StreamTargetChanged {
+                target: NonZeroU128::new(5).unwrap(),
+                entry: None,
+                streams: vec![stream(9, "YouTube", false)],
+            },
+        ))
+        .unwrap();
+    assert_eq!(names(&model), ["YouTube"]);
+    assert_eq!(
+        model.state().unwrap().streams(),
+        [stream(9, "YouTube", false)].as_slice()
+    );
+    assert_eq!(model.sync_status(), &SyncStatus::Current);
+}
+
 #[test]
 fn snapshot_recordings_project_per_slot_into_state_and_view() {
     let project_id = project(10);
@@ -1467,6 +1594,7 @@ mod titles {
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         }
     }
 

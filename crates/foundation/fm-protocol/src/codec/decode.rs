@@ -561,6 +561,23 @@ fn decode_command_payload(
         | "overlay_transition" | "overlay_appearance" | "overlay_queue"
         | "overlay_next") => decode_overlay_command(fields, overlay)?,
         stream @ ("stream_start" | "stream_stop") => decode_stream_command(fields, stream)?,
+        "stream_retry" => CommandPayload::StreamRetry {
+            target: super::stream_target::decode_target(fields)?,
+        },
+        "stream_start_all" => CommandPayload::StreamStartAll,
+        "stream_stop_all" => CommandPayload::StreamStopAll,
+        "stream_target_set" => {
+            let (target, config, stream_key) = super::stream_target::decode_set(fields)?;
+            CommandPayload::SetStreamTarget {
+                target,
+                config: Box::new(config),
+                stream_key,
+            }
+        }
+        "stream_target_remove" => CommandPayload::RemoveStreamTarget {
+            target: super::stream_target::decode_target(fields)?,
+        },
+
         record @ ("record_start" | "record_stop") => decode_record_command(fields, record)?,
         "wipe" => CommandPayload::Wipe {
             duration_frames: fields.parse_required("duration_frames")?,
@@ -1612,6 +1629,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
             &fields.required("network_streams")?,
         )?,
         capture_inputs: super::capture::decode_entries(&fields.required("capture_inputs")?)?,
+        stream_targets: super::stream_target::decode_entries(&fields.required("stream_targets")?)?,
     })
 }
 
@@ -2218,6 +2236,14 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "streams_changed" => EventPayload::StreamsChanged {
             streams: parse_stream_statuses(&fields.required("streams")?)?,
         },
+        "stream_target_changed" => {
+            let (target, entry) = super::stream_target::decode_changed(fields)?;
+            EventPayload::StreamTargetChanged {
+                target,
+                entry: entry.map(Box::new),
+                streams: parse_stream_statuses(&fields.required("streams")?)?,
+            }
+        }
         "recording_changed" => EventPayload::RecordingChanged {
             recorder: decode_recorder_slot(fields)?,
             active: fields.boolean("active")?,
@@ -2822,9 +2848,10 @@ fn decode_stream_status(fields: &mut Fields) -> Result<StreamStatusMessage, Code
     })
 }
 
-/// The seven required colon-separated `stream_status` sample fields plus the
-/// optional trailing `local=<segments>:<target_duration_ms>:<free_bytes>`
-/// triple, split from one sample entry.
+/// The ten required colon-separated `stream_status` sample fields (Protocol
+/// 2.52) plus the optional trailing
+/// `local=<segments>:<target_duration_ms>:<free_bytes>` triple, split from
+/// one sample entry.
 struct StreamSampleFields<'a> {
     target: &'a str,
     realized: &'a str,
@@ -2832,12 +2859,15 @@ struct StreamSampleFields<'a> {
     muxed_bytes: &'a str,
     enqueued_pairs: &'a str,
     dropped_pairs: &'a str,
+    reconnects: &'a str,
+    uptime_ms: &'a str,
+    bitrate_kbps: &'a str,
     failure: &'a str,
     local: Option<(&'a str, &'a str, &'a str)>,
 }
 
 /// Splits one sample entry into its fields, refusing any shape other than the
-/// exact 2.18 seven-field form or that form plus the local triple.
+/// exact ten-field form or that form plus the local triple.
 fn split_stream_status_sample(entry: &str) -> Option<StreamSampleFields<'_>> {
     let parts = entry.split(':').collect::<Vec<_>>();
     match parts.as_slice() {
@@ -2848,6 +2878,9 @@ fn split_stream_status_sample(entry: &str) -> Option<StreamSampleFields<'_>> {
             muxed_bytes,
             enqueued_pairs,
             dropped_pairs,
+            reconnects,
+            uptime_ms,
+            bitrate_kbps,
             failure,
         ] => Some(StreamSampleFields {
             target,
@@ -2856,6 +2889,9 @@ fn split_stream_status_sample(entry: &str) -> Option<StreamSampleFields<'_>> {
             muxed_bytes,
             enqueued_pairs,
             dropped_pairs,
+            reconnects,
+            uptime_ms,
+            bitrate_kbps,
             failure,
             local: None,
         }),
@@ -2866,6 +2902,9 @@ fn split_stream_status_sample(entry: &str) -> Option<StreamSampleFields<'_>> {
             muxed_bytes,
             enqueued_pairs,
             dropped_pairs,
+            reconnects,
+            uptime_ms,
+            bitrate_kbps,
             failure,
             local_segments,
             local_target_duration_ms,
@@ -2877,6 +2916,9 @@ fn split_stream_status_sample(entry: &str) -> Option<StreamSampleFields<'_>> {
             muxed_bytes,
             enqueued_pairs,
             dropped_pairs,
+            reconnects,
+            uptime_ms,
+            bitrate_kbps,
             failure,
             local: Some((
                 local_segments.strip_prefix("local=")?,
@@ -2969,7 +3011,11 @@ fn decode_stream_status_sample(
         muxed_bytes: fields.muxed_bytes.parse().map_err(|_| invalid())?,
         enqueued_pairs: fields.enqueued_pairs.parse().map_err(|_| invalid())?,
         dropped_pairs: fields.dropped_pairs.parse().map_err(|_| invalid())?,
+        reconnects: fields.reconnects.parse().map_err(|_| invalid())?,
+        uptime_ms: fields.uptime_ms.parse().map_err(|_| invalid())?,
+        bitrate_kbps: fields.bitrate_kbps.parse().map_err(|_| invalid())?,
         failure,
+
         local,
     })
 }

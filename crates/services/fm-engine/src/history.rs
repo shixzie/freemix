@@ -161,6 +161,7 @@ impl EngineCommand {
             | Self::SetNetworkStream { .. }
             | Self::SetCaptureSettings { .. }
             | Self::SetCueList { .. }
+            | Self::SetStreamTarget { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
                 if edit.is_live() {
@@ -200,6 +201,7 @@ impl EngineCommand {
             | Self::CancelManualTransition
             | Self::StreamStart { .. }
             | Self::StreamStop { .. }
+            | Self::StreamControl(_)
             | Self::RecordStart { .. }
             | Self::RecordStop { .. }
             | Self::SetTitleFields { .. }
@@ -793,6 +795,7 @@ fn fade_to_black_inverse(state: &ShowState, command: &EngineCommand) -> Option<E
 
 /// Returns the exact command that would revert `command` on `state`, or
 /// `None` when `command` is not a project edit or targets nothing in `state`.
+#[allow(clippy::too_many_lines)] // one arm per undoable command kind
 pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<EngineCommand> {
     let switcher = state.desired_switcher();
     match command {
@@ -879,6 +882,13 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                     config: Box::new(config.clone()),
                 })
         }
+        EngineCommand::SetStreamTarget { target, .. } => Some(EngineCommand::SetStreamTarget {
+            target: *target,
+            spec: state
+                .stream_target(*target)
+                .map(|config| Box::new(crate::EngineStreamTargetSpec::from_target(config))),
+        }),
+
         EngineCommand::SetCueList { list, .. } => Some(EngineCommand::SetCueList {
             list: *list,
             definition: crate::cue::definition(state, *list),

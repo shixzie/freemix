@@ -69,6 +69,7 @@ mod preset_files;
 mod scene_designer;
 mod stinger_config;
 mod stream_control;
+mod stream_targets;
 mod studio_animation;
 mod studio_color;
 mod theme;
@@ -122,7 +123,9 @@ pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
 };
-pub use stream_control::{StreamAction, stream_action, stream_command_pending};
+pub use stream_control::{
+    StreamAction, StreamGroupAction, stream_action, stream_command_pending, stream_group_action,
+};
 pub use studio_animation::{ANIMATION_SHORTCUT, TitleAnimationRefusal};
 pub use studio_color::{COLOR_SHORTCUT, GradeLutFile, GradeLutRequest, GradeRefusal};
 pub use titles::TitleUpdate;
@@ -285,8 +288,22 @@ pub enum StudioIntent {
     ToggleFadeToBlack { duration_frames: u32 },
     /// Starts or stops the configured program recorder.
     Recording(RecordingAction),
-    /// Starts or stops one configured stream target.
+    /// Starts, stops, or retries one configured stream target.
     Stream(StreamAction),
+    /// Starts or stops every configured stream target (Protocol 2.52);
+    /// recording is not affected.
+    StreamGroup(StreamGroupAction),
+    /// Adds or reconfigures one stream destination (Protocol 2.52). The
+    /// key edit keeps, clears, or replaces the stored key; its `Debug`
+    /// form never shows a new key.
+    SetStreamTarget {
+        target: WireStreamTargetId,
+        config: Box<fm_protocol::StreamTargetConfig>,
+        stream_key: fm_protocol::SecretEdit,
+    },
+    /// Removes one stopped stream destination no cue list names
+    /// (Protocol 2.52).
+    RemoveStreamTarget { target: WireStreamTargetId },
     /// Assigns one input as a Stinger slot's media. A configured slot keeps
     /// its other settings; an unconfigured slot is preloaded, mixes with
     /// Program audio, falls back to Cut, and uses
@@ -493,6 +510,8 @@ pub struct StudioUiState {
     pub recording_pending: [bool; RECORDER_SLOT_COUNT],
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
+    /// Whether a Start all or Stop all command is still unresolved.
+    pub stream_group_pending: bool,
     /// Reconnect attempt and delay while the connection is in backoff.
     pub reconnect: Option<ReconnectStatus>,
     /// Latest decoded encoded-fallback monitor frame per
@@ -557,6 +576,7 @@ impl StudioUiState {
             recording_desired: [false; RECORDER_SLOT_COUNT],
             recording_pending: [false; RECORDER_SLOT_COUNT],
             stream_pending: Vec::new(),
+            stream_group_pending: false,
             reconnect: None,
             monitor_images: [None, None],
             catalogue_pending: Vec::new(),
@@ -1396,6 +1416,8 @@ pub struct StudioShell {
     designer: scene_designer::DesignerWindow,
     /// The Fullscreen outputs dialog and its slot drafts (OR-011).
     display_outputs: display_outputs::DisplayOutputsDialog,
+    /// The Add / Edit destination dialog and Remove confirmation (OR-006).
+    stream_targets: stream_targets::StreamTargetsUi,
     /// Tab drags, native window placement, and the layout name dialog.
     dock_ui: workspace::DockUi,
 }
@@ -1740,6 +1762,7 @@ impl StudioShell {
         self.draw_preferences_window(ui.ctx());
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
+        self.draw_stream_target_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
         self.draw_tool_windows(ui.ctx(), state, &mut intents);
         self.draw_layout_name_dialog(ui.ctx());
@@ -1852,6 +1875,7 @@ impl Default for StudioShell {
             animation: studio_animation::AnimationWindow::default(),
             designer: scene_designer::DesignerWindow::default(),
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
+            stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
         }
     }
@@ -2712,6 +2736,9 @@ mod tests {
             dropped_pairs: 3,
             failure: failure.map(str::to_owned),
             local: None,
+            bitrate_kbps: 0,
+            reconnects: 0,
+            uptime_ms: 0,
         }
     }
 
@@ -2801,6 +2828,7 @@ mod tests {
             transition_favorites: TransitionFavoriteStatus::defaults(),
             input_lifecycle: vec![fm_ui_model::InputLifecycleStatus::default()],
             input_categories: Vec::new(),
+            stream_targets: Vec::new(),
         }
     }
 
@@ -3211,7 +3239,7 @@ mod tests {
         let sample = stream_sample(40, Some("auth_rejected"));
         assert_eq!(
             stream_row_text(en, Some(&sample)),
-            "Transport: connected · 2.0 KB sent · 12 queued · 3 dropped\nFailure: auth_rejected"
+            "Transport: connected · 2.0 KB sent · 12 queued · 3 dropped\nLast error: auth_rejected"
         );
 
         let clean = StreamStatusSample {

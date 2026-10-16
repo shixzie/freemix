@@ -11,6 +11,7 @@ mod media;
 mod monitor_image;
 mod network_stream;
 mod scene_layer;
+mod stream_target;
 mod version;
 
 pub use fm_types::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
@@ -32,10 +33,10 @@ pub use capture::{
 pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
-    MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
-    cue_action_token, cue_name_is_valid, decode_line, decode_refusal_reason, encode_line,
-    encode_refusal_reason, motion_wire_bytes, parse_cue_action_token, scene_clip_wire_bytes,
-    scene_layout_wire_bytes, title_clip_wire_bytes,
+    MAX_STREAM_DETAIL_BYTES, MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS,
+    MAX_STREAM_SAMPLES, cue_action_token, cue_name_is_valid, decode_line, decode_refusal_reason,
+    encode_line, encode_refusal_reason, motion_wire_bytes, parse_cue_action_token,
+    scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes,
 };
 pub use cue::{
     CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport, CueOperation,
@@ -137,5 +138,12 @@ pub use scene_layer::{
     SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,
     SceneLayerOperation, WireChromaKey, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
     WireLayerKey, WireLayerMask, WireLumaKey,
+};
+pub use stream_target::{
+    MAX_STREAM_RECONNECT_ATTEMPTS, MAX_STREAM_RECONNECT_DELAY_MS, MAX_STREAM_TARGET_BITRATE_KBPS,
+    MAX_STREAM_TARGET_ENDPOINT_BYTES, MAX_STREAM_TARGET_KEY_BYTES, MAX_STREAM_TARGET_LADDER_RUNGS,
+    MAX_STREAM_TARGET_NAME_BYTES, MAX_STREAM_TARGETS, MIN_STREAM_RECONNECT_DELAY_MS,
+    MIN_STREAM_TARGET_BITRATE_KBPS, StreamReconnect, StreamTargetConfig, StreamTargetEntry,
+    StreamTargetProtocol, stream_key_is_valid,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};

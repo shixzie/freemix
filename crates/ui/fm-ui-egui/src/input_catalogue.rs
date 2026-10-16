@@ -559,7 +559,7 @@ const DIALOG_CHROME: f32 = 160.0;
 
 /// A modal like [`crate::menu::help_modal`], anchored at the top centre of
 /// the screen; `add_contents` gets the height its scrolled body may take.
-fn anchored_modal(
+pub(crate) fn anchored_modal(
     context: &egui::Context,
     id: &str,
     title: &str,
@@ -1684,6 +1684,7 @@ mod tests {
             cue_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+            stream_targets: Vec::new(),
         }
     }
 

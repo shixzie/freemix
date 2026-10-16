@@ -1336,7 +1336,7 @@ impl StudioShell {
                     intents.push(StudioIntent::Recording(action));
                 }
                 ui.add_space(6.0);
-                crate::outputs::draw_streams(ui, state, intents);
+                crate::outputs::draw_streams(ui, state, &mut self.stream_targets, intents);
             }
             PanelId::Overlays => {
                 overlays::draw_overlays(ui, state, self.transition_duration_frames, intents);

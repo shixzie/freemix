@@ -176,7 +176,7 @@ fn input_and_program_grades_render_and_round_trip_through_the_saved_project() {
     assert!(
         fs::read_to_string(project.join("project.json"))
             .unwrap()
-            .contains("\"schema_version\": 48")
+            .contains("\"schema_version\": 49")
     );
     let listed = succeed(&["grade-list", path]);
     assert!(listed.contains("input 1: inline enabled=true exposure=1000 temperature=250"));

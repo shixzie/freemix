@@ -208,6 +208,11 @@ pub struct ShowState {
     /// The configured fullscreen display outputs by slot (OR-011).
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
+    /// Every configured stream destination's authored configuration in
+    /// authored order (OR-006), parallel to the switcher's stream inventory.
+    /// The switcher owns the desired running flags; each entry's own
+    /// `running` field is not read.
+    stream_targets: Vec<fm_model::StreamTarget>,
 }
 
 impl ShowState {
@@ -288,6 +293,7 @@ impl ShowState {
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             display_outputs: BTreeMap::new(),
+            stream_targets: Vec::new(),
         })
     }
 
@@ -361,6 +367,73 @@ impl ShowState {
     #[must_use]
     pub fn outputs(&self) -> &[(OutputId, String)] {
         &self.outputs
+    }
+
+    /// Replaces the stream destinations (OR-006): their authored
+    /// configurations and the switcher's inventory, in the given order.
+    /// Desired running flags are left to [`Self::set_stream_running`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::with_streams`].
+    pub fn with_stream_targets(
+        self,
+        targets: &[fm_model::StreamTarget],
+    ) -> Result<Self, ShowError> {
+        let mut show = self.with_streams(targets.iter().map(|target| {
+            (
+                StreamTargetId::from_non_zero(target.id().get()),
+                target.name().to_owned(),
+            )
+        }))?;
+        show.stream_targets = targets.to_vec();
+        Ok(show)
+    }
+
+    /// Every configured stream destination's authored configuration in
+    /// authored order (OR-006). Empty when the show was seeded with
+    /// [`Self::with_streams`] alone.
+    #[must_use]
+    pub fn stream_targets(&self) -> &[fm_model::StreamTarget] {
+        &self.stream_targets
+    }
+
+    /// Stream destination `target`'s authored configuration (OR-006).
+    #[must_use]
+    pub fn stream_target(&self, target: StreamTargetId) -> Option<&fm_model::StreamTarget> {
+        self.stream_targets
+            .iter()
+            .find(|candidate| candidate.id().get() == target.get())
+    }
+
+    /// Adds, replaces, or (`None`) removes destination `target` in both the
+    /// configuration list and the desired switcher's inventory. The caller
+    /// has already validated the edit.
+    pub(crate) fn set_stream_target_unchecked(
+        &mut self,
+        target: StreamTargetId,
+        config: Option<fm_model::StreamTarget>,
+    ) -> Result<(), ShowError> {
+        let Some(config) = config else {
+            self.desired_switcher
+                .remove_stream(target)
+                .map_err(ShowError::Switcher)?;
+            self.stream_targets
+                .retain(|candidate| candidate.id().get() != target.get());
+            return Ok(());
+        };
+        self.desired_switcher
+            .upsert_stream(target, config.name().to_owned())
+            .map_err(ShowError::Switcher)?;
+        match self
+            .stream_targets
+            .iter_mut()
+            .find(|candidate| candidate.id().get() == target.get())
+        {
+            Some(existing) => *existing = config,
+            None => self.stream_targets.push(config),
+        }
+        Ok(())
     }
 
     #[must_use]

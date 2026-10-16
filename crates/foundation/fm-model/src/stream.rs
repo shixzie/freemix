@@ -414,6 +414,134 @@ impl fmt::Display for StreamVideoBitrateError {
 
 impl std::error::Error for StreamVideoBitrateError {}
 
+/// Shortest authored first reconnect delay, in milliseconds.
+pub const MIN_STREAM_RECONNECT_DELAY_MS: u32 = 100;
+
+/// Longest authored reconnect delay (first or ceiling), in milliseconds: five
+/// minutes.
+pub const MAX_STREAM_RECONNECT_DELAY_MS: u32 = 300_000;
+
+/// Most reconnect attempts a destination may be authored to make before it
+/// gives up. `None` (no limit) is authored separately.
+pub const MAX_STREAM_RECONNECT_ATTEMPTS: u32 = 10_000;
+
+/// How a destination reconnects after its ingest drops or refuses it
+/// (OR-006, schema 49).
+///
+/// The first retry waits [`StreamReconnectPolicy::initial_delay_ms`]; each
+/// later one doubles the wait up to [`StreamReconnectPolicy::max_delay_ms`].
+/// After [`StreamReconnectPolicy::max_attempts`] consecutive attempts that
+/// never delivered media the destination gives up and latches failed until an
+/// operator retries, stops, or restarts it. `None` retries forever. An attempt
+/// that delivers media resets the budget.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StreamReconnectPolicy {
+    initial_delay_ms: u32,
+    max_delay_ms: u32,
+    max_attempts: Option<u32>,
+}
+
+/// Why an authored reconnect policy was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamReconnectError {
+    /// A delay is below [`MIN_STREAM_RECONNECT_DELAY_MS`] or above
+    /// [`MAX_STREAM_RECONNECT_DELAY_MS`].
+    DelayOutOfRange,
+    /// The ceiling is below the first delay.
+    MaxBelowInitial,
+    /// The attempt budget is zero or above [`MAX_STREAM_RECONNECT_ATTEMPTS`].
+    AttemptsOutOfRange,
+}
+
+impl fmt::Display for StreamReconnectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DelayOutOfRange => write!(
+                formatter,
+                "stream reconnect delays must be between {MIN_STREAM_RECONNECT_DELAY_MS} and \
+                 {MAX_STREAM_RECONNECT_DELAY_MS} ms"
+            ),
+            Self::MaxBelowInitial => formatter
+                .write_str("stream reconnect maximum delay must not be below the first delay"),
+            Self::AttemptsOutOfRange => write!(
+                formatter,
+                "stream reconnect attempts must be between 1 and {MAX_STREAM_RECONNECT_ATTEMPTS}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StreamReconnectError {}
+
+impl StreamReconnectPolicy {
+    /// The policy a destination gets when none is authored: first retry
+    /// after 250 ms, doubling to at most 2 s, giving up after 40 attempts.
+    pub const DEFAULT: Self = Self {
+        initial_delay_ms: 250,
+        max_delay_ms: 2_000,
+        max_attempts: Some(40),
+    };
+
+    /// Validates one authored policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamReconnectError`] when a delay is out of range, the
+    /// ceiling is below the first delay, or the attempt budget is zero or too
+    /// large.
+    pub const fn new(
+        initial_delay_ms: u32,
+        max_delay_ms: u32,
+        max_attempts: Option<u32>,
+    ) -> Result<Self, StreamReconnectError> {
+        if initial_delay_ms < MIN_STREAM_RECONNECT_DELAY_MS
+            || initial_delay_ms > MAX_STREAM_RECONNECT_DELAY_MS
+            || max_delay_ms < MIN_STREAM_RECONNECT_DELAY_MS
+            || max_delay_ms > MAX_STREAM_RECONNECT_DELAY_MS
+        {
+            return Err(StreamReconnectError::DelayOutOfRange);
+        }
+        if max_delay_ms < initial_delay_ms {
+            return Err(StreamReconnectError::MaxBelowInitial);
+        }
+        if let Some(attempts) = max_attempts
+            && (attempts == 0 || attempts > MAX_STREAM_RECONNECT_ATTEMPTS)
+        {
+            return Err(StreamReconnectError::AttemptsOutOfRange);
+        }
+        Ok(Self {
+            initial_delay_ms,
+            max_delay_ms,
+            max_attempts,
+        })
+    }
+
+    /// The wait before the first reconnect attempt, in milliseconds.
+    #[must_use]
+    pub const fn initial_delay_ms(self) -> u32 {
+        self.initial_delay_ms
+    }
+
+    /// The longest wait between attempts, in milliseconds.
+    #[must_use]
+    pub const fn max_delay_ms(self) -> u32 {
+        self.max_delay_ms
+    }
+
+    /// How many consecutive undelivered attempts before giving up; `None`
+    /// retries forever.
+    #[must_use]
+    pub const fn max_attempts(self) -> Option<u32> {
+        self.max_attempts
+    }
+}
+
+impl Default for StreamReconnectPolicy {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Why an authored HLS ladder was refused.
 ///
 /// No variant carries a rejected value, so an error may be logged or surfaced
@@ -784,6 +912,7 @@ pub struct StreamTarget {
     running: bool,
     video_bitrate_kbps: u32,
     ladder: Option<StreamLadder>,
+    reconnect: StreamReconnectPolicy,
     output: OutputId,
 }
 
@@ -845,6 +974,7 @@ impl StreamTarget {
             running: false,
             video_bitrate_kbps: DEFAULT_VIDEO_BITRATE_KBPS,
             ladder: None,
+            reconnect: StreamReconnectPolicy::DEFAULT,
             output,
         })
     }
@@ -900,6 +1030,13 @@ impl StreamTarget {
             self.ladder = None;
         }
         Ok(self)
+    }
+
+    /// Builder-style setter for the authored reconnect policy.
+    #[must_use]
+    pub const fn with_reconnect(mut self, reconnect: StreamReconnectPolicy) -> Self {
+        self.reconnect = reconnect;
+        self
     }
 
     #[must_use]
@@ -988,6 +1125,12 @@ impl StreamTarget {
     #[must_use]
     pub const fn ladder(&self) -> Option<&StreamLadder> {
         self.ladder.as_ref()
+    }
+
+    /// How this destination reconnects after its ingest drops it.
+    #[must_use]
+    pub const fn reconnect(&self) -> StreamReconnectPolicy {
+        self.reconnect
     }
 
     /// The output this destination takes video and audio from.
@@ -1079,6 +1222,7 @@ impl fmt::Debug for StreamTarget {
             .field("backup_url", &self.redacted_backup_url())
             .field("ladder", &self.ladder)
             .field("startup", &self.startup)
+            .field("reconnect", &self.reconnect)
             .field("output", &self.output)
             .finish_non_exhaustive()
     }

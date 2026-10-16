@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.51 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.52 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1583,6 +1583,63 @@ lists (RC-017).
   (time the daemon was down does not count toward a wait); the native
   recorder startup barrier runs the cue clock too.
 - 2.50 is refused.
+
+Protocol 2.52 adds five simultaneous stream destinations with independent
+control (OR-006).
+
+- `payload=stream_retry` (`target`) reconnects one destination now, with a
+  fresh reconnect budget and any latched failure cleared. It is refused
+  `conflict` (`stream_not_running`) unless the destination is desired
+  running, and `not_found` for an unknown target.
+- `payload=stream_start_all` and `payload=stream_stop_all` set every
+  destination's desired running flag at once.
+  - Retry, start-all, and stop-all are authorized as transition operations,
+    like `stream_start`, and each acceptance emits one `streams_changed`.
+  - None of them ever touches a recorder.
+- `payload=stream_target_set` adds or reconfigures one destination. It
+  carries `target` plus these configuration fields:
+  - `name`;
+  - `stream_protocol` (`rtmp`, `rtmps`, `srt`, `hls`);
+  - `endpoint` (scheme-relative `host[:port]/app[/path]`, `host[:port]` for
+    SRT, or an absolute directory for HLS);
+  - optional `backup_endpoint`;
+  - `output`;
+  - `startup` (`stopped`, `reconcile`);
+  - `video_bitrate_kbps` (1000..=100000);
+  - `reconnect` (`<initial ms>:<max ms>:<attempts or none>`, delays
+    100..=300000 with max >= initial, attempts 1..=10000);
+  - optional `stream_key`: absent keeps the stored key, empty clears it,
+    `***` is refused, and the key is at most 512 bytes.
+- `payload=stream_target_remove` (`target`) removes one destination.
+  - Set and remove are undoable, padlock-guarded project edits.
+  - They are refused while the destination is desired running
+    (`stream_running`), and for:
+    - a sixth destination (`too_many_streams`);
+    - a duplicate name (`duplicate_name`);
+    - an unknown output;
+    - an invalid endpoint, key, bitrate, or policy (field issues
+      `endpoint`, `backup_endpoint`, `stream_key`, `video_bitrate_kbps`,
+      `reconnect`);
+    - for removal, a destination a cue list starts or stops
+      (`stream_in_use`).
+- The snapshot adds `stream_targets`, a comma-separated list of
+  `<target>~<name>~<protocol>~<endpoint>~<backup>~<output>~<startup>~<kbps>~<reconnect>~<has_key>~<ladder rungs>`
+  in authored order.
+- `event=stream_target_changed` carries `target`, `configured` (`0|1`), the
+  configuration fields with `has_key` and `ladder_rungs` when configured,
+  and the resulting `streams` roster.
+- No snapshot, event, or refusal ever carries a stored stream key.
+- Each `stream_status` sample is now
+  `target:realized:connected:muxed:enqueued:dropped:reconnects:uptime_ms:bitrate_kbps:failure`,
+  with the optional `:local=` health after it:
+  - `reconnects` counts proven recoveries;
+  - `uptime_ms` is how long the current session has delivered media;
+  - `bitrate_kbps` is the encoded output over the last two seconds.
+  The native daemon clamps failure text to the 64-byte detail bound.
+- Durability: each stream target gains a required `reconnect` object
+  (`initial_delay_ms`, `max_delay_ms`, `max_attempts` or `null`), with a
+  default of 250 / 2000 / 40 (schema 49).
+- 2.51 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
