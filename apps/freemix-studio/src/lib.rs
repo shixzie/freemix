@@ -17,7 +17,7 @@ pub use args::{
     SupervisedConfig, UiPreferences, parse_args,
 };
 pub use native::launch_native;
-pub use prefs::{PREFERENCES_ENV, PreferenceStore, SavedPreferences, preferences_path};
+pub use prefs::{PREFERENCES_ENV, PreferenceStore, SAVE_DELAY, SavedPreferences, preferences_path};
 pub use runtime::{LifecycleState, StudioError, StudioRuntime};
 pub use supervisor::{
     DaemonSupervisor, ReadinessParseError, ReadinessRecord, RestartPolicy, SupervisorError,

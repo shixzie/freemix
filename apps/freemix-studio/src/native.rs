@@ -251,6 +251,40 @@ impl PendingIntents {
     }
 }
 
+/// How often the monitor list is read again.
+const SCREENS_REFRESH: Duration = Duration::from_secs(2);
+
+/// The monitors around winit `$window`, primary first, in points at the
+/// console's `$zoom`. A macro because eframe hands out winit's window
+/// without Studio depending on winit itself.
+macro_rules! screens_of {
+    ($window:expr, $zoom:expr) => {{
+        let window = $window;
+        let zoom: f32 = $zoom;
+        let primary = window.primary_monitor();
+        let mut monitors: Vec<_> = window.available_monitors().collect();
+        if let Some(primary) = primary
+            && let Some(index) = monitors.iter().position(|monitor| *monitor == primary)
+        {
+            let primary = monitors.remove(index);
+            monitors.insert(0, primary);
+        }
+        monitors
+            .iter()
+            .filter_map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                fm_ui_egui::ScreenRect::from_physical(
+                    (position.x, position.y),
+                    (size.width, size.height),
+                    monitor.scale_factor(),
+                    zoom,
+                )
+            })
+            .collect::<Vec<_>>()
+    }};
+}
+
 struct StudioApp {
     shell: StudioShell,
     state: StudioUiState,
@@ -267,6 +301,8 @@ struct StudioApp {
     preferences: PreferenceStore,
     /// Why the preferences could not be read or saved, shown as a notice.
     preferences_notice: Option<String>,
+    /// When the monitor list was last handed to the shell.
+    screens_checked: Option<Instant>,
     /// The supervised project bundle, whose LUT files a grade export reads;
     /// `None` when connected to an independent daemon.
     project_bundle: Option<std::path::PathBuf>,
@@ -319,6 +355,12 @@ impl StudioApp {
             .egui_ctx
             .set_zoom_factor(shell.appearance().zoom_factor());
         let preferences = PreferenceStore::new(path, saved, locale, layout, shell.appearance());
+        // Popped-out windows restored on the first frame open on a monitor
+        // that is still there.
+        if let Some(window) = creation_context.winit_window() {
+            let zoom = shell.appearance().zoom_factor();
+            shell.set_screens(screens_of!(window, zoom));
+        }
         let (request_sender, request_receiver) = sync_channel(REQUEST_CAPACITY);
         let repaint_context = creation_context.egui_ctx.clone();
         let (publisher, updates) = state_mailbox(repaint_context);
@@ -340,6 +382,7 @@ impl StudioApp {
             osc_notice: None,
             preferences,
             preferences_notice,
+            screens_checked: Some(Instant::now()),
             project_bundle,
         })
     }
@@ -476,7 +519,18 @@ impl StudioApp {
 }
 
 impl eframe::App for StudioApp {
-    fn logic(&mut self, _context: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
+        // Monitors come and go; windows opened later use the current ones.
+        let now = Instant::now();
+        if self
+            .screens_checked
+            .is_none_or(|checked| now.saturating_duration_since(checked) >= SCREENS_REFRESH)
+            && let Some(window) = frame.winit_window()
+        {
+            let zoom = context.zoom_factor();
+            self.shell.set_screens(screens_of!(window, zoom));
+            self.screens_checked = Some(now);
+        }
         if let Some(updates) = &self.updates
             && let Some(mut state) = updates.try_recv()
         {
@@ -517,16 +571,32 @@ impl eframe::App for StudioApp {
             }
         }
 
+        // Written once the operator stops changing them (a splitter or a
+        // window being dragged changes the layout every frame).
+        match self.preferences.observe_at(
+            Instant::now(),
+            self.shell.locale(),
+            self.shell.layout(),
+            self.shell.appearance(),
+        ) {
+            Ok(None) => {}
+            Ok(Some(wait)) => ui.ctx().request_repaint_after(wait),
+            Err(error) => {
+                self.preferences_notice = Some(format!("Console preferences not saved: {error}"));
+                ui.ctx().request_repaint_after(crate::SAVE_DELAY);
+            }
+        }
+    }
+
+    fn on_exit(&mut self) {
+        // Whatever changed in the last moments is saved too.
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),
             self.shell.appearance(),
         ) {
-            self.preferences_notice = Some(format!("Console preferences not saved: {error}"));
+            eprintln!("freemix-studio: console preferences not saved: {error}");
         }
-    }
-
-    fn on_exit(&mut self) {
         self.send_shutdown();
         if let Some(osc) = self.osc.take() {
             let _ = osc.shutdown();
@@ -3534,6 +3604,7 @@ mod tests {
                 fm_ui_egui::Appearance::default(),
             ),
             preferences_notice: None,
+            screens_checked: None,
             project_bundle: None,
         };
 
@@ -6077,6 +6148,7 @@ mod tests {
                 fm_ui_egui::Appearance::default(),
             ),
             preferences_notice: None,
+            screens_checked: None,
             project_bundle: None,
         };
         app.shell.set_transition_duration_frames(42);

@@ -693,6 +693,17 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ViewPanelToggleHover,
         t("Muestra u oculta este panel: {what}"),
     ),
+    (
+        Msg::ViewPanelPoppedHover,
+        t(
+            "En su propia ventana: {what}. Desmarca para ocultarlo; Traer al frente muestra su ventana delante",
+        ),
+    ),
+    (Msg::ViewPanelFront, t("Traer al frente")),
+    (
+        Msg::ViewPanelFrontHover,
+        t("{panel} está en su propia ventana: trae esa ventana al frente"),
+    ),
     (Msg::ViewToolWindows, t("Ventanas propias")),
     (
         Msg::ViewToolWindowHover,

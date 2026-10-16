@@ -265,11 +265,20 @@ both. Studio remembers the
 layout in `studio.conf`: `layout.dock` (the tile tree, for example
 `h765(v500(…),v500([outputs],[overlays|stingers|titles|playlist|media]))`),
 `layout.popouts` and `layout.tool_windows` (each popped window with its size
-and position, `program:700x460@1180,520`), `layout.saved = name | tree |
-popouts` per saved layout, plus the status bar, disclosure, and animation
-keys. A tree or pop-out list this version does not write falls back to the
-Default layout with a notice. On Wayland the compositor neither reports nor
-honours window positions, so only popped windows' sizes are restored there.
+and position, `program:700x460@1180,520`, and `+max` after a maximised
+window's un-maximised size and place, so it reopens maximised), `layout.saved
+= name | tree | popouts` per saved layout, plus the status bar, disclosure,
+and animation keys. A tree or pop-out list this version does not write falls
+back to the Default layout with a notice. A window saved where no monitor
+shows at least 64x32 points of its top strip (a monitor was unplugged or
+rearranged) reopens in the middle of the primary monitor, shrunk to fit. A
+panel popped out of a maximised tile takes the size its tile has among the
+others. Showing a popped panel again (View › Panels › Bring to front, or a
+menu entry that shows the panel) raises its window. The file is written once
+the layout has stayed unchanged for half a second, and on exit, rather than
+every frame of a splitter or window drag. On Wayland the compositor neither
+reports nor honours window positions, so only popped windows' sizes are
+restored there.
 Changing only the layout never writes back a
 `--lang`/`--clock` session override, and vice versa. Every gated
 control, menu item, and tile action shows its action and shortcut as a tooltip

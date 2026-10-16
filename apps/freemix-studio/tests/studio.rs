@@ -1915,6 +1915,7 @@ fn saved_layout_round_trips_and_ignores_bad_values() {
         Some(WindowGeometry {
             size: (640, 480),
             position: Some((-1_200, 60)),
+            maximized: false,
         }),
     );
     layout.set_tool_popped(ToolWindow::Color, true);
@@ -1923,6 +1924,7 @@ fn saved_layout_round_trips_and_ignores_bad_values() {
         WindowGeometry {
             size: (520, 760),
             position: None,
+            maximized: false,
         },
     );
     layout.saved_layouts.push(NamedLayout {
@@ -2020,6 +2022,7 @@ fn pop_out_windows_and_their_places_persist_across_restarts() {
             geometry: Some(WindowGeometry {
                 size: (812, 456),
                 position: Some((1_930, 24)),
+                maximized: false,
             }),
         }]
     );
@@ -2035,6 +2038,134 @@ fn pop_out_windows_and_their_places_persist_across_restarts() {
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn layout_drags_are_saved_once_they_settle_not_every_frame() {
+    let directory = scratch_directory("debounced-prefs");
+    let path = directory.join("studio.conf");
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        SavedPreferences::default(),
+        Locale::ENGLISH,
+        ConsoleLayout::default(),
+        Appearance::default(),
+    );
+    let start = Instant::now();
+    let frame = Duration::from_millis(16);
+    let at = |frames: u32| start + frame * frames;
+    let observe = |store: &mut PreferenceStore, now: Instant, layout: &ConsoleLayout| {
+        store
+            .observe_at(now, Locale::ENGLISH, layout, Appearance::default())
+            .unwrap()
+    };
+    // Nothing changed: nothing pending, nothing written.
+    let mut layout = ConsoleLayout::default();
+    assert_eq!(observe(&mut store, at(0), &layout), None);
+    assert!(!store.is_pending());
+    // A splitter dragged over 30 frames changes the layout every frame,
+    // yet nothing is written while it moves; each frame says how long
+    // until the write is due.
+    for step in 1..=30_u16 {
+        layout.dock.set_ratio(&[], 765 - step);
+        let wait = observe(&mut store, at(u32::from(step)), &layout);
+        assert_eq!(wait, Some(freemix_studio::SAVE_DELAY));
+        assert!(!path.exists(), "written during the drag at frame {step}");
+    }
+    // Held still, it is written once the delay has passed, not before.
+    let released = at(30);
+    let wait = observe(&mut store, released + Duration::from_millis(300), &layout).unwrap();
+    assert_eq!(wait, Duration::from_millis(200));
+    assert!(!path.exists());
+    assert_eq!(
+        observe(&mut store, released + freemix_studio::SAVE_DELAY, &layout),
+        None
+    );
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap().layout,
+        Some(layout.clone())
+    );
+    assert!(!store.is_pending());
+    // Unchanged frames afterwards write nothing more.
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        observe(&mut store, released + Duration::from_secs(5), &layout),
+        None
+    );
+    assert!(!path.exists());
+
+    // A change made just before quitting is written on exit.
+    layout.dock.pop_out(
+        PanelId::Mixer,
+        Some(WindowGeometry {
+            size: (640, 400),
+            position: Some((10, 20)),
+            maximized: true,
+        }),
+    );
+    let late = released + Duration::from_secs(6);
+    assert!(observe(&mut store, late, &layout).is_some());
+    assert!(!path.exists());
+    store.flush().unwrap();
+    assert_eq!(SavedPreferences::load(&path).unwrap().layout, Some(layout));
+    assert!(!store.is_pending());
+    store.flush().unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_failed_debounced_save_is_retried_after_another_delay() {
+    let directory = scratch_directory("retry-prefs");
+    // A directory where the file should be cannot be replaced by a file.
+    let path = directory.join("studio.conf");
+    std::fs::create_dir_all(&path).unwrap();
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        SavedPreferences::default(),
+        Locale::ENGLISH,
+        ConsoleLayout::default(),
+        Appearance::default(),
+    );
+    let start = Instant::now();
+    let spanish = Locale::new(Language::Spanish);
+    let layout = ConsoleLayout::default();
+    let delay = freemix_studio::SAVE_DELAY;
+    assert_eq!(
+        store
+            .observe_at(start, spanish, &layout, Appearance::default())
+            .unwrap(),
+        Some(delay)
+    );
+    assert!(
+        store
+            .observe_at(start + delay, spanish, &layout, Appearance::default())
+            .is_err()
+    );
+    // Not tried again every frame, but after another delay.
+    assert_eq!(
+        store
+            .observe_at(
+                start + delay * 3 / 2,
+                spanish,
+                &layout,
+                Appearance::default()
+            )
+            .unwrap(),
+        Some(delay / 2)
+    );
+    std::fs::remove_dir_all(&path).unwrap();
+    assert_eq!(
+        store
+            .observe_at(start + delay * 2, spanish, &layout, Appearance::default())
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap().language,
+        Some(Language::Spanish)
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
 #[test]
 fn layout_changes_save_without_writing_back_a_session_language_override() {
     let directory = scratch_directory("layout-prefs");

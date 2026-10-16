@@ -331,11 +331,73 @@ pub const MAX_RATIO: u16 = 950;
 const MAX_DEPTH: usize = 16;
 
 /// A popped-out window's last known place, in points: the position is
-/// unknown on platforms that do not report it (Wayland).
+/// unknown on platforms that do not report it (Wayland). A maximised
+/// window keeps the size and place it returns to when un-maximised.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WindowGeometry {
     pub size: (u16, u16),
     pub position: Option<(i32, i32)>,
+    /// Whether the window was maximised; it opens maximised again.
+    pub maximized: bool,
+}
+
+/// One monitor's area on the desktop, in whole points (the units of
+/// egui's window positions).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScreenRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl ScreenRect {
+    /// A monitor's area from its physical position and size and its scale
+    /// factor, at the console's `zoom` (the UI scale). A window on that
+    /// monitor reports its place divided by the same factor, so the two
+    /// compare in the same units. `None` for an empty monitor or an
+    /// unusable scale.
+    #[must_use]
+    pub fn from_physical(
+        position: (i32, i32),
+        size: (u32, u32),
+        scale_factor: f64,
+        zoom: f32,
+    ) -> Option<Self> {
+        #[allow(clippy::cast_possible_truncation)] // scale factors are small
+        let pixels_per_point = scale_factor as f32 * zoom;
+        if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 || size.0 == 0 || size.1 == 0 {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // desktop pixels
+        let points = |pixels: f64| (pixels as f32 / pixels_per_point).round() as i32;
+        Some(Self {
+            x: points(f64::from(position.0)),
+            y: points(f64::from(position.1)),
+            width: points(f64::from(size.0)),
+            height: points(f64::from(size.1)),
+        })
+    }
+
+    /// This monitor as a left, top, width, and height.
+    #[allow(clippy::cast_precision_loss)] // desktop points
+    fn points(self) -> (f32, f32, f32, f32) {
+        (
+            self.x as f32,
+            self.y as f32,
+            self.width as f32,
+            self.height as f32,
+        )
+    }
+
+    /// The overlap of this monitor with a rect at `x`, `y` of `width` by
+    /// `height`, as a width and height (zero when apart).
+    fn overlap(self, x: f32, y: f32, width: f32, height: f32) -> (f32, f32) {
+        let (left, top, across, down) = self.points();
+        let across = (left + across).min(x + width) - left.max(x);
+        let down = (top + down).min(y + height) - top.max(y);
+        (across.max(0.0), down.max(0.0))
+    }
 }
 
 impl WindowGeometry {
@@ -345,6 +407,12 @@ impl WindowGeometry {
     pub const MAX_SIDE: u16 = 8_000;
     /// Furthest kept window position from the origin, in points.
     pub const MAX_OFFSET: i32 = 32_000;
+    /// The strip along a window's top, in points, that must show on some
+    /// monitor for the operator to grab the window there.
+    pub const TITLE_STRIP: f32 = 64.0;
+    /// How much of [`Self::TITLE_STRIP`] must show on one monitor, across
+    /// and down, for the window to stay where it was saved.
+    pub const MIN_VISIBLE: (f32, f32) = (64.0, 32.0);
 
     /// A geometry from a window's inner size and outer position, clamped
     /// to the kept ranges. An unmeasurable (NaN) side is the smallest kept,
@@ -371,18 +439,79 @@ impl WindowGeometry {
             position: position
                 .filter(|(x, y)| !x.is_nan() && !y.is_nan())
                 .map(|(x, y)| (offset(x), offset(y))),
+            maximized: false,
+        }
+    }
+
+    /// This geometry, maximised or not.
+    #[must_use]
+    pub const fn with_maximized(self, maximized: bool) -> Self {
+        Self { maximized, ..self }
+    }
+
+    /// Where the window should open on the current `monitors`, the
+    /// primary monitor first. A window whose title strip no longer shows
+    /// on any monitor (one was unplugged, or the desktop was rearranged)
+    /// moves to the middle of the primary monitor, keeping its size but
+    /// shrinking to fit. A window without a known position only shrinks
+    /// to fit the primary monitor. No monitors leaves it as it is.
+    #[must_use]
+    pub fn onto_screens(self, monitors: &[ScreenRect]) -> Self {
+        let Some(primary) = monitors.first().map(|primary| primary.points()) else {
+            return self;
+        };
+        let (left, top, room_across, room_down) = primary;
+        let (width, height) = (f32::from(self.size.0), f32::from(self.size.1));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
+        let fit = |side: f32, room: f32| {
+            side.min(room.floor())
+                .clamp(f32::from(Self::MIN_SIDE), f32::from(Self::MAX_SIDE)) as u16
+        };
+        let size = (fit(width, room_across), fit(height, room_down));
+        let Some((x, y)) = self.position else {
+            return Self { size, ..self };
+        };
+        #[allow(clippy::cast_precision_loss)] // clamped screen points
+        let (x, y) = (x as f32, y as f32);
+        let (min_across, min_down) = Self::MIN_VISIBLE;
+        let strip = Self::TITLE_STRIP.min(height);
+        let visible = monitors.iter().any(|monitor| {
+            let (across, down) = monitor.overlap(x, y, width, strip);
+            across >= min_across.min(width) && down >= min_down.min(strip)
+        });
+        if visible {
+            return self;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // clamped first
+        let centre = |start: f32, room: f32, side: u16| {
+            (start + ((room - f32::from(side)) / 2.0).max(0.0))
+                .round()
+                .clamp(-(Self::MAX_OFFSET as f32), Self::MAX_OFFSET as f32) as i32
+        };
+        Self {
+            size,
+            position: Some((
+                centre(left, room_across, size.0),
+                centre(top, room_down, size.1),
+            )),
+            maximized: self.maximized,
         }
     }
 
     fn encode(self) -> String {
         let (width, height) = self.size;
+        let maximized = if self.maximized { MAXIMIZED_SUFFIX } else { "" };
         match self.position {
-            Some((x, y)) => format!("{width}x{height}@{x},{y}"),
-            None => format!("{width}x{height}"),
+            Some((x, y)) => format!("{width}x{height}@{x},{y}{maximized}"),
+            None => format!("{width}x{height}{maximized}"),
         }
     }
 
     fn decode(text: &str) -> Option<Self> {
+        let (text, maximized) = match text.strip_suffix(MAXIMIZED_SUFFIX) {
+            Some(text) => (text, true),
+            None => (text, false),
+        };
         let (size, position) = match text.split_once('@') {
             Some((size, position)) => (size, Some(position)),
             None => (text, None),
@@ -408,9 +537,13 @@ impl WindowGeometry {
         Some(Self {
             size: (parse_side(width)?, parse_side(height)?),
             position,
+            maximized,
         })
     }
 }
+
+/// Marks a maximised window's geometry in `studio.conf`.
+const MAXIMIZED_SUFFIX: &str = "+max";
 
 /// Something shown in its own native window, and where.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

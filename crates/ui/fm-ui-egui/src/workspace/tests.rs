@@ -1074,26 +1074,29 @@ fn applying_or_resetting_a_layout_restores_maximised_tiles() {
     }
 }
 
+/// What a native window with `info` reports.
+fn window_outcome_for(context: &egui::Context, info: egui::ViewportInfo) -> WindowOutcome {
+    let mut raw = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+        ..RawInput::default()
+    };
+    raw.viewports.insert(ViewportId::ROOT, info);
+    context.begin_pass(raw);
+    let ui = Ui::new(
+        context.clone(),
+        Id::new("fm-dock-test"),
+        UiBuilder::new().layer_id(LayerId::background()),
+    );
+    let outcome = window_outcome(&ui, ViewportClass::Immediate, false);
+    drop(ui);
+    let _ = context.end_pass();
+    outcome
+}
+
 #[test]
 fn a_minimised_window_keeps_its_last_place() {
     let context = egui::Context::default();
-    let outcome = |info: egui::ViewportInfo| {
-        let mut raw = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
-            ..RawInput::default()
-        };
-        raw.viewports.insert(ViewportId::ROOT, info);
-        context.begin_pass(raw);
-        let ui = Ui::new(
-            context.clone(),
-            Id::new("fm-dock-test"),
-            UiBuilder::new().layer_id(LayerId::background()),
-        );
-        let outcome = window_outcome(&ui, ViewportClass::Immediate, false);
-        drop(ui);
-        let _ = context.end_pass();
-        outcome
-    };
+    let outcome = |info| window_outcome_for(&context, info);
     let placed = egui::ViewportInfo {
         inner_rect: Some(Rect::from_min_size(pos2(100.0, 130.0), vec2(640.0, 400.0))),
         outer_rect: Some(Rect::from_min_size(pos2(100.0, 100.0), vec2(640.0, 430.0))),
@@ -1105,6 +1108,7 @@ fn a_minimised_window_keeps_its_last_place() {
         Some(WindowGeometry {
             size: (640, 400),
             position: Some((100, 100)),
+            maximized: false,
         })
     );
     // Windows parks a minimised window at -32000, -32000.
@@ -1177,4 +1181,176 @@ fn saved_layout_names_differing_only_in_case_are_one_layout() {
     assert!(layout.apply_preference("layout.saved", &compact.encode()));
     assert!(layout.apply_preference("layout.saved", &audio.encode()));
     assert_eq!(layout.saved_layouts, vec![audio]);
+}
+
+#[test]
+fn a_maximised_window_keeps_the_place_it_restores_to() {
+    let context = egui::Context::default();
+    let restored = WindowGeometry {
+        size: (640, 400),
+        position: Some((100, 100)),
+        maximized: false,
+    };
+    // Maximised, the window reports the whole monitor: only the flag is
+    // kept, beside the place it returns to.
+    let maximised = window_outcome_for(
+        &context,
+        egui::ViewportInfo {
+            inner_rect: Some(Rect::from_min_size(pos2(0.0, 30.0), vec2(1_920.0, 1_050.0))),
+            outer_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1_920.0, 1_080.0))),
+            minimized: Some(false),
+            maximized: Some(true),
+            ..egui::ViewportInfo::default()
+        },
+    );
+    assert_eq!(maximised.geometry, None);
+    assert_eq!(
+        maximised.kept(Some(restored)),
+        Some(restored.with_maximized(true))
+    );
+    // Never placed before, it keeps the default size.
+    assert_eq!(
+        maximised.kept(None),
+        Some(WindowGeometry::from_points(DEFAULT_WINDOW_SIZE, None).with_maximized(true))
+    );
+    // Un-maximised, its place is kept again, no longer flagged.
+    let normal = window_outcome_for(
+        &context,
+        egui::ViewportInfo {
+            inner_rect: Some(Rect::from_min_size(pos2(100.0, 130.0), vec2(640.0, 400.0))),
+            outer_rect: Some(Rect::from_min_size(pos2(100.0, 100.0), vec2(640.0, 430.0))),
+            maximized: Some(false),
+            ..egui::ViewportInfo::default()
+        },
+    );
+    assert_eq!(
+        normal.kept(Some(restored.with_maximized(true))),
+        Some(restored)
+    );
+
+    // A popped panel saved maximised opens maximised at its restored size.
+    let mut shell = StudioShell::default();
+    let builder = shell.popout_builder(
+        PopKey::Panel(PanelId::Mixer),
+        "Mixer",
+        Some(restored.with_maximized(true)),
+        Vec2::splat(200.0),
+    );
+    assert_eq!(builder.maximized, Some(true));
+    assert_eq!(builder.inner_size, Some(vec2(640.0, 400.0)));
+    assert_eq!(builder.position, Some(pos2(100.0, 100.0)));
+    let builder = shell.popout_builder(
+        PopKey::Panel(PanelId::Outputs),
+        "Outputs",
+        Some(restored),
+        Vec2::splat(200.0),
+    );
+    assert_eq!(builder.maximized, Some(false));
+}
+
+#[test]
+fn popping_out_of_a_maximised_tile_takes_the_tiles_own_size() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    frame(&context, &mut shell, &state, Vec::new());
+    let natural = tile_rect(&shell, PanelId::Mixer);
+    maximise(&context, &mut shell, &state, PanelId::Mixer);
+    // Maximised, the tile covers the whole area ...
+    assert!(tile_rect(&shell, PanelId::Mixer).width() > natural.width() * 1.5);
+    shell.apply_dock_action(&context, DockAction::PopOut(PanelId::Mixer));
+    // ... but its window takes the size it has among the other tiles.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let size = (natural.width() as u16, natural.height() as u16);
+    assert_eq!(
+        shell.layout.dock.popped()[0].geometry.map(|g| g.size),
+        Some(size)
+    );
+    // An inactive tab of a maximised group pops out at its group's size.
+    let mut shell = StudioShell::default();
+    frame(&context, &mut shell, &state, Vec::new());
+    let natural = tile_rect(&shell, PanelId::Overlays);
+    maximise(&context, &mut shell, &state, PanelId::Overlays);
+    shell.apply_dock_action(&context, DockAction::PopOut(PanelId::Titles));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let size = (natural.width() as u16, natural.height() as u16);
+    assert_eq!(
+        shell.layout.dock.popped()[0].geometry.map(|g| g.size),
+        Some(size)
+    );
+}
+
+#[test]
+fn saved_windows_open_on_a_monitor_that_is_still_there() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    shell.set_screens(vec![ScreenRect {
+        x: 0,
+        y: 0,
+        width: 1_920,
+        height: 1_080,
+    }]);
+    // Saved on a second monitor that has since been unplugged.
+    let saved = WindowGeometry {
+        size: (640, 400),
+        position: Some((2_400, 200)),
+        maximized: true,
+    };
+    shell.layout.dock.pop_out(PanelId::Mixer, Some(saved));
+    let builder = shell.popout_builder(
+        PopKey::Panel(PanelId::Mixer),
+        "Mixer",
+        Some(saved),
+        Vec2::splat(200.0),
+    );
+    assert_eq!(builder.position, Some(pos2(640.0, 340.0)));
+    assert_eq!(builder.inner_size, Some(vec2(640.0, 400.0)));
+    assert_eq!(builder.maximized, Some(true));
+    // The window keeps the place it was opened at while it is open.
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(
+        shell.dock_ui.spawned.get(&PopKey::Panel(PanelId::Mixer)),
+        Some(&Some(WindowGeometry {
+            position: Some((640, 340)),
+            ..saved
+        }))
+    );
+    // A tool window saved off-screen is brought back the same way.
+    let (_, builder) = shell.tool_viewport(
+        ToolWindow::Color,
+        Some(WindowGeometry {
+            size: (2_400, 900),
+            position: Some((-3_000, 50)),
+            maximized: false,
+        }),
+    );
+    assert_eq!(builder.position, Some(pos2(0.0, 90.0)));
+    assert_eq!(builder.inner_size, Some(vec2(1_920.0, 900.0)));
+}
+
+#[test]
+fn showing_a_popped_out_panel_brings_its_window_to_the_front() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    shell.layout.dock.pop_out(PanelId::Mixer, None);
+    frame(&context, &mut shell, &state, Vec::new());
+    shell.show_panel(PanelId::Mixer);
+    assert!(shell.layout.dock.is_popped(PanelId::Mixer));
+    assert!(shell.dock_ui.focus.contains(&PanelId::Mixer));
+    // The window is raised on the next frame, once.
+    frame(&context, &mut shell, &state, Vec::new());
+    assert!(shell.dock_ui.focus.is_empty());
+    // A hidden or docked panel just shows; there is no window to raise.
+    shell.layout.dock.close(PanelId::Outputs);
+    shell.show_panel(PanelId::Outputs);
+    shell.show_panel(PanelId::Program);
+    assert!(shell.layout.dock.is_docked(PanelId::Outputs));
+    assert!(shell.dock_ui.focus.is_empty());
+    // A raise asked for a panel docked back before the frame is dropped.
+    shell.show_panel(PanelId::Mixer);
+    shell.layout.dock.dock_back(PanelId::Mixer);
+    frame(&context, &mut shell, &state, Vec::new());
+    assert!(shell.dock_ui.focus.is_empty());
 }

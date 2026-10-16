@@ -238,6 +238,7 @@ fn pop_out_and_dock_back_keep_each_panel_in_one_place() {
     let geometry = WindowGeometry {
         size: (640, 400),
         position: Some((-200, 80)),
+        maximized: false,
     };
     assert!(layout.pop_out(Mixer, Some(geometry)));
     assert!(!layout.pop_out(Mixer, None));
@@ -250,6 +251,7 @@ fn pop_out_and_dock_back_keep_each_panel_in_one_place() {
         WindowGeometry {
             size: (700, 420),
             position: None,
+            maximized: false,
         },
     );
     assert!(layout.pop_out(Program, None));
@@ -285,6 +287,7 @@ fn trees_and_popouts_round_trip_through_text() {
         Some(WindowGeometry {
             size: (500, 300),
             position: Some((10, -20)),
+            maximized: false,
         }),
     );
     layout.pop_out(Preview, None);
@@ -425,6 +428,7 @@ fn window_geometry_is_clamped_from_points() {
         WindowGeometry {
             size: (120, 8_000),
             position: Some((-32_000, 12)),
+            maximized: false,
         }
     );
     assert_eq!(
@@ -432,6 +436,7 @@ fn window_geometry_is_clamped_from_points() {
         WindowGeometry {
             size: (640, 361),
             position: None,
+            maximized: false,
         }
     );
 }
@@ -444,4 +449,165 @@ fn unmeasurable_window_points_still_make_a_readable_geometry() {
     assert_eq!(geometry.position, None);
     let geometry = WindowGeometry::from_points((800.0, f32::NAN), Some((10.0, f32::INFINITY)));
     assert_eq!(WindowGeometry::decode(&geometry.encode()), Some(geometry));
+}
+
+fn screen(x: i32, y: i32, width: i32, height: i32) -> ScreenRect {
+    ScreenRect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn placed(size: (u16, u16), position: (i32, i32)) -> WindowGeometry {
+    WindowGeometry {
+        size,
+        position: Some(position),
+        maximized: false,
+    }
+}
+
+#[test]
+fn maximised_windows_round_trip_with_their_restored_place() {
+    let geometry = placed((640, 400), (-1_200, 60)).with_maximized(true);
+    assert_eq!(geometry.encode(), "640x400@-1200,60+max");
+    assert_eq!(WindowGeometry::decode(&geometry.encode()), Some(geometry));
+    let unplaced = WindowGeometry::from_points((800.0, 500.0), None).with_maximized(true);
+    assert_eq!(unplaced.encode(), "800x500+max");
+    assert_eq!(WindowGeometry::decode("800x500+max"), Some(unplaced));
+    for bad in [
+        "800x500+max+max",
+        "800x500@1,2+maxi",
+        "+max",
+        "800x500@+max",
+    ] {
+        assert_eq!(WindowGeometry::decode(bad), None, "{bad}");
+    }
+    let mut layout = DockLayout::default();
+    layout.pop_out(Mixer, Some(geometry));
+    assert_eq!(layout.encode_popouts(), "mixer:640x400@-1200,60+max");
+    assert_eq!(
+        DockLayout::decode(&layout.encode_tree(), &layout.encode_popouts()),
+        Ok(layout)
+    );
+}
+
+#[test]
+fn windows_on_a_monitor_stay_where_they_were_saved() {
+    // The primary monitor, with a second one to its left at negative
+    // coordinates and a third above it.
+    let monitors = [
+        screen(0, 0, 1_920, 1_080),
+        screen(-1_920, 0, 1_920, 1_080),
+        screen(0, -1_080, 1_920, 1_080),
+    ];
+    for geometry in [
+        placed((640, 400), (100, 100)),
+        placed((640, 400), (-1_200, 60)),
+        placed((640, 400), (300, -900)),
+        // Straddling two monitors.
+        placed((640, 400), (-300, 500)),
+        // Mostly off the right edge, but enough of its title strip shows.
+        placed((640, 400), (1_920 - 64, 200)),
+        // Hanging below the desktop with half its title strip showing.
+        placed((640, 400), (100, 1_080 - 32)),
+        placed((640, 400), (100, 300)).with_maximized(true),
+    ] {
+        assert_eq!(geometry.onto_screens(&monitors), geometry, "{geometry:?}");
+    }
+    // Its top a little above the only monitor (a window shadow).
+    let primary = [monitors[0]];
+    let shadowed = placed((640, 400), (100, -12));
+    assert_eq!(shadowed.onto_screens(&primary), shadowed);
+    // No monitors known: nothing to clamp to.
+    let far = placed((640, 400), (9_000, 9_000));
+    assert_eq!(far.onto_screens(&[]), far);
+}
+
+#[test]
+fn windows_off_every_monitor_move_onto_the_primary_one() {
+    let primary = screen(0, 0, 1_920, 1_080);
+    // Saved maximised on a second monitor to the right that is now
+    // unplugged: it comes back maximised on the primary one.
+    let geometry = placed((640, 400), (2_200, 100)).with_maximized(true);
+    let moved = geometry.onto_screens(&[primary]);
+    assert_eq!(moved, placed((640, 400), (640, 340)).with_maximized(true));
+    // Moving is settled: the moved place stays.
+    assert_eq!(moved.onto_screens(&[primary]), moved);
+    // Saved on a monitor to the left (negative coordinates) now gone,
+    // while one remains above.
+    let left = placed((800, 600), (-1_500, 200));
+    let above = screen(0, -1_080, 1_920, 1_080);
+    assert_eq!(
+        left.onto_screens(&[primary, above]),
+        placed((800, 600), (560, 240))
+    );
+    // Only the title strip counts: a window hanging below the desktop
+    // with less than the minimum of it showing moves.
+    let hanging = placed((640, 400), (100, 1_080 - 20));
+    assert_eq!(
+        hanging.onto_screens(&[primary]),
+        placed((640, 400), (640, 340))
+    );
+    // A sliver at the side moves too.
+    let sliver = placed((640, 400), (1_920 - 40, 100));
+    assert_eq!(sliver.onto_screens(&[primary]).position, Some((640, 340)));
+    // A window bigger than the primary monitor shrinks to fit it, and is
+    // placed at its corner; a primary away from the origin is honoured.
+    let primary = screen(-1_280, 200, 1_280, 720);
+    let huge = placed((2_560, 1_440), (5_000, 5_000));
+    assert_eq!(
+        huge.onto_screens(&[primary]),
+        placed((1_280, 720), (-1_280, 200))
+    );
+    // A window without a known place (Wayland) only shrinks to fit.
+    let unplaced = WindowGeometry::from_points((3_000.0, 500.0), None);
+    assert_eq!(
+        unplaced.onto_screens(&[primary]),
+        WindowGeometry::from_points((1_280.0, 500.0), None)
+    );
+    // A tiny monitor never shrinks a window below the kept minimum.
+    let tiny = screen(0, 0, 100, 80);
+    assert_eq!(
+        placed((640, 400), (900, 900)).onto_screens(&[tiny]).size,
+        (WindowGeometry::MIN_SIDE, WindowGeometry::MIN_SIDE)
+    );
+}
+
+#[test]
+fn monitors_convert_to_points_by_their_own_scale() {
+    // A 4K primary monitor at 200 % and a 1080p one to its right at
+    // 100 %: windows on each report their place in their own points.
+    let primary = ScreenRect::from_physical((0, 0), (3_840, 2_160), 2.0, 1.0).unwrap();
+    assert_eq!(primary, screen(0, 0, 1_920, 1_080));
+    let side = ScreenRect::from_physical((3_840, 0), (1_920, 1_080), 1.0, 1.0).unwrap();
+    assert_eq!(side, screen(3_840, 0, 1_920, 1_080));
+    // A window on the side monitor at physical (4_000, 100) reports
+    // (4_000, 100) points and stays.
+    let on_side = placed((640, 400), (4_000, 100));
+    assert_eq!(on_side.onto_screens(&[primary, side]), on_side);
+    // Unplugging the side monitor brings it onto the primary.
+    assert_eq!(
+        on_side.onto_screens(&[primary]),
+        placed((640, 400), (640, 340))
+    );
+    // The console's UI scale divides as well.
+    assert_eq!(
+        ScreenRect::from_physical((-1_920, 0), (1_920, 1_080), 1.0, 1.5).unwrap(),
+        screen(-1_280, 0, 1_280, 720)
+    );
+    // Unusable monitors are skipped.
+    assert_eq!(
+        ScreenRect::from_physical((0, 0), (0, 1_080), 1.0, 1.0),
+        None
+    );
+    assert_eq!(
+        ScreenRect::from_physical((0, 0), (800, 600), 0.0, 1.0),
+        None
+    );
+    assert_eq!(
+        ScreenRect::from_physical((0, 0), (800, 600), f64::NAN, 1.0),
+        None
+    );
 }

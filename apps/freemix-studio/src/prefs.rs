@@ -13,6 +13,7 @@
 
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use fm_ui_egui::{Appearance, ConsoleLayout};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
@@ -21,6 +22,11 @@ use fm_ui_model::i18n::{HourCycle, Language, Locale};
 pub const PREFERENCES_ENV: &str = "FREEMIX_STUDIO_PREFS";
 
 const FILE_NAME: &str = "studio.conf";
+
+/// How long the preferences must stay unchanged before they are written,
+/// so dragging a splitter or a window writes the file once, not every
+/// frame.
+pub const SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// Preferences saved from an earlier session.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -199,6 +205,11 @@ pub fn preferences_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf>
 /// preference, so a `--lang` or `--clock` override for one session is never
 /// written back when the operator changes the clock, the layout, the UI
 /// scale, or the theme, and vice versa.
+///
+/// Studio reports the preferences every frame through
+/// [`Self::observe_at`], which writes them once they have stayed unchanged
+/// for [`SAVE_DELAY`]; [`Self::flush`] writes what is still pending on
+/// exit.
 #[derive(Debug)]
 pub struct PreferenceStore {
     path: Option<PathBuf>,
@@ -210,6 +221,9 @@ pub struct PreferenceStore {
     known_layout: ConsoleLayout,
     /// The appearance in effect at startup or last saved.
     known_appearance: Appearance,
+    /// When the unsaved change was last seen; `None` when the file is up
+    /// to date.
+    pending: Option<Instant>,
 }
 
 impl PreferenceStore {
@@ -230,12 +244,13 @@ impl PreferenceStore {
             known_locale: locale,
             known_layout: layout,
             known_appearance: appearance,
+            pending: None,
         }
     }
 
     /// Saves whichever of `locale`, `layout`, and `appearance` differ from
-    /// the last known ones. Returns the write error, if any; a failed save
-    /// is retried on the next change.
+    /// the last known ones at once, with anything still pending. Returns
+    /// the write error, if any; a failed save is retried on the next call.
     ///
     /// # Errors
     ///
@@ -246,11 +261,79 @@ impl PreferenceStore {
         layout: &ConsoleLayout,
         appearance: Appearance,
     ) -> io::Result<()> {
+        self.note(Instant::now(), locale, layout, appearance);
+        self.flush()
+    }
+
+    /// Notes whichever of `locale`, `layout`, and `appearance` differ from
+    /// the last known ones at `now`, and writes the preferences once they
+    /// have stayed unchanged for [`SAVE_DELAY`]. Returns how long until a
+    /// pending write is due (ask for a frame then), or `None` when nothing
+    /// is pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`SavedPreferences::save`]; the write is
+    /// tried again [`SAVE_DELAY`] later.
+    pub fn observe_at(
+        &mut self,
+        now: Instant,
+        locale: Locale,
+        layout: &ConsoleLayout,
+        appearance: Appearance,
+    ) -> io::Result<Option<Duration>> {
+        self.note(now, locale, layout, appearance);
+        let Some(changed) = self.pending else {
+            return Ok(None);
+        };
+        let wait = SAVE_DELAY.saturating_sub(now.saturating_duration_since(changed));
+        if !wait.is_zero() {
+            return Ok(Some(wait));
+        }
+        if let Err(error) = self.flush() {
+            self.pending = Some(now);
+            return Err(error);
+        }
+        Ok(None)
+    }
+
+    /// Whether a change is waiting to be written.
+    #[must_use]
+    pub const fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Writes a pending change now (on exit).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`SavedPreferences::save`]; the change stays
+    /// pending.
+    pub fn flush(&mut self) -> io::Result<()> {
+        if self.pending.is_none() {
+            return Ok(());
+        }
+        if let Some(path) = &self.path {
+            self.saved.save(path)?;
+        }
+        self.pending = None;
+        Ok(())
+    }
+
+    /// Takes in whichever preferences changed, marking them pending at
+    /// `now`.
+    fn note(
+        &mut self,
+        now: Instant,
+        locale: Locale,
+        layout: &ConsoleLayout,
+        appearance: Appearance,
+    ) {
         if locale == self.known_locale
             && *layout == self.known_layout
             && appearance == self.known_appearance
         {
-            return Ok(());
+            return;
         }
         if locale.language != self.known_locale.language {
             self.saved.language = Some(locale.language);
@@ -270,9 +353,6 @@ impl PreferenceStore {
             self.saved.high_contrast = Some(appearance.high_contrast);
         }
         self.known_appearance = appearance;
-        match &self.path {
-            Some(path) => self.saved.save(path),
-            None => Ok(()),
-        }
+        self.pending = Some(now);
     }
 }

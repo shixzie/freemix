@@ -9,20 +9,20 @@
 //! the shell around them. Keyboard shortcuts are read in whichever window
 //! has focus, so they work wherever a panel lives.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{
     Align, Align2, CentralPanel, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Key,
     LayerId, Layout, Margin, Modifiers, Order, Panel, Pos2, Rect, Response, ScrollArea, Sense,
-    Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportId,
-    WidgetInfo, WidgetType, pos2, vec2,
+    Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportCommand,
+    ViewportId, WidgetInfo, WidgetType, pos2, vec2,
 };
 use fm_protocol::MonitorTap;
 use fm_ui_model::i18n::{Arg, Msg};
 
 use crate::dock::{
     Axis, DockLayout, DockNode, DropZone, LayoutPreset, MAX_RATIO, MIN_RATIO, NamedLayout,
-    NodePath, PanelId, ToolWindow, WindowGeometry, check_layout_name,
+    NodePath, PanelId, ScreenRect, ToolWindow, WindowGeometry, check_layout_name,
 };
 use crate::l10n::Locale;
 use crate::monitors::{self, MonitorPicture};
@@ -46,6 +46,8 @@ const TILE_PADDING: f32 = 8.0;
 const ICON_SIZE: f32 = 20.0;
 /// Width of the drag grip at the start of a tab bar.
 pub(crate) const GRIP_WIDTH: f32 = 14.0;
+/// Inner size of a native window opened without a known size.
+const DEFAULT_WINDOW_SIZE: (f32, f32) = (640.0, 420.0);
 /// The places a popped-out panel can dock beside a tile, in menu order.
 const DOCK_ZONES: [DropZone; 5] = [
     DropZone::Center,
@@ -151,9 +153,17 @@ pub(crate) struct DockUi {
     /// The geometry each open native window was created with; kept
     /// unchanged while it is open so egui never moves it back.
     spawned: BTreeMap<PopKey, Option<WindowGeometry>>,
-    /// Each docked tile's rect last frame (rounded), by active panel, to
-    /// size a panel's window when it is popped out.
+    /// Each shown tile's rect last frame (rounded), by active panel.
     tile_rects: BTreeMap<PanelId, [i32; 4]>,
+    /// Each docked panel's tile rect last frame (rounded) as the layout
+    /// places it with no tile maximised, to size and place the panel's
+    /// window when it is popped out.
+    natural_rects: BTreeMap<PanelId, [i32; 4]>,
+    /// The monitors, primary first, in points; saved windows are moved
+    /// onto them when they open. Empty when the platform lists none.
+    pub(crate) screens: Vec<ScreenRect>,
+    /// Popped-out panels whose windows come to the front this frame.
+    focus: BTreeSet<PanelId>,
     /// What is being dragged across the workspace.
     dragging: Option<DragSource>,
     /// The tile shown alone over the whole workspace, by a panel in it.
@@ -608,6 +618,7 @@ impl StudioShell {
         self.dock_ui.main_origin = origin;
         let Some(root) = self.layout.dock.root().cloned() else {
             self.dock_ui.tile_rects.clear();
+            self.dock_ui.natural_rects.clear();
             self.dock_ui.maximized = None;
             self.dock_ui.maximized_seen = None;
             self.draw_empty_workspace(ui, area);
@@ -640,15 +651,20 @@ impl StudioShell {
         }
         self.dock_ui.tile_rects = tiles
             .iter()
-            .map(|tile| {
-                #[allow(clippy::cast_possible_truncation)] // on-screen points
-                let rounded = [
-                    tile.rect.left().round() as i32,
-                    tile.rect.top().round() as i32,
-                    tile.rect.width().round() as i32,
-                    tile.rect.height().round() as i32,
-                ];
-                (tile.active_panel(), rounded)
+            .map(|tile| (tile.active_panel(), rounded_rect(tile.rect)))
+            .collect();
+        // A maximised tile covers the area; a panel popped out of it takes
+        // the size and place its tile has among the others.
+        let natural = if maximized.is_some() {
+            layout_tiles(&root, area).0
+        } else {
+            tiles.clone()
+        };
+        self.dock_ui.natural_rects = natural
+            .iter()
+            .flat_map(|tile| {
+                let rect = rounded_rect(tile.rect);
+                tile.panels.iter().map(move |panel| (*panel, rect))
             })
             .collect();
         self.track_tab_drag(ui, &tiles, &mut actions);
@@ -1062,10 +1078,28 @@ impl StudioShell {
         }
     }
 
-    /// Moves `panel` into its own native window, placed over the tile it
-    /// leaves when that is known.
+    /// Shows `panel`: a hidden panel docks back home, a docked one becomes
+    /// its group's shown tab, and a popped-out one's window comes to the
+    /// front.
+    pub(crate) fn show_panel(&mut self, panel: PanelId) {
+        self.layout.dock.show(panel);
+        if self.layout.dock.is_popped(panel) {
+            self.dock_ui.focus.insert(panel);
+        }
+    }
+
+    /// Tells the console which monitors there are, in points, the primary
+    /// one first; a saved window that would open off every monitor opens
+    /// on the primary one instead.
+    pub fn set_screens(&mut self, screens: Vec<ScreenRect>) {
+        self.dock_ui.screens = screens;
+    }
+
+    /// Moves `panel` into its own native window, sized and placed over the
+    /// tile it leaves (as laid out with no tile maximised) when that is
+    /// known.
     pub(crate) fn pop_out_panel(&mut self, context: &egui::Context, panel: PanelId) {
-        let tile = self.dock_ui.tile_rects.get(&panel).copied();
+        let tile = self.dock_ui.natural_rects.get(&panel).copied();
         let origin = context.input(|input| input.viewport().inner_rect.map(|rect| rect.min));
         #[allow(clippy::cast_precision_loss)] // on-screen points
         let geometry = tile.map(|[x, y, width, height]| {
@@ -1248,14 +1282,21 @@ impl StudioShell {
         geometry: Option<WindowGeometry>,
         min: Vec2,
     ) -> ViewportBuilder {
-        let geometry = *self.dock_ui.spawned.entry(key).or_insert(geometry);
-        let size = geometry.map_or(vec2(640.0, 420.0), |geometry| {
-            vec2(f32::from(geometry.size.0), f32::from(geometry.size.1))
-        });
+        let screens = &self.dock_ui.screens;
+        let geometry = *self
+            .dock_ui
+            .spawned
+            .entry(key)
+            .or_insert_with(|| geometry.map(|geometry| geometry.onto_screens(screens)));
+        let size = geometry.map_or(
+            vec2(DEFAULT_WINDOW_SIZE.0, DEFAULT_WINDOW_SIZE.1),
+            |geometry| vec2(f32::from(geometry.size.0), f32::from(geometry.size.1)),
+        );
         let mut builder = ViewportBuilder::default()
             .with_title(format!("{title} — FreeMix Studio"))
             .with_inner_size(size.max(min))
-            .with_min_inner_size(min);
+            .with_min_inner_size(min)
+            .with_maximized(geometry.is_some_and(|geometry| geometry.maximized));
         if let Some((x, y)) = geometry.and_then(|geometry| geometry.position) {
             #[allow(clippy::cast_precision_loss)] // clamped screen points
             let position = pos2(x as f32, y as f32);
@@ -1279,6 +1320,9 @@ impl StudioShell {
             PopKey::Panel(panel) => popped.iter().any(|popout| popout.key == *panel),
             PopKey::Tool(_) => true,
         });
+        self.dock_ui
+            .focus
+            .retain(|panel| popped.iter().any(|popout| popout.key == *panel));
         // The main window drew last frame's preview; this frame's windows
         // say again what to preview.
         let previous = self.dock_ui.remote_drop.take();
@@ -1309,6 +1353,9 @@ impl StudioShell {
                     self.native_window_keys(ui, class, state, frame.manual, intents);
                     (window_outcome(ui, class, header.dock_back), header)
                 });
+            if self.dock_ui.focus.remove(&panel) {
+                context.send_viewport_cmd_to(key.viewport(), ViewportCommand::Focus);
+            }
             if let Some((target, zone)) = header.preview {
                 self.dock_ui.remote_drop = Some(RemoteDrop {
                     panel,
@@ -1320,7 +1367,7 @@ impl StudioShell {
                 self.layout.dock.move_panel(panel, target, zone);
             } else if outcome.dock_back {
                 self.layout.dock.dock_back(panel);
-            } else if let Some(geometry) = outcome.geometry
+            } else if let Some(geometry) = outcome.kept(popout.geometry)
                 && popout.geometry != Some(geometry)
             {
                 self.layout.dock.set_geometry(panel, geometry);
@@ -1491,8 +1538,9 @@ impl StudioShell {
         if outcome.dock_back {
             self.forget_tool_popout(tool);
             self.layout.set_tool_popped(tool, false);
-        } else if let Some(geometry) = outcome.geometry
-            && self.layout.tool_popped(tool) != Some(Some(geometry))
+        } else if let Some(previous) = self.layout.tool_popped(tool)
+            && let Some(geometry) = outcome.kept(previous)
+            && previous != Some(geometry)
         {
             self.layout.set_tool_geometry(tool, geometry);
         }
@@ -1720,7 +1768,36 @@ struct PopoutHeader {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WindowOutcome {
     dock_back: bool,
+    /// The window's place, when it is neither minimised nor maximised.
     geometry: Option<WindowGeometry>,
+    /// Whether the window is maximised.
+    maximized: bool,
+}
+
+impl WindowOutcome {
+    /// The geometry to keep for a window last kept at `previous`: its
+    /// place, or while it is maximised the place it returns to when
+    /// un-maximised (which a maximised window does not report), flagged
+    /// maximised. `None` keeps `previous`.
+    fn kept(self, previous: Option<WindowGeometry>) -> Option<WindowGeometry> {
+        if self.maximized {
+            let restored =
+                previous.unwrap_or_else(|| WindowGeometry::from_points(DEFAULT_WINDOW_SIZE, None));
+            return Some(restored.with_maximized(true));
+        }
+        self.geometry
+    }
+}
+
+/// `rect` in whole points, as left, top, width, height.
+#[allow(clippy::cast_possible_truncation)] // on-screen points
+fn rounded_rect(rect: Rect) -> [i32; 4] {
+    [
+        rect.left().round() as i32,
+        rect.top().round() as i32,
+        rect.width().round() as i32,
+        rect.height().round() as i32,
+    ]
 }
 
 /// Draws a popped-out tool window's frame (its title and Dock back key)
@@ -1746,25 +1823,31 @@ pub(crate) fn tool_popout_frame(
 
 /// Reads a native window's close request and place. A minimised window
 /// reports no place worth keeping (Windows parks it at -32000, -32000),
-/// so its last place stands.
+/// so its last place stands; a maximised one reports the whole monitor,
+/// so only that it is maximised is kept.
 fn window_outcome(ui: &Ui, class: ViewportClass, dock_back: bool) -> WindowOutcome {
     if class == ViewportClass::EmbeddedWindow {
         return WindowOutcome {
             dock_back,
-            geometry: None,
+            ..WindowOutcome::default()
         };
     }
     ui.input(|input| {
         let viewport = input.viewport();
         let minimized = viewport.minimized == Some(true);
+        let maximized = !minimized && viewport.maximized == Some(true);
         WindowOutcome {
             dock_back: dock_back || viewport.close_requested(),
-            geometry: viewport.inner_rect.filter(|_| !minimized).map(|inner| {
-                WindowGeometry::from_points(
-                    (inner.width(), inner.height()),
-                    viewport.outer_rect.map(|outer| (outer.min.x, outer.min.y)),
-                )
-            }),
+            maximized,
+            geometry: viewport
+                .inner_rect
+                .filter(|_| !minimized && !maximized)
+                .map(|inner| {
+                    WindowGeometry::from_points(
+                        (inner.width(), inner.height()),
+                        viewport.outer_rect.map(|outer| (outer.min.x, outer.min.y)),
+                    )
+                }),
         }
     })
 }

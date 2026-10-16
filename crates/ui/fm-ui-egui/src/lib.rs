@@ -80,7 +80,7 @@ pub use display_outputs::{
 };
 pub use dock::{
     Axis, DockError, DockLayout, DockNode, DropZone, LayoutNameProblem, LayoutPreset, NamedLayout,
-    PanelId, PopOut, ToolWindow, WindowGeometry, check_layout_name,
+    PanelId, PopOut, ScreenRect, ToolWindow, WindowGeometry, check_layout_name,
 };
 pub use edit_history::{
     CommandRefusalNotice, EditHistoryAvailability, EditLockSummary, HistoryActionAvailability,
@@ -2189,6 +2189,7 @@ mod tests {
             Some(WindowGeometry {
                 size: (700, 480),
                 position: Some((1_700, 40)),
+                maximized: false,
             }),
         );
         layout.set_tool_popped(ToolWindow::Designer, true);

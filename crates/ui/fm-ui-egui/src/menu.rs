@@ -609,7 +609,7 @@ impl StudioShell {
         ) && let Some((_, input)) = preview
             && let Some(name) = &name
         {
-            self.layout.dock.show(PanelId::InputBank);
+            self.show_panel(PanelId::InputBank);
             self.rename_draft = Some(RenameDraft::new(input, name));
         }
         let neighbour_lock = |direction| {
@@ -792,26 +792,45 @@ impl StudioShell {
     }
 
     /// View › Panels: one checkbox per panel; a reopened panel docks back
-    /// where it belongs in the default layout.
+    /// where it belongs in the default layout. A panel in its own window
+    /// has Bring to front beside it, which raises that window.
     fn panels_menu(&mut self, ui: &mut Ui) {
         let l = self.locale;
         ui.set_min_width(220.0);
         for panel in PanelId::ALL {
             let mut shown = self.layout.dock.is_visible(panel);
-            if ui
-                .checkbox(&mut shown, l.text(panel.title()))
-                .on_hover_text(l.format(
-                    Msg::ViewPanelToggleHover,
-                    &[("what", Arg::Str(l.text(panel.hover())))],
-                ))
-                .changed()
-            {
-                if shown {
-                    self.layout.dock.show(panel);
+            let popped = self.layout.dock.is_popped(panel);
+            let what = [("what", Arg::Str(l.text(panel.hover())))];
+            ui.horizontal(|ui| {
+                let hover = if popped {
+                    Msg::ViewPanelPoppedHover
                 } else {
-                    self.layout.dock.close(panel);
+                    Msg::ViewPanelToggleHover
+                };
+                if ui
+                    .checkbox(&mut shown, l.text(panel.title()))
+                    .on_hover_text(l.format(hover, &what))
+                    .changed()
+                {
+                    if shown {
+                        self.show_panel(panel);
+                    } else {
+                        self.layout.dock.close(panel);
+                    }
                 }
-            }
+                if popped
+                    && ui
+                        .small_button(l.text(Msg::ViewPanelFront))
+                        .on_hover_text(l.format(
+                            Msg::ViewPanelFrontHover,
+                            &[("panel", Arg::Str(l.text(panel.title())))],
+                        ))
+                        .clicked()
+                {
+                    self.show_panel(panel);
+                    ui.close();
+                }
+            });
         }
     }
 
@@ -1368,7 +1387,7 @@ impl StudioShell {
             .on_hover_text(l.text(Msg::StingerSlotsHover))
             .clicked()
         {
-            self.layout.dock.show(PanelId::Stingers);
+            self.show_panel(PanelId::Stingers);
         }
     }
 
