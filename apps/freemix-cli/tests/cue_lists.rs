@@ -170,3 +170,60 @@ fn refused_cue_edits_leave_the_project_unchanged() {
     fail(&["input-remove", &project, "2"], "cannot remove input 2");
     assert_eq!(succeed(&["cue-lists", &project]), before);
 }
+
+/// A `.fmtitle` source document that needs no font (see `e2e.rs`).
+const SHAPE_TITLE_SOURCE: &str = r##"{
+  "schema_version": 48,
+  "template": {
+    "id": 7,
+    "name": "Score bar",
+    "width": 1920,
+    "height": 1080,
+    "background": "#00000000",
+    "fields": [
+      {"id": 2, "name": "Bar color", "default": {"type": "color", "value": "#112233FF"}},
+      {"id": 1, "name": "Score", "default": {"type": "number", "value": -4}}
+    ],
+    "elements": [
+      {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
+  },
+  "fonts": [],
+  "clocks": []
+}
+"##;
+
+/// Title actions name title inputs, which the local engine knows: a list
+/// with title cues is authored and fired, and the project still loads.
+#[test]
+fn title_cues_are_authored_and_fired_locally() {
+    let root = Root::new("titles");
+    let project = root.project();
+    let source = root.0.join("score-bar.fmtitle");
+    fs::write(&source, SHAPE_TITLE_SOURCE).unwrap();
+    succeed(&[
+        "title-input-add",
+        &project,
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        source.to_str().unwrap(),
+    ]);
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "1",
+        "Titles",
+        "1:On:0:title_on.9.2;2:Off:0:title_off.9",
+    ]);
+    let status = succeed(&["go", &project, "1"]);
+    assert!(status.contains(",2:9:on"), "{status}");
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(lists.contains("standby=2, live=1"), "{lists}");
+    succeed(&["go", &project, "1"]);
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(lists.contains("standby=-, live=2"), "{lists}");
+}

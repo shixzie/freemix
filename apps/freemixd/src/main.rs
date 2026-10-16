@@ -10676,10 +10676,11 @@ fn restore_engine_with_titles(
     restore_titles(&mut show, canonical, &bundle_assets.titles)?;
     restore_scenes(&mut show, canonical)?;
     show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
-    show.set_cue_lists(canonical.cue_lists().to_vec())?;
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
     restore_presets_favorites_and_media(&mut show, canonical)?;
+    // Checked against the restored titles and media inputs.
+    show.set_cue_lists(canonical.cue_lists().to_vec())?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -19180,6 +19181,69 @@ mod tests {
             subscription.try_recv().unwrap(),
             LiveEvent::Runtime(_)
         ));
+    }
+
+    /// A cue list whose cue runs a media input's transport restores: the
+    /// media inputs are known to the show before its cue lists are checked
+    /// (RC-017).
+    #[test]
+    fn a_cue_list_with_a_media_action_restores() {
+        let baseline = test_project();
+        let mut project = Project::new(
+            baseline.project().id(),
+            "Cue Media Restore",
+            baseline.project().settings().clone(),
+        );
+        project.add_input(Input {
+            id: test_input_id(1),
+            name: "Camera".into(),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Bars,
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+        project.add_input(Input {
+            id: test_input_id(2),
+            name: "Clip".into(),
+            kind: InputKind::Media {
+                asset_uri: "asset://clip.mov".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+            required_capabilities: Vec::new(),
+        });
+        project.set_main_mix(MainMix::new(test_input_id(1), test_input_id(2)));
+        project.set_cue_lists(vec![fm_model::CueList {
+            id: 1,
+            name: "Show".into(),
+            cues: vec![fm_model::Cue {
+                id: 1,
+                name: "Roll".into(),
+                actions: vec![fm_model::CueAction::Media {
+                    input: test_input_id(2),
+                    operation: fm_model::CueMediaOperation::Play,
+                }],
+                auto_follow: false,
+            }],
+            state: fm_model::CueRunState {
+                standby: Some(1),
+                ..fm_model::CueRunState::default()
+            },
+        }]);
+        let durable = StoredProject::from_project(
+            project,
+            RuntimeRouting {
+                desired_program_id: Some(test_input_id(1)),
+                realized_program_id: Some(test_input_id(1)),
+                desired_preview_id: Some(test_input_id(2)),
+                realized_preview_id: Some(test_input_id(2)),
+            },
+            ProjectPosition::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let engine = restore_engine(&durable).unwrap();
+        assert_eq!(engine.show().cue_lists().len(), 1);
     }
 
     #[test]

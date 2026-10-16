@@ -2522,6 +2522,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_capture_inputs(&mut project, snapshot.show())?;
     project.set_transition_favorites(*snapshot.show().transition_favorites());
     project.set_cue_lists(snapshot.show().cue_lists().to_vec());
+    sync_title_fields(&mut project, snapshot.show())?;
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
             project
@@ -2564,6 +2565,65 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
             .collect::<AppResult<Vec<_>>>()?,
     )?;
     ProjectStore::new(path)?.save(&stored)?;
+    Ok(())
+}
+
+/// Gives every title input of `project` its stored template and field
+/// values in `show`, so cue title actions (RC-017) name a title the engine
+/// knows, as on the daemon. A title whose template does not load (a damaged
+/// bundle) is left out, so the commands that repair the project still run;
+/// a cue list naming it is then refused when the lists are restored.
+fn restore_titles(path: &Path, show: &mut ShowState, project: &Project) -> AppResult<()> {
+    let store = ProjectStore::new(path)?;
+    for input in project.inputs() {
+        let InputKind::Title(title) = &input.kind else {
+            continue;
+        };
+        let Ok(stored) = store.load_title_template(&title.template_uri) else {
+            continue;
+        };
+        let Ok(fields) = fm_titles::TitleFieldSet::restore(
+            &stored.template,
+            title.field_revision,
+            title.fields.iter().map(|entry| {
+                (
+                    fm_titles::FieldId::new(entry.id.get()),
+                    fm_title_render::field_value(&entry.value),
+                )
+            }),
+        ) else {
+            continue;
+        };
+        show.set_title(
+            input.id,
+            fm_engine::EngineTitle::new(stored.template.name.clone(), fields)
+                .with_template(title.template_uri.clone(), stored.template),
+        )?;
+    }
+    Ok(())
+}
+
+/// Copies every title's field values and revision the engine changed (a
+/// cue's title text) into the project.
+fn sync_title_fields(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    for (&input, title) in show.titles() {
+        let fields = title
+            .fields
+            .values()
+            .iter()
+            .map(|(field, value)| fm_model::TitleFieldEntry {
+                id: fm_model::TitleFieldId::new(field.get()),
+                value: fm_title_render::model_field_value(value),
+            })
+            .collect();
+        project
+            .set_title_fields(input, title.fields.revision(), fields)
+            .map_err(|error| {
+                AppFailure(format!(
+                    "title input {input} fields could not be stored: {error:?}"
+                ))
+            })?;
+    }
     Ok(())
 }
 
@@ -3769,12 +3829,12 @@ pub(crate) fn update_project(
 }
 
 fn load_engine(path: &Path) -> AppResult<ProjectEngine> {
-    restore_project_engine(&load_stored_project(path)?)
+    restore_project_engine(path, &load_stored_project(path)?)
 }
 
 /// Restores an engine for reporting only, without opening the journal.
 fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
-    restore_project_engine(&inspect_stored_project(path)?)
+    restore_project_engine(path, &inspect_stored_project(path)?)
 }
 
 /// The project-owned state the engine edits: the favourite transition
@@ -3806,7 +3866,7 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
 }
 
 #[allow(clippy::too_many_lines)]
-fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
+fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<ProjectEngine> {
     let project = stored.project().clone();
     let inputs = project
         .inputs()
@@ -3892,6 +3952,7 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
     restore_overlays(&mut show, &mut realized, stored.runtime_overlays())?;
+    restore_titles(path, &mut show, &project)?;
     restore_project_edit_state(&mut show, &project)?;
     let position = stored.position();
     let engine = Engine::restore_persisted(

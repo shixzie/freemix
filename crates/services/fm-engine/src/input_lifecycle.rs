@@ -530,7 +530,37 @@ pub(crate) fn apply(
                 (false, true) => {
                     state.insert_media_input(*input, fm_model::MediaPlaybackSettings::default());
                 }
-                (true, false) => state.remove_media_input(*input),
+                (true, false) => {
+                    // A cue's media action needs its input to stay a media
+                    // input (RC-017).
+                    if let Some((list, cue)) = state.cue_lists().iter().find_map(|list| {
+                        list.cues
+                            .iter()
+                            .find(|cue| {
+                                cue.actions.iter().any(|action| {
+                                    matches!(action, fm_model::CueAction::Media { input: named, .. } if named == input)
+                                })
+                            })
+                            .map(|cue| (list.id, cue.id))
+                    }) {
+                        let error = crate::InputCatalogueError::InCueList {
+                            input: *input,
+                            list,
+                            cue,
+                        };
+                        return Err(rejection(
+                            RejectionCode::Conflict,
+                            "source",
+                            "input_in_use",
+                            format!(
+                                "input {input} must keep a media source: cue {cue} of cue list \
+                                 {list} runs its media transport"
+                            ),
+                        )
+                        .with_reason(error.reason()));
+                    }
+                    state.remove_media_input(*input);
+                }
                 _ => {}
             }
             state.set_input_source_unchecked(*input, source.clone());

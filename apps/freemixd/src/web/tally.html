@@ -571,10 +571,13 @@
   }
   // GO fires the standby cue of the lowest-numbered cue list; Standby moves
   // standby to the cue after it (the first cue when none is on standby).
+  // GO expects the revision it was pressed at: a second press, or another
+  // tally's GO, before the first GO is replicated is refused instead of
+  // firing the next cue as well.
   function go() {
     const cues = goList();
     if (ui.go.hidden || ui.go.disabled || !cues) return;
-    sendCommand([["payload", "cue_go"], ["list", cues.id]]);
+    sendCommand([["payload", "cue_go"], ["list", cues.id], ["expected_revision", String(link.revision)]]);
   }
   function standbyNext() {
     const cues = goList();

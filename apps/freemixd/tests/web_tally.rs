@@ -511,6 +511,12 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     assert!(page.contains("name === \"cue_list_changed\""));
     assert!(page.contains("name === \"cue_list_removed\""));
     assert!(page.contains("[\"payload\", \"cue_go\"]"));
+    // A GO names the revision it was pressed at, so a second press (or a
+    // second tally) before the first GO is replicated cannot fire the next
+    // cue too.
+    assert!(page.contains(
+        "[\"payload\", \"cue_go\"], [\"list\", cues.id], [\"expected_revision\", String(link.revision)]"
+    ));
     assert!(page.contains("[\"payload\", \"cue_standby\"]"));
     assert!(page.contains("id=\"go\""));
     assert!(page.contains("id=\"standby\""));

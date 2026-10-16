@@ -704,3 +704,65 @@ fn a_closed_input_never_reaches_preview_or_air() {
     );
     assert_eq!(engine.show().desired_switcher().program(), input(2));
 }
+
+/// A cue's media action keeps its input a media input: replacing that
+/// input's media source with a non-media one is refused (RC-017), since it
+/// would leave the cue naming a non-media input, which no project may hold.
+#[test]
+fn a_media_input_a_cue_addresses_keeps_a_media_source() {
+    let mut engine = engine();
+    let outcome = run(
+        &mut engine,
+        "cues",
+        EngineCommand::SetCueList {
+            list: 1,
+            definition: Some(fm_engine::EngineCueListDefinition {
+                name: "Show".into(),
+                cues: vec![fm_model::Cue {
+                    id: 7,
+                    name: "Roll".into(),
+                    actions: vec![fm_model::CueAction::Media {
+                        input: input(CLIP),
+                        operation: fm_model::CueMediaOperation::Play,
+                    }],
+                    auto_follow: false,
+                }],
+            }),
+        },
+    );
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    let replaced = edit(
+        &mut engine,
+        "replace",
+        EngineInputLifecycleEdit::ReplaceSource {
+            input: input(CLIP),
+            source: InputSourceSpec::Generator {
+                video: GeneratorVideo::Bars,
+                tone_hz: None,
+            },
+        },
+    );
+    assert_eq!(
+        rejection(&replaced).reason,
+        Some(fm_command::RefusalReason::InputInUse {
+            input: CLIP,
+            usage: fm_command::InputUse::CueAction { list: 1, cue: 7 },
+        })
+    );
+    assert!(engine.show().media_settings(input(CLIP)).is_some());
+    // Another media source keeps the cue valid.
+    accept(
+        &mut engine,
+        "replace-media",
+        EngineInputLifecycleEdit::ReplaceSource {
+            input: input(CLIP),
+            source: InputSourceSpec::Media {
+                asset_uri: "asset://other.mov".into(),
+            },
+        },
+    );
+}

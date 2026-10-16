@@ -13,8 +13,9 @@
 //! working copy of the list: a discrete change (a picker, a checkbox, a
 //! key) sends the whole list at once, while a text field sends it when it
 //! loses focus and a number when its drag ends, so each edit is one
-//! undoable step. The copy follows the replicated list whenever that
-//! changes, so a refused edit snaps back.
+//! undoable step. The copy follows the replicated list whenever another
+//! client changes it, and keeps an edit this console sent until its echo
+//! lands; an edit refused (resolved without an echo) snaps back.
 
 use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, Vec2};
 use fm_protocol::{
@@ -365,13 +366,26 @@ fn media_inputs(view: &ClientView, project: &ProjectState) -> Vec<InputId> {
         .collect()
 }
 
-/// The working copy of one list: `base` is the replicated definition it
-/// was taken from (or last sent), `spec` the operator's edits.
+/// The working copy of one list: `seen` is the replicated definition last
+/// observed, `sent` the definitions this console sent since (oldest first)
+/// whose echo has not landed, and `spec` the operator's edits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Draft {
     list: u64,
-    base: CueListSpec,
+    seen: CueListSpec,
+    sent: Vec<CueListSpec>,
     spec: CueListSpec,
+}
+
+impl Draft {
+    fn of(list: &CueListStatus) -> Self {
+        Self {
+            list: list.id,
+            seen: list.spec.clone(),
+            sent: Vec::new(),
+            spec: list.spec.clone(),
+        }
+    }
 }
 
 /// The Cues tab's local state.
@@ -413,20 +427,40 @@ impl CuePanel {
         self.expanded = expanded;
     }
 
-    /// Takes a fresh working copy whenever the replicated definition
-    /// differs from the one the copy was taken from.
-    fn sync_draft(&mut self, list: &CueListStatus) {
-        let stale = self
-            .draft
-            .as_ref()
-            .is_none_or(|draft| draft.list != list.id || draft.base != list.spec);
-        if stale {
-            self.draft = Some(Draft {
-                list: list.id,
-                base: list.spec.clone(),
-                spec: list.spec.clone(),
-            });
+    /// Keeps the working copy in step with the replicated list. The echo of
+    /// an edit this console sent keeps the copy (and any later edits in it);
+    /// any other change to the replicated list, or a sent edit that resolved
+    /// without an echo (`pending` is whether this session still awaits
+    /// command results), takes a fresh copy, so a refused edit snaps back.
+    fn sync_draft(&mut self, list: &CueListStatus, pending: bool) {
+        let Some(draft) = self.draft.as_mut().filter(|draft| draft.list == list.id) else {
+            self.draft = Some(Draft::of(list));
+            return;
+        };
+        if draft.seen != list.spec {
+            draft.seen = list.spec.clone();
+            match draft.sent.iter().position(|sent| *sent == list.spec) {
+                Some(echo) => {
+                    draft.sent.drain(..=echo);
+                }
+                None => *draft = Draft::of(list),
+            }
+        } else if !draft.sent.is_empty() && !pending {
+            *draft = Draft::of(list);
         }
+    }
+
+    /// The edit that sends the working copy, unless it holds nothing new.
+    fn commit_draft(&mut self) -> Option<CueIntent> {
+        let draft = self.draft.as_mut()?;
+        if draft.spec == *draft.sent.last().unwrap_or(&draft.seen) {
+            return None;
+        }
+        draft.sent.push(draft.spec.clone());
+        Some(CueIntent::Set {
+            list: draft.list,
+            spec: draft.spec.clone(),
+        })
     }
 
     #[allow(clippy::too_many_lines)] // one immediate-mode tab
@@ -507,7 +541,7 @@ impl CuePanel {
             empty_state(ui, l.text(Msg::TabCues), l.text(Msg::CueListsEmpty));
             return;
         };
-        self.sync_draft(&list);
+        self.sync_draft(&list, state.pending_commands > 0);
         let list_edit = list_edit_block(state, &list);
         ui.add_space(4.0);
 
@@ -648,12 +682,10 @@ impl CuePanel {
             self.expanded = Some(id);
             change = Some(Change::Commit);
         }
-        if matches!(change, Some(Change::Commit)) && draft.spec != draft.base {
-            draft.base = draft.spec.clone();
-            intents.push(StudioIntent::Cue(CueIntent::Set {
-                list: draft.list,
-                spec: draft.spec.clone(),
-            }));
+        if matches!(change, Some(Change::Commit))
+            && let Some(intent) = self.commit_draft()
+        {
+            intents.push(StudioIntent::Cue(intent));
         }
     }
 }
@@ -1372,6 +1404,59 @@ mod tests {
             },
             state,
         }
+    }
+
+    fn named(id: u64, name: &str) -> CueListStatus {
+        let mut status = list(id, CueRunStatus::default());
+        status.spec.name = name.into();
+        status
+    }
+
+    fn drafted(panel: &CuePanel) -> &str {
+        &panel.draft.as_ref().unwrap().spec.name
+    }
+
+    /// The working copy keeps an edit that was sent until its echo lands,
+    /// keeps later edits across the echo of an earlier one, snaps back to
+    /// the replicated list once an edit resolves without an echo (it was
+    /// refused), and follows another client's edit.
+    #[test]
+    fn the_working_copy_survives_echoes_and_snaps_back_after_a_refusal() {
+        let mut panel = CuePanel::default();
+        panel.sync_draft(&named(1, "Show"), false);
+        panel.draft.as_mut().unwrap().spec.name = "One".into();
+        assert!(matches!(
+            panel.commit_draft(),
+            Some(CueIntent::Set { list: 1, spec }) if spec.name == "One"
+        ));
+        assert_eq!(
+            panel.commit_draft(),
+            None,
+            "an unchanged copy is not resent"
+        );
+        // The edit is in flight: the stale replicated list must not undo it.
+        panel.sync_draft(&named(1, "Show"), true);
+        assert_eq!(drafted(&panel), "One");
+        panel.draft.as_mut().unwrap().spec.name = "Two".into();
+        assert!(panel.commit_draft().is_some());
+        // The first edit's echo keeps the second.
+        panel.sync_draft(&named(1, "One"), true);
+        assert_eq!(drafted(&panel), "Two");
+        panel.sync_draft(&named(1, "Two"), false);
+        assert_eq!(drafted(&panel), "Two");
+        // A refused edit resolves with no echo and snaps back.
+        panel.draft.as_mut().unwrap().spec.name = "Three".into();
+        assert!(panel.commit_draft().is_some());
+        panel.sync_draft(&named(1, "Two"), true);
+        assert_eq!(drafted(&panel), "Three");
+        panel.sync_draft(&named(1, "Two"), false);
+        assert_eq!(drafted(&panel), "Two");
+        // Another client's edit replaces the copy.
+        panel.sync_draft(&named(1, "Theirs"), false);
+        assert_eq!(drafted(&panel), "Theirs");
+        // So does showing another list.
+        panel.sync_draft(&named(2, "Other"), false);
+        assert_eq!(drafted(&panel), "Other");
     }
 
     #[test]
