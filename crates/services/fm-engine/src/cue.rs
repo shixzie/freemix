@@ -25,11 +25,17 @@
 
 use fm_automation::{CueStack, CueStackError, CueStackState, CueStep, StackCue};
 use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
-use fm_model::{Cue, CueAction, CueFault, CueList, CuePending, CueRunState, TransitionEffect};
+use fm_model::{
+    Cue, CueAction, CueFault, CueList, CueMediaOperation, CuePending, CueRunState, TransitionEffect,
+};
 use fm_switcher::{OverlayChannelId, RecorderSlot, StingerSlotId, StreamTargetId, TransitionKind};
 use fm_titles::{FieldId, FieldValue};
+use fm_types::FrameRate;
 
-use crate::{EngineCommand, EnginePlaylistOperation, EnginePlaylistStart, ShowState};
+use crate::{
+    EngineCommand, EngineMediaOperation, EngineMediaSeek, EnginePlaylistOperation,
+    EnginePlaylistStart, ShowState,
+};
 
 /// One cue list definition: its name and cues.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,8 +96,11 @@ pub(crate) fn stack_rejection(list: u64, error: CueStackError) -> Rejection {
     }
 }
 
-/// The automation stack of a list.
-pub(crate) fn stack(list: &CueList) -> CueStack<CueAction> {
+/// The automation stack of a list, its millisecond delays converted to
+/// whole frames at `rate` (see [`fm_model::delay_frames`]). A list edit
+/// only reconciles the run state, which never depends on a wait's length,
+/// so it may pass any rate.
+pub(crate) fn stack(list: &CueList, rate: FrameRate) -> CueStack<CueAction> {
     CueStack::new(
         list.cues
             .iter()
@@ -102,6 +111,9 @@ pub(crate) fn stack(list: &CueList) -> CueStack<CueAction> {
                     .iter()
                     .map(|action| match action {
                         CueAction::Wait { frames } => CueStep::Wait(*frames),
+                        CueAction::Delay { millis } => {
+                            CueStep::Wait(fm_model::delay_frames(*millis, rate))
+                        }
                         action => CueStep::Action(action.clone()),
                     })
                     .collect(),
@@ -155,6 +167,22 @@ pub(crate) fn check_references(state: &ShowState, cues: &[Cue]) -> Result<(), Re
                         format!("cue {} names input {input}, which the show lacks", cue.id),
                     )
                     .with_reason(crate::error::unknown_input_reason(input)));
+                }
+                if matches!(action, CueAction::Media { .. })
+                    && state.media_settings(input).is_none()
+                {
+                    return Err(Rejection::new(
+                        RejectionCode::InvalidCommand,
+                        format!(
+                            "cue {} names input {input}, which is not a media input",
+                            cue.id
+                        ),
+                    )
+                    .with_field(FieldIssue::new(
+                        "cues",
+                        "not_media",
+                        format!("input {input} is not a media input"),
+                    )));
                 }
                 let title = matches!(
                     action,
@@ -267,7 +295,11 @@ pub(crate) fn apply_set(
         cues: definition.cues.clone(),
         state: CueRunState::default(),
     };
-    let new_stack = stack(&next);
+    // Reconciling the run state never reads a wait's length.
+    let new_stack = stack(
+        &next,
+        FrameRate::new(25, 1).expect("25 fps is a valid rate"),
+    );
     if let Some(index) = existing {
         let current = &state.cue_lists()[index];
         let previous: Vec<u64> = current.cues.iter().map(|cue| cue.id).collect();
@@ -459,7 +491,29 @@ pub(crate) fn expand(
                 EngineCommand::StreamStop { target }
             }]
         }
-        CueAction::Wait { .. } => Vec::new(),
+        CueAction::Media { input, operation } => {
+            let media = |operation| {
+                EngineCommand::Media(crate::EngineMediaCommand {
+                    input: *input,
+                    operation,
+                })
+            };
+            match operation {
+                CueMediaOperation::Play => vec![media(EngineMediaOperation::Play)],
+                CueMediaOperation::Pause => vec![media(EngineMediaOperation::Pause)],
+                CueMediaOperation::Seek { frame } => {
+                    vec![media(EngineMediaOperation::Seek(EngineMediaSeek::Frame(
+                        *frame,
+                    )))]
+                }
+                // The seek clamps to the trimmed range's first frame.
+                CueMediaOperation::Restart => vec![
+                    media(EngineMediaOperation::Seek(EngineMediaSeek::Frame(0))),
+                    media(EngineMediaOperation::Play),
+                ],
+            }
+        }
+        CueAction::Wait { .. } | CueAction::Delay { .. } => Vec::new(),
     }
 }
 

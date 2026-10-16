@@ -59,7 +59,7 @@ fn project() -> Project {
 
 #[test]
 fn defaults_play_the_whole_file_once_at_normal_speed() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 47);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 48);
     let settings = MediaPlaybackSettings::default();
     assert_eq!(settings.trim_in, 0);
     assert_eq!(settings.trim_out, None);

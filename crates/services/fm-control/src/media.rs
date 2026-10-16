@@ -200,7 +200,7 @@ pub fn wire_media_status(status: &EngineMediaStatus) -> MediaStatus {
     }
 }
 
-fn status(engine: &Engine, input: InputId) -> MediaStatus {
+pub(crate) fn status(engine: &Engine, input: InputId) -> MediaStatus {
     wire_media_status(
         &engine
             .media_status(input)

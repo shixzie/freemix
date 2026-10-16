@@ -5271,8 +5271,12 @@ fn parse_remote_playlist(
 /// * `cue-list-set <list> <name> <cues>` where `<cues>` is a `;`-separated
 ///   list (`-` for none) of `<id>:<name>:<follow 0|1>:<actions>` and
 ///   `<actions>` a `,`-separated list (empty for none) of wire action
-///   tokens, e.g. `take.3.fade.25`, `overlay_on.1.4`, `wait.50` — except that
-///   `title_text.<input>.<field>.<text>` takes plain text;
+///   tokens, e.g. `take.3.fade.25`, `overlay_on.1.4`, `wait.50`,
+///   `delay.1500`, `media_restart.4`, `media_seek.4.250` — except that
+///   `title_text.<input>.<field>.<text>` takes plain text. A backslash
+///   escapes the next character, so names and title text may hold the
+///   separators: `\;`, `\:`, `\,`, and `\\` stand for `;`, `:`, `,`, and
+///   `\` (see [`split_escaped`]);
 /// * `cue-list-remove <list>`;
 /// * `go <list> [<cue>]`, `cue-standby <list> <cue>`, and `cue-back`,
 ///   `cue-skip`, `cue-stop`, or `cue-reset <list>`.
@@ -5347,41 +5351,78 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
     })
 }
 
+/// Splits `value` at every `separator` not escaped by a backslash, at most
+/// `limit` pieces (the last keeps the rest). Each piece keeps its escapes so
+/// a nested list can be split again; [`unescape`] resolves them. `None` when
+/// `value` ends in a lone backslash.
+fn split_escaped(value: &str, separator: char, limit: usize) -> Option<Vec<&str>> {
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == separator && pieces.len() + 1 < limit {
+            pieces.push(&value[start..index]);
+            start = index + character.len_utf8();
+        }
+    }
+    if escaped {
+        return None;
+    }
+    pieces.push(&value[start..]);
+    Some(pieces)
+}
+
+/// Resolves the backslash escapes [`split_escaped`] kept: `\x` stands for
+/// `x`.
+fn unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            out.extend(characters.next());
+        } else {
+            out.push(character);
+        }
+    }
+    out
+}
+
 /// Parses `cue-list-set` cues (see [`parse_cue`]).
 fn cue_specs(value: &str) -> Result<Vec<fm_protocol::WireCue>, ArgsError> {
     if value == "-" {
         return Ok(Vec::new());
     }
-    value
-        .split(';')
+    let invalid = |field, item: &str| ArgsError::InvalidChoice {
+        field,
+        value: item.to_owned(),
+    };
+    split_escaped(value, ';', usize::MAX)
+        .ok_or_else(|| invalid("cues", value))?
+        .into_iter()
         .map(|item| {
-            let invalid = || ArgsError::InvalidChoice {
-                field: "cue",
-                value: item.to_owned(),
-            };
-            let parts: Vec<_> = item.splitn(4, ':').collect();
+            let parts = split_escaped(item, ':', 4).ok_or_else(|| invalid("cue", item))?;
             let [id, name, follow, actions] = parts[..] else {
-                return Err(invalid());
+                return Err(invalid("cue", item));
             };
             Ok(fm_protocol::WireCue {
-                id: id.parse().map_err(|_| invalid())?,
-                name: name.to_owned(),
+                id: id.parse().map_err(|_| invalid("cue", item))?,
+                name: unescape(name),
                 auto_follow: match follow {
                     "0" => false,
                     "1" => true,
-                    _ => return Err(invalid()),
+                    _ => return Err(invalid("cue", item)),
                 },
                 actions: if actions.is_empty() {
                     Vec::new()
                 } else {
-                    actions
-                        .split(',')
-                        .map(|token| {
-                            cue_action(token).ok_or_else(|| ArgsError::InvalidChoice {
-                                field: "cue action",
-                                value: token.to_owned(),
-                            })
-                        })
+                    split_escaped(actions, ',', usize::MAX)
+                        .ok_or_else(|| invalid("cue action", actions))?
+                        .into_iter()
+                        .map(|token| cue_action(token).ok_or_else(|| invalid("cue action", token)))
                         .collect::<Result<_, _>>()?
                 },
             })
@@ -5389,8 +5430,8 @@ fn cue_specs(value: &str) -> Result<Vec<fm_protocol::WireCue>, ArgsError> {
         .collect()
 }
 
-/// One cue action token; `title_text` takes plain text, which is hex-encoded
-/// into the wire token here.
+/// One cue action token; `title_text` takes plain (escaped) text, which is
+/// hex-encoded into the wire token here. Other tokens hold no escapes.
 fn cue_action(token: &str) -> Option<fm_protocol::WireCueAction> {
     use core::fmt::Write as _;
 
@@ -5398,10 +5439,13 @@ fn cue_action(token: &str) -> Option<fm_protocol::WireCueAction> {
         let mut parts = rest.splitn(3, '.');
         let (input, field, text) = (parts.next()?, parts.next()?, parts.next()?);
         let mut hex = String::with_capacity(text.len() * 2);
-        for byte in text.bytes() {
+        for byte in unescape(text).bytes() {
             write!(hex, "{byte:02x}").ok()?;
         }
         return fm_protocol::parse_cue_action_token(&format!("title_text.{input}.{field}.{hex}"));
+    }
+    if token.contains('\\') {
+        return None;
     }
     fm_protocol::parse_cue_action_token(token)
 }
@@ -6181,6 +6225,42 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn cue_specs_honour_backslash_escapes() {
+        assert_eq!(
+            split_escaped(r"a\;b;c\\;d", ';', usize::MAX),
+            Some(vec![r"a\;b", r"c\\", "d"])
+        );
+        assert_eq!(
+            split_escaped("a:b:c:d:e", ':', 4),
+            Some(vec!["a", "b", "c", "d:e"])
+        );
+        assert_eq!(split_escaped(r"dangling\", ',', usize::MAX), None);
+        assert_eq!(unescape(r"a\,b\;c\:d\\e"), r"a,b;c:d\e");
+
+        let cues =
+            cue_specs(r"1:Open\: cold:0:title_text.2.1.a\, b\; c:d \\ e,delay.40;2:B:1:").unwrap();
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[0].name, "Open: cold");
+        assert_eq!(
+            cues[0].actions,
+            vec![
+                fm_protocol::WireCueAction::TitleText {
+                    input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(2).unwrap()),
+                    field: fm_protocol::WireTitleFieldId::new(
+                        core::num::NonZeroU128::new(1).unwrap()
+                    ),
+                    text: r"a, b; c:d \ e".into(),
+                },
+                fm_protocol::WireCueAction::Delay { millis: 40 },
+            ]
+        );
+        assert!(cues[1].auto_follow);
+        // Escapes belong in names and title text only.
+        assert!(cue_specs(r"1:A:0:wait.\5").is_err());
+        assert!(cue_specs(r"1:A:0:wait.5\").is_err());
     }
 
     #[test]

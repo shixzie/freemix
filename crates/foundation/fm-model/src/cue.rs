@@ -1,9 +1,12 @@
-//! Operator cue lists (RC-017, schema 47): ordered cues an operator fires
-//! with one GO, each a bounded list of typed show actions and frame waits,
-//! plus the persisted standby pointer and run state that drive them.
+//! Operator cue lists (RC-017, schema 48): ordered cues an operator fires
+//! with one GO, each a bounded list of typed show actions and waits, plus
+//! the persisted standby pointer and run state that drive them.
 //!
 //! A cue's actions up to its first wait run on one engine frame; a wait
-//! defers the rest by a whole number of frames. A cue that follows on
+//! defers the rest by a whole number of frames. A millisecond delay
+//! ([`CueAction::Delay`]) is converted to frames at the show's frame rate
+//! when its cue fires, rounded up to the next whole frame (so a delay never
+//! ends early) and at least one frame; see [`delay_frames`]. A cue that follows on
 //! (`auto_follow`) fires the next cue as soon as its own last action has
 //! run, on the same frame when it ends without a wait. Time is measured in
 //! engine frames, so every deferred action lands on an exact frame number
@@ -37,6 +40,8 @@ pub const MAX_CUE_TEXT_BYTES: usize = 128;
 pub const MAX_CUE_LIST_TEXT_BYTES: usize = 2_048;
 /// Longest wait, in frames.
 pub const MAX_CUE_WAIT_FRAMES: u32 = 216_000;
+/// Longest millisecond delay (one hour).
+pub const MAX_CUE_DELAY_MS: u32 = 3_600_000;
 /// Longest transition or Fade to Black an action requests, in frames.
 pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 /// Overlay channels an action may address (`1..=8`).
@@ -83,9 +88,42 @@ pub enum CueAction {
     Record { recorder: RecorderSlot, start: bool },
     /// Starts or stops stream target `target`.
     Stream { target: StreamTargetId, start: bool },
+    /// Runs `operation` on media input `input`'s transport.
+    Media {
+        input: InputId,
+        operation: CueMediaOperation,
+    },
     /// Defers the cue's remaining actions by `frames` (`1..=`
     /// [`MAX_CUE_WAIT_FRAMES`]).
     Wait { frames: u32 },
+    /// Defers the cue's remaining actions by `millis` milliseconds (`1..=`
+    /// [`MAX_CUE_DELAY_MS`]), converted to frames by [`delay_frames`].
+    Delay { millis: u32 },
+}
+
+/// A media transport operation a cue runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueMediaOperation {
+    Play,
+    Pause,
+    /// Seeks to source frame `frame` (clamped to the trimmed range).
+    Seek {
+        frame: u64,
+    },
+    /// Seeks to the start of the trimmed range and plays.
+    Restart,
+}
+
+/// The whole frames a delay of `millis` milliseconds lasts at `rate`:
+/// `ceil(millis * rate / 1000)`, at least one, so a delay never ends before
+/// its time and never collapses to zero frames.
+#[must_use]
+pub fn delay_frames(millis: u32, rate: fm_types::FrameRate) -> u32 {
+    let numerator = u128::from(millis) * u128::from(rate.numerator());
+    let denominator = u128::from(rate.denominator()) * 1_000;
+    u32::try_from(numerator.div_ceil(denominator))
+        .unwrap_or(u32::MAX)
+        .max(1)
 }
 
 impl CueAction {
@@ -99,7 +137,8 @@ impl CueAction {
             | Self::TitleText { input, .. }
             | Self::TitleOff { input }
             | Self::AudioGain { input, .. }
-            | Self::AudioMute { input, .. } => Some(*input),
+            | Self::AudioMute { input, .. }
+            | Self::Media { input, .. } => Some(*input),
             Self::Take { input, .. } => *input,
             Self::OverlayOff { .. }
             | Self::FadeToBlack { .. }
@@ -107,8 +146,15 @@ impl CueAction {
             | Self::PlaylistStop
             | Self::Record { .. }
             | Self::Stream { .. }
-            | Self::Wait { .. } => None,
+            | Self::Wait { .. }
+            | Self::Delay { .. } => None,
         }
+    }
+
+    /// Whether the action is a wait (in frames or milliseconds).
+    #[must_use]
+    pub const fn is_wait(&self) -> bool {
+        matches!(self, Self::Wait { .. } | Self::Delay { .. })
     }
 
     /// Whether the action changes Program (a take or a playlist start).
@@ -296,7 +342,9 @@ fn action_is_valid(action: &CueAction) -> bool {
             crate::InputGainMilliDb::new(*gain_millidb).is_some()
         }
         CueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
+        CueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         CueAction::Preview { .. }
+        | CueAction::Media { .. }
         | CueAction::TitleOff { .. }
         | CueAction::PlaylistStart
         | CueAction::PlaylistStop
@@ -346,7 +394,7 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
             if let CueAction::TitleText { text: value, .. } = action {
                 text += value.len();
             }
-            if matches!(action, CueAction::Wait { .. }) {
+            if action.is_wait() {
                 takes = 0;
             } else if action.takes_program() {
                 takes += 1;
@@ -380,7 +428,7 @@ pub fn validate_cue_list(list: &CueList) -> Result<(), CueListError> {
             pending.action > 0
                 && pending.action <= cue.actions.len()
                 && (pending.action < cue.actions.len() || cue.auto_follow)
-                && matches!(cue.actions[pending.action - 1], CueAction::Wait { .. })
+                && cue.actions[pending.action - 1].is_wait()
         })
     });
     let fault_valid = state.fault.is_none_or(|fault| {

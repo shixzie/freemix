@@ -2,8 +2,8 @@ use std::{cell::RefCell, collections::BTreeMap, num::NonZeroU128, rc::Rc};
 
 use fm_auth::{Policy, Role, SessionId, UserId};
 use fm_automation::{
-    AutomationEvent, Chord, CommandIntent, ConditionContext, EventFilter, GoAction, KeyStroke,
-    Modifiers, ProgrammedGo, ScheduleId, ScheduleKind, Shortcut, ShortcutScope, Trigger,
+    AutomationEvent, Chord, CommandIntent, ConditionContext, EventFilter, KeyStroke, Modifiers,
+    ScheduleId, ScheduleKind, Shortcut, ShortcutScope, Trigger,
 };
 use fm_clock::ClockDomainId;
 use fm_engine::{Engine, ShowState};
@@ -248,43 +248,18 @@ fn one_action_submitted_twice_is_replayed_not_put_on_air_twice() {
     let mut control = service();
     let mut plane = AutomationPlane::new(AutomationLimits::default());
     let operator = principal(Role::Operator);
-    let source = WireInputId::from_domain(input(1));
 
+    // A scheduled action's key names who armed it, which binding, and which
+    // occurrence, so it is the same on every emission.
     plane
-        .program_go(
-            source,
-            ProgrammedGo::new([GoAction::Intent(request(3)), GoAction::Intent(request(2))])
-                .unwrap(),
-        )
+        .schedule(&operator, "cue", 100, ScheduleKind::Once, request(2))
         .unwrap();
-
-    // One operator GO press, retried once.
-    let first = plane.start_go(&operator, source, "press-1", 100).unwrap();
-    let retry = plane.start_go(&operator, source, "press-1", 100).unwrap();
-    assert_eq!(first, retry, "a retried press is the same run");
-    assert_eq!(plane.active_go_run_len(), 1);
-
     let tick = plane.tick(&mut control, 100, &ConditionContext::new());
-    assert_eq!(
-        keys(&tick),
-        ["auto/operator/go/1/0@100#0", "auto/operator/go/1/1@100#0"],
-        "two actions, two keys -- not four"
-    );
-    assert!(
-        tick.submitted
-            .iter()
-            .all(|entry| !entry.submission.replayed)
-    );
+    assert_eq!(keys(&tick), ["auto/operator/schedule/cue@100#0"]);
+    assert!(!tick.submitted[0].submission.replayed);
     assert_eq!(preview(&control), input(2));
-
-    // A retry that arrives after the run has finished is still the same run and
-    // schedules nothing, so nothing fires a second time.
-    assert_eq!(
-        plane.start_go(&operator, source, "press-1", 400).unwrap(),
-        first
-    );
     let after = plane.tick(&mut control, 400, &ConditionContext::new());
-    assert_eq!(after.submitted.len(), 0);
+    assert_eq!(after.submitted.len(), 0, "a one-shot fires once");
     assert_eq!(after.refusals.len(), 0);
 
     // The same press emitted twice: the second submission is replayed and the

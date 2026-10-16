@@ -3082,11 +3082,13 @@ playlist runs; no scheduled starts from Studio; no per-entry hard starts or
 calendar recurrence; no vMix API or as-run log. `OR-015` remains planned.
 
 Current implementation boundary for item 5 programmed GO (`RC-017`): the
-operator cue list is implemented end to end (schema 47, Protocol 2.50). A
+operator cue list is implemented end to end (schema 48, Protocol 2.51). A
 project persists up to eight bounded cue lists of named cues with typed
 actions (preview; cut, mix, or stinger takes; overlay on and off; title on,
 text, and off; Fade to Black; playlist start and stop; strip fader and mute;
-recorder and stream start and stop; and frame waits), optional auto-follow,
+recorder and stream start and stop; media play, pause, seek, and restart
+through the media transport; frame waits; and millisecond delays converted
+to whole frames at the show rate, rounded up), optional auto-follow,
 and each list's run state (standby, live, pending wait, played, fault).
 Every referenced input and stream target is validated, and removing an
 input a cue names is refused with the `cue_action` usage. `fm-automation`'s
@@ -3094,24 +3096,26 @@ input a cue names is refused with the `cue_action` usage. `fm-automation`'s
 plans a GO as one revision whose actions up to the first wait apply
 atomically on one frame (a refused action refuses the GO), and `freemixd`'s
 cue clock submits each wait's `cue_advance` for exactly its due frame,
-journaled and replayed after restart. List edits are undoable,
+journaled and replayed after restart; a restart restores each list's
+standby pointer and pending wait and still ends the wait on its due engine
+frame (downtime does not count), the native recorder startup barrier runs
+the cue clock, and on the simulated daemon a client's cue control catches
+up to the show's wall-clock frame like a playlist control. On the native
+runtime a cue's record and stream actions start and stop the same recorder
+segments and stream workers as the direct commands. List edits are undoable,
 padlock-guarded project edits; GO and the other controls are journaled
 operator transitions outside the undo history. Studio docks a Cues panel
-(list picker, inline cue and action editor, a big GO key with the standby
+(list picker, inline cue and action editor covering every action kind, a big GO key with the standby
 cue, Back, Skip, Stop, Reset, per-cue standby and fire keys, and `G` for
 GO) with English and Spanish hover help; the phone tally page adds GO and
 Standby; and `freemix-cli` has local and `remote-` `cue-lists`,
-`cue-list-set`, `cue-list-remove`, `go`, `cue-standby`, `cue-back`,
-`cue-skip`, `cue-stop`, and `cue-reset`. Remaining gaps: lists are not bound
-to an input button or previewed before GO; there is no media play or seek
-action, no data-source update, and no millisecond or timecode delays (waits
-count engine frames); the native daemon starts and stops its recorders and
-stream workers only for the record and stream commands themselves, so a
-cue's record and stream actions change the desired state without starting
-native workers, and its startup barrier does not poll the cue clock; a
-simulated client's cue controls do not catch up to wall time
-as playlist controls do; and the older per-input `GoEngine` in
-`fm-control`'s `AutomationPlane` stays unwired. `RC-017` remains planned.
+`cue-list-set` (backslash-escaped `;`, `:`, `,` in names and title text),
+`cue-list-remove`, `go`, `cue-standby`, `cue-back`, `cue-skip`, `cue-stop`,
+and `cue-reset`. The older per-input `GoEngine` was removed from
+`fm-automation` and `fm-control`'s `AutomationPlane`; cue lists supersede
+it. Remaining gaps: lists are not bound to an input button or previewed
+before GO; there is no data-source update action and no timecode delays;
+the web tally page offers only GO and Standby. `RC-017` remains planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

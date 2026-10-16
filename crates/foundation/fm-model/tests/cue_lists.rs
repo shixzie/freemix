@@ -1,12 +1,12 @@
-//! RC-017 cue lists (schema 47): bounded definitions, consistent run
-//! states, and project-level list rules.
+//! RC-017 cue lists (schema 48): bounded definitions (millisecond delays
+//! included), consistent run states, and project-level list rules.
 
 use std::num::NonZeroU128;
 
 use fm_model::{
-    Cue, CueAction, CueFault, CueList, CueListError, CuePending, CueRunState, MAX_CUE_ACTIONS,
-    MAX_CUE_LISTS, MAX_CUE_TEXT_BYTES, MAX_CUES, TransitionEffect, validate_cue_list,
-    validate_cue_list_definition, validate_cue_lists,
+    Cue, CueAction, CueFault, CueList, CueListError, CueMediaOperation, CuePending, CueRunState,
+    MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LISTS, MAX_CUE_TEXT_BYTES, MAX_CUES,
+    TransitionEffect, validate_cue_list, validate_cue_list_definition, validate_cue_lists,
 };
 use fm_types::InputId;
 
@@ -87,6 +87,13 @@ fn definitions_enforce_names_bounds_and_one_take_per_frame() {
     );
     for (action, index) in [
         (CueAction::Wait { frames: 0 }, 0),
+        (CueAction::Delay { millis: 0 }, 0),
+        (
+            CueAction::Delay {
+                millis: MAX_CUE_DELAY_MS + 1,
+            },
+            0,
+        ),
         (
             CueAction::Take {
                 input: None,
@@ -121,6 +128,29 @@ fn definitions_enforce_names_bounds_and_one_take_per_frame() {
             "{action:?}"
         );
     }
+}
+
+#[test]
+fn delays_separate_frames_and_media_actions_validate() {
+    // A millisecond delay separates frames like a frame wait does.
+    assert_eq!(
+        validate_cue_list_definition(
+            "Show",
+            &[cue(
+                7,
+                vec![
+                    cut(1),
+                    CueAction::Delay { millis: 500 },
+                    cut(2),
+                    CueAction::Media {
+                        input: input(3),
+                        operation: CueMediaOperation::Seek { frame: 9 },
+                    },
+                ]
+            )]
+        ),
+        Ok(())
+    );
 }
 
 #[test]

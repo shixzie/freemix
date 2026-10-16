@@ -1,13 +1,13 @@
 use fm_automation::{
     ActivatorEngine, ActivatorMapping, ActivatorRule, AttemptOutcome, AutomationEvent,
     CancelPolicy, Chord, CommandIntent, Condition, ConditionContext, ConflictKind, ControlAddress,
-    ControlMode, ControllerError, ControllerInput, ControllerManager, EventFilter, GoAction,
-    GoEngine, IntentBuffer, KeyStroke, LearnRequest, MacroDecision, MacroDefinition, MacroError,
-    MacroRun, Mapping, Modifiers, Predicate, ProgrammedGo, RetryPolicy, ScheduleId, ScheduleKind,
-    ScheduleSet, Shortcut, ShortcutError, ShortcutRegistry, ShortcutScope, TallySnapshot, Trigger,
-    TriggerEngine, Value, ValueRange,
+    ControlMode, ControllerError, ControllerInput, ControllerManager, EventFilter, IntentBuffer,
+    KeyStroke, LearnRequest, MacroDecision, MacroDefinition, MacroError, MacroRun, Mapping,
+    Modifiers, Predicate, RetryPolicy, ScheduleId, ScheduleKind, ScheduleSet, Shortcut,
+    ShortcutError, ShortcutRegistry, ShortcutScope, TallySnapshot, Trigger, TriggerEngine, Value,
+    ValueRange,
 };
-use fm_command::{IdempotencyKey, MAX_TRANSACTION_COMMANDS};
+use fm_command::MAX_TRANSACTION_COMMANDS;
 use fm_types::{InputId, MediaTimestamp};
 use std::num::NonZeroU128;
 
@@ -293,62 +293,6 @@ fn schedule_boundaries_are_inclusive_anchored_and_caller_driven() {
         schedules.poll(1_025).unwrap()[0].id,
         ScheduleId::from("timer")
     );
-}
-
-#[test]
-fn programmed_go_previews_orders_cancels_and_suppresses_a_retried_press() {
-    let source = input(7);
-    let program = ProgrammedGo::new([
-        GoAction::Intent(CommandIntent::discrete(TestCommand::Named("preview"))),
-        GoAction::Delay(10),
-        GoAction::Intent(CommandIntent::discrete(TestCommand::Named("take"))),
-        GoAction::Delay(5),
-        GoAction::Intent(CommandIntent::discrete(TestCommand::Named("play"))),
-    ])
-    .unwrap();
-    let mut engine = GoEngine::default();
-    engine.program(source, program);
-    assert_eq!(
-        engine
-            .preview(source)
-            .unwrap()
-            .actions
-            .iter()
-            .map(|action| action.offset_ms)
-            .collect::<Vec<_>>(),
-        [0, 10, 15]
-    );
-
-    let press = IdempotencyKey::new("go-1");
-    let first = engine.start(source, press.clone(), 100).unwrap();
-    assert!(!first.replayed);
-    assert_eq!(engine.program_len(), 1);
-    assert_eq!(engine.active_run_len(), 1);
-
-    // One operator press, retried: the same run, and nothing scheduled twice.
-    let retry = engine.start(source, press, 999).unwrap();
-    assert!(retry.replayed);
-    assert_eq!(retry.run_id, first.run_id);
-    assert_eq!(engine.active_run_len(), 1);
-
-    assert_eq!(engine.poll(100)[0].action.index, 0);
-    assert!(
-        engine.poll(100).is_empty(),
-        "the retried press scheduled nothing a second time"
-    );
-    assert_eq!(engine.poll(110)[0].action.index, 1);
-    assert!(engine.cancel(first.run_id));
-    assert_eq!(
-        engine.poll(115),
-        [] as [fm_automation::GoActionFire<TestCommand>; 0]
-    );
-
-    // A different press is a different run.
-    let second = engine
-        .start(source, IdempotencyKey::new("go-2"), 200)
-        .unwrap();
-    assert!(!second.replayed);
-    assert_ne!(second.run_id, first.run_id);
 }
 
 #[test]

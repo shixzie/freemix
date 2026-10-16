@@ -2863,6 +2863,62 @@ fn recording_command_slot(payload: &CommandPayload) -> Option<(bool, usize)> {
     }
 }
 
+/// The recorder and stream commands an accepted cue GO or advance ran
+/// (RC-017), in the order its actions ran them, as the direct commands the
+/// native runtime realizes: a cue that starts REC 1 opens a segment exactly
+/// like `record_start`, and one that stops a stream retires its worker
+/// exactly like `stream_stop`. Every other command yields nothing; the
+/// direct record and stream commands are observed as themselves.
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+fn cue_worker_commands(
+    command: &CommandMessage,
+    submission: &CommandSubmission,
+) -> Vec<CommandMessage> {
+    if !matches!(
+        command.payload,
+        CommandPayload::CueControl { .. } | CommandPayload::CueAdvance { .. }
+    ) {
+        return Vec::new();
+    }
+    let Some(accepted) = &submission.accepted else {
+        return Vec::new();
+    };
+    accepted
+        .events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            fm_engine::EngineEvent::CueListChanged { applied, .. } => Some(applied),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|action| {
+            let wire_recorder = |recorder: RecorderSlot| {
+                fm_protocol::WireRecorderSlot::new(recorder.get())
+                    .expect("switcher recorder slots match the wire")
+            };
+            let payload = match action {
+                fm_engine::EngineCommand::RecordStart { recorder } => CommandPayload::RecordStart {
+                    recorder: wire_recorder(*recorder),
+                },
+                fm_engine::EngineCommand::RecordStop { recorder } => CommandPayload::RecordStop {
+                    recorder: wire_recorder(*recorder),
+                },
+                fm_engine::EngineCommand::StreamStart { target } => CommandPayload::StreamStart {
+                    target: WireStreamTargetId::new(target.get()),
+                },
+                fm_engine::EngineCommand::StreamStop { target } => CommandPayload::StreamStop {
+                    target: WireStreamTargetId::new(target.get()),
+                },
+                _ => return None,
+            };
+            Some(CommandMessage {
+                payload,
+                ..command.clone()
+            })
+        })
+        .collect()
+}
+
 /// One segment handed off the render path for bounded finalization.
 ///
 /// The worker owns the recorder and emits exactly one `FREEMIXD_RECORDER`
@@ -9578,31 +9634,48 @@ fn serve_inner(
             .iter()
             .any(|&active| active)
         {
-            // The playlist clock runs inside the startup barrier too: a
-            // restored playlist keeps cutting on its scheduled frames while
-            // the recorder starts, exactly as the session loop's clock does.
+            // The playlist and cue clocks run inside the startup barrier
+            // too: a restored playlist keeps cutting on its scheduled frames
+            // and a restored cue wait still ends on its due frame while the
+            // recorder starts, exactly as the session loop's clocks do.
             let stored = durable.clone();
             let principal = development_principal()?;
             let mut clock = playlist_clock::PlaylistClock::default();
+            let mut cues = cue_clock::CueClock::default();
             let mut before_frame =
                 |native: &mut NativeDaemon, control: &mut ControlService<Policy>| {
-                    let Some((frame, revision)) =
+                    if let Some((frame, revision)) =
                         clock.due(control, playlist_clock::Pacing::Engine)
-                    else {
-                        return Ok(());
-                    };
-                    let delivery = execute_native_authority_command(
-                        control,
-                        &journal,
-                        &mut durable,
-                        &principal,
-                        &authority,
-                        &playlist_clock::advance_command(frame, revision),
-                        now_millis()?,
-                        native,
-                        Some(&process_shutdown),
-                    )?;
-                    clock.observe(frame, revision, &delivery.result);
+                    {
+                        let delivery = execute_native_authority_command(
+                            control,
+                            &journal,
+                            &mut durable,
+                            &principal,
+                            &authority,
+                            &playlist_clock::advance_command(frame, revision),
+                            now_millis()?,
+                            native,
+                            Some(&process_shutdown),
+                        )?;
+                        clock.observe(frame, revision, &delivery.result);
+                    }
+                    if let Some((list, frame, revision)) =
+                        cues.due(control, playlist_clock::Pacing::Engine)
+                    {
+                        let delivery = execute_native_authority_command(
+                            control,
+                            &journal,
+                            &mut durable,
+                            &principal,
+                            &authority,
+                            &cue_clock::advance_command(list, frame, revision),
+                            now_millis()?,
+                            native,
+                            Some(&process_shutdown),
+                        )?;
+                        cues.observe(list, frame, revision, &delivery.result);
+                    }
                     Ok(())
                 };
             let primed = native.start_and_prime_configured_recorders(
@@ -11646,6 +11719,13 @@ fn execute_native_authority_command(
     native.observe_stream_command(command, &execution.submission.output.result);
     #[cfg(feature = "native-media")]
     native.observe_recording_command(command, &execution.submission.output.result, durable);
+    // A cue's record and stream actions start and stop the same workers
+    // (RC-017); its acknowledgement is not held for a segment's readiness.
+    #[cfg(feature = "native-media")]
+    for worker in cue_worker_commands(command, &execution.submission) {
+        native.observe_stream_command(&worker, &execution.submission.output.result);
+        native.observe_recording_command(&worker, &execution.submission.output.result, durable);
+    }
     // Changed title fields re-render on the title worker; this only
     // compares and hands over state.
     #[cfg(feature = "native-media")]

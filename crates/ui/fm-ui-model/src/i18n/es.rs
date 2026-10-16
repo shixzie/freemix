@@ -6183,6 +6183,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueActRecord, t("Grabar")),
     (Msg::CueActStream, t("Emitir")),
     (Msg::CueActWait, t("Esperar")),
+    (Msg::CueActMediaPlay, t("Reproducir medio")),
+    (Msg::CueActMediaPause, t("Pausar medio")),
+    (Msg::CueActMediaSeek, t("Buscar en medio")),
+    (Msg::CueActMediaRestart, t("Reiniciar medio")),
+    (Msg::CueActDelay, t("Retardo")),
+    (
+        Msg::CueParamMediaHover,
+        t("La entrada de medios cuyo transporte controla esta acción"),
+    ),
+    (
+        Msg::CueParamSeekHover,
+        t("Fotograma de origen al que saltar; se mantiene dentro del recorte del clip"),
+    ),
+    (
+        Msg::CueParamDelayHover,
+        t(
+            "Milisegundos de espera antes de que se ejecuten las acciones restantes del cue; se redondean hacia arriba a fotogramas completos a la cadencia del programa",
+        ),
+    ),
+    (Msg::CueMillisUnit, t("ms")),
     (Msg::CueParamPreview, t("(Previo)")),
     (Msg::CueParamInputHover, t("La entrada que usa esta acción")),
     (

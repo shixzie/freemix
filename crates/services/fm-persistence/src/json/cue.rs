@@ -1,4 +1,4 @@
-//! The operator cue lists in `project.json` (schema 47, RC-017).
+//! The operator cue lists in `project.json` (schema 48, RC-017).
 //!
 //! ```text
 //! "cue_lists": [
@@ -21,14 +21,15 @@
 //! `fade_to_black` (`active`, `duration_frames`), `playlist_start`,
 //! `playlist_stop`, `audio_gain` (`input`, `gain_milli_db`), `audio_mute`
 //! (`input`, `muted`), `record` (`recorder`, `start`), `stream` (`target`,
-//! `start`), and `wait` (`frames`). Bounds and references are reported by
-//! project validation.
+//! `start`), `media_play`, `media_pause`, and `media_restart` (`input`),
+//! `media_seek` (`input`, `frame`), `wait` (`frames`), and `delay`
+//! (`millis`). Bounds and references are reported by project validation.
 
 use core::fmt::Write as _;
 
 use fm_model::{
-    Cue, CueAction, CueFault, CueList, CuePending, CueRunState, RecorderSlot, StingerSlotNumber,
-    StreamTargetId, TitleFieldId, TransitionEffect,
+    Cue, CueAction, CueFault, CueList, CueMediaOperation, CuePending, CueRunState, RecorderSlot,
+    StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
 };
 use fm_types::InputId;
 
@@ -168,11 +169,38 @@ fn write_action(output: &mut String, action: &CueAction) {
             output,
             "{{\"type\": \"stream\", \"target\": {target}, \"start\": {start}}}"
         ),
+        CueAction::Media { input, operation } => write_media(output, *input, operation),
         CueAction::Wait { frames } => {
             write!(output, "{{\"type\": \"wait\", \"frames\": {frames}}}")
         }
+        CueAction::Delay { millis } => {
+            write!(output, "{{\"type\": \"delay\", \"millis\": {millis}}}")
+        }
     };
     result.expect("writing to a string cannot fail");
+}
+
+fn write_media(
+    output: &mut String,
+    input: InputId,
+    operation: &CueMediaOperation,
+) -> core::fmt::Result {
+    match operation {
+        CueMediaOperation::Play => {
+            write!(output, "{{\"type\": \"media_play\", \"input\": {input}}}")
+        }
+        CueMediaOperation::Pause => {
+            write!(output, "{{\"type\": \"media_pause\", \"input\": {input}}}")
+        }
+        CueMediaOperation::Restart => write!(
+            output,
+            "{{\"type\": \"media_restart\", \"input\": {input}}}"
+        ),
+        CueMediaOperation::Seek { frame } => write!(
+            output,
+            "{{\"type\": \"media_seek\", \"input\": {input}, \"frame\": {frame}}}"
+        ),
+    }
 }
 
 fn write_state(output: &mut String, state: &CueRunState) {
@@ -322,8 +350,29 @@ fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
             target: StreamTargetId::new(object.nonzero_u128("target")?),
             start: object.boolean("start")?,
         },
+        "media_play" => CueAction::Media {
+            input: input(&mut object)?,
+            operation: CueMediaOperation::Play,
+        },
+        "media_pause" => CueAction::Media {
+            input: input(&mut object)?,
+            operation: CueMediaOperation::Pause,
+        },
+        "media_restart" => CueAction::Media {
+            input: input(&mut object)?,
+            operation: CueMediaOperation::Restart,
+        },
+        "media_seek" => CueAction::Media {
+            input: input(&mut object)?,
+            operation: CueMediaOperation::Seek {
+                frame: object.u64("frame")?,
+            },
+        },
         "wait" => CueAction::Wait {
             frames: object.u32("frames")?,
+        },
+        "delay" => CueAction::Delay {
+            millis: object.u32("millis")?,
         },
         value => return Err(super::unknown_enum("cue action", value)),
     };

@@ -1,13 +1,16 @@
 //! Wire mapping of the cue list commands, events, and snapshot records
-//! (Protocol 2.50, RC-017).
+//! (Protocol 2.51, RC-017).
 
 use fm_engine::{Engine, EngineCommand, EngineCueListDefinition, EngineCueOperation};
-use fm_model::{Cue, CueAction, CueList, CueRunState, RecorderSlot, StreamTargetId, TitleFieldId};
+use fm_model::{
+    Cue, CueAction, CueList, CueMediaOperation, CueRunState, RecorderSlot, StreamTargetId,
+    TitleFieldId,
+};
 use fm_protocol::{
-    CommandPayload, CueListSpec, CueListStateMessage, CueListStatus, CueOperation,
-    CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText, EventPayload, RecordingStatus,
-    WireCue, WireCueAction, WireInputId, WireOverlayChannelId, WireRecorderSlot,
-    WireStreamTargetId, WireTitleFieldId,
+    CommandPayload, CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport,
+    CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText, EventPayload,
+    RecordingStatus, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
+    WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
 };
 use fm_titles::FieldId;
 use fm_types::InputId;
@@ -22,6 +25,7 @@ const _: () = {
     assert!(fm_protocol::MAX_CUE_TEXT_BYTES == fm_model::MAX_CUE_TEXT_BYTES);
     assert!(fm_protocol::MAX_CUE_LIST_TEXT_BYTES == fm_model::MAX_CUE_LIST_TEXT_BYTES);
     assert!(fm_protocol::MAX_CUE_WAIT_FRAMES == fm_model::MAX_CUE_WAIT_FRAMES);
+    assert!(fm_protocol::MAX_CUE_DELAY_MS == fm_model::MAX_CUE_DELAY_MS);
     assert!(fm_protocol::MAX_CUE_TRANSITION_FRAMES == fm_model::MAX_CUE_TRANSITION_FRAMES);
 };
 
@@ -102,7 +106,17 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             target: StreamTargetId::new(target.get()),
             start: *start,
         },
+        WireCueAction::Media { input, operation } => CueAction::Media {
+            input: input.to_domain(),
+            operation: match *operation {
+                WireCueMediaOperation::Play => CueMediaOperation::Play,
+                WireCueMediaOperation::Pause => CueMediaOperation::Pause,
+                WireCueMediaOperation::Seek { frame } => CueMediaOperation::Seek { frame },
+                WireCueMediaOperation::Restart => CueMediaOperation::Restart,
+            },
+        },
         WireCueAction::Wait { frames } => CueAction::Wait { frames: *frames },
+        WireCueAction::Delay { millis } => CueAction::Delay { millis: *millis },
     }
 }
 
@@ -169,7 +183,17 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
             target: WireStreamTargetId::new(target.get()),
             start: *start,
         },
+        CueAction::Media { input, operation } => WireCueAction::Media {
+            input: WireInputId::from_domain(*input),
+            operation: match *operation {
+                CueMediaOperation::Play => WireCueMediaOperation::Play,
+                CueMediaOperation::Pause => WireCueMediaOperation::Pause,
+                CueMediaOperation::Seek { frame } => WireCueMediaOperation::Seek { frame },
+                CueMediaOperation::Restart => WireCueMediaOperation::Restart,
+            },
+        },
         CueAction::Wait { frames } => WireCueAction::Wait { frames: *frames },
+        CueAction::Delay { millis } => WireCueAction::Delay { millis: *millis },
     }
 }
 
@@ -323,6 +347,7 @@ pub fn cue_run_changed(
     frame: u64,
     fired: &[u64],
     title_texts: &[(InputId, FieldId, String)],
+    applied: &[EngineCommand],
 ) -> EventPayload {
     let state = engine
         .show()
@@ -375,5 +400,29 @@ pub fn cue_run_changed(
             .collect(),
         playlist: crate::playlist::wire_run_state(engine),
         titles,
+        media: media_transports(engine, applied),
     }))
+}
+
+/// The transports of every media input `applied` addressed, ascending.
+fn media_transports(engine: &Engine, applied: &[EngineCommand]) -> Vec<CueMediaTransport> {
+    let inputs: std::collections::BTreeSet<InputId> = applied
+        .iter()
+        .filter_map(|command| match command {
+            EngineCommand::Media(media) => Some(media.input),
+            _ => None,
+        })
+        .collect();
+    inputs
+        .into_iter()
+        .map(|input| {
+            let status = crate::media::status(engine, input);
+            CueMediaTransport {
+                input: status.input,
+                state: status.transport.state,
+                position: status.transport.position,
+                position_time: status.transport.position_time,
+            }
+        })
+        .collect()
 }

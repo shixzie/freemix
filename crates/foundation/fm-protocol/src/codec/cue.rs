@@ -10,13 +10,17 @@
 //!   `title_off.<input>`, `fade_to_black.<active 0|1>.<frames>`,
 //!   `playlist_start`, `playlist_stop`, `audio_gain.<input>.<millidB>`,
 //!   `audio_mute.<input>.<0|1>`, `record.<recorder>.<0|1>`,
-//!   `stream.<target>.<0|1>`, `wait.<frames>`.
+//!   `stream.<target>.<0|1>`, `media_play.<input>`, `media_pause.<input>`,
+//!   `media_restart.<input>`, `media_seek.<input>.<frame>`, `wait.<frames>`,
+//!   `delay.<millis>` (the media and delay tokens since Protocol 2.51).
 //! * `state` is `<standby>:<live>:<pending>:<played>:<fault>`, each of
 //!   `standby` and `live` a cue id or `-`, `pending`
 //!   `<cue>.<action>.<due frame>` or `-`, `played` `.`-separated ascending
 //!   cue ids (empty for none), and `fault` `<cue>.<action>` or `-`.
 //! * `fired` is `.`-separated cue ids; `titles` is a `/`-separated list of
-//!   `<input>.<field revision>.<field>.<text hex>`.
+//!   `<input>.<field revision>.<field>.<text hex>`; `media` (Protocol
+//!   2.51) is a `/`-separated list of
+//!   `<input>.<transport state>.<position>.<time numerator>.<time denominator>`.
 //!
 //! Names and texts are lowercase hex of their UTF-8 bytes, so no separator
 //! can occur inside them. Every number is canonical decimal.
@@ -24,10 +28,11 @@
 use core::num::NonZeroU128;
 
 use crate::{
-    CodecError, CueListSpec, CueListStatus, CueOperation, CuePendingStatus, CueRunStatus,
-    CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS,
-    MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
-    MAX_CUES, TransitionFavoriteEffect, WireCue, WireCueAction, WireOverlayChannelId,
+    CodecError, CueListSpec, CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus,
+    CueRunStatus, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
+    MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
+    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, MediaTime, MediaTransportState,
+    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireOverlayChannelId,
     WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
 };
 
@@ -94,6 +99,7 @@ fn action_is_valid(action: &WireCueAction) -> bool {
             duration_frames, ..
         } => transition(*duration_frames),
         WireCueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
+        WireCueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         _ => true,
     }
 }
@@ -176,7 +182,14 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
         WireCueAction::AudioMute { input, muted } => format!("audio_mute.{input}.{}", flag(*muted)),
         WireCueAction::Record { recorder, start } => format!("record.{recorder}.{}", flag(*start)),
         WireCueAction::Stream { target, start } => format!("stream.{target}.{}", flag(*start)),
+        WireCueAction::Media { input, operation } => match operation {
+            WireCueMediaOperation::Play => format!("media_play.{input}"),
+            WireCueMediaOperation::Pause => format!("media_pause.{input}"),
+            WireCueMediaOperation::Restart => format!("media_restart.{input}"),
+            WireCueMediaOperation::Seek { frame } => format!("media_seek.{input}.{frame}"),
+        },
         WireCueAction::Wait { frames } => format!("wait.{frames}"),
+        WireCueAction::Delay { millis } => format!("delay.{millis}"),
     }
 }
 
@@ -274,8 +287,28 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
             target: WireStreamTargetId::new(parse_u128(target)?),
             start: parse_flag(start)?,
         },
+        [
+            operation @ ("media_play" | "media_pause" | "media_restart"),
+            id,
+        ] => WireCueAction::Media {
+            input: input(id)?,
+            operation: match *operation {
+                "media_play" => WireCueMediaOperation::Play,
+                "media_pause" => WireCueMediaOperation::Pause,
+                _ => WireCueMediaOperation::Restart,
+            },
+        },
+        ["media_seek", id, frame] => WireCueAction::Media {
+            input: input(id)?,
+            operation: WireCueMediaOperation::Seek {
+                frame: parse_canonical_u64(frame)?,
+            },
+        },
         ["wait", frames] => WireCueAction::Wait {
             frames: parse_u32(frames)?,
+        },
+        ["delay", millis] => WireCueAction::Delay {
+            millis: parse_u32(millis)?,
         },
         _ => return None,
     })
@@ -585,6 +618,63 @@ pub(super) fn decode_titles(value: &str) -> Result<Vec<CueTitleText>, CodecError
                     field_revision: parse_canonical_u64(revision).ok_or_else(bad)?,
                     field: WireTitleFieldId::new(parse_u128(field).ok_or_else(bad)?),
                     text: unhex("titles", text)?,
+                }),
+                _ => Err(bad()),
+            }
+        })
+        .collect()
+}
+
+/// Encodes the media transports of a run (Protocol 2.51).
+pub(super) fn encode_media(media: &[CueMediaTransport]) -> Result<String, CodecError> {
+    if media.len() > MAX_CUE_LIST_ACTIONS {
+        return Err(CodecError::TooManyItems("media"));
+    }
+    media
+        .iter()
+        .map(|transport| {
+            let time = transport.position_time;
+            if time.denominator == 0 {
+                return Err(invalid("media", transport.input.to_string()));
+            }
+            Ok(format!(
+                "{}.{}.{}.{}.{}",
+                transport.input,
+                transport.state.token(),
+                transport.position,
+                time.numerator,
+                time.denominator
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|items| items.join("/"))
+}
+
+/// Decodes the media transports of a run.
+pub(super) fn decode_media(value: &str) -> Result<Vec<CueMediaTransport>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split('/').count() > MAX_CUE_LIST_ACTIONS {
+        return Err(CodecError::TooManyItems("media"));
+    }
+    value
+        .split('/')
+        .map(|item| {
+            let bad = || invalid("media", item);
+            match item.split('.').collect::<Vec<_>>().as_slice() {
+                [input, state, position, numerator, denominator] => Ok(CueMediaTransport {
+                    input: parse_canonical_input(input).ok_or_else(bad)?,
+                    state: MediaTransportState::from_token(state).ok_or_else(bad)?,
+                    position: parse_canonical_u64(position).ok_or_else(bad)?,
+                    position_time: MediaTime {
+                        numerator: if *numerator == "0" {
+                            0
+                        } else {
+                            parse_u128(numerator).ok_or_else(bad)?.get()
+                        },
+                        denominator: parse_u128(denominator).ok_or_else(bad)?.get(),
+                    },
                 }),
                 _ => Err(bad()),
             }

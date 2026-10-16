@@ -1,4 +1,5 @@
-//! Protocol 2.50 operator cue lists (RC-017): the list edit, GO, standby,
+//! Protocol 2.51 operator cue lists (RC-017; media actions, millisecond
+//! delays, and the run's media transports since 2.51): the list edit, GO, standby,
 //! and clock commands, the `cue_list_changed`, `cue_list_removed`, and
 //! `cue_run_changed` events, the snapshot's `cue_list_states` count, and the
 //! `cue_list_state` follow-on record — exactly, and strictly.
@@ -7,16 +8,17 @@ use core::num::NonZeroU128;
 
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload,
-    CueListSpec, CueListStateMessage, CueListStatus, CueOperation, CuePendingStatus, CueRunChange,
-    CueRunStatus, CueTitleText, EditHistoryStatus, EngineIdentity, EventCursor, EventMessage,
-    EventPayload, FadeToBlackPosition, FadeToBlackState, InputAudioStripStatus, MAX_CUE_ACTIONS,
-    MAX_CUES, ManualTransitionStatus, OverlayStatus, PlaylistRunState, ProtocolVersion,
-    RecordingStatus, StreamRealizedState, StreamStatus, TransitionFavoriteEffect, WireCue,
-    WireCueAction, WireInputId, WireMessage, WireOverlayChannelId, WireRecorderSlot,
+    CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport, CueOperation,
+    CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText, EditHistoryStatus, EngineIdentity,
+    EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
+    InputAudioStripStatus, MAX_CUE_ACTIONS, MAX_CUES, ManualTransitionStatus, MediaTime,
+    MediaTransportState, OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus,
+    StreamRealizedState, StreamStatus, TransitionFavoriteEffect, WireCue, WireCueAction,
+    WireCueMediaOperation, WireInputId, WireMessage, WireOverlayChannelId, WireRecorderSlot,
     WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.50\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.51\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -115,6 +117,30 @@ fn spec() -> CueListSpec {
                 auto_follow: false,
                 actions: Vec::new(),
             },
+            WireCue {
+                id: 9,
+                name: "Roll clip".to_owned(),
+                auto_follow: false,
+                actions: vec![
+                    WireCueAction::Media {
+                        input: input(6),
+                        operation: WireCueMediaOperation::Restart,
+                    },
+                    WireCueAction::Delay { millis: 1_500 },
+                    WireCueAction::Media {
+                        input: input(6),
+                        operation: WireCueMediaOperation::Seek { frame: 0 },
+                    },
+                    WireCueAction::Media {
+                        input: input(6),
+                        operation: WireCueMediaOperation::Play,
+                    },
+                    WireCueAction::Media {
+                        input: input(6),
+                        operation: WireCueMediaOperation::Pause,
+                    },
+                ],
+            },
         ],
     }
 }
@@ -154,7 +180,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 50));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 51));
 }
 
 #[test]
@@ -172,6 +198,12 @@ fn cue_commands_round_trip_exactly() {
     assert!(line.contains("take.3.fade.25%2Foverlay_on.2.4"), "{line}");
     assert!(line.contains("wait.50%2Ftake.-.stinger_1.40"), "{line}");
     assert!(line.contains("audio_gain.3.-12500"), "{line}");
+    assert!(
+        line.contains(
+            "media_restart.6%2Fdelay.1500%2Fmedia_seek.6.0%2Fmedia_play.6%2Fmedia_pause.6"
+        ),
+        "{line}"
+    );
 
     for (operation, wire) in [
         (CueOperation::Go { cue: None }, "payload=cue_go\tlist=3\n"),
@@ -222,6 +254,14 @@ fn cue_commands_are_strict() {
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etake.3.cut.5",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Eaudio_gain.3.-0",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Eoverlay_off.9",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Edelay.0",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Edelay.3600001",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Edelay.01",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_play.0",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_play.6.1",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_seek.6",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_seek.6.-1",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_stop.6",
         "payload=cue_advance\tlist=3",
     ] {
         let line = format!("{PREFIX}\t{bad}\n");
@@ -250,6 +290,7 @@ fn cue_commands_are_strict() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // every cue event and the snapshot record in one pass
 fn cue_events_and_the_snapshot_record_round_trip_exactly() {
     let status = CueListStatus {
         id: 3,
@@ -313,10 +354,38 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
             field: WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
             text: "Señor".to_owned(),
         }],
+        media: vec![CueMediaTransport {
+            input: input(6),
+            state: MediaTransportState::Playing,
+            position: 0,
+            position_time: MediaTime {
+                numerator: 0,
+                denominator: 1,
+            },
+        }],
     };
-    let line = round_trip(&event(EventPayload::CueRunChanged(Box::new(change))));
+    let line = round_trip(&event(EventPayload::CueRunChanged(Box::new(
+        change.clone(),
+    ))));
     assert!(line.contains("\tfired=1.7\t"), "{line}");
     assert!(line.contains("\ttitles=5.4.2.5365c3b16f72"), "{line}");
+    assert!(line.contains("\tmedia=6.playing.0.0.1"), "{line}");
+    for bad in [
+        "media=6.playing.0.0.0",
+        "media=6.rolling.0.0.1",
+        "media=0.playing.0.0.1",
+        "media=6.playing.0.0",
+    ] {
+        let broken = line.replace("\tmedia=6.playing.0.0.1", &format!("\t{bad}"));
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    let mut bare = change;
+    bare.media.clear();
+    let line = round_trip(&event(EventPayload::CueRunChanged(Box::new(bare))));
+    assert!(
+        line.contains("\tmedia=\t") || line.contains("\tmedia=\n"),
+        "{line}"
+    );
 
     round_trip(&WireMessage::CueListState(CueListStateMessage {
         revision: 12,

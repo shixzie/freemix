@@ -1,4 +1,5 @@
-//! Replicated operator cue lists (Protocol 2.50, RC-017).
+//! Replicated operator cue lists (Protocol 2.50, RC-017; media transports
+//! Protocol 2.51).
 //!
 //! A snapshot announces one `cue_list_state` per list; `cue_list_changed`
 //! and `cue_list_removed` replace or drop a whole list after an edit, and
@@ -6,8 +7,8 @@
 //! every desired state its fired actions may have changed.
 
 use fm_protocol::{
-    CueListStatus, CueRunChange, CueRunStatus, CueTitleText, FadeToBlackState, PlaylistRunState,
-    RecordingStatus, TitleFieldValue, WireCueAction,
+    CueListStatus, CueMediaTransport, CueRunChange, CueRunStatus, CueTitleText, FadeToBlackState,
+    PlaylistRunState, RecordingStatus, TitleFieldValue, WireCueAction,
 };
 use fm_types::InputId;
 
@@ -33,6 +34,8 @@ pub struct CueRunUpdate {
     pub recordings: Vec<RecordingStatus>,
     pub playlist: PlaylistRunState,
     pub titles: Vec<CueTitleText>,
+    /// The transports the fired media actions left (Protocol 2.51).
+    pub media: Vec<CueMediaTransport>,
 }
 
 impl CueRunUpdate {
@@ -51,6 +54,7 @@ impl CueRunUpdate {
             recordings: change.recordings,
             playlist: change.playlist,
             titles: change.titles,
+            media: change.media,
         }
     }
 }
@@ -68,7 +72,8 @@ pub fn list_inputs(list: &CueListStatus) -> impl Iterator<Item = InputId> + '_ {
             | WireCueAction::TitleText { input, .. }
             | WireCueAction::TitleOff { input }
             | WireCueAction::AudioGain { input, .. }
-            | WireCueAction::AudioMute { input, .. } => Some(input.to_domain()),
+            | WireCueAction::AudioMute { input, .. }
+            | WireCueAction::Media { input, .. } => Some(input.to_domain()),
             WireCueAction::Take { input, .. } => input.map(fm_protocol::WireInputId::to_domain),
             _ => None,
         })
@@ -107,6 +112,13 @@ pub(crate) fn validate_run(update: &CueRunUpdate, state: &ProjectState) -> Resul
     }
     crate::validate_streams(&update.streams)?;
     crate::validate_recordings(&update.recordings)?;
+    if let Some(transport) = update
+        .media
+        .iter()
+        .find(|transport| !state.inputs.contains(&transport.input.to_domain()))
+    {
+        return Err(ModelError::InvalidMediaChange(transport.input.to_domain()));
+    }
     for title in &update.titles {
         let input = title.input.to_domain();
         let found = state.title(input).ok_or(ModelError::UnknownTitle(input))?;
@@ -133,6 +145,13 @@ pub(crate) fn apply_run(state: &mut ProjectState, update: CueRunUpdate) {
     {
         playlist.state = update.playlist;
         playlist.frame = update.frame;
+    }
+    for transport in update.media {
+        if let Some(status) = state.media.get_mut(&transport.input.to_domain()) {
+            status.transport.state = transport.state;
+            status.transport.position = transport.position;
+            status.transport.position_time = transport.position_time;
+        }
     }
     for text in update.titles {
         if let Some(title) = state

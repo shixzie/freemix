@@ -3122,6 +3122,7 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
             edit,
             fired,
             title_texts,
+            applied,
             ..
         } = &event.payload
         else {
@@ -3130,7 +3131,7 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         Some(if *edit {
             cue::cue_list_changed(engine, *list)
         } else {
-            cue::cue_run_changed(engine, *list, *frame, fired, title_texts)
+            cue::cue_run_changed(engine, *list, *frame, fired, title_texts, applied)
         })
     }) {
         return payload;

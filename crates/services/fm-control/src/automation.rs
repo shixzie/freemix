@@ -26,12 +26,12 @@ use std::{collections::BTreeMap, error::Error, fmt};
 
 use fm_auth::{Principal, SessionId, UserId};
 use fm_automation::{
-    AutomationEvent, Chord, CommandIntent, ConditionContext, GoEngine, GoError, IntentBuffer,
-    ProgrammedGo, ScheduleError, ScheduleId, ScheduleKind, ScheduleSet, Shortcut, ShortcutError,
-    ShortcutRegistry, Trigger, TriggerEngine, TriggerError,
+    AutomationEvent, Chord, CommandIntent, ConditionContext, IntentBuffer, ScheduleError,
+    ScheduleId, ScheduleKind, ScheduleSet, Shortcut, ShortcutError, ShortcutRegistry, Trigger,
+    TriggerEngine, TriggerError,
 };
 use fm_command::IdempotencyKey;
-use fm_protocol::{CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, WireInputId};
+use fm_protocol::{CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload};
 
 use crate::{AuthorizationHook, CommandSubmission, ControlError, ControlService};
 
@@ -48,8 +48,6 @@ pub struct AutomationLimits {
     /// [`Self::max_triggers`].
     pub max_pending_trigger_actions: usize,
     pub max_schedules: usize,
-    pub max_go_programs: usize,
-    pub max_active_go_runs: usize,
     /// Commands one [`AutomationPlane::tick`] may submit. Operator key presses
     /// do not consume this budget.
     pub max_commands_per_tick: usize,
@@ -74,8 +72,6 @@ impl Default for AutomationLimits {
             max_triggers: 256,
             max_pending_trigger_actions: 1_024,
             max_schedules: 256,
-            max_go_programs: 256,
-            max_active_go_runs: 16,
             max_commands_per_tick: 32,
             max_presses_per_frame: 64,
             default_deadline_after_due_ms: 1_000,
@@ -90,8 +86,6 @@ pub enum AutomationResource {
     Triggers,
     PendingTriggerActions,
     Schedules,
-    GoPrograms,
-    ActiveGoRuns,
     Presses,
 }
 
@@ -103,8 +97,6 @@ impl AutomationResource {
             Self::Triggers => "triggers",
             Self::PendingTriggerActions => "pending trigger actions",
             Self::Schedules => "schedules",
-            Self::GoPrograms => "programmed GO lists",
-            Self::ActiveGoRuns => "active programmed GO runs",
             Self::Presses => "key presses in one frame",
         }
     }
@@ -122,7 +114,6 @@ pub enum AutomationError {
     Shortcut(ShortcutError),
     Trigger(TriggerError),
     Schedule(ScheduleError),
-    Go(GoError),
     Control(ControlError),
 }
 
@@ -138,7 +129,6 @@ impl fmt::Display for AutomationError {
             Self::Shortcut(error) => error.fmt(formatter),
             Self::Trigger(error) => error.fmt(formatter),
             Self::Schedule(error) => error.fmt(formatter),
-            Self::Go(error) => error.fmt(formatter),
             Self::Control(error) => error.fmt(formatter),
         }
     }
@@ -161,12 +151,6 @@ impl From<TriggerError> for AutomationError {
 impl From<ScheduleError> for AutomationError {
     fn from(value: ScheduleError) -> Self {
         Self::Schedule(value)
-    }
-}
-
-impl From<GoError> for AutomationError {
-    fn from(value: GoError) -> Self {
-        Self::Go(value)
     }
 }
 
@@ -281,7 +265,6 @@ impl AuthorityResolver for ArmTimeAuthority {
 pub enum AutomationBinding {
     Trigger(String),
     Schedule(ScheduleId),
-    GoRun(u64),
 }
 
 /// One command an automation binding may produce, minus the identity that the
@@ -347,7 +330,6 @@ pub enum AutomationSource {
     Shortcut { id: String },
     Trigger { id: String },
     Schedule { id: String },
-    Go { run_id: u64, index: usize },
 }
 
 impl fmt::Display for AutomationSource {
@@ -356,7 +338,6 @@ impl fmt::Display for AutomationSource {
             Self::Shortcut { id } => write!(formatter, "shortcut/{id}"),
             Self::Trigger { id } => write!(formatter, "trigger/{id}"),
             Self::Schedule { id } => write!(formatter, "schedule/{id}"),
-            Self::Go { run_id, index } => write!(formatter, "go/{run_id}/{index}"),
         }
     }
 }
@@ -454,21 +435,20 @@ fn refuse(planned: PlannedCommand, reason: AutomationRefusalReason) -> Automatio
     }
 }
 
-/// Shortcuts, triggers, schedules and programmed GO lists bound to one
-/// authority.
+/// Shortcuts, triggers, and schedules bound to one authority. (Operator cue
+/// lists are engine state, fired by `cue_go` and run on engine frames; see
+/// `fm_engine::cue`.)
 ///
-/// A daemon drives exactly four entry points: [`Self::press`] for operator key
-/// input, [`Self::ingest_event`] for observed events, [`Self::start_go`] for a
-/// programmed GO, and [`Self::tick`] once per frame with the frame's timestamp.
-/// Nothing else is required to put automation on air.
+/// A daemon drives exactly three entry points: [`Self::press`] for operator
+/// key input, [`Self::ingest_event`] for observed events, and [`Self::tick`]
+/// once per frame with the frame's timestamp. Nothing else is required to put
+/// automation on air.
 pub struct AutomationPlane<R = ArmTimeAuthority> {
     limits: AutomationLimits,
     resolver: R,
     shortcuts: ShortcutRegistry<AutomationRequest>,
     triggers: TriggerEngine<AutomationCommand>,
     schedules: ScheduleSet<AutomationCommand>,
-    go: GoEngine<AutomationRequest>,
-    go_runs: BTreeMap<u64, AutomationIdentity>,
     armed: BTreeMap<AutomationBinding, AutomationIdentity>,
     presses_this_frame: usize,
 }
@@ -492,8 +472,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
             shortcuts: ShortcutRegistry::default(),
             triggers: TriggerEngine::default(),
             schedules: ScheduleSet::default(),
-            go: GoEngine::default(),
-            go_runs: BTreeMap::new(),
             armed: BTreeMap::new(),
             presses_this_frame: 0,
         }
@@ -529,11 +507,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
         self.schedules.len()
     }
 
-    #[must_use]
-    pub fn active_go_run_len(&self) -> usize {
-        self.go.active_run_len()
-    }
-
     /// Every binding armed by one identity, in a stable order.
     #[must_use]
     pub fn bindings_for(&self, identity: &AutomationIdentity) -> Vec<AutomationBinding> {
@@ -558,10 +531,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
                 }
                 AutomationBinding::Schedule(id) => {
                     self.schedules.cancel(id);
-                }
-                AutomationBinding::GoRun(run_id) => {
-                    self.go.cancel(*run_id);
-                    self.go_runs.remove(run_id);
                 }
             }
             self.armed.remove(binding);
@@ -687,31 +656,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
         true
     }
 
-    /// Installs the programmed GO list for one input.
-    ///
-    /// The list holds unstamped requests: a GO run is emitted under the
-    /// identity that started it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AutomationError::LimitReached`] when a new input would exceed
-    /// the programmed-list cap. Replacing an existing list is always allowed.
-    pub fn program_go(
-        &mut self,
-        input: WireInputId,
-        program: ProgrammedGo<AutomationRequest>,
-    ) -> Result<(), AutomationError> {
-        let input = input.to_domain();
-        if !self.go.has_program(input) && self.go.program_len() >= self.limits.max_go_programs {
-            return Err(AutomationError::LimitReached {
-                resource: AutomationResource::GoPrograms,
-                limit: self.limits.max_go_programs,
-            });
-        }
-        self.go.program(input, program);
-        Ok(())
-    }
-
     /// Matches one observed event against every armed trigger.
     ///
     /// # Errors
@@ -727,49 +671,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
         }
         self.triggers.ingest(event)?;
         Ok(())
-    }
-
-    /// Starts a programmed GO run under the identity of its starter.
-    ///
-    /// `idempotency_key` identifies the press, not the attempt: retrying one
-    /// operator GO press returns the run the first attempt created, so the
-    /// actions it emits keep their command identities and the authority
-    /// suppresses the duplicates. A fresh key is a fresh run.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AutomationError::LimitReached`] at the concurrent-run cap --
-    /// never for a retry of a run that already exists -- or an unknown-input or
-    /// timestamp refusal from the GO engine.
-    pub fn start_go(
-        &mut self,
-        principal: &Principal,
-        input: WireInputId,
-        idempotency_key: impl Into<IdempotencyKey>,
-        now_ms: u64,
-    ) -> Result<u64, AutomationError> {
-        let idempotency_key = idempotency_key.into();
-        if self.go.started(&idempotency_key).is_none()
-            && self.go.active_run_len() >= self.limits.max_active_go_runs
-        {
-            return Err(AutomationError::LimitReached {
-                resource: AutomationResource::ActiveGoRuns,
-                limit: self.limits.max_active_go_runs,
-            });
-        }
-        let start = self.go.start(input.to_domain(), idempotency_key, now_ms)?;
-        if !start.replayed {
-            let identity = AutomationIdentity::of(principal);
-            self.go_runs.insert(start.run_id, identity.clone());
-            self.arm(AutomationBinding::GoRun(start.run_id), principal, identity);
-        }
-        Ok(start.run_id)
-    }
-
-    pub fn cancel_go(&mut self, run_id: u64) -> bool {
-        self.go_runs.remove(&run_id);
-        self.release(&AutomationBinding::GoRun(run_id));
-        self.go.cancel(run_id)
     }
 
     /// Resolves a pressed chord and submits its command immediately.
@@ -827,8 +728,8 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
 
     /// Submits every automation command due at `now_ms`.
     ///
-    /// Sources are collected in a fixed order -- schedules, then triggers, then
-    /// programmed GO actions -- and each engine drains its own queue in
+    /// Sources are collected in a fixed order -- schedules, then triggers --
+    /// and each engine drains its own queue in
     /// deterministic due-time then registration order, so the emitted sequence
     /// never depends on map iteration order. Later commands overwrite earlier
     /// ones on shared state, which is why the least operator-driven source is
@@ -964,8 +865,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
             }
         }
 
-        self.collect_go(now_ms, &mut buffer, &mut coalesced, &mut completed);
-
         tick.refusals.extend(
             coalesced
                 .into_iter()
@@ -984,52 +883,6 @@ impl<R: AuthorityResolver> AutomationPlane<R> {
                 .map(CommandIntent::into_command),
         );
         (plan, completed)
-    }
-
-    /// Plans the GO actions due at `now_ms` and retires the runs that have
-    /// fired for the last time.
-    ///
-    /// A run whose identity is no longer recorded is skipped: only
-    /// [`Self::revoke_identity`] removes one, and it cancels the run's pending
-    /// actions in the same breath, so this is defence and not a path.
-    fn collect_go(
-        &mut self,
-        now_ms: u64,
-        buffer: &mut IntentBuffer<PlannedCommand, AutomationSource>,
-        coalesced: &mut Vec<PlannedCommand>,
-        completed: &mut Vec<AutomationBinding>,
-    ) {
-        for fire in self.go.poll(now_ms) {
-            let Some(identity) = self.go_runs.get(&fire.run_id).cloned() else {
-                continue;
-            };
-            let source = AutomationSource::Go {
-                run_id: fire.run_id,
-                index: fire.action.index,
-            };
-            let due_ms = fire.scheduled_for_ms;
-            plan_intent(
-                buffer,
-                coalesced,
-                source.clone(),
-                fire.action.intent.map(|request| PlannedCommand {
-                    source,
-                    due_ms,
-                    intent_index: 0,
-                    command: AutomationCommand { identity, request },
-                }),
-            );
-        }
-        let finished: Vec<_> = self
-            .go_runs
-            .keys()
-            .copied()
-            .filter(|run_id| !self.go.is_active(*run_id))
-            .collect();
-        for run_id in finished {
-            self.go_runs.remove(&run_id);
-            completed.push(AutomationBinding::GoRun(run_id));
-        }
     }
 
     /// Records that `binding` is armed under `identity`, caching the arm-time

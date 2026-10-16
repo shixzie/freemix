@@ -3260,6 +3260,7 @@ mod cue_lists {
                     recordings: recordings(),
                     playlist: PlaylistRunState::Stopped,
                     titles: Vec::new(),
+                    media: Vec::new(),
                 })),
             ))
             .unwrap();
@@ -3319,6 +3320,7 @@ mod cue_lists {
                         recordings: recordings(),
                         playlist: PlaylistRunState::Stopped,
                         titles: Vec::new(),
+                        media: Vec::new(),
                     })),
                 ))
                 .is_err()

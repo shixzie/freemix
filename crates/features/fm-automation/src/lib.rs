@@ -13,7 +13,6 @@ mod control_map;
 mod controller;
 mod cue;
 mod feedback;
-mod go;
 mod intent;
 mod macros;
 mod midi;
@@ -57,10 +56,6 @@ pub use feedback::{
     FeedbackBinding, FeedbackError, FeedbackMessage, FeedbackPayload, FeedbackRouter,
     FeedbackSchedule, FeedbackSource, FeedbackTarget, FeedbackTick, MAX_FEEDBACK_BINDINGS,
     OscFeedbackFormat,
-};
-pub use go::{
-    GoAction, GoActionFire, GoEngine, GoError, GoPreview, GoStart, MAX_GO_START_RECEIPTS,
-    PlannedGoAction, ProgrammedGo,
 };
 pub use intent::{CommandIntent, IntentBuffer};
 pub use macros::{

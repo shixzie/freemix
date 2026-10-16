@@ -1,4 +1,4 @@
-//! RC-017 at schema 47: the project's operator cue lists, with their
+//! RC-017 at schema 48 (media actions and millisecond delays): the project's operator cue lists, with their
 //! standby pointer and run state, round-trip exactly and strictly in
 //! `project.json`; references are project validation.
 
@@ -10,9 +10,9 @@ use std::{
 };
 
 use fm_model::{
-    AudioBus, Cue, CueAction, CueList, CuePending, CueRunState, Input, InputKind, Output, Project,
-    ProjectSettings, RecorderSlot, Rgba8, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
-    SolidColor, StartupPolicy, StingerSlotNumber, TransitionEffect,
+    AudioBus, Cue, CueAction, CueList, CueMediaOperation, CuePending, CueRunState, Input,
+    InputKind, Output, Project, ProjectSettings, RecorderSlot, Rgba8, Scene, SimulatedAudio,
+    SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy, StingerSlotNumber, TransitionEffect,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -75,6 +75,15 @@ fn project() -> Project {
             },
         },
     );
+    project.add_input(Input {
+        id: input(12),
+        name: "Clip".into(),
+        kind: InputKind::Media {
+            asset_uri: "asset://clip.mov".into(),
+            playback: fm_model::MediaPlaybackSettings::default(),
+        },
+        required_capabilities: Vec::new(),
+    });
     for (value, name) in [(10, "Host"), (11, "Guest")] {
         project.add_input(Input {
             id: input(value),
@@ -199,10 +208,55 @@ fn lists() -> Vec<CueList> {
             cues: Vec::new(),
             state: CueRunState::default(),
         },
+        clips_list(),
     ]
 }
 
+/// A list of media transport actions and a millisecond delay, mid-wait.
+fn clips_list() -> CueList {
+    CueList {
+        id: 12,
+        name: "Clips".into(),
+        cues: vec![Cue {
+            id: 1,
+            name: "Roll".into(),
+            actions: vec![
+                CueAction::Media {
+                    input: input(12),
+                    operation: CueMediaOperation::Restart,
+                },
+                CueAction::Delay { millis: 1_500 },
+                CueAction::Media {
+                    input: input(12),
+                    operation: CueMediaOperation::Seek { frame: 250 },
+                },
+                CueAction::Media {
+                    input: input(12),
+                    operation: CueMediaOperation::Pause,
+                },
+                CueAction::Media {
+                    input: input(12),
+                    operation: CueMediaOperation::Play,
+                },
+            ],
+            auto_follow: false,
+        }],
+        state: CueRunState {
+            standby: None,
+            live: Some(1),
+            pending: Some(CuePending {
+                cue: 1,
+                action: 2,
+                due_frame: 45,
+            }),
+            played: vec![1],
+            fault: None,
+        },
+    }
+}
+
 #[test]
+#[allow(clippy::too_many_lines)] // one exhaustive strict-decoder scenario
 fn cue_lists_round_trip_exactly_and_strictly() {
     let directory = TestDirectory::new("round-trip");
     let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
@@ -212,7 +266,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 47"));
+    assert!(text.contains("\"schema_version\": 48"));
     assert!(text.contains("\"cue_lists\": ["), "{text}");
     assert!(
         text.contains("{\"type\": \"wait\", \"frames\": 30}"),
@@ -226,6 +280,16 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         text.contains("\"pending\": {\"cue\": 1, \"action\": 7, \"due_frame\": 120}"),
         "{text}"
     );
+    for token in [
+        "{\"type\": \"media_restart\", \"input\": 12}",
+        "{\"type\": \"delay\", \"millis\": 1500}",
+        "{\"type\": \"media_seek\", \"input\": 12, \"frame\": 250}",
+        "{\"type\": \"media_pause\", \"input\": 12}",
+        "{\"type\": \"media_play\", \"input\": 12}",
+        "\"pending\": {\"cue\": 1, \"action\": 2, \"due_frame\": 45}",
+    ] {
+        assert!(text.contains(token), "{token}: {text}");
+    }
 
     for (from, to) in [
         (
@@ -247,6 +311,18 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         ("\"effect\": \"fade\"", "\"effect\": \"dissolve\""),
         ("\"auto_follow\": true", "\"auto_follow\": 1"),
         ("\"played\": [1]", "\"played\": \"1\""),
+        (
+            "{\"type\": \"media_seek\", \"input\": 12, \"frame\": 250}",
+            "{\"type\": \"media_seek\", \"input\": 12}",
+        ),
+        (
+            "{\"type\": \"media_play\", \"input\": 12}",
+            "{\"type\": \"media_stop\", \"input\": 12}",
+        ),
+        (
+            "{\"type\": \"delay\", \"millis\": 1500}",
+            "{\"type\": \"delay\", \"millis\": 1.5}",
+        ),
         (",\n    \"cue_lists\": [", ",\n    \"cue_list\": ["),
     ] {
         let malformed = text.replacen(from, to, 1);
@@ -266,6 +342,18 @@ fn cue_lists_round_trip_exactly_and_strictly() {
             "{\"type\": \"wait\", \"frames\": 0}",
         ),
         ("\"input\": 11, \"effect\"", "\"input\": 99, \"effect\""),
+        (
+            "{\"type\": \"delay\", \"millis\": 1500}",
+            "{\"type\": \"delay\", \"millis\": 0}",
+        ),
+        (
+            "{\"type\": \"delay\", \"millis\": 1500}",
+            "{\"type\": \"delay\", \"millis\": 3600001}",
+        ),
+        (
+            "{\"type\": \"media_pause\", \"input\": 12}",
+            "{\"type\": \"media_pause\", \"input\": 10}",
+        ),
         ("\"standby\": 4", "\"standby\": 5"),
         ("\"action\": 7", "\"action\": 6"),
         ("\"played\": [1]", "\"played\": [4, 1]"),

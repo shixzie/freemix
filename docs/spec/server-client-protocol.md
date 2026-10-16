@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.50 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.51 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1538,6 +1538,42 @@ Protocol 2.50 adds operator cue lists with a GO key (RC-017).
   `cue-back`, `cue-skip`, `cue-stop`, `cue-reset`, and their `remote-`
   forms; a local `go` runs the cue's waits on the simulated clock.
 - 2.49 is refused.
+
+Protocol 2.51 adds media transport actions and millisecond delays to cue
+lists (RC-017).
+
+- New action tokens: `media_play.<input>`, `media_pause.<input>`,
+  `media_seek.<input>.<source frame>` (clamped to the clip's trimmed range),
+  `media_restart.<input>` (a seek to the trimmed start, then play), and
+  `delay.<millis>` (1..=3600000). A media action must name a media input
+  (`invalid_command`) and runs through the media transport exactly like the
+  matching `media_*` command; a delay separates frames like a `wait`.
+- A delay is converted to whole frames at the show's frame rate when its cue
+  fires: `ceil(millis * rate / 1000)` frames, at least one, so a delay never
+  ends early (1001 ms at 30000/1001 fps is 30 frames, 1002 ms is 31). The
+  pending wait's due frame is persisted, so a restart does not re-round it.
+- `event=cue_run_changed` adds `media`: the transport of every media input
+  the run's actions addressed, ascending, `/`-separated
+  `<input>.<state>.<position>.<time numerator>.<time denominator>` (state
+  a `media_state` transport token, time the exact playhead time in lowest
+  terms); empty when none. Clients fold it into their media states.
+- Durability: cue actions gain `media_play`, `media_pause`, and
+  `media_restart` (`input`), `media_seek` (`input`, `frame`), and `delay`
+  (`millis`) (schema 48).
+- `freemix-cli` `cue-list-set` takes the new tokens, and a backslash
+  escapes the next character in names and title text, so `\;`, `\:`,
+  `\,`, and `\\` stand for `;`, `:`, `,`, and `\`.
+- On the native runtime a cue's record and stream actions start and stop the
+  same recorder segments and stream workers as `record_start`,
+  `record_stop`, `stream_start`, and `stream_stop` (a cue's acknowledgement
+  is not held for a segment's mux readiness). On the simulated daemon a
+  client's cue control first catches the engine up to the show's
+  wall-clock frame while a cue waits, and `cue_list_state.frame` reports that
+  frame, as for playlists. A restarted daemon restores every list's standby
+  pointer and pending wait and still ends the wait on its due engine frame
+  (time the daemon was down does not count toward a wait); the native
+  recorder startup barrier runs the cue clock too.
+- 2.50 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

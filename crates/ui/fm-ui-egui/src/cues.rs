@@ -19,9 +19,9 @@
 use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, Vec2};
 use fm_protocol::{
     AutoTransitionKind, CueListSpec, CueListStatus, CueOperation, CueRunStatus, MAX_CUE_ACTIONS,
-    MAX_CUE_LISTS, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
-    TransitionFavoriteEffect, WireCue, WireCueAction, WireInputId, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    MAX_CUE_DELAY_MS, MAX_CUE_LISTS, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
+    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::InputId;
 use fm_ui_model::{ClientView, ProjectState};
@@ -187,11 +187,16 @@ pub enum ActionKind {
     AudioMute,
     Record,
     Stream,
+    MediaPlay,
+    MediaPause,
+    MediaSeek,
+    MediaRestart,
     Wait,
+    Delay,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 20] = [
         Self::Preview,
         Self::Take,
         Self::OverlayOn,
@@ -206,7 +211,12 @@ impl ActionKind {
         Self::AudioMute,
         Self::Record,
         Self::Stream,
+        Self::MediaPlay,
+        Self::MediaPause,
+        Self::MediaSeek,
+        Self::MediaRestart,
         Self::Wait,
+        Self::Delay,
     ];
 
     #[must_use]
@@ -226,7 +236,14 @@ impl ActionKind {
             WireCueAction::AudioMute { .. } => Self::AudioMute,
             WireCueAction::Record { .. } => Self::Record,
             WireCueAction::Stream { .. } => Self::Stream,
+            WireCueAction::Media { operation, .. } => match operation {
+                WireCueMediaOperation::Play => Self::MediaPlay,
+                WireCueMediaOperation::Pause => Self::MediaPause,
+                WireCueMediaOperation::Seek { .. } => Self::MediaSeek,
+                WireCueMediaOperation::Restart => Self::MediaRestart,
+            },
             WireCueAction::Wait { .. } => Self::Wait,
+            WireCueAction::Delay { .. } => Self::Delay,
         }
     }
 
@@ -248,7 +265,12 @@ impl ActionKind {
             Self::AudioMute => Msg::CueActMute.en(),
             Self::Record => Msg::CueActRecord.en(),
             Self::Stream => Msg::CueActStream.en(),
+            Self::MediaPlay => Msg::CueActMediaPlay.en(),
+            Self::MediaPause => Msg::CueActMediaPause.en(),
+            Self::MediaSeek => Msg::CueActMediaSeek.en(),
+            Self::MediaRestart => Msg::CueActMediaRestart.en(),
             Self::Wait => Msg::CueActWait.en(),
+            Self::Delay => Msg::CueActDelay.en(),
         }
     }
 
@@ -262,6 +284,18 @@ impl ActionKind {
     ) -> Option<WireCueAction> {
         let input = || view.inputs.first().copied().map(WireInputId::from_domain);
         let title = || project.titles().first();
+        let media = || {
+            media_inputs(view, project)
+                .first()
+                .copied()
+                .map(WireInputId::from_domain)
+        };
+        let transport = |operation| {
+            Some(WireCueAction::Media {
+                input: media()?,
+                operation,
+            })
+        };
         let channel = WireOverlayChannelId::new(1)?;
         Some(match self {
             Self::Preview => WireCueAction::Preview { input: input()? },
@@ -312,9 +346,23 @@ impl ActionKind {
                 target: WireStreamTargetId::new(view.streams.first()?.target),
                 start: true,
             },
+            Self::MediaPlay => transport(WireCueMediaOperation::Play)?,
+            Self::MediaPause => transport(WireCueMediaOperation::Pause)?,
+            Self::MediaSeek => transport(WireCueMediaOperation::Seek { frame: 0 })?,
+            Self::MediaRestart => transport(WireCueMediaOperation::Restart)?,
             Self::Wait => WireCueAction::Wait { frames: 25 },
+            Self::Delay => WireCueAction::Delay { millis: 1_000 },
         })
     }
+}
+
+/// The show's media inputs, in input order: the media actions' choices.
+fn media_inputs(view: &ClientView, project: &ProjectState) -> Vec<InputId> {
+    view.inputs
+        .iter()
+        .copied()
+        .filter(|input| project.media_status(*input).is_some())
+        .collect()
 }
 
 /// The working copy of one list: `base` is the replicated definition it
@@ -915,6 +963,11 @@ fn input_picker(
     edit: Option<&'static str>,
 ) -> bool {
     let l = names.l;
+    let hover = l.text(if salt == "media" {
+        Msg::CueParamMediaHover
+    } else {
+        Msg::CueParamInputHover
+    });
     let text = value.map_or_else(
         || l.text(Msg::CueParamPreview).to_owned(),
         |input| names.input(input),
@@ -938,7 +991,7 @@ fn input_picker(
                     );
                     if ui
                         .selectable_label(*value == option, label)
-                        .on_hover_text(l.text(Msg::CueParamInputHover))
+                        .on_hover_text(hover)
                         .clicked()
                         && *value != option
                     {
@@ -948,7 +1001,7 @@ fn input_picker(
                 }
             })
             .response
-            .hint(l.text(Msg::CueParamInputHover), edit.unwrap_or(""));
+            .hint(hover, edit.unwrap_or(""));
     });
     changed
 }
@@ -1255,6 +1308,27 @@ fn draw_params(
             });
             flag(ui, start, l.text(Msg::CueParamStartHover), edit).or(change)
         }
+        WireCueAction::Media { input, operation } => {
+            let media = media_inputs(names.view, names.project);
+            let mut value = Some(*input);
+            let changed = input_picker(ui, names, "media", (&mut value, &media), false, edit)
+                .then_some(Change::Commit);
+            if let Some(value) = value {
+                *input = value;
+            }
+            if let WireCueMediaOperation::Seek { frame } = operation {
+                number(
+                    ui,
+                    frame,
+                    0..=u64::from(u32::MAX),
+                    (l.text(Msg::CueParamSeekHover), ""),
+                    enabled,
+                )
+                .or(changed)
+            } else {
+                changed
+            }
+        }
         WireCueAction::Wait { frames: wait } => number(
             ui,
             wait,
@@ -1262,6 +1336,16 @@ fn draw_params(
             (l.text(Msg::CueParamWaitHover), &suffix),
             enabled,
         ),
+        WireCueAction::Delay { millis } => {
+            let unit = format!(" {}", l.text(Msg::CueMillisUnit));
+            number(
+                ui,
+                millis,
+                1..=MAX_CUE_DELAY_MS,
+                (l.text(Msg::CueParamDelayHover), &unit),
+                enabled,
+            )
+        }
     }
 }
 
@@ -1372,5 +1456,27 @@ mod tests {
             ActionKind::of(&WireCueAction::PlaylistStop),
             ActionKind::PlaylistStop
         );
+        assert_eq!(
+            ActionKind::of(&WireCueAction::Delay { millis: 40 }),
+            ActionKind::Delay
+        );
+        let clip = WireInputId::new(core::num::NonZeroU128::new(4).unwrap());
+        for (operation, kind) in [
+            (WireCueMediaOperation::Play, ActionKind::MediaPlay),
+            (WireCueMediaOperation::Pause, ActionKind::MediaPause),
+            (
+                WireCueMediaOperation::Seek { frame: 9 },
+                ActionKind::MediaSeek,
+            ),
+            (WireCueMediaOperation::Restart, ActionKind::MediaRestart),
+        ] {
+            assert_eq!(
+                ActionKind::of(&WireCueAction::Media {
+                    input: clip,
+                    operation
+                }),
+                kind
+            );
+        }
     }
 }

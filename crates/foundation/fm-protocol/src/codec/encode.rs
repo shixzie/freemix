@@ -2078,6 +2078,7 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                 super::playlist::encode_playlist_state(change.playlist),
             )?;
             record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
+            record.field_string("media", super::cue::encode_media(&change.media)?)?;
         }
         EventPayload::GradeChanged(change) => {
             record.field("event", "grade_changed")?;

@@ -1,4 +1,5 @@
-//! Operator cue lists (Protocol 2.50, RC-017).
+//! Operator cue lists (Protocol 2.50, RC-017; media actions and millisecond
+//! delays Protocol 2.51).
 //!
 //! A project holds up to [`MAX_CUE_LISTS`] ordered cue lists. Each cue is a
 //! name and a bounded list of [`WireCueAction`]s; the authority keeps the
@@ -18,9 +19,10 @@
 //! changed.
 
 use crate::{
-    FadeToBlackState, InputAudioStripStatus, ManualTransitionStatus, OverlayStatus,
-    PlaylistRunState, RecordingStatus, StreamStatus, TransitionFavoriteEffect, WireInputId,
-    WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
+    FadeToBlackState, InputAudioStripStatus, ManualTransitionStatus, MediaTime,
+    MediaTransportState, OverlayStatus, PlaylistRunState, RecordingStatus, StreamStatus,
+    TransitionFavoriteEffect, WireInputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStreamTargetId, WireTitleFieldId,
 };
 
 /// Most cue lists one project holds.
@@ -39,6 +41,8 @@ pub const MAX_CUE_TEXT_BYTES: usize = 128;
 pub const MAX_CUE_LIST_TEXT_BYTES: usize = 2_048;
 /// Longest wait, in frames.
 pub const MAX_CUE_WAIT_FRAMES: u32 = 216_000;
+/// Longest millisecond delay (one hour).
+pub const MAX_CUE_DELAY_MS: u32 = 3_600_000;
 /// Longest transition or Fade to Black an action requests, in frames.
 pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 
@@ -99,10 +103,34 @@ pub enum WireCueAction {
         target: WireStreamTargetId,
         start: bool,
     },
+    /// Runs `operation` on media input `input`'s transport (Protocol 2.51).
+    Media {
+        input: WireInputId,
+        operation: WireCueMediaOperation,
+    },
     /// Defers the cue's remaining actions by `frames` (at least one).
     Wait {
         frames: u32,
     },
+    /// Defers the cue's remaining actions by `millis` milliseconds (at
+    /// least one), converted to whole frames at the show rate when the cue
+    /// fires, rounded up (Protocol 2.51).
+    Delay {
+        millis: u32,
+    },
+}
+
+/// A media transport operation a cue runs (Protocol 2.51).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WireCueMediaOperation {
+    Play,
+    Pause,
+    /// Seeks to source frame `frame`, clamped to the trimmed range.
+    Seek {
+        frame: u64,
+    },
+    /// Seeks to the start of the trimmed range and plays.
+    Restart,
 }
 
 /// One cue.
@@ -214,6 +242,20 @@ pub struct CueRunChange {
     pub recordings: Vec<RecordingStatus>,
     pub playlist: PlaylistRunState,
     pub titles: Vec<CueTitleText>,
+    /// The transport of every media input the fired actions addressed,
+    /// once they have run, ascending by input (Protocol 2.51).
+    pub media: Vec<CueMediaTransport>,
+}
+
+/// A media input's transport after a cue's media actions (Protocol 2.51):
+/// the parts of its [`crate::MediaTransportStatus`] a transport operation
+/// changes, projected onto the run's frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CueMediaTransport {
+    pub input: WireInputId,
+    pub state: MediaTransportState,
+    pub position: u64,
+    pub position_time: MediaTime,
 }
 
 /// One cue list at a snapshot's revision. A session writes exactly

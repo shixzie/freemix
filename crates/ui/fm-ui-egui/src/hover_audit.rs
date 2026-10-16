@@ -648,6 +648,7 @@ fn model(variant: Variant) -> ClientModel {
 fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
     use fm_protocol::{
         CueListSpec, CueListStatus, CuePendingStatus, CueRunStatus, WireCue, WireCueAction,
+        WireCueMediaOperation,
     };
     let channel = WireOverlayChannelId::new(2).unwrap();
     let every_kind = vec![
@@ -723,7 +724,32 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                             duration_frames: 0,
                         }],
                     ),
-                    cue(30, "Close", false, Vec::new()),
+                    // Protocol 2.51: the media transport actions and a
+                    // millisecond delay, on the Guest media input.
+                    cue(
+                        30,
+                        "Close",
+                        false,
+                        vec![
+                            WireCueAction::Media {
+                                input: wire(4),
+                                operation: WireCueMediaOperation::Restart,
+                            },
+                            WireCueAction::Delay { millis: 1_500 },
+                            WireCueAction::Media {
+                                input: wire(4),
+                                operation: WireCueMediaOperation::Seek { frame: 250 },
+                            },
+                            WireCueAction::Media {
+                                input: wire(4),
+                                operation: WireCueMediaOperation::Play,
+                            },
+                            WireCueAction::Media {
+                                input: wire(4),
+                                operation: WireCueMediaOperation::Pause,
+                            },
+                        ],
+                    ),
                 ],
             },
             state: CueRunStatus {
@@ -1329,7 +1355,11 @@ fn scenes(language: Language) -> Vec<Scene> {
     // waiting list (editing refused) with its cue expanded, for an operator
     // and a viewer.
     for (operator, role) in [(true, "operator"), (false, "viewer")] {
-        for (name, list, cue) in [("cues-actions", 1, 10), ("cues-waiting", 2, 1)] {
+        for (name, list, cue) in [
+            ("cues-actions", 1, 10),
+            ("cues-media", 1, 30),
+            ("cues-waiting", 2, 1),
+        ] {
             scenes.push(Scene::console(
                 format!("{role}/{name}"),
                 shell(&|shell| {

@@ -6,7 +6,17 @@
 //! [`crate::playlist_clock`]): by wall time anchored to the engine cursor on
 //! the simulated daemon, by the native pacer's next frame otherwise. The
 //! advance is journaled like any accepted command, so replay and restart
-//! reproduce the exact frames.
+//! reproduce the exact frames. On the simulated daemon a client's cue
+//! control first catches the engine up to the show's wall-clock frame
+//! ([`CueClock::catch_up`]), like a playlist control.
+//!
+//! A restarted daemon restores every list's standby pointer and pending
+//! wait from the project and journal, and the wait still ends on its due
+//! engine frame: show time is engine frames, so the time the daemon was
+//! down does not count toward a wait. The native recorder startup barrier
+//! runs this clock too. A wait whose due frame the restored cursor has
+//! already passed (only when frames were realized without a clock pass)
+//! runs on the next frame, exactly as a late advance does while running.
 
 use std::time::Instant;
 
@@ -14,6 +24,7 @@ use fm_command::RejectionCode;
 use fm_control::ControlService;
 use fm_persistence::StoredProject;
 use fm_protocol::{CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult};
+use fm_types::FrameRate;
 
 use super::{
     AppResult, NativeDaemon, Policy, ProcessShutdown, SharedControl, development_principal,
@@ -112,6 +123,55 @@ impl CueClock {
         )?;
         self.observe(list, frame, revision, &delivery.result);
         Ok(())
+    }
+}
+
+impl CueClock {
+    /// Simulated runtime only: before a client's cue control executes,
+    /// realizes the idle frames wall time has played since a cue started
+    /// waiting, so the control lands on the show's frame (as the playlist
+    /// clock's catch-up does). Without it a Stop, Skip, or GO issued
+    /// mid-wait ran at the engine cursor, which on the simulated engine only
+    /// moves while commands execute, so it was timed as if it came right
+    /// after the waiting cue fired.
+    ///
+    /// Never ticks onto the pending cue's due frame or a pending playlist
+    /// boundary, so their clocks still run them on their frames. Journal
+    /// replay ticks the same idle frames before the command (see
+    /// `replay_idle_frames`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine tick failure.
+    pub(super) fn catch_up(
+        &self,
+        control: &mut ControlService<Policy>,
+        server: &fm_protocol::ServerIdentity,
+        rate: FrameRate,
+        now: Instant,
+    ) -> AppResult<()> {
+        let Some((_, due)) = control.cue_advance_frame() else {
+            return Ok(());
+        };
+        let mut target = self
+            .observed_frame(control.frame_cursor(), rate, now)
+            .min(due.saturating_sub(1));
+        if let Some(boundary) = control.playlist_advance_frame() {
+            target = target.min(boundary.saturating_sub(1));
+        }
+        while control.frame_cursor() < target {
+            control.tick(server)?;
+        }
+        Ok(())
+    }
+
+    /// The engine frame wall time has reached: the anchored wall-clock frame
+    /// while a cue waits (never behind `cursor`), else `cursor`. Under
+    /// native pacing no anchor is ever set, so this is `cursor`.
+    pub(super) fn observed_frame(&self, cursor: u64, rate: FrameRate, now: Instant) -> u64 {
+        self.anchor.map_or(cursor, |(frame, at)| {
+            wall_frame(frame, at, now, rate).max(cursor)
+        })
     }
 }
 

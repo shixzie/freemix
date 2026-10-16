@@ -323,13 +323,17 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                     | crate::CueAction::TitleText { .. }
                     | crate::CueAction::TitleOff { .. }
             );
+            let is_media = matches!(action, crate::CueAction::Media { .. });
             match found {
                 None => errors.push(ValidationError {
                     entity: Some(EntityRef::Input(input)),
                     field: "cue_lists.cues.actions.input",
                     kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
                 }),
-                Some(found) if is_title && !matches!(found.kind, InputKind::Title(_)) => {
+                Some(found)
+                    if (is_title && !matches!(found.kind, InputKind::Title(_)))
+                        || (is_media && !matches!(found.kind, InputKind::Media { .. })) =>
+                {
                     errors.push(ValidationError {
                         entity: Some(EntityRef::Input(input)),
                         field: "cue_lists.cues.actions.input",

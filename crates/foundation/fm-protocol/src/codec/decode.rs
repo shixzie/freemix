@@ -2338,6 +2338,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             recordings: parse_recording_statuses(&fields.required("recordings")?)?,
             playlist: decode_playlist_state(fields.required("playlist")?)?,
             titles: super::cue::decode_titles(&fields.required("titles")?)?,
+            media: super::cue::decode_media(&fields.required("media")?)?,
         })),
         "playlist_changed" => EventPayload::PlaylistChanged {
             frame: fields.canonical_required("frame")?,

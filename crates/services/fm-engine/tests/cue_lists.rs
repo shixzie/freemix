@@ -1,6 +1,7 @@
 //! Operator cue lists (RC-017): GO runs the standby cue frame-atomically,
-//! waits land on exact frames, list edits are undoable and padlocked, and
-//! inputs a cue names cannot be removed.
+//! waits (in frames or milliseconds) land on exact frames, media actions run
+//! the media transport, list edits are undoable and padlocked, and inputs a
+//! cue names cannot be removed.
 
 use core::num::NonZeroU128;
 
@@ -10,7 +11,9 @@ use fm_engine::{
     EditLockScope, Engine, EngineCommand, EngineCommandOutcome, EngineCueListDefinition,
     EngineCueOperation, EngineEvent, FrameResult, ShowState,
 };
-use fm_model::{Cue, CueAction, StingerSlotNumber, TransitionEffect};
+use fm_model::{
+    Cue, CueAction, CueMediaOperation, MediaPlaybackSettings, StingerSlotNumber, TransitionEffect,
+};
 use fm_switcher::{OverlayChannelId, SwitcherEvent};
 use fm_types::{FrameRate, InputId};
 
@@ -427,4 +430,166 @@ fn a_waiting_cue_cannot_be_changed_and_stop_drops_its_rest() {
             .all(|(_, program)| *program == input(2))
     );
     accepted(&submit(&mut engine, "edit-2", set(1, Vec::new())));
+}
+
+/// A show whose input 2 is a synthetic ten-second media clip.
+fn media_engine(rate: FrameRate) -> Engine {
+    let mut show = ShowState::new(
+        "cue media",
+        vec![(input(1), "Camera".into()), (input(2), "Clip".into())],
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    let settings = MediaPlaybackSettings::default();
+    show.set_media_input(input(2), settings).unwrap();
+    let mut engine = Engine::new(
+        show,
+        rate,
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+    engine
+        .set_media_source(
+            input(2),
+            Some(fm_engine::EngineMediaSource::synthetic(&settings, rate)),
+        )
+        .unwrap();
+    engine
+}
+
+fn media(operation: CueMediaOperation) -> CueAction {
+    CueAction::Media {
+        input: input(2),
+        operation,
+    }
+}
+
+/// A millisecond delay waits `ceil(ms * rate / 1000)` frames (at least one)
+/// at the show's rate, decided when its cue fires.
+#[test]
+fn millisecond_delays_round_up_to_whole_frames_at_the_show_rate() {
+    let ntsc = FrameRate::new(30_000, 1_001).unwrap();
+    for (millis, rate, frames) in [
+        (1_000, FrameRate::new(25, 1).unwrap(), 25),
+        (1, FrameRate::new(25, 1).unwrap(), 1),
+        (41, FrameRate::new(25, 1).unwrap(), 2),
+        (40, FrameRate::new(25, 1).unwrap(), 1),
+        (1_000, ntsc, 30),
+        (1_001, ntsc, 30),
+        (1_002, ntsc, 31),
+        (
+            fm_model::MAX_CUE_DELAY_MS,
+            FrameRate::new(60, 1).unwrap(),
+            216_000,
+        ),
+    ] {
+        assert_eq!(fm_model::delay_frames(millis, rate), frames, "{millis} ms");
+    }
+
+    let mut engine = media_engine(ntsc);
+    let outcome = submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![cue(
+                10,
+                vec![cut(2), CueAction::Delay { millis: 1_002 }, cut(1)],
+                false,
+            )],
+        ),
+    );
+    accepted(&outcome);
+    engine.tick().unwrap();
+    let go = accepted(&submit(&mut engine, "go", control(1, GO)));
+    let due = go + 31;
+    assert_eq!(engine.cue_advance_frame(), Some((1, due)));
+    let remaining = due + 2 - engine.frame_cursor().get();
+    let frames = drive(&mut engine, remaining);
+    assert_eq!(program_changes(&frames), [(go, input(2)), (due, input(1))]);
+}
+
+/// Media actions run the input's transport through the ordinary media
+/// command path: restart seeks to the clip's start and plays, a later seek
+/// and pause land on the frame of their cue, and the transport is projected
+/// at once like a direct media command's.
+#[test]
+fn media_actions_play_pause_seek_and_restart_the_transport() {
+    let mut engine = media_engine(FrameRate::new(25, 1).unwrap());
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![
+                cue(10, vec![media(CueMediaOperation::Restart)], false),
+                cue(
+                    20,
+                    vec![
+                        media(CueMediaOperation::Seek { frame: 100 }),
+                        media(CueMediaOperation::Pause),
+                    ],
+                    false,
+                ),
+                cue(30, vec![media(CueMediaOperation::Play)], false),
+            ],
+        ),
+    ));
+    engine.tick().unwrap();
+    let go = submit(&mut engine, "go-restart", control(1, GO));
+    accepted(&go);
+    let applied = match &go.events[0].payload {
+        EngineEvent::CueListChanged { applied, .. } => applied.clone(),
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(
+        applied.len(),
+        2,
+        "restart is a seek and a play: {applied:?}"
+    );
+    let status = engine.media_status(input(2)).unwrap();
+    assert_eq!(status.state, fm_engine::fm_playback::MediaState::Playing);
+    assert!(engine.media_advancing());
+    for _ in 0..5 {
+        engine.tick().unwrap();
+    }
+    assert_eq!(engine.media_status(input(2)).unwrap().position, 5);
+
+    accepted(&submit(&mut engine, "go-seek", control(1, GO)));
+    engine.tick().unwrap();
+    engine.tick().unwrap();
+    let status = engine.media_status(input(2)).unwrap();
+    assert_eq!(status.state, fm_engine::fm_playback::MediaState::Paused);
+    assert_eq!(status.position, 100);
+
+    accepted(&submit(&mut engine, "go-play", control(1, GO)));
+    for _ in 0..3 {
+        engine.tick().unwrap();
+    }
+    let status = engine.media_status(input(2)).unwrap();
+    assert_eq!(status.state, fm_engine::fm_playback::MediaState::Playing);
+    assert_eq!(status.position, 103);
+}
+
+/// A media action must name a media input.
+#[test]
+fn media_actions_on_other_inputs_are_refused() {
+    let mut engine = media_engine(FrameRate::new(25, 1).unwrap());
+    let outcome = submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![cue(
+                10,
+                vec![CueAction::Media {
+                    input: input(1),
+                    operation: CueMediaOperation::Play,
+                }],
+                false,
+            )],
+        ),
+    );
+    assert_eq!(refusal(&outcome).0, RejectionCode::InvalidCommand);
+    assert_eq!(engine.show().cue_lists().len(), 0);
 }

@@ -670,7 +670,11 @@ pub enum EngineEvent {
     /// A cue list command was accepted for `frame` (RC-017): the list
     /// afterwards is read from [`ShowState::cue_list`] (`removed` when it no
     /// longer exists). `fired` lists the cues a GO or advance fired and
-    /// `title_texts` every title text it set, in order. `edit` marks a
+    /// `title_texts` every title text it set, in order. `applied` lists
+    /// the runtime actions the frame's cue actions realize, in order (a
+    /// record, stream, or media command appears as itself), so a runtime
+    /// that realizes more than the show (recorders, stream workers) acts on
+    /// exactly what the cue did. `edit` marks a
     /// definition edit (or its undo or redo) rather than a live operation.
     CueListChanged {
         list: u64,
@@ -679,6 +683,7 @@ pub enum EngineEvent {
         removed: bool,
         fired: Vec<u64>,
         title_texts: Vec<(InputId, FieldId, String)>,
+        applied: Vec<EngineCommand>,
     },
 }
 
@@ -1340,7 +1345,7 @@ impl Engine {
             .show()
             .cue_list(list_id)
             .ok_or_else(|| crate::cue::unknown_list(list_id))?;
-        let stack = crate::cue::stack(list);
+        let stack = crate::cue::stack(list, self.frame_rate);
         let state = crate::cue::stack_state(&list.state);
         let refused = |error| crate::cue::stack_rejection(list_id, error);
         let quiet = |state| fm_automation::CueFiring {
@@ -1401,7 +1406,10 @@ impl Engine {
                     .cue_list(list_id)
                     .expect("the planned list exists");
                 let state = crate::cue::stack_state(&list.state);
-                (crate::cue::stack(list).fail(&state, cue, step), Vec::new())
+                (
+                    crate::cue::stack(list, self.frame_rate).fail(&state, cue, step),
+                    Vec::new(),
+                )
             }
         };
         let index = show
@@ -1419,6 +1427,7 @@ impl Engine {
                 removed: false,
                 fired,
                 title_texts,
+                applied: runtime.clone(),
             },
             runtime,
             transition,
@@ -1750,6 +1759,19 @@ impl Engine {
                 .and_then(crate::media::MediaRuntime::track_indexes),
             _ => None,
         };
+        // A cue's media actions queue on their transports exactly like a
+        // media command once the GO or advance is accepted.
+        let cue_media: Vec<crate::EngineMediaCommand> = match &cue {
+            Some(Ok(plan)) => plan
+                .runtime
+                .iter()
+                .filter_map(|action| match action {
+                    EngineCommand::Media(media) => Some(*media),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let staged_resolution = resolution.clone();
         let title_clip_bound = self.title_clip_bound;
         let scene_clip_bound = self.scene_clip_bound;
@@ -1829,6 +1851,12 @@ impl Engine {
                 }
             }
             if let EngineCommand::Media(media) = &command {
+                self.media
+                    .entry(media.input)
+                    .or_default()
+                    .accept(media.operation);
+            }
+            for media in cue_media {
                 self.media
                     .entry(media.input)
                     .or_default()
@@ -2393,6 +2421,7 @@ impl EngineMutation {
                 removed: definition.is_none(),
                 fired: Vec::new(),
                 title_texts: Vec::new(),
+                applied: Vec::new(),
             });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,

@@ -1048,17 +1048,25 @@ impl Runtime<'_> {
         durable: &StoredProject,
         simulated: bool,
     ) -> Result<(), DispatchError> {
-        if !simulated || !matches!(command.payload, CommandPayload::PlaylistControl { .. }) {
+        let cue = matches!(command.payload, CommandPayload::CueControl { .. });
+        if !simulated || !(cue || matches!(command.payload, CommandPayload::PlaylistControl { .. }))
+        {
             return Ok(());
+        }
+        let rate = durable.project().settings().frame_rate;
+        let now = Instant::now();
+        // A cue control catches up to a waiting cue's wall-clock frame as a
+        // playlist control does to the playlist's (RC-017); a cue may also
+        // start or stop the playlist, so it honours both.
+        if cue {
+            self.cue_clock
+                .borrow()
+                .catch_up(&mut self.control.borrow_mut(), self.authority, rate, now)
+                .map_err(DispatchError::Daemon)?;
         }
         self.playlist_clock
             .borrow()
-            .catch_up(
-                &mut self.control.borrow_mut(),
-                self.authority,
-                durable.project().settings().frame_rate,
-                Instant::now(),
-            )
+            .catch_up(&mut self.control.borrow_mut(), self.authority, rate, now)
             .map_err(DispatchError::Daemon)
     }
 
@@ -1356,12 +1364,16 @@ impl Runtime<'_> {
                     .into_iter()
                     .map(WireMessage::MediaState),
             );
-            peer.initial_sync.extend(
-                control
-                    .cue_list_states()
-                    .into_iter()
-                    .map(WireMessage::CueListState),
-            );
+            // A waiting cue's countdown reads the show's wall-clock frame on
+            // the simulated daemon, as the playlist state does.
+            peer.initial_sync
+                .extend(control.cue_list_states().into_iter().map(|mut state| {
+                    state.frame =
+                        self.cue_clock
+                            .borrow()
+                            .observed_frame(state.frame, rate, Instant::now());
+                    WireMessage::CueListState(state)
+                }));
         }
     }
 
