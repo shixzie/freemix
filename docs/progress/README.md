@@ -4,7 +4,7 @@ Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
 supervised daemon runs in simulated mode and sends no audio meters, so a
 normal build reports `METERS UNAVAILABLE` with unlit meter wells. Every
-console capture (regenerated on 2026-10-15/16 at Protocol 2.41, with the later additions at Protocol 2.48, see below) on the simulated daemon was taken
+console capture (regenerated on 2026-10-15/16 at Protocol 2.41, with the later additions at Protocol 2.48 and the round 5 additions at Protocol 2.52, see below) on the simulated daemon was taken
 with a synthetic meter feed (see Reproducing): those meter levels are a
 Studio-side test signal, not daemon audio. The
 Preview/Program monitors show
@@ -393,6 +393,64 @@ the counts and lock chips.
 | `studio-mixer-monitor.png` | The native session's audio mixer maximised (double-click its tab) with `▾ GAIN · BAL · DLY` open (AU-001, Protocol 2.44): solo mode `PFL` lit on the `MON` strip, Field Feed (the only input with audio, a 440 Hz tone over UDP) soloed at -3.0 dB with its lit amber `S`, so `MON` reads `SOLO LISTEN` and meters the pre-fader solo at -21.0 while Master reads -24.0; the group strips Cameras (-6 dB, holding Camera 1 and 2), Talkback (Host Mic and Guest Line), and the parent group All Mics, with Talkback's parent picker reading `In All Mics` and the others `Top level`. These are daemon meters (no synthetic feed). |
 | `studio-spanish-refusal.png` | 1920x1080 `--lang es --role admin`, simulated daemon: after right-clicking Camera 1 Wide, `Quitar…`, and `QUITAR`, the typed refusal toast `ERROR · Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la escena 100. Quite esa capa de la escena primero.`, now entirely in Spanish (the earlier capture quoted the daemon's English detail). |
 | `studio-fullscreen-outputs.png` | 1920x1080 `--role admin` against a native daemon started with `--diagnostic-display-inventory` listing two displays (DELL U2720Q, HDR, three modes; Venue LED Wall 1920x1080@50): Output › `Fullscreen outputs…` (OR-011, Protocol 2.42) with `2 displays connected` and `Refresh displays`; Output 1 `STANDBY`, `Waiting: the display is not connected`, targeting `name:Projector (not connected)` with Program bus / Current mode / Fit inside / Off (SDR); Output 2 `ACTIVE`, `On Venue LED Wall at 1920×1080 @ 50 Hz; SDR`, showing Program Output with Fill; each slot with `Save and apply`, `Discard changes`, and `Clear`. |
+| `studio-workspace-docked.png` | 1920x1080 `--role admin`, round 5 (Protocol 2.52, schema 49): the full docked Default workspace on a show with five stream destinations and two cue lists, after `GO` fired cues 1 and 2 of "Evening Run" from the Cues tab (cue 1 previewed Camera 1 Wide and started REC 2; cue 2 faded it to Program and started YouTube Main and Twitch Backup) and Venue SRT Feed was started by hand: the red `REC` and amber `LIVE` top-bar badges (desired but not reported live), Recording & streams with `1 / 2 RECORDING`, `5 TARGETS`, `START ALL` / `STOP ALL` / a disabled `ADD…` (the show is full), and the per-row `RETRY` / `EDIT…` / remove keys; the side group on `CUES` with the green `GO` key, `Standby: Host intro`, the `PLAYED` / `LIVE` / `STANDBY` row chips, and the amber `TX —` lamp. |
+| `studio-cues.png` | The Cues panel popped out (900x720 window capture) on the same session (RC-017): the list picker with `New list` / `Delete list`, the full-width `GO` key, `Standby: Host intro`, `Step back` / `Skip` / `Stop` / `Reset`, the editable list name, and eight cue rows: Pre-show standby `PLAYED`, Show open `LIVE` (red border) opened with its three actions (Take Preview with Fade 30 frames, Stream YouTube Main On, Stream Twitch Backup On) and `Add action`, Host intro `STANDBY` (green border), Guest interview with `Follow` ticked, and per-row standby (`●`), go-this-cue (`▶`), move, remove, and action-count keys. |
+| `studio-streams-five.png` | The Recording & streams panel popped out (820x610 window capture, OR-006) with five destinations: YouTube Main (RTMPS with backup), Twitch Backup (RTMP), and Venue SRT Feed (SRT) started and amber `NOT LIVE` with amber-outlined `STOP` keys and enabled `RETRY`; Facebook Live (RTMPS) and Local HLS Archive `OFF` with `START`, `EDIT…`, and remove (`✕`) enabled. `EDIT…` and remove are disabled on running destinations, and remove also on YouTube Main and Twitch Backup while a cue names them; `ADD…` is disabled at five destinations. |
+| `studio-stream-status-hover.png` | The same window hovering YouTube Main's status chip: the status tooltip with `Desired on · realized not live`, `State: NOT LIVE`, the destination and backup URLs, `Output: Program Output · target 6,000 kb/s`, `Stream key: stored (never shown)`, and `No transport sample yet` (the simulated daemon sends no stream samples, so the bitrate / dropped / reconnects / uptime line is absent). |
+| `studio-stream-edit-dialog.png` | 1920x1080, `EDIT…` on Facebook Live: the Edit destination dialog with the Destination section (Name, `RTMP` / `RTMPS` / `SRT` / `HLS` with RTMPS lit, Server `live-api-s.facebook.com:443/rtmp` and the resolved `rtmps://…` URL under it, the Backup server placeholder), a replacement stream key being typed and shown as dots beside the eye toggle, Output and video (Program Output, 4000 kb/s, `Start on launch`), Reconnect (250 ms / 2000 ms / 40 attempts, `Unlimited`), the undo note, and `CANCEL` / `SAVE`. |
+| `studio-stream-remove.png` | Remove (`✕`) on Facebook Live: the Remove destination confirmation naming the destination and its URL (never the key), the note that recording and the other destinations are not affected, and `CANCEL` / the red `REMOVE`. |
+| `studio-stream-add-dialog.png` | After the removal, `ADD…`: the Add destination dialog filled in as Facebook Live, RTMPS, `live-api-s.facebook.com:443/rtmp`, with a typed (fake) stream key masked as dots and the eye toggle's hover help `Show what is typed here; secrets are masked by default`; the suggested name was "Destination 5", the bitrate defaults to 6000 kb/s, and `ADD` is enabled. |
+| `studio-add-input-solid.png` | 1920x1080 `--role admin`, the `+` tile (which now reads `colour · bars · stream · camera`): the sectioned Add input dialog with the four kinds, `SOLID COLOUR` chosen, the suggested name "Solid Colour 1", the `SAMPLE` swatch tagged `INPUT 8` / `SILENT` beside the colour presets, `input 8 · position 8`, and `CANCEL` / `ADD INPUT`. |
+| `studio-add-input-network.png` | The same dialog with `NETWORK STREAM`: name "Stage Left Camera" (`Name is free`), the Stream source section with the URL `rtsp://operator:••••••••@10.0.0.42:554/stream1` (the password in the URL is masked as typed, with an eye toggle), `RTSP stream`, the Connection section with the RTSP transport keys, Recovery (`HOLD LAST FRAME` / `BLACK`, give up after attempts), each section with its `▸ ADVANCED` disclosure, and the `CONNECTING` sample. |
+
+Round 5: captures of 2026-10-16 at Protocol 2.52, schema 49 (commit
+a821e6d). Added: `studio-workspace-docked.png` (the full docked workspace),
+`studio-cues.png` (RC-017 cue list with standby and GO),
+`studio-streams-five.png`, `studio-stream-status-hover.png`,
+`studio-stream-edit-dialog.png`, `studio-stream-remove.png`, and
+`studio-stream-add-dialog.png` (OR-006 five destinations with independent
+control and a masked key), and `studio-add-input-solid.png` /
+`studio-add-input-network.png` (the sectioned Add input dialog with its
+secret toggle). All use the simulated daemon and the synthetic meter feed.
+`studio-cues.png` and the two stream panel captures are window captures of
+the popped-out panel (`import -window`), so the rows are legible; the rest
+are full-screen. The simulated daemon sends no stream transport samples, so
+started destinations read `NOT LIVE` and the status hover has no bitrate
+line. Every stream key in the demo show is a fake (`demo-…-not-real`).
+
+Review notes from these captures (problems seen, not fixed here):
+
+- Recording & streams at the Default layout fits only about three and a
+  half destination rows; with five destinations the rest (and the HLS row)
+  sit below a scroll (`studio-workspace-docked.png`). The `1 / 2 RECORDING`
+  and `5 TARGETS` header counts run into the panel's right edge / scroll
+  bar.
+- Each destination's `RETRY` / `EDIT…` / `✕` keys sit on a second line
+  below the row's card instead of inside it, so a row reads as two
+  (`studio-streams-five.png`).
+- Docked Cues tab at the Default width: the cue rows are wider than the
+  side panel, so the action-count key (`2 +`) and the right edge of each
+  row are clipped behind a horizontal scroll bar; an opened cue's action
+  rows wrap, putting the first action's move-down and remove keys on a line
+  of their own (background of `studio-add-input-solid.png`).
+- Cue rows keep a fixed name field, so longer names are cut off (`Close
+  and stop str`, cut without an ellipsis), even in the wide popped-out window,
+  where the rows also do not grow to the window width (`studio-cues.png`).
+  Cues that have not played show an empty outlined chip rather than a
+  label.
+- The `GO` key label is left-aligned in a key that spans the whole panel.
+- Destination dialog: the resolved URL hint under Server sits flush against
+  the `Backup server` label with no spacing; the Backup server placeholder
+  is the generic `live.example.com/app` even for a Facebook RTMPS server.
+  The masked key shows one dot per character, which reveals its length.
+  Typing a key removes the `A key is stored…` caption and leaves an empty
+  gap above `OUTPUT AND VIDEO` (`studio-stream-edit-dialog.png`).
+- The eye toggle's hover help spills outside the dialog over the Recording
+  & streams panel (`studio-stream-add-dialog.png`).
+- Add input (network stream): `Give up after (attempts)` shows `0` with no
+  hint that it means never give up (`studio-add-input-network.png`).
+- Without a window manager a popped-out panel stays above the console's
+  modal dialogs (seen while capturing; the windows were moved aside first).
 
 Captures of 2026-10-16 at Protocol 2.48, schema 45 (commit 64f800a). Added:
 `studio-network-stream-form.png` and `studio-network-stream-tile.png`
@@ -1059,3 +1117,51 @@ cargo build -p freemix-cli -p freemixd -p freemix-studio \
   active the daemon kept dropping the Studio session (see the review notes),
   hence the waiting `Projector` slot. It opens Output › `Fullscreen
   outputs…`.
+
+The round 5 captures (2026-10-16, Protocol 2.52, schema 49) built `git
+archive HEAD` in `/tmp/shots5-src` with `CARGO_TARGET_DIR=/tmp/shots4-target`
+and `--features freemix-studio/capture-meter-signal`, on Xvfb `:95`
+(1920x1080x24) with `--listen 127.0.0.1:7395`, `--role admin`, a fresh
+`FREEMIX_STUDIO_PREFS` file, and `FREEMIX_STUDIO_CAPTURE_METERS=1`. The show
+is the demo show above, but with five stream destinations (fake keys) and
+two cue lists in place of the two stream targets:
+
+```sh
+freemix-cli stream-add demo.freemix 1 1 rtmps://a.rtmp.youtube.com/live2 demo-yt-key-not-real "YouTube Main" \
+    --backup rtmps://b.rtmp.youtube.com/live2 --video-bitrate-kbps 6000
+freemix-cli stream-add demo.freemix 2 1 rtmp://live.twitch.tv/app demo-twitch-key-not-real "Twitch Backup" \
+    --video-bitrate-kbps 4500 --reconnect 500:5000:20
+freemix-cli stream-add demo.freemix 3 1 rtmps://live-api-s.facebook.com:443/rtmp demo-fb-key-not-real "Facebook Live" \
+    --video-bitrate-kbps 4000
+freemix-cli stream-add demo.freemix 4 1 srt://srt.example.com:9000 demo-srt-passphrase "Venue SRT Feed" \
+    --video-bitrate-kbps 8000 --reconnect 250:2000:none
+freemix-cli stream-add demo.freemix 5 1 hls:///tmp/hls "Local HLS Archive" --rung 2500:1280x720 --rung 6000:1920x1080
+freemix-cli cue-list-set demo.freemix 1 "Evening Run" "1:Pre-show standby:0:preview.1,record.2.1;\
+2:Show open:0:take.-.fade.30,stream.1.1,stream.2.1;3:Host intro:0:preview.3,take.-.fade.20;\
+4:Guest interview:1:take.4.wipe.20,overlay_on.1.5;5:Lower third off:0:overlay_off.1;\
+6:Break to black:0:fade_to_black.1.45;7:Back from break:0:fade_to_black.0.30,take.1.cut.0;\
+8:Close and stop streams:0:fade_to_black.1.60,stream.1.0,stream.2.0,record.2.0"
+freemix-cli cue-list-set demo.freemix 2 "Contingency" \
+    "1:Technical difficulties:0:take.5.cut.0,audio_mute.4.1;2:Resume programme:0:audio_mute.4.0,take.7.fade.30"
+```
+
+(the cue string is one argument; it is wrapped here for width). The steps:
+click the side group's `CUES` tab and `GO` twice (cue 1, then cue 2);
+maximise Recording & streams (double-click its tab), click Venue SRT Feed's
+`START`, and restore it; click its pop-out key, `xdotool windowmove` /
+`windowsize` the new window to 560,150 at 820x610, and `import -window` it
+(`studio-streams-five.png`), then hover YouTube Main's `NOT LIVE` chip for
+about four seconds (`studio-stream-status-hover.png`). Click Facebook Live's
+`EDIT…`, move the popped window out of the way (with no window manager it
+stays above the console's dialogs), click the Stream key field, focus the
+console window, and `xdotool type` a fake key
+(`studio-stream-edit-dialog.png`); `CANCEL`, then the window's dock-back key.
+Click Facebook Live's `✕` (`studio-stream-remove.png`), `REMOVE`, `ADD…`,
+type the name, click `RTMPS`, type the server and a fake key, and hover the
+eye toggle (`studio-stream-add-dialog.png`); `ADD`. Pop out the Cues tab,
+size it to 900x720, open Show open's `3 +` action key, and `import -window`
+it (`studio-cues.png`); close the actions and dock it back. Click the `+`
+tile (`studio-add-input-solid.png`), then `NETWORK STREAM`, type the name
+and `rtsp://operator:demo-pass@10.0.0.42:554/stream1`
+(`studio-add-input-network.png`), `CANCEL`, and capture the console with the
+pointer parked on the status bar (`studio-workspace-docked.png`).
