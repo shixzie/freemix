@@ -4,7 +4,7 @@ Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
 supervised daemon runs in simulated mode and sends no audio meters, so a
 normal build reports `METERS UNAVAILABLE` with unlit meter wells. Every
-console capture (all of them regenerated on 2026-10-15/16 at Protocol 2.41, see below) was taken
+console capture (regenerated on 2026-10-15/16 at Protocol 2.41, with the later additions at Protocol 2.48, see below) on the simulated daemon was taken
 with a synthetic meter feed (see Reproducing): those meter levels are a
 Studio-side test signal, not daemon audio. The
 Preview/Program monitors show
@@ -322,7 +322,7 @@ the counts and lock chips.
 |---|---|
 | `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click, hovering the Program well: both wells show `SIMULATED` frames (Camera 1 Wide on Preview, Camera 2 Close on Program) under the solid `PREVIEW`/`PROGRAM` tally chips, the two tiles borrow those frames, and the tooltip names the desired and realized Program source and states that Fade to Black is not composited. |
 | `studio-console-monitors-scene.png` | 1920x1080, the demo show as launched: Main Scene on Program (the simulated composite of its layers), Camera 2 Close on Preview, the transition column with `MORE`, the four `FAVOURITES` keys (Fade, Wipe, Fly, Cube), and the Fade to Black `Outputs 1/1` selector, neutral `START` keys on both stopped recorders, the HLS ladder `NOT LIVE` with an amber-outlined `STOP`, the input bank toolbar (`All inputs`, `Import files…`, `Categories…`), the mixer strips with their `PAN` knobs, and Guest Remote's latched `CLIP` with `RESET CLIP` in the mixer header. |
-| `studio-console-production.png` | 1920x1080 `--role admin`, a realistic production state (2026-10-16): input categories (Cameras, Remote, Graphics) as filter chips over the bank and colour strips down each tile's leading edge; the looping playlist running on the Playlist tab (`PLAYING`, red `REMAINING -00:09:13:51` of `00:10:00:00`, entry 01 Guest Remote `ON AIR`, entry 02 `NEXT`) has cut Guest Remote to Program, where it airs with the saved library grade "Guest warm" (the white and grey bars read beige); the animated Lower Third ("Ana Torres", input 8) was previewed and taken to O1 and sits composited over it (`O1` badge on the Program header); REC 2 is `RECORDING`; the mixer shows the strip labels `Host Mic` and `Guest Line`, Camera 1 and 2 panned `L30`/`R30`, and Colour Fill and Lower Third muted with AFV off. |
+| `studio-console-production.png` | 1920x1080 `--role admin`, a realistic production state (recaptured at Protocol 2.48, schema 45): input categories (Cameras, Remote, Graphics) as filter chips over the bank and colour strips down each tile's leading edge; the looping playlist running on the Playlist tab (`PLAYING`, red `REMAINING -00:08:38:30` of `00:10:00:00`, entry 01 Guest Remote `ON AIR`, entry 02 `NEXT`) has cut Guest Remote to Program, where it airs with the saved library grade "Guest warm" (the white bar reads beige); the animated Lower Third ("Ana Torres", input 8) was previewed and taken to O1 and sits composited over it (`O1` badge on the Program header); REC 2 is `RECORDING`; the mixer shows the strip labels `Host Mic` and `Guest Line`, Camera 1 and 2 panned `L30`/`R30`, the `MON` strip with its `SIP`/`PFL`/`AFL` keys beside Master, and Colour Fill (strip 5, muted) clipped under the pinned `MON` strip. |
 | `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, lit red `STOP` key, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview (Camera 1 Wide) and confirmed `ON AIR` with its `TAKE OFF` key and the `O1` badge on the Program header, the HLS ladder `NOT LIVE` with its amber `STOP`, the stopped RTMP target with a neutral `START`. The manual transition block and the mixer strips show their simpler default behind the `▸ DETAILS` and `▸ GAIN · BAL · DLY` disclosure keys. |
 | `studio-console-hover-help.png` | The same session hovering `FADE`: the tooltip says what the key does in operator language and names its shortcut (`Fade Preview to Program over the shared duration  [F]`). Every interactive control carries help like this (RC-018). |
 | `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the amber `T-BAR 69%` header, and, although `▸ DETAILS` is still collapsed, the position field and the active `COMMIT`/`CANCEL` keys take the place of the manual start keys while the transition is in flight, so the input bank and mixer below do not move; the automatic transition, `MORE`, and favourite keys are dimmed. |
@@ -345,7 +345,7 @@ the counts and lock chips.
 | `studio-console-spanish-shortcuts.png` | The same reference in Spanish, opened with F1 during a 1920x1080 `--lang es` session (REC 2 recording, O1 on air): `Atajos de teclado`, `Teclas activas`, `Lanzar la transición favorita 1 a 4`, the `Consola` group, and key names in Spanish (`Ctrl+Mayús+Z`, `Tab · Intro`, `Ctrl+Mayús+L`). |
 | `studio-console-health-strip.png` | 1920x1080 demo show hovering the `TX —` lamp: the status bar's health strip (`PGM FEED` and `METERS` green, `TX —` amber because the HLS ladder is desired but not live and the simulated daemon sends no transport samples) and its tooltip `Streams: 0 of 2 live · no recent transport samples to measure the rate · 0 A/V pairs dropped`. |
 | `studio-console-layout-restored.png` | Studio restarted on a `studio.conf` saved after dragging the side panel edge to 480 px and hiding the mixer from View: the restored layout (input bank across the full width, 480 px side panel) with View open (`Colour grade…  Ctrl+G`, `Animate title…  Ctrl+Shift+A`, `Design scene layout…  Ctrl+Shift+L`, the Panels checkboxes, the Advanced controls toggles, the five-way Side panel tab choice including `Media`, Language, 12-hour clock), and the enabled `Reset layout` item with its tooltip. |
-| `studio-default-layout.png` | 1920x1080, the Default layout as a fresh `studio.conf` opens it (2026-10-16): Preview, Transitions, and Program along the top with Recording & streams beside them, the input bank, audio mixer, and the Overlays/Stingers/Titles/Playlist/Media tab group along the bottom. Both rows' tab bars line up across the console and each starts with its drag grip; Preview and Program are the same width with their 16:9 wells letterboxed in the middle of their tiles; the transition column has widened with its tile (to 323 points, beside the gutter a short tile's scroll bar floats in) and fits it without scrolling; the mixer's input strips start at the left beside the pinned Monitor and Master strips. |
+| `studio-default-layout.png` | 1920x1080, the Default layout as a fresh `studio.conf` opens it on the demo show (recaptured at Protocol 2.48, schema 45): Preview, Transitions, and Program along the top with Recording & streams beside them, the input bank, audio mixer, and the Overlays/Stingers/Titles/Playlist/Media tab group along the bottom. Both rows' tab bars line up across the console and each starts with its drag grip; Preview and Program are the same width with their 16:9 wells letterboxed in the middle of their tiles; the transition column fits its tile with `MORE`, the `FAVOURITES` row, the collapsed `▸ DETAILS` manual block, and the Fade to Black duration and `Outputs 1/1` keys; the mixer's input strips start at the left beside the pinned `MON` strip (`= MASTER`, `SIP` lit, `METER ONLY`) and Master. |
 | `studio-docking.png` | The same session while the side tab group's grip is dragged onto the left edge of the input bank: the blue drop preview covers the bank tile's left half, where releasing would split it, and the chip beside the pointer names every panel moving together (`Overlays · Stingers · Titles · Playlist · Media`). |
 | `studio-popout.png` | The Program panel popped out into its own native window (`Program — FreeMix Studio`, moved to 1180,520 and resized to 700x460; no window manager, so no decorations) with the grip, `Dock back to…`, and Dock back key in its header. Its grip is held over the console window: the main window shows the drop preview on the right half of the input bank tile with a `Program` chip, and releasing docked it there. The transition column is centred at its widest (360 points) in the tile Program left. |
 | `studio-popout-dock-menu.png` | The same popped Program window with `Dock back to…` open: every docked tile (Preview, Transitions, Input bank, Audio mixer, Recording & streams, and the side tab group) with Into its tab group / To its left / To its right / Above it / Below it. Hovering Preview › To its right previews that place in the console and shows the item's hover help; clicking it docked Program beside Preview. |
@@ -383,6 +383,76 @@ the counts and lock chips.
 | `studio-color.png` | 1920x1080 `--role admin` on the demo show, Guest Remote (colour bars) cut to Program, its tile menu `Grade…` (also View › Colour grade… or Ctrl+G) opening the Studio Colour window bound to input 4, then the Warm look clicked: the grade went to freemixd as a `grade_input_set` command (REV 10 to 11), the target now reads `04 · Guest Remote · graded` with the `ON AIR` status, the Program monitor shows the server-applied warm grade, and the panel preview (held last ungraded frame, so the grade is not applied twice) shows the draft applied locally on CPU, with the Waveform scope below. Above the panel: the Library combo/Apply, Save to library, LUT import path with its 32 KiB limit caption, and the `.fmgrade` Export/Import row. |
 | `studio-animation.png` | 1920x1080 `--role admin` (GX-011), the demo show plus title input 8 "Lower Third" imported from a four-element `lower-third.fmtitle` (Bar, Accent, Name, Role) whose In phase was built with `freemix-cli title-animation-preset` (slide-from-left, wipe, fade on Bar, Accent, Name; Role left unanimated) and `title-animation-stretch` to 30 frames: Titles tab, the row's `Animate…` opening the Studio Animation window at its default size. The ruler was clicked near frame 10, then Role's `Preset…` picker opened and the pointer rested on `Slide from bottom`: the canvas shows `PRESET PREVIEW`, the server's exact preview of the hovered preset at mid-phase (frame 15), the element outlines and onion skins drawn over it, and the item's hover help. Nothing is applied until the item is clicked, which sends one `title_animation_preset` (one undo step). |
 | `studio-scene-designer.png` | 1920x1080 `--role admin`, live (2026-10-16): the Layer designer opened with Ctrl+Shift+L (also View › Design scene layout…, Edit › Preview input › Design layout…, or Design… on a Scene tile's menu) on the demo show's Main Scene, which is on Program. Guest PiP (left crop 240 px) was selected in the layer list and dragged on the canvas; the drag streamed Protocol 2.39 `scene_layer_*` commands to freemixd (the chip read `SENDING EDITS` during the drag and returns to green `LIVE EDITS`), the canvas behind the outlines is the server's own picture of the scene (`SERVER PICTURE` badge, top right), and the Program tile shows the moved PiP. Undo is enabled and is the engine's. Left, the layer list with Forward/Backward/To front/To back; right, the numeric inspector (position 1163, 658 px, size 480x270, zoom 25 %, rotation with quarter-turn keys, opacity, visible, crop L 240 px, mask, stack `2 of 2`, z-order, anchor 50 %/50 %). No offline banner: the session holds `edit_project` and a Scene input shows the scene. |
+| `studio-network-stream-form.png` | 1920x1080 `--role admin` against a native daemon (IN-015, Protocol 2.46): the `+` tile's Add input dialog with `NETWORK STREAM` chosen, the name "Stage Left RTSP" (`Name is free`), the URL `rtsp://operator:s3cret@10.0.0.42:554/stream1` (the form shows what the operator typed; the daemon redacts the credentials everywhere it reports the URL, see the next row), `TCP` transport, the jitter, retry, give-up, and timeout fields, `HOLD LAST FRAME`, and the sample tagged `INPUT 12` / `CONNECTING` / `SILENT`. The longest retry wait was set to 400 ms, below the 500 ms first retry, so the red validation line `the first retry wait must not exceed the longest one` shows and `ADD INPUT` is unavailable with the same reason in the footer. |
+| `studio-network-stream-tile.png` | The native session's input bank: Field Feed (input 8, a loopback `ffmpeg` MPEG-TS sender on `udp://127.0.0.1:7591`) with a green `LIVE` badge, Venue Camera RTSP (input 9, `rtsp://operator:s3cret@127.0.0.1:7592/live`, nothing listening) with an amber `RECONNECTING 35` badge, and the two capture tiles `LIVE`; hovering Field Feed shows the tile tooltip `Network stream udp://127.0.0.1:7591: LIVE · 2,136 kb/s, 400 ms buffered · 3,866 dropped, 0 late frames, 0 reconnects` (the dropped count reflects the overloaded software-rendering host). Hovering the RTSP tile instead reads `rtsp://***@127.0.0.1:7592/live: RECONNECTING 42 · … · Next attempt in 1 s · Last error: Error opening input files: Connection refused`. Program shows the native daemon's CPU readback of Main Scene; Preview reads `NO PREVIEW TAP`. |
+| `studio-capture-picker.png` | The same dialog with `CAMERA / CAPTURE` chosen (IN-001, Protocol 2.47): `2 capture devices found (fake)` from the daemon's `--diagnostic-capture-inventory` fake backend (Fake Cam `/dev/video0`, Spare Cam `/dev/video2`), Fake Cam selected, the format picker with Picture size / Rate / Pixel format filters (`Any`), `Automatic (nearest the program)`, the formats grouped `UHD` / `HD` (`1920x1080 30p MJPEG` selected), the `NONE` / `PAIRED DEVICE AUDIO` / `ALSA DEVICE` audio keys (`Paired audio: none paired`), `HOLD LAST PICTURE` / `BLACK`, and the sample tagged `STARTING`. |
+| `studio-capture-signal-lost.png` | The native session after the fake inventory file was rewritten without Spare Cam (an unplug): input 11's tile carries the red `SIGNAL LOST` badge across its picture and a red border, and its tooltip reads `Capture v4l2:usb-0000:00:14.0-2#Spare Cam: SIGNAL LOST (device unplugged) · 1280x720 60p MJPEG, audio off · 1 losses, 0 recoveries, 0 renegotiations · Last error: device not present`. Desk Cam stays `LIVE` and the RTSP input keeps `RECONNECTING n`. |
+| `studio-ftb-outputs.png` | 1920x1080 `--role admin`, simulated daemon (SW-004, Protocol 2.48) on a show with three outputs (`ftb-output-duration … 1 45`, `… 2 90`, `ftb-output … 3 off`, `ftb-curve … ease`): the Fade to Black `Outputs 2/3` popover with Program Output and Venue Screens ticked, each with `Own duration` ticked and its frames (`45 fr`, `90 fr`), Confidence Monitor unticked, and the `CURVE` keys `Linear` / `Ease` (Ease lit). |
+| `studio-tbar-cube.png` | The native session after selecting Field Feed on Preview, `MANUAL` › `MORE` › `Cube zoom`, dragging the T-bar to 53 %, and opening `▾ DETAILS`: the amber `T-BAR 53%` header, `POS 5379 bp`, `COMMIT`/`CANCEL`, the status card `CUBE ZOOM 53%` / `Main Scene ▶ Field Feed`, and the Program monitor showing the native daemon's mid-transition frame (Main Scene and the Field Feed test pattern on two faces of the zooming cube, `ENCODED PREVIEW 640×360 · CPU readback`); the Main Scene tile borrows the same frame. |
+| `studio-layer-keys.png` | 1920x1080 `--role admin`, simulated daemon (IN-020, Protocol 2.43): the Layer designer (Ctrl+Shift+L, window enlarged) on Main Scene with Guest PiP selected after `scene-layer-key … 100 1 chroma 0 177 64 90 24 128` and `scene-layer-effect-add` `saturation 40` and `sharpen 300`. The canvas is the server picture with the bars' green column keyed out; the inspector shows `KEY` (`Chroma`, the key swatch and its `Green`/`Blue` presets, R/G/B 0/177/64, similarity 90, smoothness 24, spill 128) and `EFFECTS` (`1. Saturation` amount 40, `2. Sharpen` amount 30.0 %, each with its reorder and remove keys, and `Add effect`). |
+| `studio-mixer-monitor.png` | The native session's audio mixer maximised (double-click its tab) with `▾ GAIN · BAL · DLY` open (AU-001, Protocol 2.44): solo mode `PFL` lit on the `MON` strip, Field Feed (the only input with audio, a 440 Hz tone over UDP) soloed at -3.0 dB with its lit amber `S`, so `MON` reads `SOLO LISTEN` and meters the pre-fader solo at -21.0 while Master reads -24.0; the group strips Cameras (-6 dB, holding Camera 1 and 2), Talkback (Host Mic and Guest Line), and the parent group All Mics, with Talkback's parent picker reading `In All Mics` and the others `Top level`. These are daemon meters (no synthetic feed). |
+| `studio-spanish-refusal.png` | 1920x1080 `--lang es --role admin`, simulated daemon: after right-clicking Camera 1 Wide, `Quitar…`, and `QUITAR`, the typed refusal toast `ERROR · Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la escena 100. Quite esa capa de la escena primero.`, now entirely in Spanish (the earlier capture quoted the daemon's English detail). |
+| `studio-fullscreen-outputs.png` | 1920x1080 `--role admin` against a native daemon started with `--diagnostic-display-inventory` listing two displays (DELL U2720Q, HDR, three modes; Venue LED Wall 1920x1080@50): Output › `Fullscreen outputs…` (OR-011, Protocol 2.42) with `2 displays connected` and `Refresh displays`; Output 1 `STANDBY`, `Waiting: the display is not connected`, targeting `name:Projector (not connected)` with Program bus / Current mode / Fit inside / Off (SDR); Output 2 `ACTIVE`, `On Venue LED Wall at 1920×1080 @ 50 Hz; SDR`, showing Program Output with Fill; each slot with `Save and apply`, `Discard changes`, and `Clear`. |
+
+Captures of 2026-10-16 at Protocol 2.48, schema 45 (commit 64f800a). Added:
+`studio-network-stream-form.png` and `studio-network-stream-tile.png`
+(IN-015), `studio-capture-picker.png` and `studio-capture-signal-lost.png`
+(IN-001), `studio-ftb-outputs.png` (SW-004 per-output durations and curve),
+`studio-tbar-cube.png` (a manual Cube Zoom), `studio-layer-keys.png`
+(IN-020 keys and effects), `studio-mixer-monitor.png` (AU-001 PFL, nested
+groups, `MON`), `studio-spanish-refusal.png`, and
+`studio-fullscreen-outputs.png` (OR-011); `studio-default-layout.png` and
+`studio-console-production.png` were recaptured. The network stream,
+capture, T-bar, mixer, and fullscreen captures come from a native daemon
+(`--features native-media`, `--native-media`) on Mesa lavapipe, so their
+Program monitor is the native CPU readback, Preview reads `NO PREVIEW TAP`,
+and the meters are the daemon's own; the other captures use the simulated
+daemon and the synthetic meter feed, which carries no monitor-bus level, so
+their `MON` strip reads `--`. The simulated daemon's Program render does not
+show transitions in progress (it renders the realized source), which is why
+the Cube Zoom capture uses the native daemon. This host was also running
+other builds, so the native daemon fell behind: Program frames and meters
+went stale for seconds at a time and the Field Feed tooltip counts thousands
+of dropped frames; each capture was taken while its monitor was current.
+
+Review notes from these captures (problems seen, not fixed here):
+
+- The Layer designer's effect rows draw their move-up, move-down, and
+  remove keys as empty boxes: the `▲`, `▼`, and `✕` glyphs are missing from
+  the UI font (`studio-layer-keys.png`). The same panel shows Saturation's
+  amount as a bare `40` but Sharpen's as `30.0 %`.
+- The `+` tile still reads "solid colour · colour bars" although the Add
+  input dialog now also offers network streams and cameras (every capture
+  showing the `+` tile).
+- Network stream form: the retry-wait error appears under the STREAM URL
+  field instead of beside the retry fields, and the footer's `Unavailable:
+  the first retry wait must not exceed the l…` runs under the `CANCEL` key.
+  The dialog also re-centres (jumps vertically) whenever a hint line appears
+  or disappears (`studio-network-stream-form.png`).
+- The amber `RECONNECTING n` tile badge sits over the tile's `no thumbnail`
+  caption, leaving `no` peeking out at its left (`studio-network-stream-tile.png`,
+  `studio-capture-signal-lost.png`). Live network and capture tiles have no
+  thumbnail either.
+- Mixer detail rows on labelled strips (Host Mic, Guest Line) sit about 3 px
+  higher than on the other strips (`studio-mixer-monitor.png`). At the
+  Default layout the fifth input strip is a clipped sliver under the pinned
+  `MON` strip (`studio-default-layout.png`, `studio-console-production.png`).
+- With `▾ DETAILS` open during a manual transition, the transition tile
+  scrolls and the Fade to Black block is pushed below its bottom edge
+  (`studio-tbar-cube.png`).
+- Fullscreen outputs: a waiting slot shows its raw selector
+  (`name:Projector (not connected)`) and a `STANDBY` chip beside
+  `Waiting: …`; while the console is reconnecting the dialog shows every
+  slot `UNUSED` / `Not configured` instead of an unknown state.
+- The Spanish refusal toast is now fully translated, but still shows the
+  raw reason code `(input_in_use)`; the Spanish console keeps `SIP`, `PFL`,
+  `AFL`, `MON`, `CLIP`, and `REC` in English and abbreviates `DESLIZ`.
+- Not a capture artifact but seen while capturing: with two active
+  fullscreen display outputs on the diagnostic display inventory, the native
+  daemon dropped every Studio session within seconds
+  (`FREEMIXD_SESSION … closed=write_failed`), so the capture uses one active
+  and one waiting slot; even then Studio showed `NO PGM FEED` and
+  `METERS UNAVAILABLE` while a display output was active.
 
 Recapture of 2026-10-15/16 (Protocol 2.41, schema 39). Every capture in
 the table was regenerated from one build of HEAD (commit 1bf8dd2) on the
@@ -902,3 +972,90 @@ the `MANUAL` row's `FADE`, then drags the T-bar handle upward
 (`xdotool mousedown 1`, `mousemove`, `mouseup 1`); the Fade-to-Black capture
 clicks `FTB`. Recording start can stall the simulated daemon for a few
 seconds, so allow it to settle before capturing the overview.
+
+The captures of 2026-10-16 at Protocol 2.48 built `git archive HEAD` in
+`/tmp/shots4-src` with `CARGO_TARGET_DIR=/tmp/shots4-target`, on Xvfb
+`:91` (1920x1080x24) with port `127.0.0.1:7391`, a fresh
+`FREEMIX_STUDIO_PREFS` file per launch, and
+
+```sh
+cargo build -p freemix-cli -p freemixd -p freemix-studio \
+    --features freemix-studio/capture-meter-signal,freemixd/native-media
+```
+
+(`native-media` builds on Linux without FFmpeg development packages; the
+`ffmpeg` binary is still needed at run time for network streams).
+
+- `studio-default-layout.png`: the demo show as above, Studio supervising
+  freemixd, captured as launched.
+- `studio-console-production.png`: as described above, with the
+  `lower-third.fmtitle` template's `"schema_version"` raised to 45; the
+  Titles tab's `TAKE` key now sits below the fold, so the capture scrolls
+  the side panel before clicking it.
+- `studio-ftb-outputs.png` and `studio-layer-keys.png` (simulated daemon,
+  `--role admin`): the demo show plus `output-add demo.freemix 2 100 1 "Venue
+  Screens"` and `… 3 … "Confidence Monitor"`, `ftb-output demo.freemix 3
+  off`, `ftb-output-duration demo.freemix 1 45` and `… 2 90`, `ftb-curve
+  demo.freemix ease`, `scene-layer-key demo.freemix 100 1 chroma 0 177 64 90
+  24 128`, `scene-layer-effect-add demo.freemix 100 1 saturation 40`, and
+  `… sharpen 300`. Click `Outputs 2/3` for the first; press Ctrl+Shift+L,
+  click Guest PiP in the layer list, and drag the designer window's corner
+  to the bottom-right of the screen for the second.
+- `studio-spanish-refusal.png`: the demo show with `--lang es --role
+  admin`; right-click Camera 1 Wide, `Quitar…`, `QUITAR`.
+- The native captures (network stream, capture, T-bar, mixer, fullscreen)
+  run freemixd on its own and connect Studio to it with `--connect
+  127.0.0.1:7391 --project-id <id> --role admin`, without
+  `FREEMIX_STUDIO_CAPTURE_METERS`. The native runtime refuses simulated sine
+  audio, so the demo show is built without stream targets and inputs 1, 2,
+  3, 4, and 6 are replaced with silent solids (`input-replace-solid
+  demo.freemix 1 70 110 160 255`, …). It then adds
+
+  ```sh
+  freemix-cli input-add-stream demo.freemix 8 "Field Feed" udp://127.0.0.1:7591 \
+      --jitter-ms 200 --backoff-min-ms 500 --backoff-max-ms 2000
+  freemix-cli input-add-stream demo.freemix 9 "Venue Camera RTSP" \
+      rtsp://operator:s3cret@127.0.0.1:7592/live --transport tcp \
+      --backoff-min-ms 500 --backoff-max-ms 2000 --timeout-ms 1500
+  freemix-cli input-add-capture demo.freemix 10 "Desk Cam" "v4l2:usb-0000:00:14.0-1#Fake Cam" --loss black
+  freemix-cli input-add-capture demo.freemix 11 "Spare Cam" "v4l2:usb-0000:00:14.0-2#Spare Cam" --loss black
+  freemix-cli audio-label demo.freemix 3 "Host Mic"      # and 4 "Guest Line"
+  freemix-cli audio-group-name demo.freemix 1 "Cameras"  # 2 "Talkback", 3 "All Mics"
+  freemix-cli audio-group demo.freemix 1 1               # 2 1, 3 2, 4 2
+  freemix-cli audio-group-parent demo.freemix 2 3
+  freemix-cli audio-group-level demo.freemix 1 -6000 off
+  freemix-cli audio-solo-mode demo.freemix pfl
+  freemix-cli audio-strip demo.freemix 8 -3000 0 off on off 0
+  ```
+
+  starts the loopback sender `ffmpeg -re -f lavfi -i
+  testsrc2=size=640x360:rate=25 -f lavfi -i sine=frequency=440 -c:v
+  mpeg2video -c:a mp2 -f mpegts "udp://127.0.0.1:7591?pkt_size=1316"`, and
+  runs `freemixd serve demo.freemix --listen 127.0.0.1:7391 --native-media
+  --diagnostic-capture-inventory capture-inventory.txt`. The capture
+  inventory has one tab-separated line per device, for example
+  `key=v4l2:usb-0000:00:14.0-1#Fake Cam  name=Fake Cam  path=/dev/video0
+  formats=640x360@25/1:yuyv:p,1920x1080@30/1:mjpeg:p,…  rgba=c83c3cff`;
+  rewriting it (atomically, through a rename) without Spare Cam's line
+  unplugs that device. The tile captures hover the Field Feed tile (and the
+  RTSP tile) for about four seconds; the form captures click the `+` tile,
+  `NETWORK STREAM`, type the name and URL, click `TCP`, and set the longest
+  retry wait to 400, then choose `CAMERA / CAPTURE`, rename the input, click
+  Fake Cam and `1920x1080 30p MJPEG`. The signal-lost capture rewrites the
+  inventory, scrolls the bank, and hovers Spare Cam. The T-bar capture
+  clicks Field Feed, `MANUAL` › `MORE` › `Cube zoom`, drags the T-bar handle
+  from (862, 281) to (862, 210) in 16 steps, and clicks `▸ DETAILS`. The
+  mixer capture double-clicks the `AUDIO MIXER` tab and opens `▸ GAIN · BAL
+  · DLY`.
+- `studio-fullscreen-outputs.png` restarts that daemon with
+  `--diagnostic-display-inventory displays.tsv` after
+  `display-output-set demo.freemix 1 "display=name:Projector,source=program,scaling=fit"`
+  and `display-output-set demo.freemix 2
+  "display=id:right,source=output:1,mode=current,scaling=fill"`, where
+  `displays.tsv` holds `id=left  name=DELL U2720Q  x=0  y=0
+  mode=1920x1080@60  modes=3840x2160@60;2560x1440@60;1920x1080@60  hdr=hdr`
+  and `id=right  name=Venue LED Wall  x=3840  y=0  mode=1920x1080@50
+  modes=1920x1080@50;1280x720@50  hdr=sdr` (tab-separated). With both slots
+  active the daemon kept dropping the Studio session (see the review notes),
+  hence the waiting `Projector` slot. It opens Output › `Fullscreen
+  outputs…`.
