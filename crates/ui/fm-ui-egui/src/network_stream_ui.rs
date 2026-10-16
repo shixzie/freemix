@@ -16,7 +16,8 @@
 //! channels, and the last error.
 
 use egui::{
-    Color32, CornerRadius, DragValue, FontFamily, FontId, Painter, Rect, RichText, Ui, Vec2, pos2,
+    Color32, CornerRadius, DragValue, FontFamily, FontId, Painter, Rect, RichText, Sense, Stroke,
+    StrokeKind, Ui, Vec2, pos2,
 };
 use fm_protocol::{
     AudioChannels, GiveUp, NetworkStreamConfig, NetworkStreamEntry, NetworkStreamError,
@@ -34,6 +35,27 @@ use crate::input_catalogue::kind_key;
 use crate::l10n::{Arg, Locale, Msg};
 use crate::theme::{AMBER, ERROR, muted_color, section_label, text_dim_color};
 
+/// Which collapsed "Advanced" groups of the stream form are open.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StreamAdvanced {
+    /// Source: the audio channels.
+    pub(crate) source: bool,
+    /// Connection: the jitter buffer, SRT stream ID, and key length.
+    pub(crate) connection: bool,
+    /// Recovery: the retry waits and the timeout.
+    pub(crate) recovery: bool,
+}
+
+/// Which secret fields show what was typed; every one is masked until its
+/// eye key is pressed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StreamReveal {
+    /// The password in the URL's `user:password@` part.
+    pub(crate) url: bool,
+    pub(crate) stream_key: bool,
+    pub(crate) passphrase: bool,
+}
+
 /// The stream form of the Add input dialog.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct NetworkStreamDraft {
@@ -47,6 +69,74 @@ pub(crate) struct NetworkStreamDraft {
     pub(crate) passphrase: String,
     /// SRT stream ID; empty for none.
     pub(crate) stream_id: String,
+    pub(crate) advanced: StreamAdvanced,
+    pub(crate) reveal: StreamReveal,
+}
+
+/// The stream form field a validation problem belongs to, so the problem
+/// shows under that field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StreamField {
+    Url,
+    Transport,
+    Mode,
+    StreamKey,
+    Passphrase,
+    StreamId,
+    Latency,
+    Jitter,
+    /// The first and longest retry waits, which are checked together.
+    Backoff,
+    GiveUp,
+    Timeout,
+}
+
+impl StreamField {
+    /// The field's label, as the form shows it.
+    pub(crate) const fn label(self) -> Msg {
+        match self {
+            Self::Url => Msg::NsUrl,
+            Self::Transport => Msg::NsTransport,
+            Self::Mode => Msg::NsMode,
+            Self::StreamKey => Msg::NsStreamKey,
+            Self::Passphrase => Msg::NsPassphrase,
+            Self::StreamId => Msg::NsStreamId,
+            Self::Latency => Msg::NsLatency,
+            Self::Jitter => Msg::NsJitter,
+            Self::Backoff => Msg::NsBackoffMax,
+            Self::GiveUp => Msg::NsGiveUp,
+            Self::Timeout => Msg::NsTimeout,
+        }
+    }
+}
+
+/// Why the daemon would refuse a form, and the field to fix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FieldProblem<F> {
+    pub(crate) field: F,
+    /// An English catalog reason.
+    pub(crate) reason: &'static str,
+    /// The field is merely not filled in yet (no URL typed, no device
+    /// chosen): a prompt, not an error, so it is not marked in red.
+    pub(crate) prompt: bool,
+}
+
+impl<F> FieldProblem<F> {
+    pub(crate) const fn error(field: F, reason: &'static str) -> Self {
+        Self {
+            field,
+            reason,
+            prompt: false,
+        }
+    }
+
+    pub(crate) const fn prompt(field: F, reason: &'static str) -> Self {
+        Self {
+            field,
+            reason,
+            prompt: true,
+        }
+    }
 }
 
 impl NetworkStreamDraft {
@@ -55,9 +145,17 @@ impl NetworkStreamDraft {
     /// protocol are kept: a stream key typed for an `rtmp://` URL is not
     /// sent once the URL becomes `srt://`.
     pub(crate) fn config(&self) -> Result<NetworkStreamConfig, &'static str> {
+        self.checked().map_err(|problem| problem.reason)
+    }
+
+    /// [`Self::config`], with the field each problem belongs to.
+    pub(crate) fn checked(&self) -> Result<NetworkStreamConfig, FieldProblem<StreamField>> {
         let url = self.url.trim();
         if url.is_empty() {
-            return Err(Msg::NsReasonUrlEmpty.en());
+            return Err(FieldProblem::prompt(
+                StreamField::Url,
+                Msg::NsReasonUrlEmpty.en(),
+            ));
         }
         let protocol = self.protocol();
         let mut settings = self.settings;
@@ -73,20 +171,29 @@ impl NetworkStreamDraft {
             stream_key: field(StreamProtocol::Rtmp, &self.stream_key),
             passphrase: field(StreamProtocol::Srt, &self.passphrase),
         };
-        config.validate().map_err(|error| match error {
-            NetworkStreamError::InvalidUrl => Msg::NsReasonUrlInvalid.en(),
-            NetworkStreamError::UnsupportedScheme => Msg::RsnUnsupportedScheme.en(),
-            NetworkStreamError::TransportNotRtsp => Msg::NsReasonTransport.en(),
-            NetworkStreamError::Backoff => Msg::NsReasonBackoff.en(),
-            NetworkStreamError::JitterBuffer
-            | NetworkStreamError::GiveUp
-            | NetworkStreamError::Timeout
-            | NetworkStreamError::Latency => Msg::NsReasonSettings.en(),
-            NetworkStreamError::ModeUnsupported => Msg::NsReasonMode.en(),
-            NetworkStreamError::ListenPort => Msg::NsReasonListenPort.en(),
-            NetworkStreamError::StreamKey => Msg::NsReasonStreamKey.en(),
-            NetworkStreamError::Passphrase => Msg::NsReasonPassphrase.en(),
-            NetworkStreamError::StreamId => Msg::NsReasonStreamId.en(),
+        config.validate().map_err(|error| {
+            let (field, reason) = match error {
+                NetworkStreamError::InvalidUrl => (StreamField::Url, Msg::NsReasonUrlInvalid),
+                NetworkStreamError::UnsupportedScheme => {
+                    (StreamField::Url, Msg::RsnUnsupportedScheme)
+                }
+                NetworkStreamError::ListenPort => (StreamField::Url, Msg::NsReasonListenPort),
+                NetworkStreamError::TransportNotRtsp => {
+                    (StreamField::Transport, Msg::NsReasonTransport)
+                }
+                NetworkStreamError::Backoff => (StreamField::Backoff, Msg::NsReasonBackoff),
+                NetworkStreamError::JitterBuffer => (StreamField::Jitter, Msg::NsReasonSettings),
+                NetworkStreamError::GiveUp => (StreamField::GiveUp, Msg::NsReasonSettings),
+                NetworkStreamError::Timeout => (StreamField::Timeout, Msg::NsReasonSettings),
+                NetworkStreamError::Latency => (StreamField::Latency, Msg::NsReasonSettings),
+                NetworkStreamError::ModeUnsupported => (StreamField::Mode, Msg::NsReasonMode),
+                NetworkStreamError::StreamKey => (StreamField::StreamKey, Msg::NsReasonStreamKey),
+                NetworkStreamError::Passphrase => {
+                    (StreamField::Passphrase, Msg::NsReasonPassphrase)
+                }
+                NetworkStreamError::StreamId => (StreamField::StreamId, Msg::NsReasonStreamId),
+            };
+            FieldProblem::error(field, reason.en())
         })?;
         Ok(config)
     }
@@ -97,72 +204,289 @@ impl NetworkStreamDraft {
     }
 }
 
-/// Draws the stream form: URL, the RTMP or SRT connection fields, RTSP
-/// transport, audio channels, jitter buffer, reconnect policy, timeout, and
-/// stall slate, each with its help.
-#[allow(clippy::too_many_lines)] // one labelled control per setting
-pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft) {
-    ui.label(section_label(l.text(Msg::NsUrl)));
-    ui.add(
-        egui::TextEdit::singleline(&mut draft.url)
-            .id(egui::Id::new("studio-add-input-stream-url"))
-            .hint_text("rtsp://camera.local:554/stream1")
-            .char_limit(MAX_STREAM_URL_BYTES)
-            .desired_width(ui.available_width()),
-    )
-    .on_hover_text(l.text(Msg::NsUrlHover));
-    if let Err(reason) = draft.config() {
-        ui.label(
-            RichText::new(l.tr(reason))
-                .size(crate::theme::legible(10.5))
-                .color(if draft.url.trim().is_empty() {
-                    muted_color()
-                } else {
-                    ERROR
-                }),
+/// The byte range of the password in a URL's `user:password@` part, if it
+/// has a non-empty one.
+pub(crate) fn url_password(url: &str) -> Option<core::ops::Range<usize>> {
+    let start = url.find("://")? + 3;
+    let rest = &url[start..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let at = authority.rfind('@')?;
+    let colon = authority[..at].find(':')?;
+    (colon + 1 < at).then(|| start + colon + 1..start + at)
+}
+
+/// `url` with the password of its `user:password@` part masked character
+/// by character, so the text keeps its length and the cursor its place.
+pub(crate) fn mask_url_password(url: &str) -> String {
+    let Some(range) = url_password(url) else {
+        return url.to_owned();
+    };
+    url.char_indices()
+        .map(|(index, c)| {
+            if range.contains(&index) {
+                egui::epaint::text::PASSWORD_REPLACEMENT_CHAR
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Height of one caption line under a field.
+fn hint_height(ui: &Ui) -> f32 {
+    ui.ctx().fonts_mut(|fonts| {
+        fonts.row_height(&FontId::proportional(crate::theme::legible(
+            crate::theme::CAPTION_SIZE,
+        )))
+    })
+}
+
+/// A hint line under a field that keeps its height when it is empty, so
+/// the form does not shift as hints come and go; longer text wraps.
+pub(crate) fn hint_slot(ui: &mut Ui, text: Option<RichText>) {
+    let height = hint_height(ui);
+    ui.vertical(|ui| {
+        ui.set_min_height(height);
+        if let Some(text) = text {
+            ui.add(egui::Label::new(text).wrap());
+        }
+    });
+}
+
+/// A validation problem's text under the field it belongs to.
+pub(crate) fn field_error(l: Locale, reason: &str) -> RichText {
+    RichText::new(crate::input_catalogue::capitalized(l.tr(reason)))
+        .size(crate::theme::legible(crate::theme::CAPTION_SIZE))
+        .color(ERROR)
+}
+
+/// Outlines a field (or a row of keys) in red: it is the one to fix.
+pub(crate) fn mark_invalid(ui: &Ui, rect: Rect) {
+    ui.painter().rect_stroke(
+        rect.expand(1.5),
+        CornerRadius::same(4),
+        Stroke::new(1.5, ERROR),
+        StrokeKind::Outside,
+    );
+}
+
+/// A form section's heading, with its Advanced disclosure (if any) at the
+/// trailing end of the row.
+pub(crate) fn section_heading(
+    ui: &mut Ui,
+    l: Locale,
+    title: Msg,
+    advanced: Option<(&mut bool, (Msg, Msg))>,
+) {
+    section_heading_with(ui, l, title, |ui| {
+        if let Some((open, (show, hide))) = advanced {
+            crate::theme::disclosure(
+                ui,
+                open,
+                l.text(Msg::AdvancedKey),
+                (l.text(show), l.text(hide)),
+            );
+        }
+    });
+}
+
+/// A form section's heading with `trailing` controls at the end of its
+/// row, over a rule.
+pub(crate) fn section_heading_with(
+    ui: &mut Ui,
+    l: Locale,
+    title: Msg,
+    trailing: impl FnOnce(&mut Ui),
+) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(section_label(l.text(title)).color(crate::theme::text_color()));
+        ui.with_layout(crate::l10n::trailing_layout(l), trailing);
+    });
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top(),
+        Stroke::new(crate::theme::line_width(), crate::theme::border_color()),
+    );
+    ui.add_space(4.0);
+}
+
+/// A small field label above a control.
+pub(crate) fn sub_label(ui: &mut Ui, l: Locale, label: Msg) {
+    ui.label(
+        RichText::new(l.text(label))
+            .size(crate::theme::legible(11.0))
+            .color(text_dim_color()),
+    );
+}
+
+/// Paints an eye, struck through when `struck`, centred in `rect`.
+#[allow(clippy::cast_precision_loss)] // a dozen segments
+fn paint_eye(painter: &Painter, rect: Rect, color: Color32, struck: bool) {
+    const SEGMENTS: usize = 12;
+    let centre = rect.center();
+    let (half_width, half_height) = (7.0_f32, 4.2_f32);
+    let lid = |step: usize, sign: f32| {
+        let x = -half_width + 2.0 * half_width * step as f32 / SEGMENTS as f32;
+        centre + Vec2::new(x, sign * half_height * (1.0 - (x / half_width).powi(2)))
+    };
+    let mut points: Vec<_> = (0..=SEGMENTS).map(|step| lid(step, -1.0)).collect();
+    points.extend((1..SEGMENTS).rev().map(|step| lid(step, 1.0)));
+    painter.add(egui::Shape::closed_line(points, Stroke::new(1.3, color)));
+    painter.circle_filled(centre, 2.1, color);
+    if struck {
+        painter.line_segment(
+            [
+                centre + Vec2::new(-half_width * 0.8, half_height + 1.5),
+                centre + Vec2::new(half_width * 0.8, -half_height - 1.5),
+            ],
+            Stroke::new(1.6, color),
         );
     }
-    ui.add_space(4.0);
+}
+
+/// The show/hide key of a secret field: an eye while the field is masked
+/// (a click shows it), a struck-through eye while it shows.
+pub(crate) fn reveal_key(ui: &mut Ui, l: Locale, shown: &mut bool) -> egui::Response {
+    let (name, hover) = if *shown {
+        (Msg::SecretHide, Msg::SecretHideHover)
+    } else {
+        (Msg::SecretShow, Msg::SecretShowHover)
+    };
+    let response = ui
+        .add(
+            egui::Button::new("")
+                .frame_when_inactive(false)
+                .min_size(Vec2::splat(crate::theme::MIN_TARGET)),
+        )
+        .on_hover_text(l.text(hover));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, l.text(name)));
+    let color = ui.style().interact(&response).text_color();
+    paint_eye(ui.painter(), response.rect, color, *shown);
+    if response.clicked() {
+        *shown = !*shown;
+    }
+    response
+}
+
+/// Width of a field that has an eye key beside it.
+fn beside_key(ui: &Ui) -> f32 {
+    (ui.available_width() - crate::theme::MIN_TARGET - ui.spacing().item_spacing.x).max(60.0)
+}
+
+/// Draws the stream form in three sections, each with its rarely changed
+/// fields behind an Advanced disclosure: Source (URL; audio channels),
+/// Connection (RTSP transport, or the RTMP / SRT mode, stream key or
+/// passphrase, and SRT latency; jitter buffer, stream ID, key length), and
+/// Recovery (stall slate and give-up count; retry waits and timeout). A
+/// problem shows under the field it belongs to, which is outlined in red;
+/// an Advanced group holding it opens.
+pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft) {
     let protocol = draft.protocol();
     if let Some(protocol) = protocol
         && !draft.settings.mode.supported_by(protocol)
     {
         draft.settings.mode = StreamMode::Caller;
     }
-    if matches!(protocol, Some(StreamProtocol::Rtmp | StreamProtocol::Srt)) {
-        draw_connection_fields(ui, l, draft, protocol == Some(StreamProtocol::Srt));
-        ui.add_space(4.0);
-    }
-    let rtsp = protocol == Some(StreamProtocol::Rtsp);
-    if !rtsp {
+    if protocol != Some(StreamProtocol::Rtsp) {
         draft.settings.transport = RtspTransport::Auto;
     }
-    ui.label(section_label(l.text(Msg::NsTransport)));
+    let problem = draft.checked().err();
+    let error = problem.filter(|problem| !problem.prompt);
+    let at = |field: StreamField| error.filter(|problem| problem.field == field);
+    match error.map(|problem| problem.field) {
+        Some(StreamField::Jitter | StreamField::StreamId) => draft.advanced.connection = true,
+        Some(StreamField::Backoff | StreamField::Timeout) => draft.advanced.recovery = true,
+        _ => {}
+    }
+    draw_source(ui, l, draft, protocol, problem);
+    draw_connection(ui, l, draft, protocol, &at);
+    draw_recovery(ui, l, draft, &at);
+}
+
+type ProblemAt<'a> = dyn Fn(StreamField) -> Option<FieldProblem<StreamField>> + 'a;
+
+/// The Source section: the URL (its password masked), and the audio
+/// channels.
+fn draw_source(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut NetworkStreamDraft,
+    protocol: Option<StreamProtocol>,
+    problem: Option<FieldProblem<StreamField>>,
+) {
+    section_heading(
+        ui,
+        l,
+        Msg::NsSectionSource,
+        Some((
+            &mut draft.advanced.source,
+            (Msg::NsAdvSourceShow, Msg::NsAdvSourceHide),
+        )),
+    );
+    sub_label(ui, l, Msg::NsUrl);
+    let has_password = url_password(&draft.url).is_some();
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        for (transport, label) in [
-            (RtspTransport::Auto, Msg::NsTransportAuto),
-            (RtspTransport::Tcp, Msg::NsTransportTcp),
-            (RtspTransport::Udp, Msg::NsTransportUdp),
-        ] {
-            let selected = draft.settings.transport == transport;
-            let response = ui
-                .add_enabled(rtsp, kind_key(l.text(label), selected))
-                .on_hover_text(l.text(Msg::NsTransportHover))
-                .on_disabled_hover_text(format!(
-                    "{}\n{}",
-                    l.text(Msg::NsTransportHover),
-                    crate::l10n::unavailable(l, Msg::NsReasonTransport.en())
-                ));
-            if response.clicked() {
-                draft.settings.transport = transport;
-            }
+        let reveal = draft.reveal.url;
+        let mut layouter = move |ui: &Ui, text: &dyn egui::TextBuffer, _wrap: f32| {
+            let shown = if reveal {
+                text.as_str().to_owned()
+            } else {
+                mask_url_password(text.as_str())
+            };
+            let font = egui::FontSelection::Default.resolve(ui.style());
+            let color = ui
+                .visuals()
+                .override_text_color
+                .unwrap_or_else(|| ui.visuals().widgets.inactive.text_color());
+            let mut job = egui::text::LayoutJob::simple_singleline(shown, font, color);
+            job.keep_trailing_whitespace = true;
+            ui.ctx().fonts_mut(|fonts| fonts.layout_job(job))
+        };
+        let width = beside_key(ui);
+        let response = ui
+            .add(
+                egui::TextEdit::singleline(&mut draft.url)
+                    .id(egui::Id::new("studio-add-input-stream-url"))
+                    .hint_text("rtsp://camera.local:554/stream1")
+                    .char_limit(MAX_STREAM_URL_BYTES)
+                    .layouter(&mut layouter)
+                    .desired_width(width),
+            )
+            .on_hover_text(l.text(Msg::NsUrlHover));
+        if problem.is_some_and(|problem| !problem.prompt && problem.field == StreamField::Url) {
+            mark_invalid(ui, response.rect);
+        }
+        // The key's place is kept while the URL has no password, so the
+        // field does not change width as one is typed.
+        if has_password {
+            reveal_key(ui, l, &mut draft.reveal.url);
+        } else {
+            ui.allocate_exact_size(Vec2::splat(crate::theme::MIN_TARGET), Sense::hover());
         }
     });
-    ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::NsAudio)));
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+    let hint = match problem {
+        Some(problem) if problem.field == StreamField::Url => Some(if problem.prompt {
+            crate::theme::caption(crate::input_catalogue::capitalized(l.tr(problem.reason)))
+        } else {
+            field_error(l, problem.reason)
+        }),
+        _ => protocol.map(|protocol| {
+            crate::theme::caption(l.format(
+                Msg::NsUrlRecognised,
+                &[("protocol", Arg::Str(&protocol.token().to_uppercase()))],
+            ))
+        }),
+    };
+    hint_slot(ui, hint);
+    if !draft.advanced.source {
+        return;
+    }
+    sub_label(ui, l, Msg::NsAudio);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         for audio in AudioChannels::ALL {
             let selected = draft.settings.audio == audio;
             let (label, hover) = match audio.first_channel() {
@@ -182,7 +506,7 @@ pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStream
                 ),
             };
             if ui
-                .add(kind_key(&label, selected))
+                .add(kind_key(&label, selected).min_size(Vec2::new(64.0, 26.0)))
                 .on_hover_text(hover)
                 .clicked()
             {
@@ -190,8 +514,50 @@ pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStream
             }
         }
     });
-    ui.add_space(4.0);
-    egui::Grid::new("studio-add-input-stream-grid")
+}
+
+/// The Connection section: what the URL's protocol connects with.
+fn draw_connection(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut NetworkStreamDraft,
+    protocol: Option<StreamProtocol>,
+    at: &ProblemAt<'_>,
+) {
+    section_heading(
+        ui,
+        l,
+        Msg::NsSectionConnection,
+        Some((
+            &mut draft.advanced.connection,
+            (Msg::NsAdvConnectionShow, Msg::NsAdvConnectionHide),
+        )),
+    );
+    let srt = protocol == Some(StreamProtocol::Srt);
+    let simple = matches!(
+        protocol,
+        Some(StreamProtocol::Rtsp | StreamProtocol::Rtmp | StreamProtocol::Srt)
+    );
+    match protocol {
+        Some(StreamProtocol::Rtsp) => draw_transport(ui, l, draft, at),
+        Some(StreamProtocol::Rtmp | StreamProtocol::Srt) => {
+            draw_mode(ui, l, draft, srt, at);
+            draw_connection_grid(ui, l, draft, srt, at);
+        }
+        _ => {}
+    }
+    if !draft.advanced.connection {
+        if !simple {
+            // Nothing else to set in the simple view, or nothing known yet.
+            ui.label(crate::theme::caption(l.text(if protocol.is_some() {
+                Msg::NsConnectionDefaults
+            } else {
+                Msg::NsConnectionPending
+            })));
+        }
+        return;
+    }
+    egui::Grid::new("studio-add-input-stream-connection-advanced")
         .num_columns(2)
         .spacing(Vec2::new(10.0, 4.0))
         .show(ui, |ui| {
@@ -201,65 +567,70 @@ pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStream
                 (Msg::NsJitter, Msg::NsJitterHover),
                 &mut draft.settings.jitter_buffer_ms,
                 MIN_JITTER_BUFFER_MS..=MAX_JITTER_BUFFER_MS,
+                at(StreamField::Jitter),
             );
-            number_row(
-                ui,
-                l,
-                (Msg::NsBackoffMin, Msg::NsBackoffMinHover),
-                &mut draft.settings.reconnect.backoff_min_ms,
-                MIN_RECONNECT_BACKOFF_MS..=MAX_RECONNECT_BACKOFF_MS,
-            );
-            number_row(
-                ui,
-                l,
-                (Msg::NsBackoffMax, Msg::NsBackoffMaxHover),
-                &mut draft.settings.reconnect.backoff_max_ms,
-                MIN_RECONNECT_BACKOFF_MS..=MAX_RECONNECT_BACKOFF_MS,
-            );
-            number_row(
-                ui,
-                l,
-                (Msg::NsGiveUp, Msg::NsGiveUpHover),
-                &mut draft.give_up_after,
-                0..=MAX_RECONNECT_ATTEMPTS,
-            );
-            number_row(
-                ui,
-                l,
-                (Msg::NsTimeout, Msg::NsTimeoutHover),
-                &mut draft.settings.timeout_ms,
-                MIN_STREAM_TIMEOUT_MS..=MAX_STREAM_TIMEOUT_MS,
-            );
+            if srt {
+                ui.label(
+                    RichText::new(l.text(Msg::NsStreamId))
+                        .size(crate::theme::legible(11.0))
+                        .color(text_dim_color()),
+                )
+                .on_hover_text(l.text(Msg::NsStreamIdHover));
+                let response = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut draft.stream_id)
+                            .char_limit(MAX_SRT_STREAM_ID_BYTES)
+                            .desired_width(220.0),
+                    )
+                    .on_hover_text(l.text(Msg::NsStreamIdHover));
+                ui.end_row();
+                if let Some(problem) = at(StreamField::StreamId) {
+                    mark_invalid(ui, response.rect);
+                    error_row(ui, l, problem.reason);
+                }
+            }
         });
-    ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::NsStall)));
-    ui.horizontal(|ui| {
+    if srt {
+        draw_key_length(ui, l, draft);
+    }
+}
+
+/// The RTSP transport keys.
+fn draw_transport(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, at: &ProblemAt<'_>) {
+    sub_label(ui, l, Msg::NsTransport);
+    let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        for (stall, label, hover) in [
-            (
-                StallSlate::Freeze,
-                Msg::NsStallFreeze,
-                Msg::NsStallFreezeHover,
-            ),
-            (StallSlate::Black, Msg::FtbWordBlack, Msg::NsStallBlackHover),
+        for (transport, label) in [
+            (RtspTransport::Auto, Msg::NsTransportAuto),
+            (RtspTransport::Tcp, Msg::NsTransportTcp),
+            (RtspTransport::Udp, Msg::NsTransportUdp),
         ] {
-            let selected = draft.settings.stall == stall;
+            let selected = draft.settings.transport == transport;
             if ui
-                .add(kind_key(l.text(label), selected))
-                .on_hover_text(l.text(hover))
+                .add(kind_key(l.text(label), selected).min_size(Vec2::new(96.0, 26.0)))
+                .on_hover_text(l.text(Msg::NsTransportHover))
                 .clicked()
             {
-                draft.settings.stall = stall;
+                draft.settings.transport = transport;
             }
         }
     });
+    if let Some(problem) = at(StreamField::Transport) {
+        mark_invalid(ui, row.response.rect);
+        ui.add(egui::Label::new(field_error(l, problem.reason)).wrap());
+    }
 }
 
-/// The RTMP (`srt == false`) or SRT connection fields: the mode, then the
-/// stream key, or the passphrase, key length, stream ID, and latency.
-fn draw_connection_fields(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, srt: bool) {
-    ui.label(section_label(l.text(Msg::NsMode)));
-    ui.horizontal(|ui| {
+/// The RTMP (`srt == false`) or SRT connection mode keys.
+fn draw_mode(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut NetworkStreamDraft,
+    srt: bool,
+    at: &ProblemAt<'_>,
+) {
+    sub_label(ui, l, Msg::NsMode);
+    let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (mode, label, hover) in [
             (
@@ -281,7 +652,10 @@ fn draw_connection_fields(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft
             let enabled = srt || mode != StreamMode::Rendezvous;
             let selected = draft.settings.mode == mode;
             let response = ui
-                .add_enabled(enabled, kind_key(l.text(label), selected))
+                .add_enabled(
+                    enabled,
+                    kind_key(l.text(label), selected).min_size(Vec2::new(120.0, 26.0)),
+                )
                 .on_hover_text(l.text(hover))
                 .on_disabled_hover_text(format!(
                     "{}\n{}",
@@ -293,72 +667,166 @@ fn draw_connection_fields(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft
             }
         }
     });
-    let secret_row = |ui: &mut Ui, label: Msg, hover: Msg, value: &mut String, limit: usize| {
-        ui.label(
-            RichText::new(l.text(label))
-                .size(crate::theme::legible(11.0))
-                .color(text_dim_color()),
-        )
-        .on_hover_text(l.text(hover));
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .password(true)
-                .char_limit(limit)
-                .desired_width(220.0),
-        )
-        .on_hover_text(l.text(hover));
-        ui.end_row();
-    };
+    if let Some(problem) = at(StreamField::Mode) {
+        mark_invalid(ui, row.response.rect);
+        ui.add(egui::Label::new(field_error(l, problem.reason)).wrap());
+    }
+}
+
+/// The RTMP stream key, or the SRT passphrase and latency; a secret is
+/// masked until its eye key shows it.
+fn draw_connection_grid(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut NetworkStreamDraft,
+    srt: bool,
+    at: &ProblemAt<'_>,
+) {
     egui::Grid::new("studio-add-input-stream-connection")
         .num_columns(2)
         .spacing(Vec2::new(10.0, 4.0))
         .show(ui, |ui| {
-            if !srt {
-                secret_row(
-                    ui,
+            let (label, hover, value, limit, shown, field) = if srt {
+                (
+                    Msg::NsPassphrase,
+                    Msg::NsPassphraseHover,
+                    &mut draft.passphrase,
+                    MAX_SRT_PASSPHRASE_BYTES,
+                    &mut draft.reveal.passphrase,
+                    StreamField::Passphrase,
+                )
+            } else {
+                (
                     Msg::NsStreamKey,
                     Msg::NsStreamKeyHover,
                     &mut draft.stream_key,
                     MAX_STREAM_KEY_BYTES,
-                );
-                return;
-            }
-            secret_row(
-                ui,
-                Msg::NsPassphrase,
-                Msg::NsPassphraseHover,
-                &mut draft.passphrase,
-                MAX_SRT_PASSPHRASE_BYTES,
-            );
+                    &mut draft.reveal.stream_key,
+                    StreamField::StreamKey,
+                )
+            };
             ui.label(
-                RichText::new(l.text(Msg::NsStreamId))
+                RichText::new(l.text(label))
                     .size(crate::theme::legible(11.0))
                     .color(text_dim_color()),
             )
-            .on_hover_text(l.text(Msg::NsStreamIdHover));
-            ui.add(
-                egui::TextEdit::singleline(&mut draft.stream_id)
-                    .char_limit(MAX_SRT_STREAM_ID_BYTES)
-                    .desired_width(220.0),
-            )
-            .on_hover_text(l.text(Msg::NsStreamIdHover));
+            .on_hover_text(l.text(hover));
+            ui.horizontal(|ui| {
+                let response = ui
+                    .add(
+                        egui::TextEdit::singleline(value)
+                            .password(!*shown)
+                            .char_limit(limit)
+                            .desired_width(220.0),
+                    )
+                    .on_hover_text(l.text(hover));
+                if at(field).is_some() {
+                    mark_invalid(ui, response.rect);
+                }
+                reveal_key(ui, l, shown);
+            });
             ui.end_row();
+            if let Some(problem) = at(field) {
+                error_row(ui, l, problem.reason);
+            }
+            if srt {
+                number_row(
+                    ui,
+                    l,
+                    (Msg::NsLatency, Msg::NsLatencyHover),
+                    &mut draft.settings.latency_ms,
+                    MIN_SRT_LATENCY_MS..=MAX_SRT_LATENCY_MS,
+                    at(StreamField::Latency),
+                );
+            }
+        });
+}
+
+/// The Recovery section: what the input shows while the stream stalls, and
+/// how it reconnects.
+fn draw_recovery(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, at: &ProblemAt<'_>) {
+    section_heading(
+        ui,
+        l,
+        Msg::NsSectionRecovery,
+        Some((
+            &mut draft.advanced.recovery,
+            (Msg::NsAdvRecoveryShow, Msg::NsAdvRecoveryHide),
+        )),
+    );
+    sub_label(ui, l, Msg::NsStall);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (stall, label, hover) in [
+            (
+                StallSlate::Freeze,
+                Msg::NsStallFreeze,
+                Msg::NsStallFreezeHover,
+            ),
+            (StallSlate::Black, Msg::FtbWordBlack, Msg::NsStallBlackHover),
+        ] {
+            let selected = draft.settings.stall == stall;
+            if ui
+                .add(kind_key(l.text(label), selected))
+                .on_hover_text(l.text(hover))
+                .clicked()
+            {
+                draft.settings.stall = stall;
+            }
+        }
+    });
+    ui.add_space(4.0);
+    egui::Grid::new("studio-add-input-stream-recovery")
+        .num_columns(2)
+        .spacing(Vec2::new(10.0, 4.0))
+        .show(ui, |ui| {
             number_row(
                 ui,
                 l,
-                (Msg::NsLatency, Msg::NsLatencyHover),
-                &mut draft.settings.latency_ms,
-                MIN_SRT_LATENCY_MS..=MAX_SRT_LATENCY_MS,
+                (Msg::NsGiveUp, Msg::NsGiveUpHover),
+                &mut draft.give_up_after,
+                0..=MAX_RECONNECT_ATTEMPTS,
+                at(StreamField::GiveUp),
+            );
+            if !draft.advanced.recovery {
+                return;
+            }
+            let backoff = at(StreamField::Backoff);
+            number_row(
+                ui,
+                l,
+                (Msg::NsBackoffMin, Msg::NsBackoffMinHover),
+                &mut draft.settings.reconnect.backoff_min_ms,
+                MIN_RECONNECT_BACKOFF_MS..=MAX_RECONNECT_BACKOFF_MS,
+                // Both waits are outlined; the reason shows once, under the
+                // pair.
+                backoff.map(|problem| FieldProblem {
+                    reason: "",
+                    ..problem
+                }),
+            );
+            number_row(
+                ui,
+                l,
+                (Msg::NsBackoffMax, Msg::NsBackoffMaxHover),
+                &mut draft.settings.reconnect.backoff_max_ms,
+                MIN_RECONNECT_BACKOFF_MS..=MAX_RECONNECT_BACKOFF_MS,
+                backoff,
+            );
+            number_row(
+                ui,
+                l,
+                (Msg::NsTimeout, Msg::NsTimeoutHover),
+                &mut draft.settings.timeout_ms,
+                MIN_STREAM_TIMEOUT_MS..=MAX_STREAM_TIMEOUT_MS,
+                at(StreamField::Timeout),
             );
         });
-    if srt {
-        draw_key_length(ui, l, draft);
-    }
 }
 
 /// The SRT AES key length keys, enabled once a passphrase is typed.
 fn draw_key_length(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft) {
-    ui.label(section_label(l.text(Msg::NsKeyLength)));
+    sub_label(ui, l, Msg::NsKeyLength);
     let encrypted = !draft.passphrase.is_empty();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -366,7 +834,10 @@ fn draw_key_length(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft) {
             let label = format!("AES-{}", u32::from(length.bytes()) * 8);
             let selected = draft.settings.key_length == length;
             let response = ui
-                .add_enabled(encrypted, kind_key(&label, selected))
+                .add_enabled(
+                    encrypted,
+                    kind_key(&label, selected).min_size(Vec2::new(96.0, 26.0)),
+                )
                 .on_hover_text(l.text(Msg::NsKeyLengthHover))
                 .on_disabled_hover_text(format!(
                     "{}\n{}",
@@ -380,12 +851,22 @@ fn draw_key_length(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft) {
     });
 }
 
+/// A grid row holding only a validation problem, under the control column.
+fn error_row(ui: &mut Ui, l: Locale, reason: &str) {
+    ui.label("");
+    ui.add(egui::Label::new(field_error(l, reason)).wrap());
+    ui.end_row();
+}
+
+/// A labelled number field; a `problem` outlines it in red and, unless its
+/// reason is empty, shows that reason on the next row.
 fn number_row(
     ui: &mut Ui,
     l: Locale,
     (label, hover): (Msg, Msg),
     value: &mut u32,
     range: core::ops::RangeInclusive<u32>,
+    problem: Option<FieldProblem<StreamField>>,
 ) {
     ui.label(
         RichText::new(l.text(label))
@@ -393,9 +874,16 @@ fn number_row(
             .color(text_dim_color()),
     )
     .on_hover_text(l.text(hover));
-    ui.add(DragValue::new(value).range(range).speed(10.0))
+    let response = ui
+        .add(DragValue::new(value).range(range).speed(10.0))
         .on_hover_text(l.text(hover));
     ui.end_row();
+    if let Some(problem) = problem {
+        mark_invalid(ui, response.rect);
+        if !problem.reason.is_empty() {
+            error_row(ui, l, problem.reason);
+        }
+    }
 }
 
 /// The tile badge for a stream status: its text and colour, or `None`
@@ -711,6 +1199,64 @@ mod tests {
         assert_eq!(
             connection_details(Locale::ENGLISH, &rtmp).unwrap(),
             "RTMP CALLER, stream key set"
+        );
+    }
+
+    #[test]
+    fn problems_name_the_field_they_belong_to() {
+        let mut draft = NetworkStreamDraft::default();
+        let problem = draft.checked().unwrap_err();
+        assert_eq!(problem.field, StreamField::Url);
+        assert!(problem.prompt, "an empty URL is still to be typed");
+        draft.url = "rtsp://".into();
+        assert_eq!(
+            draft.checked().unwrap_err(),
+            FieldProblem::error(StreamField::Url, Msg::NsReasonUrlInvalid.en())
+        );
+        draft.url = "rtsp://cam.local/live".into();
+        draft.settings.reconnect.backoff_min_ms = 500;
+        draft.settings.reconnect.backoff_max_ms = 400;
+        assert_eq!(
+            draft.checked().unwrap_err(),
+            FieldProblem::error(StreamField::Backoff, Msg::NsReasonBackoff.en())
+        );
+        assert_eq!(StreamField::Backoff.label(), Msg::NsBackoffMax);
+        draft.settings.reconnect.backoff_max_ms = 5_000;
+        draft.url = "rtmp://0.0.0.0:1935/live".into();
+        draft.stream_key = "obs key".into();
+        assert_eq!(draft.checked().unwrap_err().field, StreamField::StreamKey);
+        draft.url = "srt://0.0.0.0:9000".into();
+        draft.passphrase = "short".into();
+        assert_eq!(draft.checked().unwrap_err().field, StreamField::Passphrase);
+    }
+
+    #[test]
+    fn only_the_url_password_is_masked() {
+        let bullet = egui::epaint::text::PASSWORD_REPLACEMENT_CHAR;
+        let url = "rtsp://operator:s3cret@10.0.0.42:554/stream1";
+        let masked = mask_url_password(url);
+        assert_eq!(
+            masked,
+            format!(
+                "rtsp://operator:{}@10.0.0.42:554/stream1",
+                bullet.to_string().repeat(6)
+            )
+        );
+        assert_eq!(masked.chars().count(), url.chars().count());
+        for plain in [
+            "rtsp://cam.local/live",
+            "rtsp://operator@cam.local/live",
+            "rtsp://operator:@cam.local/live",
+            "http://cam.local/a:b@c",
+            "not a url",
+        ] {
+            assert_eq!(url_password(plain), None, "{plain}");
+            assert_eq!(mask_url_password(plain), plain);
+        }
+        // The last `@` of the authority ends the password.
+        assert_eq!(
+            url_password("rtsp://u:p@ss@h/live").map(|range| &"rtsp://u:p@ss@h/live"[range]),
+            Some("p@ss")
         );
     }
 }

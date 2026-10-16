@@ -2168,7 +2168,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::NsBadgeBuffering, t("ALMACENANDO")),
     (Msg::NsBadgeStalled, t("CORTADO")),
     (Msg::NsBadgeListening, t("ESCUCHANDO")),
-    (Msg::NsMode, t("Conexión")),
+    (Msg::NsMode, t("Modo de conexión")),
     (Msg::NsModeCaller, t("LLAMADA")),
     (Msg::NsModeListener, t("ESCUCHA")),
     (Msg::NsModeRendezvous, t("ENCUENTRO")),
@@ -2287,6 +2287,58 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::NsDetailNextAttempt,
         t("Próximo intento en {seconds} s"),
     ),
+    (Msg::NsSectionSource, t("Origen del flujo")),
+    (Msg::NsSectionConnection, t("Conexión")),
+    (Msg::NsSectionRecovery, t("Recuperación")),
+    (Msg::NsUrlRecognised, t("Flujo {protocol}")),
+    (
+        Msg::NsConnectionDefaults,
+        t(
+            "Este protocolo se conecta con sus valores por defecto; Avanzado tiene el búfer de fluctuación",
+        ),
+    ),
+    (
+        Msg::NsConnectionPending,
+        t("Los ajustes de conexión dependen del protocolo de la URL"),
+    ),
+    (Msg::AdvancedKey, t("AVANZADO")),
+    (
+        Msg::NsAdvSourceShow,
+        t("Muestra los canales de audio que oye la entrada"),
+    ),
+    (
+        Msg::NsAdvSourceHide,
+        t("Oculta los canales de audio (la elección se conserva)"),
+    ),
+    (
+        Msg::NsAdvConnectionShow,
+        t(
+            "Muestra el búfer de fluctuación y, para SRT, el ID de flujo y la longitud de la clave de cifrado",
+        ),
+    ),
+    (
+        Msg::NsAdvConnectionHide,
+        t("Oculta los ajustes de conexión menos habituales (sus valores se conservan)"),
+    ),
+    (
+        Msg::NsAdvRecoveryShow,
+        t("Muestra las esperas de reconexión y el tiempo de espera sin datos"),
+    ),
+    (
+        Msg::NsAdvRecoveryHide,
+        t("Oculta las esperas de reconexión y el tiempo de espera (sus valores se conservan)"),
+    ),
+    (Msg::SecretShow, t("Mostrar secreto")),
+    (Msg::SecretHide, t("Ocultar secreto")),
+    (
+        Msg::SecretShowHover,
+        t("Muestra lo escrito aquí; los secretos se ocultan por defecto"),
+    ),
+    (Msg::SecretHideHover, t("Vuelve a ocultar lo escrito aquí")),
+    (
+        Msg::AddInputFixField,
+        t("Corrige el campo marcado en rojo: {field}"),
+    ),
     (Msg::NameCapture, t("Cámara")),
     (Msg::KindCaptureKey, t("CÁMARA / CAPTURA")),
     (
@@ -2380,6 +2432,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::CapFilterNone,
         t("Ningún formato coincide con estos filtros"),
     ),
+    (
+        Msg::CapAdvFormatShow,
+        t(
+            "Muestra los filtros de tamaño de imagen, cadencia y formato de píxel de la lista de formatos",
+        ),
+    ),
+    (
+        Msg::CapAdvFormatHide,
+        t("Oculta los filtros de formato y vuelve a listar todos los formatos"),
+    ),
     (Msg::CapRateFps, t("{rate} cps")),
     (Msg::CapAudioNone, t("NINGUNO")),
     (Msg::CapAudioPaired, t("AUDIO DEL DISPOSITIVO")),
@@ -2398,6 +2460,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::CapPairedAudio, t("Audio emparejado: {audio}")),
+    (Msg::CapAlsaDevice, t("Nombre del dispositivo ALSA")),
     (
         Msg::CapAlsaDeviceHover,
         t(

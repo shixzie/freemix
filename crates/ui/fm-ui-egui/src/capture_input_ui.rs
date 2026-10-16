@@ -34,7 +34,10 @@ use crate::StudioUiState;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_catalogue::kind_key;
 use crate::l10n::{Arg, Locale, Msg};
-use crate::theme::{AMBER, ERROR, mono, muted_color, section_label, text_dim_color};
+use crate::network_stream_ui::{
+    FieldProblem, field_error, hint_slot, mark_invalid, section_heading, section_heading_with,
+};
+use crate::theme::{AMBER, ERROR, mono, muted_color, text_dim_color};
 
 /// The audio a new capture input hears, as the form offers it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -75,17 +78,46 @@ pub(crate) struct CaptureDraft {
     pub(crate) alsa_device: String,
     pub(crate) loss: CaptureLossSlate,
     pub(crate) filter: FormatFilter,
+    /// The format filters show (the Format section's Advanced group).
+    pub(crate) advanced: bool,
+}
+
+/// The capture form field a validation problem belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureField {
+    Device,
+    Format,
+    Alsa,
+}
+
+impl CaptureField {
+    /// The field's label, as the form shows it.
+    pub(crate) const fn label(self) -> Msg {
+        match self {
+            Self::Device => Msg::CapDevice,
+            Self::Format => Msg::CapFormat,
+            Self::Alsa => Msg::CapAlsaDevice,
+        }
+    }
 }
 
 impl CaptureDraft {
     /// The configuration the form describes, or why the daemon would refuse
     /// it (an English catalog reason).
     pub(crate) fn config(&self) -> Result<CaptureInputConfig, &'static str> {
+        self.checked().map_err(|problem| problem.reason)
+    }
+
+    /// [`Self::config`], with the field each problem belongs to.
+    pub(crate) fn checked(&self) -> Result<CaptureInputConfig, FieldProblem<CaptureField>> {
         let stable_key = self
             .device
             .as_deref()
             .filter(|key| validate_stable_key(key).is_ok())
-            .ok_or(Msg::CapReasonNoDevice.en())?;
+            .ok_or(FieldProblem::prompt(
+                CaptureField::Device,
+                Msg::CapReasonNoDevice.en(),
+            ))?;
         let audio = match self.audio {
             AudioChoice::None => CaptureAudio::None,
             AudioChoice::Paired => CaptureAudio::Paired,
@@ -100,12 +132,22 @@ impl CaptureDraft {
             },
         };
         config.validate().map_err(|error| match error {
-            CaptureError::AlsaDevice => Msg::CapReasonAlsa.en(),
-            CaptureError::StableKey => Msg::CapReasonNoDevice.en(),
+            // An empty name is still to be typed, not wrong.
+            CaptureError::AlsaDevice if self.alsa_device.trim().is_empty() => {
+                FieldProblem::prompt(CaptureField::Alsa, Msg::CapReasonAlsa.en())
+            }
+            CaptureError::AlsaDevice => {
+                FieldProblem::error(CaptureField::Alsa, Msg::CapReasonAlsa.en())
+            }
+            CaptureError::StableKey => {
+                FieldProblem::prompt(CaptureField::Device, Msg::CapReasonNoDevice.en())
+            }
             CaptureError::Dimensions
             | CaptureError::Rate
             | CaptureError::FormatToken
-            | CaptureError::Token => Msg::CapReasonSettings.en(),
+            | CaptureError::Token => {
+                FieldProblem::error(CaptureField::Format, Msg::CapReasonSettings.en())
+            }
         })?;
         Ok(config)
     }
@@ -241,25 +283,22 @@ pub(crate) fn draw_capture_form(
         draft.device = None;
         draft.format = None;
     }
-    ui.horizontal(|ui| {
-        ui.label(section_label(l.text(Msg::CapDevice)));
-        ui.with_layout(crate::l10n::trailing_layout(l), |ui| {
-            if ui
-                .add_enabled(
-                    state.connection_status.controls_enabled(),
-                    egui::Button::new(
-                        RichText::new(l.text(Msg::CapRefresh)).size(crate::theme::legible(11.0)),
-                    ),
-                )
-                .hint(
-                    l.text(Msg::CapRefreshHover),
-                    unavailable_reason(state, Capability::EditProject),
-                )
-                .clicked()
-            {
-                outcome.rescan = true;
-            }
-        });
+    section_heading_with(ui, l, Msg::CapDevice, |ui| {
+        if ui
+            .add_enabled(
+                state.connection_status.controls_enabled(),
+                egui::Button::new(
+                    RichText::new(l.text(Msg::CapRefresh)).size(crate::theme::legible(11.0)),
+                ),
+            )
+            .hint(
+                l.text(Msg::CapRefreshHover),
+                unavailable_reason(state, Capability::EditProject),
+            )
+            .clicked()
+        {
+            outcome.rescan = true;
+        }
     });
     let (line, problem) = inventory_line(l, inventory);
     ui.label(
@@ -269,19 +308,27 @@ pub(crate) fn draw_capture_form(
     );
     let devices = inventory.map_or(&[][..], |inventory| inventory.devices.as_slice());
     outcome.picked = draw_devices(ui, l, devices, draft);
+    let problem = draft.checked().err();
+    // Choosing a device is prompted for under the list, in a slot that
+    // keeps its height once one is chosen.
+    hint_slot(
+        ui,
+        problem
+            .filter(|problem| problem.field == CaptureField::Device && !devices.is_empty())
+            .map(|problem| {
+                crate::theme::caption(crate::input_catalogue::capitalized(l.tr(problem.reason)))
+            }),
+    );
     let device = draft.device.as_deref().and_then(|key| {
         devices
             .iter()
             .find(|device| device.stable_key.as_str() == key)
     });
     if let Some(device) = device {
-        ui.add_space(4.0);
-        draw_format_picker(ui, l, device, draft);
-        ui.add_space(4.0);
-        draw_audio(ui, l, device, draft);
+        draw_format_picker(ui, l, device, draft, problem);
+        draw_audio(ui, l, device, draft, problem);
     }
-    ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::CapLoss)));
+    section_heading(ui, l, Msg::CapLoss, None);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (loss, label, hover) in [
@@ -462,9 +509,28 @@ fn draw_filters(ui: &mut Ui, l: Locale, device: &CaptureDevice, filter: &mut For
 
 /// The format picker: Automatic, or one of the device's formats that pass
 /// the filters, grouped by resolution class.
-fn draw_format_picker(ui: &mut Ui, l: Locale, device: &CaptureDevice, draft: &mut CaptureDraft) {
-    ui.label(section_label(l.text(Msg::CapFormat)));
-    draw_filters(ui, l, device, &mut draft.filter);
+fn draw_format_picker(
+    ui: &mut Ui,
+    l: Locale,
+    device: &CaptureDevice,
+    draft: &mut CaptureDraft,
+    problem: Option<FieldProblem<CaptureField>>,
+) {
+    section_heading(
+        ui,
+        l,
+        Msg::CapFormat,
+        Some((
+            &mut draft.advanced,
+            (Msg::CapAdvFormatShow, Msg::CapAdvFormatHide),
+        )),
+    );
+    if draft.advanced {
+        draw_filters(ui, l, device, &mut draft.filter);
+    } else {
+        // Hidden filters would hide formats without saying so.
+        draft.filter = FormatFilter::default();
+    }
     let mut formats: Vec<CaptureFormat> = device
         .formats
         .iter()
@@ -479,7 +545,7 @@ fn draw_format_picker(ui: &mut Ui, l: Locale, device: &CaptureDevice, draft: &mu
             format.scan,
         )
     });
-    ScrollArea::vertical()
+    let list = ScrollArea::vertical()
         .id_salt("studio-add-input-capture-formats")
         .max_height(150.0)
         .auto_shrink([false, true])
@@ -528,10 +594,20 @@ fn draw_format_picker(ui: &mut Ui, l: Locale, device: &CaptureDevice, draft: &mu
                 }
             }
         });
+    if let Some(problem) = problem.filter(|problem| problem.field == CaptureField::Format) {
+        mark_invalid(ui, list.inner_rect);
+        ui.add(egui::Label::new(field_error(l, problem.reason)).wrap());
+    }
 }
 
-fn draw_audio(ui: &mut Ui, l: Locale, device: &CaptureDevice, draft: &mut CaptureDraft) {
-    ui.label(section_label(l.text(Msg::StingerAudio)));
+fn draw_audio(
+    ui: &mut Ui,
+    l: Locale,
+    device: &CaptureDevice,
+    draft: &mut CaptureDraft,
+    problem: Option<FieldProblem<CaptureField>>,
+) {
+    section_heading(ui, l, Msg::StingerAudio, None);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         for (audio, label, hover) in [
@@ -567,28 +643,33 @@ fn draw_audio(ui: &mut Ui, l: Locale, device: &CaptureDevice, draft: &mut Captur
             );
         }
         AudioChoice::Alsa => {
-            ui.add(
-                egui::TextEdit::singleline(&mut draft.alsa_device)
-                    .id(egui::Id::new("studio-add-input-capture-alsa"))
-                    .hint_text("hw:CARD=C920,DEV=0")
-                    .char_limit(MAX_ALSA_DEVICE_BYTES)
-                    .desired_width(ui.available_width()),
-            )
-            .on_hover_text(l.text(Msg::CapAlsaDeviceHover));
-            if CaptureAudio::Alsa(draft.alsa_device.trim().to_owned())
-                .validate()
-                .is_err()
-            {
-                ui.label(
-                    RichText::new(l.text(Msg::CapReasonAlsa))
-                        .size(crate::theme::legible(10.5))
-                        .color(if draft.alsa_device.trim().is_empty() {
-                            muted_color()
-                        } else {
-                            ERROR
-                        }),
-                );
+            crate::network_stream_ui::sub_label(ui, l, Msg::CapAlsaDevice);
+            let response = ui
+                .add(
+                    egui::TextEdit::singleline(&mut draft.alsa_device)
+                        .id(egui::Id::new("studio-add-input-capture-alsa"))
+                        .hint_text("hw:CARD=C920,DEV=0")
+                        .char_limit(MAX_ALSA_DEVICE_BYTES)
+                        .desired_width(ui.available_width()),
+                )
+                .on_hover_text(l.text(Msg::CapAlsaDeviceHover));
+            let alsa = problem.filter(|problem| problem.field == CaptureField::Alsa);
+            if alsa.is_some_and(|problem| !problem.prompt) {
+                mark_invalid(ui, response.rect);
             }
+            // The hint slot keeps its height while the name is valid.
+            hint_slot(
+                ui,
+                alsa.map(|problem| {
+                    if problem.prompt {
+                        crate::theme::caption(crate::input_catalogue::capitalized(
+                            l.tr(problem.reason),
+                        ))
+                    } else {
+                        field_error(l, problem.reason)
+                    }
+                }),
+            );
         }
     }
 }

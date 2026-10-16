@@ -21,8 +21,9 @@ use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_bank::project_editing_available;
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
+use crate::network_stream_ui::FieldProblem;
 use crate::theme::{
-    ACCENT_FILL, AMBER, ERROR, MONITOR_BLACK, PROGRAM, PROGRAM_FILL, Tone, accent_color,
+    ACCENT_FILL, AMBER, MONITOR_BLACK, PROGRAM, PROGRAM_FILL, Tone, accent_color,
     border_strong_color, mono, muted_color, paint_lamp, section_label, text_color, text_dim_color,
     widget_color,
 };
@@ -497,6 +498,122 @@ impl AddInputDraft {
             NewInputKind::Capture => LiveInputSource::Capture(Box::new(self.capture.config()?)),
         })
     }
+
+    /// The stream or capture form field the source fails on: its label,
+    /// the reason, and whether it is only still to be filled in.
+    pub(crate) fn source_problem(&self) -> Option<FieldProblem<Msg>> {
+        let problem = match self.kind {
+            NewInputKind::Solid | NewInputKind::Bars => return None,
+            NewInputKind::Network => {
+                let problem = self.stream.checked().err()?;
+                (problem.field.label(), problem.reason, problem.prompt)
+            }
+            NewInputKind::Capture => {
+                let problem = self.capture.checked().err()?;
+                (problem.field.label(), problem.reason, problem.prompt)
+            }
+        };
+        Some(FieldProblem {
+            field: problem.0,
+            reason: problem.1,
+            prompt: problem.2,
+        })
+    }
+}
+
+/// The footer line of the Add input dialog for a blocked add: a short
+/// pointer to the field to fix when the reason belongs to one (the reason
+/// itself shows under that field), else the reason; and the full
+/// `Unavailable: …` line for its hover.
+pub(crate) fn add_input_summary(
+    l: Locale,
+    draft: &AddInputDraft,
+    taken: &[&str],
+    reason: &str,
+) -> (String, String) {
+    let full = l10n::unavailable(l, reason);
+    let field = if input_name_problem(&draft.name, taken) == Some(reason) {
+        Some(Msg::AddInputName)
+    } else {
+        draft
+            .source_problem()
+            .filter(|problem| problem.reason == reason && !problem.prompt)
+            .map(|problem| problem.field)
+    };
+    let short = field.map_or_else(
+        || full.clone(),
+        |field| l.format(Msg::AddInputFixField, &[("field", Arg::Str(l.text(field)))]),
+    );
+    (short, full)
+}
+
+/// Where the Add input dialog's top edge sits: a fixed distance from the
+/// top of the screen, so the dialog grows and shrinks downwards as hint
+/// lines and sections come and go instead of re-centring.
+fn dialog_top(screen_height: f32) -> f32 {
+    (screen_height * 0.06).clamp(12.0, 64.0)
+}
+
+/// Room the dialog's title, footer, and margins take besides its body.
+const DIALOG_CHROME: f32 = 160.0;
+
+/// A modal like [`crate::menu::help_modal`], anchored at the top centre of
+/// the screen; `add_contents` gets the height its scrolled body may take.
+fn anchored_modal(
+    context: &egui::Context,
+    id: &str,
+    title: &str,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui, f32),
+) -> bool {
+    let l = l10n::locale(context);
+    let screen = context.content_rect();
+    let top = dialog_top(screen.height());
+    let body = (screen.height() - 2.0 * top - DIALOG_CHROME).max(120.0);
+    let mut close = false;
+    let response = egui::Modal::new(egui::Id::new(id))
+        .area(
+            egui::Modal::default_area(egui::Id::new(id))
+                .anchor(Align2::CENTER_TOP, Vec2::new(0.0, top)),
+        )
+        .backdrop_color(Color32::from_black_alpha(150))
+        .frame(
+            egui::Frame::new()
+                .fill(crate::theme::raised_color())
+                .stroke(Stroke::new(
+                    crate::theme::line_width(),
+                    border_strong_color(),
+                ))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(18)),
+        )
+        .show(context, |ui| {
+            ui.set_width(width);
+            // The area offers last frame's size; the body may grow to the
+            // screen's height.
+            ui.set_max_height(screen.height() - 2.0 * top);
+            // As in help_modal, the close key's place is reserved in the
+            // title row and the key created last, for the Tab order.
+            let mut close_slot = Rect::NOTHING;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).size(16.0).strong().color(text_color()));
+                ui.with_layout(l10n::trailing_layout(l), |ui| {
+                    close_slot = ui
+                        .allocate_exact_size(Vec2::splat(crate::theme::MIN_TARGET), Sense::hover())
+                        .0;
+                });
+            });
+            ui.separator();
+            add_contents(ui, body);
+            if ui
+                .put(close_slot, crate::theme::close_key(14.0))
+                .on_hover_text(l.text(Msg::CloseEsc))
+                .clicked()
+            {
+                close = true;
+            }
+        });
+    close || response.should_close()
 }
 
 /// `#rrggbb` text for a colour.
@@ -910,7 +1027,6 @@ impl StudioShell {
         let Some(mut draft) = self.add_input.take() else {
             return;
         };
-        let submission = add_input_intent(&draft, state, &self.catalogue);
         let next_id = state
             .view
             .as_ref()
@@ -927,192 +1043,207 @@ impl StudioShell {
         let mut submit = false;
         let mut cancel = false;
         let l = self.locale;
-        let closed = crate::menu::help_modal(
+        let catalogue = &self.catalogue;
+        let closed = anchored_modal(
             context,
             "studio-add-input-window",
             l.text(Msg::AddInput),
             460.0,
-            |ui| {
-                ui.label(
-                    RichText::new(l.text(Msg::AddInputIntro))
-                        .size(crate::theme::legible(11.0))
-                        .color(text_dim_color()),
-                );
-                ui.add_space(8.0);
-                ui.label(section_label(l.text(Msg::AddInputKind)));
-                // Four kinds wrap rather than widen the dialog.
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
-                    for kind in [
-                        NewInputKind::Solid,
-                        NewInputKind::Bars,
-                        NewInputKind::Network,
-                        NewInputKind::Capture,
-                    ] {
-                        let selected = draft.kind == kind;
-                        let response = ui
-                            .add(kind_key(l.text(kind.key_label()), selected))
-                            .on_hover_text(l.text(kind.description()));
-                        if response.clicked() && !selected {
-                            let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
-                            draft.set_kind(kind, &taken);
-                            // The capture form lists the server's devices.
-                            if kind == NewInputKind::Capture {
-                                intents.push(StudioIntent::RequestCaptureDevices);
-                            }
-                        }
-                    }
-                });
-                ui.add_space(6.0);
-                ui.label(section_label(l.text(Msg::AddInputName)));
-                let edit = ui
-                    .add(
-                        egui::TextEdit::singleline(&mut draft.name)
-                            .id(egui::Id::new("studio-add-input-name"))
-                            .char_limit(MAX_INPUT_NAME_BYTES)
-                            .desired_width(ui.available_width()),
-                    )
-                    .on_hover_text(l.text(Msg::AddInputNameHover));
-                if draft.focus_pending {
-                    draft.focus_pending = false;
-                    edit.request_focus();
-                }
-                if edit.changed() {
-                    draft.name_edited = true;
-                }
-                if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    submit = true;
-                }
-                let taken_refs: Vec<&str> = taken.iter().map(String::as_str).collect();
-                match input_name_problem(&draft.name, &taken_refs) {
-                    Some(problem) => {
+            |ui, body_height| {
+                // The body scrolls on a short screen; the footer stays.
+                egui::ScrollArea::vertical()
+                    .id_salt("studio-add-input-body")
+                    .max_height(body_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
                         ui.label(
-                            RichText::new(capitalized(l.tr(problem)))
-                                .size(crate::theme::legible(10.5))
-                                .color(ERROR),
+                            RichText::new(l.text(Msg::AddInputIntro))
+                                .size(crate::theme::legible(11.0))
+                                .color(text_dim_color()),
                         );
-                    }
-                    None if !draft.name_edited => {
-                        ui.label(
-                            RichText::new(l.text(Msg::NameSuggested))
-                                .size(crate::theme::legible(10.5))
-                                .color(muted_color()),
-                        );
-                    }
-                    None => {
-                        ui.label(
-                            RichText::new(l.text(Msg::NameFree))
-                                .size(crate::theme::legible(10.5))
-                                .color(muted_color()),
-                        );
-                    }
-                }
-                if draft.kind == NewInputKind::Network {
-                    ui.add_space(6.0);
-                    crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
-                }
-                if draft.kind == NewInputKind::Capture {
-                    ui.add_space(6.0);
-                    let outcome = crate::capture_input_ui::draw_capture_form(
-                        ui,
-                        l,
-                        state,
-                        &mut draft.capture,
-                    );
-                    if outcome.rescan {
-                        intents.push(StudioIntent::RequestCaptureDevices);
-                    }
-                    // The device name is the suggested input name.
-                    if let Some(device) = outcome.picked
-                        && !draft.name_edited
-                    {
-                        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
-                        if let Some(name) = crate::capture_input_ui::suggested_name(&device, &taken)
-                        {
-                            draft.name = name;
-                        }
-                    }
-                }
-                ui.add_space(6.0);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 16.0;
-                    ui.vertical(|ui| {
-                        ui.label(section_label(l.text(Msg::AddInputPreview)));
-                        paint_source_preview(ui, &draft, next_id);
-                        let position = ("position", Arg::from(position));
-                        ui.label(
-                            mono(next_id.map_or_else(
-                                || l.format(Msg::AddInputNoIdPosition, &[position]),
-                                |input| {
-                                    l.format(
-                                        Msg::AddInputIdPosition,
-                                        &[position, ("input", Arg::Str(&input.to_string()))],
-                                    )
-                                },
-                            ))
-                            .size(crate::theme::legible(10.5))
-                            .color(text_dim_color()),
-                        );
-                    });
-                    if draft.kind == NewInputKind::Solid {
-                        ui.vertical(|ui| {
-                            ui.label(section_label(l.text(Msg::AddInputColour)));
-                            ui.horizontal_wrapped(|ui| {
-                                ui.set_max_width(220.0);
-                                ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
-                                for (label, color) in COLOUR_PRESETS {
-                                    if colour_swatch(ui, color, draft.color == color)
-                                        .on_hover_text(l.format(
-                                            Msg::ColourSwatchHover,
-                                            &[
-                                                ("colour", Arg::Str(l.text(label))),
-                                                ("hex", Arg::Str(&hex_colour(color))),
-                                            ],
-                                        ))
-                                        .clicked()
-                                    {
-                                        draft.color = color;
+                        ui.add_space(8.0);
+                        ui.label(section_label(l.text(Msg::AddInputKind)));
+                        // Four kinds wrap rather than widen the dialog.
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+                            for kind in [
+                                NewInputKind::Solid,
+                                NewInputKind::Bars,
+                                NewInputKind::Network,
+                                NewInputKind::Capture,
+                            ] {
+                                let selected = draft.kind == kind;
+                                let response = ui
+                                    .add(kind_key(l.text(kind.key_label()), selected))
+                                    .on_hover_text(l.text(kind.description()));
+                                if response.clicked() && !selected {
+                                    let taken: Vec<&str> =
+                                        taken.iter().map(String::as_str).collect();
+                                    draft.set_kind(kind, &taken);
+                                    // The capture form lists the server's devices.
+                                    if kind == NewInputKind::Capture {
+                                        intents.push(StudioIntent::RequestCaptureDevices);
                                     }
                                 }
-                            });
-                            ui.horizontal(|ui| {
-                                egui::color_picker::color_edit_button_srgba(
-                                    ui,
-                                    &mut draft.color,
-                                    egui::color_picker::Alpha::Opaque,
-                                )
-                                .on_hover_text(l.text(Msg::ColourPickHover));
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.label(section_label(l.text(Msg::AddInputName)));
+                        let edit = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut draft.name)
+                                    .id(egui::Id::new("studio-add-input-name"))
+                                    .char_limit(MAX_INPUT_NAME_BYTES)
+                                    .desired_width(ui.available_width()),
+                            )
+                            .on_hover_text(l.text(Msg::AddInputNameHover));
+                        if draft.focus_pending {
+                            draft.focus_pending = false;
+                            edit.request_focus();
+                        }
+                        if edit.changed() {
+                            draft.name_edited = true;
+                        }
+                        if edit.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                        {
+                            submit = true;
+                        }
+                        let taken_refs: Vec<&str> = taken.iter().map(String::as_str).collect();
+                        let name_problem = input_name_problem(&draft.name, &taken_refs);
+                        if name_problem.is_some() {
+                            crate::network_stream_ui::mark_invalid(ui, edit.rect);
+                        }
+                        crate::network_stream_ui::hint_slot(
+                            ui,
+                            Some(match name_problem {
+                                Some(problem) => crate::network_stream_ui::field_error(l, problem),
+                                None if !draft.name_edited => {
+                                    crate::theme::caption(l.text(Msg::NameSuggested))
+                                }
+                                None => crate::theme::caption(l.text(Msg::NameFree)),
+                            }),
+                        );
+                        if draft.kind == NewInputKind::Network {
+                            ui.add_space(6.0);
+                            crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
+                        }
+                        if draft.kind == NewInputKind::Capture {
+                            ui.add_space(6.0);
+                            let outcome = crate::capture_input_ui::draw_capture_form(
+                                ui,
+                                l,
+                                state,
+                                &mut draft.capture,
+                            );
+                            if outcome.rescan {
+                                intents.push(StudioIntent::RequestCaptureDevices);
+                            }
+                            // The device name is the suggested input name.
+                            if let Some(device) = outcome.picked
+                                && !draft.name_edited
+                            {
+                                let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+                                if let Some(name) =
+                                    crate::capture_input_ui::suggested_name(&device, &taken)
+                                {
+                                    draft.name = name;
+                                }
+                            }
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 16.0;
+                            ui.vertical(|ui| {
+                                ui.label(section_label(l.text(Msg::AddInputPreview)));
+                                paint_source_preview(ui, &draft, next_id);
+                                let position = ("position", Arg::from(position));
                                 ui.label(
-                                    mono(hex_colour(draft.color))
-                                        .size(crate::theme::legible(11.5))
-                                        .color(text_color()),
+                                    mono(next_id.map_or_else(
+                                        || l.format(Msg::AddInputNoIdPosition, &[position]),
+                                        |input| {
+                                            l.format(
+                                                Msg::AddInputIdPosition,
+                                                &[
+                                                    position,
+                                                    ("input", Arg::Str(&input.to_string())),
+                                                ],
+                                            )
+                                        },
+                                    ))
+                                    .size(crate::theme::legible(10.5))
+                                    .color(text_dim_color()),
                                 );
                             });
+                            if draft.kind == NewInputKind::Solid {
+                                ui.vertical(|ui| {
+                                    ui.label(section_label(l.text(Msg::AddInputColour)));
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.set_max_width(220.0);
+                                        ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
+                                        for (label, color) in COLOUR_PRESETS {
+                                            if colour_swatch(ui, color, draft.color == color)
+                                                .on_hover_text(l.format(
+                                                    Msg::ColourSwatchHover,
+                                                    &[
+                                                        ("colour", Arg::Str(l.text(label))),
+                                                        ("hex", Arg::Str(&hex_colour(color))),
+                                                    ],
+                                                ))
+                                                .clicked()
+                                            {
+                                                draft.color = color;
+                                            }
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        egui::color_picker::color_edit_button_srgba(
+                                            ui,
+                                            &mut draft.color,
+                                            egui::color_picker::Alpha::Opaque,
+                                        )
+                                        .on_hover_text(l.text(Msg::ColourPickHover));
+                                        ui.label(
+                                            mono(hex_colour(draft.color))
+                                                .size(crate::theme::legible(11.5))
+                                                .color(text_color()),
+                                        );
+                                    });
+                                });
+                            }
                         });
-                    }
-                });
-                ui.add_space(8.0);
+                    });
+                // The rebuilt intent, so the footer agrees with this
+                // frame's edits.
+                let submission = add_input_intent(&draft, state, catalogue);
+                ui.add_space(6.0);
                 ui.separator();
-                ui.horizontal(|ui| {
+                // The footer's message has its own wrapping row above the
+                // keys, so a long reason never runs under them.
+                ui.horizontal_top(|ui| {
                     if let Err(reason) = submission {
+                        let names: Vec<&str> = taken.iter().map(String::as_str).collect();
+                        let (short, full) = add_input_summary(l, &draft, &names, reason);
                         let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
                         paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
                         ui.add(
                             egui::Label::new(
-                                RichText::new(l10n::unavailable(l, reason))
+                                RichText::new(short)
                                     .size(crate::theme::legible(10.5))
                                     .color(AMBER),
                             )
-                            .truncate(),
+                            .wrap(),
                         )
-                        .on_hover_text(l10n::unavailable(l, reason));
+                        .on_hover_text(full);
                     } else {
-                        ui.label(
-                            RichText::new(l.text(Msg::AddInputUndoNote))
-                                .size(crate::theme::legible(10.5))
-                                .color(muted_color()),
+                        ui.add(
+                            egui::Label::new(crate::theme::caption(l.text(Msg::AddInputUndoNote)))
+                                .wrap(),
                         );
                     }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Add sits right of Cancel but is created after it,
                         // so Tab runs left to right: Cancel, then Add.
@@ -2205,5 +2336,235 @@ mod tests {
                 "v4l2:usb-1:C920"
             )))
         );
+    }
+
+    /// The Add input dialog drafts the layout test draws: every kind, the
+    /// stream form's simple and Advanced views with problems in a hidden
+    /// and a shown field, and the capture form with its filters and a bad
+    /// ALSA name.
+    fn dialog_drafts(state: &StudioUiState) -> Vec<(&'static str, AddInputDraft)> {
+        use crate::capture_input_ui::AudioChoice;
+        use crate::network_stream_ui::StreamAdvanced;
+        let mut shell = StudioShell::default();
+        shell.open_add_input(state);
+        let base = shell.add_input.clone().unwrap();
+        let with = |kind, configure: &dyn Fn(&mut AddInputDraft)| {
+            let mut draft = base.clone();
+            draft.kind = kind;
+            draft.focus_pending = false;
+            configure(&mut draft);
+            draft
+        };
+        let all_open = StreamAdvanced {
+            source: true,
+            connection: true,
+            recovery: true,
+        };
+        let webcam = crate::hover_audit::capture_inventory().devices[0].clone();
+        vec![
+            ("solid", with(NewInputKind::Solid, &|_| {})),
+            ("network-empty", with(NewInputKind::Network, &|_| {})),
+            (
+                "network-rtsp-backoff",
+                with(NewInputKind::Network, &|draft| {
+                    draft.stream.url = "rtsp://operator:s3cret@10.0.0.42:554/stream1".into();
+                    draft.stream.settings.transport = fm_protocol::RtspTransport::Tcp;
+                    draft.stream.settings.reconnect.backoff_min_ms = 500;
+                    draft.stream.settings.reconnect.backoff_max_ms = 400;
+                }),
+            ),
+            (
+                "network-rtmp-key",
+                with(NewInputKind::Network, &|draft| {
+                    draft.stream.url = "rtmp://0.0.0.0:1935/live".into();
+                    draft.stream.settings.mode = fm_protocol::StreamMode::Listener;
+                    draft.stream.stream_key = "obs key".into();
+                }),
+            ),
+            (
+                "network-srt-advanced",
+                with(NewInputKind::Network, &|draft| {
+                    draft.stream.url = "srt://0.0.0.0:9000".into();
+                    draft.stream.settings.mode = fm_protocol::StreamMode::Listener;
+                    draft.stream.passphrase = "correct-horse-battery".into();
+                    draft.stream.reveal.passphrase = true;
+                    draft.stream.stream_id = "cam1".into();
+                    draft.stream.advanced = all_open;
+                }),
+            ),
+            ("capture-none", with(NewInputKind::Capture, &|_| {})),
+            (
+                "capture-advanced",
+                with(NewInputKind::Capture, &|draft| {
+                    draft.capture.select_device(&webcam);
+                    draft.capture.advanced = true;
+                    draft.capture.format = Some(webcam.formats[0]);
+                    draft.capture.audio = AudioChoice::Alsa;
+                    draft.capture.alsa_device = "bad name".into();
+                }),
+            ),
+        ]
+    }
+
+    /// Every text a pass painted, each with its rectangle cut to its clip
+    /// rectangle.
+    fn painted_texts(output: &egui::FullOutput) -> Vec<(String, Rect)> {
+        fn collect(shape: &egui::Shape, clip: Rect, out: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let rect = text
+                        .galley
+                        .rect
+                        .translate(text.pos.to_vec2())
+                        .intersect(clip);
+                    if rect.is_positive() && !text.galley.text().trim().is_empty() {
+                        out.push((text.galley.text().to_owned(), rect));
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, clipped.clip_rect, &mut out);
+        }
+        out
+    }
+
+    fn draw_dialog(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+        size: Vec2,
+    ) -> egui::FullOutput {
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..egui::RawInput::default()
+        });
+        let mut ui = Ui::new(
+            context.clone(),
+            egui::Id::new("fm-add-input-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let _ = shell.draw(&mut ui, state);
+        drop(ui);
+        context.end_pass()
+    }
+
+    /// At 1280x720 and 1920x1080, in English and Spanish, the Add input
+    /// dialog keeps its top edge wherever its contents change, fits the
+    /// screen, paints no text over other text, and keeps the footer's
+    /// message on its own row above the keys. With
+    /// `FM_ADD_INPUT_RENDER_DIR` set, each draft is also written there as a
+    /// PNG for review.
+    #[test]
+    fn the_add_input_dialog_is_anchored_and_nothing_overlaps() {
+        use crate::offscreen::{Canvas, Textures};
+        use fm_ui_model::i18n::Language;
+        let render_dir = std::env::var("FM_ADD_INPUT_RENDER_DIR").ok();
+        let mut state = crate::hover_audit::bank_fixture();
+        if let Some(view) = state.view.as_mut() {
+            view.capture_inventory = Some(crate::hover_audit::capture_inventory());
+        }
+        for size in [Vec2::new(1_280.0, 720.0), Vec2::new(1_920.0, 1_080.0)] {
+            for language in [Language::English, Language::Spanish] {
+                let locale = Locale::new(language);
+                // The console behind the dialog, to tell its text apart.
+                let console = {
+                    let context = egui::Context::default();
+                    let mut shell = StudioShell::default();
+                    shell.set_locale(locale);
+                    let mut output = None;
+                    for _ in 0..3 {
+                        output = Some(draw_dialog(&context, &mut shell, &state, size));
+                    }
+                    painted_texts(&output.unwrap())
+                };
+                for (name, draft) in dialog_drafts(&state) {
+                    let context = egui::Context::default();
+                    let mut textures = Textures::default();
+                    let mut shell = StudioShell::default();
+                    shell.set_locale(locale);
+                    // The console is up before the dialog opens over it, as
+                    // in the app, so the dialog's layer is on top.
+                    textures.apply(&draw_dialog(&context, &mut shell, &state, size));
+                    shell.add_input = Some(AddInputDraft { locale, ..draft });
+                    let mut output = None;
+                    // Enough passes for the dialog to finish fading in.
+                    for _ in 0..6 {
+                        let full = draw_dialog(&context, &mut shell, &state, size);
+                        textures.apply(&full);
+                        output = Some(full);
+                    }
+                    let output = output.unwrap();
+                    let scene = format!("{name} {language:?} {}x{}", size.x, size.y);
+                    let dialog = context
+                        .memory(|memory| memory.area_rect(egui::Id::new("studio-add-input-window")))
+                        .expect("the dialog is open");
+                    assert!(
+                        (dialog.top() - dialog_top(size.y)).abs() < 0.5,
+                        "{scene}: the dialog's top is {}",
+                        dialog.top()
+                    );
+                    assert!(
+                        dialog.bottom() <= size.y && dialog.left() >= 0.0,
+                        "{scene}: the dialog {dialog:?} leaves the screen"
+                    );
+                    let mut texts = painted_texts(&output);
+                    texts.retain(|text| dialog.contains_rect(text.1) && !console.contains(text));
+                    for (index, (a, a_rect)) in texts.iter().enumerate() {
+                        for (b, b_rect) in &texts[index + 1..] {
+                            let overlap = a_rect.intersect(*b_rect);
+                            assert!(
+                                !(overlap.width() > 1.0 && overlap.height() > 1.0),
+                                "{scene}: {a:?} {a_rect:?} overlaps {b:?} {b_rect:?}"
+                            );
+                        }
+                    }
+                    let keys = texts
+                        .iter()
+                        .filter(|(text, _)| {
+                            text == locale.text(Msg::CancelKey)
+                                || text == locale.text(Msg::AddInputKey)
+                        })
+                        .map(|(_, rect)| *rect)
+                        .collect::<Vec<_>>();
+                    assert_eq!(keys.len(), 2, "{scene}: both footer keys are painted");
+                    let keys_top = keys.iter().map(Rect::top).fold(f32::MAX, f32::min);
+                    for (text, rect) in &texts {
+                        if rect.top() < keys_top && rect.bottom() > keys_top - 30.0 {
+                            assert!(
+                                rect.bottom() <= keys_top - 4.0,
+                                "{scene}: footer text {text:?} {rect:?} runs into the keys"
+                            );
+                        }
+                    }
+                    if let Some(dir) = &render_dir {
+                        let primitives = context.tessellate(output.shapes, output.pixels_per_point);
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let mut canvas = Canvas::new(
+                            size.x as usize,
+                            size.y as usize,
+                            crate::theme::graphite_color(),
+                        );
+                        canvas.paint(&primitives, &textures, output.pixels_per_point);
+                        let (width, height, rgba) =
+                            canvas.crop_rgba8(Rect::from_min_size(egui::Pos2::ZERO, size));
+                        std::fs::write(
+                            format!("{dir}/add-input-{name}-{language:?}-{width}x{height}.png"),
+                            crate::offscreen::encode_png(width, height, &rgba),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
     }
 }

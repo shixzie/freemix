@@ -887,7 +887,7 @@ fn capture_entries() -> Vec<fm_protocol::CaptureInputEntry> {
 
 /// The daemon's capture inventory of the fixture: a webcam with paired
 /// audio and several formats, and a capture card without paired audio.
-fn capture_inventory() -> fm_protocol::CaptureInventory {
+pub(crate) fn capture_inventory() -> fm_protocol::CaptureInventory {
     use fm_protocol::{CaptureDevice, CaptureInventory, CapturePixelFormat, CaptureScan};
     let progressive = CaptureScan::Progressive;
     CaptureInventory {
@@ -984,6 +984,7 @@ fn capture_scenes(locale: Locale) -> Vec<Scene> {
             shell(&|draft| {
                 draft.capture.select_device(&webcam);
                 draft.capture.format = Some(webcam.formats[0]);
+                draft.capture.advanced = true;
                 draft.capture.filter.pixel = Some(fm_protocol::CapturePixelFormat::Mjpeg);
                 draft.capture.audio = AudioChoice::Alsa;
                 draft.capture.alsa_device = "hw:CARD=USB,DEV=0".into();
@@ -1388,7 +1389,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         state
     }));
     let operator = ready(true, Variant::default());
-    let dialogs: [(&str, Configure); 14] = [
+    let dialogs: [(&str, Configure); 15] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
         ("about", &|shell| shell.show_about = true),
         ("preferences", &|shell| shell.show_preferences = true),
@@ -1399,7 +1400,25 @@ fn scenes(language: Language) -> Vec<Scene> {
             shell.open_add_input(&operator);
             if let Some(draft) = shell.add_input.as_mut() {
                 draft.kind = crate::input_catalogue::NewInputKind::Network;
-                draft.stream.url = "rtsp://cam.local/live".into();
+                draft.stream.url = "rtsp://operator:s3cret@cam.local/live".into();
+            }
+        }),
+        // The same form with every Advanced group open, the URL's password
+        // shown, and the retry waits crossed, so the field's red problem
+        // line and the footer's pointer to it are audited.
+        ("add-input-network-invalid", &|shell| {
+            shell.open_add_input(&operator);
+            if let Some(draft) = shell.add_input.as_mut() {
+                draft.kind = crate::input_catalogue::NewInputKind::Network;
+                draft.stream.url = "rtsp://operator:s3cret@cam.local/live".into();
+                draft.stream.reveal.url = true;
+                draft.stream.advanced = crate::network_stream_ui::StreamAdvanced {
+                    source: true,
+                    connection: true,
+                    recovery: true,
+                };
+                draft.stream.settings.reconnect.backoff_min_ms = 20_000;
+                draft.stream.settings.reconnect.backoff_max_ms = 1_000;
             }
         }),
         // IN-016: an RTMP listener with a stream key, so the mode keys and
@@ -1411,6 +1430,7 @@ fn scenes(language: Language) -> Vec<Scene> {
                 draft.stream.url = "rtmp://0.0.0.0:1935/live".into();
                 draft.stream.settings.mode = fm_protocol::StreamMode::Listener;
                 draft.stream.stream_key = "obs-key".into();
+                draft.stream.advanced.connection = true;
             }
         }),
         // IN-017: an encrypted SRT listener on a stereo pair, so the
@@ -1425,6 +1445,12 @@ fn scenes(language: Language) -> Vec<Scene> {
                 draft.stream.settings.audio = fm_protocol::AudioChannels::Pair34;
                 draft.stream.passphrase = "correct-horse-battery".into();
                 draft.stream.stream_id = "cam1".into();
+                draft.stream.reveal.passphrase = true;
+                draft.stream.advanced = crate::network_stream_ui::StreamAdvanced {
+                    source: true,
+                    connection: true,
+                    recovery: true,
+                };
             }
         }),
         ("remove-input", &|shell| {
