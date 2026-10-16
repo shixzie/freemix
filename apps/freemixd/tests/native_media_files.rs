@@ -540,28 +540,25 @@ fn native_daemon_plays_a_media_file_through_its_engine_transport() {
             .then_some(())
     });
 
-    // Pausing holds the picture: once monitor frames rendered before the
-    // pause drain, Program repeats one frame.
+    // Pausing holds the picture at the paused position: monitor frames
+    // rendered before the pause may still drain, but none passes the
+    // position, and once Program shows it, it repeats. (A run of repeated
+    // frames does not prove the pause took hold: a playing clip whose
+    // decode runs late on a loaded host repeats its frame too.)
     let paused = client.media(MediaOperation::Pause);
     assert_eq!(paused.transport.state, MediaTransportState::Paused);
-    let mut last = None;
-    let mut repeats = 0;
-    let held = client.wait_for("the picture to hold", |client, message| {
+    let held = paused.transport.position;
+    client.wait_for("the paused frame on Program", |client, message| {
         let frame = client.shown_frame(message)?;
-        if last == Some(frame) {
-            repeats += 1;
-        } else {
-            last = Some(frame);
-            repeats = 0;
-        }
-        (repeats == 3).then_some(frame)
+        assert!(frame <= held, "paused at {held}, showed {frame}");
+        (frame == held).then_some(())
     });
     let mut repeated = 0;
-    client.wait_for("the held frame twice more", |client, message| {
+    client.wait_for("the held frame four more times", |client, message| {
         let frame = client.shown_frame(message)?;
         assert_eq!(frame, held, "paused at {held}, showed {frame}");
         repeated += 1;
-        (repeated == 2).then_some(())
+        (repeated == 4).then_some(())
     });
 
     // IN-026: pausing the input holds its picture although its transport

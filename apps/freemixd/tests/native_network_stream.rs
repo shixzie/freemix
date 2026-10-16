@@ -24,8 +24,12 @@ use std::{
     num::NonZeroU128,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc,
-    thread,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -410,38 +414,66 @@ impl Client {
     }
 }
 
-/// A red test signal with a tone, published to `url` in `format`; killed
+/// A red test signal with a tone, published to `url` in `format`; stopped
 /// on drop.
-struct Publisher(Child);
+///
+/// An `ffmpeg` publisher does not retry, and a listening receiver's child
+/// binds its port some time after the status turns `listening` (a loaded
+/// host can stretch that well past any fixed settle time), so a publisher
+/// that exits before it is dropped is started again.
+struct Publisher {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
 
 impl Publisher {
     fn start(format: &str, url: &str) -> Self {
-        Self(
-            Command::new("ffmpeg")
-                .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-re"])
-                .args(["-f", "lavfi", "-i", "color=c=red:s=320x180:r=25"])
-                .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
-                // FLV carries `flv1`; MPEG-TS needs an MPEG video codec.
-                .args(["-c:v", if format == "flv" { "flv" } else { "mpeg2video" }])
-                .args(["-g", "10", "-b:v", "400k", "-c:a", "aac", "-f", format, url])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap(),
-        )
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let (format, url) = (format.to_owned(), url.to_owned());
+        let thread = thread::spawn(move || {
+            while !stopping.load(Ordering::Acquire) {
+                let mut child = Self::spawn(&format, &url);
+                while !stopping.load(Ordering::Acquire) && matches!(child.try_wait(), Ok(None)) {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                if !stopping.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn spawn(format: &str, url: &str) -> Child {
+        Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-re"])
+            .args(["-f", "lavfi", "-i", "color=c=red:s=320x180:r=25"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
+            // FLV carries `flv1`; MPEG-TS needs an MPEG video codec.
+            .args(["-c:v", if format == "flv" { "flv" } else { "mpeg2video" }])
+            .args(["-g", "10", "-b:v", "400k", "-c:a", "aac", "-f", format, url])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
     }
 }
 
 impl Drop for Publisher {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
-
-/// How long a listening receiver's child is given to bind its port.
-const LISTEN_SETTLE: Duration = Duration::from_secs(2);
 
 /// Whether `ffmpeg` has `libsrt`; its absence fails only under
 /// `FM_REQUIRE_FFMPEG_SRT=1`.
@@ -668,9 +700,8 @@ fn native_daemon_listens_for_an_rtmp_push_and_an_encrypted_srt_caller() {
     });
     assert_eq!(listening.reconnects, 0, "{listening:?}");
 
-    // The status turns `listening` as the child starts; give it a moment
-    // to bind before the publisher (which does not retry) connects.
-    thread::sleep(LISTEN_SETTLE);
+    // The status turns `listening` as the child starts: the publisher keeps
+    // trying until the child has bound its port.
     let publisher = Publisher::start(
         "flv",
         &format!("rtmp://127.0.0.1:{rtmp_port}/live/{stream_key}"),
@@ -723,7 +754,6 @@ fn native_daemon_listens_for_an_rtmp_push_and_an_encrypted_srt_caller() {
         client.status("the SRT listener listening", |status| {
             status.state == NetworkStreamState::Listening
         });
-        thread::sleep(LISTEN_SETTLE);
         let _caller = Publisher::start(
             "mpegts",
             &format!(

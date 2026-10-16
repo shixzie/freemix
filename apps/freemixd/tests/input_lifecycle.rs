@@ -361,6 +361,29 @@ fn status(snapshot: &SnapshotMessage, id: u128) -> &fm_protocol::InputStatus {
         .unwrap_or_else(|| panic!("input {id} is missing from the snapshot"))
 }
 
+/// Reconnects until media input `id` satisfies `done` (given a fresh
+/// snapshot and the input's availability, transport state, and position),
+/// failing with `what` after a deadline: a media transport advances on the
+/// daemon's own frame clock, which a loaded host can delay well past any
+/// fixed sleep.
+fn wait_for_media(
+    daemon: &Daemon,
+    id: u128,
+    what: &str,
+    mut done: impl FnMut(&SnapshotMessage, (bool, MediaTransportState, u64)) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, snapshot, states) = Client::connect(daemon);
+        let media = media_position(&states, id);
+        if done(&snapshot, media) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{what}: {media:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn media_position(states: &[MediaStateMessage], id: u128) -> (bool, MediaTransportState, u64) {
     let state = states
         .iter()
@@ -494,7 +517,12 @@ fn input_lifecycle_commands_replicate_journal_and_persist() {
         input: wire(2),
         operation: MediaOperation::Play,
     });
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_media(
+        &daemon,
+        2,
+        "the played input never advanced",
+        |_, (_, _, position)| position > 0,
+    );
     client.lifecycle(InputLifecycleOperation::SetPaused {
         input: wire(2),
         paused: true,
@@ -515,12 +543,14 @@ fn input_lifecycle_commands_replicate_journal_and_persist() {
         input: wire(11),
         closed: true,
     });
-    std::thread::sleep(Duration::from_millis(200));
-    let (_, closed, closed_states) = Client::connect(&daemon);
-    assert!(status(&closed, 11).lifecycle.closed);
-    assert!(
-        !media_position(&closed_states, 11).0,
-        "a closed input has no source"
+    wait_for_media(
+        &daemon,
+        11,
+        "a closed input has no source",
+        |snapshot, (available, _, _)| {
+            assert!(status(snapshot, 11).lifecycle.closed);
+            !available
+        },
     );
     client.lifecycle(InputLifecycleOperation::SetClosed {
         input: wire(11),

@@ -122,6 +122,10 @@ const LISTEN_FAILURE_WINDOW: Duration = Duration::from_secs(2);
 
 const AUDIO_HEADER_LIMIT: usize = 8 * 1024;
 const BITRATE_WINDOW: Duration = Duration::from_secs(1);
+/// Media a connection must receive before it publishes its first bitrate.
+const BITRATE_FIRST_READING: Duration = Duration::from_millis(200);
+/// Stream indexes beyond this carry no media time into the bitrate.
+const BITRATE_MAX_STREAMS: usize = 16;
 const POLL: Duration = Duration::from_millis(20);
 const AUDIO_READ_TIMEOUT: Duration = Duration::from_millis(200);
 const TOKEN_BYTES: usize = 16;
@@ -396,24 +400,120 @@ struct Inner {
     dropped_frames: u64,
     late_frames: u64,
     reconnects: u32,
-    bitrate_bps: u64,
-    window_bytes: u64,
-    window_start: Option<Instant>,
+    bitrate: BitrateMeter,
     last_error: Option<String>,
 }
 
-impl Inner {
-    fn roll_bitrate(&mut self, now: Instant) {
-        let start = *self.window_start.get_or_insert(now);
+/// The received media bitrate over about the last second.
+///
+/// A window's bytes are divided by the media time they carry (the longest
+/// per-stream sum of packet durations), not by the wall time they took to
+/// arrive: a connection's first packets reach the receiver in one burst once
+/// the child has probed the stream, which a wall-clock window reads as a
+/// spike, and a window that rolled during the silent probe read zero for up
+/// to a second while the stream was already live. The window still rolls
+/// once a wall-clock second (a window without packets reads zero, and so
+/// does a connection until its first packet), and a connection publishes its
+/// first reading as soon as it has received [`BITRATE_FIRST_READING`] of
+/// media instead of a window later. Packets without durations (or streams
+/// without a time base) fall back to the window's wall time.
+#[derive(Default)]
+struct BitrateMeter {
+    bps: u64,
+    bytes: u64,
+    /// Media time received per stream index in this window, in nanoseconds.
+    media_nanos: Vec<u64>,
+    /// The connection's stream time bases (`#tb` lines): numerator and
+    /// denominator.
+    time_bases: Vec<Option<(u64, u64)>>,
+    /// The window's start; `None` until the connection's first packet.
+    start: Option<Instant>,
+    /// The connection published a reading.
+    measured: bool,
+}
+
+impl BitrateMeter {
+    /// Forgets the reading and the connection's streams.
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Records a `#tb <stream>: <num>/<den>` line.
+    fn time_base(&mut self, line: &str) {
+        let Some((stream, base)) = line
+            .strip_prefix("#tb ")
+            .and_then(|rest| rest.split_once(':'))
+        else {
+            return;
+        };
+        let Some((numerator, denominator)) = base.trim().split_once('/') else {
+            return;
+        };
+        let (Ok(stream), Ok(numerator), Ok(denominator)) = (
+            stream.trim().parse::<usize>(),
+            numerator.trim().parse::<u64>(),
+            denominator.trim().parse::<u64>(),
+        ) else {
+            return;
+        };
+        if stream >= BITRATE_MAX_STREAMS || numerator == 0 || denominator == 0 {
+            return;
+        }
+        if self.time_bases.len() <= stream {
+            self.time_bases.resize(stream + 1, None);
+        }
+        self.time_bases[stream] = Some((numerator, denominator));
+    }
+
+    /// Counts one received packet.
+    fn packet(&mut self, packet: CrcPacket, now: Instant) {
+        let start = *self.start.get_or_insert(now);
+        self.bytes = self.bytes.saturating_add(packet.size);
+        if let Some(Some((numerator, denominator))) = self.time_bases.get(packet.stream) {
+            let nanos = u128::from(packet.duration) * u128::from(*numerator) * 1_000_000_000
+                / u128::from(*denominator);
+            if self.media_nanos.len() <= packet.stream {
+                self.media_nanos.resize(packet.stream + 1, 0);
+            }
+            let total = &mut self.media_nanos[packet.stream];
+            *total = total.saturating_add(u64::try_from(nanos).unwrap_or(u64::MAX));
+        }
+        if !self.measured && u128::from(self.media()) >= BITRATE_FIRST_READING.as_nanos() {
+            self.bps = self.rate(now.saturating_duration_since(start));
+            self.measured = true;
+        }
+        self.roll(now);
+    }
+
+    /// Publishes the window once it spans [`BITRATE_WINDOW`] and starts the
+    /// next one.
+    fn roll(&mut self, now: Instant) {
+        let Some(start) = self.start else {
+            return;
+        };
         let elapsed = now.saturating_duration_since(start);
         if elapsed >= BITRATE_WINDOW {
-            let nanos = elapsed.as_nanos().max(1);
-            self.bitrate_bps =
-                u64::try_from(u128::from(self.window_bytes) * 8 * 1_000_000_000 / nanos)
-                    .unwrap_or(u64::MAX);
-            self.window_bytes = 0;
-            self.window_start = Some(now);
+            self.bps = self.rate(elapsed);
+            self.measured = true;
+            self.bytes = 0;
+            self.media_nanos.fill(0);
+            self.start = Some(now);
         }
+    }
+
+    fn media(&self) -> u64 {
+        self.media_nanos.iter().copied().max().unwrap_or(0)
+    }
+
+    fn rate(&self, elapsed: Duration) -> u64 {
+        let media = self.media();
+        let nanos = if media > 0 {
+            u128::from(media)
+        } else {
+            elapsed.as_nanos()
+        }
+        .max(1);
+        u64::try_from(u128::from(self.bytes) * 8 * 1_000_000_000 / nanos).unwrap_or(u64::MAX)
     }
 }
 
@@ -678,7 +778,7 @@ impl NetworkReceiver {
             / u64::from(rate.numerator()).max(1);
         NetworkStreamStatus {
             state,
-            bitrate_bps: inner.bitrate_bps,
+            bitrate_bps: inner.bitrate.bps,
             buffer_ms: u32::try_from(buffer_ms).unwrap_or(u32::MAX),
             dropped_frames: inner.dropped_frames,
             late_frames: inner.late_frames,
@@ -1141,7 +1241,7 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
                 let mut inner = shared.lock();
                 inner.audio_absent = false;
                 inner.frames.clear();
-                inner.bitrate_bps = 0;
+                inner.bitrate.clear();
                 if inner.state == NetworkStreamState::Listening {
                     // A wait that ran out its cycle is not an error; a
                     // refused publisher or an ended session keeps its
@@ -1186,7 +1286,7 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
         // reconnect, retried at once without audio).
         inner.audio_absent = false;
         inner.frames.clear();
-        inner.bitrate_bps = 0;
+        inner.bitrate.clear();
         if !policy.allows(attempt) {
             inner.state = NetworkStreamState::Failed;
             inner.reconnect_at = None;
@@ -1245,8 +1345,7 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         if plan.listens() {
             inner.state = NetworkStreamState::Listening;
         }
-        inner.window_bytes = 0;
-        inner.window_start = None;
+        inner.bitrate.clear();
         (inner.generation, inner.audio_absent)
     };
     let listener = if audio_absent {
@@ -1338,7 +1437,7 @@ fn watch(shared: &Shared, plan: &Plan, child: &mut Child, started: Instant) -> E
             return Ended::Shutdown;
         }
         let now = Instant::now();
-        inner.roll_bitrate(now);
+        inner.bitrate.roll(now);
         let delivered = inner.delivered;
         if inner.rejected_peer {
             return Ended::Dropped { delivered };
@@ -1464,16 +1563,19 @@ fn read_log(shared: &Shared, plan: &Plan, generation: u64, stderr: ChildStderr) 
         }
         let text = String::from_utf8_lossy(&line);
         let text = text.trim();
-        if text.is_empty() || text.starts_with('#') {
+        if text.is_empty() {
             continue;
         }
         let mut inner = shared.lock();
         if inner.generation != generation {
             return;
         }
-        if let Some(size) = framecrc_size(text) {
-            inner.window_bytes = inner.window_bytes.saturating_add(size);
-            inner.roll_bitrate(Instant::now());
+        if text.starts_with('#') {
+            inner.bitrate.time_base(text);
+            continue;
+        }
+        if let Some(packet) = framecrc_packet(text) {
+            inner.bitrate.packet(packet, Instant::now());
             continue;
         }
         let (level, text) = split_level(text);
@@ -1612,14 +1714,27 @@ fn lowercase_scheme_echo(text: &str, plan: &Plan) -> String {
     text.replace(&child_url(&connect), &connect)
 }
 
-/// The packet size of one frame CRC line (`stream, dts, pts, duration,
-/// size, crc`).
-fn framecrc_size(line: &str) -> Option<u64> {
+/// One packet of the frame CRC listing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CrcPacket {
+    stream: usize,
+    /// In the stream's time base; 0 when unknown.
+    duration: u64,
+    size: u64,
+}
+
+/// The packet of one frame CRC line (`stream, dts, pts, duration, size,
+/// crc`).
+fn framecrc_packet(line: &str) -> Option<CrcPacket> {
     let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
-    if fields.len() < 6 || fields[0].parse::<u32>().is_err() || !fields[5].starts_with("0x") {
+    if fields.len() < 6 || !fields[5].starts_with("0x") {
         return None;
     }
-    fields[4].parse().ok()
+    Some(CrcPacket {
+        stream: fields[0].parse().ok()?,
+        duration: fields[3].parse().unwrap_or(0),
+        size: fields[4].parse().ok()?,
+    })
 }
 
 fn read_audio(shared: &Shared, plan: &Plan, generation: u64, listener: &TcpListener) {
@@ -1915,13 +2030,91 @@ mod tests {
     }
 
     #[test]
-    fn framecrc_lines_yield_packet_sizes() {
+    fn framecrc_lines_yield_packets() {
         assert_eq!(
-            framecrc_size("0,          0,          0,     3600,     4512, 0x1f2e3d4c"),
-            Some(4512)
+            framecrc_packet("1,          0,          0,     3600,     4512, 0x1f2e3d4c"),
+            Some(CrcPacket {
+                stream: 1,
+                duration: 3600,
+                size: 4512,
+            })
         );
-        assert_eq!(framecrc_size("[udp @ 0x55] Connection refused"), None);
-        assert_eq!(framecrc_size("#tb 0: 1/90000"), None);
+        assert_eq!(
+            framecrc_packet(
+                "0,      -2698,        902,       -1,     4984, 0x28378265, S=1,        1"
+            )
+            .map(|packet| (packet.duration, packet.size)),
+            Some((0, 4984))
+        );
+        assert_eq!(framecrc_packet("[udp @ 0x55] Connection refused"), None);
+        assert_eq!(framecrc_packet("#tb 0: 1/90000"), None);
+    }
+
+    /// 40 ms video packets of 5 000 bytes: 1 Mbit/s of media.
+    fn video_packet() -> CrcPacket {
+        CrcPacket {
+            stream: 0,
+            duration: 3_600,
+            size: 5_000,
+        }
+    }
+
+    fn at(start: Instant, millis: u32) -> Instant {
+        start + Duration::from_millis(u64::from(millis))
+    }
+
+    #[test]
+    fn the_first_reading_comes_from_media_time_not_from_a_burst() {
+        let mut meter = BitrateMeter::default();
+        meter.time_base("#tb 0: 1/90000");
+        let start = Instant::now();
+        // The probe's backlog arrives at once: 200 ms of media publish a
+        // reading at once, at the stream's rate rather than as a spike.
+        for _ in 0..4 {
+            meter.packet(video_packet(), start);
+        }
+        assert_eq!(meter.bps, 0, "less media than the first reading needs");
+        meter.packet(video_packet(), start);
+        assert_eq!(meter.bps, 1_000_000);
+        // A window holding the rest of the burst and then real time still
+        // reads the stream's rate.
+        for _ in 0..10 {
+            meter.packet(video_packet(), start);
+        }
+        for frame in 1..=25 {
+            meter.packet(video_packet(), at(start, frame * 40));
+        }
+        assert_eq!(meter.bps, 1_000_000);
+    }
+
+    #[test]
+    fn a_connection_reads_zero_until_its_first_packet_and_after_it_goes_quiet() {
+        let mut meter = BitrateMeter::default();
+        meter.time_base("#tb 0: 1/90000");
+        let start = Instant::now();
+        // Probing: no packet yet, no window to roll.
+        meter.roll(at(start, 3_000));
+        assert_eq!(meter.bps, 0);
+        for frame in 0..25 {
+            meter.packet(video_packet(), at(start, 3_000 + frame * 40));
+        }
+        assert_eq!(meter.bps, 1_000_000);
+        meter.roll(at(start, 4_000));
+        assert_eq!(meter.bps, 1_000_000);
+        // Nothing arrived over the next window.
+        meter.roll(at(start, 5_000));
+        assert_eq!(meter.bps, 0);
+    }
+
+    #[test]
+    fn packets_without_a_time_base_fall_back_to_wall_time() {
+        let mut meter = BitrateMeter::default();
+        let start = Instant::now();
+        meter.packet(video_packet(), start);
+        assert_eq!(meter.bps, 0, "no media time: wait for a full window");
+        meter.packet(video_packet(), at(start, 500));
+        meter.roll(at(start, 1_000));
+        assert_eq!(meter.bps, 80_000);
     }
 
     #[test]

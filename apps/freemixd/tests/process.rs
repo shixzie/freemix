@@ -146,7 +146,8 @@ impl Daemon {
     }
 
     fn start_with_status(project: &Path, token: &str, once: bool) -> (Self, SocketAddr) {
-        Self::start_with_status_and_web(project, token, once, false)
+        let (daemon, status, _) = Self::start_with_status_and_web(project, token, once, false);
+        (daemon, status)
     }
 
     /// `web` also starts the WebSocket gateway, whose bounded shutdown keeps the
@@ -156,7 +157,7 @@ impl Daemon {
         token: &str,
         once: bool,
         web: bool,
-    ) -> (Self, SocketAddr) {
+    ) -> (Self, SocketAddr, Option<SocketAddr>) {
         let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"));
         command
             .arg("serve")
@@ -180,6 +181,7 @@ impl Daemon {
         let mut lines = read_startup_lines(&mut child, expected);
         let line = lines.remove(0);
         let status_line = lines.pop().unwrap();
+        let web_line = lines.pop();
         let readiness = line.parse::<ReadinessRecord>().unwrap_or_else(|error| {
             startup_failure(
                 &mut child,
@@ -198,14 +200,27 @@ impl Daemon {
                     None,
                 )
             });
-        (
-            Self {
-                child: Some(child),
-                address: readiness.address,
-                project_id: readiness.project_id,
-            },
-            status.address,
-        )
+        let web_address = web_line.map(|web_line| {
+            web_line
+                .strip_prefix("FREEMIXD_WEB_READY\tv=1\taddress=")
+                .and_then(|line| line.strip_suffix('\n'))
+                .and_then(|address| address.parse().ok())
+                .unwrap_or_else(|| {
+                    startup_failure(
+                        &mut child,
+                        &[line.clone(), web_line.clone(), status_line.clone()],
+                        "invalid web readiness",
+                        None,
+                    )
+                })
+        });
+        let daemon = Self {
+            child: Some(child),
+            address: readiness.address,
+            project_id: readiness.project_id,
+        };
+        wait_until_ready(status.address);
+        (daemon, status.address, web_address)
     }
 
     fn start_with_once(project: &Path, once: bool) -> Self {
@@ -668,6 +683,30 @@ fn try_status_request(address: SocketAddr, request: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&response).into_owned())
 }
 
+/// Polls `/readyz` until the daemon reports ready.
+///
+/// The status listener's readiness record only says the listener is bound:
+/// until the control loop's first pass beats, `/readyz` truthfully answers
+/// `liveness=stalled`, so a single probe right after startup races that pass.
+fn wait_until_ready(address: SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let readiness =
+            try_status_request(address, b"GET /readyz HTTP/1.1\r\nHost: status\r\n\r\n");
+        if readiness
+            .as_deref()
+            .is_some_and(|readiness| readiness.starts_with("HTTP/1.1 200 OK\r\n"))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never reported ready: {readiness:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Request shapes a supervisor or a scanner actually sends: a HEAD probe, an
 /// unsupported method, an absent route, a head past the cap, and a protected
 /// route probed without credentials.
@@ -913,10 +952,15 @@ fn status_listener_answers_probes_while_silent_connections_flood_it() {
 ///
 /// SIGTERM moves the daemon from ready to draining while the status listener is
 /// still up, which is exactly the interval a supervisor has to be able to tell
-/// apart from a crash. The gateway is enabled so the daemon spends a bounded
-/// but measurable interval winding its other subsystems down; probing across
-/// the signal must observe `readiness=draining`, which a readiness frozen at
-/// startup never reports.
+/// apart from a crash. Probing across the signal must observe
+/// `readiness=draining`, which a readiness frozen at startup never reports.
+///
+/// Left alone, the daemon drains in a few milliseconds, which probe threads
+/// starved by a loaded machine can miss entirely. So the test holds the
+/// window open itself: a tally-page request whose head never completes keeps
+/// the WebSocket gateway's worker reading until its bounded handshake timeout,
+/// and the gateway's shutdown (which runs while the status listener still
+/// answers) joins that worker.
 #[cfg(unix)]
 #[test]
 fn readiness_reports_draining_after_a_cooperative_stop_request() {
@@ -924,8 +968,9 @@ fn readiness_reports_draining_after_a_cooperative_stop_request() {
     let project_path = directory.project_path();
     create_project(&project_path);
 
-    let (daemon, status_address) =
+    let (daemon, status_address, web_address) =
         Daemon::start_with_status_and_web(&project_path, STATUS_TOKEN, false, true);
+    let web_address = web_address.unwrap();
     let ready = status_request(
         status_address,
         b"GET /readyz HTTP/1.1\r\nHost: status\r\n\r\n",
@@ -939,7 +984,7 @@ fn readiness_reports_draining_after_a_cooperative_stop_request() {
             let probing = Arc::clone(&probing);
             let drained = Arc::clone(&drained);
             std::thread::spawn(move || {
-                while probing.load(Ordering::Acquire) {
+                while probing.load(Ordering::Acquire) && !drained.load(Ordering::Acquire) {
                     let Some(readiness) = try_status_request(
                         status_address,
                         b"GET /readyz HTTP/1.1\r\nHost: status\r\n\r\n",
@@ -958,12 +1003,23 @@ fn readiness_reports_draining_after_a_cooperative_stop_request() {
         })
         .collect();
 
+    // The gateway's listener hands an accepted socket to its worker within a
+    // poll interval (25 ms); the head start keeps the stop from racing that
+    // handoff, and the worker then reads for up to its handshake timeout.
+    let mut stalled_head =
+        TcpStream::connect_timeout(&web_address, Duration::from_secs(1)).unwrap();
+    stalled_head
+        .write_all(b"GET /tally HTTP/1.1\r\nHost: web\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
     let status = ProcessCommand::new("/bin/kill")
         .args(["-TERM", &daemon.child.as_ref().unwrap().id().to_string()])
         .status()
         .unwrap();
     assert!(status.success(), "SIGTERM command failed: {status}");
     daemon.wait_success();
+    drop(stalled_head);
 
     probing.store(false, Ordering::Release);
     for probe in probes {
