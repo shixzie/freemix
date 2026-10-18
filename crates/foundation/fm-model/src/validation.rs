@@ -149,6 +149,18 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
             kind: ValidationErrorKind::Cycle,
         });
     }
+    if project
+        .audio_monitor_output()
+        .device
+        .as_deref()
+        .is_some_and(|device| crate::validate_audio_monitor_device(device).is_err())
+    {
+        errors.push(ValidationError {
+            entity: None,
+            field: "audio_monitor_output.device",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
     validate_display_outputs(project, errors);
     for &output in project.fade_to_black_excluded_outputs() {
         if !project

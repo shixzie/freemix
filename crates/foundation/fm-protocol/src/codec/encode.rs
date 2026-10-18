@@ -2740,8 +2740,9 @@ fn encode_audio_meters(
                 });
             }
             format!(
-                "{}~{}",
+                "{}~{}~{}",
                 if monitor.solo { "solo" } else { "master" },
+                monitor.output.token(),
                 encode_meter_channels(&monitor.channels, "monitor")?
             )
         }

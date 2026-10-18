@@ -4375,6 +4375,12 @@ fn validate_audio_mixer_change(
                 && state.audio_mixer.parent_is_acyclic(*group, *parent)
         }
         fm_protocol::AudioMixerOperation::SetSoloMode { .. } => true,
+        fm_protocol::AudioMixerOperation::SetMonitorDevice { device } => device
+            .as_deref()
+            .is_none_or(fm_protocol::audio_monitor_device_is_valid),
+        fm_protocol::AudioMixerOperation::SetMonitorLevel { gain_millidb, .. } => {
+            (-96_000..=24_000).contains(gain_millidb)
+        }
     };
     if valid {
         Ok(())

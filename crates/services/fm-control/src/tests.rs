@@ -6267,6 +6267,90 @@ fn group_solo_parents_and_solo_mode_are_replicated_and_realized() {
     assert!(snapshot.audio_mixer.groups[1].soloed);
 }
 
+/// Protocol 2.53 (AU-001): the headphone device is an audio-controlled
+/// undoable project edit and its level a live audio operation; both
+/// replicate exactly into the snapshot and reach the realized frame.
+#[test]
+fn the_monitor_output_is_replicated_and_realized() {
+    use fm_engine::EngineAudioMixerUpdate;
+    use fm_protocol::{AudioMixerOperation, AudioMonitorStatus};
+
+    let mut control = mixer_service();
+    let server = server_identity();
+    for (key, operation) in [
+        (
+            "device",
+            AudioMixerOperation::SetMonitorDevice {
+                device: Some("default".into()),
+            },
+        ),
+        (
+            "level",
+            AudioMixerOperation::SetMonitorLevel {
+                gain_millidb: -3_000,
+                muted: true,
+            },
+        ),
+    ] {
+        let payload = CommandPayload::AudioMixer(operation.clone());
+        assert_eq!(
+            control.required_classes(&payload).primary(),
+            CommandClass::ControlAudio,
+            "{key}"
+        );
+        let submission = control
+            .submit(&principal(Role::Audio), command(key, key, payload), 0)
+            .unwrap();
+        assert!(
+            submission.is_accepted(),
+            "{key}: {:?}",
+            submission.output.result
+        );
+        assert_wire_exact(&control, &submission);
+        assert_eq!(
+            submission.output.events[0].payload,
+            EventPayload::AudioMixerChanged(operation)
+        );
+    }
+    assert_eq!(
+        control.snapshot().snapshot.audio_mixer.monitor,
+        AudioMonitorStatus {
+            device: Some("default".into()),
+            gain_millidb: -3_000,
+            muted: true,
+        }
+    );
+    let tick = control.tick(&server).unwrap();
+    assert_eq!(
+        tick.frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::MonitorDevice(Some("default".into())),
+            EngineAudioMixerUpdate::MonitorLevel(fm_engine::EngineAudioGroupState {
+                gain_millidb: -3_000,
+                muted: true,
+            }),
+        ]
+    );
+    let undo = control
+        .submit(
+            &principal(Role::Admin),
+            command(
+                "u",
+                "u",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undo.is_accepted(), "{:?}", undo.output.result);
+    assert_wire_exact(&control, &undo);
+    let monitor = control.snapshot().snapshot.audio_mixer.monitor.clone();
+    assert_eq!(monitor.device, None);
+    assert!(monitor.muted);
+}
+
 /// Protocol 2.40 (SW-004): the Fade-to-Black output selection is a
 /// switcher-operator project edit, replicated and undoable.
 #[test]

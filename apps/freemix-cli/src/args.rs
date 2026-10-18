@@ -104,6 +104,12 @@ pub enum AudioMixerArgs {
     GroupParent { group: u8, parent: Option<u8> },
     /// `audio-solo-mode <sip|pfl|afl>`.
     SoloMode { mode: fm_model::AudioSoloMode },
+    /// `audio-monitor-device <device|none>`: the headphone device the
+    /// monitor bus plays on.
+    MonitorDevice { device: Option<String> },
+    /// `audio-monitor-level <gain millidB> <muted on|off>`: the headphone
+    /// feed's own level.
+    MonitorLevel { gain_millidb: i32, muted: bool },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1811,13 +1817,17 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-group-solo"
         | "audio-group-parent"
         | "audio-solo-mode"
+        | "audio-monitor-device"
+        | "audio-monitor-level"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
         | "remote-audio-group-level"
         | "remote-audio-group-solo"
         | "remote-audio-group-parent"
-        | "remote-audio-solo-mode") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-solo-mode"
+        | "remote-audio-monitor-device"
+        | "remote-audio-monitor-level") => parse_audio_mixer(mixer, arguments),
         output @ ("ftb-output" | "remote-ftb-output") => {
             parse_fade_to_black_output(output, arguments)
         }
@@ -2748,6 +2758,16 @@ fn parse_audio_mixer(
                 )?,
             }
         }
+        "audio-monitor-device" => {
+            let device = required(&mut arguments, "monitor device")?;
+            AudioMixerArgs::MonitorDevice {
+                device: (device != "none").then_some(device),
+            }
+        }
+        "audio-monitor-level" => AudioMixerArgs::MonitorLevel {
+            gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
+            muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
+        },
         _ => AudioMixerArgs::GroupLevel {
             group: audio_group_number(&required(&mut arguments, "group")?)?,
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
@@ -7486,6 +7506,59 @@ mod tests {
                 delay_samples: 48_000,
             })
         );
+    }
+
+    #[test]
+    fn monitor_output_commands_parse() {
+        assert_eq!(
+            parse(strings(&[
+                "audio-monitor-device",
+                "show.freemix",
+                "hw:CARD=Headset,DEV=0"
+            ])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::MonitorDevice {
+                    device: Some("hw:CARD=Headset,DEV=0".into()),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["audio-monitor-device", "show.freemix", "none"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::MonitorDevice { device: None },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-monitor-level",
+                "127.0.0.1:9123",
+                "-6000",
+                "on",
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::MonitorLevel {
+                    gain_millidb: -6_000,
+                    muted: true,
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        for bad in [
+            &["audio-monitor-device", "show.freemix"][..],
+            &["audio-monitor-level", "show.freemix", "-6000"],
+            &["audio-monitor-level", "show.freemix", "loud", "on"],
+            &["audio-monitor-level", "show.freemix", "0", "yes"],
+        ] {
+            assert!(parse(strings(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

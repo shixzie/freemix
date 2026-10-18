@@ -4,11 +4,13 @@
 use std::num::NonZeroU128;
 
 use fm_model::{
-    AUDIO_GROUP_COUNT, AudioBus, AudioGroup, AudioGroupNumber, AudioLabelError, AudioSoloMode,
-    CURRENT_SCHEMA_VERSION, EntityRef, Input, InputAudioStripState, InputGainMilliDb, InputKind,
-    InputPanBasisPoints, MAX_AUDIO_LABEL_BYTES, Output, Project, ProjectSettings, Rgba8, Scene,
-    SetAudioMixerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy,
-    ValidationErrorKind, validate_audio_group_name, validate_audio_strip_label,
+    AUDIO_GROUP_COUNT, AudioBus, AudioGroup, AudioGroupNumber, AudioLabelError,
+    AudioMonitorDeviceError, AudioMonitorOutput, AudioSoloMode, CURRENT_SCHEMA_VERSION, EntityRef,
+    Input, InputAudioStripState, InputGainMilliDb, InputKind, InputPanBasisPoints,
+    MAX_AUDIO_LABEL_BYTES, MAX_AUDIO_MONITOR_DEVICE_BYTES, Output, Project, ProjectSettings, Rgba8,
+    Scene, SetAudioMixerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
+    StartupPolicy, ValidationErrorKind, validate_audio_group_name, validate_audio_monitor_device,
+    validate_audio_strip_label,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
@@ -86,7 +88,7 @@ fn project() -> Project {
 
 #[test]
 fn schema_39_defaults_center_pan_unlabelled_ungrouped_and_every_output_fading() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 49);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 50);
     let project = project();
     assert_eq!(
         project.input_audio_strip(input(10)).unwrap().pan,
@@ -374,5 +376,68 @@ fn restored_cyclic_group_parents_fail_validation() {
             .iter()
             .any(|error| error.field == "audio_groups.parent"
                 && error.kind == ValidationErrorKind::Cycle)
+    );
+}
+
+#[test]
+fn schema_50_monitor_output_is_a_validated_device_with_its_own_level() {
+    let mut project = project();
+    assert_eq!(
+        project.audio_monitor_output(),
+        &AudioMonitorOutput::default()
+    );
+    assert_eq!(project.audio_monitor_output().device, None);
+    assert_eq!(project.audio_monitor_output().gain, InputGainMilliDb::UNITY);
+    assert!(!project.audio_monitor_output().muted);
+
+    let headphones = AudioMonitorOutput {
+        device: Some("hw:CARD=Headset,DEV=0".into()),
+        gain: InputGainMilliDb::new(-6_000).unwrap(),
+        muted: true,
+    };
+    project
+        .set_audio_monitor_output(headphones.clone())
+        .unwrap();
+    assert_eq!(project.audio_monitor_output(), &headphones);
+    assert_eq!(project.validate(), Ok(()));
+
+    let longest = "d".repeat(MAX_AUDIO_MONITOR_DEVICE_BYTES);
+    assert_eq!(validate_audio_monitor_device(&longest), Ok(()));
+    for bad in [
+        String::new(),
+        "d".repeat(MAX_AUDIO_MONITOR_DEVICE_BYTES + 1),
+        "my headset".into(),
+        "auriculares\u{e1}".into(),
+        "tab\there".into(),
+    ] {
+        assert_eq!(
+            validate_audio_monitor_device(&bad),
+            Err(AudioMonitorDeviceError::Invalid),
+            "{bad:?}"
+        );
+        assert_eq!(
+            project.set_audio_monitor_output(AudioMonitorOutput {
+                device: Some(bad.clone()),
+                ..AudioMonitorOutput::default()
+            }),
+            Err(SetAudioMixerError::MonitorDevice(
+                AudioMonitorDeviceError::Invalid
+            ))
+        );
+        // A refused edit changes nothing.
+        assert_eq!(project.audio_monitor_output(), &headphones);
+    }
+
+    // A restored unusable device is reported by validation.
+    project.restore_audio_monitor_output(AudioMonitorOutput {
+        device: Some("two words".into()),
+        ..AudioMonitorOutput::default()
+    });
+    let errors = project.validate().unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "audio_monitor_output.device"
+                && error.kind == ValidationErrorKind::OutOfRange)
     );
 }

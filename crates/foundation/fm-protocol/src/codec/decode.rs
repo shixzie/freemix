@@ -479,9 +479,15 @@ fn decode_command_payload(
             super::input_lifecycle::decode_lifecycle_operation(lifecycle, fields)?
                 .expect("every listed payload is a lifecycle operation"),
         ),
-        mixer @ ("audio_strip_label" | "audio_strip_group" | "audio_group_name"
-        | "audio_group_level" | "audio_group_solo" | "audio_group_parent"
-        | "audio_solo_mode") => CommandPayload::AudioMixer(
+        mixer @ ("audio_strip_label"
+        | "audio_strip_group"
+        | "audio_group_name"
+        | "audio_group_level"
+        | "audio_group_solo"
+        | "audio_group_parent"
+        | "audio_solo_mode"
+        | "audio_monitor_device"
+        | "audio_monitor_level") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),
         ),
@@ -3146,17 +3152,27 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
             field: "monitor",
             value: monitor_value.clone(),
         };
-        let (source, channels) = monitor_value.split_once('~').ok_or_else(invalid)?;
+        let mut parts = monitor_value.splitn(3, '~');
+        let (Some(source), Some(output), Some(channels)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(invalid());
+        };
         let solo = match source {
             "master" => false,
             "solo" => true,
             _ => return Err(invalid()),
         };
+        let output = crate::AudioMonitorOutputState::from_token(output).ok_or_else(invalid)?;
         let channels = decode_meter_channels(channels, "monitor")?;
         if channels.len() != master.len() {
             return Err(invalid());
         }
-        Some(crate::AudioMonitorMeters { solo, channels })
+        Some(crate::AudioMonitorMeters {
+            solo,
+            output,
+            channels,
+        })
     };
     Ok(AudioMetersMessage {
         server,

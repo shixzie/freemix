@@ -87,7 +87,7 @@ behavior.
 
 | ID | Pri | Capability | Acceptance |
 |---|---:|---|---|
-| AU-001 | P0 | Per-input mixer strip | Gain, fader, mute, follow-video, solo/PFL, pan/balance, delay, meter, bus sends, labels, and groups |
+| AU-001 | P0 | Per-input mixer strip | Gain, fader, mute, follow-video, solo/PFL with a headphone monitor output, pan/balance, delay, meter, bus sends, labels, and groups |
 | AU-002 | P0 | Master plus seven auxiliary buses | Independent mixes, mute/fader/processing, named routing, device/network/record destinations, and mix-minus |
 | AU-003 | P0 | Multichannel audio | Preserve channel count/layout, map matrix, stereo pairs/mono, downmix, embedded/de-embedded audio |
 | AU-004 | P0 | Sample-rate conversion and sync | Stable 48 kHz engine clock by default, drift compensation, discontinuity handling, and per-source sync telemetry |

@@ -2721,15 +2721,54 @@ pub struct InputAudioMeters {
     pub channels: Vec<AudioMeterChannel>,
 }
 
+/// Whether the monitor bus is reaching its output device (2.53, AU-001).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum AudioMonitorOutputState {
+    /// `off`: no device is chosen; the bus is only metered.
+    #[default]
+    Off,
+    /// `playing`: the bus is playing on the chosen device.
+    Playing,
+    /// `failed`: the chosen device could not be opened or stopped playing.
+    /// Choosing the device again retries.
+    Failed,
+}
+
+impl AudioMonitorOutputState {
+    /// Every state in display order.
+    pub const ALL: [Self; 3] = [Self::Off, Self::Playing, Self::Failed];
+
+    /// The wire token: `off`, `playing`, or `failed`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Playing => "playing",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Parses [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.token() == token)
+    }
+}
+
 /// The monitor (headphone) bus meters of one interval (2.44, AU-001).
 ///
 /// `solo` is set while the bus carries a PFL/AFL solo; otherwise it follows
-/// Master. On the wire this is `monitor=<master|solo>~<channels>`, or `-`
-/// when the sender has no monitor bus.
+/// Master. `output` (2.53) says whether the bus is reaching its output
+/// device. On the wire this is
+/// `monitor=<master|solo>~<off|playing|failed>~<channels>`, or `-` when the
+/// sender has no monitor bus.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AudioMonitorMeters {
     pub solo: bool,
-    /// One reading per Master channel, in Master channel order.
+    /// Whether the bus is reaching its output device (2.53).
+    pub output: AudioMonitorOutputState,
+    /// One reading per Master channel, in Master channel order. The meters
+    /// read the bus before the monitor output level and mute.
     pub channels: Vec<AudioMeterChannel>,
 }
 

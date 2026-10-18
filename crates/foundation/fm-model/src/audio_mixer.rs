@@ -1,5 +1,5 @@
-//! Mixer strip labels, VCA-style strip groups, and the solo mode (AU-001,
-//! schemas 39 and 42).
+//! Mixer strip labels, VCA-style strip groups, the solo mode, and the
+//! monitor output (AU-001, schemas 39, 42, and 50).
 //!
 //! - Every input's Master strip carries an optional operator **label**
 //!   (empty means "show the input name") and an optional **group**.
@@ -19,6 +19,9 @@
 //! - The project's [`AudioSoloMode`] (schema 42) chooses whether a solo
 //!   gates Program (solo-in-place) or is heard on the monitor bus
 //!   pre-fader (PFL) or after-fader (AFL) without touching Program.
+//! - The project's [`AudioMonitorOutput`] (schema 50) sends the monitor bus
+//!   to a local audio output device (headphones) at its own level and mute,
+//!   independent of Program. Without a device the bus is only metered.
 
 use core::fmt;
 
@@ -254,4 +257,73 @@ pub fn validate_audio_group_name(name: &str) -> Result<(), AudioLabelError> {
         return Err(AudioLabelError::Empty);
     }
     validate_audio_strip_label(name)
+}
+
+/// The longest monitor output device name, in bytes (the ALSA device bound).
+pub const MAX_AUDIO_MONITOR_DEVICE_BYTES: usize = fm_types::capture::MAX_ALSA_DEVICE_BYTES;
+
+/// Where the monitor bus is heard, and how loud (AU-001, schema 50).
+///
+/// The level and mute act on the device feed only; Program, recordings,
+/// streams, and the monitor meters are untouched.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioMonitorOutput {
+    /// The local audio output device (an ALSA device name such as
+    /// `default` or `hw:CARD=Headset,DEV=0`), or `None` for meter-only.
+    pub device: Option<String>,
+    /// The monitor feed level.
+    pub gain: InputGainMilliDb,
+    /// Whether the monitor feed is muted.
+    pub muted: bool,
+}
+
+impl Default for AudioMonitorOutput {
+    /// Meter-only, at unity, unmuted.
+    fn default() -> Self {
+        Self {
+            device: None,
+            gain: InputGainMilliDb::UNITY,
+            muted: false,
+        }
+    }
+}
+
+/// Why a monitor output device name is refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioMonitorDeviceError {
+    /// The name is empty, longer than [`MAX_AUDIO_MONITOR_DEVICE_BYTES`], or
+    /// not printable ASCII without spaces.
+    Invalid,
+}
+
+impl fmt::Display for AudioMonitorDeviceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid => write!(
+                formatter,
+                "monitor output device must be 1 to {MAX_AUDIO_MONITOR_DEVICE_BYTES} bytes of \
+                 printable ASCII without spaces"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AudioMonitorDeviceError {}
+
+/// Checks a monitor output device name: 1 to
+/// [`MAX_AUDIO_MONITOR_DEVICE_BYTES`] bytes of printable ASCII without
+/// spaces, the same rule as a capture input's ALSA device.
+///
+/// # Errors
+///
+/// Returns [`AudioMonitorDeviceError::Invalid`].
+pub fn validate_audio_monitor_device(device: &str) -> Result<(), AudioMonitorDeviceError> {
+    if device.is_empty()
+        || device.len() > MAX_AUDIO_MONITOR_DEVICE_BYTES
+        || !device.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        Err(AudioMonitorDeviceError::Invalid)
+    } else {
+        Ok(())
+    }
 }

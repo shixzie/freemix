@@ -1678,7 +1678,13 @@ fn format_audio_mixer(state: &fm_ui_model::ProjectState) -> String {
         })
         .collect::<Vec<_>>()
         .join(",");
-    format!("[{strips}]/[{groups}]/solo={}", mixer.solo_mode.token())
+    format!(
+        "[{strips}]/[{groups}]/solo={}/monitor={}:{}:{}",
+        mixer.solo_mode.token(),
+        mixer.monitor.device.as_deref().unwrap_or("-"),
+        mixer.monitor.gain_millidb,
+        mixer.monitor.muted
+    )
 }
 
 /// The outputs Fade to Black leaves live (SW-004).

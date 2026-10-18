@@ -250,6 +250,9 @@ fn model(variant: Variant) -> ClientModel {
             mixer.groups[1].parent = Some(3);
             mixer.groups[1].soloed = true;
             mixer.solo_mode = fm_protocol::AudioSoloMode::Pfl;
+            // A headphone device at its own level (Protocol 2.53).
+            mixer.monitor.device = Some("hw:CARD=Headset,DEV=0".into());
+            mixer.monitor.gain_millidb = -6_000;
             mixer.labels.push(fm_protocol::InputAudioLabel {
                 input: wire(1),
                 label: "Host Mic".into(),
@@ -1194,8 +1197,10 @@ fn meters() -> AudioMetersMessage {
                 channels: vec![channel(if value == 1 { 1_000_000 } else { 300_000 }); 2],
             })
             .collect(),
+        // The headphone device failed, so its retry help is audited.
         monitor: Some(fm_protocol::AudioMonitorMeters {
             solo: true,
+            output: fm_protocol::AudioMonitorOutputState::Failed,
             channels: vec![channel(300_000); 2],
         }),
     }

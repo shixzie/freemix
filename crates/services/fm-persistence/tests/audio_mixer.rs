@@ -1,6 +1,7 @@
-//! AU-001 and SW-004 at schemas 39 and 42: strip pan, labels, groups (with
-//! solo and nesting), the solo mode, and the Fade-to-Black output selection
-//! round-trip exactly and strictly in `project.json`.
+//! AU-001 and SW-004 at schemas 39, 42, and 50: strip pan, labels, groups
+//! (with solo and nesting), the solo mode, the monitor output, and the
+//! Fade-to-Black output selection round-trip exactly and strictly in
+//! `project.json`.
 
 use std::{
     fs,
@@ -10,9 +11,10 @@ use std::{
 };
 
 use fm_model::{
-    AudioBus, AudioGroup, AudioGroupNumber, AudioSoloMode, Input, InputAudioStripState,
-    InputGainMilliDb, InputKind, InputPanBasisPoints, Output, Project, ProjectSettings, Rgba8,
-    Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy,
+    AudioBus, AudioGroup, AudioGroupNumber, AudioMonitorOutput, AudioSoloMode, Input,
+    InputAudioStripState, InputGainMilliDb, InputKind, InputPanBasisPoints, Output, Project,
+    ProjectSettings, Rgba8, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
+    StartupPolicy,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -190,13 +192,13 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 49"));
+    assert!(text.contains("\"schema_version\": 50"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2}"
     ), "{text}");
     assert!(text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null}"));
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": []\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": []\n  },"
     ), "{text}");
 
     for (from, to) in [
@@ -315,6 +317,83 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         assert!(
             matches!(store.load(), Err(StoreError::Validation(_))),
             "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+}
+
+#[test]
+fn the_monitor_output_round_trips_exactly_and_strictly() {
+    let directory = TestDirectory::new("monitor-output");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    expected
+        .set_audio_monitor_output(AudioMonitorOutput {
+            device: Some("hw:CARD=Headset,DEV=0".into()),
+            gain: InputGainMilliDb::new(-6_000).unwrap(),
+            muted: true,
+        })
+        .unwrap();
+    let expected = stored(expected);
+    store.save(&expected).unwrap();
+    assert_eq!(store.load().unwrap(), expected);
+
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    let encoded = "\"audio_monitor_output\": {\"device\": \"hw:CARD=Headset,DEV=0\", \"gain_milli_db\": -6000, \"muted\": true}";
+    assert!(
+        text.contains(&format!(
+            "\"audio_solo_mode\": \"sip\",\n    {encoded},\n    \"fade_to_black_excluded_outputs\""
+        )),
+        "{text}"
+    );
+
+    // No device is `null`.
+    let meter_only = text.replacen(
+        "\"device\": \"hw:CARD=Headset,DEV=0\"",
+        "\"device\": null",
+        1,
+    );
+    fs::write(directory.path("show.freemix/project.json"), &meter_only).unwrap();
+    assert_eq!(
+        store
+            .load()
+            .unwrap()
+            .project()
+            .audio_monitor_output()
+            .device,
+        None
+    );
+
+    for (from, to) in [
+        ("\"device\": \"hw:CARD=Headset,DEV=0\"", "\"device\": 1"),
+        ("\"device\": \"hw:CARD=Headset,DEV=0\", ", ""),
+        ("\"gain_milli_db\": -6000", "\"gain_milli_db\": 24001"),
+        ("\"gain_milli_db\": -6000", "\"gain_milli_db\": \"-6000\""),
+        ("\"muted\": true}", "\"muted\": 1}"),
+        ("\"muted\": true}", "\"muted\": true, \"solo\": false}"),
+        (encoded, "\"audio_monitor_output\": null"),
+        (&format!(",\n    {encoded}"), ""),
+    ] {
+        let malformed = text.replacen(from, to, 1);
+        assert_ne!(malformed, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}"
+        );
+    }
+
+    // An unusable device name is project validation.
+    for device in ["", "two words", "caf\u{e9}"] {
+        let invalid = text.replacen(
+            "\"device\": \"hw:CARD=Headset,DEV=0\"",
+            &format!("\"device\": \"{device}\""),
+            1,
+        );
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::Validation(_))),
+            "{device:?}: {:?}",
             store.load()
         );
     }

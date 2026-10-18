@@ -1,6 +1,6 @@
-//! Mixer strip labels, VCA-style strip groups, the solo mode, and the
-//! Fade-to-Black output selection (Protocols 2.40 and 2.44, AU-001 and
-//! SW-004).
+//! Mixer strip labels, VCA-style strip groups, the solo mode, the monitor
+//! output, and the Fade-to-Black output selection (Protocols 2.40, 2.44, and
+//! 2.53, AU-001 and SW-004).
 //!
 //! Every input's Master strip carries an optional operator label and an
 //! optional group (`1..=`[`AUDIO_GROUP_COUNT`]). A group carries no audio of
@@ -16,6 +16,11 @@
 //! a solo gates Program (`sip`, solo-in-place) or is heard on the monitor
 //! bus pre-fader (`pfl`) or after-fader (`afl`) without touching Program.
 //!
+//! Since 2.53 the monitor bus can play on a local audio output device
+//! (headphones) at its own level and mute, independent of Program: the
+//! device is a project edit and the level a live operation. Without a device
+//! the bus is only metered.
+//!
 //! | Operation | Payload | Fields | Class |
 //! |---|---|---|---|
 //! | [`AudioMixerOperation::SetLabel`] | `audio_strip_label` | `input`, `label` (may be empty) | project edit |
@@ -25,6 +30,8 @@
 //! | [`AudioMixerOperation::SetGroupSolo`] | `audio_group_solo` | `group`, `soloed` (`0\|1`) | live operation |
 //! | [`AudioMixerOperation::SetGroupParent`] | `audio_group_parent` | `group`, `parent` (`-` for none) | project edit |
 //! | [`AudioMixerOperation::SetSoloMode`] | `audio_solo_mode` | `mode` (`sip\|pfl\|afl`) | project edit |
+//! | [`AudioMixerOperation::SetMonitorDevice`] | `audio_monitor_device` | `device` (empty for none) | project edit |
+//! | [`AudioMixerOperation::SetMonitorLevel`] | `audio_monitor_level` | `gain_millidb`, `muted` | live operation |
 //!
 //! Every accepted operation, undo and redo included, is announced by
 //! `event=audio_mixer_changed` carrying the operation (`operation=<payload>`
@@ -34,7 +41,9 @@
 //!
 //! A snapshot carries `audio_groups` (four
 //! `<name>~<gain>~<muted>~<soloed>~<parent>` entries, group 1 first, `parent`
-//! being `-` or a group number), `audio_solo_mode`, `input_audio_labels`
+//! being `-` or a group number), `audio_solo_mode`, `audio_monitor`
+//! (`<device>~<gain>~<muted>`, the device empty for none),
+//! `input_audio_labels`
 //! (sparse `<input>~<label>` entries,
 //! ascending), each strip's group inside `input_audio_strips`, and
 //! `fade_to_black_excluded_outputs` (the outputs Fade to Black leaves live,
@@ -54,6 +63,30 @@ pub fn audio_label_is_valid(text: &str, allow_empty: bool) -> bool {
     (allow_empty || !text.trim().is_empty())
         && text.len() <= MAX_AUDIO_LABEL_BYTES
         && !text.chars().any(char::is_control)
+}
+
+/// Longest monitor output device name, in bytes (2.53).
+pub const MAX_AUDIO_MONITOR_DEVICE_BYTES: usize = 64;
+
+/// Whether `device` is a usable monitor output device name: 1 to
+/// [`MAX_AUDIO_MONITOR_DEVICE_BYTES`] bytes of printable ASCII without
+/// spaces (2.53).
+#[must_use]
+pub fn audio_monitor_device_is_valid(device: &str) -> bool {
+    !device.is_empty()
+        && device.len() <= MAX_AUDIO_MONITOR_DEVICE_BYTES
+        && device.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+/// Where the monitor bus is heard, and how loud (2.53).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AudioMonitorStatus {
+    /// The local audio output device, or `None` for meter-only.
+    pub device: Option<String>,
+    /// The monitor feed level; Program is untouched.
+    pub gain_millidb: i32,
+    /// Whether the monitor feed is muted.
+    pub muted: bool,
 }
 
 /// Whether `group` names one of the show's groups.
@@ -144,6 +177,8 @@ pub struct AudioMixerStatus {
     pub labels: Vec<InputAudioLabel>,
     /// How a soloed strip is heard (2.44).
     pub solo_mode: AudioSoloMode,
+    /// Where the monitor bus is heard, and how loud (2.53).
+    pub monitor: AudioMonitorStatus,
 }
 
 impl Default for AudioMixerStatus {
@@ -152,6 +187,7 @@ impl Default for AudioMixerStatus {
             groups: [1, 2, 3, 4].map(AudioGroupStatus::default_for),
             labels: Vec::new(),
             solo_mode: AudioSoloMode::InPlace,
+            monitor: AudioMonitorStatus::default(),
         }
     }
 }
@@ -240,6 +276,16 @@ impl AudioMixerStatus {
                 }
             }
             AudioMixerOperation::SetSoloMode { mode } => self.solo_mode = *mode,
+            AudioMixerOperation::SetMonitorDevice { device } => {
+                self.monitor.device.clone_from(device);
+            }
+            AudioMixerOperation::SetMonitorLevel {
+                gain_millidb,
+                muted,
+            } => {
+                self.monitor.gain_millidb = *gain_millidb;
+                self.monitor.muted = *muted;
+            }
         }
     }
 }
@@ -268,6 +314,11 @@ pub enum AudioMixerOperation {
     SetGroupParent { group: u8, parent: Option<u8> },
     /// Chooses how a soloed strip is heard.
     SetSoloMode { mode: AudioSoloMode },
+    /// Plays the monitor bus on a local audio output device, or on none
+    /// (meter-only) (2.53).
+    SetMonitorDevice { device: Option<String> },
+    /// Moves the monitor feed level or mute; Program is untouched (2.53).
+    SetMonitorLevel { gain_millidb: i32, muted: bool },
 }
 
 impl AudioMixerOperation {
@@ -282,13 +333,18 @@ impl AudioMixerOperation {
             Self::SetGroupSolo { .. } => "audio_group_solo",
             Self::SetGroupParent { .. } => "audio_group_parent",
             Self::SetSoloMode { .. } => "audio_solo_mode",
+            Self::SetMonitorDevice { .. } => "audio_monitor_device",
+            Self::SetMonitorLevel { .. } => "audio_monitor_level",
         }
     }
 
     /// Whether this is a live operation rather than a project edit.
     #[must_use]
     pub const fn is_live(&self) -> bool {
-        matches!(self, Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. })
+        matches!(
+            self,
+            Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. } | Self::SetMonitorLevel { .. }
+        )
     }
 }
 

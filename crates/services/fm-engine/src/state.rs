@@ -205,6 +205,7 @@ pub struct ShowState {
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
     /// How a soloed strip is heard (AU-001).
     audio_solo_mode: fm_model::AudioSoloMode,
+    audio_monitor: crate::EngineAudioMonitor,
     /// The configured fullscreen display outputs by slot (OR-011).
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
@@ -292,6 +293,7 @@ impl ShowState {
             input_audio_groups: BTreeMap::new(),
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
+            audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
             stream_targets: Vec::new(),
         })
@@ -777,6 +779,37 @@ impl ShowState {
     /// Restores the solo mode.
     pub const fn set_audio_solo_mode(&mut self, mode: fm_model::AudioSoloMode) {
         self.audio_solo_mode = mode;
+    }
+
+    /// The monitor output: its device and live level (AU-001).
+    #[must_use]
+    pub const fn audio_monitor(&self) -> &crate::EngineAudioMonitor {
+        &self.audio_monitor
+    }
+
+    pub(crate) const fn audio_monitor_mut(&mut self) -> &mut crate::EngineAudioMonitor {
+        &mut self.audio_monitor
+    }
+
+    /// Restores the monitor output.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidAudioMonitorDevice`] for an unusable device name
+    /// or [`ShowError::InvalidAudioMonitorGain`] for a level outside the strip range.
+    /// Nothing changes on error.
+    pub fn set_audio_monitor(
+        &mut self,
+        monitor: crate::EngineAudioMonitor,
+    ) -> Result<(), ShowError> {
+        if let Some(device) = &monitor.device {
+            fm_model::validate_audio_monitor_device(device)
+                .map_err(|_| ShowError::InvalidAudioMonitorDevice)?;
+        }
+        crate::audio_mixer::validate_group_state(monitor.state)
+            .map_err(|_| ShowError::InvalidAudioMonitorGain(monitor.state.gain_millidb))?;
+        self.audio_monitor = monitor;
+        Ok(())
     }
 
     /// The configured fullscreen display outputs by slot (OR-011).

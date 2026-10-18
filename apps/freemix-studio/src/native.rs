@@ -159,6 +159,18 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             *current_muted = muted;
             true
         }
+        // A headphone level drag sends the latest level, never a backlog.
+        (
+            StudioIntent::AudioMixer(
+                current @ fm_protocol::AudioMixerOperation::SetMonitorLevel { .. },
+            ),
+            StudioIntent::AudioMixer(
+                incoming @ fm_protocol::AudioMixerOperation::SetMonitorLevel { .. },
+            ),
+        ) => {
+            *current = incoming;
+            true
+        }
         // One queued display inventory (or capture devices) request answers
         // every later one.
         (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)

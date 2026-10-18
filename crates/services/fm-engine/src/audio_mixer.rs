@@ -1,4 +1,5 @@
-//! Mixer strip labels, VCA-style strip groups, and the solo mode (AU-001).
+//! Mixer strip labels, VCA-style strip groups, the solo mode, and the
+//! monitor output (AU-001).
 //!
 //! Every input's Master strip carries an optional operator label and an
 //! optional group; the show keeps [`fm_model::AUDIO_GROUP_COUNT`] groups,
@@ -10,24 +11,29 @@
 //! `fm_audio::MixerGroup`). Parents never form a cycle. The show's
 //! [`fm_model::AudioSoloMode`] chooses whether a solo gates Program
 //! (solo-in-place) or is heard on the monitor bus pre-fader (PFL) or
-//! after-fader (AFL).
+//! after-fader (AFL). The show's monitor output plays that bus on a local
+//! audio output device (headphones) at its own level and mute, independent
+//! of Program; without a device the bus is only metered.
 //!
 //! # Command classes
 //!
 //! - [`EngineAudioMixerEdit::SetLabel`], [`EngineAudioMixerEdit::SetGroup`],
 //!   [`EngineAudioMixerEdit::RenameGroup`],
-//!   [`EngineAudioMixerEdit::SetGroupParent`], and
-//!   [`EngineAudioMixerEdit::SetSoloMode`] change durable configuration.
-//!   They are project edits: refused while the project padlock (and, for a
-//!   strip, the input's padlock) is engaged, and undoable with the exact
-//!   previous label, membership, name, parent, or mode.
-//! - [`EngineAudioMixerEdit::SetGroupLevel`] moves a group fader or mute and
-//!   [`EngineAudioMixerEdit::SetGroupSolo`] solos a group. Like a strip
-//!   fader or solo they are live operations: never recorded, never reverted
-//!   by undo, and never blocked by a padlock.
+//!   [`EngineAudioMixerEdit::SetGroupParent`],
+//!   [`EngineAudioMixerEdit::SetSoloMode`], and
+//!   [`EngineAudioMixerEdit::SetMonitorDevice`] change durable
+//!   configuration. They are project edits: refused while the project
+//!   padlock (and, for a strip, the input's padlock) is engaged, and undoable
+//!   with the exact previous label, membership, name, parent, mode, or
+//!   device.
+//! - [`EngineAudioMixerEdit::SetGroupLevel`] moves a group fader or mute,
+//!   [`EngineAudioMixerEdit::SetGroupSolo`] solos a group, and
+//!   [`EngineAudioMixerEdit::SetMonitorLevel`] moves the monitor output level
+//!   or mute. Like a strip fader or solo they are live operations: never
+//!   recorded, never reverted by undo, and never blocked by a padlock.
 //!
-//! Membership, group levels, solos, parents, and the solo mode reach the
-//! media plane on the command's target frame through
+//! Membership, group levels, solos, parents, the solo mode, and the monitor
+//! output reach the media plane on the command's target frame through
 //! [`crate::FrameResult::audio_mixer_updates`].
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
@@ -66,6 +72,17 @@ impl EngineAudioGroup {
             parent: None,
         }
     }
+}
+
+/// The monitor output: the device the monitor bus plays on and its live
+/// level and mute.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EngineAudioMonitor {
+    /// The local audio output device, or `None` for meter-only. Durable
+    /// configuration.
+    pub device: Option<String>,
+    /// The monitor feed level and mute. Live state.
+    pub state: EngineAudioGroupState,
 }
 
 /// Whether nesting `group` inside `parent` keeps `groups` cycle-free.
@@ -118,13 +135,21 @@ pub enum EngineAudioMixerEdit {
     },
     /// Chooses solo-in-place, PFL, or AFL. A project edit.
     SetSoloMode { mode: AudioSoloMode },
+    /// Plays the monitor bus on a local audio output device, or on none. A
+    /// project edit.
+    SetMonitorDevice { device: Option<String> },
+    /// Moves the monitor output level or mute. A live operation.
+    SetMonitorLevel { state: EngineAudioGroupState },
 }
 
 impl EngineAudioMixerEdit {
     /// Whether this edit is a live operation rather than a project edit.
     #[must_use]
     pub const fn is_live(&self) -> bool {
-        matches!(self, Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. })
+        matches!(
+            self,
+            Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. } | Self::SetMonitorLevel { .. }
+        )
     }
 
     /// The input whose padlock covers this edit.
@@ -136,7 +161,9 @@ impl EngineAudioMixerEdit {
             | Self::SetGroupLevel { .. }
             | Self::SetGroupSolo { .. }
             | Self::SetGroupParent { .. }
-            | Self::SetSoloMode { .. } => None,
+            | Self::SetSoloMode { .. }
+            | Self::SetMonitorDevice { .. }
+            | Self::SetMonitorLevel { .. } => None,
         }
     }
 
@@ -148,7 +175,7 @@ impl EngineAudioMixerEdit {
 }
 
 /// A mixer change the media plane applies on a realized frame.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineAudioMixerUpdate {
     /// `input`'s strip joined `group`, or left every group.
     Membership {
@@ -172,12 +199,17 @@ pub enum EngineAudioMixerUpdate {
     },
     /// The solo mode changed.
     SoloMode(AudioSoloMode),
+    /// The monitor output device was chosen again, even if unchanged, so the
+    /// media plane reopens it.
+    MonitorDevice(Option<String>),
+    /// The monitor output level or mute moved.
+    MonitorLevel(EngineAudioGroupState),
 }
 
 impl EngineAudioMixerUpdate {
     /// The media-plane update an accepted edit realizes, if any.
     #[must_use]
-    pub const fn of(edit: &EngineAudioMixerEdit) -> Option<Self> {
+    pub fn of(edit: &EngineAudioMixerEdit) -> Option<Self> {
         match edit {
             EngineAudioMixerEdit::SetGroup { input, group } => Some(Self::Membership {
                 input: *input,
@@ -196,6 +228,10 @@ impl EngineAudioMixerUpdate {
                 parent: *parent,
             }),
             EngineAudioMixerEdit::SetSoloMode { mode } => Some(Self::SoloMode(*mode)),
+            EngineAudioMixerEdit::SetMonitorDevice { device } => {
+                Some(Self::MonitorDevice(device.clone()))
+            }
+            EngineAudioMixerEdit::SetMonitorLevel { state } => Some(Self::MonitorLevel(*state)),
             EngineAudioMixerEdit::SetLabel { .. } | EngineAudioMixerEdit::RenameGroup { .. } => {
                 None
             }
@@ -304,11 +340,40 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
             state.set_audio_solo_mode(*mode);
             Ok(())
         }
+        EngineAudioMixerEdit::SetMonitorDevice { device } => {
+            if let Some(device) = device {
+                fm_model::validate_audio_monitor_device(device).map_err(|error| {
+                    rejection(
+                        RejectionCode::InvalidCommand,
+                        "device",
+                        "invalid_device",
+                        error.to_string(),
+                    )
+                })?;
+            }
+            state.audio_monitor_mut().device.clone_from(device);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetMonitorLevel { state: level } => {
+            validate_group_state(*level).map_err(|_| {
+                rejection(
+                    RejectionCode::InvalidCommand,
+                    "gain_millidb",
+                    "out_of_range",
+                    format!(
+                        "monitor output gain must be between {MIN_INPUT_AUDIO_GAIN_MILLIDB} and \
+                         {MAX_INPUT_AUDIO_GAIN_MILLIDB} millidB"
+                    ),
+                )
+            })?;
+            state.audio_monitor_mut().state = *level;
+            Ok(())
+        }
     }
 }
 
 /// The exact edit that reverts project edit `edit` on `state`, or `None` for
-/// a live group level or solo, or an unknown input.
+/// a live group level, solo, or monitor level, or an unknown input.
 pub(crate) fn inverse(
     state: &ShowState,
     edit: &EngineAudioMixerEdit,
@@ -347,8 +412,13 @@ pub(crate) fn inverse(
         EngineAudioMixerEdit::SetSoloMode { .. } => Some(EngineAudioMixerEdit::SetSoloMode {
             mode: state.audio_solo_mode(),
         }),
-        EngineAudioMixerEdit::SetGroupLevel { .. } | EngineAudioMixerEdit::SetGroupSolo { .. } => {
-            None
+        EngineAudioMixerEdit::SetMonitorDevice { .. } => {
+            Some(EngineAudioMixerEdit::SetMonitorDevice {
+                device: state.audio_monitor().device.clone(),
+            })
         }
+        EngineAudioMixerEdit::SetGroupLevel { .. }
+        | EngineAudioMixerEdit::SetGroupSolo { .. }
+        | EngineAudioMixerEdit::SetMonitorLevel { .. } => None,
     }
 }

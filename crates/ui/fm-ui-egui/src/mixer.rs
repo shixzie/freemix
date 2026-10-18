@@ -682,6 +682,7 @@ pub(crate) fn draw_mixer(
                     stale: meters_stale,
                 },
                 monitor.is_some_and(|monitor| monitor.solo),
+                monitor.map(|monitor| monitor.output),
             ),
             StripGate {
                 enabled,
@@ -1192,12 +1193,19 @@ fn group_parent_choice(
     (chosen != current).then_some(chosen)
 }
 
-/// Draws the monitor-bus strip: what the bus carries, its meter, and the
-/// solo-mode keys. Returns `true` when the operator cleared its clip.
+/// Draws the monitor-bus strip: what the bus carries, its meter, the
+/// solo-mode keys, and the headphone output (device, state, level, and
+/// mute). `output` is the device state the server last metered, if any.
+/// Returns `true` when the operator cleared its clip.
+#[allow(clippy::too_many_lines)]
 fn draw_monitor_strip(
     ui: &mut Ui,
     view: &ClientView,
-    (feed, solo): (MeterFeed<'_>, bool),
+    (feed, solo, output): (
+        MeterFeed<'_>,
+        bool,
+        Option<fm_protocol::AudioMonitorOutputState>,
+    ),
     gate: StripGate,
     fader_height: f32,
     intents: &mut Vec<StudioIntent>,
@@ -1273,16 +1281,149 @@ fn draw_monitor_strip(
                 }
             });
         });
-        ui.vertical_centered(|ui| {
-            let text = l.text(Msg::MonitorNoDevice);
-            let size = fitted_font_size(ui, text, crate::theme::legible(8.5), ui.available_width());
-            ui.add(
-                egui::Label::new(RichText::new(text).size(size).color(muted_color())).truncate(),
-            )
-            .on_hover_text(l.text(Msg::MonitorNoDeviceHover));
-        });
+        draw_monitor_output(ui, view, output, (enabled, reason), intents);
     });
     clear_clip
+}
+
+/// The monitor strip's headphone output: the device field, the device
+/// state, and the feed's own level and mute (AU-001, Protocol 2.53).
+fn draw_monitor_output(
+    ui: &mut Ui,
+    view: &ClientView,
+    output: Option<fm_protocol::AudioMonitorOutputState>,
+    (enabled, reason): (bool, &str),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let monitor = &view.audio_mixer.monitor;
+    let device = monitor.device.as_deref().unwrap_or_default();
+    ui.vertical_centered_justified(|ui| {
+        if let Some(text) = device_entry(
+            ui,
+            device,
+            enabled,
+            (
+                l.text(Msg::MonitorDevicePlaceholder),
+                l.text(Msg::MonitorDeviceHover),
+                reason,
+            ),
+        ) {
+            let device = (!text.is_empty()).then_some(text);
+            intents.push(StudioIntent::AudioMixer(
+                fm_protocol::AudioMixerOperation::SetMonitorDevice { device },
+            ));
+        }
+    });
+    let (text, hover, color) = match (monitor.device.as_deref(), output) {
+        (None, _) => (
+            l.text(Msg::MonitorNoDevice),
+            l.text(Msg::MonitorNoDeviceHover).to_owned(),
+            muted_color(),
+        ),
+        (Some(device), Some(fm_protocol::AudioMonitorOutputState::Playing)) => (
+            l.text(Msg::MonitorOutputPlaying),
+            l.format(
+                Msg::MonitorOutputPlayingHover,
+                &[("device", Arg::Str(device))],
+            ),
+            accent_color(),
+        ),
+        (Some(device), Some(fm_protocol::AudioMonitorOutputState::Failed)) => (
+            l.text(Msg::MonitorOutputFailed),
+            l.format(
+                Msg::MonitorOutputFailedHover,
+                &[("device", Arg::Str(device))],
+            ),
+            PROGRAM,
+        ),
+        (Some(device), Some(fm_protocol::AudioMonitorOutputState::Off) | None) => (
+            l.text(Msg::MonitorOutputIdle),
+            l.format(Msg::MonitorOutputIdleHover, &[("device", Arg::Str(device))]),
+            muted_color(),
+        ),
+    };
+    ui.vertical_centered(|ui| {
+        let size = fitted_font_size(ui, text, crate::theme::legible(8.5), ui.available_width());
+        ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).truncate())
+            .on_hover_text(hover);
+    });
+    let mut gain_millidb = monitor.gain_millidb;
+    let mut muted = monitor.muted;
+    let mut changed = false;
+    ui.vertical_centered_justified(|ui| {
+        changed |= ui
+            .add_enabled(
+                enabled,
+                DragValue::new(&mut gain_millidb)
+                    .range(-96_000..=24_000)
+                    .speed(100.0)
+                    .custom_formatter(|value, _| {
+                        #[allow(clippy::cast_possible_truncation)] // bounded range
+                        format_gain(l, value as i32)
+                    })
+                    .custom_parser(|text| parse_gain(l, text)),
+            )
+            .hint(l.text(Msg::MonitorLevelHover), reason)
+            .changed();
+    });
+    changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, STRIP_INNER_WIDTH)
+        .hint(
+            l.text(if muted {
+                Msg::MonitorMuteOnHover
+            } else {
+                Msg::MonitorMuteOffHover
+            }),
+            reason,
+        )
+        .changed();
+    if changed {
+        intents.push(StudioIntent::AudioMixer(
+            fm_protocol::AudioMixerOperation::SetMonitorLevel {
+                gain_millidb,
+                muted,
+            },
+        ));
+    }
+}
+
+/// The monitor device editor: commits on Enter or focus loss and returns
+/// the trimmed text when it differs from `current` (empty: no device).
+/// Text the server would refuse is never sent.
+fn device_entry(
+    ui: &mut Ui,
+    current: &str,
+    enabled: bool,
+    (placeholder, hover, reason): (&str, &str, &str),
+) -> Option<String> {
+    let id = ui.make_persistent_id("monitor-device");
+    let mut text = ui
+        .data_mut(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| current.to_owned());
+    let response = ui
+        .add_enabled(
+            enabled,
+            egui::TextEdit::singleline(&mut text)
+                .char_limit(fm_protocol::MAX_AUDIO_MONITOR_DEVICE_BYTES)
+                .hint_text(RichText::new(placeholder).monospace())
+                .font(egui::TextStyle::Monospace),
+        )
+        .hint(hover, reason);
+    let text = text.trim().to_owned();
+    if response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, text));
+        None
+    } else {
+        ui.data_mut(|data| data.remove::<String>(id));
+        // Enter on the same device reopens it, so a failed device can be
+        // retried; leaving the field unchanged sends nothing.
+        let entered = ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let retry = entered && !text.is_empty() && text == current;
+        (response.lost_focus()
+            && (text != current || retry)
+            && (text.is_empty() || fm_protocol::audio_monitor_device_is_valid(&text)))
+        .then_some(text)
+    }
 }
 
 /// The peak-hold readout: the held level, or a red `CLIP` while latched.

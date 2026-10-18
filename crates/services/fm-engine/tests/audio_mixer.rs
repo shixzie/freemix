@@ -10,8 +10,8 @@ use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdempotencyKey, Rejection, RejectionCode};
 use fm_engine::{
     EditLockScope, EditRejectionKind, Engine, EngineAudioGroupState, EngineAudioMixerEdit,
-    EngineAudioMixerUpdate, EngineCommand, EngineCommandKind, EngineCommandOutcome, EngineEvent,
-    EngineInputAudioStripState, ShowState,
+    EngineAudioMixerUpdate, EngineAudioMonitor, EngineCommand, EngineCommandKind,
+    EngineCommandOutcome, EngineEvent, EngineInputAudioStripState, ShowState,
 };
 use fm_model::{AudioGroupNumber, AudioSoloMode};
 use fm_switcher::FadeToBlackFrame;
@@ -727,4 +727,111 @@ fn group_parents_refuse_cycles_and_the_padlock_covers_parent_and_mode() {
             soloed: true,
         }),
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn the_monitor_device_is_an_undoable_padlocked_edit_and_its_level_is_live() {
+    let mut engine = engine();
+    let device = |device: Option<&str>| {
+        mixer(EngineAudioMixerEdit::SetMonitorDevice {
+            device: device.map(str::to_owned),
+        })
+    };
+    let level = |gain_millidb, muted| {
+        mixer(EngineAudioMixerEdit::SetMonitorLevel {
+            state: EngineAudioGroupState {
+                gain_millidb,
+                muted,
+            },
+        })
+    };
+    assert_eq!(device(None).kind(), EngineCommandKind::ProjectEdit);
+    assert_eq!(level(0, false).kind(), EngineCommandKind::LiveOperation);
+    assert_eq!(
+        engine.show().audio_monitor(),
+        &EngineAudioMonitor::default()
+    );
+
+    accept(&mut engine, "device", device(Some("hw:CARD=Headset,DEV=0")));
+    accept(&mut engine, "level", level(-6_000, true));
+    assert_eq!(
+        engine.show().audio_monitor(),
+        &EngineAudioMonitor {
+            device: Some("hw:CARD=Headset,DEV=0".into()),
+            state: EngineAudioGroupState {
+                gain_millidb: -6_000,
+                muted: true,
+            },
+        }
+    );
+    // Only the device is recorded.
+    assert_eq!(engine.undo_entries().len(), 1);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::MonitorDevice(Some("hw:CARD=Headset,DEV=0".into())),
+            EngineAudioMixerUpdate::MonitorLevel(EngineAudioGroupState {
+                gain_millidb: -6_000,
+                muted: true,
+            }),
+        ]
+    );
+
+    // Undo restores the exact previous device and never the live level.
+    undo(&mut engine, "undo-device");
+    assert_eq!(engine.show().audio_monitor().device, None);
+    assert!(engine.show().audio_monitor().state.muted);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![EngineAudioMixerUpdate::MonitorDevice(None)]
+    );
+    redo(&mut engine, "redo-device");
+    assert_eq!(
+        engine.show().audio_monitor().device.as_deref(),
+        Some("hw:CARD=Headset,DEV=0")
+    );
+
+    // An unusable device or level is refused and changes nothing.
+    for (key, command, field) in [
+        ("spaces", device(Some("my headset")), "device"),
+        ("empty", device(Some("")), "device"),
+        ("loud", level(24_001, false), "gain_millidb"),
+        ("quiet", level(-96_001, false), "gain_millidb"),
+    ] {
+        let outcome = execute(&mut engine, key, command);
+        let rejection = rejection(&outcome);
+        assert_eq!(rejection.code, RejectionCode::InvalidCommand, "{key}");
+        assert!(
+            rejection.fields.iter().any(|issue| issue.field == field),
+            "{key}: {rejection:?}"
+        );
+    }
+    assert_eq!(engine.show().audio_monitor().state.gain_millidb, -6_000);
+    let mut show = engine.show().clone();
+    assert_eq!(
+        show.set_audio_monitor(EngineAudioMonitor {
+            device: Some("two words".into()),
+            ..EngineAudioMonitor::default()
+        }),
+        Err(fm_engine::ShowError::InvalidAudioMonitorDevice)
+    );
+
+    // The padlock covers the device but not the level.
+    accept(
+        &mut engine,
+        "lock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: true,
+        },
+    );
+    let outcome = execute(&mut engine, "locked-device", device(None));
+    assert_eq!(
+        EditRejectionKind::of(rejection(&outcome)),
+        Some(EditRejectionKind::ProjectLocked)
+    );
+    accept(&mut engine, "locked-level", level(0, false));
 }

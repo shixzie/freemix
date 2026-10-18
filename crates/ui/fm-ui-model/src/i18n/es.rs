@@ -1468,8 +1468,46 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MonitorNoDeviceHover,
         t(
-            "Este servidor mide el bus de monitoreo pero todavía no lo envía a un dispositivo de auriculares",
+            "No hay un dispositivo de auriculares elegido, así que el bus de monitoreo solo se mide; escribe el nombre de un dispositivo en el campo de arriba para escucharlo",
         ),
+    ),
+    (Msg::MonitorDevicePlaceholder, t("Sin dispositivo")),
+    (
+        Msg::MonitorDeviceHover,
+        t(
+            "Dispositivo de auriculares para el bus de monitoreo: un nombre de salida ALSA como default o hw:CARD=Headset,DEV=0. Pulsa Intro para reproducir el bus de monitoreo en él, o vacía el campo para detenerlo; el Programa nunca cambia",
+        ),
+    ),
+    (Msg::MonitorOutputPlaying, t("AURIC. ACTIVOS")),
+    (
+        Msg::MonitorOutputPlayingHover,
+        t("El bus de monitoreo se está reproduciendo en {device}"),
+    ),
+    (Msg::MonitorOutputFailed, t("AURIC. FALLÓ")),
+    (
+        Msg::MonitorOutputFailedHover,
+        t(
+            "No se pudo abrir el dispositivo {device} o dejó de reproducir; revisa el nombre y pulsa Intro en el campo del dispositivo para reintentar",
+        ),
+    ),
+    (Msg::MonitorOutputIdle, t("AURIC. EN ESPERA")),
+    (
+        Msg::MonitorOutputIdleHover,
+        t("Este servidor no está generando audio ahora, así que nada llega a {device}"),
+    ),
+    (
+        Msg::MonitorLevelHover,
+        t(
+            "Nivel de auriculares: el volumen propio de la señal de monitoreo; el Programa, las grabaciones, las transmisiones y el medidor de monitoreo no cambian",
+        ),
+    ),
+    (
+        Msg::MonitorMuteOnHover,
+        t("Auriculares silenciados: haz clic para volver a oír el bus de monitoreo"),
+    ),
+    (
+        Msg::MonitorMuteOffHover,
+        t("Silenciar solo la señal de auriculares; el Programa sigue sonando"),
     ),
     (Msg::SoloModeSip, t("SIP")),
     (Msg::SoloModePfl, t("PFL")),

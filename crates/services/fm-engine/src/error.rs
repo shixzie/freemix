@@ -34,6 +34,10 @@ pub enum ShowError {
     InvalidAudioGroupGain(i32),
     /// A group parent would nest the group inside itself (AU-001).
     AudioGroupCycle(fm_model::AudioGroupNumber),
+    /// The monitor output device name is unusable (AU-001).
+    InvalidAudioMonitorDevice,
+    /// The monitor output level is outside the strip gain range (AU-001).
+    InvalidAudioMonitorGain(i32),
     /// A display output slot's configuration is refused (OR-011); carries
     /// the [`fm_model::SetDisplayOutputError::code`].
     InvalidDisplayOutput(fm_types::display::DisplayOutputSlot, &'static str),
@@ -89,6 +93,15 @@ impl fmt::Display for ShowError {
             }
             Self::AudioGroupCycle(group) => {
                 write!(formatter, "{group} cannot be nested inside itself")
+            }
+            Self::InvalidAudioMonitorDevice => {
+                fm_model::AudioMonitorDeviceError::Invalid.fmt(formatter)
+            }
+            Self::InvalidAudioMonitorGain(gain) => {
+                write!(
+                    formatter,
+                    "monitor output gain {gain} millidB is out of range"
+                )
             }
             Self::UnknownOutput(output) => {
                 write!(formatter, "show does not contain output {output}")

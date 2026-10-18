@@ -2909,8 +2909,8 @@ struct NativeAudioScratch {
     meter_inputs: Vec<InputId>,
     master_meters: Vec<ChannelMeter>,
     input_meters: Vec<ChannelMeter>,
-    /// The monitor (headphone) bus of the last render (AU-001). No device
-    /// carries it yet; it is metered and reported.
+    /// The monitor (headphone) bus of the last render (AU-001): metered,
+    /// reported, and played on the monitor output device when one is chosen.
     monitor: Vec<Vec<f32>>,
     monitor_meters: Vec<ChannelMeter>,
     /// Whether the last render's monitor bus carried a PFL/AFL solo.
@@ -2931,6 +2931,11 @@ pub struct NativeAudioMeters<'a> {
     pub monitor: &'a [ChannelMeter],
     /// Whether the monitor bus carried a PFL/AFL solo rather than Master.
     pub monitor_solo: bool,
+    /// The monitor bus samples of the interval, one plane per Master
+    /// channel; the first `end_sample - start_sample` samples are valid.
+    pub monitor_planes: &'a [Vec<f32>],
+    /// The Master sample rate, in hertz.
+    pub sample_rate: u32,
 }
 
 struct StagedAudioPadding {
@@ -3881,6 +3886,8 @@ impl NativeMasterRuntime {
             input_meters: &self.scratch.input_meters,
             monitor: &self.scratch.monitor_meters,
             monitor_solo: self.scratch.monitor_solo,
+            monitor_planes: &self.scratch.monitor,
+            sample_rate: self.format.sample_rate.hertz(),
         })
     }
 
@@ -3946,10 +3953,10 @@ impl NativeMasterRuntime {
     /// any mixer.
     pub fn apply_audio_mixer_update(
         &mut self,
-        update: fm_engine::EngineAudioMixerUpdate,
+        update: &fm_engine::EngineAudioMixerUpdate,
     ) -> Result<(), NativeMasterError> {
         let apply = |mixer: &mut MasterMixer| -> Result<(), NativeMasterError> {
-            match update {
+            match *update {
                 fm_engine::EngineAudioMixerUpdate::Membership { input, group } => {
                     let Some(mut state) = mixer.input_state(input) else {
                         return Ok(());
@@ -3976,10 +3983,14 @@ impl NativeMasterRuntime {
                 fm_engine::EngineAudioMixerUpdate::SoloMode(mode) => {
                     mixer.set_solo_mode(native_solo_mode(mode));
                 }
+                // The monitor output plays the rendered bus; the mixers
+                // never see its device or level.
+                fm_engine::EngineAudioMixerUpdate::MonitorDevice(_)
+                | fm_engine::EngineAudioMixerUpdate::MonitorLevel(_) => {}
             }
             Ok(())
         };
-        if let fm_engine::EngineAudioMixerUpdate::Membership { input, .. } = update
+        if let fm_engine::EngineAudioMixerUpdate::Membership { input, .. } = *update
             && self.mixer.input_state(input).is_none()
         {
             return Err(NativeMasterError::MissingAudioRoute { input });
@@ -12566,7 +12577,7 @@ mod tests {
         let group = fm_model::AudioGroupNumber::new(3).unwrap();
 
         master
-            .apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::Membership {
+            .apply_audio_mixer_update(&fm_engine::EngineAudioMixerUpdate::Membership {
                 input: source,
                 group: Some(group),
             })
@@ -12580,7 +12591,7 @@ mod tests {
             Some(native_mixer_group(group))
         );
         master
-            .apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::GroupLevel {
+            .apply_audio_mixer_update(&fm_engine::EngineAudioMixerUpdate::GroupLevel {
                 group,
                 state: fm_engine::EngineAudioGroupState {
                     gain_millidb: 0,
@@ -12603,7 +12614,7 @@ mod tests {
 
         // Unmuting at -6 dB makes the member play at the group gain.
         master
-            .apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::GroupLevel {
+            .apply_audio_mixer_update(&fm_engine::EngineAudioMixerUpdate::GroupLevel {
                 group,
                 state: fm_engine::EngineAudioGroupState {
                     gain_millidb: -6_000,
@@ -12620,7 +12631,7 @@ mod tests {
         assert!((sample - expected).abs() < 1.0e-4, "{sample} != {expected}");
 
         assert!(matches!(
-            master.apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::Membership {
+            master.apply_audio_mixer_update(&fm_engine::EngineAudioMixerUpdate::Membership {
                 input: input(99),
                 group: Some(group),
             }),

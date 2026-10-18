@@ -702,6 +702,9 @@ struct NativeDaemon {
     telemetry_emitted: bool,
     audio_meter_sequence: u64,
     pending_audio_meters: Option<AudioMetersMessage>,
+    /// The headphone output: the monitor bus on a local audio device at its
+    /// own level (AU-001).
+    monitor_output: freemixd::monitor_output::MonitorOutputSlot,
     stream_status_sequence: u64,
     pending_stream_status: Option<StreamStatusMessage>,
     /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
@@ -4887,6 +4890,15 @@ impl NativeDaemon {
             telemetry_emitted: false,
             audio_meter_sequence: 0,
             pending_audio_meters: None,
+            monitor_output: {
+                let monitor = stored.project().audio_monitor_output();
+                freemixd::monitor_output::MonitorOutputSlot::new(
+                    "ffmpeg".into(),
+                    monitor.device.clone(),
+                    monitor.gain.get(),
+                    monitor.muted,
+                )
+            },
             stream_status_sequence: 0,
             pending_stream_status: None,
             monitor: NativeMonitorTap::new(stored.project().settings()),
@@ -6628,6 +6640,7 @@ impl NativeDaemon {
         let registry = self.playback.registry();
         let stinger_registry = self.stingers.registry();
         let master = &mut self.master;
+        let monitor_output = &mut self.monitor_output;
         let project_plan = &mut self.project_plan;
         let projected_frame = self.projected_frame.as_ref();
         let latest_output = &mut self.latest_output;
@@ -6653,11 +6666,11 @@ impl NativeDaemon {
                     .set_input_audio_strip(input, strip)
                     .map_err(NativeRealizationError::Audio)?;
             }
-            for &update in &frame.audio_mixer_updates {
+            for update in &frame.audio_mixer_updates {
                 master
                     .apply_audio_mixer_update(update)
                     .map_err(NativeRealizationError::Audio)?;
-                match update {
+                match *update {
                     fm_engine::EngineAudioMixerUpdate::Membership { input, group } => project_plan
                         .set_input_audio_group(input, group)
                         .map_err(NativeRealizationError::Audio)?,
@@ -6672,6 +6685,12 @@ impl NativeDaemon {
                     }
                     fm_engine::EngineAudioMixerUpdate::SoloMode(mode) => {
                         project_plan.set_audio_solo_mode(mode);
+                    }
+                    fm_engine::EngineAudioMixerUpdate::MonitorDevice(ref device) => {
+                        monitor_output.set_device(device.clone());
+                    }
+                    fm_engine::EngineAudioMixerUpdate::MonitorLevel(state) => {
+                        monitor_output.set_level(state.gain_millidb, state.muted);
                     }
                 }
             }
@@ -6712,7 +6731,13 @@ impl NativeDaemon {
                 .audio_meter_sequence
                 .checked_add(1)
                 .ok_or_else(|| AppFailure("audio meter sequence exhausted".into()))?;
-            self.pending_audio_meters = Some(audio_meters_message(server, sequence, &meters));
+            let samples = usize::try_from(meters.end_sample - meters.start_sample)
+                .map_err(|_| AppFailure("audio meter interval exceeds memory".into()))?;
+            self.monitor_output
+                .push(meters.monitor_planes, samples, meters.sample_rate);
+            let output = self.monitor_output.state();
+            self.pending_audio_meters =
+                Some(audio_meters_message(server, sequence, &meters, output));
             self.audio_meter_sequence = sequence;
         }
         self.install_stinger_mutation()?;
@@ -7379,6 +7404,7 @@ fn audio_meters_message(
     server: &ServerIdentity,
     sequence: u64,
     meters: &NativeAudioMeters<'_>,
+    output: fm_protocol::AudioMonitorOutputState,
 ) -> AudioMetersMessage {
     AudioMetersMessage {
         server: server.clone(),
@@ -7403,6 +7429,7 @@ fn audio_meters_message(
             .collect(),
         monitor: Some(fm_protocol::AudioMonitorMeters {
             solo: meters.monitor_solo,
+            output,
             channels: meters
                 .monitor
                 .iter()
@@ -11271,6 +11298,14 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
         )?;
     }
     show.set_audio_solo_mode(project.audio_solo_mode());
+    let monitor = project.audio_monitor_output();
+    show.set_audio_monitor(fm_engine::EngineAudioMonitor {
+        device: monitor.device.clone(),
+        state: fm_engine::EngineAudioGroupState {
+            gain_millidb: monitor.gain.get(),
+            muted: monitor.muted,
+        },
+    })?;
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
@@ -11363,6 +11398,15 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
         }
     }
     project.set_audio_solo_mode(show.audio_solo_mode());
+    let monitor = show.audio_monitor();
+    project
+        .set_audio_monitor_output(fm_model::AudioMonitorOutput {
+            device: monitor.device.clone(),
+            gain: InputGainMilliDb::new(monitor.state.gain_millidb)
+                .expect("engine monitor gain is bounded by the model contract"),
+            muted: monitor.state.muted,
+        })
+        .map_err(|error| AppFailure(format!("project cannot take the monitor output: {error}")))?;
     let excluded = show.desired_switcher().fade_to_black_excluded_outputs();
     let outputs = project
         .outputs()

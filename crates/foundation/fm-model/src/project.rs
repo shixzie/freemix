@@ -907,7 +907,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(49);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(50);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -951,6 +951,7 @@ pub struct Project {
     input_lifecycle: BTreeMap<InputId, crate::InputLifecycle>,
     audio_groups: crate::AudioGroups,
     audio_solo_mode: crate::AudioSoloMode,
+    audio_monitor_output: crate::AudioMonitorOutput,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
     fade_to_black_output_durations: BTreeMap<OutputId, u32>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -987,6 +988,7 @@ impl Project {
             input_lifecycle: BTreeMap::new(),
             audio_groups: crate::AudioGroups::default(),
             audio_solo_mode: crate::AudioSoloMode::InPlace,
+            audio_monitor_output: crate::AudioMonitorOutput::default(),
             fade_to_black_excluded_outputs: BTreeSet::new(),
             fade_to_black_output_durations: BTreeMap::new(),
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
@@ -1158,6 +1160,36 @@ impl Project {
 
     pub fn set_audio_solo_mode(&mut self, mode: crate::AudioSoloMode) {
         self.audio_solo_mode = mode;
+    }
+
+    /// Where the monitor bus is heard, and how loud (AU-001, schema 50).
+    #[must_use]
+    pub const fn audio_monitor_output(&self) -> &crate::AudioMonitorOutput {
+        &self.audio_monitor_output
+    }
+
+    /// Replaces the monitor output.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::MonitorDevice`] for an unusable device
+    /// name. Nothing changes on error.
+    pub fn set_audio_monitor_output(
+        &mut self,
+        value: crate::AudioMonitorOutput,
+    ) -> Result<(), SetAudioMixerError> {
+        if let Some(device) = &value.device {
+            crate::validate_audio_monitor_device(device)
+                .map_err(SetAudioMixerError::MonitorDevice)?;
+        }
+        self.audio_monitor_output = value;
+        Ok(())
+    }
+
+    /// Replaces the monitor output; the device is reported by
+    /// [`Self::validate`].
+    pub fn restore_audio_monitor_output(&mut self, value: crate::AudioMonitorOutput) {
+        self.audio_monitor_output = value;
     }
 
     /// Replaces every strip group; names are reported by
@@ -4013,6 +4045,8 @@ pub enum SetAudioMixerError {
     Label(crate::AudioLabelError),
     /// The parent would nest this group inside itself.
     GroupCycle(crate::AudioGroupNumber),
+    /// The monitor output device name is unusable.
+    MonitorDevice(crate::AudioMonitorDeviceError),
 }
 
 impl std::fmt::Display for SetAudioMixerError {
@@ -4023,6 +4057,7 @@ impl std::fmt::Display for SetAudioMixerError {
             Self::GroupCycle(group) => {
                 write!(formatter, "{group} cannot be nested inside itself")
             }
+            Self::MonitorDevice(error) => error.fmt(formatter),
         }
     }
 }

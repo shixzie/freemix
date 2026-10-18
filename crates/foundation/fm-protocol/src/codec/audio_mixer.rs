@@ -1,10 +1,12 @@
-//! Mixer label, group, solo-mode, and Fade-to-Black output codec
-//! (Protocols 2.40 and 2.44).
+//! Mixer label, group, solo-mode, monitor output, and Fade-to-Black output
+//! codec (Protocols 2.40, 2.44, and 2.53).
 //!
 //! * `audio_groups` is four comma-separated `<name>~<gain_millidb>~<muted
 //!   0|1>~<soloed 0|1>~<parent - or 1..=4>` entries, group 1 first; no group
 //!   is its own parent.
 //! * `audio_solo_mode` is `sip`, `pfl`, or `afl`.
+//! * `audio_monitor` (Protocol 2.53) is `<device>~<gain_millidb>~<muted
+//!   0|1>`, the device percent-escaped and empty for none.
 //! * `input_audio_labels` is a comma-separated list of
 //!   `<input>~<length>:<label>` (Protocol 2.45), strictly ascending by input,
 //!   each label non-empty (empty for none). `<length>` is the label's
@@ -25,9 +27,9 @@
 use core::fmt::Write as _;
 
 use crate::{
-    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
-    CodecError, InputAudioLabel, MAX_AUDIO_LABEL_BYTES, WireOutputId, audio_group_is_valid,
-    audio_label_is_valid,
+    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
+    AudioSoloMode, CodecError, InputAudioLabel, MAX_AUDIO_LABEL_BYTES, WireOutputId,
+    audio_group_is_valid, audio_label_is_valid, audio_monitor_device_is_valid,
 };
 
 use super::MAX_LIST_ITEMS;
@@ -396,6 +398,55 @@ fn decode_output_durations(value: &str) -> Result<Vec<(WireOutputId, u32)>, Code
     Ok(durations)
 }
 
+/// Checks an optional monitor device and returns its wire text (empty for
+/// none).
+fn encode_monitor_device<'a>(
+    field: &'static str,
+    device: Option<&'a str>,
+) -> Result<&'a str, CodecError> {
+    match device {
+        None => Ok(""),
+        Some(device) if audio_monitor_device_is_valid(device) => Ok(device),
+        Some(device) => Err(invalid(field, device)),
+    }
+}
+
+/// Decodes a monitor device's wire text: empty for none.
+fn decode_monitor_device(field: &'static str, value: String) -> Result<Option<String>, CodecError> {
+    if value.is_empty() {
+        Ok(None)
+    } else if audio_monitor_device_is_valid(&value) {
+        Ok(Some(value))
+    } else {
+        Err(invalid(field, value))
+    }
+}
+
+/// Encodes the snapshot's `audio_monitor`.
+fn encode_monitor(monitor: &AudioMonitorStatus) -> Result<String, CodecError> {
+    let device = encode_monitor_device("audio_monitor", monitor.device.as_deref())?;
+    check_gain("audio_monitor", monitor.gain_millidb)?;
+    Ok(format!(
+        "{}~{}~{}",
+        escape_bounded(device)?,
+        monitor.gain_millidb,
+        u8::from(monitor.muted)
+    ))
+}
+
+/// Decodes the snapshot's `audio_monitor`.
+fn decode_monitor(value: &str) -> Result<AudioMonitorStatus, CodecError> {
+    let parts: Vec<&str> = value.split('~').collect();
+    let [device, gain, muted] = parts.as_slice() else {
+        return Err(invalid("audio_monitor", value));
+    };
+    Ok(AudioMonitorStatus {
+        device: decode_monitor_device("audio_monitor", unescape(device)?)?,
+        gain_millidb: parse_gain("audio_monitor", gain)?,
+        muted: parse_flag("audio_monitor", muted)?,
+    })
+}
+
 /// Encodes the snapshot mixer fields.
 pub(super) fn encode_status(
     status: &AudioMixerStatus,
@@ -403,6 +454,7 @@ pub(super) fn encode_status(
 ) -> Result<(), CodecError> {
     push("audio_groups", encode_groups(&status.groups)?)?;
     push("audio_solo_mode", status.solo_mode.token().to_owned())?;
+    push("audio_monitor", encode_monitor(&status.monitor)?)?;
     push("input_audio_labels", encode_labels(&status.labels)?)
 }
 
@@ -411,6 +463,7 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerSt
     Ok(AudioMixerStatus {
         groups: decode_groups(&fields.required("audio_groups")?)?,
         solo_mode: parse_solo_mode("audio_solo_mode", &fields.required("audio_solo_mode")?)?,
+        monitor: decode_monitor(&fields.required("audio_monitor")?)?,
         labels: decode_labels(&fields.required("input_audio_labels")?)?,
     })
 }
@@ -474,6 +527,18 @@ pub(super) fn encode_operation(
             push("parent", parent)
         }
         AudioMixerOperation::SetSoloMode { mode } => push("mode", mode.token().to_owned()),
+        AudioMixerOperation::SetMonitorDevice { device } => push(
+            "device",
+            encode_monitor_device("device", device.as_deref())?.to_owned(),
+        ),
+        AudioMixerOperation::SetMonitorLevel {
+            gain_millidb,
+            muted,
+        } => {
+            check_gain("gain_millidb", *gain_millidb)?;
+            push("gain_millidb", gain_millidb.to_string())?;
+            push("muted", u8::from(*muted).to_string())
+        }
     }
 }
 
@@ -527,6 +592,13 @@ pub(super) fn decode_operation(
         }
         "audio_solo_mode" => AudioMixerOperation::SetSoloMode {
             mode: parse_solo_mode("mode", &fields.required("mode")?)?,
+        },
+        "audio_monitor_device" => AudioMixerOperation::SetMonitorDevice {
+            device: decode_monitor_device("device", fields.required("device")?)?,
+        },
+        "audio_monitor_level" => AudioMixerOperation::SetMonitorLevel {
+            gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
+            muted: parse_flag("muted", &fields.required("muted")?)?,
         },
         _ => return Ok(None),
     }))

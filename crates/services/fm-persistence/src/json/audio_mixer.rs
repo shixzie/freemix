@@ -1,5 +1,5 @@
-//! Strip groups, the solo mode, and Fade-to-Black output selection in
-//! `project.json` (schemas 39 and 42, AU-001 and SW-004).
+//! Strip groups, the solo mode, the monitor output, and Fade-to-Black output
+//! selection in `project.json` (schemas 39, 42, and 50, AU-001 and SW-004).
 //!
 //! ```text
 //! "audio_groups": [
@@ -9,6 +9,7 @@
 //!   {"name": "Group 4", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": null}
 //! ],
 //! "audio_solo_mode": "pfl",
+//! "audio_monitor_output": {"device": "default", "gain_milli_db": -6000, "muted": false},
 //! "fade_to_black_excluded_outputs": [5],
 //! "fade_to_black_output_durations": [{"output": 3, "duration_frames": 90}],
 //! "fade_to_black_curve": "ease"
@@ -16,7 +17,10 @@
 //!
 //! Exactly [`AUDIO_GROUP_COUNT`] groups, group 1 first; `parent` is a group
 //! number or `null`, and parents never form a cycle (checked by project
-//! validation). `audio_solo_mode` is `sip`, `pfl`, or `afl`. Every strip in
+//! validation). `audio_solo_mode` is `sip`, `pfl`, or `afl`.
+//! `audio_monitor_output` (schema 50) names the local audio output device the
+//! monitor bus plays on (`null` for meter-only; an unusable name is reported
+//! by project validation) and its own level and mute. Every strip in
 //! `input_audio_strips` also carries `pan_basis_points`, `label` (empty for
 //! none), and `group` (a group number or `null`). Excluded outputs are
 //! strictly ascending output ids; every other output fades. Outputs in
@@ -28,7 +32,8 @@ use core::fmt::Write as _;
 use std::collections::BTreeSet;
 
 use fm_model::{
-    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioSoloMode, InputGainMilliDb,
+    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioMonitorOutput,
+    AudioSoloMode, InputGainMilliDb,
 };
 use fm_types::OutputId;
 
@@ -59,6 +64,23 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         output,
         "\n    ],\n    \"audio_solo_mode\": \"{}\"",
         project.audio_solo_mode().token()
+    )
+    .expect("writing to a string cannot fail");
+    let monitor = project.audio_monitor_output();
+    output.push_str(",\n    \"audio_monitor_output\": {\"device\": ");
+    match &monitor.device {
+        Some(device) => {
+            output.push('"');
+            escape_string(output, device);
+            output.push('"');
+        }
+        None => output.push_str("null"),
+    }
+    write!(
+        output,
+        ", \"gain_milli_db\": {}, \"muted\": {}}}",
+        monitor.gain.get(),
+        monitor.muted
     )
     .expect("writing to a string cannot fail");
     output.push_str(",\n    \"fade_to_black_excluded_outputs\": [");
@@ -169,6 +191,33 @@ pub(crate) fn parse_audio_solo_mode(object: &mut Object) -> Result<AudioSoloMode
     let token = object.string("audio_solo_mode")?;
     AudioSoloMode::from_token(&token)
         .ok_or_else(|| syntax("audio_solo_mode must be \"sip\", \"pfl\", or \"afl\""))
+}
+
+/// Parses `"audio_monitor_output"` from the project object.
+pub(crate) fn parse_audio_monitor_output(
+    object: &mut Object,
+) -> Result<AudioMonitorOutput, DecodeError> {
+    let mut monitor = Object::new(object.take("audio_monitor_output")?, "audio monitor output")?;
+    let device = parse_optional(monitor.take("device")?, |value| {
+        let Value::String(device) = value else {
+            return Err(syntax("audio monitor device must be a string or null"));
+        };
+        Ok(device)
+    })?;
+    let gain = InputGainMilliDb::new(monitor.i32("gain_milli_db")?).ok_or_else(|| {
+        syntax(format!(
+            "audio monitor gain_milli_db must be between {} and {}",
+            InputGainMilliDb::MIN,
+            InputGainMilliDb::MAX
+        ))
+    })?;
+    let muted = monitor.boolean("muted")?;
+    monitor.finish()?;
+    Ok(AudioMonitorOutput {
+        device,
+        gain,
+        muted,
+    })
 }
 
 /// Parses `"fade_to_black_excluded_outputs"` from the project object.

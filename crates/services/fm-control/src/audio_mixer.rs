@@ -1,14 +1,14 @@
-//! Mixer labels, strip groups, the solo mode, and the Fade-to-Black output
-//! selection between the engine and the wire (Protocols 2.40 and 2.44,
-//! AU-001 and SW-004).
+//! Mixer labels, strip groups, the solo mode, the monitor output, and the
+//! Fade-to-Black output selection between the engine and the wire
+//! (Protocols 2.40, 2.44, and 2.53, AU-001 and SW-004).
 
 use fm_engine::{
     EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
 };
 use fm_model::{AudioGroupNumber, AudioSoloMode};
 use fm_protocol::{
-    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, CommandPayload, EventPayload,
-    InputAudioLabel, WireInputId, WireOutputId,
+    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus, CommandPayload,
+    EventPayload, InputAudioLabel, WireInputId, WireOutputId,
 };
 
 fn group_number(group: u8) -> AudioGroupNumber {
@@ -74,6 +74,20 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
         AudioMixerOperation::SetSoloMode { mode } => EngineAudioMixerEdit::SetSoloMode {
             mode: solo_mode(*mode),
         },
+        AudioMixerOperation::SetMonitorDevice { device } => {
+            EngineAudioMixerEdit::SetMonitorDevice {
+                device: device.clone(),
+            }
+        }
+        AudioMixerOperation::SetMonitorLevel {
+            gain_millidb,
+            muted,
+        } => EngineAudioMixerEdit::SetMonitorLevel {
+            state: EngineAudioGroupState {
+                gain_millidb: *gain_millidb,
+                muted: *muted,
+            },
+        },
     })
 }
 
@@ -111,6 +125,15 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
         }
         EngineAudioMixerEdit::SetSoloMode { mode } => AudioMixerOperation::SetSoloMode {
             mode: wire_solo_mode(*mode),
+        },
+        EngineAudioMixerEdit::SetMonitorDevice { device } => {
+            AudioMixerOperation::SetMonitorDevice {
+                device: device.clone(),
+            }
+        }
+        EngineAudioMixerEdit::SetMonitorLevel { state } => AudioMixerOperation::SetMonitorLevel {
+            gain_millidb: state.gain_millidb,
+            muted: state.muted,
         },
     }
 }
@@ -166,7 +189,7 @@ pub(super) fn changed(event: &EngineEvent) -> Option<EventPayload> {
     }
 }
 
-/// The snapshot's groups, solo mode, and labels.
+/// The snapshot's groups, solo mode, monitor output, and labels.
 pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
     AudioMixerStatus {
         groups: show.audio_groups().clone().map(|group| AudioGroupStatus {
@@ -177,6 +200,11 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
             parent: group.parent.map(AudioGroupNumber::get),
         }),
         solo_mode: wire_solo_mode(show.audio_solo_mode()),
+        monitor: AudioMonitorStatus {
+            device: show.audio_monitor().device.clone(),
+            gain_millidb: show.audio_monitor().state.gain_millidb,
+            muted: show.audio_monitor().state.muted,
+        },
         labels: show
             .input_audio_labels()
             .iter()

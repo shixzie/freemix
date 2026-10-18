@@ -3,6 +3,8 @@ use std::{error::Error, fmt, net::SocketAddr, num::NonZeroU128, str::FromStr};
 use fm_types::ProjectId;
 
 #[cfg(feature = "native-media")]
+pub mod monitor_output;
+#[cfg(feature = "native-media")]
 pub mod native_media;
 pub mod overlay_layout;
 

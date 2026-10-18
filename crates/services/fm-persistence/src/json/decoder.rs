@@ -78,6 +78,7 @@ struct ProjectDto {
     input_lifecycle: super::input_lifecycle::ParsedInputLifecycle,
     audio_groups: fm_model::AudioGroups,
     audio_solo_mode: fm_model::AudioSoloMode,
+    audio_monitor_output: fm_model::AudioMonitorOutput,
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
     fade_to_black_output_durations: Vec<(fm_types::OutputId, u32)>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -132,6 +133,7 @@ impl ProjectDto {
             input_lifecycle: super::input_lifecycle::parse_input_lifecycle(&mut object)?,
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
             audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
+            audio_monitor_output: super::audio_mixer::parse_audio_monitor_output(&mut object)?,
             fade_to_black_excluded_outputs:
                 super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
             fade_to_black_output_durations:
@@ -183,6 +185,8 @@ impl ProjectDto {
         // Group names are reported by project validation.
         project.restore_audio_groups(self.audio_groups);
         project.set_audio_solo_mode(self.audio_solo_mode);
+        // An unusable device name is reported by project validation.
+        project.restore_audio_monitor_output(self.audio_monitor_output);
         for scene in self.scenes {
             project.add_scene(scene);
         }

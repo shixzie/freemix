@@ -1,11 +1,12 @@
 //! Protocol 2.40 mixer strip labels, VCA-style strip groups, mono pan, and
 //! the Fade-to-Black output selection (AU-001, SW-004), plus Protocol 2.44
-//! group solo, nested groups, the solo mode, and the monitor bus meters: the
+//! group solo, nested groups, the solo mode, and the monitor bus meters, and
+//! the Protocol 2.53 headphone output (device, level, and mute): the
 //! commands, the `audio_mixer_changed` and `fade_to_black_output_changed`
 //! durable events, and the snapshot fields — exactly, and strictly.
 
 use fm_protocol::{
-    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
+    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus, AudioSoloMode,
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EditLockStatus,
     EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
     InputAudioLabel, InputAudioStripStatus, InputStatus, ManualTransitionStatus, OverlayStatus,
@@ -13,7 +14,7 @@ use fm_protocol::{
     WireRecorderSlot, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.52\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.53\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -166,7 +167,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 52));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 53));
 }
 
 #[test]
@@ -255,6 +256,23 @@ fn mixer_commands_have_an_exact_wire_form() {
             },
             "\tpayload=audio_solo_mode\tmode=afl\n",
         ),
+        (
+            AudioMixerOperation::SetMonitorDevice {
+                device: Some("hw:CARD=Headset,DEV=0".into()),
+            },
+            "\tpayload=audio_monitor_device\tdevice=hw%3ACARD%3DHeadset%2CDEV%3D0\n",
+        ),
+        (
+            AudioMixerOperation::SetMonitorDevice { device: None },
+            "\tpayload=audio_monitor_device\tdevice=\n",
+        ),
+        (
+            AudioMixerOperation::SetMonitorLevel {
+                gain_millidb: -6_000,
+                muted: true,
+            },
+            "\tpayload=audio_monitor_level\tgain_millidb=-6000\tmuted=1\n",
+        ),
     ];
     for (operation, suffix) in cases {
         let line = round_trip(&command(CommandPayload::AudioMixer(operation.clone())));
@@ -303,6 +321,15 @@ fn mixer_commands_have_an_exact_wire_form() {
         }
         .is_live()
     );
+    // Protocol 2.53: the headphone device is a project edit, its level live.
+    assert!(!AudioMixerOperation::SetMonitorDevice { device: None }.is_live());
+    assert!(
+        AudioMixerOperation::SetMonitorLevel {
+            gain_millidb: 0,
+            muted: false
+        }
+        .is_live()
+    );
 }
 
 #[test]
@@ -330,6 +357,12 @@ fn mixer_commands_are_strict() {
         "\tpayload=audio_solo_mode\tmode=PFL",
         "\tpayload=audio_solo_mode\tmode=",
         "\tpayload=audio_solo_mode",
+        "\tpayload=audio_monitor_device",
+        "\tpayload=audio_monitor_device\tdevice=my%20headset",
+        "\tpayload=audio_monitor_device\tdevice=caf%C3%A9",
+        "\tpayload=audio_monitor_level\tgain_millidb=24001\tmuted=0",
+        "\tpayload=audio_monitor_level\tgain_millidb=0\tmuted=yes",
+        "\tpayload=audio_monitor_level\tmuted=0",
         "\tpayload=fade_to_black_output\toutput=0\taffected=1",
         "\tpayload=fade_to_black_output\toutput=7\taffected=true",
         "\tpayload=input_audio_strip\tinput=1\tgain_millidb=0\tbalance_basis_points=0\tmuted=0\tsoloed=0\tfollow_video=1\tdelay_samples=0",
@@ -488,7 +521,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tstream_targets=\n"
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tstream_targets=\n"
         ),
         "{line}"
     );
@@ -658,6 +691,9 @@ fn the_largest_snapshot_mixer_fits_one_line() {
         group.name = "ñ".repeat(fm_protocol::MAX_AUDIO_LABEL_BYTES / 2);
     }
     snapshot.audio_mixer.labels = worst_labels(ids);
+    // A worst-case headphone device escapes every byte (2.53).
+    snapshot.audio_mixer.monitor.device =
+        Some("~".repeat(fm_protocol::MAX_AUDIO_MONITOR_DEVICE_BYTES));
     let line = round_trip(&message);
     assert!(line.len() <= fm_protocol::MAX_LINE_BYTES, "{}", line.len());
 }
@@ -727,4 +763,68 @@ fn applying_operations_updates_the_replicated_mixer() {
     assert!(status.parent_is_acyclic(1, Some(2)));
     assert!(fm_protocol::fade_to_black_affects(&[output(8)], output(7)));
     assert!(!fm_protocol::fade_to_black_affects(&[output(8)], output(8)));
+}
+
+#[test]
+fn snapshot_carries_the_monitor_output() {
+    let mut status = mixer();
+    status.monitor = AudioMonitorStatus {
+        device: Some("hw:CARD=Headset,DEV=0".into()),
+        gain_millidb: -6_000,
+        muted: true,
+    };
+    let line = round_trip(&snapshot(status, Vec::new()));
+    assert!(
+        line.contains(
+            "\taudio_solo_mode=pfl\taudio_monitor=hw%253ACARD%253DHeadset%252CDEV%253D0%7E-6000%7E1\tinput_audio_labels="
+        ),
+        "{line}"
+    );
+    for (from, to) in [
+        // The 2.52 snapshot without the field.
+        (
+            "\taudio_monitor=hw%253ACARD%253DHeadset%252CDEV%253D0%7E-6000%7E1",
+            "",
+        ),
+        ("%7E-6000%7E1\t", "%7E-6000\t"),
+        ("%7E-6000%7E1\t", "%7E-6000%7E2\t"),
+        ("%7E-6000%7E1\t", "%7E24001%7E1\t"),
+        ("%7E-6000%7E1\t", "%7E-6000%7E1%7E0\t"),
+        ("hw%253ACARD", "hw%2520CARD"),
+    ] {
+        assert!(line.contains(from), "{from}");
+        assert!(decode_line(&line.replace(from, to)).is_err(), "{to}");
+    }
+    // An unusable device is refused on encode.
+    let mut bad = mixer();
+    bad.monitor.device = Some("my headset".into());
+    assert!(encode_line(&snapshot(bad, Vec::new())).is_err());
+    let mut bad = mixer();
+    bad.monitor.gain_millidb = 24_001;
+    assert!(encode_line(&snapshot(bad, Vec::new())).is_err());
+
+    // Applying the operations updates the replicated monitor output.
+    let mut status = AudioMixerStatus::default();
+    status.apply(&AudioMixerOperation::SetMonitorDevice {
+        device: Some("default".into()),
+    });
+    status.apply(&AudioMixerOperation::SetMonitorLevel {
+        gain_millidb: -3_000,
+        muted: true,
+    });
+    assert_eq!(
+        status.monitor,
+        AudioMonitorStatus {
+            device: Some("default".into()),
+            gain_millidb: -3_000,
+            muted: true,
+        }
+    );
+    status.apply(&AudioMixerOperation::SetMonitorDevice { device: None });
+    assert_eq!(status.monitor.device, None);
+    assert!(fm_protocol::audio_monitor_device_is_valid(
+        "hw:CARD=Headset,DEV=0"
+    ));
+    assert!(!fm_protocol::audio_monitor_device_is_valid(""));
+    assert!(!fm_protocol::audio_monitor_device_is_valid("two words"));
 }

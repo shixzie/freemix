@@ -22,8 +22,10 @@ pub use animation_preset::{
     MAX_ANIMATION_PRESET_NAME_BYTES, MAX_PROJECT_ANIMATION_PRESETS, UserAnimationPreset,
 };
 pub use audio_mixer::{
-    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioLabelError, AudioSoloMode,
-    MAX_AUDIO_LABEL_BYTES, validate_audio_group_name, validate_audio_strip_label,
+    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioLabelError,
+    AudioMonitorDeviceError, AudioMonitorOutput, AudioSoloMode, MAX_AUDIO_LABEL_BYTES,
+    MAX_AUDIO_MONITOR_DEVICE_BYTES, validate_audio_group_name, validate_audio_monitor_device,
+    validate_audio_strip_label,
 };
 pub use cue::{
     CUE_OVERLAY_CHANNELS, Cue, CueAction, CueFault, CueList, CueListError, CueMediaOperation,

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.52 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.53 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1640,6 +1640,31 @@ control (OR-006).
   (`initial_delay_ms`, `max_delay_ms`, `max_attempts` or `null`), with a
   default of 250 / 2000 / 40 (schema 49).
 - 2.51 is refused.
+
+Protocol 2.53 adds the headphone output (AU-001): the monitor bus plays on a
+local audio output device at its own level and mute, independent of Program.
+
+- `payload=audio_monitor_device` (`device`: an ALSA output name of 1 to 64
+  bytes of printable ASCII without spaces, or empty for none) chooses the
+  device. It is an undoable, padlock-guarded project edit authorized as an
+  audio operation; choosing a device again, even the current one, reopens
+  it, so a failed device is retried.
+- `payload=audio_monitor_level` (`gain_millidb` -96000..=24000, `muted`
+  `0|1`) moves the headphone feed's level. It is a live audio operation:
+  never recorded, never undone, never padlock-guarded. It changes neither
+  Program, recordings, streams, nor the monitor meters.
+- Both are announced by `event=audio_mixer_changed` with
+  `operation=audio_monitor_device|audio_monitor_level` and the same fields.
+- The snapshot adds `audio_monitor=<device>~<gain_millidb>~<muted>` after
+  `audio_solo_mode`, the device percent-escaped and empty for none.
+- `audio_meters` `monitor` becomes
+  `<master|solo>~<off|playing|failed>~<channels>`: `off` while no device is
+  chosen or no audio is rendered, `playing` while the bus reaches the
+  device, `failed` once the device could not be opened or stopped playing.
+- Durability: the project gains a required `audio_monitor_output` object
+  (`device` string or `null`, `gain_milli_db`, `muted`), meter-only at
+  unity by default (schema 50).
+- 2.52 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
