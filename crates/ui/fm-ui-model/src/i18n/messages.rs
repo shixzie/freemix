@@ -2394,6 +2394,8 @@ messages! {
     StreamEditHover => t("Change the settings of \"{name}\""),
     StreamRemoveHover => t("Remove destination \"{name}\" from the show"),
     StreamRemoveName => t("Remove destination"),
+    StreamRemoveMenuItem => t("Remove destination…"),
+    StreamRowMoreHover => t("More actions for \"{name}\": Retry, Edit, Remove"),
     StreamStatState => t("State: {state}"),
     StreamStatUrl => t("Destination: {url}"),
     StreamStatBackup => t("Backup: {url}"),

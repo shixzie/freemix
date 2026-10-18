@@ -762,12 +762,41 @@ pub(crate) fn draw_group_keys(
     ui.add_space(4.0);
 }
 
-/// The Retry / Edit / Remove keys under one destination's row.
+/// Gap between a destination row's Retry / Edit / Remove keys.
+const ROW_KEY_GAP: f32 = 4.0;
+/// Width of the collapsed `···` key that holds them in a narrow panel.
+pub(crate) const ROW_MENU_WIDTH: f32 = 30.0;
+
+/// Width the Retry / Edit / Remove keys take side by side in a row.
+pub(crate) fn row_keys_width(ui: &Ui) -> f32 {
+    let l = l10n::locale(ui.ctx());
+    let padding = ui.spacing().button_padding.x * 2.0;
+    let text = |msg: Msg| {
+        ui.painter()
+            .layout_no_wrap(
+                l.text(msg).to_owned(),
+                egui::FontId::proportional(crate::theme::legible(11.0)),
+                text_color(),
+            )
+            .size()
+            .x
+            + padding
+    };
+    (text(Msg::StreamRetryKey)
+        + text(Msg::StreamEditKey)
+        + crate::theme::MIN_TARGET
+        + ROW_KEY_GAP * 2.0)
+        .ceil()
+}
+
+/// The Retry / Edit / Remove keys inside one destination's row, laid out
+/// left to right in `ui` (`height` points tall); `collapsed` puts them
+/// behind one `···` menu key for a narrow panel.
 pub(crate) fn draw_row_keys(
     ui: &mut Ui,
     state: &StudioUiState,
-    target: WireStreamTargetId,
-    name: &str,
+    (target, name): (WireStreamTargetId, &str),
+    (collapsed, height): (bool, f32),
     dialogs: &mut StreamTargetsUi,
     intents: &mut Vec<StudioIntent>,
 ) {
@@ -780,50 +809,90 @@ pub(crate) fn draw_row_keys(
         return;
     };
     let name_arg = [("name", Arg::Str(name))];
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.add_space(26.0);
-        let retry = stream_action(state, StreamAction::Retry(target));
-        if ui
-            .add_enabled(retry.is_some(), small_button(l.text(Msg::StreamRetryKey)))
-            .hint(
-                &l.format(Msg::StreamRetryHover, &name_arg),
-                retry_unavailable_reason(state, stream),
-            )
-            .clicked()
-            && let Some(action) = retry
-        {
-            intents.push(StudioIntent::Stream(action));
-        }
-        let edit = edit_block(state, target);
-        if ui
-            .add_enabled(edit.is_none(), small_button(l.text(Msg::StreamEditKey)))
-            .hint(
-                &l.format(Msg::StreamEditHover, &name_arg),
-                edit.unwrap_or(""),
-            )
-            .clicked()
-        {
-            dialogs.open_edit(state, target);
-        }
-        let remove = remove_block(state, target);
-        if add_icon_button(
-            ui,
-            remove.is_none(),
-            Button::new("").min_size(Vec2::new(crate::theme::MIN_TARGET, 20.0)),
-            KeyIcon::Remove,
-            l.text(Msg::StreamRemoveName),
+    let retry = stream_action(state, StreamAction::Retry(target));
+    let edit = edit_block(state, target);
+    let remove = remove_block(state, target);
+    if collapsed {
+        let (more, _) = egui::containers::menu::MenuButton::from_button(
+            small_button("···").min_size(Vec2::new(ROW_MENU_WIDTH, height)),
         )
+        .ui(ui, |ui| {
+            if ui
+                .add_enabled(retry.is_some(), Button::new(l.text(Msg::StreamRetryKey)))
+                .hint(
+                    &l.format(Msg::StreamRetryHover, &name_arg),
+                    retry_unavailable_reason(state, stream),
+                )
+                .clicked()
+                && let Some(action) = retry
+            {
+                intents.push(StudioIntent::Stream(action));
+            }
+            if ui
+                .add_enabled(edit.is_none(), Button::new(l.text(Msg::StreamEditKey)))
+                .hint(
+                    &l.format(Msg::StreamEditHover, &name_arg),
+                    edit.unwrap_or(""),
+                )
+                .clicked()
+            {
+                dialogs.open_edit(state, target);
+            }
+            if ui
+                .add_enabled(
+                    remove.is_none(),
+                    Button::new(l.text(Msg::StreamRemoveMenuItem)),
+                )
+                .hint(
+                    &l.format(Msg::StreamRemoveHover, &name_arg),
+                    remove.unwrap_or(""),
+                )
+                .clicked()
+            {
+                dialogs.open_remove(state, target);
+            }
+        });
+        more.on_hover_text(l.format(Msg::StreamRowMoreHover, &name_arg));
+        return;
+    }
+    ui.spacing_mut().item_spacing.x = ROW_KEY_GAP;
+    let key = |text: &str| small_button(text).min_size(Vec2::new(0.0, height));
+    if ui
+        .add_enabled(retry.is_some(), key(l.text(Msg::StreamRetryKey)))
         .hint(
-            &l.format(Msg::StreamRemoveHover, &name_arg),
-            remove.unwrap_or(""),
+            &l.format(Msg::StreamRetryHover, &name_arg),
+            retry_unavailable_reason(state, stream),
         )
         .clicked()
-        {
-            dialogs.open_remove(state, target);
-        }
-    });
-    ui.add_space(3.0);
+        && let Some(action) = retry
+    {
+        intents.push(StudioIntent::Stream(action));
+    }
+    if ui
+        .add_enabled(edit.is_none(), key(l.text(Msg::StreamEditKey)))
+        .hint(
+            &l.format(Msg::StreamEditHover, &name_arg),
+            edit.unwrap_or(""),
+        )
+        .clicked()
+    {
+        dialogs.open_edit(state, target);
+    }
+    if add_icon_button(
+        ui,
+        remove.is_none(),
+        Button::new("").min_size(Vec2::new(crate::theme::MIN_TARGET, height)),
+        KeyIcon::Remove,
+        l.text(Msg::StreamRemoveName),
+    )
+    .hint(
+        &l.format(Msg::StreamRemoveHover, &name_arg),
+        remove.unwrap_or(""),
+    )
+    .clicked()
+    {
+        dialogs.open_remove(state, target);
+    }
 }
 
 // ---------------------------------------------------------------------------

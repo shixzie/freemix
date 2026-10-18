@@ -31,7 +31,12 @@ use crate::{
 };
 
 /// Height of one output row; rows never change height with their state.
-pub(crate) const OUTPUT_ROW_HEIGHT: f32 = 42.0;
+pub(crate) const OUTPUT_ROW_HEIGHT: f32 = 38.0;
+/// Height of the keys inside a row.
+const ROW_KEY_HEIGHT: f32 = crate::theme::MIN_TARGET;
+/// Room kept clear right of a section header's count, so it never runs
+/// into the panel's edge or its scroll bar.
+const SCROLL_GUTTER: f32 = 10.0;
 /// Wide enough for the longest translated row status (`CONGESTIONADO`).
 const CHIP_WIDTH: f32 = 86.0;
 /// Narrowest Start/Stop key; wider when a translated word needs it.
@@ -223,14 +228,43 @@ pub(crate) fn row_key_style(starts: bool, tone: Tone) -> (Msg, Color32, Color32)
     }
 }
 
-/// Paints one fixed-height row and returns whether its key was clicked.
+/// Extra keys drawn inside a row, left of its Start/Stop key: their
+/// side-by-side width and a drawer told whether to collapse them into one
+/// menu key (`true`) and how tall a key is.
+type RowExtras<'a> = (f32, &'a mut dyn FnMut(&mut Ui, bool, f32));
+
+/// Width of the row's text column below which its extra keys collapse into
+/// one menu key: the status chip and a few words of detail.
+const MIN_TEXT_WIDTH: f32 = CHIP_WIDTH + 60.0;
+
+/// Where a row's extra keys go, left of its Start/Stop key at `key_rect`,
+/// and whether they collapse into one menu key so the text column from
+/// `text_left` keeps at least [`MIN_TEXT_WIDTH`].
+fn extras_layout(key_rect: Rect, text_left: f32, inline_width: f32) -> (Rect, bool) {
+    let right = key_rect.min.x - 6.0;
+    let collapsed = right - text_left - inline_width - 8.0 < MIN_TEXT_WIDTH;
+    let width = if collapsed {
+        crate::stream_targets::ROW_MENU_WIDTH
+    } else {
+        inline_width
+    };
+    (
+        Rect::from_min_max(
+            pos2(right - width, key_rect.min.y),
+            pos2(right, key_rect.max.y),
+        ),
+        collapsed,
+    )
+}
+
+/// Paints one fixed-height row, with any `extras` keys inside it, and
+/// returns whether its key was clicked.
 fn draw_row(
     ui: &mut Ui,
     id: egui::Id,
-    title: &str,
-    row: &OutputRow,
-    tooltip: &str,
+    (title, row, tooltip): (&str, &OutputRow, &str),
     key: &RowKey<'_>,
+    extras: Option<RowExtras<'_>>,
 ) -> bool {
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), OUTPUT_ROW_HEIGHT),
@@ -238,13 +272,16 @@ fn draw_row(
     );
     let key_width = key_width(ui, l10n::locale(ui.ctx()));
     let key_rect = Rect::from_center_size(
-        pos2(rect.max.x - 8.0 - key_width / 2.0, rect.center().y),
-        Vec2::new(key_width, 26.0),
+        pos2(rect.max.x - 7.0 - key_width / 2.0, rect.center().y),
+        Vec2::new(key_width, ROW_KEY_HEIGHT),
     );
     let text_left = rect.min.x + 26.0;
-    let text_right = key_rect.min.x - 8.0;
+    let extras_rect = extras
+        .as_ref()
+        .map(|(inline_width, _)| extras_layout(key_rect, text_left, *inline_width));
+    let text_right = extras_rect.map_or(key_rect.min.x, |(extras, _)| extras.min.x) - 8.0;
     let chip_rect = Rect::from_min_size(
-        pos2(text_left, rect.min.y + 22.0),
+        pos2(text_left, rect.min.y + 20.0),
         Vec2::new(CHIP_WIDTH.min(text_right - text_left), 15.0),
     );
     if ui.is_rect_visible(rect) {
@@ -265,7 +302,7 @@ fn draw_row(
         );
         paint_lamp(
             painter,
-            pos2(rect.min.x + 14.0, rect.min.y + 13.0),
+            pos2(rect.min.x + 14.0, rect.min.y + 11.5),
             4.0,
             row.tone,
         );
@@ -277,7 +314,7 @@ fn draw_row(
             text_right - text_left,
         );
         painter.galley(
-            pos2(text_left, rect.min.y + 5.0),
+            pos2(text_left, rect.min.y + 3.5),
             title_galley,
             text_color(),
         );
@@ -305,14 +342,28 @@ fn draw_row(
         status_chip_painted(painter, chip_rect, row.status, row.tone);
     }
     ui.interact(
-        Rect::from_min_max(rect.min, pos2(key_rect.min.x - 4.0, rect.max.y)),
+        Rect::from_min_max(rect.min, pos2(text_right + 4.0, rect.max.y)),
         id.with("info"),
         Sense::hover(),
     )
     .on_hover_text(tooltip);
     ui.add_space(1.0);
+    if let (Some((_, draw)), Some((extras, collapsed))) = (extras, extras_rect) {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(id.with("extras"))
+                .max_rect(extras)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        draw(&mut child, collapsed, extras.height());
+    }
+    draw_row_key(ui, key_rect, key, row.tone)
+}
+
+/// The row's Start/Stop key at `key_rect`; returns whether it was clicked.
+fn draw_row_key(ui: &mut Ui, key_rect: Rect, key: &RowKey<'_>, tone: Tone) -> bool {
     let l = l10n::locale(ui.ctx());
-    let (label, fill, stroke) = row_key_style(key.starts, row.tone);
+    let (label, fill, stroke) = row_key_style(key.starts, tone);
     let label = l.text(label);
     ui.place(key_rect, |ui: &mut Ui| {
         ui.add_enabled(
@@ -343,6 +394,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
         .filter(|desired| has_view && **desired)
         .count();
     section_header(ui, l.text(Msg::RecordingHeading), |ui| {
+        ui.add_space(SCROLL_GUTTER);
         ui.label(
             mono(on_air_summary(
                 l,
@@ -391,9 +443,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
         if draw_row(
             ui,
             egui::Id::new(("studio-recorder-row", slot)),
-            &format!("REC {slot}"),
-            &row,
-            &tooltip,
+            (&format!("REC {slot}"), &row, &tooltip),
             &RowKey {
                 starts: requested.starts(),
                 enabled: allowed.is_some(),
@@ -404,6 +454,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
                     unavailable_reason(state, Capability::Transition)
                 },
             },
+            None,
         ) {
             selected = allowed;
         }
@@ -528,6 +579,7 @@ pub(crate) fn draw_streams(
         .collect();
     let live = rows.iter().filter(|row| row.tone == Tone::OnAir).count();
     section_header(ui, l.text(Msg::StreamsHeading), |ui| {
+        ui.add_space(SCROLL_GUTTER);
         ui.label(
             mono(if state.view.is_some() {
                 on_air_summary(l, live, rows.len(), OutputKind::Streams)
@@ -569,53 +621,57 @@ pub(crate) fn draw_streams(
         );
         return;
     }
+    let inline_width = crate::stream_targets::row_keys_width(ui);
     for ((stream, sample), row) in state.streams.iter().zip(samples).zip(&rows) {
         let requested = StreamAction::for_stream(stream);
         let allowed = stream_action(state, requested);
         let action = stream_action_text(l, requested, &stream.name);
-        if draw_row(
+        let tooltip = format!(
+            "{}\n{}\n{}",
+            l.format(
+                Msg::StreamRowHover,
+                &[
+                    ("name", Arg::Str(&stream.name)),
+                    (
+                        "desired",
+                        Arg::Str(l.text(if stream.desired_running {
+                            Msg::WordOn
+                        } else {
+                            Msg::WordOff
+                        })),
+                    ),
+                    ("realized", Arg::Str(&l.tr(row.status).to_lowercase())),
+                ],
+            ),
+            stream_stats_text(l, state, stream, l.tr(row.status), sample),
+            stream_row_text(l, sample)
+        );
+        let target = WireStreamTargetId::new(stream.target);
+        let mut row_keys = |ui: &mut Ui, collapsed: bool, height: f32| {
+            crate::stream_targets::draw_row_keys(
+                ui,
+                state,
+                (target, &stream.name),
+                (collapsed, height),
+                dialogs,
+                intents,
+            );
+        };
+        let clicked = draw_row(
             ui,
             egui::Id::new(("studio-stream-row", stream.target)),
-            &stream.name,
-            row,
-            &format!(
-                "{}\n{}\n{}",
-                l.format(
-                    Msg::StreamRowHover,
-                    &[
-                        ("name", Arg::Str(&stream.name)),
-                        (
-                            "desired",
-                            Arg::Str(l.text(if stream.desired_running {
-                                Msg::WordOn
-                            } else {
-                                Msg::WordOff
-                            })),
-                        ),
-                        ("realized", Arg::Str(&l.tr(row.status).to_lowercase())),
-                    ],
-                ),
-                stream_stats_text(l, state, stream, l.tr(row.status), sample),
-                stream_row_text(l, sample)
-            ),
+            (&stream.name, row, &tooltip),
             &RowKey {
                 starts: requested.starts(),
                 enabled: allowed.is_some(),
                 action: &action,
                 reason: stream_unavailable_reason(state, stream),
             },
-        ) && let Some(action) = allowed
-        {
+            Some((inline_width, &mut row_keys)),
+        );
+        if clicked && let Some(action) = allowed {
             intents.push(StudioIntent::Stream(action));
         }
-        crate::stream_targets::draw_row_keys(
-            ui,
-            state,
-            WireStreamTargetId::new(stream.target),
-            &stream.name,
-            dialogs,
-            intents,
-        );
     }
 }
 
@@ -766,6 +822,21 @@ mod tests {
         );
         assert_eq!((row.status, row.tone), ("CONGESTED", Tone::Pending));
         assert_eq!(row.detail, "1.5 MB sent · 2 dropped · 6 seg · io");
+    }
+
+    #[test]
+    fn row_keys_sit_inside_the_row_and_fold_in_a_narrow_dock() {
+        let key = |right: f32| Rect::from_min_max(pos2(right - 58.0, 7.0), pos2(right, 31.0));
+        // A wide row: the keys sit side by side just left of Start/Stop.
+        let (rect, collapsed) = extras_layout(key(800.0), 26.0, 130.0);
+        assert!(!collapsed);
+        assert_eq!((rect.min.x, rect.max.x), (606.0, 736.0));
+        assert_eq!((rect.min.y, rect.max.y), (7.0, 31.0));
+        // A narrow dock keeps the text column and folds them into `···`.
+        let (rect, collapsed) = extras_layout(key(340.0), 26.0, 130.0);
+        assert!(collapsed);
+        assert_eq!(rect.width(), crate::stream_targets::ROW_MENU_WIDTH);
+        assert_eq!(rect.max.x, 276.0);
     }
 
     #[test]

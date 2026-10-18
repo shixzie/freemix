@@ -1642,6 +1642,19 @@ fn scenes(language: Language) -> Vec<Scene> {
             operator.clone(),
         ));
     }
+    // OR-006: in a narrow dock each destination row folds its Retry / Edit
+    // / Remove keys into one `···` menu key.
+    let narrow = operator.clone();
+    scenes.push(Scene {
+        name: "operator/streams-narrow".into(),
+        draw: Box::new(move |ui| {
+            crate::l10n::set_locale(ui.ctx(), locale);
+            let mut dialogs = crate::stream_targets::StreamTargetsUi::default();
+            let mut intents = Vec::new();
+            ui.set_max_width(260.0);
+            crate::outputs::draw_streams(ui, &narrow, &mut dialogs, &mut intents);
+        }),
+    });
     // The Colour window: Simple on a graded camera, Advanced on Program
     // with a library grade chosen and a name and LUT path typed, on a graded
     // scene layer, and locked by a missing permission and by the project

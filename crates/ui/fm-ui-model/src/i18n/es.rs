@@ -6347,6 +6347,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Quitar el destino «{name}» del show"),
     ),
     (Msg::StreamRemoveName, t("Quitar destino")),
+    (Msg::StreamRemoveMenuItem, t("Quitar destino…")),
+    (
+        Msg::StreamRowMoreHover,
+        t("Más acciones para «{name}»: reintentar, editar, quitar"),
+    ),
     (Msg::StreamStatState, t("Estado: {state}")),
     (Msg::StreamStatUrl, t("Destino: {url}")),
     (Msg::StreamStatBackup, t("Respaldo: {url}")),
