@@ -564,7 +564,7 @@ fn draw_connection(
             number_row(
                 ui,
                 l,
-                (Msg::NsJitter, Msg::NsJitterHover),
+                (Msg::NsJitter, Msg::NsJitterHover, None),
                 &mut draft.settings.jitter_buffer_ms,
                 MIN_JITTER_BUFFER_MS..=MAX_JITTER_BUFFER_MS,
                 at(StreamField::Jitter),
@@ -733,7 +733,7 @@ fn draw_connection_grid(
                 number_row(
                     ui,
                     l,
-                    (Msg::NsLatency, Msg::NsLatencyHover),
+                    (Msg::NsLatency, Msg::NsLatencyHover, None),
                     &mut draft.settings.latency_ms,
                     MIN_SRT_LATENCY_MS..=MAX_SRT_LATENCY_MS,
                     at(StreamField::Latency),
@@ -783,7 +783,7 @@ fn draw_recovery(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, at: &Pr
             number_row(
                 ui,
                 l,
-                (Msg::NsGiveUp, Msg::NsGiveUpHover),
+                (Msg::NsGiveUp, Msg::NsGiveUpHover, Some(Msg::NsGiveUpNever)),
                 &mut draft.give_up_after,
                 0..=MAX_RECONNECT_ATTEMPTS,
                 at(StreamField::GiveUp),
@@ -795,7 +795,7 @@ fn draw_recovery(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, at: &Pr
             number_row(
                 ui,
                 l,
-                (Msg::NsBackoffMin, Msg::NsBackoffMinHover),
+                (Msg::NsBackoffMin, Msg::NsBackoffMinHover, None),
                 &mut draft.settings.reconnect.backoff_min_ms,
                 MIN_RECONNECT_BACKOFF_MS..=MAX_RECONNECT_BACKOFF_MS,
                 // Both waits are outlined; the reason shows once, under the
@@ -808,7 +808,7 @@ fn draw_recovery(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, at: &Pr
             number_row(
                 ui,
                 l,
-                (Msg::NsBackoffMax, Msg::NsBackoffMaxHover),
+                (Msg::NsBackoffMax, Msg::NsBackoffMaxHover, None),
                 &mut draft.settings.reconnect.backoff_max_ms,
                 MIN_RECONNECT_BACKOFF_MS..=MAX_RECONNECT_BACKOFF_MS,
                 backoff,
@@ -816,7 +816,7 @@ fn draw_recovery(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft, at: &Pr
             number_row(
                 ui,
                 l,
-                (Msg::NsTimeout, Msg::NsTimeoutHover),
+                (Msg::NsTimeout, Msg::NsTimeoutHover, None),
                 &mut draft.settings.timeout_ms,
                 MIN_STREAM_TIMEOUT_MS..=MAX_STREAM_TIMEOUT_MS,
                 at(StreamField::Timeout),
@@ -863,7 +863,7 @@ fn error_row(ui: &mut Ui, l: Locale, reason: &str) {
 fn number_row(
     ui: &mut Ui,
     l: Locale,
-    (label, hover): (Msg, Msg),
+    (label, hover, note): (Msg, Msg, Option<Msg>),
     value: &mut u32,
     range: core::ops::RangeInclusive<u32>,
     problem: Option<FieldProblem<StreamField>>,
@@ -875,8 +875,17 @@ fn number_row(
     )
     .on_hover_text(l.text(hover));
     let response = ui
-        .add(DragValue::new(value).range(range).speed(10.0))
-        .on_hover_text(l.text(hover));
+        .horizontal(|ui| {
+            let response = ui
+                .add(DragValue::new(value).range(range).speed(10.0))
+                .on_hover_text(l.text(hover));
+            if let Some(note) = note {
+                ui.label(crate::theme::caption(l.text(note)))
+                    .on_hover_text(l.text(hover));
+            }
+            response
+        })
+        .inner;
     ui.end_row();
     if let Some(problem) = problem {
         mark_invalid(ui, response.rect);

@@ -192,14 +192,14 @@ impl CueRole {
         }
     }
 
-    const fn chip(self) -> Option<(Msg, Tone)> {
+    const fn chip(self) -> (Msg, Tone) {
         match self {
-            Self::Idle => None,
-            Self::Live => Some((Msg::Live, Tone::OnAir)),
-            Self::Standby => Some((Msg::CueStateStandby, Tone::Ready)),
-            Self::Waiting => Some((Msg::MediaStateWaiting, Tone::Pending)),
-            Self::Played => Some((Msg::CueStatePlayed, Tone::Idle)),
-            Self::Fault => Some((Msg::CueStateFault, Tone::Fault)),
+            Self::Idle => (Msg::CueStateNotPlayed, Tone::Idle),
+            Self::Live => (Msg::Live, Tone::OnAir),
+            Self::Standby => (Msg::CueStateStandby, Tone::Ready),
+            Self::Waiting => (Msg::MediaStateWaiting, Tone::Pending),
+            Self::Played => (Msg::CueStatePlayed, Tone::Idle),
+            Self::Fault => (Msg::CueStateFault, Tone::Fault),
         }
     }
 }
@@ -589,11 +589,14 @@ impl CuePanel {
             .standby
             .and_then(|id| list.spec.cues.iter().find(|cue| cue.id == id))
             .map(|cue| cue.name.clone());
-        let go_button = Button::new(
+        // Growing atoms on both sides centre the label in the full-width key.
+        let go_button = Button::new((
+            egui::Atom::grow(),
             RichText::new(l.text(Msg::CueGo))
                 .size(legible(22.0))
                 .strong(),
-        )
+            egui::Atom::grow(),
+        ))
         .fill(PREVIEW.gamma_multiply(if go.is_ok() { 0.45 } else { 0.12 }))
         .stroke(Stroke::new(2.0, PREVIEW.gamma_multiply(0.8)))
         .min_size(Vec2::new(ui.available_width(), 48.0));
@@ -766,9 +769,77 @@ enum RowEdit {
     Change(Change),
 }
 
+/// Width of a cue row's run-state chip.
+const CHIP_WIDTH: f32 = 64.0;
+/// Width of a cue row's standby, fire, move, and remove keys.
+const ROW_KEY_WIDTH: f32 = 28.0;
+/// Width of a cue row's action-count key.
+const COUNT_KEY_WIDTH: f32 = 36.0;
+/// The narrowest name field a one-line cue row keeps; narrower docks move
+/// the follow box and keys to a second line.
+const MIN_ONE_LINE_NAME: f32 = 110.0;
+
+/// Width of the follow box and the five row keys, with their spacing.
+fn row_controls_width(ui: &Ui, follow: &str) -> f32 {
+    let spacing = ui.spacing();
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text = ui.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(follow.to_owned(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    let follow_width = spacing.icon_width + spacing.icon_spacing + text;
+    follow_width + 5.0 * ROW_KEY_WIDTH + 5.0 * spacing.item_spacing.x + 2.0
+}
+
+/// A cue's name field, `width` wide. While it is not being edited a name
+/// that does not fit ends in `…`, and the hover repeats it in full.
+fn cue_name_field(
+    ui: &mut Ui,
+    l: Locale,
+    name: &mut String,
+    width: f32,
+    edit: Option<&'static str>,
+) -> egui::Response {
+    let id = ui.id().with("name");
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui
+        .visuals()
+        .override_text_color
+        .unwrap_or_else(|| ui.visuals().widgets.inactive.text_color());
+    let mut elided = false;
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.as_str().to_owned(), font.clone(), color);
+        if !focused {
+            job.wrap = egui::text::TextWrapping::truncate_at_width(wrap_width.max(1.0));
+        }
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        elided |= galley.elided;
+        galley
+    };
+    let response = ui.add_enabled(
+        edit.is_none(),
+        TextEdit::singleline(name)
+            .id(id)
+            .desired_width(width)
+            .layouter(&mut layouter),
+    );
+    let hover = l.text(Msg::CueNameHover);
+    if elided {
+        let full = format!("{name}\n{hover}");
+        response.hint(&full, edit.unwrap_or(""))
+    } else {
+        response.hint(hover, edit.unwrap_or(""))
+    }
+}
+
 /// One cue: its chip, name, follow box, standby, fire, move, and remove
-/// keys, and (expanded) its actions.
-#[allow(clippy::too_many_lines)]
+/// keys, the action-count key, and (expanded) its actions. The name takes
+/// the width the keys leave; in a narrow dock the follow box and keys move
+/// to a second line under the chip, name, and count key.
 fn draw_cue_row(
     ui: &mut Ui,
     names: &Names<'_>,
@@ -793,115 +864,59 @@ fn draw_cue_row(
         .corner_radius(4.0)
         .inner_margin(4.0)
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.push_id(("studio-cue", id), |ui| {
+                let open = expanded == Some(id);
+                let spacing = ui.spacing().item_spacing.x;
+                let controls = row_controls_width(ui, l.text(Msg::CueFollow));
+                let head = CHIP_WIDTH + COUNT_KEY_WIDTH + 2.0 * spacing;
+                let two_line_name = ui.available_width() - head - spacing;
+                let one_line = two_line_name - controls >= MIN_ONE_LINE_NAME;
+                let name_width = if one_line {
+                    two_line_name - controls
+                } else {
+                    two_line_name
+                };
+                let mut removed = false;
                 ui.horizontal(|ui| {
-                    let (text, tone) = role
-                        .chip()
-                        .map_or(("", Tone::Idle), |(msg, tone)| (l.text(msg), tone));
-                    status_chip(ui, text, tone, 64.0).on_hover_text(l.text(Msg::CueStateHover));
-                    let name = ui
-                        .add_enabled(
-                            edit.is_none(),
-                            TextEdit::singleline(&mut cues[index].name).desired_width(110.0),
-                        )
-                        .hint(l.text(Msg::CueNameHover), edit.unwrap_or(""));
+                    let (msg, tone) = role.chip();
+                    status_chip(ui, l.text(msg), tone, CHIP_WIDTH)
+                        .on_hover_text(l.text(Msg::CueStateHover));
+                    let name =
+                        cue_name_field(ui, l, &mut cues[index].name, name_width.max(40.0), edit);
                     if name.lost_focus() {
                         result = Some(RowEdit::Change(Change::Commit));
                     }
-                    let follow = ui
-                        .add_enabled(
-                            edit.is_none(),
-                            egui::Checkbox::new(
-                                &mut cues[index].auto_follow,
-                                l.text(Msg::CueFollow),
-                            ),
-                        )
-                        .hint(l.text(Msg::CueFollowHover), edit.unwrap_or(""));
-                    if follow.changed() {
-                        result = Some(RowEdit::Change(Change::Commit));
-                    }
-                    if add_icon_button(
-                        ui,
-                        control.is_none(),
-                        key_button("", None, 28.0),
-                        KeyIcon::Dot,
-                        l.text(Msg::CueJumpHover),
-                    )
-                    .hint(l.text(Msg::CueJumpHover), control.unwrap_or(""))
-                    .clicked()
-                    {
-                        intents.push(StudioIntent::Cue(CueIntent::Control {
-                            list: list.id,
-                            operation: CueOperation::Standby { cue: id },
-                        }));
-                    }
-                    if ui
-                        .add_enabled(control.is_none(), key_button("▶", None, 28.0))
-                        .hint(l.text(Msg::CueFireHover), control.unwrap_or(""))
-                        .clicked()
-                    {
-                        intents.push(StudioIntent::Cue(CueIntent::Control {
-                            list: list.id,
-                            operation: CueOperation::Go { cue: Some(id) },
-                        }));
-                    }
-                    let moves = [
-                        (
-                            KeyIcon::Up,
-                            Msg::CueUpHover,
-                            index > 0,
-                            index.wrapping_sub(1),
-                            Msg::CueReasonFirst,
-                        ),
-                        (
-                            KeyIcon::Down,
-                            Msg::CueDownHover,
-                            index + 1 < cues.len(),
-                            index + 1,
-                            Msg::CueReasonLast,
-                        ),
-                    ];
-                    for (icon, hover, possible, other, end) in moves {
-                        let reason = edit.unwrap_or(end.en());
-                        if add_icon_button(
-                            ui,
-                            edit.is_none() && possible,
-                            key_button("", None, 28.0),
-                            icon,
-                            l.text(hover),
-                        )
-                        .hint(l.text(hover), reason)
-                        .clicked()
-                        {
-                            cues.swap(index, other);
-                            result = Some(RowEdit::Change(Change::Commit));
+                    if !one_line {
+                        if count_key(ui, l, cues[index].actions.len(), open) {
+                            result = Some(RowEdit::Expand(id));
                         }
-                    }
-                    if add_icon_button(
-                        ui,
-                        edit.is_none(),
-                        key_button("", Some(ERROR), 28.0),
-                        KeyIcon::Remove,
-                        l.text(Msg::CueRemoveHover),
-                    )
-                    .hint(l.text(Msg::CueRemoveHover), edit.unwrap_or(""))
-                    .clicked()
-                    {
-                        cues.remove(index);
-                        result = Some(RowEdit::Change(Change::Commit));
                         return;
                     }
-                    let open = expanded == Some(id);
-                    let count = cues[index].actions.len().to_string();
-                    let label = format!("{count} {}", if open { "−" } else { "+" });
-                    if ui
-                        .add(key_button(&label, None, 36.0))
-                        .on_hover_text(l.text(Msg::CueExpandHover))
-                        .clicked()
+                    if let Some(change) =
+                        row_controls(ui, l, list.id, (cues, index), (control, edit), intents)
                     {
+                        removed = matches!(change, RowControl::Removed);
+                        result = Some(RowEdit::Change(Change::Commit));
+                    }
+                    if !removed && count_key(ui, l, cues[index].actions.len(), open) {
                         result = Some(RowEdit::Expand(id));
                     }
                 });
+                if !one_line {
+                    ui.horizontal(|ui| {
+                        ui.add_space(CHIP_WIDTH);
+                        if let Some(change) =
+                            row_controls(ui, l, list.id, (cues, index), (control, edit), intents)
+                        {
+                            removed = matches!(change, RowControl::Removed);
+                            result = Some(RowEdit::Change(Change::Commit));
+                        }
+                    });
+                }
+                if removed {
+                    return;
+                }
                 if let Some((earlier, name)) = &conflict {
                     let note = if *earlier == id {
                         l.text(Msg::CueTakeTwiceNote).to_owned()
@@ -910,7 +925,7 @@ fn draw_cue_row(
                     };
                     ui.label(RichText::new(note).size(legible(11.0)).color(ERROR));
                 }
-                if expanded == Some(id)
+                if open
                     && index < cues.len()
                     && let Some(change) = draw_actions(ui, names, &mut cues[index], edit)
                 {
@@ -921,6 +936,116 @@ fn draw_cue_row(
     ui.add_space(2.0);
     result
 }
+
+/// The action-count key, which opens and closes a cue's actions.
+fn count_key(ui: &mut Ui, l: Locale, count: usize, open: bool) -> bool {
+    let label = format!("{count} {}", if open { "−" } else { "+" });
+    ui.add(key_button(&label, None, COUNT_KEY_WIDTH))
+        .on_hover_text(l.text(Msg::CueExpandHover))
+        .clicked()
+}
+
+/// What a row's follow box and keys did to the working copy.
+enum RowControl {
+    Changed,
+    Removed,
+}
+
+/// A cue row's follow box and its standby, fire, move, and remove keys.
+fn row_controls(
+    ui: &mut Ui,
+    l: Locale,
+    list: u64,
+    (cues, index): (&mut Vec<WireCue>, usize),
+    (control, edit): (Option<&'static str>, Option<&'static str>),
+    intents: &mut Vec<StudioIntent>,
+) -> Option<RowControl> {
+    let id = cues[index].id;
+    let mut result = None;
+    let follow = ui
+        .add_enabled(
+            edit.is_none(),
+            egui::Checkbox::new(&mut cues[index].auto_follow, l.text(Msg::CueFollow)),
+        )
+        .hint(l.text(Msg::CueFollowHover), edit.unwrap_or(""));
+    if follow.changed() {
+        result = Some(RowControl::Changed);
+    }
+    if add_icon_button(
+        ui,
+        control.is_none(),
+        key_button("", None, ROW_KEY_WIDTH),
+        KeyIcon::Dot,
+        l.text(Msg::CueJumpHover),
+    )
+    .hint(l.text(Msg::CueJumpHover), control.unwrap_or(""))
+    .clicked()
+    {
+        intents.push(StudioIntent::Cue(CueIntent::Control {
+            list,
+            operation: CueOperation::Standby { cue: id },
+        }));
+    }
+    if ui
+        .add_enabled(control.is_none(), key_button("▶", None, ROW_KEY_WIDTH))
+        .hint(l.text(Msg::CueFireHover), control.unwrap_or(""))
+        .clicked()
+    {
+        intents.push(StudioIntent::Cue(CueIntent::Control {
+            list,
+            operation: CueOperation::Go { cue: Some(id) },
+        }));
+    }
+    let moves = [
+        (
+            KeyIcon::Up,
+            Msg::CueUpHover,
+            index > 0,
+            index.wrapping_sub(1),
+            Msg::CueReasonFirst,
+        ),
+        (
+            KeyIcon::Down,
+            Msg::CueDownHover,
+            index + 1 < cues.len(),
+            index + 1,
+            Msg::CueReasonLast,
+        ),
+    ];
+    for (icon, hover, possible, other, end) in moves {
+        let reason = edit.unwrap_or(end.en());
+        if add_icon_button(
+            ui,
+            edit.is_none() && possible,
+            key_button("", None, ROW_KEY_WIDTH),
+            icon,
+            l.text(hover),
+        )
+        .hint(l.text(hover), reason)
+        .clicked()
+        {
+            cues.swap(index, other);
+            result = Some(RowControl::Changed);
+        }
+    }
+    if add_icon_button(
+        ui,
+        edit.is_none(),
+        key_button("", Some(ERROR), ROW_KEY_WIDTH),
+        KeyIcon::Remove,
+        l.text(Msg::CueRemoveHover),
+    )
+    .hint(l.text(Msg::CueRemoveHover), edit.unwrap_or(""))
+    .clicked()
+    {
+        cues.remove(index);
+        result = Some(RowControl::Removed);
+    }
+    result
+}
+
+/// Width of an action row's move and remove keys.
+const ACTION_KEY_WIDTH: f32 = 24.0;
 
 /// A cue's actions, each with its kind picker, parameters, and move and
 /// remove keys, then the Add action key.
@@ -938,47 +1063,58 @@ fn draw_actions(
     let count = cue.actions.len();
     for index in 0..count {
         ui.push_id(("studio-cue-action", index), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(field_label(&(index + 1).to_string()));
-                let current = ActionKind::of(&cue.actions[index]);
-                ui.add_enabled_ui(edit.is_none(), |ui| {
-                    ComboBox::from_id_salt("kind")
-                        .width(104.0)
-                        .selected_text(RichText::new(l.tr(current.label())).size(legible(11.0)))
-                        .show_ui(ui, |ui| {
-                            for kind in ActionKind::ALL {
-                                let fresh = kind.default_action(names.view, names.project);
-                                let response = ui
-                                    .add_enabled(
-                                        fresh.is_some(),
-                                        egui::Button::selectable(
-                                            kind == current,
-                                            l.tr(kind.label()),
-                                        ),
-                                    )
-                                    .hint(
-                                        l.text(Msg::CueActionKindHover),
-                                        edit.unwrap_or(Msg::CueReasonNothingToName.en()),
-                                    );
-                                if response.clicked()
-                                    && kind != current
-                                    && let Some(fresh) = fresh
-                                {
-                                    cue.actions[index] = fresh;
-                                    change = Some(Change::Commit);
+            // The move and remove keys keep a fixed column on the first
+            // line; a narrow dock wraps the kind and parameters instead.
+            ui.horizontal_top(|ui| {
+                let keys = 3.0 * (ACTION_KEY_WIDTH + ui.spacing().item_spacing.x);
+                let text = (ui.available_width() - keys).max(80.0);
+                let layout = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+                let height = ui.spacing().interact_size.y;
+                ui.allocate_ui_with_layout(Vec2::new(text, height), layout, |ui| {
+                    ui.set_min_width(text);
+                    ui.label(field_label(&(index + 1).to_string()));
+                    let current = ActionKind::of(&cue.actions[index]);
+                    let width = fit_width(ui, 104.0);
+                    ui.add_enabled_ui(edit.is_none(), |ui| {
+                        ComboBox::from_id_salt("kind")
+                            .width(width)
+                            .truncate()
+                            .selected_text(RichText::new(l.tr(current.label())).size(legible(11.0)))
+                            .show_ui(ui, |ui| {
+                                for kind in ActionKind::ALL {
+                                    let fresh = kind.default_action(names.view, names.project);
+                                    let response = ui
+                                        .add_enabled(
+                                            fresh.is_some(),
+                                            egui::Button::selectable(
+                                                kind == current,
+                                                l.tr(kind.label()),
+                                            ),
+                                        )
+                                        .hint(
+                                            l.text(Msg::CueActionKindHover),
+                                            edit.unwrap_or(Msg::CueReasonNothingToName.en()),
+                                        );
+                                    if response.clicked()
+                                        && kind != current
+                                        && let Some(fresh) = fresh
+                                    {
+                                        cue.actions[index] = fresh;
+                                        change = Some(Change::Commit);
+                                    }
                                 }
-                            }
-                        })
-                        .response
-                        .hint(l.text(Msg::CueActionKindHover), edit.unwrap_or(""));
+                            })
+                            .response
+                            .hint(l.text(Msg::CueActionKindHover), edit.unwrap_or(""));
+                    });
+                    if let Some(param) = draw_params(ui, names, &mut cue.actions[index], edit) {
+                        change = Some(param);
+                    }
                 });
-                if let Some(param) = draw_params(ui, names, &mut cue.actions[index], edit) {
-                    change = Some(param);
-                }
                 if add_icon_button(
                     ui,
                     edit.is_none() && index > 0,
-                    key_button("", None, 24.0),
+                    key_button("", None, ACTION_KEY_WIDTH),
                     KeyIcon::Up,
                     l.text(Msg::CueActionUpHover),
                 )
@@ -993,7 +1129,7 @@ fn draw_actions(
                 if add_icon_button(
                     ui,
                     edit.is_none() && index + 1 < count,
-                    key_button("", None, 24.0),
+                    key_button("", None, ACTION_KEY_WIDTH),
                     KeyIcon::Down,
                     l.text(Msg::CueActionDownHover),
                 )
@@ -1008,7 +1144,7 @@ fn draw_actions(
                 if add_icon_button(
                     ui,
                     edit.is_none(),
-                    key_button("", Some(ERROR), 24.0),
+                    key_button("", Some(ERROR), ACTION_KEY_WIDTH),
                     KeyIcon::Remove,
                     l.text(Msg::CueActionRemoveHover),
                 )
@@ -1045,6 +1181,24 @@ fn draw_actions(
     change
 }
 
+/// The narrowest an action's picker or text field shrinks before it wraps
+/// to the next line.
+const MIN_FIELD_WIDTH: f32 = 56.0;
+
+/// The width for an action picker or field of `preferred` width in the
+/// wrapping action row: what is left of the line, never more than
+/// `preferred`. When less than [`MIN_FIELD_WIDTH`] is left the row wraps
+/// first. Pickers sit in their own scope, which the wrapping layout cannot
+/// move, so the row makes room for them here.
+fn fit_width(ui: &mut Ui, preferred: f32) -> f32 {
+    let padding = 2.0 * ui.spacing().button_padding.x;
+    let room = |ui: &Ui| ui.available_size_before_wrap().x - padding;
+    if room(ui) < MIN_FIELD_WIDTH && ui.cursor().left() > ui.max_rect().left() + 1.0 {
+        ui.end_row();
+    }
+    preferred.min(room(ui)).max(MIN_FIELD_WIDTH)
+}
+
 /// An input picker over `choices`; `allow_preview` adds the Preview choice
 /// (`None`).
 fn input_picker(
@@ -1066,9 +1220,10 @@ fn input_picker(
         |input| names.input(input),
     );
     let mut changed = false;
+    let width = fit_width(ui, 110.0);
     ui.add_enabled_ui(edit.is_none(), |ui| {
         ComboBox::from_id_salt(salt)
-            .width(110.0)
+            .width(width)
             .truncate()
             .selected_text(RichText::new(text).size(legible(11.0)))
             .show_ui(ui, |ui| {
@@ -1197,9 +1352,11 @@ fn draw_params(
                 .iter()
                 .filter_map(|stinger| WireStingerSlotId::new(stinger.slot))
                 .collect();
+            let width = fit_width(ui, 96.0);
             ui.add_enabled_ui(edit.is_none(), |ui| {
                 ComboBox::from_id_salt("effect")
-                    .width(96.0)
+                    .width(width)
+                    .truncate()
                     .selected_text(
                         RichText::new(crate::transitions::effect_name(l, *effect))
                             .size(legible(11.0)),
@@ -1282,9 +1439,10 @@ fn draw_params(
                 .find(|candidate| candidate.field == *field)
                 .map(|candidate| candidate.name.clone())
                 .unwrap_or_default();
+            let width = fit_width(ui, 90.0);
             ui.add_enabled_ui(edit.is_none(), |ui| {
                 ComboBox::from_id_salt("field")
-                    .width(90.0)
+                    .width(width)
                     .truncate()
                     .selected_text(RichText::new(current).size(legible(11.0)))
                     .show_ui(ui, |ui| {
@@ -1303,10 +1461,11 @@ fn draw_params(
                     .response
                     .hint(l.text(Msg::CueParamFieldHover), edit.unwrap_or(""));
             });
+            let width = fit_width(ui, 120.0);
             let response = ui
                 .add_enabled(
                     edit.is_none(),
-                    TextEdit::singleline(text).desired_width(120.0),
+                    TextEdit::singleline(text).desired_width(width),
                 )
                 .hint(l.text(Msg::CueParamTextHover), edit.unwrap_or(""));
             if response.lost_focus() {
@@ -1378,9 +1537,10 @@ fn draw_params(
                 .map(|stream| stream.name.clone())
                 .unwrap_or_default();
             let mut change = None;
+            let width = fit_width(ui, 100.0);
             ui.add_enabled_ui(edit.is_none(), |ui| {
                 ComboBox::from_id_salt("target")
-                    .width(100.0)
+                    .width(width)
                     .truncate()
                     .selected_text(RichText::new(current).size(legible(11.0)))
                     .show_ui(ui, |ui| {

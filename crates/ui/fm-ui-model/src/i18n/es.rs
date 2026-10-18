@@ -2124,6 +2124,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Intentos de reconexión seguidos antes de que la entrada muestre FALLIDO; 0 reintenta mientras la entrada esté abierta",
         ),
     ),
+    (Msg::NsGiveUpNever, t("0 = no abandonar nunca")),
     (Msg::NsTimeout, t("Tiempo de espera (ms)")),
     (
         Msg::NsTimeoutHover,
@@ -6150,11 +6151,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Mostrar u ocultar las acciones de este cue"),
     ),
     (Msg::CueStatePlayed, t("DISPARADO")),
+    (Msg::CueStateNotPlayed, t("EN COLA")),
     (Msg::CueStateFault, t("FALLO")),
     (
         Msg::CueStateHover,
         t(
-            "Estado de este cue: al aire, en espera, esperando sus próximas acciones, disparado o detenido por una acción rechazada",
+            "Estado de este cue: en cola (aún sin disparar), al aire, en espera, esperando sus próximas acciones, disparado o detenido por una acción rechazada",
         ),
     ),
     (

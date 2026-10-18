@@ -452,6 +452,16 @@ Review notes from these captures (problems seen, not fixed here):
 - Without a window manager a popped-out panel stays above the console's
   modal dialogs (seen while capturing; the windows were moved aside first).
 
+`studio-cues.png` and `studio-workspace-docked.png` were recaptured after
+the Cues fixes that followed (same steps, Facebook Live not removed and
+re-added): cue rows fill the panel width and their names take the width
+the keys leave, ending in `…` with the full name on hover; in the docked
+tab each row puts its follow box and keys on a second line so nothing
+hides behind a scroll bar; an opened cue's action rows keep their move and
+remove keys in a column on the first line and shrink or wrap their
+pickers; cues not yet played read `QUEUED`; and `GO` is centred. Add input
+now notes `0 = never give up` beside `Give up after (attempts)`.
+
 Captures of 2026-10-16 at Protocol 2.48, schema 45 (commit 64f800a). Added:
 `studio-network-stream-form.png` and `studio-network-stream-tile.png`
 (IN-015), `studio-capture-picker.png` and `studio-capture-signal-lost.png`
