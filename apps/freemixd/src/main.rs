@@ -176,7 +176,8 @@ use fm_io_network::{
     DestinationId, DestinationRenditions, DestinationState, Endpoint, EnqueueStatus, FrameRate,
     HlsLadder, HlsLadderRung, HlsPlaylistMetadata, NetworkTelemetry, OutputPacket, OutputProtocol,
     OutputSet, PollEvent, QueueCapacity, ReconnectPolicy, RenditionId, RenditionPlan,
-    RenditionPlanner, RenditionProfile, TimingProfile, VideoRendition, parse_master_m3u8,
+    RenditionPlanner, RenditionProfile, SrtOptions, TimingProfile, VideoRendition,
+    parse_master_m3u8,
     rtmp::{FfmpegRtmpSink, RtmpSinkConfig, StreamKey, raw_pair_packet},
 };
 #[cfg(feature = "native-media")]
@@ -3281,6 +3282,26 @@ fn stream_record_format(
     )?)
 }
 
+/// Compiles one SRT target's authored latency and optional passphrase into
+/// the sink's caller-mode options; `None` for every other protocol.
+///
+/// `fm-model` and the sink validate the same bounds, so a rejected conversion
+/// is unreachable; dropping the passphrase instead would publish an
+/// encrypted destination in the clear.
+#[cfg(feature = "native-media")]
+fn stream_srt_options(target: &fm_model::StreamTarget) -> Option<SrtOptions> {
+    let latency_ms = target.srt_latency_ms()?;
+    Some(
+        SrtOptions::new(
+            latency_ms,
+            target
+                .srt_passphrase()
+                .map(fm_model::SrtPassphrase::expose_secret),
+        )
+        .expect("the authored SRT options already satisfy the sink's rules"),
+    )
+}
+
 /// Compiles one target's authored HLS ladder into the sink's own rung type.
 ///
 /// `fm-model` and the sink validate the identical rule set, and the authored
@@ -3960,6 +3981,7 @@ impl NativeProgramStream {
         sink_config.encoder = stream_encoder_settings(split.target.video_bitrate_kbps());
         sink_config.stream_key = split.stream_key;
         sink_config.ladder = stream_ladder(split.target);
+        sink_config.srt = stream_srt_options(split.target);
         output_set
             .add_destination(
                 DestinationConfig::new(
@@ -13672,6 +13694,25 @@ fn sync_project_streams(project: &mut fm_model::Project, show: &ShowState) -> Ap
                     "stream target {target_id} could not be persisted: {error}"
                 ))
             })?,
+        }
+    }
+    // The show's order is authoritative: an undone removal comes back at its
+    // old place, not at the end where an add appends it.
+    for (index, target) in show.stream_targets().iter().enumerate() {
+        if project
+            .stream_targets()
+            .get(index)
+            .map(fm_model::StreamTarget::id)
+            != Some(target.id())
+        {
+            project
+                .move_stream_target(target.id(), index)
+                .map_err(|error| {
+                    AppFailure(format!(
+                        "stream target {} could not be reordered: {error}",
+                        target.id()
+                    ))
+                })?;
         }
     }
     Ok(())

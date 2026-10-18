@@ -23,7 +23,7 @@ use fm_model::{
     InputGainMilliDb, InputKind, Layer, LayerEffect, LayerGeometry, MainMix, Project,
     ProjectSettings, RecorderSlot as ModelRecorderSlot, RectMask, Rgba8 as ModelRgba8, Rotation,
     SceneLayerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy, StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig,
+    SrtPassphrase, StartupPolicy, StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol,
     StreamTarget, StreamTargetId,
 };
@@ -3129,6 +3129,24 @@ fn stream_target(spec: &StreamSpec) -> AppResult<StreamTarget> {
     let target = target
         .with_ladder(spec.ladder.clone())
         .map_err(|error| AppFailure(error.to_string()))?;
+    let target = match spec.srt_latency_ms {
+        Some(latency) => target
+            .with_srt_latency_ms(latency)
+            .map_err(|error| AppFailure(error.to_string()))?,
+        None => target,
+    };
+    // The passphrase is a secret: the typed error names no text.
+    let passphrase = spec
+        .srt_passphrase
+        .as_deref()
+        .map(|secret| {
+            SrtPassphrase::parse(secret)
+                .map_err(|error| AppFailure(format!("invalid SRT passphrase: {error}")))
+        })
+        .transpose()?;
+    let target = target
+        .with_srt_passphrase(passphrase)
+        .map_err(|error| AppFailure(error.to_string()))?;
     Ok(target
         .with_startup(spec.startup)
         .with_reconnect(spec.reconnect))
@@ -5043,8 +5061,20 @@ fn print_stream_targets(project: &Project) {
             StartupPolicy::Stopped => "stopped",
             StartupPolicy::ReconcileDesiredState => "reconcile-desired-state",
         };
+        // An SRT destination also prints its latency and whether it is
+        // encrypted, never the passphrase.
+        let srt = target.srt_latency_ms().map_or_else(String::new, |latency| {
+            format!(
+                " srt_latency_ms={latency} passphrase={}",
+                if target.srt_passphrase().is_some() {
+                    "yes"
+                } else {
+                    "no"
+                }
+            )
+        });
         println!(
-            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} ladder={} reconnect={} running={}",
+            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} ladder={} reconnect={}{srt} running={}",
             target.id(),
             target.name(),
             target.protocol(),
@@ -5425,8 +5455,8 @@ Usage:
   freemix-cli output-rename <show.freemix> <existing-output-id> <name>
   freemix-cli output-startup <show.freemix> <existing-output-id> <stopped|reconcile-desired-state>
   freemix-cli output-remove <show.freemix> <existing-output-id>
-  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)] [--reconnect <initial_ms>:<max_ms>:<attempts|none>]
-  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)] [--reconnect <initial_ms>:<max_ms>:<attempts|none>]
+  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--srt-latency-ms <20..=8000> (srt:// only)] [--srt-passphrase <10..=79 chars> (srt:// only)]
+  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--srt-latency-ms <20..=8000> (srt:// only)] [--srt-passphrase <10..=79 chars> (srt:// only)]
   freemix-cli stream-remove <show.freemix> <existing-stream-id>
   freemix-cli stream-start <show.freemix> <existing-stream-id>
   freemix-cli stream-stop <show.freemix> <existing-stream-id>
@@ -5438,6 +5468,10 @@ Usage:
       (100..=300000), each later one doubles up to max_ms, and after
       1..=10000 undelivered attempts it gives up (`none` retries forever);
       the default is 250:2000:40, printed by `streams` as reconnect=...
+      An srt:// destination connects as a caller with --srt-latency-ms
+      (default 120) and, with --srt-passphrase, AES encryption; `streams`
+      prints srt_latency_ms=... passphrase=yes|no, never the passphrase.
+      stream-update replaces the whole configuration, passphrase included.
   freemix-cli record-start <show.freemix> [--recorder <1|2>]
   freemix-cli record-stop <show.freemix> [--recorder <1|2>]
       The stream key is a positional argument and is therefore visible in this
@@ -5645,11 +5679,11 @@ Usage:
   freemix-cli remote-stream-retry <127.0.0.1:port> <running-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-start-all <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop-all <127.0.0.1:port> [--key <key>] [--expect <revision>]
-  freemix-cli remote-stream-set <127.0.0.1:port> <nonzero-stream-id> [--name <name>] [--protocol rtmp|rtmps|srt|hls] [--endpoint <host/app|host:port|/abs/dir or full URL>] [--backup-endpoint <endpoint> | --clear-backup-endpoint] [--output <id>] [--bitrate-kbps <1000..=100000>] [--startup stopped|reconcile] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--stream-key <key> | --clear-stream-key] [--key <key>] [--expect <revision>]
+  freemix-cli remote-stream-set <127.0.0.1:port> <nonzero-stream-id> [--name <name>] [--protocol rtmp|rtmps|srt|hls] [--endpoint <host/app|host:port|/abs/dir or full URL>] [--backup-endpoint <endpoint> | --clear-backup-endpoint] [--output <id>] [--bitrate-kbps <1000..=100000>] [--startup stopped|reconcile] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--stream-key <key> | --clear-stream-key] [--srt-latency-ms <20..=8000>] [--srt-passphrase <passphrase> | --clear-srt-passphrase] [--key <key>] [--expect <revision>]
       Adds or reconfigures a destination of a stopped stream. A new one needs
       --name, --protocol (or a full endpoint URL), --endpoint and --output;
       for an existing one every omitted option keeps the daemon's value and
-      an omitted stream key is kept. The key is never printed.
+      an omitted stream key or SRT passphrase is kept. Neither is printed.
   freemix-cli remote-stream-remove <127.0.0.1:port> <stopped-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-streams <127.0.0.1:port>
       Lists each destination's configuration (URL without key, key=yes|no)

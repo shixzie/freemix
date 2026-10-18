@@ -2,7 +2,9 @@
 //! the group start and stop, the destination edit and removal commands, the
 //! `stream_target_changed` durable event, the snapshot's `stream_targets`,
 //! and the status sample's reconnect, uptime, and bitrate fields — exactly,
-//! and strictly, with the stream key never reported back.
+//! and strictly, with the stream key never reported back. Protocol 2.54 adds
+//! an SRT destination's latency and secret passphrase, and an edit's
+//! `position` in the authored list.
 
 use std::num::NonZeroU128;
 
@@ -13,7 +15,7 @@ use fm_protocol::{
     StreamTargetProtocol, WireMessage, WireOutputId, WireStreamTargetId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.53\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
 const KEY: &str = "live-secret-key-0001";
 
 fn target(value: u128) -> WireStreamTargetId {
@@ -70,12 +72,13 @@ fn config() -> StreamTargetConfig {
             max_delay_ms: 8_000,
             max_attempts: Some(12),
         },
+        srt_latency_ms: None,
     }
 }
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 53));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 54));
     assert_eq!(MAX_STREAM_TARGETS, 5);
     assert_eq!(
         StreamReconnect::DEFAULT,
@@ -117,6 +120,8 @@ fn destination_edits_round_trip_every_key_edit() {
             target: target(7),
             config: Box::new(config()),
             stream_key: stream_key.clone(),
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
         }));
         assert!(line.contains("\tpayload=stream_target_set\t"), "{line}");
         assert!(line.contains("\tstream_protocol=rtmp\t"), "{line}");
@@ -147,6 +152,8 @@ fn destination_edits_round_trip_every_key_edit() {
         target: target(8),
         config: Box::new(hls),
         stream_key: SecretEdit::Keep,
+        srt_passphrase: SecretEdit::Keep,
+        position: None,
     }));
     assert!(line.contains("\treconnect=250%3A2000%3Anone"), "{line}");
     assert!(line.contains("\tstartup=stopped"), "{line}");
@@ -164,6 +171,8 @@ fn destination_edits_are_strict() {
         target: target(7),
         config: Box::new(config()),
         stream_key: SecretEdit::Set(KEY.to_owned()),
+        srt_passphrase: SecretEdit::Keep,
+        position: None,
     }))
     .unwrap();
     // A redacted echo can never be stored as a key.
@@ -217,6 +226,7 @@ fn the_changed_event_reports_configuration_without_the_key() {
         config: config(),
         has_key: true,
         ladder_rungs: 0,
+        has_passphrase: false,
     };
     let line = round_trip(&event(EventPayload::StreamTargetChanged {
         target: target(7),
@@ -234,4 +244,113 @@ fn the_changed_event_reports_configuration_without_the_key() {
     }));
     assert!(removed.contains("\tconfigured=0"), "{removed}");
     assert!(!removed.contains("\tname=Main"), "{removed}");
+}
+
+const PASSPHRASE: &str = "srt-wire-passphrase-01";
+
+fn srt_config() -> StreamTargetConfig {
+    StreamTargetConfig {
+        name: "SRT relay".to_owned(),
+        protocol: StreamTargetProtocol::Srt,
+        endpoint: "relay.example.test:9710".to_owned(),
+        srt_latency_ms: Some(250),
+        ..config()
+    }
+}
+
+#[test]
+fn srt_edits_carry_latency_passphrase_and_position_exactly() {
+    for (passphrase, wire) in [
+        (SecretEdit::Keep, None),
+        (SecretEdit::Clear, Some("\tsrt_passphrase=\t")),
+        (
+            SecretEdit::Set(PASSPHRASE.to_owned()),
+            Some("\tsrt_passphrase=srt-wire-passphrase-01\t"),
+        ),
+    ] {
+        let line = round_trip(&command(CommandPayload::SetStreamTarget {
+            target: target(7),
+            config: Box::new(srt_config()),
+            stream_key: SecretEdit::Keep,
+            srt_passphrase: passphrase.clone(),
+            position: Some(2),
+        }));
+        assert!(line.contains("\tsrt_latency_ms=250\t"), "{line}");
+        assert!(line.ends_with("\tposition=2\n"), "{line}");
+        match wire {
+            Some(field) => assert!(line.contains(field), "{line}"),
+            None => assert!(!line.contains("srt_passphrase"), "{line}"),
+        }
+        assert!(!format!("{passphrase:?}").contains(PASSPHRASE));
+    }
+    let line = encode_line(&command(CommandPayload::SetStreamTarget {
+        target: target(7),
+        config: Box::new(srt_config()),
+        stream_key: SecretEdit::Keep,
+        srt_passphrase: SecretEdit::Set(PASSPHRASE.to_owned()),
+        position: Some(4),
+    }))
+    .unwrap();
+    for (from, to) in [
+        // A redacted echo, a short or spaced passphrase, and latency bounds.
+        (PASSPHRASE, "***"),
+        (PASSPHRASE, "short"),
+        (PASSPHRASE, "has%20a%20space%20inside"),
+        ("srt_latency_ms=250", "srt_latency_ms=19"),
+        ("srt_latency_ms=250", "srt_latency_ms=8001"),
+        // SRT needs its latency; a fifth index does not exist.
+        ("\tsrt_latency_ms=250", ""),
+        ("position=4", "position=5"),
+        ("position=4", "position=04"),
+    ] {
+        assert!(line.contains(from), "{from} in {line}");
+        refused(&line.replacen(from, to, 1));
+    }
+    // A latency on another protocol is refused at both ends.
+    let rtmp_with_latency = StreamTargetConfig {
+        srt_latency_ms: Some(120),
+        ..config()
+    };
+    assert!(
+        encode_line(&command(CommandPayload::SetStreamTarget {
+            target: target(7),
+            config: Box::new(rtmp_with_latency),
+            stream_key: SecretEdit::Keep,
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn the_changed_event_says_only_whether_a_passphrase_is_stored() {
+    let entry = StreamTargetEntry {
+        target: target(7),
+        config: srt_config(),
+        has_key: true,
+        ladder_rungs: 0,
+        has_passphrase: true,
+    };
+    let line = round_trip(&event(EventPayload::StreamTargetChanged {
+        target: target(7),
+        entry: Some(Box::new(entry.clone())),
+        streams: Vec::new(),
+    }));
+    assert!(line.contains("\thas_passphrase=1"), "{line}");
+    assert!(line.contains("\tsrt_latency_ms=250"), "{line}");
+    assert!(!line.contains(PASSPHRASE), "{line}");
+    // Only SRT can say a passphrase is stored.
+    let rtmp = StreamTargetEntry {
+        config: config(),
+        ..entry
+    };
+    assert!(
+        encode_line(&event(EventPayload::StreamTargetChanged {
+            target: target(7),
+            entry: Some(Box::new(rtmp)),
+            streams: Vec::new(),
+        }))
+        .is_err()
+    );
 }

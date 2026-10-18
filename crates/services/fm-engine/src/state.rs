@@ -415,6 +415,7 @@ impl ShowState {
         &mut self,
         target: StreamTargetId,
         config: Option<fm_model::StreamTarget>,
+        position: Option<usize>,
     ) -> Result<(), ShowError> {
         let Some(config) = config else {
             self.desired_switcher
@@ -425,15 +426,24 @@ impl ShowState {
             return Ok(());
         };
         self.desired_switcher
-            .upsert_stream(target, config.name().to_owned())
+            .upsert_stream_at(target, config.name().to_owned(), position)
             .map_err(ShowError::Switcher)?;
-        match self
+        if let Some(index) = self
             .stream_targets
-            .iter_mut()
-            .find(|candidate| candidate.id().get() == target.get())
+            .iter()
+            .position(|candidate| candidate.id().get() == target.get())
         {
-            Some(existing) => *existing = config,
-            None => self.stream_targets.push(config),
+            self.stream_targets[index] = config;
+            if let Some(position) = position {
+                let moved = self.stream_targets.remove(index);
+                let position = position.min(self.stream_targets.len());
+                self.stream_targets.insert(position, moved);
+            }
+        } else {
+            let index = position.map_or(self.stream_targets.len(), |position| {
+                position.min(self.stream_targets.len())
+            });
+            self.stream_targets.insert(index, config);
         }
         Ok(())
     }

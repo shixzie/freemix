@@ -838,6 +838,99 @@ impl fmt::Debug for StreamKey {
     }
 }
 
+/// Lowest authored SRT send latency, in milliseconds (schema 51).
+pub const MIN_STREAM_SRT_LATENCY_MS: u32 = fm_types::network_stream::MIN_SRT_LATENCY_MS;
+
+/// Highest authored SRT send latency, in milliseconds (schema 51).
+pub const MAX_STREAM_SRT_LATENCY_MS: u32 = fm_types::network_stream::MAX_SRT_LATENCY_MS;
+
+/// SRT latency an SRT destination gets when none is authored: libsrt's own
+/// default of 120 ms.
+pub const DEFAULT_STREAM_SRT_LATENCY_MS: u32 = fm_types::network_stream::DEFAULT_SRT_LATENCY_MS;
+
+/// Shortest SRT passphrase, in bytes, as libsrt requires.
+pub const MIN_STREAM_SRT_PASSPHRASE_BYTES: usize =
+    fm_types::network_stream::MIN_SRT_PASSPHRASE_BYTES;
+
+/// Longest SRT passphrase, in bytes, as libsrt requires.
+pub const MAX_STREAM_SRT_PASSPHRASE_BYTES: usize =
+    fm_types::network_stream::MAX_SRT_PASSPHRASE_BYTES;
+
+/// Why an SRT passphrase was refused. No variant carries passphrase text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SrtPassphraseError {
+    /// Shorter than [`MIN_STREAM_SRT_PASSPHRASE_BYTES`] or longer than
+    /// [`MAX_STREAM_SRT_PASSPHRASE_BYTES`].
+    Length,
+    /// Not printable ASCII without whitespace.
+    InvalidCharacter,
+}
+
+impl fmt::Display for SrtPassphraseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Length => write!(
+                formatter,
+                "SRT passphrase must be {MIN_STREAM_SRT_PASSPHRASE_BYTES} to \
+                 {MAX_STREAM_SRT_PASSPHRASE_BYTES} bytes"
+            ),
+            Self::InvalidCharacter => {
+                formatter.write_str("SRT passphrase must be printable ASCII without whitespace")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SrtPassphraseError {}
+
+/// One validated SRT encryption passphrase (schema 51).
+///
+/// A secret exactly like [`StreamKey`]: no `Display`, `Debug` prints
+/// `SrtPassphrase("****")`, and only [`SrtPassphrase::expose_secret`] reads it.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SrtPassphrase {
+    secret: String,
+}
+
+impl SrtPassphrase {
+    /// Validates length and character set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`SrtPassphraseError`]. No variant carries the text.
+    pub fn parse(secret: &str) -> Result<Self, SrtPassphraseError> {
+        if !(MIN_STREAM_SRT_PASSPHRASE_BYTES..=MAX_STREAM_SRT_PASSPHRASE_BYTES)
+            .contains(&secret.len())
+        {
+            return Err(SrtPassphraseError::Length);
+        }
+        if !secret.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+            return Err(SrtPassphraseError::InvalidCharacter);
+        }
+        Ok(Self {
+            secret: secret.to_owned(),
+        })
+    }
+
+    /// Returns the secret in the clear.
+    ///
+    /// Call this only to hand the passphrase to a sink or to write the bundle
+    /// manifest. It must not reach a log, a status line, or an error.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.secret
+    }
+}
+
+impl fmt::Debug for SrtPassphrase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("SrtPassphrase")
+            .field(&REDACTED_STREAM_KEY)
+            .finish()
+    }
+}
+
 /// Why a streaming destination was refused at construction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamTargetError {
@@ -862,6 +955,11 @@ pub enum StreamTargetError {
     /// The endpoint does not satisfy the destination protocol's endpoint
     /// rules, for example an RTMP `host/application` endpoint on SRT or HLS.
     EndpointProtocolMismatch,
+    /// An SRT latency or passphrase on a protocol other than SRT.
+    SrtOptionsNotAllowed,
+    /// An SRT latency outside [`MIN_STREAM_SRT_LATENCY_MS`] through
+    /// [`MAX_STREAM_SRT_LATENCY_MS`].
+    SrtLatencyOutOfRange,
 }
 
 impl fmt::Display for StreamTargetError {
@@ -892,6 +990,12 @@ impl fmt::Display for StreamTargetError {
             }
             Self::EndpointProtocolMismatch => formatter
                 .write_str("stream endpoint does not match the stream destination protocol"),
+            Self::SrtOptionsNotAllowed => formatter
+                .write_str("only an SRT stream destination carries a latency or passphrase"),
+            Self::SrtLatencyOutOfRange => write!(
+                formatter,
+                "SRT latency must be {MIN_STREAM_SRT_LATENCY_MS} to {MAX_STREAM_SRT_LATENCY_MS} ms"
+            ),
         }
     }
 }
@@ -917,6 +1021,10 @@ pub struct StreamTarget {
     video_bitrate_kbps: u32,
     ladder: Option<StreamLadder>,
     reconnect: StreamReconnectPolicy,
+    /// SRT send latency in milliseconds; `Some` exactly for SRT.
+    srt_latency_ms: Option<u32>,
+    /// SRT encryption passphrase; only SRT may carry one.
+    srt_passphrase: Option<SrtPassphrase>,
     output: OutputId,
 }
 
@@ -979,8 +1087,46 @@ impl StreamTarget {
             video_bitrate_kbps: DEFAULT_VIDEO_BITRATE_KBPS,
             ladder: None,
             reconnect: StreamReconnectPolicy::DEFAULT,
+            srt_latency_ms: (protocol == StreamProtocol::Srt)
+                .then_some(DEFAULT_STREAM_SRT_LATENCY_MS),
+            srt_passphrase: None,
             output,
         })
+    }
+
+    /// Builder-style setter for the SRT send latency, in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamTargetError::SrtOptionsNotAllowed`] on a protocol other
+    /// than SRT and [`StreamTargetError::SrtLatencyOutOfRange`] outside
+    /// [`MIN_STREAM_SRT_LATENCY_MS`]..=[`MAX_STREAM_SRT_LATENCY_MS`].
+    pub fn with_srt_latency_ms(mut self, latency_ms: u32) -> Result<Self, StreamTargetError> {
+        if self.protocol != StreamProtocol::Srt {
+            return Err(StreamTargetError::SrtOptionsNotAllowed);
+        }
+        if !(MIN_STREAM_SRT_LATENCY_MS..=MAX_STREAM_SRT_LATENCY_MS).contains(&latency_ms) {
+            return Err(StreamTargetError::SrtLatencyOutOfRange);
+        }
+        self.srt_latency_ms = Some(latency_ms);
+        Ok(self)
+    }
+
+    /// Attaches or clears the SRT encryption passphrase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamTargetError::SrtOptionsNotAllowed`] when a passphrase
+    /// is set on a protocol other than SRT.
+    pub fn with_srt_passphrase(
+        mut self,
+        passphrase: Option<SrtPassphrase>,
+    ) -> Result<Self, StreamTargetError> {
+        if passphrase.is_some() && self.protocol != StreamProtocol::Srt {
+            return Err(StreamTargetError::SrtOptionsNotAllowed);
+        }
+        self.srt_passphrase = passphrase;
+        Ok(self)
     }
 
     /// Attaches or clears the failover endpoint, which uses the same protocol
@@ -1137,6 +1283,19 @@ impl StreamTarget {
         self.reconnect
     }
 
+    /// The SRT send latency in milliseconds, `Some` exactly for SRT.
+    #[must_use]
+    pub const fn srt_latency_ms(&self) -> Option<u32> {
+        self.srt_latency_ms
+    }
+
+    /// The SRT encryption passphrase, when one is stored. Reading its value
+    /// still requires [`SrtPassphrase::expose_secret`].
+    #[must_use]
+    pub const fn srt_passphrase(&self) -> Option<&SrtPassphrase> {
+        self.srt_passphrase.as_ref()
+    }
+
     /// The output this destination takes video and audio from.
     #[must_use]
     pub const fn output(&self) -> OutputId {
@@ -1227,6 +1386,8 @@ impl fmt::Debug for StreamTarget {
             .field("ladder", &self.ladder)
             .field("startup", &self.startup)
             .field("reconnect", &self.reconnect)
+            .field("srt_latency_ms", &self.srt_latency_ms)
+            .field("srt_passphrase", &self.srt_passphrase)
             .field("output", &self.output)
             .finish_non_exhaustive()
     }

@@ -15,8 +15,8 @@ use core::fmt;
 
 use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
 use fm_model::{
-    CueAction, StartupPolicy, StreamEndpoint, StreamKey, StreamLadder, StreamProtocol,
-    StreamReconnectPolicy, StreamTarget, StreamTargetError,
+    CueAction, SrtPassphrase, StartupPolicy, StreamEndpoint, StreamKey, StreamLadder,
+    StreamProtocol, StreamReconnectPolicy, StreamTarget, StreamTargetError,
 };
 use fm_switcher::{MAX_STREAM_COUNT, StreamTargetId};
 use fm_types::OutputId;
@@ -43,6 +43,11 @@ pub struct EngineStreamTargetSpec {
     pub reconnect_max_delay_ms: u32,
     pub reconnect_max_attempts: Option<u32>,
     pub ladder: Option<StreamLadder>,
+    /// The SRT send latency, `Some` exactly for SRT (schema 51).
+    pub srt_latency_ms: Option<u32>,
+    /// The exact SRT passphrase the destination will hold, resolved like
+    /// `key`. `Debug` masks it.
+    pub srt_passphrase: Option<String>,
 }
 
 impl fmt::Debug for EngineStreamTargetSpec {
@@ -59,6 +64,14 @@ impl fmt::Debug for EngineStreamTargetSpec {
             )
             .field("output", &self.output)
             .field("video_bitrate_kbps", &self.video_bitrate_kbps)
+            .field("srt_latency_ms", &self.srt_latency_ms)
+            .field(
+                "srt_passphrase",
+                &self
+                    .srt_passphrase
+                    .as_ref()
+                    .map(|_| fm_model::REDACTED_STREAM_KEY),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -83,6 +96,10 @@ impl EngineStreamTargetSpec {
             reconnect_max_delay_ms: reconnect.max_delay_ms(),
             reconnect_max_attempts: reconnect.max_attempts(),
             ladder: target.ladder().cloned(),
+            srt_latency_ms: target.srt_latency_ms(),
+            srt_passphrase: target
+                .srt_passphrase()
+                .map(|passphrase| passphrase.expose_secret().to_owned()),
         }
     }
 
@@ -117,6 +134,15 @@ impl EngineStreamTargetSpec {
                     .map_err(|error| invalid("stream_key", "invalid_stream_key", error.to_string()))
             })
             .transpose()?;
+        let passphrase = self
+            .srt_passphrase
+            .as_deref()
+            .map(|passphrase| {
+                SrtPassphrase::parse(passphrase).map_err(|error| {
+                    invalid("srt_passphrase", "invalid_passphrase", error.to_string())
+                })
+            })
+            .transpose()?;
         let target_error = |error: StreamTargetError| {
             let field = match error {
                 StreamTargetError::EmptyName | StreamTargetError::NameTooLong => "name",
@@ -128,6 +154,8 @@ impl EngineStreamTargetSpec {
                 StreamTargetError::UrlTooLong | StreamTargetError::EndpointProtocolMismatch => {
                     "endpoint"
                 }
+                StreamTargetError::SrtOptionsNotAllowed
+                | StreamTargetError::SrtLatencyOutOfRange => "srt_latency_ms",
             };
             invalid(field, "invalid_stream_target", error.to_string())
         };
@@ -153,7 +181,20 @@ impl EngineStreamTargetSpec {
             .ladder
             .clone()
             .filter(|_| self.protocol == StreamProtocol::Hls);
-        let target = target.with_ladder(ladder).map_err(target_error)?;
+        let target = target
+            .with_ladder(ladder)
+            .and_then(|target| match self.srt_latency_ms {
+                Some(latency) => target.with_srt_latency_ms(latency),
+                None if self.protocol == StreamProtocol::Srt => {
+                    Err(StreamTargetError::SrtLatencyOutOfRange)
+                }
+                None => Ok(target),
+            })
+            .map_err(target_error)?
+            .with_srt_passphrase(passphrase)
+            .map_err(|error| {
+                invalid("srt_passphrase", "invalid_stream_target", error.to_string())
+            })?;
         Ok(target.with_startup(self.startup).with_reconnect(reconnect))
     }
 }
@@ -183,11 +224,13 @@ fn unknown_rejection(target: StreamTargetId) -> Rejection {
 }
 
 /// Validates and applies one destination edit to the desired show,
-/// returning the resulting configuration (`None` for a removal).
+/// returning the resulting configuration (`None` for a removal). `position`
+/// places an added or edited destination at that index of the authored list.
 pub(crate) fn apply(
     state: &mut ShowState,
     target: StreamTargetId,
     spec: Option<&EngineStreamTargetSpec>,
+    position: Option<usize>,
 ) -> Result<Option<StreamTarget>, Rejection> {
     let config = spec.map(|spec| spec.build(target)).transpose()?;
     let config = config.as_ref();
@@ -264,7 +307,7 @@ pub(crate) fn apply(
         }
     }
     state
-        .set_stream_target_unchecked(target, config.cloned())
+        .set_stream_target_unchecked(target, config.cloned(), position)
         .map_err(|error| Rejection::new(RejectionCode::InvalidCommand, error.to_string()))?;
     Ok(config.cloned())
 }

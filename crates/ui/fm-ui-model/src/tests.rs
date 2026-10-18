@@ -900,9 +900,11 @@ fn stream_target_entry(value: u128, name: &str, has_key: bool) -> fm_protocol::S
             reconcile_on_startup: false,
             video_bitrate_kbps: 6_000,
             reconnect: fm_protocol::StreamReconnect::DEFAULT,
+            srt_latency_ms: None,
         },
         has_key,
         ladder_rungs: 0,
+        has_passphrase: false,
     }
 }
 

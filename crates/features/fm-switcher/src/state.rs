@@ -552,14 +552,36 @@ impl SwitcherState {
         target: StreamTargetId,
         name: String,
     ) -> Result<(), SwitcherError> {
+        self.upsert_stream_at(target, name, None)
+    }
+
+    /// Like [`Self::upsert_stream`], but `Some(position)` also places the
+    /// target at that index of the inventory (clamped to its end), so an
+    /// undone removal returns to its old place (OR-006).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::upsert_stream`].
+    pub fn upsert_stream_at(
+        &mut self,
+        target: StreamTargetId,
+        name: String,
+        position: Option<usize>,
+    ) -> Result<(), SwitcherError> {
         let mut streams = self
             .streams
             .iter()
             .map(|stream| (stream.id(), stream.name().to_owned()))
             .collect::<Vec<_>>();
-        match streams.iter_mut().find(|(id, _)| *id == target) {
-            Some((_, existing)) => *existing = name,
-            None => streams.push((target, name)),
+        if let Some(index) = streams.iter().position(|(id, _)| *id == target) {
+            streams[index].1 = name;
+            if let Some(position) = position {
+                let moved = streams.remove(index);
+                streams.insert(position.min(streams.len()), moved);
+            }
+        } else {
+            let index = position.map_or(streams.len(), |position| position.min(streams.len()));
+            streams.insert(index, (target, name));
         }
         self.streams = collect_desired_streams(streams)?;
         Ok(())

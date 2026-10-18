@@ -300,6 +300,8 @@ pub enum StudioIntent {
         target: WireStreamTargetId,
         config: Box<fm_protocol::StreamTargetConfig>,
         stream_key: fm_protocol::SecretEdit,
+        /// The SRT passphrase edit (Protocol 2.54), a secret like the key.
+        srt_passphrase: fm_protocol::SecretEdit,
     },
     /// Removes one stopped stream destination no cue list names
     /// (Protocol 2.52).

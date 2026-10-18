@@ -1,11 +1,14 @@
-//! Configured stream destinations on the wire (Protocol 2.52, OR-006).
+//! Configured stream destinations on the wire (Protocols 2.52 and 2.54,
+//! OR-006).
 //!
 //! A destination's authored configuration travels without its stream key:
 //! [`StreamTargetEntry::has_key`] says only whether one is stored, and an
 //! edit ([`crate::CommandPayload::SetStreamTarget`]) keeps, clears, or
 //! replaces it through a [`crate::SecretEdit`], exactly like a network
-//! input's secrets. No snapshot, event, status line, or error ever carries a
-//! key.
+//! input's secrets. Since 2.54 an SRT destination also carries its send
+//! latency and an optional encryption passphrase, which is a secret handled
+//! exactly like the key ([`StreamTargetEntry::has_passphrase`]). No
+//! snapshot, event, status line, or error ever carries a key or passphrase.
 //!
 //! The wire restates the authoring bounds of `fm_model::StreamTarget` (which
 //! this foundation crate cannot depend on) so that an out-of-range value is
@@ -34,6 +37,16 @@ pub const MAX_STREAM_RECONNECT_DELAY_MS: u32 = 300_000;
 pub const MAX_STREAM_RECONNECT_ATTEMPTS: u32 = 10_000;
 /// Most rungs an authored HLS ladder carries.
 pub const MAX_STREAM_TARGET_LADDER_RUNGS: u8 = 8;
+/// Lowest SRT send latency in milliseconds (2.54).
+pub const MIN_STREAM_TARGET_SRT_LATENCY_MS: u32 = 20;
+/// Highest SRT send latency in milliseconds (2.54).
+pub const MAX_STREAM_TARGET_SRT_LATENCY_MS: u32 = 8_000;
+/// The SRT send latency a new SRT destination starts with (2.54).
+pub const DEFAULT_STREAM_TARGET_SRT_LATENCY_MS: u32 = 120;
+/// Shortest SRT passphrase in bytes (2.54).
+pub const MIN_STREAM_TARGET_PASSPHRASE_BYTES: usize = 10;
+/// Longest SRT passphrase in bytes (2.54).
+pub const MAX_STREAM_TARGET_PASSPHRASE_BYTES: usize = 79;
 
 /// The transport a destination publishes over.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -129,6 +142,8 @@ pub struct StreamTargetConfig {
     pub reconcile_on_startup: bool,
     pub video_bitrate_kbps: u32,
     pub reconnect: StreamReconnect,
+    /// The SRT send latency in milliseconds: `Some` exactly for SRT (2.54).
+    pub srt_latency_ms: Option<u32>,
 }
 
 fn endpoint_is_valid(endpoint: &str) -> bool {
@@ -151,6 +166,14 @@ impl StreamTargetConfig {
             && (MIN_STREAM_TARGET_BITRATE_KBPS..=MAX_STREAM_TARGET_BITRATE_KBPS)
                 .contains(&self.video_bitrate_kbps)
             && self.reconnect.is_valid()
+            && match self.srt_latency_ms {
+                Some(latency) => {
+                    self.protocol == StreamTargetProtocol::Srt
+                        && (MIN_STREAM_TARGET_SRT_LATENCY_MS..=MAX_STREAM_TARGET_SRT_LATENCY_MS)
+                            .contains(&latency)
+                }
+                None => self.protocol != StreamTargetProtocol::Srt,
+            }
     }
 
     /// The destination URL without its key, as an operator may see it.
@@ -169,6 +192,16 @@ pub fn stream_key_is_valid(key: &str) -> bool {
         && key.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
+/// Whether `passphrase` is acceptable SRT passphrase text on the wire:
+/// printable ASCII without whitespace, [`MIN_STREAM_TARGET_PASSPHRASE_BYTES`]
+/// to [`MAX_STREAM_TARGET_PASSPHRASE_BYTES`] (2.54).
+#[must_use]
+pub fn srt_passphrase_is_valid(passphrase: &str) -> bool {
+    (MIN_STREAM_TARGET_PASSPHRASE_BYTES..=MAX_STREAM_TARGET_PASSPHRASE_BYTES)
+        .contains(&passphrase.len())
+        && passphrase.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
 /// One configured destination as clients see it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StreamTargetEntry {
@@ -179,4 +212,7 @@ pub struct StreamTargetEntry {
     /// Rungs of the authored HLS ladder, `0` without one. A ladder is
     /// authored offline; an edit keeps it while the protocol stays HLS.
     pub ladder_rungs: u8,
+    /// Whether an SRT passphrase is stored; the passphrase never travels
+    /// (2.54).
+    pub has_passphrase: bool,
 }

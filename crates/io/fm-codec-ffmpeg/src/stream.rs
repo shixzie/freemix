@@ -33,7 +33,10 @@
 //! This crate cannot close that hole. Containing it is an OS-level measure
 //! (`hidepid=2`, a PID namespace, or a dedicated unprivileged user) and lies
 //! outside this crate's isolation boundary, exactly as for the recorder's
-//! loopback input tokens.
+//! loopback input tokens. An SRT destination's optional encryption
+//! passphrase ([`SrtOptions`]) is handled exactly like the key: it travels
+//! to the child as its own `-passphrase` argument (never in the URL), its
+//! `Debug` is masked, and it is scrubbed out of captured stderr.
 //!
 //! # Loss is explicit, and the media clock is not allowed to drift
 //!
@@ -58,8 +61,9 @@
 //! to the caller, which owns backoff, destination rotation, and whether a new
 //! [`Streamer`] should be started at all. Also out of scope: per-output wiring
 //! into the engine, hardware encoders, and TLS certificate policy (`rtmps://`
-//! uses the child's default trust configuration), and SRT encryption and
-//! passphrase policy (`srt://` likewise uses the child's defaults).
+//! uses the child's default trust configuration). An `srt://` destination
+//! connects in caller mode; [`SrtOptions`] sets its send latency and optional
+//! AES passphrase, and the key length is libsrt's default.
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
@@ -646,6 +650,107 @@ impl fmt::Display for HlsLadderError {
 
 impl std::error::Error for HlsLadderError {}
 
+/// Shortest SRT send latency, in milliseconds.
+pub const MIN_SRT_LATENCY_MS: u32 = 20;
+/// Longest SRT send latency, in milliseconds.
+pub const MAX_SRT_LATENCY_MS: u32 = 8_000;
+const MIN_SRT_PASSPHRASE_BYTES: usize = 10;
+const MAX_SRT_PASSPHRASE_BYTES: usize = 79;
+
+/// Why [`SrtOptions`] were refused. No variant carries passphrase text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SrtOptionsError {
+    /// The latency is outside [`MIN_SRT_LATENCY_MS`]..=[`MAX_SRT_LATENCY_MS`].
+    Latency,
+    /// The passphrase is not 10 to 79 printable ASCII bytes without
+    /// whitespace.
+    Passphrase,
+}
+
+impl fmt::Display for SrtOptionsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Latency => "SRT latency must be 20 to 8000 ms",
+            Self::Passphrase => {
+                "SRT passphrase must be 10 to 79 printable ASCII bytes without whitespace"
+            }
+        })
+    }
+}
+
+impl std::error::Error for SrtOptionsError {}
+
+/// Caller-mode options of one `srt://` destination: the send latency and an
+/// optional AES encryption passphrase, a secret `Debug` never renders.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SrtOptions {
+    latency_ms: u32,
+    passphrase: Option<String>,
+}
+
+impl SrtOptions {
+    /// Validates the latency and passphrase.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`SrtOptionsError`] that carries no passphrase text.
+    pub fn new(latency_ms: u32, passphrase: Option<&str>) -> Result<Self, SrtOptionsError> {
+        if !(MIN_SRT_LATENCY_MS..=MAX_SRT_LATENCY_MS).contains(&latency_ms) {
+            return Err(SrtOptionsError::Latency);
+        }
+        if let Some(passphrase) = passphrase
+            && (!(MIN_SRT_PASSPHRASE_BYTES..=MAX_SRT_PASSPHRASE_BYTES).contains(&passphrase.len())
+                || !passphrase.bytes().all(|byte| (0x21..=0x7e).contains(&byte)))
+        {
+            return Err(SrtOptionsError::Passphrase);
+        }
+        Ok(Self {
+            latency_ms,
+            passphrase: passphrase.map(str::to_owned),
+        })
+    }
+
+    /// The send latency, in milliseconds.
+    #[must_use]
+    pub const fn latency_ms(&self) -> u32 {
+        self.latency_ms
+    }
+
+    /// Whether the destination is encrypted.
+    #[must_use]
+    pub const fn is_encrypted(&self) -> bool {
+        self.passphrase.is_some()
+    }
+
+    /// The caller-mode protocol options placed before the output URL.
+    fn args(&self) -> Vec<String> {
+        let mut values = vec![
+            "-mode".to_owned(),
+            "caller".to_owned(),
+            // libsrt takes its latency in microseconds.
+            "-latency".to_owned(),
+            (u64::from(self.latency_ms) * 1_000).to_string(),
+        ];
+        if let Some(passphrase) = &self.passphrase {
+            values.extend(["-passphrase".to_owned(), passphrase.clone()]);
+        }
+        values
+    }
+}
+
+impl fmt::Debug for SrtOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SrtOptions")
+            .field("latency_ms", &self.latency_ms)
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| REDACTED_KEY),
+            )
+            .finish()
+    }
+}
+
 /// Streaming startup configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamConfig {
@@ -659,6 +764,9 @@ pub struct StreamConfig {
     /// encodes every rung of the one program and publishes a master playlist
     /// plus one variant playlist per rung.
     pub ladder: Option<HlsLadder>,
+    /// Caller-mode SRT options, `Some` only for an `srt://` destination;
+    /// `None` there uses libsrt's defaults without encryption.
+    pub srt: Option<SrtOptions>,
 }
 
 impl StreamConfig {
@@ -672,6 +780,7 @@ impl StreamConfig {
             overflow: OverflowPolicy::DropOldest,
             encoder: EncoderSettings::default(),
             ladder: None,
+            srt: None,
         }
     }
 }
@@ -730,6 +839,8 @@ pub enum StartErrorKind {
     /// carry one: only a local HLS destination encodes more than one
     /// rendition. The variant carries no path or URL text.
     LadderNotSupported,
+    /// [`SrtOptions`] were configured for a destination other than `srt://`.
+    SrtOptionsNotSupported,
     Randomness,
     ThreadSpawn(io::ErrorKind),
     Bind {
@@ -1022,6 +1133,15 @@ impl Redactor {
         rules.sort_by_key(|rule| std::cmp::Reverse(rule.0.len()));
         let longest = rules.first().map_or(0, |rule| rule.0.len());
         Self { rules, longest }
+    }
+
+    /// Also masks `secret` (an SRT passphrase) as `****`.
+    fn add_secret(&mut self, secret: &str) {
+        self.rules
+            .push((secret.as_bytes().to_vec(), REDACTED_KEY.as_bytes().to_vec()));
+        self.rules
+            .sort_by_key(|rule| std::cmp::Reverse(rule.0.len()));
+        self.longest = self.rules.first().map_or(0, |rule| rule.0.len());
     }
 
     fn scrub(&self, buffer: &mut Vec<u8>) {
@@ -1550,6 +1670,9 @@ impl Streamer {
         if config.ladder.is_some() && config.destination.kind() != DestinationKind::Hls {
             return Err(StartError::complete(StartErrorKind::LadderNotSupported));
         }
+        if config.srt.is_some() && config.destination.kind() != DestinationKind::Srt {
+            return Err(StartError::complete(StartErrorKind::SrtOptionsNotSupported));
+        }
         // A local HLS destination publishes into a directory the operator
         // chose. Create its leaf before the child is spawned, so an unusable
         // path is a startup error rather than a child that dies on its first
@@ -1584,7 +1707,14 @@ impl Streamer {
                 audio_token: &audio_token,
             },
         );
-        let redactor = Redactor::new(&config.destination, [&video_token, &audio_token]);
+        let mut redactor = Redactor::new(&config.destination, [&video_token, &audio_token]);
+        if let Some(passphrase) = config
+            .srt
+            .as_ref()
+            .and_then(|srt| srt.passphrase.as_deref())
+        {
+            redactor.add_secret(passphrase);
+        }
         let shared = Arc::new(Shared::new(
             &config.format,
             config.limits,
@@ -3171,6 +3301,14 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
         ));
     } else {
         values.extend(single_rendition_encoder_args(config.encoder, gop));
+        // Protocol options precede the output URL they apply to.
+        if let Some(srt) = config
+            .srt
+            .as_ref()
+            .filter(|_| config.destination.kind() == DestinationKind::Srt)
+        {
+            values.extend(srt.args());
+        }
         values.extend(output_args(
             config.destination.kind(),
             &config.destination.url,
@@ -3619,6 +3757,67 @@ mod tests {
             .position(|window| window == ["-flvflags", "no_duration_filesize"])
             .expect("FLV output keeps -flvflags");
         assert!(flvflags < url_position - 2);
+    }
+
+    #[test]
+    fn srt_options_precede_the_url_and_never_render_the_passphrase() {
+        const PASSPHRASE: &str = "Srt-Secret-Passphrase-42";
+        let inputs = Inputs {
+            video_address: "127.0.0.1:20001".parse().unwrap(),
+            audio_address: "127.0.0.1:20002".parse().unwrap(),
+            video_token: "video-token",
+            audio_token: "audio-token",
+        };
+        let mut srt = StreamConfig::new(
+            format(),
+            StreamDestination::parse("srt://127.0.0.1:9000?streamid=abcd1234").unwrap(),
+        );
+        srt.srt = Some(SrtOptions::new(250, Some(PASSPHRASE)).unwrap());
+        let text = command_args(&srt, "stereo", &inputs)
+            .into_iter()
+            .map(|argument| argument.into_string().unwrap())
+            .collect::<Vec<_>>();
+        let tail = &text[text.len() - 9..];
+        assert_eq!(
+            tail,
+            [
+                "-mode",
+                "caller",
+                "-latency",
+                "250000",
+                "-passphrase",
+                PASSPHRASE,
+                "-f",
+                "mpegts",
+                "srt://127.0.0.1:9000?streamid=abcd1234",
+            ]
+        );
+        // Unencrypted: the latency only.
+        srt.srt = Some(SrtOptions::new(120, None).unwrap());
+        let text = command_args(&srt, "stereo", &inputs)
+            .into_iter()
+            .map(|argument| argument.into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert!(!text.iter().any(|argument| argument == "-passphrase"));
+        assert!(text.iter().any(|argument| argument == "120000"));
+
+        let options = SrtOptions::new(250, Some(PASSPHRASE)).unwrap();
+        assert!(!format!("{options:?}").contains(PASSPHRASE));
+        assert!(!format!("{srt:?}").contains(PASSPHRASE));
+        assert_eq!(SrtOptions::new(19, None), Err(SrtOptionsError::Latency));
+        assert_eq!(SrtOptions::new(8_001, None), Err(SrtOptionsError::Latency));
+        for bad in ["short", "has space inside", &"p".repeat(80)] {
+            assert_eq!(
+                SrtOptions::new(120, Some(bad)),
+                Err(SrtOptionsError::Passphrase)
+            );
+        }
+
+        let destination = StreamDestination::parse("srt://h:9000?streamid=abcd1234").unwrap();
+        let mut redactor = Redactor::new(&destination, ["videotoken", "audiotoken"]);
+        redactor.add_secret(PASSPHRASE);
+        let scrubbed = redactor.scrub_text(&format!("bad passphrase {PASSPHRASE} rejected"));
+        assert_eq!(scrubbed, "bad passphrase **** rejected");
     }
 
     #[test]

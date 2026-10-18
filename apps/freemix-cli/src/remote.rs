@@ -215,10 +215,28 @@ pub fn set_stream_target(
         ))
         .into());
     }
+    if let fm_protocol::SecretEdit::Set(secret) = &options.srt_passphrase {
+        if config.protocol != fm_protocol::StreamTargetProtocol::Srt {
+            return Err(
+                RemoteFailure("--srt-passphrase requires an SRT destination".into()).into(),
+            );
+        }
+        if !fm_protocol::srt_passphrase_is_valid(secret) {
+            return Err(RemoteFailure(format!(
+                "invalid SRT passphrase: it must be {}..={} bytes of printable ASCII without \
+                 spaces",
+                fm_protocol::MIN_STREAM_TARGET_PASSPHRASE_BYTES,
+                fm_protocol::MAX_STREAM_TARGET_PASSPHRASE_BYTES
+            ))
+            .into());
+        }
+    }
     let payload = CommandPayload::SetStreamTarget {
         target,
         config: Box::new(config),
         stream_key: options.stream_key.clone(),
+        srt_passphrase: options.srt_passphrase.clone(),
+        position: None,
     };
     let key = match key {
         Some(key) => key,
@@ -345,7 +363,35 @@ fn stream_target_config(
                 max_attempts: policy.max_attempts(),
             },
         ),
+        // SRT carries its latency: the given one, else the current one, else
+        // the default. Every other protocol carries none.
+        srt_latency_ms: if protocol == fm_protocol::StreamTargetProtocol::Srt {
+            Some(
+                options
+                    .srt_latency_ms
+                    .or(current.and_then(|config| config.srt_latency_ms))
+                    .unwrap_or(fm_protocol::DEFAULT_STREAM_TARGET_SRT_LATENCY_MS),
+            )
+        } else if options.srt_latency_ms.is_some() {
+            return Err(
+                RemoteFailure("--srt-latency-ms requires an SRT destination".into()).into(),
+            );
+        } else {
+            None
+        },
     };
+    if config.srt_latency_ms.is_some_and(|latency| {
+        !(fm_protocol::MIN_STREAM_TARGET_SRT_LATENCY_MS
+            ..=fm_protocol::MAX_STREAM_TARGET_SRT_LATENCY_MS)
+            .contains(&latency)
+    }) {
+        return Err(RemoteFailure(format!(
+            "SRT latency must be in {}..={} ms",
+            fm_protocol::MIN_STREAM_TARGET_SRT_LATENCY_MS,
+            fm_protocol::MAX_STREAM_TARGET_SRT_LATENCY_MS
+        ))
+        .into());
+    }
     if !(fm_protocol::MIN_STREAM_TARGET_BITRATE_KBPS..=fm_protocol::MAX_STREAM_TARGET_BITRATE_KBPS)
         .contains(&config.video_bitrate_kbps)
     {
@@ -421,8 +467,20 @@ fn print_stream_targets(rows: Vec<StreamTargetRow>) {
                 )
             },
         );
+        // An SRT destination also says its latency and whether a passphrase
+        // is stored, never the passphrase itself.
+        let srt = config.srt_latency_ms.map_or_else(String::new, |latency| {
+            format!(
+                ", srt_latency_ms={latency}, passphrase={}",
+                if row.entry.has_passphrase {
+                    "yes"
+                } else {
+                    "no"
+                }
+            )
+        });
         println!(
-            "StreamTarget(id={}, name={:?}, protocol={}, url={:?}, backup_url={}, output={}, startup={}, video_bitrate_kbps={}, reconnect={}, key={}, ladder_rungs={}, desired={}, {status})",
+            "StreamTarget(id={}, name={:?}, protocol={}, url={:?}, backup_url={}, output={}, startup={}, video_bitrate_kbps={}, reconnect={}, key={}, ladder_rungs={}{srt}, desired={}, {status})",
             row.entry.target,
             config.name,
             config.protocol.token(),

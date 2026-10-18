@@ -573,11 +573,13 @@ fn decode_command_payload(
         "stream_start_all" => CommandPayload::StreamStartAll,
         "stream_stop_all" => CommandPayload::StreamStopAll,
         "stream_target_set" => {
-            let (target, config, stream_key) = super::stream_target::decode_set(fields)?;
+            let set = super::stream_target::decode_set(fields)?;
             CommandPayload::SetStreamTarget {
-                target,
-                config: Box::new(config),
-                stream_key,
+                target: set.target,
+                config: Box::new(set.config),
+                stream_key: set.stream_key,
+                srt_passphrase: set.srt_passphrase,
+                position: set.position,
             }
         }
         "stream_target_remove" => CommandPayload::RemoveStreamTarget {

@@ -8,6 +8,8 @@
 //! a [`SecretEdit`]: leaving the field empty while editing keeps the stored
 //! key. No tooltip, label, or status line ever shows a key: destinations are
 //! shown by [`fm_protocol::StreamTargetConfig::display_url`], which has none.
+//! An SRT destination's optional encryption passphrase (Protocol 2.54) is a
+//! secret in exactly the same way, typed into its own masked field.
 //!
 //! The dialog validates as the operator types, with the bounds the daemon
 //! applies, so its Add / Save key is only enabled for a destination the
@@ -19,11 +21,14 @@ use core::num::NonZeroU128;
 
 use egui::{Button, DragValue, RichText, Sense, Stroke, Ui, Vec2};
 use fm_protocol::{
-    MAX_STREAM_RECONNECT_ATTEMPTS, MAX_STREAM_RECONNECT_DELAY_MS, MAX_STREAM_TARGET_BITRATE_KBPS,
+    DEFAULT_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_RECONNECT_ATTEMPTS,
+    MAX_STREAM_RECONNECT_DELAY_MS, MAX_STREAM_TARGET_BITRATE_KBPS,
     MAX_STREAM_TARGET_ENDPOINT_BYTES, MAX_STREAM_TARGET_KEY_BYTES, MAX_STREAM_TARGET_NAME_BYTES,
-    MAX_STREAM_TARGETS, MIN_STREAM_RECONNECT_DELAY_MS, MIN_STREAM_TARGET_BITRATE_KBPS, SecretEdit,
-    StreamReconnect, StreamTargetConfig, StreamTargetEntry, StreamTargetProtocol, WireCueAction,
-    WireOutputId, WireStreamTargetId, stream_key_is_valid,
+    MAX_STREAM_TARGET_PASSPHRASE_BYTES, MAX_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_TARGETS,
+    MIN_STREAM_RECONNECT_DELAY_MS, MIN_STREAM_TARGET_BITRATE_KBPS,
+    MIN_STREAM_TARGET_SRT_LATENCY_MS, SecretEdit, StreamReconnect, StreamTargetConfig,
+    StreamTargetEntry, StreamTargetProtocol, WireCueAction, WireOutputId, WireStreamTargetId,
+    srt_passphrase_is_valid, stream_key_is_valid,
 };
 
 use crate::edit_history::stinger_edit_lock_reason;
@@ -177,6 +182,10 @@ pub(crate) enum TargetField {
     /// The first and longest reconnect waits, checked together.
     Delays,
     Attempts,
+    /// The SRT send latency.
+    Latency,
+    /// The SRT encryption passphrase.
+    Passphrase,
 }
 
 impl TargetField {
@@ -194,6 +203,8 @@ impl TargetField {
             Self::Bitrate => Msg::StreamFieldBitrate,
             Self::Delays => Msg::StreamFieldMaxDelay,
             Self::Attempts => Msg::StreamFieldAttempts,
+            Self::Latency => Msg::NsLatency,
+            Self::Passphrase => Msg::NsPassphrase,
         }
     }
 }
@@ -222,6 +233,16 @@ pub(crate) struct TargetDraft {
     pub(crate) key: String,
     /// Whether the key field shows what was typed.
     pub(crate) reveal_key: bool,
+    /// The SRT send latency, in milliseconds.
+    pub(crate) srt_latency_ms: u32,
+    /// Whether the edited SRT destination has a stored passphrase.
+    pub(crate) stored_passphrase: bool,
+    /// Whether the SRT destination is encrypted.
+    pub(crate) encrypt: bool,
+    /// A newly typed SRT passphrase; empty keeps a stored one.
+    pub(crate) passphrase: String,
+    /// Whether the passphrase field shows what was typed.
+    pub(crate) reveal_passphrase: bool,
 }
 
 impl fmt::Debug for TargetDraft {
@@ -234,6 +255,15 @@ impl fmt::Debug for TargetDraft {
             .field("endpoint", &self.endpoint)
             .field("stored_key", &self.stored_key)
             .field("key", &if self.key.is_empty() { "" } else { "***" })
+            .field("stored_passphrase", &self.stored_passphrase)
+            .field(
+                "passphrase",
+                &if self.passphrase.is_empty() {
+                    ""
+                } else {
+                    "***"
+                },
+            )
             .finish_non_exhaustive()
     }
 }
@@ -264,6 +294,11 @@ impl TargetDraft {
             unlimited: reconnect.max_attempts.is_none(),
             key: String::new(),
             reveal_key: false,
+            srt_latency_ms: DEFAULT_STREAM_TARGET_SRT_LATENCY_MS,
+            stored_passphrase: false,
+            encrypt: false,
+            passphrase: String::new(),
+            reveal_passphrase: false,
         }
     }
 
@@ -287,6 +322,13 @@ impl TargetDraft {
             unlimited: config.reconnect.max_attempts.is_none(),
             key: String::new(),
             reveal_key: false,
+            srt_latency_ms: config
+                .srt_latency_ms
+                .unwrap_or(DEFAULT_STREAM_TARGET_SRT_LATENCY_MS),
+            stored_passphrase: entry.has_passphrase,
+            encrypt: entry.has_passphrase,
+            passphrase: String::new(),
+            reveal_passphrase: false,
         }
     }
 
@@ -302,6 +344,38 @@ impl TargetDraft {
             self.key.clear();
             self.backup.clear();
         }
+        if protocol != StreamTargetProtocol::Srt {
+            self.passphrase.clear();
+        }
+    }
+
+    /// The SRT passphrase edit the form describes, or why the daemon would
+    /// refuse it. Only an encrypted SRT destination keeps or sets one.
+    pub(crate) fn passphrase_edit(&self) -> Result<SecretEdit, FieldProblem<TargetField>> {
+        if self.protocol != StreamTargetProtocol::Srt || !self.encrypt {
+            return Ok(if self.stored_passphrase {
+                SecretEdit::Clear
+            } else {
+                SecretEdit::Keep
+            });
+        }
+        if self.passphrase.is_empty() {
+            return if self.editing() && self.stored_passphrase {
+                Ok(SecretEdit::Keep)
+            } else {
+                Err(FieldProblem::prompt(
+                    TargetField::Passphrase,
+                    Msg::StreamErrPassphraseRequired.en(),
+                ))
+            };
+        }
+        if !srt_passphrase_is_valid(&self.passphrase) || self.passphrase == REDACTED_KEY {
+            return Err(FieldProblem::error(
+                TargetField::Passphrase,
+                Msg::StreamErrPassphraseChars.en(),
+            ));
+        }
+        Ok(SecretEdit::Set(self.passphrase.clone()))
     }
 
     /// The key edit the form describes, or why the daemon would refuse it.
@@ -391,6 +465,17 @@ impl TargetDraft {
             None
         };
         let stream_key = self.key_edit()?;
+        let srt = self.protocol == StreamTargetProtocol::Srt;
+        if srt
+            && !(MIN_STREAM_TARGET_SRT_LATENCY_MS..=MAX_STREAM_TARGET_SRT_LATENCY_MS)
+                .contains(&self.srt_latency_ms)
+        {
+            return Err(FieldProblem::error(
+                TargetField::Latency,
+                Msg::StreamErrLatency.en(),
+            ));
+        }
+        self.passphrase_edit()?;
         let output = self
             .output
             .filter(|output| outputs.contains(output))
@@ -437,6 +522,7 @@ impl TargetDraft {
             reconcile_on_startup: self.reconcile_on_startup,
             video_bitrate_kbps: self.bitrate_kbps,
             reconnect,
+            srt_latency_ms: srt.then_some(self.srt_latency_ms),
         };
         debug_assert!(config.is_valid());
         Ok((config, stream_key))
@@ -578,13 +664,18 @@ pub(crate) fn submission(
     let (config, stream_key) = draft
         .checked(&taken, &output_ids(state))
         .map_err(Blocked::Field)?;
-    if draft.original.as_ref() == Some(&config) && stream_key == SecretEdit::Keep {
+    let srt_passphrase = draft.passphrase_edit().map_err(Blocked::Field)?;
+    if draft.original.as_ref() == Some(&config)
+        && stream_key == SecretEdit::Keep
+        && srt_passphrase == SecretEdit::Keep
+    {
         return Err(Blocked::Unchanged);
     }
     Ok(StudioIntent::SetStreamTarget {
         target: draft.target,
         config: Box::new(config),
         stream_key,
+        srt_passphrase,
     })
 }
 
@@ -1089,6 +1180,9 @@ fn draw_form(ui: &mut Ui, l: Locale, state: &StudioUiState, draft: &mut TargetDr
         None
     };
     hint_slot(ui, field_hint(l, problem, TargetField::Key, key_caption));
+    if draft.protocol == StreamTargetProtocol::Srt {
+        draw_srt_fields(ui, l, draft, problem);
+    }
 
     section_heading(ui, l, Msg::StreamSectionVideo, None);
     sub_label(ui, l, Msg::MenuOutput);
@@ -1186,6 +1280,80 @@ fn draw_form(ui: &mut Ui, l: Locale, state: &StudioUiState, draft: &mut TargetDr
     }
 }
 
+/// An SRT destination's send latency, Encrypt toggle, and masked passphrase
+/// (Protocol 2.54).
+fn draw_srt_fields(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut TargetDraft,
+    problem: Option<FieldProblem<TargetField>>,
+) {
+    let invalid = |field: TargetField| {
+        problem.is_some_and(|problem| !problem.prompt && problem.field == field)
+    };
+    egui::Grid::new("studio-stream-target-srt")
+        .num_columns(2)
+        .spacing(Vec2::new(10.0, 4.0))
+        .show(ui, |ui| {
+            number_row(
+                ui,
+                l,
+                (Msg::NsLatency, Msg::NsLatencyHover),
+                &mut draft.srt_latency_ms,
+                MIN_STREAM_TARGET_SRT_LATENCY_MS..=MAX_STREAM_TARGET_SRT_LATENCY_MS,
+                invalid(TargetField::Latency),
+                None,
+            );
+        });
+    hint_slot(ui, field_hint(l, problem, TargetField::Latency, None));
+    ui.checkbox(&mut draft.encrypt, l.text(Msg::StreamFieldEncrypt))
+        .on_hover_text(l.text(Msg::StreamFieldEncryptHover));
+    sub_label(ui, l, Msg::NsPassphrase);
+    let encrypt = draft.encrypt;
+    let keep = draft.editing() && draft.stored_passphrase;
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - crate::theme::MIN_TARGET - ui.spacing().item_spacing.x)
+            .max(60.0);
+        let hint = if !draft.passphrase.is_empty() && !draft.reveal_passphrase {
+            KEY_MASK
+        } else if keep && encrypt {
+            l.text(Msg::StreamKeyKeepHint)
+        } else {
+            ""
+        };
+        let response = masked_secret_field(
+            ui,
+            &mut draft.passphrase,
+            (draft.reveal_passphrase, encrypt),
+            passphrase_field_id(),
+            MAX_STREAM_TARGET_PASSPHRASE_BYTES,
+            hint,
+            width,
+        )
+        .hint(
+            l.text(Msg::StreamFieldPassphraseHover),
+            Msg::ReasonStreamNotEncrypted.en(),
+        );
+        if invalid(TargetField::Passphrase) {
+            mark_invalid(ui, response.rect);
+        }
+        reveal_key(ui, l, &mut draft.reveal_passphrase);
+    });
+    let passphrase_caption = if !encrypt && draft.stored_passphrase {
+        Some(caption(l.text(Msg::StreamPassphraseClearCaption)))
+    } else if encrypt && keep && draft.passphrase.is_empty() {
+        Some(caption(l.text(Msg::StreamPassphraseKeepCaption)))
+    } else if encrypt && keep {
+        Some(caption(l.text(Msg::StreamPassphraseReplaceCaption)))
+    } else {
+        None
+    };
+    hint_slot(
+        ui,
+        field_hint(l, problem, TargetField::Passphrase, passphrase_caption),
+    );
+}
+
 /// The footer line for a blocked submission: a short pointer and the full
 /// reason on hover.
 fn footer_text(l: Locale, protocol: StreamTargetProtocol, blocked: Blocked) -> (String, String) {
@@ -1238,23 +1406,47 @@ fn key_field(
     } else {
         ""
     };
-    if draft.reveal_key {
+    masked_secret_field(
+        ui,
+        &mut draft.key,
+        (draft.reveal_key, !hls),
+        key_field_id(),
+        MAX_STREAM_TARGET_KEY_BYTES,
+        hint,
+        width,
+    )
+}
+
+/// One secret field (the stream key or SRT passphrase), `(revealed,
+/// enabled)`. Revealed, it edits `secret` directly. Masked, it edits an
+/// empty buffer each frame (typed or pasted text is appended, Backspace drops
+/// the last character) and shows `hint` instead of one dot per character.
+fn masked_secret_field(
+    ui: &mut Ui,
+    secret: &mut String,
+    (revealed, enabled): (bool, bool),
+    id: egui::Id,
+    limit: usize,
+    hint: &str,
+    width: f32,
+) -> egui::Response {
+    if revealed {
         return ui.add_enabled(
-            !hls,
-            egui::TextEdit::singleline(&mut draft.key)
-                .id(key_field_id())
+            enabled,
+            egui::TextEdit::singleline(secret)
+                .id(id)
                 .hint_text(hint)
-                .char_limit(MAX_STREAM_TARGET_KEY_BYTES)
+                .char_limit(limit)
                 .desired_width(width),
         );
     }
     let mut typed = String::new();
     let response = ui.add_enabled(
-        !hls,
+        enabled,
         egui::TextEdit::singleline(&mut typed)
-            .id(key_field_id())
+            .id(id)
             .password(true)
-            .hint_text(egui::RichText::new(hint).color(if draft.key.is_empty() {
+            .hint_text(egui::RichText::new(hint).color(if secret.is_empty() {
                 ui.visuals().weak_text_color()
             } else {
                 ui.visuals().text_color()
@@ -1263,17 +1455,22 @@ fn key_field(
     );
     if response.has_focus() {
         if !typed.is_empty() {
-            let room = MAX_STREAM_TARGET_KEY_BYTES.saturating_sub(draft.key.len());
+            let room = limit.saturating_sub(secret.len());
             let mut end = typed.len().min(room);
             while !typed.is_char_boundary(end) {
                 end -= 1;
             }
-            draft.key.push_str(&typed[..end]);
+            secret.push_str(&typed[..end]);
         } else if ui.input(|input| input.key_pressed(egui::Key::Backspace)) {
-            draft.key.pop();
+            secret.pop();
         }
     }
     response
+}
+
+/// The SRT passphrase field's widget id.
+fn passphrase_field_id() -> egui::Id {
+    egui::Id::new("studio-stream-target-passphrase")
 }
 
 /// The stream key field's widget id.
@@ -1286,7 +1483,10 @@ fn key_field_id() -> egui::Id {
 /// dialog (for any destination) could otherwise bring a typed key back with
 /// one undo, and send it for the wrong destination.
 fn forget_key_field(context: &egui::Context) {
-    context.data_mut(|data| data.remove::<egui::text_edit::TextEditState>(key_field_id()));
+    context.data_mut(|data| {
+        data.remove::<egui::text_edit::TextEditState>(key_field_id());
+        data.remove::<egui::text_edit::TextEditState>(passphrase_field_id());
+    });
 }
 
 impl StudioShell {
@@ -1549,6 +1749,7 @@ pub(crate) mod tests {
     use crate::StudioConnectionStatus;
 
     const SECRET: &str = "sk_live_TOPSECRET_42";
+    const PASSPHRASE: &str = "srt-PASSPHRASE-secret";
 
     fn target(value: u128) -> WireStreamTargetId {
         WireStreamTargetId::new(NonZeroU128::new(value).unwrap())
@@ -1580,9 +1781,12 @@ pub(crate) mod tests {
                 reconcile_on_startup: false,
                 video_bitrate_kbps: 6_000,
                 reconnect: StreamReconnect::DEFAULT,
+                srt_latency_ms: (protocol == StreamTargetProtocol::Srt)
+                    .then_some(DEFAULT_STREAM_TARGET_SRT_LATENCY_MS),
             },
             has_key: protocol.carries_key(),
             ladder_rungs: 0,
+            has_passphrase: false,
         }
     }
 
@@ -1793,6 +1997,7 @@ pub(crate) mod tests {
             target: sent,
             config,
             stream_key,
+            ..
         }) = submission(&draft, &state)
         else {
             panic!("an edited destination submits");
@@ -2154,6 +2359,11 @@ pub(crate) mod tests {
             shell.set_locale(Locale::new(language));
             let mut draft = TargetDraft::edit(&stored);
             draft.key = SECRET.into();
+            // An SRT edit shows the passphrase field too, typed over.
+            draft.set_protocol(StreamTargetProtocol::Srt);
+            draft.endpoint = "ingest.example:9000".into();
+            draft.encrypt = true;
+            draft.passphrase = PASSPHRASE.into();
             shell.stream_targets.dialog = Some(draft);
             let mut texts = Vec::new();
             for _ in 0..4 {
@@ -2180,11 +2390,82 @@ pub(crate) mod tests {
                 all.contains("rtmp://ingest.example/live"),
                 "{language:?}: the destination URL is shown"
             );
+            assert!(
+                !all.contains(PASSPHRASE),
+                "{language:?}: a passphrase was painted"
+            );
             assert!(!all.contains(SECRET), "{language:?}: a key was painted");
             assert!(
                 !all.contains("TOPSECRET"),
                 "{language:?}: a key was painted"
             );
         }
+    }
+
+    /// An SRT draft sends its latency; Encrypt with a typed passphrase sets
+    /// it, an edit keeps a stored one unless one is typed, and unticking
+    /// Encrypt clears it. The form refuses what the daemon would.
+    #[test]
+    fn srt_drafts_send_their_latency_and_a_secret_passphrase() {
+        let mut draft = new_draft(StreamTargetProtocol::Srt, "srt.example:9000", "stream-id");
+        let (config, _) = check(&draft).unwrap();
+        assert_eq!(
+            config.srt_latency_ms,
+            Some(DEFAULT_STREAM_TARGET_SRT_LATENCY_MS)
+        );
+        assert_eq!(draft.passphrase_edit(), Ok(SecretEdit::Keep));
+        draft.srt_latency_ms = 19;
+        assert_eq!(check(&draft).unwrap_err().field, TargetField::Latency);
+        draft.srt_latency_ms = 400;
+        draft.encrypt = true;
+        let missing = check(&draft).unwrap_err();
+        assert_eq!(
+            (missing.field, missing.prompt),
+            (TargetField::Passphrase, true)
+        );
+        for refused in ["short", "has a space inside", "***"] {
+            draft.passphrase = refused.into();
+            assert_eq!(check(&draft).unwrap_err().field, TargetField::Passphrase);
+        }
+        draft.passphrase = PASSPHRASE.into();
+        assert_eq!(check(&draft).unwrap().0.srt_latency_ms, Some(400));
+        assert_eq!(
+            draft.passphrase_edit(),
+            Ok(SecretEdit::Set(PASSPHRASE.into()))
+        );
+        assert!(!format!("{draft:?}").contains(PASSPHRASE));
+        // Moving off SRT drops the typed passphrase and the latency.
+        draft.set_protocol(StreamTargetProtocol::Rtmp);
+        draft.endpoint = "ingest.example/live".into();
+        assert_eq!(draft.passphrase, "");
+        assert_eq!(check(&draft).unwrap().0.srt_latency_ms, None);
+
+        // Editing an encrypted SRT destination.
+        let mut stored = entry(1, "Relay", StreamTargetProtocol::Srt);
+        stored.has_passphrase = true;
+        let state = fixture(core::slice::from_ref(&stored));
+        let mut draft = TargetDraft::edit(&stored);
+        assert!(draft.encrypt);
+        assert_eq!(submission(&draft, &state), Err(Blocked::Unchanged));
+        draft.passphrase = PASSPHRASE.into();
+        let Ok(StudioIntent::SetStreamTarget { srt_passphrase, .. }) = submission(&draft, &state)
+        else {
+            panic!("a new passphrase submits");
+        };
+        assert_eq!(srt_passphrase, SecretEdit::Set(PASSPHRASE.into()));
+        draft.passphrase.clear();
+        draft.encrypt = false;
+        let Ok(StudioIntent::SetStreamTarget {
+            srt_passphrase,
+            stream_key,
+            ..
+        }) = submission(&draft, &state)
+        else {
+            panic!("clearing the passphrase submits");
+        };
+        assert_eq!(
+            (srt_passphrase, stream_key),
+            (SecretEdit::Clear, SecretEdit::Keep)
+        );
     }
 }

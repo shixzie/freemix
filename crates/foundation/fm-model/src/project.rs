@@ -907,7 +907,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(50);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(51);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -3598,6 +3598,29 @@ impl Project {
             return Err(UpdateStreamTargetError::UnknownOutput(target.output()));
         }
         self.stream_targets[index] = target;
+        Ok(())
+    }
+
+    /// Moves an existing destination to `index` in the authored order (an
+    /// undone removal returns to its old place), clamped to the last place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateStreamTargetError::UnknownStreamTarget`] when the id
+    /// does not exist.
+    pub fn move_stream_target(
+        &mut self,
+        target: StreamTargetId,
+        index: usize,
+    ) -> Result<(), UpdateStreamTargetError> {
+        let from = self
+            .stream_targets
+            .iter()
+            .position(|candidate| candidate.id() == target)
+            .ok_or(UpdateStreamTargetError::UnknownStreamTarget(target))?;
+        let moved = self.stream_targets.remove(from);
+        let index = index.min(self.stream_targets.len());
+        self.stream_targets.insert(index, moved);
         Ok(())
     }
 

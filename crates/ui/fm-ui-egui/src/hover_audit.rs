@@ -828,9 +828,11 @@ fn stream_target_entries() -> Vec<fm_protocol::StreamTargetEntry> {
                 reconcile_on_startup: true,
                 video_bitrate_kbps: 6_000,
                 reconnect: StreamReconnect::DEFAULT,
+                srt_latency_ms: None,
             },
             has_key: false,
             ladder_rungs: 3,
+            has_passphrase: false,
         },
         StreamTargetEntry {
             target: WireStreamTargetId::new(NonZeroU128::new(2).unwrap()),
@@ -846,9 +848,11 @@ fn stream_target_entries() -> Vec<fm_protocol::StreamTargetEntry> {
                     max_attempts: None,
                     ..StreamReconnect::DEFAULT
                 },
+                srt_latency_ms: None,
             },
             has_key: true,
             ladder_rungs: 0,
+            has_passphrase: false,
         },
     ]
 }
@@ -1607,9 +1611,30 @@ fn scenes(language: Language) -> Vec<Scene> {
     // and the key shown), editing the stopped keyed destination, editing the
     // running HLS one (Save refused, the key and backup disabled), and the
     // Remove confirmation.
-    let destinations: [(&str, Configure); 5] = [
+    let destinations: [(&str, Configure); 7] = [
         ("stream-add", &|shell| {
             shell.stream_targets.open_add(locale, &operator);
+        }),
+        // Protocol 2.54: an encrypted SRT caller with its latency and a
+        // masked passphrase, then one with Encrypt unticked (the passphrase
+        // field disabled with its reason).
+        ("stream-add-srt", &|shell| {
+            shell.stream_targets.open_add(locale, &operator);
+            if let Some(draft) = shell.stream_targets.dialog.as_mut() {
+                draft.set_protocol(fm_protocol::StreamTargetProtocol::Srt);
+                draft.endpoint = "srt.example.com:9000".into();
+                draft.key = "typed-key".into();
+                draft.encrypt = true;
+                draft.passphrase = "typed-passphrase".into();
+            }
+        }),
+        ("stream-add-srt-clear", &|shell| {
+            shell.stream_targets.open_add(locale, &operator);
+            if let Some(draft) = shell.stream_targets.dialog.as_mut() {
+                draft.set_protocol(fm_protocol::StreamTargetProtocol::Srt);
+                draft.endpoint = "srt.example.com:9000".into();
+                draft.srt_latency_ms = 10;
+            }
         }),
         ("stream-add-invalid", &|shell| {
             shell.stream_targets.open_add(locale, &operator);

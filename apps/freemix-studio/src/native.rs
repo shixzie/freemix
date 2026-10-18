@@ -1864,6 +1864,7 @@ fn resolve_set_stream_target(
     target: WireStreamTargetId,
     config: Box<fm_protocol::StreamTargetConfig>,
     stream_key: fm_protocol::SecretEdit,
+    srt_passphrase: fm_protocol::SecretEdit,
 ) -> Result<CommandPayload, String> {
     let view = view.ok_or_else(|| {
         "Cannot configure a stream target before project state is synchronized".to_owned()
@@ -1879,6 +1880,8 @@ fn resolve_set_stream_target(
         target,
         config,
         stream_key,
+        srt_passphrase,
+        position: None,
     })
 }
 
@@ -2584,7 +2587,10 @@ fn intent_payload(
             target,
             config,
             stream_key,
-        } => return resolve_set_stream_target(view, target, config, stream_key),
+            srt_passphrase,
+        } => {
+            return resolve_set_stream_target(view, target, config, stream_key, srt_passphrase);
+        }
         StudioIntent::RemoveStreamTarget { target } => {
             return resolve_remove_stream_target(view, target);
         }
@@ -6181,6 +6187,7 @@ mod tests {
             reconcile_on_startup: false,
             video_bitrate_kbps: 6_000,
             reconnect: fm_protocol::StreamReconnect::DEFAULT,
+            srt_latency_ms: None,
         };
         assert_eq!(
             intent_payload(
@@ -6188,6 +6195,7 @@ mod tests {
                     target: missing,
                     config: Box::new(config.clone()),
                     stream_key: fm_protocol::SecretEdit::Set("k".to_owned()),
+                    srt_passphrase: fm_protocol::SecretEdit::Keep,
                 },
                 Some(&view)
             ),
@@ -6204,6 +6212,7 @@ mod tests {
                     target: missing,
                     config: Box::new(config.clone()),
                     stream_key: fm_protocol::SecretEdit::Keep,
+                    srt_passphrase: fm_protocol::SecretEdit::Keep,
                 },
                 Some(&with_output)
             ),
@@ -6211,6 +6220,8 @@ mod tests {
                 target: missing,
                 config: Box::new(config),
                 stream_key: fm_protocol::SecretEdit::Keep,
+                srt_passphrase: fm_protocol::SecretEdit::Keep,
+                position: None,
             })
         );
     }

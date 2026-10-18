@@ -7,7 +7,7 @@ use fm_model::{
     PlaylistEntry, PlaylistLoop, PlaylistRunState, PlaylistTransition, PlaylistTransitionKind,
     Project, ProjectGrading, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask,
     RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
-    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
+    SolidColor, SourceRef, SrtPassphrase, StartupPolicy, StingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
     StreamLadderRung, StreamProtocol, StreamReconnectPolicy, StreamTarget, StreamTargetId,
     TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleInput,
@@ -825,6 +825,8 @@ fn parse_output(value: Value) -> Result<Output, DecodeError> {
 /// either pairing reversed. `ladder` is `null` for a single-rendition
 /// destination and an array of rungs for an HLS ladder; the
 /// [builder](StreamTarget::with_ladder) refuses one on any other protocol.
+/// `srt_latency_ms` is a number exactly for SRT and `srt_passphrase` an
+/// optional SRT-only secret (schema 51).
 fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let mut object = Object::new(value, "stream target")?;
     let id = StreamTargetId::new(object.nonzero_u128("id")?);
@@ -862,7 +864,28 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let video_bitrate_kbps = object.u32("video_bitrate_kbps")?;
     let ladder = parse_optional(object.take("ladder")?, parse_stream_ladder)?;
     let reconnect = parse_stream_reconnect(object.take("reconnect")?)?;
+    let srt_latency_ms = parse_optional(object.take("srt_latency_ms")?, |value| {
+        let Value::Number(value) = value else {
+            return Err(syntax(
+                "field `srt_latency_ms` must be an unsigned integer or null".to_owned(),
+            ));
+        };
+        u32::try_from(value).map_err(|_| syntax("field `srt_latency_ms` exceeds u32".to_owned()))
+    })?;
+    let srt_passphrase = object
+        .optional_string("srt_passphrase")?
+        .map(|secret| {
+            SrtPassphrase::parse(&secret)
+                .map_err(|error| syntax(format!("field `srt_passphrase` is invalid: {error}")))
+        })
+        .transpose()?;
     object.finish()?;
+    // SRT carries its latency exactly, and nothing else carries one.
+    if srt_latency_ms.is_some() != (protocol == StreamProtocol::Srt) {
+        return Err(syntax(
+            "field `srt_latency_ms` must be a number for SRT and null otherwise".to_owned(),
+        ));
+    }
     let target = StreamTarget::new(id, name, protocol, endpoint, key, output)
         .and_then(|target| target.with_backup_endpoint(backup_endpoint))
         .map_err(|error| syntax(format!("stream target is invalid: {error}")))?;
@@ -871,6 +894,11 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
         .map_err(|error| syntax(format!("stream target video bitrate is invalid: {error}")))?;
     let target = target
         .with_ladder(ladder)
+        .and_then(|target| match srt_latency_ms {
+            Some(latency) => target.with_srt_latency_ms(latency),
+            None => Ok(target),
+        })
+        .and_then(|target| target.with_srt_passphrase(srt_passphrase))
         .map_err(|error| syntax(format!("stream target is invalid: {error}")))?;
     Ok(target
         .with_startup(startup)

@@ -3879,7 +3879,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 50,
+  "schema_version": 51,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4086,7 +4086,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 50", "\"schema_version\": 47"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 51", "\"schema_version\": 47"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4100,7 +4100,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 47 is unsupported; expected 50",
+        "title template schema 47 is unsupported; expected 51",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4118,7 +4118,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 50,
+  "schema_version": 51,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4381,7 +4381,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 50,
+  "schema_version": 51,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4611,7 +4611,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 50,
+  "schema_version": 51,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4708,7 +4708,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 50,
+  "schema_version": 51,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5325,6 +5325,9 @@ fn assert_stream_authoring_refusals_are_atomic(context: &ContractContext) {
     }
 }
 
+/// A local SRT destination's passphrase: stored in the bundle, never printed.
+const CLI_SRT_PASSPHRASE: &str = "cli-srt-passphrase-01";
+
 #[test]
 fn local_stream_destinations_are_authored_offline_and_never_print_the_stream_key() {
     const KEY: &str = STREAM_KEY;
@@ -5463,9 +5466,68 @@ fn author_srt_stream_destination(context: &ContractContext) {
             "url=\"srt://relay.example.test:9710?streamid=****\" ",
             "backup_url=\"none\" ",
             "output=30 output_name=\"Primary\" startup=stopped ",
-            "video_bitrate_kbps=4500 ladder=none reconnect=250:2000:40 running=false"
+            "video_bitrate_kbps=4500 ladder=none reconnect=250:2000:40 ",
+            "srt_latency_ms=120 passphrase=no running=false"
         )
     );
+
+    // Protocol 2.54 / schema 51: an SRT caller's latency and passphrase. The
+    // passphrase is stored in the bundle like the key and never printed.
+    let srt_update = |options: &[&str]| {
+        let mut arguments = vec![
+            "stream-update",
+            context.project_path(),
+            "41",
+            "30",
+            "srt://relay.example.test:9710",
+            STREAM_KEY,
+            "SRT relay",
+        ];
+        arguments.extend_from_slice(options);
+        invoke_bounded(&arguments)
+    };
+    assert_success(&srt_update(&[
+        "--srt-latency-ms",
+        "400",
+        "--srt-passphrase",
+        CLI_SRT_PASSPHRASE,
+    ]));
+    let srt_manifest = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(srt_manifest.contains("\"srt_latency_ms\": 400"));
+    assert!(srt_manifest.contains(&format!("\"srt_passphrase\": \"{CLI_SRT_PASSPHRASE}\"")));
+    let streams = stdout(&invoke_bounded(&["streams", context.project_path()]));
+    assert!(
+        streams.ends_with("srt_latency_ms=400 passphrase=yes running=false"),
+        "{streams}"
+    );
+    assert!(!streams.contains(CLI_SRT_PASSPHRASE));
+    // Out of range and too short are refused without echoing the secret.
+    for refused in [
+        ["--srt-latency-ms", "8001"],
+        ["--srt-passphrase", "tiny-pass"],
+    ] {
+        let output = srt_update(&refused);
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("tiny-pass"));
+    }
+    let output = invoke_bounded(&[
+        "stream-update",
+        context.project_path(),
+        "41",
+        "30",
+        "rtmp://relay.example.test/live",
+        STREAM_KEY,
+        "SRT relay",
+        "--srt-passphrase",
+        CLI_SRT_PASSPHRASE,
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("only srt:// stream destinations support --srt-passphrase"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(CLI_SRT_PASSPHRASE));
     assert_success(&invoke_bounded(&[
         "stream-remove",
         context.project_path(),
@@ -5783,13 +5845,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        50
+        51
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 50);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 51);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5802,7 +5864,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 50);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 51);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5878,7 +5940,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        50
+        51
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5886,7 +5948,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 50);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 51);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5896,7 +5958,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 50);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 51);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5904,7 +5966,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 50);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 51);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -13533,6 +13595,7 @@ fn remote_stream_config() -> fm_protocol::StreamTargetConfig {
             max_delay_ms: 10_000,
             max_attempts: None,
         },
+        srt_latency_ms: None,
     }
 }
 
@@ -13545,6 +13608,7 @@ fn remote_stream_entry(
         config,
         has_key,
         ladder_rungs: 0,
+        has_passphrase: false,
     }
 }
 
@@ -13574,6 +13638,9 @@ fn start_stream_target_edit(
     FakeRemoteServer { address, worker }
 }
 
+/// A remote SRT destination's passphrase: sent once, never printed.
+const REMOTE_SRT_PASSPHRASE: &str = "remote-srt-passphrase";
+
 /// OR-006, Protocol 2.52: `remote-stream-set` sends the exact configuration
 /// and key edit (a new destination from its options; an edit keeping every
 /// field it does not name from the daemon's snapshot), and
@@ -13592,6 +13659,8 @@ fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
                 target: remote_stream_target(40),
                 config: Box::new(config.clone()),
                 stream_key: fm_protocol::SecretEdit::Set(REMOTE_STREAM_KEY.into()),
+                srt_passphrase: fm_protocol::SecretEdit::Keep,
+                position: None,
             },
             event: EventPayload::StreamTargetChanged {
                 target: remote_stream_target(40),
@@ -13650,6 +13719,8 @@ fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
                 target: remote_stream_target(40),
                 config: Box::new(edited.clone()),
                 stream_key: fm_protocol::SecretEdit::Keep,
+                srt_passphrase: fm_protocol::SecretEdit::Keep,
+                position: None,
             },
             event: EventPayload::StreamTargetChanged {
                 target: remote_stream_target(40),
@@ -13700,10 +13771,12 @@ fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
                 target: remote_stream_target(40),
                 config: Box::new(hls.clone()),
                 stream_key: fm_protocol::SecretEdit::Clear,
+                srt_passphrase: fm_protocol::SecretEdit::Keep,
+                position: None,
             },
             event: EventPayload::StreamTargetChanged {
                 target: remote_stream_target(40),
-                entry: Some(Box::new(remote_stream_entry(hls, false))),
+                entry: Some(Box::new(remote_stream_entry(hls.clone(), false))),
                 streams: remote_stream_roster(false),
             },
             domain: "project",
@@ -13725,6 +13798,62 @@ fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
     ]);
     assert_success(&output);
     assert!(stdout(&output).contains("key=no"), "{}", stdout(&output));
+    server.finish();
+
+    // Protocol 2.54: moving to an encrypted SRT caller sends its latency and
+    // passphrase; the listing says passphrase=yes and never prints either
+    // secret.
+    let mut srt = hls.clone();
+    srt.protocol = fm_protocol::StreamTargetProtocol::Srt;
+    srt.endpoint = "relay.example.test:9000".into();
+    srt.srt_latency_ms = Some(300);
+    let mut srt_entry = remote_stream_entry(srt.clone(), true);
+    srt_entry.has_passphrase = true;
+    let server = start_stream_target_edit(
+        RemoteEdit {
+            role: Role::Graphics,
+            key: "remote-stream-srt",
+            payload: CommandPayload::SetStreamTarget {
+                target: remote_stream_target(40),
+                config: Box::new(srt),
+                stream_key: fm_protocol::SecretEdit::Set(REMOTE_STREAM_KEY.into()),
+                srt_passphrase: fm_protocol::SecretEdit::Set(REMOTE_SRT_PASSPHRASE.into()),
+                position: None,
+            },
+            event: EventPayload::StreamTargetChanged {
+                target: remote_stream_target(40),
+                entry: Some(Box::new(srt_entry)),
+                streams: remote_stream_roster(false),
+            },
+            domain: "project",
+        },
+        vec![remote_stream_entry(hls.clone(), false)],
+        remote_stream_roster(false),
+    );
+    let output = invoke_bounded(&[
+        "remote-stream-set",
+        &server.address(),
+        "40",
+        "--endpoint",
+        "srt://relay.example.test:9000",
+        "--stream-key",
+        REMOTE_STREAM_KEY,
+        "--srt-latency-ms",
+        "300",
+        "--srt-passphrase",
+        REMOTE_SRT_PASSPHRASE,
+        "--key",
+        "remote-stream-srt",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert_no_secrets(&output, &[REMOTE_STREAM_KEY, REMOTE_SRT_PASSPHRASE]);
+    assert!(
+        stdout(&output).contains("ladder_rungs=0, srt_latency_ms=300, passphrase=yes, desired="),
+        "{}",
+        stdout(&output)
+    );
     server.finish();
 
     let server = start_stream_target_edit(
@@ -13896,6 +14025,7 @@ fn remote_stream_retry_start_all_and_stop_all_send_exact_payloads() {
 /// its key and, for a running destination, waits for and prints the latest
 /// status sample.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn remote_streams_lists_destinations_with_their_latest_status_sample() {
     let server = FakeRemoteServer::start_test_peer(|stream| {
         SNAPSHOT_STREAM_TARGETS.with(|cell| {
@@ -13912,9 +14042,11 @@ fn remote_streams_lists_destinations_with_their_latest_status_sample() {
                         reconcile_on_startup: true,
                         video_bitrate_kbps: 2_500,
                         reconnect: fm_protocol::StreamReconnect::DEFAULT,
+                        srt_latency_ms: None,
                     },
                     has_key: false,
                     ladder_rungs: 2,
+                    has_passphrase: false,
                 },
             ];
         });

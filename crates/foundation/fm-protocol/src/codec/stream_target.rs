@@ -1,23 +1,26 @@
-//! Stream destination codec (Protocol 2.52, OR-006).
+//! Stream destination codec (Protocols 2.52 and 2.54, OR-006).
 //!
 //! * A configuration is the fields `name`, `stream_protocol` (`rtmp`, `rtmps`,
 //!   `srt`, `hls`), `endpoint`, optional `backup_endpoint`, `output`,
-//!   `startup` (`stopped` or `reconcile`), `video_bitrate_kbps`, and
-//!   `reconnect` (`<initial ms>:<max ms>:<attempts or none>`).
-//! * `stream_target_set` carries `target`, a configuration, and an optional
-//!   `stream_key`: absent keeps the stored key, empty clears it, and any
-//!   other value replaces it. `***` is refused so a redacted echo can never
-//!   be stored as a key.
+//!   `startup` (`stopped` or `reconcile`), `video_bitrate_kbps`,
+//!   `reconnect` (`<initial ms>:<max ms>:<attempts or none>`), and
+//!   `srt_latency_ms` (2.54), present exactly for SRT.
+//! * `stream_target_set` carries `target`, a configuration, an optional
+//!   `stream_key` and (2.54) `srt_passphrase`: absent keeps the stored
+//!   secret, empty clears it, and any other value replaces it. `***` is
+//!   refused so a redacted echo can never be stored. An optional `position`
+//!   (2.54, `0..5`) places the destination at that index of the authored
+//!   list.
 //! * `stream_targets` (snapshot) is a comma-separated list of
-//!   `<target>~<name>~<protocol>~<endpoint>~<backup>~<output>~<startup>~<kbps>~<reconnect>~<has_key 0|1>~<ladder rungs>`
+//!   `<target>~<name>~<protocol>~<endpoint>~<backup>~<output>~<startup>~<kbps>~<reconnect>~<has_key 0|1>~<ladder rungs>~<srt latency ms or empty>~<has_passphrase 0|1>`
 //!   in authored order, with text percent-escaped and an empty backup for
 //!   none.
 //! * `stream_target_changed` carries `target`, `configured` (`0|1`), the
-//!   configuration plus `has_key` and `ladder_rungs` when configured, and the
-//!   resulting `streams` roster.
+//!   configuration plus `has_key`, `ladder_rungs`, and `has_passphrase`
+//!   when configured, and the resulting `streams` roster.
 //!
-//! No field ever carries a stored stream key, and a refused key is reported
-//! as `***`.
+//! No field ever carries a stored stream key or passphrase, and a refused
+//! one is reported as `***`.
 
 use core::num::NonZeroU128;
 
@@ -25,7 +28,7 @@ use crate::display_output::invalid;
 use crate::{
     CodecError, MAX_STREAM_TARGET_LADDER_RUNGS, MAX_STREAM_TARGETS, SecretEdit, StreamReconnect,
     StreamTargetConfig, StreamTargetEntry, StreamTargetProtocol, WireOutputId, WireStreamTargetId,
-    stream_key_is_valid,
+    srt_passphrase_is_valid, stream_key_is_valid,
 };
 
 use super::media::{FieldSource, Push};
@@ -145,7 +148,11 @@ pub(super) fn encode_config(
         startup_token(config.reconcile_on_startup).to_owned(),
     )?;
     push("video_bitrate_kbps", config.video_bitrate_kbps.to_string())?;
-    push("reconnect", encode_reconnect(config.reconnect)?)
+    push("reconnect", encode_reconnect(config.reconnect)?)?;
+    if let Some(latency) = config.srt_latency_ms {
+        push("srt_latency_ms", latency.to_string())?;
+    }
+    Ok(())
 }
 
 /// Decodes a configuration's fields.
@@ -166,9 +173,63 @@ pub(super) fn decode_config(
             &fields.required("video_bitrate_kbps")?,
         )?,
         reconnect: parse_reconnect(&fields.required("reconnect")?)?,
+        srt_latency_ms: fields
+            .optional("srt_latency_ms")
+            .map(|value| parse_u32("srt_latency_ms", &value))
+            .transpose()?,
     };
     check_config(&config)?;
     Ok(config)
+}
+
+/// Encodes one optional secret field (`stream_key` or `srt_passphrase`).
+fn encode_secret(
+    field: &'static str,
+    edit: &SecretEdit,
+    valid: fn(&str) -> bool,
+    push: &mut Push<'_>,
+) -> Result<(), CodecError> {
+    match edit {
+        SecretEdit::Keep => Ok(()),
+        SecretEdit::Clear => push(field, String::new()),
+        SecretEdit::Set(secret) if secret == REDACTED_KEY || !valid(secret) => {
+            Err(invalid(field, REDACTED_KEY))
+        }
+        SecretEdit::Set(secret) => push(field, secret.clone()),
+    }
+}
+
+/// Decodes one optional secret field (`stream_key` or `srt_passphrase`).
+fn decode_secret(
+    field: &'static str,
+    fields: &mut dyn FieldSource,
+    valid: fn(&str) -> bool,
+) -> Result<SecretEdit, CodecError> {
+    Ok(match fields.optional(field) {
+        None => SecretEdit::Keep,
+        Some(secret) if secret.is_empty() => SecretEdit::Clear,
+        Some(secret) if secret == REDACTED_KEY || !valid(&secret) => {
+            return Err(invalid(field, REDACTED_KEY));
+        }
+        Some(secret) => SecretEdit::Set(secret),
+    })
+}
+
+/// One decoded `stream_target_set`.
+pub(super) struct DecodedSet {
+    pub target: WireStreamTargetId,
+    pub config: StreamTargetConfig,
+    pub stream_key: SecretEdit,
+    pub srt_passphrase: SecretEdit,
+    pub position: Option<u8>,
+}
+
+fn check_position(position: u8) -> Result<u8, CodecError> {
+    if usize::from(position) < MAX_STREAM_TARGETS {
+        Ok(position)
+    } else {
+        Err(invalid("position", position.to_string()))
+    }
 }
 
 /// Encodes `stream_target_set`'s fields after `payload`.
@@ -176,35 +237,48 @@ pub(super) fn encode_set(
     target: WireStreamTargetId,
     config: &StreamTargetConfig,
     stream_key: &SecretEdit,
+    srt_passphrase: &SecretEdit,
+    position: Option<u8>,
     push: &mut Push<'_>,
 ) -> Result<(), CodecError> {
     push("target", target.to_string())?;
     encode_config(config, push)?;
-    match stream_key {
-        SecretEdit::Keep => Ok(()),
-        SecretEdit::Clear => push("stream_key", String::new()),
-        SecretEdit::Set(key) if key == REDACTED_KEY || !stream_key_is_valid(key) => {
-            Err(invalid("stream_key", REDACTED_KEY))
-        }
-        SecretEdit::Set(key) => push("stream_key", key.clone()),
+    encode_secret("stream_key", stream_key, stream_key_is_valid, push)?;
+    encode_secret(
+        "srt_passphrase",
+        srt_passphrase,
+        srt_passphrase_is_valid,
+        push,
+    )?;
+    if let Some(position) = position {
+        push("position", check_position(position)?.to_string())?;
     }
+    Ok(())
 }
 
 /// Decodes `stream_target_set`'s fields.
-pub(super) fn decode_set(
-    fields: &mut dyn FieldSource,
-) -> Result<(WireStreamTargetId, StreamTargetConfig, SecretEdit), CodecError> {
+pub(super) fn decode_set(fields: &mut dyn FieldSource) -> Result<DecodedSet, CodecError> {
     let target = decode_target(fields)?;
     let config = decode_config(fields)?;
-    let stream_key = match fields.optional("stream_key") {
-        None => SecretEdit::Keep,
-        Some(key) if key.is_empty() => SecretEdit::Clear,
-        Some(key) if key == REDACTED_KEY || !stream_key_is_valid(&key) => {
-            return Err(invalid("stream_key", REDACTED_KEY));
-        }
-        Some(key) => SecretEdit::Set(key),
-    };
-    Ok((target, config, stream_key))
+    let stream_key = decode_secret("stream_key", fields, stream_key_is_valid)?;
+    let srt_passphrase = decode_secret("srt_passphrase", fields, srt_passphrase_is_valid)?;
+    let position = fields
+        .optional("position")
+        .map(|value| {
+            parse_u32("position", &value)
+                .and_then(|position| {
+                    u8::try_from(position).map_err(|_| invalid("position", value.clone()))
+                })
+                .and_then(check_position)
+        })
+        .transpose()?;
+    Ok(DecodedSet {
+        target,
+        config,
+        stream_key,
+        srt_passphrase,
+        position,
+    })
 }
 
 /// Decodes a `target` field.
@@ -223,6 +297,9 @@ fn check_entry(entry: &StreamTargetEntry) -> Result<(), CodecError> {
         || (entry.ladder_rungs > 0 && entry.config.protocol != StreamTargetProtocol::Hls)
     {
         return Err(invalid("ladder_rungs", entry.ladder_rungs.to_string()));
+    }
+    if entry.has_passphrase && entry.config.protocol != StreamTargetProtocol::Srt {
+        return Err(invalid("has_passphrase", "1"));
     }
     Ok(())
 }
@@ -244,7 +321,8 @@ pub(super) fn encode_changed(
     check_entry(entry)?;
     encode_config(&entry.config, push)?;
     push("has_key", u8::from(entry.has_key).to_string())?;
-    push("ladder_rungs", entry.ladder_rungs.to_string())
+    push("ladder_rungs", entry.ladder_rungs.to_string())?;
+    push("has_passphrase", u8::from(entry.has_passphrase).to_string())
 }
 
 /// Decodes `stream_target_changed`'s target and entry fields.
@@ -265,6 +343,7 @@ pub(super) fn decode_changed(
             &fields.required("ladder_rungs")?,
         )?)
         .map_err(|_| invalid("ladder_rungs", "out of range"))?,
+        has_passphrase: parse_flag("has_passphrase", &fields.required("has_passphrase")?)?,
     };
     check_entry(&entry)?;
     Ok((target, Some(entry)))
@@ -285,7 +364,7 @@ pub(super) fn encode_entries(entries: &[StreamTargetEntry]) -> Result<String, Co
         check_entry(entry)?;
         let config = &entry.config;
         items.push(format!(
-            "{}~{}~{}~{}~{}~{}~{}~{}~{}~{}~{}",
+            "{}~{}~{}~{}~{}~{}~{}~{}~{}~{}~{}~{}~{}",
             entry.target,
             escape_bounded(&config.name)?,
             config.protocol.token(),
@@ -300,6 +379,10 @@ pub(super) fn encode_entries(entries: &[StreamTargetEntry]) -> Result<String, Co
             encode_reconnect(config.reconnect)?,
             u8::from(entry.has_key),
             entry.ladder_rungs,
+            config
+                .srt_latency_ms
+                .map_or_else(String::new, |latency| latency.to_string()),
+            u8::from(entry.has_passphrase),
         ));
     }
     Ok(items.join(","))
@@ -330,6 +413,8 @@ pub(super) fn decode_entries(value: &str) -> Result<Vec<StreamTargetEntry>, Code
             reconnect,
             has_key,
             ladder,
+            srt_latency,
+            has_passphrase,
         ] = parts.as_slice()
         else {
             return Err(error());
@@ -349,10 +434,16 @@ pub(super) fn decode_entries(value: &str) -> Result<Vec<StreamTargetEntry>, Code
                 reconcile_on_startup: parse_startup(startup)?,
                 video_bitrate_kbps: parse_u32("stream_targets", kbps)?,
                 reconnect: parse_reconnect(reconnect)?,
+                srt_latency_ms: if srt_latency.is_empty() {
+                    None
+                } else {
+                    Some(parse_u32("stream_targets", srt_latency)?)
+                },
             },
             has_key: parse_flag("stream_targets", has_key)?,
             ladder_rungs: u8::try_from(parse_u32("stream_targets", ladder)?)
                 .map_err(|_| error())?,
+            has_passphrase: parse_flag("stream_targets", has_passphrase)?,
         };
         if entries
             .iter()

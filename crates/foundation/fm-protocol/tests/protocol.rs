@@ -1015,6 +1015,66 @@ fn snapshot_streams_round_trip_and_reject_duplicates_and_bounds() {
     ));
 }
 
+/// The snapshot's configured destinations (2.54): an SRT entry carries its
+/// latency and whether a passphrase is stored; other protocols carry an
+/// empty latency, and the passphrase never travels.
+#[test]
+fn snapshot_stream_targets_carry_srt_latency_and_passphrase_presence() {
+    let mut message = snapshot(input_statuses(&[(1, "camera"), (2, "slides")]));
+    let WireMessage::Snapshot(snapshot_message) = &mut message else {
+        unreachable!();
+    };
+    let config = |name: &str, protocol, endpoint: &str, latency| fm_protocol::StreamTargetConfig {
+        name: name.into(),
+        protocol,
+        endpoint: endpoint.into(),
+        backup_endpoint: None,
+        output: fm_protocol::WireOutputId::new(NonZeroU128::new(1).unwrap()),
+        reconcile_on_startup: false,
+        video_bitrate_kbps: 4_500,
+        reconnect: fm_protocol::StreamReconnect::DEFAULT,
+        srt_latency_ms: latency,
+    };
+    snapshot_message.stream_targets = vec![
+        fm_protocol::StreamTargetEntry {
+            target: stream_target(1),
+            config: config(
+                "SRT",
+                fm_protocol::StreamTargetProtocol::Srt,
+                "relay.example:9000",
+                Some(300),
+            ),
+            has_key: true,
+            ladder_rungs: 0,
+            has_passphrase: true,
+        },
+        fm_protocol::StreamTargetEntry {
+            target: stream_target(2),
+            config: config(
+                "RTMP",
+                fm_protocol::StreamTargetProtocol::Rtmp,
+                "ingest.example/live",
+                None,
+            ),
+            has_key: true,
+            ladder_rungs: 0,
+            has_passphrase: false,
+        },
+    ];
+    let encoded = encode_line(&message).unwrap();
+    assert!(encoded.contains("%7E0%7E300%7E1%2C2%7E"), "{encoded}");
+    assert!(encoded.ends_with("%7E1%7E0%7E%7E0\n"), "{encoded}");
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+    // SRT without a latency, or a passphrase off SRT, is refused.
+    for (from, to) in [
+        ("%7E0%7E300%7E1%2C", "%7E0%7E%7E1%2C"),
+        ("%7E1%7E0%7E%7E0\n", "%7E1%7E0%7E%7E1\n"),
+    ] {
+        assert!(encoded.contains(from), "{from}");
+        assert!(decode_line(&encoded.replacen(from, to, 1)).is_err());
+    }
+}
+
 #[test]
 fn snapshot_stream_text_bounds_are_enforced_in_both_directions() {
     let mut message = snapshot(input_statuses(&[(1, "camera"), (2, "slides")]));
@@ -2714,7 +2774,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.53\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.54\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2723,7 +2783,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.53\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -3048,7 +3108,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.53\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.54\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3058,7 +3118,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.53\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3240,7 +3300,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.53\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3288,7 +3348,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 53));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 54));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3342,7 +3402,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.53\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.54\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4125,7 +4185,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.53\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4165,7 +4225,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 53));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 54));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4237,7 +4297,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.53\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.54\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4536,7 +4596,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 53));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 54));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

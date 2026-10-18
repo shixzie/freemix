@@ -43,6 +43,8 @@ fn spec(name: &str) -> EngineStreamTargetSpec {
         reconnect_max_delay_ms: 4_000,
         reconnect_max_attempts: Some(6),
         ladder: None,
+        srt_latency_ms: None,
+        srt_passphrase: None,
     }
 }
 
@@ -50,7 +52,46 @@ fn set(target_id: u128, spec: EngineStreamTargetSpec) -> EngineCommand {
     EngineCommand::SetStreamTarget {
         target: target(target_id),
         spec: Some(Box::new(spec)),
+        position: None,
     }
+}
+
+fn remove(target_id: u128) -> EngineCommand {
+    EngineCommand::SetStreamTarget {
+        target: target(target_id),
+        spec: None,
+        position: None,
+    }
+}
+
+fn undo() -> EngineCommand {
+    EngineCommand::Undo {
+        expected_edit: None,
+    }
+}
+
+fn redo() -> EngineCommand {
+    EngineCommand::Redo {
+        expected_edit: None,
+    }
+}
+
+/// The authored destination order and the desired roster order.
+fn order(engine: &Engine) -> (Vec<u128>, Vec<u128>) {
+    (
+        engine
+            .show()
+            .stream_targets()
+            .iter()
+            .map(|target| target.id().get().get())
+            .collect(),
+        engine
+            .show()
+            .streams()
+            .iter()
+            .map(|stream| stream.id().get().get())
+            .collect(),
+    )
 }
 
 fn engine() -> Engine {
@@ -250,14 +291,7 @@ fn edits_and_removal_are_refused_while_running_and_validated() {
         refusal(&edit),
         (RejectionCode::Conflict, Some("stream_running".to_owned()))
     );
-    let remove = submit(
-        &mut engine,
-        "remove-running",
-        EngineCommand::SetStreamTarget {
-            target: target(1),
-            spec: None,
-        },
-    );
+    let remove = submit(&mut engine, "remove-running", remove(1));
     assert_eq!(
         refusal(&remove),
         (RejectionCode::Conflict, Some("stream_running".to_owned()))
@@ -326,14 +360,7 @@ fn destination_edits_are_undoable_and_events_carry_the_configuration() {
         "Dest 2"
     );
 
-    accept(
-        &mut engine,
-        "remove-5",
-        EngineCommand::SetStreamTarget {
-            target: target(5),
-            spec: None,
-        },
-    );
+    accept(&mut engine, "remove-5", remove(5));
     assert_eq!(engine.show().stream_targets().len(), 4);
     assert_eq!(engine.show().stream_running(target(5)), None);
     accept(
@@ -353,5 +380,131 @@ fn destination_edits_are_undoable_and_events_carry_the_configuration() {
             .unwrap()
             .expose_secret(),
         KEY
+    );
+}
+
+/// Undoing a removal puts the destination back where it was, in both the
+/// authored list and the desired roster, and redo and undo again agree.
+#[test]
+fn undoing_a_removal_restores_the_destination_at_its_old_place() {
+    let mut engine = engine();
+    for id in 1..=3 {
+        accept(
+            &mut engine,
+            &format!("add-{id}"),
+            set(id, spec(&format!("Dest {id}"))),
+        );
+    }
+    assert_eq!(order(&engine), (vec![1, 2, 3], vec![1, 2, 3]));
+    accept(&mut engine, "remove-2", remove(2));
+    assert_eq!(order(&engine), (vec![1, 3], vec![1, 3]));
+    accept(&mut engine, "undo-remove", undo());
+    assert_eq!(order(&engine), (vec![1, 2, 3], vec![1, 2, 3]));
+    accept(&mut engine, "redo-remove", redo());
+    assert_eq!(order(&engine), (vec![1, 3], vec![1, 3]));
+    accept(&mut engine, "undo-again", undo());
+    assert_eq!(order(&engine), (vec![1, 2, 3], vec![1, 2, 3]));
+
+    // Removing the first one comes back first, and an edit keeps its place.
+    accept(&mut engine, "remove-1", remove(1));
+    accept(&mut engine, "undo-first", undo());
+    assert_eq!(order(&engine), (vec![1, 2, 3], vec![1, 2, 3]));
+    accept(&mut engine, "edit-2", set(2, spec("Dest 2 renamed")));
+    assert_eq!(order(&engine).0, vec![1, 2, 3]);
+    accept(&mut engine, "undo-edit", undo());
+    assert_eq!(order(&engine).0, vec![1, 2, 3]);
+    // An add undone and redone returns to the end.
+    accept(&mut engine, "add-4", set(4, spec("Dest 4")));
+    accept(&mut engine, "undo-add", undo());
+    assert_eq!(order(&engine).0, vec![1, 2, 3]);
+    accept(&mut engine, "redo-add", redo());
+    assert_eq!(order(&engine), (vec![1, 2, 3, 4], vec![1, 2, 3, 4]));
+    // An explicit position places a new destination.
+    accept(
+        &mut engine,
+        "add-5-first",
+        EngineCommand::SetStreamTarget {
+            target: target(5),
+            spec: Some(Box::new(spec("Dest 5"))),
+            position: Some(0),
+        },
+    );
+    assert_eq!(order(&engine), (vec![5, 1, 2, 3, 4], vec![5, 1, 2, 3, 4]));
+}
+
+/// An SRT destination carries its latency and an optional passphrase that
+/// survives undo and never reaches a refusal or `Debug`.
+#[test]
+fn srt_destinations_carry_latency_and_a_secret_passphrase() {
+    const PASSPHRASE: &str = "srt-pass-phrase-0001";
+    let srt = |latency: Option<u32>, passphrase: Option<&str>| EngineStreamTargetSpec {
+        protocol: StreamProtocol::Srt,
+        endpoint: "srt.example.test:9000".to_owned(),
+        srt_latency_ms: latency,
+        srt_passphrase: passphrase.map(str::to_owned),
+        ..spec("SRT relay")
+    };
+    let mut engine = engine();
+    accept(
+        &mut engine,
+        "add-srt",
+        set(1, srt(Some(250), Some(PASSPHRASE))),
+    );
+    let stored = engine.show().stream_target(target(1)).unwrap();
+    assert_eq!(stored.srt_latency_ms(), Some(250));
+    assert_eq!(stored.srt_passphrase().unwrap().expose_secret(), PASSPHRASE);
+    assert!(!format!("{stored:?}").contains(PASSPHRASE));
+    assert!(!format!("{:?}", srt(Some(250), Some(PASSPHRASE))).contains(PASSPHRASE));
+
+    // SRT needs its latency in range; other protocols carry none, and a
+    // passphrase off SRT is refused.
+    for (key, bad) in [
+        ("no-latency", srt(None, None)),
+        ("low-latency", srt(Some(19), None)),
+        ("high-latency", srt(Some(8_001), None)),
+        (
+            "rtmp-latency",
+            EngineStreamTargetSpec {
+                srt_latency_ms: Some(120),
+                ..spec("SRT relay")
+            },
+        ),
+        (
+            "rtmp-passphrase",
+            EngineStreamTargetSpec {
+                srt_passphrase: Some(PASSPHRASE.to_owned()),
+                ..spec("SRT relay")
+            },
+        ),
+        ("short-passphrase", srt(Some(120), Some("short"))),
+        (
+            "spaced-passphrase",
+            srt(Some(120), Some("has a space in it")),
+        ),
+    ] {
+        let refused = submit(&mut engine, key, set(1, bad));
+        assert_eq!(refusal(&refused).0, RejectionCode::InvalidCommand, "{key}");
+        assert!(
+            !format!("{:?}", refused.receipt).contains(PASSPHRASE),
+            "{key}"
+        );
+    }
+
+    // Clearing the passphrase is undoable back to the exact secret.
+    accept(&mut engine, "clear", set(1, srt(Some(500), None)));
+    assert!(
+        engine
+            .show()
+            .stream_target(target(1))
+            .unwrap()
+            .srt_passphrase()
+            .is_none()
+    );
+    accept(&mut engine, "undo-clear", undo());
+    let restored = engine.show().stream_target(target(1)).unwrap();
+    assert_eq!(restored.srt_latency_ms(), Some(250));
+    assert_eq!(
+        restored.srt_passphrase().unwrap().expose_secret(),
+        PASSPHRASE
     );
 }

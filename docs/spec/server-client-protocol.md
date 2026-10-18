@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.53 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.54 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1665,6 +1665,41 @@ local audio output device at its own level and mute, independent of Program.
   (`device` string or `null`, `gain_milli_db`, `muted`), meter-only at
   unity by default (schema 50).
 - 2.52 is refused.
+
+Protocol 2.54 adds SRT caller options to stream destinations (OR-006) and
+keeps a destination's place in the authored list across undo.
+
+- `payload=stream_target_set` gains:
+  - `srt_latency_ms` (20..=8000), present exactly when `stream_protocol=srt`
+    (default 120 for a new SRT destination in Studio and the CLI);
+  - optional `srt_passphrase`, a secret edited like `stream_key`: absent
+    keeps the stored passphrase, empty clears it, `***` is refused, and a
+    set passphrase is 10..=79 bytes of printable ASCII without spaces
+    (libsrt's bounds). Setting one on another protocol is refused (field
+    issue `srt_passphrase`); a latency off SRT or out of range is refused
+    (field issue `srt_latency_ms`);
+  - optional `position` (0..=4, canonical decimal): the destination's index
+    in the authored list, clamped to its end. Absent keeps an existing
+    destination where it is and appends a new one. The undo of a removal
+    carries the removed destination's old index, so removing B from A, B, C
+    and undoing restores A, B, C live, in the journal, and in the saved
+    project.
+- `event=stream_target_changed` adds `srt_latency_ms` (SRT only) and a
+  required `has_passphrase` (`0|1`, `1` only for SRT) when configured.
+- Each snapshot `stream_targets` item gains two fields:
+  `...~<ladder rungs>~<srt latency ms or empty>~<has_passphrase>`.
+- No snapshot, event, refusal, log line, or `FFmpeg` stderr ever carries a
+  stored passphrase; the native daemon masks it in worker diagnostics as it
+  does stream keys.
+- The native daemon publishes an SRT destination as MPEG-TS in caller mode
+  with the authored latency and, when stored, the passphrase (AES
+  encryption negotiated by libsrt), under the same per-destination
+  reconnect policy as RTMP.
+- Durability: each stream target gains required `srt_latency_ms` (a number
+  exactly for SRT, otherwise `null`) and `srt_passphrase` (string or `null`,
+  stored in the bundle under the same trust model as `stream_key`)
+  (schema 51).
+- 2.53 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

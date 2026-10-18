@@ -1,8 +1,8 @@
-//! Stream destinations between the engine and the wire (Protocol 2.52,
-//! OR-006).
+//! Stream destinations between the engine and the wire (Protocols 2.52 and
+//! 2.54, OR-006).
 //!
 //! Everything this module reports carries the destination's configuration
-//! without its stream key: only whether one is stored.
+//! without its stream key or SRT passphrase: only whether one is stored.
 
 use fm_engine::{
     EngineCommand, EngineEvent, EngineStreamControl, EngineStreamTargetSpec, ShowState,
@@ -53,11 +53,14 @@ pub(super) fn engine_command(show: &ShowState, payload: &CommandPayload) -> Opti
         CommandPayload::RemoveStreamTarget { target } => EngineCommand::SetStreamTarget {
             target: domain_target(*target),
             spec: None,
+            position: None,
         },
         CommandPayload::SetStreamTarget {
             target,
             config,
             stream_key,
+            srt_passphrase,
+            position,
         } => {
             let domain = domain_target(*target);
             let current = show.stream_target(domain);
@@ -85,7 +88,19 @@ pub(super) fn engine_command(show: &ShowState, payload: &CommandPayload) -> Opti
                     reconnect_max_delay_ms: config.reconnect.max_delay_ms,
                     reconnect_max_attempts: config.reconnect.max_attempts,
                     ladder: current.and_then(StreamTarget::ladder).cloned(),
+                    srt_latency_ms: config.srt_latency_ms,
+                    // A kept passphrase does not survive a move off SRT; a
+                    // new one on another protocol is refused by the engine.
+                    srt_passphrase: match srt_passphrase {
+                        SecretEdit::Keep if protocol != StreamProtocol::Srt => None,
+                        edit => edit.apply(
+                            current
+                                .and_then(StreamTarget::srt_passphrase)
+                                .map(fm_model::SrtPassphrase::expose_secret),
+                        ),
+                    },
                 })),
+                position: position.map(usize::from),
             }
         }
         _ => return None,
@@ -110,6 +125,7 @@ pub(crate) fn wire_config(target: &StreamTarget) -> StreamTargetConfig {
             max_delay_ms: reconnect.max_delay_ms(),
             max_attempts: reconnect.max_attempts(),
         },
+        srt_latency_ms: target.srt_latency_ms(),
     }
 }
 
@@ -122,13 +138,19 @@ pub(crate) fn wire_entry(target: &StreamTarget) -> StreamTargetEntry {
         ladder_rungs: target.ladder().map_or(0, |ladder| {
             u8::try_from(ladder.rungs().len()).unwrap_or(u8::MAX)
         }),
+        has_passphrase: target.srt_passphrase().is_some(),
     }
 }
 
 /// The wire payload of an undoable destination edit, with its exact key for
 /// the journal and history.
 pub(super) fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
-    let EngineCommand::SetStreamTarget { target, spec } = command else {
+    let EngineCommand::SetStreamTarget {
+        target,
+        spec,
+        position,
+    } = command
+    else {
         return None;
     };
     let target = WireStreamTargetId::new(target.get());
@@ -149,8 +171,11 @@ pub(super) fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayloa
                     max_delay_ms: spec.reconnect_max_delay_ms,
                     max_attempts: spec.reconnect_max_attempts,
                 },
+                srt_latency_ms: spec.srt_latency_ms,
             }),
             stream_key: SecretEdit::exact(spec.key.as_deref()),
+            srt_passphrase: SecretEdit::exact(spec.srt_passphrase.as_deref()),
+            position: position.and_then(|position| u8::try_from(position).ok()),
         },
     })
 }

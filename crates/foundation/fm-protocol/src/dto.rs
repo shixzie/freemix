@@ -1635,13 +1635,19 @@ pub enum CommandPayload {
     /// affects recording.
     StreamStopAll,
     /// Adds or reconfigures destination `target` (Protocol 2.52, OR-006).
-    /// The stream key is kept, cleared, or replaced by `stream_key`; a client
-    /// cannot read it back. A padlocked, undoable project edit, refused while
-    /// the destination is desired running.
+    /// The stream key is kept, cleared, or replaced by `stream_key`, and an
+    /// SRT destination's passphrase by `srt_passphrase` (2.54); a client
+    /// cannot read either back. `position` (2.54) places the destination at
+    /// that index of the authored list (an undone removal returns to its old
+    /// place); `None` keeps an existing one where it is and appends a new
+    /// one. A padlocked, undoable project edit, refused while the destination
+    /// is desired running.
     SetStreamTarget {
         target: WireStreamTargetId,
         config: Box<crate::StreamTargetConfig>,
         stream_key: crate::SecretEdit,
+        srt_passphrase: crate::SecretEdit,
+        position: Option<u8>,
     },
     /// Removes destination `target` (Protocol 2.52, OR-006). A padlocked,
     /// undoable project edit, refused while it is desired running or a cue

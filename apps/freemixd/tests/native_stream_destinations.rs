@@ -14,10 +14,16 @@
 //!   running. A stopped destination is then edited live and restarted, and
 //!   another is removed.
 //! - No stream key ever appears on the wire, in a snapshot, or on stderr.
+//! - An encrypted SRT caller (protocol 2.54) with its own latency delivers
+//!   H.264/AAC MPEG-TS to an in-test `FFmpeg` SRT listener and reconnects
+//!   when that listener restarts; its passphrase never leaves the bundle.
+//! - Undoing a destination's removal restores it at its old place, live, in
+//!   the journal, and in the saved project.
 //!
 //! The test needs a native GPU adapter and `FFmpeg`/`ffprobe`. Without an
 //! adapter it is skipped unless `FM_REQUIRE_NATIVE_MEDIA=1`; without the
-//! tools unless `FM_REQUIRE_FFMPEG=1`.
+//! tools unless `FM_REQUIRE_FFMPEG=1`; the SRT test also needs `FFmpeg`
+//! built with libsrt unless `FM_REQUIRE_FFMPEG_SRT=1`.
 
 #![cfg(all(feature = "native-media", unix))]
 
@@ -25,7 +31,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{BufRead, BufReader, ErrorKind, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     num::NonZeroU128,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -65,6 +71,8 @@ const VICTIM: u128 = 2;
 const HLS_TOKEN: &str = "native-stream-destinations-hls-token-0001";
 /// The HLS destination added live.
 const HLS: u128 = 5;
+/// The SRT destination's passphrase: never echoed anywhere.
+const SRT_PASSPHRASE: &str = "native-srt-passphrase-0001";
 
 fn id(value: u128) -> NonZeroU128 {
     NonZeroU128::new(value).unwrap()
@@ -542,6 +550,10 @@ impl Client {
                         "a stream key reached the wire: {line}"
                     );
                 }
+                assert!(
+                    !line.contains(SRT_PASSPHRASE),
+                    "the SRT passphrase reached the wire: {line}"
+                );
                 let message = decode_line(&line).unwrap();
                 if let WireMessage::StreamStatus(status) = &message {
                     for sample in &status.samples {
@@ -637,6 +649,7 @@ fn rtmp_config(target: u128, port: u16, reconnect: StreamReconnectPolicy) -> Str
             max_delay_ms: reconnect.max_delay_ms(),
             max_attempts: reconnect.max_attempts(),
         },
+        srt_latency_ms: None,
     }
 }
 
@@ -723,6 +736,8 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
             target: wire_target(4),
             config: Box::new(rtmp_config(4, ports[3], patient())),
             stream_key: SecretEdit::Set(key(4)),
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
         },
     );
     client.command(
@@ -738,8 +753,11 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
                 reconcile_on_startup: false,
                 video_bitrate_kbps: 2_500,
                 reconnect: StreamReconnect::DEFAULT,
+                srt_latency_ms: None,
             }),
             stream_key: SecretEdit::Keep,
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
         },
     );
     let sixth = client.submit(
@@ -748,6 +766,8 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
             target: wire_target(6),
             config: Box::new(rtmp_config(6, ports[3], patient())),
             stream_key: SecretEdit::Set(key(4)),
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
         },
     );
     assert!(
@@ -851,6 +871,8 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
                 ..rtmp_config(3, new_port, patient())
             }),
             stream_key: SecretEdit::Keep,
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
         },
     );
     client.command(
@@ -977,6 +999,7 @@ fn hls_config(name: &str, directory: &Path) -> StreamTargetConfig {
         reconcile_on_startup: false,
         video_bitrate_kbps: 2_500,
         reconnect: StreamReconnect::DEFAULT,
+        srt_latency_ms: None,
     }
 }
 
@@ -1027,6 +1050,8 @@ fn hls_listener_serves_destinations_added_live_and_drops_removed_ones() {
             target: wire_target(2),
             config: Box::new(hls_config("Added HLS", &added)),
             stream_key: SecretEdit::Keep,
+            srt_passphrase: SecretEdit::Keep,
+            position: None,
         },
     );
     client.command(
@@ -1063,4 +1088,291 @@ fn hls_listener_serves_destinations_added_live_and_drops_removed_ones() {
     );
     drop(client);
     daemon.stop();
+}
+
+/// Whether `ffmpeg` has `libsrt`; its absence fails only under
+/// `FM_REQUIRE_FFMPEG_SRT=1`.
+fn srt_available() -> bool {
+    let available = Command::new("ffmpeg")
+        .args(["-hide_banner", "-protocols"])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.trim() == "srt")
+        });
+    assert!(
+        available || std::env::var("FM_REQUIRE_FFMPEG_SRT").as_deref() != Ok("1"),
+        "FM_REQUIRE_FFMPEG_SRT=1 but ffmpeg has no libsrt"
+    );
+    if !available {
+        eprintln!("native SRT destination test skipped: ffmpeg has no libsrt");
+    }
+    available
+}
+
+fn free_udp_port() -> u16 {
+    UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// One in-test SRT ingest: an encrypted `FFmpeg` listener that accepts one
+/// caller and writes the MPEG-TS it receives to a file.
+struct SrtSink {
+    child: Child,
+    output: PathBuf,
+}
+
+impl SrtSink {
+    fn spawn(directory: &Path, port: u16, generation: u32) -> Self {
+        let output = directory.join(format!("srt-ingest-{generation}.ts"));
+        let child = Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+            .arg(format!(
+                "srt://127.0.0.1:{port}?mode=listener&passphrase={SRT_PASSPHRASE}&latency=200000"
+            ))
+            .args(["-c", "copy", "-flush_packets", "1", "-f", "mpegts", "-y"])
+            .arg(&output)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Self { child, output }
+    }
+
+    fn bytes(&self) -> u64 {
+        fs::metadata(&self.output).map_or(0, |metadata| metadata.len())
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for SrtSink {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// The distinct codec names of the streams in `path`, sorted.
+fn codecs(path: &Path) -> Vec<String> {
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        probe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let mut codecs: Vec<String> = String::from_utf8_lossy(&probe.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    // MPEG-TS lists each stream again under its program.
+    codecs.sort();
+    codecs.dedup();
+    codecs
+}
+
+/// An encrypted SRT caller (protocol 2.54, OR-006): added live with its
+/// latency and passphrase, it delivers H.264/AAC MPEG-TS to an encrypted
+/// listener, reconnects under its authored policy when the listener
+/// restarts, and is reported only as "a passphrase is stored". The
+/// passphrase never reaches the wire, a snapshot, or stderr; the bundle
+/// keeps it like a stream key.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn an_encrypted_srt_destination_delivers_and_reconnects_without_leaking_its_passphrase() {
+    const SRT: u128 = 4;
+    if !tools_available() || !srt_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("srt-destination.freemix");
+    let ingest = directory.path().join("ingest");
+    fs::create_dir_all(&ingest).unwrap();
+    save_project_with(&project, |_| Vec::new());
+    let Some(daemon) = DaemonProcess::start(&project, &directory.path().join("program.mp4")) else {
+        return;
+    };
+    let mut client = Client::connect(daemon.address);
+    let port = free_udp_port();
+    let srt_config = StreamTargetConfig {
+        name: "Encrypted SRT".into(),
+        protocol: StreamTargetProtocol::Srt,
+        endpoint: format!("127.0.0.1:{port}"),
+        srt_latency_ms: Some(200),
+        ..rtmp_config(SRT, port, patient())
+    };
+    client.command(
+        "add-srt",
+        CommandPayload::SetStreamTarget {
+            target: wire_target(SRT),
+            config: Box::new(srt_config.clone()),
+            stream_key: SecretEdit::Set(key(SRT)),
+            srt_passphrase: SecretEdit::Set(SRT_PASSPHRASE.into()),
+            position: None,
+        },
+    );
+
+    let mut sink = SrtSink::spawn(&ingest, port, 1);
+    client.idle(Duration::from_millis(500));
+    client.command(
+        "start-srt",
+        CommandPayload::StreamStart {
+            target: wire_target(SRT),
+        },
+    );
+    client.wait_for("the SRT destination to deliver", |client| {
+        client.state(SRT) == Some(StreamRealizedState::Live)
+            && client.muxed(SRT) > 0
+            && sink.bytes() > 64 * 1_024
+    });
+
+    // The listener restarts: the caller reconnects within its budget.
+    sink.kill();
+    let first = sink.output.clone();
+    let sink = SrtSink::spawn(&ingest, port, 2);
+    client.wait_for("the SRT destination to reconnect", |client| {
+        client.state(SRT) == Some(StreamRealizedState::Live) && sink.bytes() > 64 * 1_024
+    });
+    client.command(
+        "stop-srt",
+        CommandPayload::StreamStop {
+            target: wire_target(SRT),
+        },
+    );
+    client.wait_for("the SRT destination to stop", |client| {
+        client.state(SRT) == Some(StreamRealizedState::Stopped)
+    });
+    drop(client);
+
+    // A fresh session sees the latency and that a passphrase is stored.
+    let viewer = Client::connect(daemon.address);
+    let entries = &viewer.snapshot.as_ref().unwrap().stream_targets;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].config, srt_config);
+    assert!(entries[0].has_key && entries[0].has_passphrase);
+    drop(viewer);
+    let stderr = daemon.stop();
+    drop(sink);
+    assert!(
+        !stderr.contains(SRT_PASSPHRASE),
+        "the SRT passphrase leaked: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&key(SRT)),
+        "the SRT stream id leaked: {stderr}"
+    );
+    for received in [first, ingest.join("srt-ingest-2.ts")] {
+        assert_eq!(codecs(&received), ["aac", "h264"], "{}", received.display());
+    }
+
+    // The checkpoint keeps the destination and its secrets in the bundle.
+    let saved = ProjectStore::new(&project).unwrap().load().unwrap();
+    let target = &saved.project().stream_targets()[0];
+    assert_eq!(target.protocol(), StreamProtocol::Srt);
+    assert_eq!(target.srt_latency_ms(), Some(200));
+    assert_eq!(
+        target
+            .srt_passphrase()
+            .map(fm_model::SrtPassphrase::expose_secret),
+        Some(SRT_PASSPHRASE)
+    );
+}
+
+/// The authored destination ids, in order, of a fresh session's snapshot.
+fn snapshot_order(address: SocketAddr) -> Vec<u128> {
+    let viewer = Client::connect(address);
+    viewer
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .stream_targets
+        .iter()
+        .map(|entry| entry.target.get().get())
+        .collect()
+}
+
+/// Undoing a destination's removal restores it at its old place (protocol
+/// 2.54 carries the position). It used to come back last: removing B from
+/// A, B, C and undoing left A, C, B live, after a journal replay, and in the
+/// saved project.
+#[test]
+fn undoing_a_destination_removal_restores_its_place() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("undo-order.freemix");
+    let ports: Vec<u16> = (0..3).map(|_| free_port()).collect();
+    save_project(&project, &ports);
+    let program = directory.path().join("program.mp4");
+    let Some(daemon) = DaemonProcess::start(&project, &program) else {
+        return;
+    };
+    let mut client = Client::connect(daemon.address);
+    client.command(
+        "remove-2",
+        CommandPayload::RemoveStreamTarget {
+            target: wire_target(2),
+        },
+    );
+    client.command(
+        "undo-remove",
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+    );
+    drop(client);
+    assert_eq!(snapshot_order(daemon.address), [1, 2, 3]);
+
+    // An abrupt exit: the journal replays the undo at the same place.
+    drop(daemon);
+    let Some(daemon) = DaemonProcess::start(&project, &program) else {
+        return;
+    };
+    assert_eq!(snapshot_order(daemon.address), [1, 2, 3]);
+    // Edit history is per process; the same edit and undo again, then the
+    // shutdown checkpoint.
+    let mut client = Client::connect(daemon.address);
+    client.command(
+        "remove-2-again",
+        CommandPayload::RemoveStreamTarget {
+            target: wire_target(2),
+        },
+    );
+    client.command(
+        "undo-again",
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+    );
+    drop(client);
+    daemon.stop();
+    let saved = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert_eq!(
+        saved
+            .project()
+            .stream_targets()
+            .iter()
+            .map(|target| target.id().get().get())
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert_eq!(saved.project().stream_targets()[1].name(), "Destination 2");
 }

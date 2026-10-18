@@ -6621,4 +6621,40 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::StreamRemoveKeyHover, t("Quitar este destino")),
     (Msg::StreamRemoveCancelHover, t("Conservar este destino")),
+    (Msg::StreamFieldEncrypt, t("Cifrar")),
+    (
+        Msg::StreamFieldEncryptHover,
+        t("Cifrar la señal SRT con AES; el receptor necesita la misma frase de cifrado"),
+    ),
+    (
+        Msg::StreamFieldPassphraseHover,
+        t(
+            "La frase de cifrado SRT que también usa el receptor, de 10 a 79 caracteres imprimibles sin espacios. Se guarda con el proyecto y no vuelve a mostrarse",
+        ),
+    ),
+    (
+        Msg::StreamPassphraseKeepCaption,
+        t("Hay una frase guardada; escriba otra solo para reemplazarla"),
+    ),
+    (
+        Msg::StreamPassphraseReplaceCaption,
+        t("La frase escrita reemplaza a la guardada; vacíe el campo para conservarla"),
+    ),
+    (
+        Msg::StreamPassphraseClearCaption,
+        t("La frase guardada se elimina: la señal se envía sin cifrar"),
+    ),
+    (
+        Msg::ReasonStreamNotEncrypted,
+        t("marque Cifrar para indicar una frase"),
+    ),
+    (
+        Msg::StreamErrPassphraseRequired,
+        t("escriba la frase de cifrado"),
+    ),
+    (
+        Msg::StreamErrPassphraseChars,
+        t("use de 10 a 79 caracteres imprimibles, sin espacios"),
+    ),
+    (Msg::StreamErrLatency, t("use de 20 a 8000 ms")),
 ];

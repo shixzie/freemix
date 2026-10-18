@@ -496,11 +496,18 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             target,
             config,
             stream_key,
+            srt_passphrase,
+            position,
         } => {
             record.field("payload", "stream_target_set")?;
-            super::stream_target::encode_set(*target, config, stream_key, &mut |name, value| {
-                record.field_string(name, value)
-            })?;
+            super::stream_target::encode_set(
+                *target,
+                config,
+                stream_key,
+                srt_passphrase,
+                *position,
+                &mut |name, value| record.field_string(name, value),
+            )?;
         }
         CommandPayload::RemoveStreamTarget { target } => {
             record.field("payload", "stream_target_remove")?;

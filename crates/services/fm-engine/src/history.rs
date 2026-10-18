@@ -736,6 +736,24 @@ fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
         EngineCommand::AnimationPreset(edit) => {
             EngineCommand::AnimationPreset(crate::animation_preset::normalized(state, edit))
         }
+        // A destination edit is recorded at the exact place it ends up, so
+        // its inverse (which restores the old place) reverses it exactly.
+        EngineCommand::SetStreamTarget {
+            target,
+            spec,
+            position,
+        } => EngineCommand::SetStreamTarget {
+            target: *target,
+            spec: spec.clone(),
+            position: spec.as_ref().map(|_| {
+                let targets = state.stream_targets();
+                let existing = targets
+                    .iter()
+                    .position(|config| config.id().get() == target.get());
+                let last = existing.map_or(targets.len(), |_| targets.len() - 1);
+                position.map_or(existing.unwrap_or(last), |position| position.min(last))
+            }),
+        },
         command => command.clone(),
     }
 }
@@ -882,11 +900,17 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                     config: Box::new(config.clone()),
                 })
         }
+        // The inverse restores the destination at its old place, so undoing
+        // a removal does not move it to the end of the list.
         EngineCommand::SetStreamTarget { target, .. } => Some(EngineCommand::SetStreamTarget {
             target: *target,
             spec: state
                 .stream_target(*target)
                 .map(|config| Box::new(crate::EngineStreamTargetSpec::from_target(config))),
+            position: state
+                .stream_targets()
+                .iter()
+                .position(|config| config.id().get() == target.get()),
         }),
 
         EngineCommand::SetCueList { list, .. } => Some(EngineCommand::SetCueList {

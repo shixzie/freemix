@@ -435,6 +435,9 @@ fn write_project_collections(output: &mut String, project: &fm_model::Project) {
 /// secret is allowed to leave [`fm_model::StreamKey`]. An HLS destination has
 /// no key; its field is written as `null`. An authored ladder is written
 /// inline as an array of rungs; a destination without one writes `null`.
+/// `srt_latency_ms` is a number exactly for SRT, and `srt_passphrase` a string
+/// only for an encrypted SRT destination (schema 51); both are `null`
+/// otherwise.
 fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
     output.push_str(",\n    \"stream_targets\": [");
     for (index, target) in project.stream_targets().iter().enumerate() {
@@ -492,6 +495,21 @@ fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
                 write!(output, "{attempts}}}").expect("writing to a string cannot fail");
             }
             None => output.push_str("null}"),
+        }
+        output.push_str(",\n        \"srt_latency_ms\": ");
+        match target.srt_latency_ms() {
+            Some(latency) => write!(output, "{latency}").expect("writing to a string cannot fail"),
+            None => output.push_str("null"),
+        }
+        // The SRT passphrase shares the stream key's trust model: written in
+        // the clear here and nowhere else.
+        output.push_str(",\n        \"srt_passphrase\": ");
+        if let Some(passphrase) = target.srt_passphrase() {
+            output.push('"');
+            escape_string(output, passphrase.expose_secret());
+            output.push('"');
+        } else {
+            output.push_str("null");
         }
         output.push_str("\n      }");
     }

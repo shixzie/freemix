@@ -116,9 +116,10 @@
 //! # Not covered
 //!
 //! TLS certificate policy (`rtmps://` uses the
-//! child's default trust configuration); SRT encryption and passphrase policy
-//! (`srt://` likewise uses the child's default configuration and carries the
-//! caller's stream id verbatim); credential resolution (this sink is handed an
+//! child's default trust configuration); SRT key-length policy (`srt://`
+//! connects in caller mode with the authored latency and optional
+//! passphrase of [`RtmpSinkConfig::srt`], carries the caller's stream id
+//! verbatim, and leaves the AES key length to libsrt); credential resolution (this sink is handed an
 //! already-resolved stream key); adaptive bitrate for network destinations
 //! (only a local HLS destination carries the authored ladder, and even there
 //! this transport never selects a rendition — the child's segmenter publishes
@@ -135,7 +136,9 @@ use fm_codec_ffmpeg::stream::{
     StartError, StartErrorKind, StopReport, StreamConfig, StreamDestination, StreamFailure,
     StreamLimits, StreamTelemetry, Streamer,
 };
-pub use fm_codec_ffmpeg::stream::{HlsLadder, HlsLadderError, HlsLadderRung};
+pub use fm_codec_ffmpeg::stream::{
+    HlsLadder, HlsLadderError, HlsLadderRung, SrtOptions, SrtOptionsError,
+};
 use fm_frame::{
     AudioBlock, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
     NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
@@ -290,6 +293,9 @@ pub struct RtmpSinkConfig {
     /// [`Streamer::start`] refuses a ladder for it, so this stays `None` unless
     /// the selected endpoint is HLS.
     pub ladder: Option<HlsLadder>,
+    /// Caller-mode SRT latency and optional passphrase. Honoured only when
+    /// the destination protocol is SRT; every other protocol ignores it.
+    pub srt: Option<SrtOptions>,
 }
 
 impl RtmpSinkConfig {
@@ -313,6 +319,7 @@ impl RtmpSinkConfig {
             encoder: EncoderSettings::default(),
             stream_key: None,
             ladder: None,
+            srt: None,
         }
     }
 }
@@ -695,6 +702,9 @@ impl TransportSink for FfmpegRtmpSink {
         stream_config.encoder = self.config.encoder;
         stream_config.overflow = OverflowPolicy::Reject;
         stream_config.ladder.clone_from(&self.config.ladder);
+        if config.protocol() == OutputProtocol::Srt {
+            stream_config.srt.clone_from(&self.config.srt);
+        }
         match Streamer::start(stream_config) {
             Ok(streamer) => {
                 self.connections_started = self.connections_started.saturating_add(1);
@@ -835,6 +845,11 @@ fn classify_start(error: &StartError) -> SinkError {
             FailureStage::Protocol,
             false,
             "a bitrate ladder is carried by a local HLS destination only".to_owned(),
+        ),
+        StartErrorKind::SrtOptionsNotSupported => (
+            FailureStage::Protocol,
+            false,
+            "SRT latency and passphrase are carried by an SRT destination only".to_owned(),
         ),
         StartErrorKind::InvalidExecutable => (
             FailureStage::Protocol,

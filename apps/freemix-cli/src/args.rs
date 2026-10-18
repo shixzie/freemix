@@ -164,6 +164,10 @@ pub struct StreamSpec {
     pub ladder: Option<fm_model::StreamLadder>,
     /// The authored reconnect policy (OR-006); `--reconnect` or the default.
     pub reconnect: StreamReconnectPolicy,
+    /// `--srt-latency-ms` (srt:// only); `None` is the 120 ms default.
+    pub srt_latency_ms: Option<u32>,
+    /// `--srt-passphrase` (srt:// only), a secret `Debug` redacts.
+    pub srt_passphrase: Option<String>,
 }
 
 /// The options of `remote-stream-set` (OR-006): every field a destination
@@ -188,6 +192,10 @@ pub struct RemoteStreamTargetOptions {
     pub reconcile_on_startup: Option<bool>,
     pub reconnect: Option<StreamReconnectPolicy>,
     pub stream_key: SecretEdit,
+    /// `--srt-latency-ms` (an SRT destination only).
+    pub srt_latency_ms: Option<u32>,
+    /// `--srt-passphrase` / `--clear-srt-passphrase`; omitted keeps it.
+    pub srt_passphrase: SecretEdit,
 }
 
 impl std::fmt::Debug for StreamSpec {
@@ -204,6 +212,11 @@ impl std::fmt::Debug for StreamSpec {
             .field("video_bitrate_kbps", &self.video_bitrate_kbps)
             .field("ladder", &self.ladder)
             .field("reconnect", &self.reconnect)
+            .field("srt_latency_ms", &self.srt_latency_ms)
+            .field(
+                "srt_passphrase",
+                &self.srt_passphrase.as_ref().map(|_| "****"),
+            )
             .finish()
     }
 }
@@ -1495,6 +1508,9 @@ pub enum ArgsError {
     /// RTMP/RTMPS/SRT publish one rendition, so a multi-bitrate ladder has no
     /// meaning there.
     LadderNotAllowed,
+    /// `--srt-latency-ms` or `--srt-passphrase` on a destination other than
+    /// `srt://`.
+    SrtOptionNotAllowed(&'static str),
     /// The authored rungs are individually shaped but invalid as a ladder.
     InvalidLadder(fm_model::StreamLadderError),
     /// A well-shaped `--reconnect` policy is out of bounds (OR-006).
@@ -1550,6 +1566,12 @@ impl core::fmt::Display for ArgsError {
             }
             Self::LadderNotAllowed => {
                 formatter.write_str("only hls:// stream destinations support --rung")
+            }
+            Self::SrtOptionNotAllowed(option) => {
+                write!(
+                    formatter,
+                    "only srt:// stream destinations support {option}"
+                )
             }
             Self::InvalidLadder(error) => write!(formatter, "{error}"),
             Self::InvalidReconnect(error) => write!(formatter, "{error}"),
@@ -2142,12 +2164,14 @@ fn parse_output_startup(mut arguments: impl Iterator<Item = String>) -> Result<C
 
 /// The options `stream-add` and `stream-update` accept after their
 /// positionals.
-const STREAM_OPTIONS: [&str; 5] = [
+const STREAM_OPTIONS: [&str; 7] = [
     "--reconnect",
     "--backup",
     "--startup",
     "--video-bitrate-kbps",
     "--rung",
+    "--srt-latency-ms",
+    "--srt-passphrase",
 ];
 
 /// One non-blank `stream-add`/`stream-update` positional. One of the
@@ -2188,10 +2212,30 @@ fn parse_stream(
     let mut video_bitrate_kbps = DEFAULT_VIDEO_BITRATE_KBPS;
     let mut rungs = Vec::new();
     let mut reconnect = StreamReconnectPolicy::DEFAULT;
+    let srt = url.starts_with("srt://");
+    let mut srt_latency_ms = None;
+    let mut srt_passphrase = None;
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--reconnect" => {
                 reconnect = reconnect_policy(&required(&mut arguments, "stream reconnect")?)?;
+            }
+            // SRT caller options (Protocol 2.54). The passphrase is a secret
+            // like the key: no error below repeats it.
+            "--srt-latency-ms" => {
+                if !srt {
+                    return Err(ArgsError::SrtOptionNotAllowed("--srt-latency-ms"));
+                }
+                srt_latency_ms = Some(number(
+                    &required(&mut arguments, "SRT latency ms")?,
+                    "SRT latency",
+                )?);
+            }
+            "--srt-passphrase" => {
+                if !srt {
+                    return Err(ArgsError::SrtOptionNotAllowed("--srt-passphrase"));
+                }
+                srt_passphrase = Some(nonblank(&mut arguments, "SRT passphrase")?);
             }
             "--backup" => {
                 if hls {
@@ -2245,6 +2289,8 @@ fn parse_stream(
             video_bitrate_kbps,
             ladder,
             reconnect,
+            srt_latency_ms,
+            srt_passphrase,
         },
     ))
 }
@@ -2371,6 +2417,31 @@ fn parse_remote_stream_set(
                     });
                 }
                 options.stream_key = SecretEdit::Clear;
+            }
+            "--srt-latency-ms" => {
+                options.srt_latency_ms = Some(number(
+                    &required(&mut arguments, "SRT latency ms")?,
+                    "SRT latency",
+                )?);
+            }
+            "--srt-passphrase" => {
+                if options.srt_passphrase == SecretEdit::Clear {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--srt-passphrase",
+                        conflicts: "--clear-srt-passphrase",
+                    });
+                }
+                options.srt_passphrase =
+                    SecretEdit::Set(nonblank(&mut arguments, "SRT passphrase")?);
+            }
+            "--clear-srt-passphrase" => {
+                if matches!(options.srt_passphrase, SecretEdit::Set(_)) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-srt-passphrase",
+                        conflicts: "--srt-passphrase",
+                    });
+                }
+                options.srt_passphrase = SecretEdit::Clear;
             }
             "--key" => {
                 let value = required(&mut arguments, "idempotency key")?;

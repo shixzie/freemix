@@ -335,11 +335,14 @@ pub enum EngineCommand {
     StreamControl(EngineStreamControl),
     /// Adds or reconfigures (`Some`) or removes (`None`) stream destination
     /// `target` (OR-006). A project edit honouring the project padlock,
-    /// undone by restoring the previous configuration; refused while the
-    /// destination is desired running.
+    /// undone by restoring the previous configuration at its previous
+    /// `position` in the authored list; refused while the destination is
+    /// desired running. `position: None` keeps an existing destination in
+    /// place and appends a new one.
     SetStreamTarget {
         target: StreamTargetId,
         spec: Option<Box<crate::EngineStreamTargetSpec>>,
+        position: Option<usize>,
     },
     RecordStart {
         recorder: RecorderSlot,
@@ -3247,8 +3250,12 @@ fn apply_stream_mutation(
                 Some(true) => {}
             }
         }
-        EngineCommand::SetStreamTarget { target, spec } => {
-            let config = crate::stream_target::apply(state, target, spec.as_deref())?;
+        EngineCommand::SetStreamTarget {
+            target,
+            spec,
+            position,
+        } => {
+            let config = crate::stream_target::apply(state, target, spec.as_deref(), position)?;
             events.push(EngineEvent::StreamTargetChanged {
                 target,
                 config: config.map(Box::new),
@@ -3703,9 +3710,13 @@ fn apply_runtime_stream(
             Some(Ok(switcher.set_all_streams_running(false)))
         }
         EngineCommand::StreamControl(EngineStreamControl::Retry { .. }) => Some(Ok(Vec::new())),
-        EngineCommand::SetStreamTarget { target, spec } => Some(match spec {
+        EngineCommand::SetStreamTarget {
+            target,
+            spec,
+            position,
+        } => Some(match spec {
             Some(spec) => switcher
-                .upsert_stream(*target, spec.name.clone())
+                .upsert_stream_at(*target, spec.name.clone(), *position)
                 .map(|()| Vec::new()),
 
             None => switcher.remove_stream(*target).map(|()| Vec::new()),

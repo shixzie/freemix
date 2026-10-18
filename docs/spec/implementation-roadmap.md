@@ -1926,9 +1926,28 @@ The `--hls-listen` route table follows live destination edits: a local HLS
 destination added while the daemon runs is served at once, and a removed or
 moved one stops being served. A native process test covers both.
 
+Protocol 2.54 (schema 51) adds SRT caller options. An `srt://` destination
+persists a latency (20–8000 ms, default 120) and an optional AES passphrase
+(10–79 printable bytes). The passphrase is a `SecretEdit` like the stream
+key, stored only in the bundle and reported only as `has_passphrase`. The
+native output publishes MPEG-TS with `-mode caller -latency` and, when set,
+`-passphrase`, under the destination's own reconnect policy, and masks the
+passphrase in worker diagnostics. Studio's destination dialog adds the
+latency, an Encrypt checkbox, and a masked passphrase field;
+`stream-add`/`stream-update` take `--srt-latency-ms` and `--srt-passphrase`,
+and `remote-stream-set` also takes `--clear-srt-passphrase`. A native
+process test streams an encrypted caller into an encrypted `ffmpeg` SRT
+listener, probes H.264/AAC, and reconnects after the listener restarts. It
+skips without `libsrt` unless `FM_REQUIRE_FFMPEG_SRT=1`.
+`stream_target_set` also carries an optional `position`. The undo of a
+removal uses it, so the destination returns to its old place, live, after a
+journal replay, and in the saved project. A native process test covers
+this; before the fix it came back last.
+
 Remaining gaps:
-- undoing a destination removal restores it at the end of the list rather
-  than at its old position;
+- the SRT passphrase reaches the `ffmpeg` child's command line;
+- there is no SRT listener or rendezvous output, and no SRT link
+  statistics for destinations;
 - a running destination must be stopped before it can be edited;
 - there is no per-destination encoder override beyond bitrate;
 - the simulated daemon accepts every command but realizes no transport.
