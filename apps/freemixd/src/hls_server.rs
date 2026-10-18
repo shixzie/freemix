@@ -28,7 +28,7 @@ use std::{
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, PoisonError, RwLock,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
@@ -202,6 +202,42 @@ impl HlsRoots {
     }
 }
 
+/// The listener's live route table, shared between the daemon and the accept
+/// thread: stream destinations added, edited, or removed while the daemon
+/// runs (OR-006) republish it, so a new local HLS destination is served at
+/// once and a removed or moved one stops being served.
+#[derive(Clone)]
+pub struct HlsRouteTable {
+    roots: Arc<RwLock<HlsRoots>>,
+}
+
+impl HlsRouteTable {
+    fn new(roots: HlsRoots) -> Self {
+        Self {
+            roots: Arc::new(RwLock::new(roots)),
+        }
+    }
+
+    /// Replaces every route at once; requests already routed keep the path
+    /// they resolved.
+    #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+    pub fn replace(&self, roots: HlsRoots) {
+        *self.roots.write().unwrap_or_else(PoisonError::into_inner) = roots;
+    }
+
+    /// [`HlsRoots::resolve`] against the current table.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`HlsRoots::resolve`].
+    pub fn resolve(&self, target: u128, relative: &str) -> Result<PathBuf, HlsRouteError> {
+        self.roots
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .resolve(target, relative)
+    }
+}
+
 /// Whether a relative request path is one of the four published shapes.
 fn valid_relative(relative: &str) -> bool {
     match relative.split_once('/') {
@@ -236,6 +272,8 @@ fn valid_leaf(leaf: &str) -> bool {
 /// A bounded HTTP/1.1 listener serving the local `hls://` destinations.
 pub struct HlsServer {
     address: SocketAddr,
+    #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+    routes: HlsRouteTable,
     cancel: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -274,6 +312,8 @@ impl HlsServer {
         let bound = listener.local_addr()?;
 
         let cancel = shutdown;
+        let routes = HlsRouteTable::new(roots);
+        let accept_routes = routes.clone();
         let mut senders = Vec::with_capacity(CONNECTION_WORKERS);
         let mut threads = Vec::with_capacity(CONNECTION_WORKERS + 1);
         for index in 0..CONNECTION_WORKERS {
@@ -295,16 +335,25 @@ impl HlsServer {
         match thread::Builder::new()
             .name("freemixd-hls-accept".into())
             .spawn(move || {
-                accept_loop(&listener, senders, &accept_cancel, &token, &roots);
+                accept_loop(&listener, senders, &accept_cancel, &token, &accept_routes);
             }) {
             Ok(handle) => threads.insert(0, handle),
             Err(error) => return Err(stop_threads(&cancel, threads, error)),
         }
         Ok(Self {
             address: bound,
+            routes,
             cancel,
             threads,
         })
+    }
+
+    /// The live route table, which the daemon republishes after every
+    /// stream destination edit.
+    #[must_use]
+    #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+    pub fn routes(&self) -> HlsRouteTable {
+        self.routes.clone()
     }
 
     /// The address the listener actually bound.
@@ -433,7 +482,7 @@ fn accept_loop(
     mut senders: Vec<SyncSender<HlsJob>>,
     cancel: &AtomicBool,
     token: &[u8],
-    roots: &HlsRoots,
+    roots: &HlsRouteTable,
 ) {
     let mut pending: Vec<Pending> = Vec::with_capacity(PENDING_CAPACITY);
     while !cancel.load(Ordering::Acquire) {
@@ -483,7 +532,7 @@ fn advance_pending(
     pending: &mut Vec<Pending>,
     senders: &mut [SyncSender<HlsJob>],
     token: &[u8],
-    roots: &HlsRoots,
+    roots: &HlsRouteTable,
 ) -> bool {
     let now = Instant::now();
     let mut progressed = false;
@@ -517,7 +566,7 @@ fn advance_pending(
 fn advance_one(
     connection: &mut Pending,
     token: &[u8],
-    roots: &HlsRoots,
+    roots: &HlsRouteTable,
     now: Instant,
     progressed: &mut bool,
 ) -> Step {
@@ -556,7 +605,7 @@ fn advance_one(
 }
 
 /// Routes a head as soon as it is complete, or rejects one that never ends.
-fn classify(connection: &mut Pending, token: &[u8], roots: &HlsRoots, now: Instant) -> Step {
+fn classify(connection: &mut Pending, token: &[u8], roots: &HlsRouteTable, now: Instant) -> Step {
     if let Some(end) = connection
         .head
         .windows(4)
@@ -868,7 +917,7 @@ enum Routed {
     },
 }
 
-fn route(head: &[u8], token: &[u8], roots: &HlsRoots) -> Routed {
+fn route(head: &[u8], token: &[u8], roots: &HlsRouteTable) -> Routed {
     let request = match RequestHead::parse(head) {
         Ok(request) => request,
         Err(response) => return Routed::Reply(response),

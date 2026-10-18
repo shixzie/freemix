@@ -385,6 +385,8 @@ pub enum RemoveOutputError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddStreamTargetError {
+    /// The project already carries [`crate::MAX_STREAM_TARGETS`].
+    TooMany,
     DuplicateId(StreamTargetId),
     DuplicateName,
     UnknownOutput(OutputId),
@@ -785,6 +787,11 @@ impl std::error::Error for RemoveOutputError {}
 impl std::fmt::Display for AddStreamTargetError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TooMany => write!(
+                formatter,
+                "the project already has {} stream destinations, the most it may hold",
+                crate::MAX_STREAM_TARGETS
+            ),
             Self::DuplicateId(id) => write!(formatter, "duplicate stream destination {id}"),
             Self::DuplicateName => formatter.write_str("duplicate stream destination name"),
             Self::UnknownOutput(output) => write!(formatter, "unknown output {output}"),
@@ -3487,7 +3494,8 @@ impl Project {
     ///
     /// The destination's own fields were already validated when it was
     /// constructed; what is checked here is what only the project knows: a
-    /// unique id, a name no other destination uses, and an output that exists.
+    /// unique id, a name no other destination uses, an output that exists,
+    /// and room under [`crate::MAX_STREAM_TARGETS`].
     ///
     /// # Errors
     ///
@@ -3496,6 +3504,9 @@ impl Project {
         &mut self,
         target: StreamTarget,
     ) -> Result<(), AddStreamTargetError> {
+        if self.stream_targets.len() >= crate::MAX_STREAM_TARGETS {
+            return Err(AddStreamTargetError::TooMany);
+        }
         if self
             .stream_targets
             .iter()

@@ -1573,7 +1573,15 @@ impl core::fmt::Display for ArgsError {
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument `{argument}`")
             }
-            Self::UnknownOption(option) => write!(formatter, "unknown option `{option}`"),
+            // No option takes an attached `=value`, and the value may be a
+            // secret (`--stream-key=...`), so it is never echoed.
+            Self::UnknownOption(option) => match option.split_once('=') {
+                Some((name, _)) if name.starts_with('-') => write!(
+                    formatter,
+                    "unknown option `{name}=<value>`; give the value as the next argument"
+                ),
+                _ => write!(formatter, "unknown option `{option}`"),
+            },
             Self::UnknownCommand(command) => write!(formatter, "unknown command `{command}`"),
             Self::NotLiveInputKind(kind) => write!(
                 formatter,
@@ -2122,6 +2130,31 @@ fn parse_output_startup(mut arguments: impl Iterator<Item = String>) -> Result<C
     })
 }
 
+/// The options `stream-add` and `stream-update` accept after their
+/// positionals.
+const STREAM_OPTIONS: [&str; 5] = [
+    "--reconnect",
+    "--backup",
+    "--startup",
+    "--video-bitrate-kbps",
+    "--rung",
+];
+
+/// One non-blank `stream-add`/`stream-update` positional. One of the
+/// command's own options there means the positional was left out:
+/// `stream-add ... <url> --reconnect 1:2:3` must not store `--reconnect` as
+/// the key and `1:2:3` as the name.
+fn stream_positional(
+    arguments: &mut impl Iterator<Item = String>,
+    field: &'static str,
+) -> Result<String, ArgsError> {
+    let value = nonblank(arguments, field)?;
+    if STREAM_OPTIONS.contains(&value.as_str()) {
+        return Err(ArgsError::MissingValue(field));
+    }
+    Ok(value)
+}
+
 fn parse_stream(
     mut arguments: impl Iterator<Item = String>,
     build: fn(PathBuf, StreamSpec) -> Command,
@@ -2137,9 +2170,9 @@ fn parse_stream(
     let key = if hls {
         None
     } else {
-        Some(nonblank(&mut arguments, "stream key")?)
+        Some(stream_positional(&mut arguments, "stream key")?)
     };
-    let name = nonblank(&mut arguments, "stream name")?;
+    let name = stream_positional(&mut arguments, "stream name")?;
     let mut backup_url = None;
     let mut startup = StartupPolicy::Stopped;
     let mut video_bitrate_kbps = DEFAULT_VIDEO_BITRATE_KBPS;
@@ -2222,12 +2255,20 @@ fn reconnect_policy(value: &str) -> Result<StreamReconnectPolicy, ArgsError> {
     else {
         return Err(invalid());
     };
-    let initial = initial.parse::<u32>().map_err(|_| invalid())?;
-    let max = max.parse::<u32>().map_err(|_| invalid())?;
+    // Plain decimal digits only, like the wire: `str::parse` would also
+    // take a leading `+`.
+    let digits = |text: &str| {
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        text.parse::<u32>().map_err(|_| invalid())
+    };
+    let initial = digits(initial)?;
+    let max = digits(max)?;
     let attempts = if attempts == "none" {
         None
     } else {
-        Some(attempts.parse::<u32>().map_err(|_| invalid())?)
+        Some(digits(attempts)?)
     };
     StreamReconnectPolicy::new(initial, max, attempts).map_err(ArgsError::InvalidReconnect)
 }

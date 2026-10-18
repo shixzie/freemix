@@ -1128,6 +1128,21 @@ fn stream_destinations_refuse_bad_urls_credentials_duplicate_ids_and_dangling_ou
     );
     assert_eq!(project.stream_targets().len(), 1);
 
+    // A sixth destination is refused (OR-006): the engine, the switcher and
+    // the output set hold five, so a sixth saved offline made the bundle
+    // unloadable.
+    let mut full = project.clone();
+    for id in 2..=5 {
+        full.add_stream_target_checked(stream_target(id, &format!("Extra {id}"), output_id(1)))
+            .unwrap();
+    }
+    assert_eq!(full.stream_targets().len(), fm_model::MAX_STREAM_TARGETS);
+    assert_eq!(
+        full.add_stream_target_checked(stream_target(6, "Sixth", output_id(1))),
+        Err(AddStreamTargetError::TooMany)
+    );
+    assert_eq!(full.stream_targets().len(), fm_model::MAX_STREAM_TARGETS);
+
     // An output that a destination publishes cannot be pulled out from under it.
     assert_eq!(
         project.remove_output(output_id(1)),

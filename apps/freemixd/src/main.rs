@@ -676,6 +676,11 @@ struct NativeDaemon {
     /// local outputs whose playlist cannot currently be read stay `None`, and
     /// their next wire sample carries no local field.
     local_output_status: [Option<StreamLocalStatus>; fm_switcher::MAX_STREAM_COUNT],
+    /// The `--hls-listen` route table, when the listener runs: every stream
+    /// destination edit (OR-006) republishes it from the realized
+    /// destinations, so a local HLS destination added while running is served
+    /// at once and a removed one is not served any longer.
+    hls_routes: Option<hls_server::HlsRouteTable>,
     /// When the last local HLS output sample was attempted; `None` makes the
     /// first sample evaluate immediately instead of after one full interval.
     local_output_sampled_at: Option<Instant>,
@@ -4870,6 +4875,7 @@ impl NativeDaemon {
             disk_sampled_at: None,
             local_output_dirs,
             local_output_status: [None; fm_switcher::MAX_STREAM_COUNT],
+            hls_routes: None,
             local_output_sampled_at: None,
             recording_finalizers: Vec::new(),
             streams,
@@ -5689,7 +5695,25 @@ impl NativeDaemon {
             self.streams.push(stream);
         }
         self.local_output_dirs = self.local_hls_directories();
+        self.publish_hls_routes();
         Ok(())
+    }
+
+    /// Republishes the `--hls-listen` route table from the realized
+    /// destinations, if the listener runs. The engine's unique target ids
+    /// make a duplicate unreachable; one is reported and keeps the previous
+    /// table rather than serving the wrong directory.
+    fn publish_hls_routes(&self) {
+        let Some(routes) = &self.hls_routes else {
+            return;
+        };
+        match hls_roots(Some(self)) {
+            Ok(roots) => routes.replace(roots),
+            Err(error) => eprintln!(
+                "FREEMIXD_STREAM_FAILURE\tv=1\ttarget=hls\tfailure={}",
+                diagnostic_field(&format!("hls_routes:{error}"))
+            ),
+        }
     }
 
     /// The group a new destination with encoder identity `key` joins: the
@@ -10163,12 +10187,13 @@ fn serve_inner(
                 .into());
             }
             let token = hls_server::token_from_environment()?;
-            Some(HlsServer::start(
-                address,
-                token,
-                roots,
-                Arc::new(AtomicBool::new(false)),
-            )?)
+            let listener =
+                HlsServer::start(address, token, roots, Arc::new(AtomicBool::new(false)))?;
+            #[cfg(feature = "native-media")]
+            if let Some(native) = native.as_mut() {
+                native.hls_routes = Some(listener.routes());
+            }
+            Some(listener)
         }
         None => None,
     };

@@ -1922,9 +1922,13 @@ A native process test covers the full run:
 - a group stop leaves the recording running;
 - no key appears on the wire, in snapshots, or on stderr.
 
+The `--hls-listen` route table follows live destination edits: a local HLS
+destination added while the daemon runs is served at once, and a removed or
+moved one stops being served. A native process test covers both.
+
 Remaining gaps:
-- the LAN HLS server's routes are fixed at startup, so an HLS destination
-  added live is written but not served until restart;
+- undoing a destination removal restores it at the end of the list rather
+  than at its old position;
 - a running destination must be stopped before it can be edited;
 - there is no per-destination encoder override beyond bitrate;
 - the simulated daemon accepts every command but realizes no transport.

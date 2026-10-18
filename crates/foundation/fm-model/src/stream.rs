@@ -62,6 +62,10 @@ pub const MAX_STREAM_TARGET_NAME_BYTES: usize = 128;
 /// for HLS.
 pub const MAX_STREAM_ENDPOINT_BYTES: usize = 1_024;
 
+/// Most stream destinations one project may carry (OR-006), matching the
+/// switcher's stream inventory and the shared output set.
+pub const MAX_STREAM_TARGETS: usize = 5;
+
 /// Shortest stream key that can be substituted out of captured child output
 /// without mangling unrelated text. Matches the sink's minimum.
 pub const MIN_STREAM_KEY_BYTES: usize = 4;

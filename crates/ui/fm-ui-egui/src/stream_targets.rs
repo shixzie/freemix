@@ -45,6 +45,11 @@ use crate::{StudioIntent, StudioShell, StudioUiState};
 
 /// Default video bitrate of a new destination, in kilobits per second.
 const DEFAULT_BITRATE_KBPS: u32 = 6_000;
+/// Shortest stream key the daemon accepts (`fm_model::MIN_STREAM_KEY_BYTES`,
+/// which this UI crate does not depend on).
+const MIN_STREAM_KEY_BYTES: usize = 4;
+/// The redaction marker, which the codec refuses as a key.
+const REDACTED_KEY: &str = "***";
 /// Width of the Add / Edit destination dialog.
 const DIALOG_WIDTH: f32 = 480.0;
 
@@ -318,7 +323,15 @@ impl TargetDraft {
                 ))
             };
         }
-        if !stream_key_is_valid(&self.key) || self.key.len() > MAX_STREAM_TARGET_KEY_BYTES {
+        // The daemon validates through `fm_model::StreamKey::parse`, which
+        // also refuses a `/`, a key under `MIN_STREAM_KEY_BYTES`, and the
+        // codec refuses the redaction marker itself.
+        if !stream_key_is_valid(&self.key)
+            || self.key.len() > MAX_STREAM_TARGET_KEY_BYTES
+            || self.key.len() < MIN_STREAM_KEY_BYTES
+            || self.key.contains('/')
+            || self.key == REDACTED_KEY
+        {
             return Err(FieldProblem::error(
                 TargetField::Key,
                 Msg::StreamErrKeyChars.en(),
@@ -554,6 +567,12 @@ pub(crate) fn submission(
     if let Some(reason) = gate {
         return Err(Blocked::Gate(reason));
     }
+    // An add whose id another console took meanwhile would reconfigure
+    // that destination; [`StreamTargetsUi::reconcile`] moves the draft to a
+    // free id before it can submit.
+    if !draft.editing() && known_targets(state).contains(&draft.target.get()) {
+        return Err(Blocked::Gate(Msg::ReasonStreamPending.en()));
+    }
     let names = other_names(state, draft.target);
     let taken: Vec<&str> = names.iter().map(String::as_str).collect();
     let (config, stream_key) = draft
@@ -599,12 +618,19 @@ impl StreamTargetsUi {
             return;
         };
         let output = output_ids(state).first().copied();
-        self.dialog = Some(TargetDraft::new(
-            l,
-            target,
-            output,
-            known_targets(state).len() + 1,
-        ));
+        let names = other_names(state, target);
+        let mut draft = TargetDraft::new(l, target, output, known_targets(state).len() + 1);
+        // The first default name no other destination uses.
+        for position in known_targets(state).len() + 1.. {
+            draft.name = format!("{} {position}", l.text(Msg::StreamSectionDestination));
+            if !names
+                .iter()
+                .any(|name| name.trim().eq_ignore_ascii_case(draft.name.trim()))
+            {
+                break;
+            }
+        }
+        self.dialog = Some(draft);
     }
 
     /// Opens the Edit dialog for `target` when editing is available.
@@ -660,6 +686,17 @@ impl StreamTargetsUi {
             .is_some_and(|draft| draft.editing() && gone(draft.target))
         {
             self.dialog = None;
+        }
+        // Another console added a destination under this add's id: the add
+        // moves to the next free id instead of reconfiguring that one.
+        if let Some(draft) = self.dialog.as_mut()
+            && !draft.editing()
+            && known_targets(state).contains(&draft.target.get())
+        {
+            match next_target_id(state) {
+                Some(next) => draft.target = next,
+                None => self.dialog = None,
+            }
         }
         if self
             .remove
@@ -960,20 +997,7 @@ fn draw_form(ui: &mut Ui, l: Locale, state: &StudioUiState, draft: &mut TargetDr
         let width = (ui.available_width() - crate::theme::MIN_TARGET - ui.spacing().item_spacing.x)
             .max(60.0);
         let keep = draft.editing() && draft.stored_key;
-        let response = ui
-            .add_enabled(
-                !hls,
-                egui::TextEdit::singleline(&mut draft.key)
-                    .id(egui::Id::new("studio-stream-target-key"))
-                    .password(!draft.reveal_key)
-                    .hint_text(if keep && !hls {
-                        l.text(Msg::StreamKeyKeepHint)
-                    } else {
-                        ""
-                    })
-                    .char_limit(MAX_STREAM_TARGET_KEY_BYTES)
-                    .desired_width(width),
-            )
+        let response = key_field(ui, l, draft, hls, keep, width)
             .hint(l.text(Msg::StreamFieldKeyHover), Msg::ReasonHlsNoKey.en());
         if invalid(TargetField::Key) {
             mark_invalid(ui, response.rect);
@@ -988,6 +1012,10 @@ fn draw_form(ui: &mut Ui, l: Locale, state: &StudioUiState, draft: &mut TargetDr
         Some(caption(l.text(Msg::StreamKeyClearCaption)))
     } else if !hls && draft.editing() && draft.stored_key && draft.key.is_empty() {
         Some(caption(l.text(Msg::StreamKeyKeepCaption)))
+    } else if !hls && draft.editing() && draft.stored_key {
+        // Typing over a stored key says what Save does instead of leaving
+        // the caption's slot empty.
+        Some(caption(l.text(Msg::StreamKeyReplaceCaption)))
     } else {
         None
     };
@@ -1116,6 +1144,82 @@ fn footer_text(l: Locale, protocol: StreamTargetProtocol, blocked: Blocked) -> (
     }
 }
 
+/// The masked stream key as the field shows it: a fixed run of dots, so
+/// the mask never tells how long the key is.
+const KEY_MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+
+/// The stream key field. Revealed, it edits the key directly. Masked, it
+/// edits an empty buffer each frame (typed or pasted text is appended to
+/// the key, Backspace drops its last character) and shows [`KEY_MASK`]
+/// whatever the key's length, instead of one dot per character.
+fn key_field(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut TargetDraft,
+    hls: bool,
+    keep: bool,
+    width: f32,
+) -> egui::Response {
+    let hint = if hls {
+        ""
+    } else if !draft.key.is_empty() && !draft.reveal_key {
+        KEY_MASK
+    } else if keep {
+        l.text(Msg::StreamKeyKeepHint)
+    } else {
+        ""
+    };
+    if draft.reveal_key {
+        return ui.add_enabled(
+            !hls,
+            egui::TextEdit::singleline(&mut draft.key)
+                .id(key_field_id())
+                .hint_text(hint)
+                .char_limit(MAX_STREAM_TARGET_KEY_BYTES)
+                .desired_width(width),
+        );
+    }
+    let mut typed = String::new();
+    let response = ui.add_enabled(
+        !hls,
+        egui::TextEdit::singleline(&mut typed)
+            .id(key_field_id())
+            .password(true)
+            .hint_text(egui::RichText::new(hint).color(if draft.key.is_empty() {
+                ui.visuals().weak_text_color()
+            } else {
+                ui.visuals().text_color()
+            }))
+            .desired_width(width),
+    );
+    if response.has_focus() {
+        if !typed.is_empty() {
+            let room = MAX_STREAM_TARGET_KEY_BYTES.saturating_sub(draft.key.len());
+            let mut end = typed.len().min(room);
+            while !typed.is_char_boundary(end) {
+                end -= 1;
+            }
+            draft.key.push_str(&typed[..end]);
+        } else if ui.input(|input| input.key_pressed(egui::Key::Backspace)) {
+            draft.key.pop();
+        }
+    }
+    response
+}
+
+/// The stream key field's widget id.
+fn key_field_id() -> egui::Id {
+    egui::Id::new("studio-stream-target-key")
+}
+
+/// Drops the key field's widget state once no dialog shows it: egui keeps a
+/// text field's undo history in context memory under its id, so a later
+/// dialog (for any destination) could otherwise bring a typed key back with
+/// one undo, and send it for the wrong destination.
+fn forget_key_field(context: &egui::Context) {
+    context.data_mut(|data| data.remove::<egui::text_edit::TextEditState>(key_field_id()));
+}
+
 impl StudioShell {
     /// Draws the Add / Edit destination dialog and the Remove confirmation
     /// when open.
@@ -1138,6 +1242,7 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
     ) {
         let Some(mut draft) = self.stream_targets.dialog.take() else {
+            forget_key_field(context);
             return;
         };
         let l = self.locale;
@@ -1237,9 +1342,12 @@ impl StudioShell {
         );
         if submit && let Ok(intent) = submission(&draft, state) {
             intents.push(intent);
+            forget_key_field(context);
             return;
         }
-        if !(closed || cancel) {
+        if closed || cancel {
+            forget_key_field(context);
+        } else {
             self.stream_targets.dialog = Some(draft);
         }
     }
@@ -1585,7 +1693,7 @@ pub(crate) mod tests {
             check(&new_draft(
                 StreamTargetProtocol::Srt,
                 "srt.example:9000",
-                "a&b"
+                "key&b"
             ))
             .unwrap_err()
             .reason,
@@ -1648,6 +1756,88 @@ pub(crate) mod tests {
         assert!(!format!("{draft:?}").contains(SECRET));
     }
 
+    /// The form refuses every key `fm_model::StreamKey::parse` or the codec
+    /// refuses, so Save is never enabled for a key the daemon rejects after
+    /// the dialog closed (OR-006).
+    #[test]
+    fn keys_the_daemon_refuses_are_refused_in_the_form() {
+        for refused in ["a/b-key", "abc", "***"] {
+            let problem = check(&new_draft(
+                StreamTargetProtocol::Rtmp,
+                "ingest.example/live",
+                refused,
+            ))
+            .unwrap_err();
+            assert_eq!(problem.field, TargetField::Key, "{refused}");
+            assert_eq!(problem.reason, Msg::StreamErrKeyChars.en(), "{refused}");
+        }
+        assert!(
+            check(&new_draft(
+                StreamTargetProtocol::Rtmp,
+                "ingest.example/live",
+                "abcd"
+            ))
+            .is_ok()
+        );
+    }
+
+    /// An open Add dialog whose id another console takes meanwhile moves to
+    /// a free id instead of reconfiguring (and overwriting the key of) that
+    /// destination (OR-006).
+    #[test]
+    fn an_add_whose_id_is_taken_meanwhile_never_overwrites_that_destination() {
+        let mut state = fixture(&[
+            entry(1, "T1", StreamTargetProtocol::Rtmp),
+            entry(2, "T2", StreamTargetProtocol::Rtmp),
+        ]);
+        let mut ui = StreamTargetsUi::default();
+        ui.open_add(Locale::ENGLISH, &state);
+        let mut draft = ui.dialog.clone().unwrap();
+        assert_eq!(draft.target, target(3));
+        draft.endpoint = "ingest.example/live".into();
+        draft.key = SECRET.into();
+        ui.dialog = Some(draft.clone());
+        // Another console adds destination 3.
+        let theirs = entry(3, "Theirs", StreamTargetProtocol::Rtmp);
+        let view = state.view.as_mut().unwrap();
+        view.stream_targets.push(theirs);
+        view.streams.push(StreamStatus {
+            target: target(3).get(),
+            name: "Theirs".into(),
+            desired_running: false,
+            realized: StreamRealizedState::Stopped,
+            detail: None,
+        });
+        state.streams.clone_from(&view.streams);
+        assert!(matches!(submission(&draft, &state), Err(Blocked::Gate(_))));
+        ui.reconcile(&state);
+        let moved = ui.dialog.as_ref().unwrap();
+        assert_eq!(moved.target, target(4));
+        assert_eq!(moved.key, SECRET);
+        let Ok(StudioIntent::SetStreamTarget { target: sent, .. }) = submission(moved, &state)
+        else {
+            panic!("the moved add submits");
+        };
+        assert_eq!(sent, target(4));
+    }
+
+    /// A new destination's default name is one no destination uses, so the
+    /// dialog never opens already refusing its own name.
+    #[test]
+    fn a_new_destination_defaults_to_a_free_name() {
+        let state = fixture(&[
+            entry(1, "Destination 1", StreamTargetProtocol::Rtmp),
+            entry(3, "Destination 3", StreamTargetProtocol::Rtmp),
+        ]);
+        let mut ui = StreamTargetsUi::default();
+        ui.open_add(Locale::ENGLISH, &state);
+        let mut draft = ui.dialog.unwrap();
+        assert_eq!(draft.name, "Destination 4");
+        draft.endpoint = "ingest.example/live".into();
+        draft.key = SECRET.into();
+        assert!(submission(&draft, &state).is_ok());
+    }
+
     #[test]
     fn running_destinations_cannot_be_saved() {
         let stored = entry(1, "Twitch", StreamTargetProtocol::Rtmp);
@@ -1663,7 +1853,11 @@ pub(crate) mod tests {
 
     #[test]
     fn form_problems_name_their_field_with_the_daemons_bounds() {
-        let ok = new_draft(StreamTargetProtocol::Rtmp, "ingest.example/live", "k");
+        let ok = new_draft(
+            StreamTargetProtocol::Rtmp,
+            "ingest.example/live",
+            "live-key",
+        );
         assert!(check(&ok).is_ok());
         let mut taken = ok.clone();
         taken.name = "TWITCH".into();
@@ -1771,6 +1965,109 @@ pub(crate) mod tests {
             collect(&clipped.shape, &mut out);
         }
         out
+    }
+
+    /// A typed key's widget state, which holds its undo history, is dropped
+    /// once the dialog closes, so no later dialog can undo back to it.
+    #[test]
+    fn a_closed_dialog_forgets_the_typed_key() {
+        let stored = entry(1, "Twitch", StreamTargetProtocol::Rtmp);
+        let state = fixture(core::slice::from_ref(&stored));
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        shell.stream_targets.dialog = Some(TargetDraft::edit(&stored));
+        let pass = |shell: &mut StudioShell, events: Vec<egui::Event>| {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1_920.0, 1_080.0),
+                )),
+                events,
+                ..egui::RawInput::default()
+            });
+            let mut ui = Ui::new(
+                context.clone(),
+                egui::Id::new("fm-stream-target-test"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let _ = shell.draw(&mut ui, &state);
+            drop(ui);
+            let _ = context.end_pass();
+        };
+        pass(&mut shell, Vec::new());
+        context.memory_mut(|memory| memory.request_focus(key_field_id()));
+        pass(&mut shell, Vec::new());
+        pass(&mut shell, vec![egui::Event::Text(SECRET.to_owned())]);
+        assert_eq!(shell.stream_targets.dialog.as_ref().unwrap().key, SECRET);
+        assert!(egui::text_edit::TextEditState::load(&context, key_field_id()).is_some());
+        shell.stream_targets.dialog = None;
+        pass(&mut shell, Vec::new());
+        assert!(egui::text_edit::TextEditState::load(&context, key_field_id()).is_none());
+    }
+
+    /// The masked key paints a fixed run of dots whatever its length, and
+    /// typing over a stored key swaps the keep caption for the replace one
+    /// instead of leaving its slot empty.
+    #[test]
+    fn the_masked_key_hides_its_length_and_typing_keeps_a_caption() {
+        let stored = entry(1, "Twitch", StreamTargetProtocol::Rtmp);
+        let state = fixture(core::slice::from_ref(&stored));
+        let draw = |key: &str| {
+            let context = egui::Context::default();
+            let mut shell = StudioShell::default();
+            let mut draft = TargetDraft::edit(&stored);
+            draft.key = key.to_owned();
+            shell.stream_targets.dialog = Some(draft);
+            let mut texts = Vec::new();
+            for _ in 0..3 {
+                context.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1_920.0, 1_080.0),
+                    )),
+                    ..egui::RawInput::default()
+                });
+                let mut ui = Ui::new(
+                    context.clone(),
+                    egui::Id::new("fm-stream-target-test"),
+                    egui::UiBuilder::new()
+                        .layer_id(egui::LayerId::background())
+                        .max_rect(context.viewport_rect()),
+                );
+                let _ = shell.draw(&mut ui, &state);
+                drop(ui);
+                texts = painted_texts(&context.end_pass());
+            }
+            texts
+        };
+        for key in ["abcd", SECRET, &"k".repeat(200)] {
+            let texts = draw(key);
+            assert!(
+                texts.iter().any(|text| text == KEY_MASK),
+                "{key}: {texts:?}"
+            );
+            let dots = "\u{2022}".repeat(key.chars().count());
+            assert!(
+                key.chars().count() == 8 || !texts.contains(&dots),
+                "{key}: the mask shows the key's length"
+            );
+            assert!(!texts.iter().any(|text| text.contains(key)), "{key}");
+            assert!(
+                texts
+                    .iter()
+                    .any(|text| text == Msg::StreamKeyReplaceCaption.en()),
+                "{texts:?}"
+            );
+        }
+        let texts = draw("");
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == Msg::StreamKeyKeepCaption.en())
+        );
+        assert!(!texts.iter().any(|text| text == KEY_MASK));
     }
 
     /// With every tooltip shown and the Edit dialog open over a typed key,

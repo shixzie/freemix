@@ -61,6 +61,8 @@ const HEARTBEAT_EVERY: Duration = Duration::from_secs(3);
 const OUTPUT: u128 = 6_012;
 /// The destination whose ingest dies.
 const VICTIM: u128 = 2;
+/// The `--hls-listen` bearer token.
+const HLS_TOKEN: &str = "native-stream-destinations-hls-token-0001";
 /// The HLS destination added live.
 const HLS: u128 = 5;
 
@@ -122,8 +124,37 @@ fn impatient() -> StreamReconnectPolicy {
 
 /// A 64x48 25 fps generator show with three stopped RTMP destinations on
 /// `ports`.
-#[allow(clippy::too_many_lines)]
 fn save_project(path: &Path, ports: &[u16]) {
+    save_project_with(path, |output| {
+        ports
+            .iter()
+            .enumerate()
+            .map(|(index, port)| {
+                let target = u128::try_from(index + 1).unwrap();
+                StreamTarget::new(
+                    StreamTargetId::new(id(target)),
+                    format!("Destination {target}"),
+                    StreamProtocol::Rtmp,
+                    StreamEndpoint::parse(&format!("127.0.0.1:{port}/live")).unwrap(),
+                    Some(StreamKey::parse(&key(target)).unwrap()),
+                    output,
+                )
+                .unwrap()
+                .with_reconnect(if target == VICTIM {
+                    impatient()
+                } else {
+                    patient()
+                })
+                .set_running(false)
+            })
+            .collect()
+    });
+}
+
+/// The same show with the stream destinations `targets` authors on its one
+/// output.
+#[allow(clippy::too_many_lines)]
+fn save_project_with(path: &Path, targets: impl FnOnce(OutputId) -> Vec<StreamTarget>) {
     let rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
         ProjectId::new(id(6_000)),
@@ -194,23 +225,7 @@ fn save_project(path: &Path, ports: &[u16]) {
         startup: StartupPolicy::ReconcileDesiredState,
         required_capabilities: Vec::new(),
     });
-    for (index, port) in ports.iter().enumerate() {
-        let target = u128::try_from(index + 1).unwrap();
-        let destination = StreamTarget::new(
-            StreamTargetId::new(id(target)),
-            format!("Destination {target}"),
-            StreamProtocol::Rtmp,
-            StreamEndpoint::parse(&format!("127.0.0.1:{port}/live")).unwrap(),
-            Some(StreamKey::parse(&key(target)).unwrap()),
-            output,
-        )
-        .unwrap()
-        .with_reconnect(if target == VICTIM {
-            impatient()
-        } else {
-            patient()
-        })
-        .set_running(false);
+    for destination in targets(output) {
         project.add_stream_target_checked(destination).unwrap();
     }
     let stored = StoredProject::from_project(
@@ -287,12 +302,46 @@ impl DaemonProcess {
     /// returns `None` when this host has no native media runtime (unless
     /// `FM_REQUIRE_NATIVE_MEDIA=1`).
     fn start(project: &Path, output: &Path) -> Option<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_freemixd"))
-            .arg("serve")
-            .arg(project)
-            .arg("--native-media")
-            .arg("--record-program")
-            .arg(output)
+        Self::spawn(
+            Command::new(env!("CARGO_BIN_EXE_freemixd"))
+                .arg("serve")
+                .arg(project)
+                .arg("--native-media")
+                .arg("--record-program")
+                .arg(output),
+        )
+        .map(|(daemon, _)| daemon)
+    }
+
+    /// Starts `freemixd serve --native-media --hls-listen 127.0.0.1:0` with
+    /// [`HLS_TOKEN`], returning the daemon and the listener's bound address.
+    fn start_hls(project: &Path) -> Option<(Self, SocketAddr)> {
+        let (daemon, stdout) = Self::spawn(
+            Command::new(env!("CARGO_BIN_EXE_freemixd"))
+                .arg("serve")
+                .arg(project)
+                .arg("--native-media")
+                .arg("--hls-listen")
+                .arg("127.0.0.1:0")
+                .env("FREEMIXD_HLS_TOKEN", HLS_TOKEN),
+        )?;
+        loop {
+            let line = stdout
+                .recv_timeout(PROCESS_TIMEOUT)
+                .expect("no FREEMIXD_HLS_READY record");
+            if let Some(address) = line
+                .trim_end()
+                .strip_prefix("FREEMIXD_HLS_READY\tv=1\taddress=")
+            {
+                return Some((daemon, address.parse().unwrap()));
+            }
+        }
+    }
+
+    /// Spawns `command`, waiting for its readiness record; the receiver
+    /// yields every later stdout line.
+    fn spawn(command: &mut Command) -> Option<(Self, mpsc::Receiver<String>)> {
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -302,18 +351,26 @@ impl DaemonProcess {
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let (ready_sender, ready) = mpsc::channel();
         thread::spawn(move || {
-            let mut line = String::new();
-            let _ = stdout.read_line(&mut line);
-            let _ = ready_sender.send(line);
-            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+            loop {
+                let mut line = String::new();
+                if !matches!(stdout.read_line(&mut line), Ok(read) if read > 0) {
+                    break;
+                }
+                // The receiver may be gone; keep draining so the pipe never
+                // fills.
+                let _ = ready_sender.send(line);
+            }
         });
         let line = ready.recv_timeout(PROCESS_TIMEOUT).unwrap_or_default();
         if let Ok(readiness) = line.trim_end().parse::<ReadinessRecord>() {
-            return Some(Self {
-                child,
-                address: readiness.address,
-                stderr,
-            });
+            return Some((
+                Self {
+                    child,
+                    address: readiness.address,
+                    stderr,
+                },
+                ready,
+            ));
         }
         let _ = child.kill();
         let _ = child.wait();
@@ -887,4 +944,123 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
         frames * 10 >= expected * 6,
         "{frames} frames recorded over {recorded_for:?}"
     );
+}
+
+/// `GET /v1/hls/<target>/index.m3u8` on the HLS listener; the status line.
+fn hls_status(address: SocketAddr, target: u128) -> String {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /v1/hls/{target}/index.m3u8 HTTP/1.1\r\nHost: hls\r\nAuthorization: Bearer {HLS_TOKEN}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    String::from_utf8_lossy(&response)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A local HLS destination named `name` publishing into `directory`.
+fn hls_config(name: &str, directory: &Path) -> StreamTargetConfig {
+    StreamTargetConfig {
+        name: name.into(),
+        protocol: StreamTargetProtocol::Hls,
+        endpoint: directory.display().to_string(),
+        backup_endpoint: None,
+        output: WireOutputId::new(id(OUTPUT)),
+        reconcile_on_startup: false,
+        video_bitrate_kbps: 2_500,
+        reconnect: StreamReconnect::DEFAULT,
+    }
+}
+
+/// The `--hls-listen` routes follow live destination edits (OR-006): a
+/// local HLS destination added while the daemon runs is served at once, and
+/// a removed one is no longer served. The route table used to be fixed at
+/// startup, so the new destination answered 404 until a restart and the
+/// removed one kept serving its directory.
+#[test]
+fn hls_listener_serves_destinations_added_live_and_drops_removed_ones() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("hls-destinations.freemix");
+    let authored = directory.path().join("hls-authored");
+    let added = directory.path().join("hls-added");
+    fs::create_dir_all(&authored).unwrap();
+    // The authored destination never starts; its playlist is a fixture.
+    fs::write(authored.join("index.m3u8"), "#EXTM3U\n").unwrap();
+    save_project_with(&project, |output| {
+        vec![
+            StreamTarget::new(
+                StreamTargetId::new(id(1)),
+                "Authored HLS".to_owned(),
+                StreamProtocol::Hls,
+                StreamEndpoint::parse_for(StreamProtocol::Hls, &authored.display().to_string())
+                    .unwrap(),
+                None,
+                output,
+            )
+            .unwrap()
+            .set_running(false),
+        ]
+    });
+    let Some((daemon, hls)) = DaemonProcess::start_hls(&project) else {
+        return;
+    };
+    let status = hls_status(hls, 1);
+    assert!(status.contains(" 200 "), "{status}");
+    let status = hls_status(hls, 2);
+    assert!(status.contains(" 404 "), "{status}");
+
+    let mut client = Client::connect(daemon.address);
+    client.command(
+        "add-hls",
+        CommandPayload::SetStreamTarget {
+            target: wire_target(2),
+            config: Box::new(hls_config("Added HLS", &added)),
+            stream_key: SecretEdit::Keep,
+        },
+    );
+    client.command(
+        "start-hls",
+        CommandPayload::StreamStart {
+            target: wire_target(2),
+        },
+    );
+    client.wait_for("the added destination's playlist", |_| {
+        added.join("index.m3u8").is_file()
+    });
+    let status = hls_status(hls, 2);
+    assert!(
+        status.contains(" 200 "),
+        "added live but not served: {status}"
+    );
+
+    client.command(
+        "remove-authored",
+        CommandPayload::RemoveStreamTarget {
+            target: wire_target(1),
+        },
+    );
+    let status = hls_status(hls, 1);
+    assert!(
+        status.contains(" 404 "),
+        "removed but still served: {status}"
+    );
+    client.command(
+        "stop-hls",
+        CommandPayload::StreamStop {
+            target: wire_target(2),
+        },
+    );
+    drop(client);
+    daemon.stop();
 }

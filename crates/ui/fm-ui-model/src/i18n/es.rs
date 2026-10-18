@@ -6449,6 +6449,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("La clave guardada se quita: el HLS local no usa ninguna"),
     ),
     (
+        Msg::StreamKeyReplaceCaption,
+        t("La clave escrita sustituye a la guardada; vacíe el campo para conservarla"),
+    ),
+    (
         Msg::StreamFieldOutputHover,
         t("Publicar la imagen y el sonido de esta salida"),
     ),
@@ -6550,7 +6554,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::StreamErrKeyChars,
-        t("use caracteres imprimibles sin espacios, como máximo 512 bytes"),
+        t("use de 4 a 512 caracteres imprimibles, sin espacios ni /"),
     ),
     (
         Msg::StreamErrKeySrt,

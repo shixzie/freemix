@@ -297,7 +297,12 @@ fn stream_target_config(
             Some(backup)
         }
         None if options.clear_backup_endpoint => None,
-        None => current.and_then(|config| config.backup_endpoint.clone()),
+        // A keyless HLS destination has no backup server: moving to HLS
+        // drops the stored one instead of sending it for the daemon to
+        // refuse.
+        None => current
+            .and_then(|config| config.backup_endpoint.clone())
+            .filter(|_| protocol.carries_key()),
     };
     let name = match &options.name {
         Some(name) => name.clone(),

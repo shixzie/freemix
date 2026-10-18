@@ -13202,6 +13202,114 @@ fn local_stream_start_all_and_stop_all_toggle_every_destination_but_not_recordin
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// OR-006: a sixth offline `stream-add` is refused before the bundle is
+/// saved. It used to be saved first and then refused by the engine load,
+/// leaving a bundle no engine command (nor freemixd) could open.
+#[test]
+fn a_sixth_local_stream_destination_is_refused_without_touching_the_bundle() {
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    for stream in 41..=44 {
+        assert_success(&invoke_bounded(&[
+            "stream-add",
+            context.project_path(),
+            &stream.to_string(),
+            "30",
+            "rtmps://ingest.example.test/live",
+            STREAM_KEY,
+            &format!("Extra {stream}"),
+        ]));
+    }
+    let manifest_before = fs::read(context.project.join("project.json")).unwrap();
+    let refused = invoke_bounded(&[
+        "stream-add",
+        context.project_path(),
+        "45",
+        "30",
+        "rtmps://ingest.example.test/live",
+        STREAM_KEY,
+        "Sixth",
+    ]);
+    assert_failure_contains(&refused, "already has 5 stream destinations");
+    assert_no_secrets(&refused, &[STREAM_KEY]);
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest_before
+    );
+    // The bundle still loads for engine commands.
+    assert_success(&invoke_bounded(&[
+        "stream-start-all",
+        context.project_path(),
+    ]));
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-006: an attached `--option=value` is never echoed, since the value
+/// may be a stream key; a left-out key or name positional is not filled
+/// with one of the command's own options; and `--reconnect` takes plain
+/// digits only, like the wire.
+#[test]
+fn stream_arguments_never_echo_attached_keys_or_swallow_options() {
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    let manifest_before = fs::read(context.project.join("project.json")).unwrap();
+    for arguments in [
+        vec![
+            "remote-stream-set",
+            "127.0.0.1:1",
+            "40",
+            "--name",
+            "N",
+            "--stream-key=sk_attached_SECRET_9",
+        ],
+        vec![
+            "stream-update",
+            context.project_path(),
+            "40",
+            "30",
+            "rtmps://ingest.example.test/live",
+            STREAM_KEY,
+            "Main",
+            "--stream-key=sk_attached_SECRET_9",
+        ],
+    ] {
+        let refused = invoke_bounded(&arguments);
+        assert_failure_contains(&refused, "unknown option `--stream-key=<value>`");
+        assert_no_secrets(&refused, &["sk_attached_SECRET_9", STREAM_KEY]);
+    }
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "stream-add",
+            context.project_path(),
+            "47",
+            "30",
+            "rtmp://h.example.test/live",
+            "--reconnect",
+            "100:100:1",
+        ]),
+        "stream key",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "stream-add",
+            context.project_path(),
+            "47",
+            "30",
+            "rtmp://h.example.test/live",
+            STREAM_KEY,
+            "Plus",
+            "--reconnect",
+            "+100:200:5",
+        ]),
+        "stream reconnect",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest_before
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 /// OR-006: `--reconnect <initial_ms>:<max_ms>:<attempts|none>` is parsed,
 /// validated against the model's bounds, persisted, printed in the same
 /// syntax, and refused atomically when out of range or misshapen.
@@ -13500,8 +13608,11 @@ fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
     server.finish();
 
     // Moving to keyless HLS with --clear-stream-key clears the key; a full
-    // endpoint URL names the protocol. The listing then says key=no.
-    let mut hls = config.clone();
+    // endpoint URL names the protocol. The listing then says key=no. HLS has
+    // no backup server, so the stored one is dropped rather than sent for
+    // the daemon to refuse.
+    let mut hls = edited.clone();
+    hls.backup_endpoint = None;
     hls.protocol = fm_protocol::StreamTargetProtocol::Hls;
     hls.endpoint = "/var/lib/freemix/hls".into();
     let server = start_stream_target_edit(
@@ -13520,7 +13631,7 @@ fn remote_stream_set_and_remove_send_exact_payloads_and_never_print_the_key() {
             },
             domain: "project",
         },
-        vec![added.clone()],
+        vec![remote_stream_entry(edited.clone(), true)],
         remote_stream_roster(false),
     );
     let output = invoke_bounded(&[
