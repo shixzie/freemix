@@ -1,8 +1,9 @@
-//! The self-contained phone tally page served on the WebSocket gateway port.
+//! The self-contained phone tally and operator pages served on the WebSocket
+//! gateway port.
 //!
-//! Serving it from the gateway's own origin lets the page reach
+//! Serving them from the gateway's own origin lets a page reach
 //! `/v1/control` same-origin, so the gateway can require a matching `Origin`
-//! for browser-carried credentials. The page is static and carries no secret:
+//! for browser-carried credentials. Each page is static and carries no secret:
 //! the operator enters the `FREEMIXD_WEB_TOKEN` in the page, which presents it
 //! through the WebSocket subprotocol list. Requests for any other path fall
 //! through untouched to the WebSocket handshake.
@@ -16,6 +17,9 @@ use std::{
 
 pub(super) const TALLY_PATH: &str = "/tally";
 pub(super) const TALLY_PAGE: &str = include_str!("tally.html");
+/// The phone and tablet operator surface (`RC-014`).
+pub(super) const OPERATOR_PATH: &str = "/operator";
+pub(super) const OPERATOR_PAGE: &str = include_str!("operator.html");
 
 const MAX_REQUEST_LINE: usize = 2 * 1024;
 const MAX_REQUEST_HEAD: usize = 8 * 1024;
@@ -30,7 +34,7 @@ pub(super) enum PageOutcome {
     Handled,
 }
 
-/// Answers a tally page request without consuming any other request.
+/// Answers a page request without consuming any other request.
 ///
 /// Only the request line is peeked before deciding, so a WebSocket upgrade
 /// reaches the handshake with every byte intact.
@@ -41,7 +45,7 @@ pub(super) fn serve(stream: &mut TcpStream, timeout: Duration) -> PageOutcome {
         Peeked::NotPage => return PageOutcome::NotPage,
         Peeked::Gone => return PageOutcome::Handled,
     };
-    let Some(method) = page_method(&request) else {
+    let Some((method, page)) = page_method(&request) else {
         return PageOutcome::NotPage;
     };
     let Some(head) = read_head(stream, deadline) else {
@@ -49,8 +53,8 @@ pub(super) fn serve(stream: &mut TcpStream, timeout: Duration) -> PageOutcome {
         return PageOutcome::Handled;
     };
     let response = match method {
-        Method::Get => page_response(&head, true),
-        Method::Head => page_response(&head, false),
+        Method::Get => page_response(&head, page, true),
+        Method::Head => page_response(&head, page, false),
         Method::Other => {
             b"HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, HEAD\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".to_vec()
         }
@@ -104,8 +108,9 @@ fn peek_request_line(stream: &TcpStream, deadline: Instant) -> Peeked {
     }
 }
 
-/// Recognizes `<METHOD> /tally[?query] HTTP/1.x`.
-fn page_method(request_line: &str) -> Option<Method> {
+/// Recognizes `<METHOD> /tally[?query] HTTP/1.x` (or `/operator`) and
+/// returns the method with the page it names.
+fn page_method(request_line: &str) -> Option<(Method, &'static str)> {
     let mut parts = request_line.split(' ');
     let method = parts.next()?;
     let target = parts.next()?;
@@ -114,14 +119,17 @@ fn page_method(request_line: &str) -> Option<Method> {
         return None;
     }
     let path = target.split_once('?').map_or(target, |(path, _)| path);
-    if path != TALLY_PATH {
-        return None;
-    }
-    Some(match method {
+    let page = match path {
+        TALLY_PATH => TALLY_PAGE,
+        OPERATOR_PATH => OPERATOR_PAGE,
+        _ => return None,
+    };
+    let method = match method {
         "GET" => Method::Get,
         "HEAD" => Method::Head,
         _ => Method::Other,
-    })
+    };
+    Some((method, page))
 }
 
 /// Consumes the full request head so closing never resets unread bytes.
@@ -161,7 +169,7 @@ fn host_header(head: &str) -> Option<&str> {
     })
 }
 
-fn page_response(head: &str, body: bool) -> Vec<u8> {
+fn page_response(head: &str, page: &str, body: bool) -> Vec<u8> {
     // The page only ever connects back to its own gateway. `'self'` covers
     // same-origin WebSockets in current browsers; the explicit `ws://` source
     // keeps older engines that predate that rule working.
@@ -180,32 +188,52 @@ fn page_response(head: &str, body: bool) -> Vec<u8> {
          style-src 'unsafe-inline'; img-src data:; connect-src {connect}; base-uri 'none'; \
          form-action 'none'; frame-ancestors 'none'\r\n\
          Connection: close\r\n\r\n",
-        TALLY_PAGE.len()
+        page.len()
     )
     .into_bytes();
     if body {
-        response.extend_from_slice(TALLY_PAGE.as_bytes());
+        response.extend_from_slice(page.as_bytes());
     }
     response
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Method, TALLY_PAGE, page_method, page_response, sanitized_host};
+    use super::{Method, OPERATOR_PAGE, TALLY_PAGE, page_method, page_response, sanitized_host};
 
     #[test]
-    fn only_the_tally_path_is_a_page_request() {
-        assert_eq!(page_method("GET /tally HTTP/1.1"), Some(Method::Get));
+    fn only_the_page_paths_are_page_requests() {
+        assert_eq!(
+            page_method("GET /tally HTTP/1.1"),
+            Some((Method::Get, TALLY_PAGE))
+        );
         assert_eq!(
             page_method("GET /tally?input=7 HTTP/1.1"),
-            Some(Method::Get)
+            Some((Method::Get, TALLY_PAGE))
         );
-        assert_eq!(page_method("HEAD /tally HTTP/1.0"), Some(Method::Head));
-        assert_eq!(page_method("POST /tally HTTP/1.1"), Some(Method::Other));
+        assert_eq!(
+            page_method("HEAD /tally HTTP/1.0"),
+            Some((Method::Head, TALLY_PAGE))
+        );
+        assert_eq!(
+            page_method("POST /tally HTTP/1.1"),
+            Some((Method::Other, TALLY_PAGE))
+        );
+        assert_eq!(
+            page_method("GET /operator HTTP/1.1"),
+            Some((Method::Get, OPERATOR_PAGE))
+        );
+        assert_eq!(
+            page_method("HEAD /operator?x=1 HTTP/1.1"),
+            Some((Method::Head, OPERATOR_PAGE))
+        );
         for line in [
             "GET /v1/control HTTP/1.1",
             "GET /tally/ HTTP/1.1",
             "GET /tallyx HTTP/1.1",
+            "GET /operator/ HTTP/1.1",
+            "GET /operator/transition HTTP/1.1",
+            "GET / HTTP/1.1",
             "GET /tally HTTP/2",
             "GET /tally HTTP/1.1 extra",
             "GET /tally",
@@ -226,13 +254,14 @@ mod tests {
     #[test]
     fn head_responses_carry_headers_without_a_body() {
         let head = "HEAD /tally HTTP/1.1\r\nHost: 127.0.0.1:4000\r\n\r\n";
-        let response = String::from_utf8(page_response(head, false)).unwrap();
+        let response = String::from_utf8(page_response(head, TALLY_PAGE, false)).unwrap();
         assert!(response.ends_with("\r\n\r\n"));
         assert!(response.contains(&format!("Content-Length: {}\r\n", TALLY_PAGE.len())));
         assert!(response.contains("connect-src 'self' ws://127.0.0.1:4000;"));
         let hostile = "GET /tally HTTP/1.1\r\nHost: a b\r\n\r\n";
-        let response = String::from_utf8(page_response(hostile, true)).unwrap();
+        let response = String::from_utf8(page_response(hostile, OPERATOR_PAGE, true)).unwrap();
         assert!(response.contains("connect-src 'self'; base-uri"));
-        assert!(response.ends_with(TALLY_PAGE));
+        assert!(response.contains(&format!("Content-Length: {}\r\n", OPERATOR_PAGE.len())));
+        assert!(response.ends_with(OPERATOR_PAGE));
     }
 }

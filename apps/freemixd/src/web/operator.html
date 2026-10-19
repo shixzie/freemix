@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>FreeMix Operator</title>
+<style>
+  :root { --program: #d0021b; --preview: #12872f; --idle: #2b2b2b; --panel: #141414; --line: #ffffff40;
+    --muted: #b8b8b8; --warn: #ffb000; --focus: #4da3ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #000; color: #fff;
+    font: 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+  button, input, select { font: inherit; color: inherit; }
+  button { min-height: 48px; padding: 0 .9rem; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--idle); font-weight: 650; touch-action: manipulation; }
+  button:disabled { opacity: .45; }
+  /* The selected Preview source is disabled ("Already on Preview") but must stay bright. */
+  button[aria-pressed="true"]:disabled { opacity: 1; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  header { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .5rem .75rem;
+    padding-top: max(.5rem, env(safe-area-inset-top)); background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 1.05rem; margin: 0; }
+  header .spacer { flex: 1; }
+  #link { padding: .2rem .65rem; border-radius: 999px; font-size: .85rem; font-weight: 700; background: #333; }
+  #link[data-phase="live"] { background: var(--preview); }
+  #link[data-phase="waiting"], #link[data-phase="connecting"], #link[data-phase="open"] { background: #6a4b00; color: #ffe2a0; }
+  #link[data-phase="stopped"] { background: var(--program); }
+  header a { color: #cfe3ff; }
+  main { flex: 1; display: grid; gap: .75rem; padding: .75rem; align-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: .75rem; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: .8rem; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .5rem; color: var(--muted); }
+  .why { margin: .4rem 0 0; font-size: .85rem; color: var(--warn); min-height: 0; }
+  .why:empty { display: none; }
+  .bus { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); }
+  .bus button, .bus .tile { min-height: 64px; text-align: center; word-break: break-word; }
+  .bus .tile { display: flex; align-items: center; justify-content: center; padding: .25rem .5rem;
+    border-radius: 10px; border: 1px solid var(--line); background: var(--idle); font-weight: 650; }
+  [data-light="program"] { background: var(--program) !important; border-color: #ff8a8a !important; }
+  [data-light="preview"] { background: var(--preview) !important; border-color: #8af0a3 !important; }
+  [data-pending="1"] { box-shadow: inset 0 0 0 3px var(--warn); }
+  [data-offline="1"] { text-decoration: line-through; }
+  .take { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .take button { min-height: 72px; font-size: 1.35rem; letter-spacing: .06em; }
+  #cut { background: #3a0d12; border-color: #ff6b7a; }
+  #auto { background: #10301a; border-color: #6fe08d; }
+  fieldset { border: 0; padding: 0; margin: .6rem 0 0; }
+  legend { font-size: .85rem; color: var(--muted); margin-bottom: .35rem; padding: 0; }
+  .choices { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .choices label { position: relative; }
+  .choices input { position: absolute; opacity: 0; inset: 0; margin: 0; }
+  .choices span { display: inline-flex; align-items: center; min-height: 44px; padding: 0 .8rem; border-radius: 999px;
+    border: 1px solid var(--line); background: #222; }
+  .choices input:checked + span { background: #f0f0f0; color: #000; font-weight: 700; }
+  .choices input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .choices input:disabled + span { opacity: .45; }
+  .row { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; border-top: 1px solid #ffffff14; }
+  .row:first-of-type { border-top: 0; }
+  .row { flex-wrap: wrap; }
+  .row .name { flex: 1 1 6rem; min-width: 6rem; overflow-wrap: anywhere; }
+  .row .state { flex: 0 1 auto; text-align: right; font-size: .8rem; font-weight: 800; letter-spacing: .06em;
+    color: var(--muted); }
+  .row .state[data-on="1"] { color: #ff6b7a; }
+  .row button { min-width: 6.5rem; margin-left: auto; }
+  #ftb[data-phase="black"], #ftb[data-phase="fading"] { background: #000; border-color: var(--warn); color: var(--warn); }
+  button[aria-pressed="true"].mute { background: #5a1010; border-color: #ff6b7a; }
+  .badge { font-size: .8rem; font-weight: 800; letter-spacing: .06em; }
+  form { display: grid; gap: .75rem; max-width: 26rem; }
+  label.field { display: grid; gap: .25rem; }
+  label.field input, label.field select { min-height: 48px; padding: 0 .6rem; border-radius: 10px;
+    border: 1px solid var(--line); background: #111; }
+  #status { padding: .5rem .75rem; padding-bottom: max(.5rem, env(safe-area-inset-bottom)); font-size: .9rem;
+    color: #ddd; background: var(--panel); border-top: 1px solid var(--line); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">FreeMix Operator</h1>
+  <span id="link" role="status" data-phase="idle">OFFLINE</span>
+  <span class="spacer"></span>
+  <button type="button" id="reconnect" hidden>Reconnect now</button>
+  <button type="button" id="signout">Change token</button>
+  <a href="/tally">Tally</a>
+</header>
+<main id="surface" aria-labelledby="title">
+  <section id="setup-panel" class="wide" hidden aria-labelledby="setup-heading">
+    <h2 id="setup-heading">Connect</h2>
+    <form id="setup" autocomplete="off">
+      <label class="field">Access token
+        <input id="token" type="password" required minlength="32" maxlength="256" autocomplete="off">
+      </label>
+      <label class="field">Role
+        <select id="role">
+          <option value="operator">Operator (switch, record, stream, audio)</option>
+          <option value="audio">Audio (mute only)</option>
+          <option value="viewer">Viewer (watch only)</option>
+        </select>
+      </label>
+      <button type="submit">Connect</button>
+    </form>
+  </section>
+
+  <section class="wide" aria-labelledby="program-heading">
+    <h2 id="program-heading">Program</h2>
+    <div id="program-bus" class="bus" role="list" aria-label="Program bus"></div>
+    <p id="why-program" class="why" aria-live="polite"></p>
+  </section>
+
+  <section class="wide" aria-labelledby="preview-heading">
+    <h2 id="preview-heading">Preview <span class="sr-only">(tap an input to put it on Preview)</span></h2>
+    <div id="preview-bus" class="bus" role="group" aria-label="Preview bus"></div>
+    <p id="why-preview" class="why" aria-live="polite"></p>
+  </section>
+
+  <section aria-labelledby="transition-heading">
+    <h2 id="transition-heading">Transition</h2>
+    <div class="take">
+      <button type="button" id="cut" aria-describedby="why-transition" aria-keyshortcuts="C">CUT</button>
+      <button type="button" id="auto" aria-describedby="why-transition auto-kind" aria-keyshortcuts="A">AUTO</button>
+    </div>
+    <span id="auto-kind" class="sr-only"></span>
+    <fieldset id="kinds">
+      <legend>Transition for AUTO</legend>
+      <div class="choices" id="kind-choices"></div>
+    </fieldset>
+    <fieldset id="durations">
+      <legend>Duration for AUTO and Fade to Black</legend>
+      <div class="choices" id="duration-choices"></div>
+    </fieldset>
+    <div class="row" style="margin-top:.6rem">
+      <span class="name">Fade to Black <span id="ftb-state" class="badge" role="status">LIVE</span></span>
+      <button type="button" id="ftb" aria-describedby="why-transition" aria-pressed="false" aria-keyshortcuts="B">FTB</button>
+    </div>
+    <p id="why-transition" class="why" aria-live="polite"></p>
+  </section>
+
+  <section aria-labelledby="outputs-heading">
+    <h2 id="outputs-heading">Record and stream</h2>
+    <div id="recorders"></div>
+    <div id="streams"></div>
+    <p id="no-streams" class="why" hidden style="color:var(--muted)">No stream destinations are configured.</p>
+    <p id="why-outputs" class="why" aria-live="polite"></p>
+  </section>
+
+  <section aria-labelledby="audio-heading">
+    <h2 id="audio-heading">Audio</h2>
+    <div id="strips"></div>
+    <p id="why-audio" class="why" aria-live="polite"></p>
+  </section>
+</main>
+<div id="status" role="log" aria-live="polite">Not connected</div>
+<script>
+"use strict";
+(() => {
+  // Exact current protocol identifier; a daemon on any other one rejects us.
+  const PROTOCOL = "2.60";
+  const CONTROL_SUBPROTOCOL = "freemix.control.v1";
+  const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
+  const HEARTBEAT_INTERVAL_MS = 5000;
+  const HEARTBEAT_ACK_TIMEOUT_MS = 5000;
+  const SYNC_TIMEOUT_MS = 5000;
+  const INITIAL_BACKOFF_MS = 500;
+  const MAX_BACKOFF_MS = 10000;
+  const MAX_TRACKED_REVISIONS = 64;
+  // How long a mute refused as stale waits for the page to catch up before
+  // it is dropped instead of retried.
+  const MUTE_RETRY_TIMEOUT_MS = 2000;
+  const FTB_BLACK = 65535;
+  // Mirrors freemix-web's OperatorTransition.
+  const TRANSITIONS = [
+    ["fade", "Fade"], ["alpha_fade", "Alpha fade"], ["slide", "Slide"], ["zoom", "Zoom"], ["wipe", "Wipe"],
+  ];
+  const DURATIONS_MS = [500, 1000, 1500, 2000, 3000];
+  // Mirrors freemix-web's stream_state_label.
+  const STREAM_TEXT = {
+    stopped: "Stopped", starting: "Starting", live: "LIVE", waiting_to_reconnect: "Reconnecting",
+    congested: "Congested", failed: "Failed", unavailable: "Unavailable",
+  };
+  // Mirrors freemix-web's OperatorBlock::reason.
+  const REASON = {
+    notLive: "Not connected to the show",
+    permission: (name) => "This session lacks the " + name + " permission",
+    alreadyOnPreview: "Already on Preview",
+    notInShow: "No longer in the show",
+    noAudioStrip: "Waiting for this input's audio state",
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const ui = {
+    link: $("link"), status: $("status"), title: $("title"), reconnect: $("reconnect"), signout: $("signout"),
+    setupPanel: $("setup-panel"), setup: $("setup"), token: $("token"), role: $("role"),
+    programBus: $("program-bus"), previewBus: $("preview-bus"),
+    cut: $("cut"), auto: $("auto"), autoKind: $("auto-kind"), ftb: $("ftb"), ftbState: $("ftb-state"),
+    kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
+    recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
+    whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
+    whyAudio: $("why-audio"),
+  };
+
+  const store = window.sessionStorage;
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has("token")) store.setItem("freemix.operator.token", params.get("token"));
+  if (params.has("role")) store.setItem("freemix.operator.role", params.get("role"));
+  // Never leave the token in the address bar or history.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const link = {
+    phase: "idle", // idle | connecting | open | live | waiting | stopped
+    socket: null, attempt: 0, everLive: false, retryAt: 0, stopReason: "",
+    syncDeadline: 0, nextHeartbeat: 0, heartbeatDeadline: 0, heartbeatSequence: 1,
+    pendingHeartbeat: 0, server: null, permissions: [], revision: 0, role: "",
+  };
+  const show = {
+    name: "", inputs: [], frameRate: [30, 1],
+    desired: { program: "", preview: "" },
+    realized: { program: "", preview: "", manualFrom: "", manualTo: "" },
+    desiredByRevision: new Map(),
+    ftb: { target: false, position: 0 }, realizedFtb: { target: false, position: 0 },
+    strips: new Map(), recordings: [false, false], streams: [],
+  };
+  const choice = {
+    kind: store.getItem("freemix.operator.kind") || "fade",
+    durationMs: Number(store.getItem("freemix.operator.duration")) || 1000,
+  };
+  if (!TRANSITIONS.some(([token]) => token === choice.kind)) choice.kind = "fade";
+  if (!DURATIONS_MS.includes(choice.durationMs)) choice.durationMs = 1000;
+  // Commands this page sent and has not seen resolve: id -> label.
+  const pending = new Map();
+  // Mutes in flight (id -> { input, strip, retried }) and mutes refused as
+  // stale, waiting for the page to reach the revision they were refused at.
+  const mutesSent = new Map();
+  let muteRetries = [];
+  let commandCounter = 0;
+  let wakeLock = null;
+  const sessionNonce = Array.from(crypto.getRandomValues(new Uint8Array(8)),
+    (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  // ---- Wire codec: one newline-terminated, tab-separated record. ----
+  const SAFE = /^[A-Za-z0-9._-]$/;
+  function escapeValue(value) {
+    let out = "";
+    for (const byte of new TextEncoder().encode(String(value))) {
+      const ch = String.fromCharCode(byte);
+      out += SAFE.test(ch) ? ch : "%" + byte.toString(16).toUpperCase().padStart(2, "0");
+    }
+    return out;
+  }
+  function encodeRecord(kind, fields) {
+    return kind + fields.map(([name, value]) => "\t" + name + "=" + escapeValue(value)).join("") + "\n";
+  }
+  function decodeRecord(line) {
+    const parts = line.split("\t");
+    const fields = new Map();
+    for (const part of parts.slice(1)) {
+      const at = part.indexOf("=");
+      if (at < 1) throw new Error("malformed field");
+      const name = part.slice(0, at);
+      if (fields.has(name)) throw new Error("duplicate field " + name);
+      fields.set(name, decodeURIComponent(part.slice(at + 1)));
+    }
+    return { kind: parts[0], fields };
+  }
+  function required(record, name) {
+    const value = record.fields.get(name);
+    if (value === undefined) throw new Error(record.kind + " lacks " + name);
+    return value;
+  }
+  function base64Url(text) {
+    return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  // `id~name~category:color:paused:closed:offline`, comma separated.
+  function parseInputs(value) {
+    return value.split(",").map((item) => {
+      const parts = item.split("~");
+      if (parts.length !== 3 || !parts[0]) throw new Error("malformed input");
+      const lifecycle = parts[2].split(":");
+      return {
+        id: parts[0], label: decodeURIComponent(parts[1]),
+        offline: lifecycle[3] === "1" || (lifecycle[4] !== undefined && lifecycle[4] !== "-"),
+      };
+    });
+  }
+  // `input:gain:balance:pan:muted:soloed:follow_video:delay:group`.
+  function parseStrips(value) {
+    const strips = new Map();
+    for (const item of value ? value.split(",") : []) {
+      const parts = item.split(":");
+      if (parts.length < 9) throw new Error("malformed audio strip");
+      strips.set(parts[0], {
+        gain: parts[1], balance: parts[2], pan: parts[3], muted: parts[4] === "1",
+        soloed: parts[5] === "1", follow: parts[6] === "1", delay: parts[7],
+      });
+    }
+    return strips;
+  }
+  // `target:name:desired_running:realized:detail`.
+  function parseStreams(value) {
+    return (value ? value.split(",") : []).map((item) => {
+      const parts = item.split(":");
+      if (parts.length !== 5) throw new Error("malformed stream");
+      return {
+        id: parts[0], name: decodeURIComponent(parts[1]), desired: parts[2] === "1",
+        realized: parts[3], detail: parts[4] ? decodeURIComponent(parts[4]) : "",
+      };
+    });
+  }
+  // `1:<desired>,2:<desired>`.
+  function parseRecordings(value) {
+    const active = [false, false];
+    for (const item of value.split(",")) {
+      const [slot, on] = item.split(":");
+      if (slot !== "1" && slot !== "2") throw new Error("malformed recordings");
+      active[Number(slot) - 1] = on === "1";
+    }
+    return active;
+  }
+  function parseFtb(record, prefix) {
+    return {
+      target: required(record, prefix + "ftb_target_active") === "1",
+      position: Number(required(record, prefix + "ftb_position_numerator")),
+    };
+  }
+
+  // ---- Connection driver: mirrors freemix-web's TallyLink. ----
+  function token() { return store.getItem("freemix.operator.token") || ""; }
+  function role() {
+    const chosen = store.getItem("freemix.operator.role");
+    return chosen === "viewer" || chosen === "audio" ? chosen : "operator";
+  }
+
+  function connect() {
+    if (!token()) { link.phase = "idle"; render(); return; }
+    link.phase = "connecting";
+    const scheme = location.protocol === "https:" ? "wss://" : "ws://";
+    let socket;
+    try {
+      socket = new WebSocket(scheme + location.host + "/v1/control",
+        [CONTROL_SUBPROTOCOL, BEARER_SUBPROTOCOL_PREFIX + base64Url(token())]);
+    } catch (error) {
+      transportClosed();
+      return;
+    }
+    link.socket = socket;
+    socket.onopen = () => {
+      if (socket !== link.socket) return;
+      if (socket.protocol !== CONTROL_SUBPROTOCOL) { closeSocket(); return; }
+      link.phase = "open";
+      link.syncDeadline = Date.now() + SYNC_TIMEOUT_MS;
+      send(encodeRecord("handshake_request", [
+        ["protocol", PROTOCOL], ["build", "freemix-operator-web"], ["client_type", "web"],
+        ["desired_role", role()], ["resume", "0"],
+      ]));
+    };
+    socket.onmessage = (event) => {
+      if (socket !== link.socket || typeof event.data !== "string") return;
+      try {
+        for (const line of event.data.split("\n")) if (line) receive(decodeRecord(line));
+      } catch (error) {
+        closeSocket();
+      }
+      render();
+    };
+    socket.onclose = () => { if (socket === link.socket) transportClosed(); };
+    render();
+  }
+
+  function send(line) {
+    if (link.socket && link.socket.readyState === WebSocket.OPEN) link.socket.send(line);
+  }
+
+  function closeSocket() {
+    const socket = link.socket;
+    if (socket) { link.socket = null; try { socket.close(); } catch (error) { /* closed */ } }
+    transportClosed();
+  }
+
+  function transportClosed() {
+    link.socket = null;
+    link.syncDeadline = link.nextHeartbeat = link.heartbeatDeadline = 0;
+    link.pendingHeartbeat = 0;
+    link.server = null;
+    link.permissions = [];
+    // Unresolved commands may or may not have applied; the next snapshot tells.
+    if (pending.size) note("Connection lost before " + pending.size + " command(s) resolved; check the show");
+    pending.clear();
+    mutesSent.clear();
+    muteRetries = [];
+    if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
+    link.attempt += 1;
+    const delay = Math.min(INITIAL_BACKOFF_MS * 2 ** Math.min(link.attempt - 1, 20), MAX_BACKOFF_MS);
+    link.retryAt = Date.now() + delay;
+    link.phase = "waiting";
+    render();
+  }
+
+  function stop(reason) {
+    link.phase = "stopped";
+    link.stopReason = reason;
+    const socket = link.socket;
+    link.socket = null;
+    if (socket) try { socket.close(); } catch (error) { /* closed */ }
+    render();
+  }
+
+  function sameServer(record) {
+    return link.server && required(record, "engine_id") === link.server.engine_id
+      && required(record, "state_epoch") === link.server.state_epoch
+      && required(record, "log_id") === link.server.log_id;
+  }
+
+  function trackDesired(revision) {
+    show.desiredByRevision.set(revision, { program: show.desired.program, preview: show.desired.preview });
+    while (show.desiredByRevision.size > MAX_TRACKED_REVISIONS) {
+      show.desiredByRevision.delete(show.desiredByRevision.keys().next().value);
+    }
+  }
+
+  // Events that carry the whole switcher state, including cue and script runs.
+  const SWITCHER_EVENTS = new Set(["desired_switcher", "stinger_slots_changed", "cue_run_changed", "script_ran"]);
+
+  function receive(record) {
+    switch (record.kind) {
+      case "handshake_response": {
+        if (link.phase !== "open") throw new Error("unexpected handshake");
+        const outcome = required(record, "outcome");
+        if (outcome === "rejected") {
+          const code = required(record, "code");
+          if (required(record, "retryable") === "1") closeSocket();
+          else stop("Rejected by server: " + code);
+          return;
+        }
+        if (required(record, "protocol") !== PROTOCOL) { stop("Server protocol is incompatible"); return; }
+        if (outcome !== "snapshot") throw new Error("unexpected resume");
+        link.server = {
+          engine_id: required(record, "engine_id"), project_id: required(record, "project_id"),
+          state_epoch: required(record, "state_epoch"), log_id: required(record, "log_id"),
+        };
+        const permissions = required(record, "permissions");
+        link.permissions = permissions ? permissions.split(",") : [];
+        link.role = required(record, "granted_role");
+        return;
+      }
+      case "snapshot": {
+        if (!sameServer(record)) throw new Error("foreign snapshot");
+        show.name = required(record, "show_name");
+        show.inputs = parseInputs(required(record, "inputs"));
+        const rate = required(record, "frame_rate").split("/").map(Number);
+        show.frameRate = rate.length === 2 && rate[0] > 0 && rate[1] > 0 ? rate : [30, 1];
+        link.revision = Number(required(record, "revision"));
+        show.desired = { program: required(record, "desired_program"), preview: required(record, "desired_preview") };
+        show.realized = {
+          program: required(record, "realized_program"), preview: required(record, "realized_preview"),
+          manualFrom: "", manualTo: "",
+        };
+        if (record.fields.get("realized_manual_active") === "1") {
+          show.realized.manualFrom = required(record, "realized_manual_from");
+          show.realized.manualTo = required(record, "realized_manual_to");
+        }
+        show.ftb = parseFtb(record, "desired_");
+        show.realizedFtb = parseFtb(record, "realized_");
+        show.strips = parseStrips(required(record, "input_audio_strips"));
+        show.recordings = parseRecordings(required(record, "recordings"));
+        show.streams = parseStreams(required(record, "streams"));
+        show.desiredByRevision.clear();
+        trackDesired(link.revision);
+        link.phase = "live";
+        link.everLive = true;
+        link.attempt = 0;
+        link.syncDeadline = 0;
+        link.nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
+        requestWakeLock();
+        return;
+      }
+      case "event": {
+        if (link.phase !== "live" || !sameServer(record)) throw new Error("unexpected event");
+        const revision = Number(required(record, "revision"));
+        if (revision !== link.revision + 1) { closeSocket(); return; } // gap: resynchronize
+        link.revision = revision;
+        applyEvent(required(record, "event"), record);
+        trackDesired(revision);
+        settleMuteRetries();
+        return;
+      }
+      case "runtime_event": {
+        if (!sameServer(record) || required(record, "event") !== "realized") return;
+        const desired = show.desiredByRevision.get(Number(required(record, "revision")));
+        if (!desired) return;
+        show.realized = { program: desired.program, preview: desired.preview, manualFrom: "", manualTo: "" };
+        if (record.fields.get("manual_active") === "1") {
+          show.realized.manualFrom = required(record, "manual_from");
+          show.realized.manualTo = required(record, "manual_to");
+        }
+        if (record.fields.has("ftb_target_active")) show.realizedFtb = parseFtb(record, "");
+        return;
+      }
+      case "heartbeat_acknowledgement":
+        if (Number(required(record, "heartbeat_sequence")) === link.pendingHeartbeat) {
+          link.pendingHeartbeat = 0;
+          link.heartbeatDeadline = 0;
+          link.nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
+        }
+        return;
+      case "command_result": {
+        const id = required(record, "id");
+        const label = pending.get(id);
+        const mute = mutesSent.get(id);
+        pending.delete(id);
+        mutesSent.delete(id);
+        if (!label) return;
+        if (record.fields.get("status") === "rejected") {
+          const code = required(record, "code");
+          // A mute that lost a race with another command (often this page's
+          // own): retry it once the page has caught up, if the strip still
+          // holds the values the operator pressed it on.
+          if (mute && !mute.retried && code === "revision_conflict") {
+            muteRetries.push({ ...mute, revision: Number(required(record, "current_revision")),
+              deadline: Date.now() + MUTE_RETRY_TIMEOUT_MS });
+            settleMuteRetries();
+            return;
+          }
+          const message = record.fields.get("message") || "";
+          note(code === "revision_conflict"
+            ? label + " not applied: the show changed first; check it and press again"
+            : label + " refused (" + code + ")" + (message ? ": " + message : ""));
+        } else {
+          note(label + " accepted");
+        }
+        return;
+      }
+      case "error":
+        // Includes server_shutting_down: reconnect after backoff.
+        closeSocket();
+        return;
+      default:
+        return; // Lossy telemetry is not sent to Web peers; ignore anything else.
+    }
+  }
+
+  function applyEvent(name, record) {
+    if (SWITCHER_EVENTS.has(name)) {
+      show.desired = { program: required(record, "program"), preview: required(record, "preview") };
+      show.ftb = parseFtb(record, "");
+      show.strips = parseStrips(required(record, "input_audio_strips"));
+      if (name === "cue_run_changed" || name === "script_ran") {
+        show.streams = parseStreams(required(record, "streams"));
+        show.recordings = parseRecordings(required(record, "recordings"));
+      }
+    } else if (name === "playlist_changed") {
+      // A playlist take moves Program too.
+      show.desired = { program: required(record, "program"), preview: required(record, "preview") };
+    } else if (name === "streams_changed" || name === "stream_target_changed") {
+      show.streams = parseStreams(required(record, "streams"));
+    } else if (name === "recording_changed") {
+      const slot = Number(required(record, "recorder"));
+      if (slot === 1 || slot === 2) show.recordings[slot - 1] = required(record, "active") === "1";
+    } else if (name === "input_renamed") {
+      const input = show.inputs.find((candidate) => candidate.id === required(record, "input"));
+      if (input) input.label = required(record, "name");
+    } else if (name === "input_order_changed") {
+      const order = required(record, "inputs").split(",");
+      show.inputs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    } else if (name === "input_added") {
+      // Its audio strip replicates with the next switcher event.
+      show.inputs.push({ id: required(record, "input"), label: required(record, "name"), offline: false });
+    } else if (name === "input_removed") {
+      const id = required(record, "input");
+      show.inputs = show.inputs.filter((candidate) => candidate.id !== id);
+      show.strips.delete(id);
+    } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_group_solo") {
+      // A group solo re-solos its members; resynchronize so a mute never
+      // writes back a stale solo.
+      closeSocket();
+    }
+  }
+
+  function sameStrip(a, b) {
+    return a && b && a.gain === b.gain && a.balance === b.balance && a.pan === b.pan && a.muted === b.muted
+      && a.soloed === b.soloed && a.follow === b.follow && a.delay === b.delay;
+  }
+  function settleMuteRetries() {
+    if (link.phase !== "live") return;
+    const waiting = [];
+    for (const retry of muteRetries) {
+      if (link.revision < retry.revision) { waiting.push(retry); continue; }
+      const input = show.inputs.find((candidate) => candidate.id === retry.input);
+      if (input && sameStrip(show.strips.get(retry.input), retry.strip)) sendMute(retry.input, true);
+      else note("Mute not applied: " + (input ? input.label : "the input") + "'s audio changed first");
+    }
+    muteRetries = waiting;
+  }
+
+  function tick() {
+    const now = Date.now();
+    if (muteRetries.some((retry) => now >= retry.deadline)) {
+      muteRetries = muteRetries.filter((retry) => now < retry.deadline);
+      note("Mute not sent: the show kept changing; press it again");
+    }
+    if (link.phase === "waiting" && now >= link.retryAt) connect();
+    else if (link.phase === "open" && link.syncDeadline && now >= link.syncDeadline) closeSocket();
+    else if (link.phase === "live") {
+      if (link.heartbeatDeadline && now >= link.heartbeatDeadline) { closeSocket(); return; }
+      if (!link.pendingHeartbeat && now >= link.nextHeartbeat) {
+        link.pendingHeartbeat = link.heartbeatSequence++;
+        link.heartbeatDeadline = now + HEARTBEAT_ACK_TIMEOUT_MS;
+        send(encodeRecord("heartbeat", [
+          ["engine_id", link.server.engine_id], ["project_id", link.server.project_id],
+          ["state_epoch", link.server.state_epoch], ["log_id", link.server.log_id],
+          ["sequence", link.pendingHeartbeat], ["sent_at_ms", now], ["applied", "0"],
+        ]));
+      }
+    }
+    if (link.phase === "waiting") render();
+  }
+
+  // ---- Control gating: mirrors freemix-web's OperatorSurface::gate. ----
+  const PERMISSION = { preview: "select_preview", transition: "transition", audio: "control_audio" };
+  // "" when enabled, otherwise the disabled reason shown beside the control.
+  function gate(kind, subject) {
+    if (link.phase !== "live") return REASON.notLive;
+    if (!link.permissions.includes(PERMISSION[kind])) return REASON.permission(PERMISSION[kind]);
+    if (kind === "preview") {
+      if (!show.inputs.some((input) => input.id === subject)) return REASON.notInShow;
+      if (show.desired.preview === subject) return REASON.alreadyOnPreview;
+    } else if (kind === "audio" && subject !== undefined) {
+      if (!show.inputs.some((input) => input.id === subject)) return REASON.notInShow;
+      if (!show.strips.has(subject)) return REASON.noAudioStrip;
+    }
+    return "";
+  }
+  function sectionReason(kind) {
+    return link.phase !== "live" ? REASON.notLive
+      : link.permissions.includes(PERMISSION[kind]) ? "" : REASON.permission(PERMISSION[kind]);
+  }
+
+  // Mirrors freemix-web's duration_frames.
+  function durationFrames() {
+    const [numerator, denominator] = show.frameRate;
+    const scale = denominator * 1000;
+    return Math.max(1, Math.floor((choice.durationMs * numerator + Math.floor(scale / 2)) / scale));
+  }
+
+  // ---- Presentation. ----
+  function lightOf(id) {
+    if (link.phase !== "live") return "offline";
+    const realized = show.realized;
+    if (realized.program === id || realized.manualFrom === id || realized.manualTo === id) return "program";
+    if (realized.preview === id) return "preview";
+    return "idle";
+  }
+  // Mirrors freemix-web's FadeToBlackPhase.
+  function ftbPhase() {
+    const position = show.realizedFtb.position;
+    if (show.ftb.target) return position === FTB_BLACK ? ["black", "BLACK"] : ["fading", "FADING TO BLACK"];
+    return position === 0 ? ["live", "LIVE"] : ["fading", "FADING UP"];
+  }
+
+  // Reuses keyed children so focus survives re-renders.
+  function syncChildren(container, keys, create, update) {
+    const existing = new Map([...container.children].map((child) => [child.dataset.key, child]));
+    const ordered = keys.map((key) => {
+      let child = existing.get(key);
+      if (!child) { child = create(key); child.dataset.key = key; }
+      update(child, key);
+      return child;
+    });
+    for (const [key, child] of existing) if (!keys.includes(key)) child.remove();
+    ordered.forEach((child, index) => {
+      if (container.children[index] !== child) container.insertBefore(child, container.children[index] || null);
+    });
+  }
+  function setDisabled(button, reason) {
+    button.disabled = Boolean(reason);
+    if (reason) button.title = reason; else button.removeAttribute("title");
+  }
+
+  function statusText() {
+    switch (link.phase) {
+      case "idle": return "Enter the daemon's web access token to connect";
+      case "connecting": case "open":
+        return link.attempt ? "Reconnecting (attempt " + link.attempt + ")" : "Connecting";
+      case "live": return "Live" + (show.name ? " — " + show.name : "") + " as " + (link.role || role());
+      case "waiting": {
+        const seconds = Math.max(0, link.retryAt - Date.now()) / 1000;
+        const hint = link.everLive ? "" : " (check the token, or another web client may be connected)";
+        return "Connection lost; retry " + link.attempt + " in " + seconds.toFixed(1) + " s" + hint;
+      }
+      case "stopped": return link.stopReason || "Stopped";
+      default: return "";
+    }
+  }
+  const LINK_TEXT = { idle: "OFFLINE", connecting: "CONNECTING", open: "CONNECTING", live: "LIVE",
+    waiting: "RECONNECTING", stopped: "STOPPED" };
+
+  let lastNote = "";
+  let lastNoteAt = 0;
+  function note(text) { lastNote = text; lastNoteAt = Date.now(); }
+
+  function render() {
+    const live = link.phase === "live";
+    ui.link.dataset.phase = link.phase;
+    ui.link.textContent = LINK_TEXT[link.phase] || "OFFLINE";
+    ui.title.textContent = live && show.name ? show.name : "FreeMix Operator";
+    ui.reconnect.hidden = link.phase !== "waiting";
+    ui.setupPanel.hidden = link.phase !== "idle" && link.phase !== "stopped";
+    ui.status.textContent = statusText() + (lastNote && Date.now() - lastNoteAt < 8000 ? " · " + lastNote : "");
+
+    const ids = live ? show.inputs.map((input) => input.id) : [];
+    const inputOf = (id) => show.inputs.find((input) => input.id === id);
+    syncChildren(ui.programBus, ids, () => {
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      tile.setAttribute("role", "listitem");
+      return tile;
+    }, (tile, id) => {
+      const input = inputOf(id);
+      const light = lightOf(id);
+      tile.textContent = input.label;
+      tile.dataset.light = light === "program" ? "program" : "idle";
+      tile.dataset.offline = input.offline ? "1" : "0";
+      // Desired Program that has not reached air yet.
+      tile.dataset.pending = show.desired.program === id && light !== "program" ? "1" : "0";
+      tile.setAttribute("aria-label", input.label + (light === "program" ? ", on air" : "")
+        + (input.offline ? ", offline" : ""));
+    });
+    syncChildren(ui.previewBus, ids, (id) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("aria-describedby", "why-preview");
+      button.addEventListener("click", () => previewInput(id));
+      return button;
+    }, (button, id) => {
+      const input = inputOf(id);
+      const light = lightOf(id);
+      const reason = gate("preview", id);
+      button.textContent = input.label;
+      button.dataset.light = light === "preview" ? "preview" : light === "program" ? "idle" : "idle";
+      button.dataset.offline = input.offline ? "1" : "0";
+      button.dataset.pending = show.desired.preview === id && light !== "preview" ? "1" : "0";
+      button.setAttribute("aria-pressed", String(show.desired.preview === id));
+      button.setAttribute("aria-label", input.label + (light === "program" ? ", on air" : "")
+        + (input.offline ? ", offline" : ""));
+      setDisabled(button, reason);
+    });
+    // Program is status only; while not live it is unknown, never stale.
+    ui.whyProgram.textContent = live ? "" : REASON.notLive;
+    ui.whyPreview.textContent = sectionReason("preview");
+
+    const transitionReason = gate("transition");
+    setDisabled(ui.cut, transitionReason);
+    setDisabled(ui.auto, transitionReason);
+    const kindLabel = (TRANSITIONS.find(([token]) => token === choice.kind) || TRANSITIONS[0])[1];
+    ui.auto.textContent = "AUTO";
+    ui.autoKind.textContent = kindLabel + ", " + (choice.durationMs / 1000) + " seconds";
+    ui.auto.setAttribute("aria-label", "AUTO: " + kindLabel + " Preview to Program over "
+      + (choice.durationMs / 1000) + " s");
+    for (const radio of ui.kindChoices.querySelectorAll("input")) {
+      radio.checked = radio.value === choice.kind;
+    }
+    for (const radio of ui.durationChoices.querySelectorAll("input")) {
+      radio.checked = Number(radio.value) === choice.durationMs;
+    }
+    const [phase, phaseText] = live ? ftbPhase() : ["live", "UNKNOWN"];
+    ui.ftbState.textContent = phaseText;
+    ui.ftb.dataset.phase = phase;
+    ui.ftb.setAttribute("aria-pressed", String(live && show.ftb.target));
+    ui.ftb.textContent = live && show.ftb.target ? "FROM BLACK" : "FTB";
+    ui.ftb.setAttribute("aria-label", live && show.ftb.target ? "Fade Program from black" : "Fade Program to black");
+    setDisabled(ui.ftb, transitionReason);
+    ui.whyTransition.textContent = transitionReason;
+
+    syncChildren(ui.recorders, live ? ["1", "2"] : [], (slot) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
+      row.querySelector(".name").textContent = "Recorder " + slot;
+      row.querySelector("button").addEventListener("click", () => toggleRecorder(Number(slot)));
+      return row;
+    }, (row, slot) => {
+      const on = show.recordings[Number(slot) - 1];
+      const state = row.querySelector(".state");
+      state.textContent = on ? "REC" : "STOPPED";
+      state.dataset.on = on ? "1" : "0";
+      const button = row.querySelector("button");
+      button.textContent = on ? "Stop" : "Record";
+      button.setAttribute("aria-label", (on ? "Stop recorder " : "Start recorder ") + slot);
+      setDisabled(button, transitionReason);
+    });
+    const streamIds = live ? show.streams.map((stream) => stream.id) : [];
+    syncChildren(ui.streams, streamIds, (id) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
+      row.querySelector("button").addEventListener("click", () => toggleStream(id));
+      return row;
+    }, (row, id) => {
+      const stream = show.streams.find((candidate) => candidate.id === id);
+      row.querySelector(".name").textContent = stream.name;
+      const state = row.querySelector(".state");
+      const realized = STREAM_TEXT[stream.realized] || stream.realized;
+      // Desired and realized differ until the destination catches up.
+      const requested = stream.desired && stream.realized === "stopped" ? " (start requested)"
+        : !stream.desired && stream.realized !== "stopped" ? " (stop requested)" : "";
+      state.textContent = realized + requested + (stream.detail ? " — " + stream.detail : "");
+      state.dataset.on = stream.realized === "live" ? "1" : "0";
+      const button = row.querySelector("button");
+      button.textContent = stream.desired ? "Stop" : "Go live";
+      button.setAttribute("aria-label", (stream.desired ? "Stop stream " : "Start stream ") + stream.name);
+      setDisabled(button, transitionReason);
+    });
+    ui.noStreams.hidden = !live || show.streams.length > 0;
+    ui.whyOutputs.textContent = transitionReason;
+
+    syncChildren(ui.strips, ids, (id) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = "<span class=\"name\"></span><button type=\"button\" class=\"mute\" aria-describedby=\"why-audio\"></button>";
+      row.querySelector("button").addEventListener("click", () => toggleMute(id));
+      return row;
+    }, (row, id) => {
+      const input = inputOf(id);
+      const strip = show.strips.get(id);
+      row.querySelector(".name").textContent = input.label;
+      const button = row.querySelector("button");
+      const muted = Boolean(strip && strip.muted);
+      button.textContent = muted ? "MUTED" : "Mute";
+      button.setAttribute("aria-pressed", String(muted));
+      button.setAttribute("aria-label", "Mute " + input.label);
+      setDisabled(button, gate("audio", id));
+    });
+    ui.whyAudio.textContent = sectionReason("audio");
+  }
+
+  // ---- Commands. The server authorizes every command again. ----
+  function sendCommand(label, payload, expectedRevision) {
+    commandCounter += 1;
+    const id = "operator-" + sessionNonce + "-" + commandCounter;
+    const fields = [["protocol", PROTOCOL], ["id", id], ["idempotency_key", id]];
+    if (expectedRevision !== undefined) fields.push(["expected_revision", String(expectedRevision)]);
+    send(encodeRecord("command", [...fields, ...payload]));
+    pending.set(id, label);
+    note(label + " sent");
+    render();
+    return id;
+  }
+  function previewInput(id) {
+    if (gate("preview", id)) return;
+    const input = show.inputs.find((candidate) => candidate.id === id);
+    sendCommand("Preview " + input.label, [["payload", "select_preview"], ["input", id]]);
+  }
+  function cut() {
+    if (gate("transition")) return;
+    sendCommand("Cut", [["payload", "cut"]]);
+  }
+  function auto() {
+    if (gate("transition")) return;
+    sendCommand("Auto " + choice.kind, [["payload", choice.kind], ["duration_frames", String(durationFrames())]]);
+  }
+  function fadeToBlack() {
+    if (gate("transition")) return;
+    const active = !show.ftb.target;
+    sendCommand(active ? "Fade to black" : "Fade from black",
+      [["payload", "fade_to_black"], ["active", active ? "1" : "0"], ["duration_frames", String(durationFrames())]]);
+  }
+  function toggleRecorder(slot) {
+    if (gate("transition")) return;
+    const on = show.recordings[slot - 1];
+    sendCommand((on ? "Stop" : "Start") + " recorder " + slot,
+      [["payload", on ? "record_stop" : "record_start"], ["recorder", String(slot)]]);
+  }
+  function toggleStream(id) {
+    const stream = show.streams.find((candidate) => candidate.id === id);
+    if (gate("transition") || !stream) return;
+    sendCommand((stream.desired ? "Stop " : "Start ") + stream.name,
+      [["payload", stream.desired ? "stream_stop" : "stream_start"], ["target", id]]);
+  }
+  // A mute rewrites the whole strip, so it names the revision its values
+  // came from: a strip changed elsewhere first refuses it instead of
+  // reverting that change.
+  // A stale mute is retried once from the newer revision, and only while
+  // the strip is unchanged (see settleMuteRetries).
+  function toggleMute(id) {
+    if (gate("audio", id)) return;
+    sendMute(id, false);
+  }
+  function sendMute(id, retried) {
+    const strip = show.strips.get(id);
+    const input = show.inputs.find((candidate) => candidate.id === id);
+    const commandId = sendCommand((strip.muted ? "Unmute " : "Mute ") + input.label, [
+      ["payload", "input_audio_strip"], ["input", id], ["gain_millidb", strip.gain],
+      ["balance_basis_points", strip.balance], ["pan_basis_points", strip.pan],
+      ["muted", strip.muted ? "0" : "1"], ["soloed", strip.soloed ? "1" : "0"],
+      ["follow_video", strip.follow ? "1" : "0"], ["delay_samples", strip.delay],
+    ], link.revision);
+    mutesSent.set(commandId, { input: id, strip: { ...strip }, retried });
+  }
+
+  async function requestWakeLock() {
+    try {
+      if (!wakeLock && navigator.wakeLock && document.visibilityState === "visible") {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      }
+    } catch (error) { wakeLock = null; }
+  }
+
+  function choiceGroup(container, name, entries, onPick) {
+    for (const [value, text] of entries) {
+      const label = document.createElement("label");
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = name;
+      radio.value = value;
+      radio.addEventListener("change", () => { if (radio.checked) { onPick(value); render(); } });
+      const span = document.createElement("span");
+      span.textContent = text;
+      label.append(radio, span);
+      container.append(label);
+    }
+  }
+  choiceGroup(ui.kindChoices, "kind", TRANSITIONS, (value) => {
+    choice.kind = value;
+    store.setItem("freemix.operator.kind", value);
+  });
+  choiceGroup(ui.durationChoices, "duration", DURATIONS_MS.map((ms) => [String(ms), (ms / 1000) + " s"]), (value) => {
+    choice.durationMs = Number(value);
+    store.setItem("freemix.operator.duration", value);
+  });
+
+  ui.cut.addEventListener("click", cut);
+  ui.auto.addEventListener("click", auto);
+  ui.ftb.addEventListener("click", fadeToBlack);
+  ui.reconnect.addEventListener("click", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
+  ui.signout.addEventListener("click", () => {
+    store.removeItem("freemix.operator.token");
+    stop("");
+    link.phase = "idle";
+    render();
+    ui.token.focus();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+    if (event.target instanceof HTMLInputElement && event.target.type !== "radio") return;
+    if (event.target instanceof HTMLSelectElement) return;
+    const key = event.key.toLowerCase();
+    if (key === "c") cut();
+    else if (key === "a") auto();
+    else if (key === "b") fadeToBlack();
+    else if (/^[1-9]$/.test(key) && show.inputs[Number(key) - 1]) previewInput(show.inputs[Number(key) - 1].id);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (link.phase === "waiting") link.retryAt = Date.now();
+    if (link.phase === "live") requestWakeLock();
+  });
+  window.addEventListener("online", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
+  ui.setup.addEventListener("submit", (event) => {
+    event.preventDefault();
+    store.setItem("freemix.operator.token", ui.token.value);
+    store.setItem("freemix.operator.role", ui.role.value);
+    ui.token.value = "";
+    link.attempt = 0;
+    link.everLive = false;
+    connect();
+  });
+
+  ui.role.value = role();
+  setInterval(tick, 250);
+  render();
+  connect();
+})();
+</script>
+</body>
+</html>

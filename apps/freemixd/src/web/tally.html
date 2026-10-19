@@ -317,10 +317,11 @@
       case "snapshot": {
         if (!sameServer(record)) throw new Error("foreign snapshot");
         show.name = required(record, "show_name");
+        // `id~name~lifecycle`: the label is the middle part only.
         show.inputs = required(record, "inputs").split(",").map((item) => {
-          const at = item.indexOf("~");
-          if (at < 1) throw new Error("malformed input");
-          return { id: item.slice(0, at), label: decodeURIComponent(item.slice(at + 1)) };
+          const parts = item.split("~");
+          if (parts.length !== 3 || !parts[0]) throw new Error("malformed input");
+          return { id: parts[0], label: decodeURIComponent(parts[1]) };
         });
         link.revision = Number(required(record, "revision"));
         show.desired = { program: required(record, "desired_program"), preview: required(record, "desired_preview") };

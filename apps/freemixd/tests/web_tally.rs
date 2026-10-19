@@ -1,6 +1,7 @@
-//! Phone tally over the loopback web gateway: the served page, browser-style
-//! subprotocol authentication, a viewer tally that follows an operator's cut,
-//! server-side role limits, edit padlocks, heartbeats, and reconnect.
+//! Phone tally and operator pages over the loopback web gateway: the served
+//! pages, browser-style subprotocol authentication, a viewer tally that
+//! follows an operator's cut, server-side role limits, edit padlocks,
+//! heartbeats, reconnect, and the operator page's exact wire commands.
 
 use std::{
     fs,
@@ -16,7 +17,7 @@ use std::{
 use fm_model::{
     AudioBus, Input, InputKind, Layer, LayerGeometry, MainMix, Output, Project, ProjectSettings,
     Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy,
+    StartupPolicy, StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
@@ -113,8 +114,10 @@ fn input(value: u128) -> WireInputId {
 }
 
 fn create_project(path: &Path) {
-    create_project_with(path, false);
+    create_project_with(path, false, false);
 }
+
+const STREAM_ID: u128 = ID_BASE + 400;
 
 const TITLE_TEMPLATE_KEY: &str = "titles/tally-title.fmtitle";
 
@@ -147,9 +150,10 @@ fn write_title_template(store: &ProjectStore) {
     fs::write(&template_path, document).unwrap();
 }
 
-/// The tally project; with `title`, title input 4 ("Lower third") too.
+/// The tally project; with `title`, title input 4 ("Lower third") too, and
+/// with `stream`, one stopped stream destination on the program output.
 #[allow(clippy::too_many_lines)] // one flat project fixture
-fn create_project_with(path: &Path, title: bool) {
+fn create_project_with(path: &Path, title: bool, stream: bool) {
     let store = ProjectStore::new(path).unwrap();
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
@@ -225,14 +229,29 @@ fn create_project_with(path: &Path, title: bool) {
         name: "Program bus".into(),
         sends: Vec::new(),
     });
+    let output = OutputId::new(NonZeroU128::new(ID_BASE + 300).unwrap());
     project.add_output(Output {
-        id: OutputId::new(NonZeroU128::new(ID_BASE + 300).unwrap()),
+        id: output,
         name: "Program output".into(),
         video_source: scene,
         audio_source: bus,
         startup: StartupPolicy::ReconcileDesiredState,
         required_capabilities: vec!["simulation.output".into()],
     });
+    if stream {
+        let target = StreamTarget::new(
+            StreamTargetId::new(NonZeroU128::new(STREAM_ID).unwrap()),
+            "Main destination".to_owned(),
+            StreamProtocol::Rtmp,
+            StreamEndpoint::parse("127.0.0.1/live").unwrap(),
+            Some(StreamKey::parse("live-key-0001").unwrap()),
+            output,
+        )
+        .unwrap()
+        .with_startup(StartupPolicy::Stopped)
+        .set_running(false);
+        project.add_stream_target_checked(target).unwrap();
+    }
     let stored = StoredProject::from_project(
         project,
         RuntimeRouting {
@@ -833,7 +852,7 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
 
     let directory = TestDirectory::new("go-authority");
     let project = directory.0.join("show.freemix");
-    create_project_with(&project, true);
+    create_project_with(&project, true, false);
     let daemon = Daemon::start(&project);
     let (mut tally, _, permissions, _) = web_session(daemon.web, Role::Operator);
     assert!(permissions.iter().any(|granted| granted == "transition"));
@@ -907,4 +926,357 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
     // Full control is unchanged: Admin fires the whole chain.
     admin.send(&command("admin-go", go(Some(10))));
     assert_eq!(admin.accepted("admin-go"), revision + 2);
+}
+
+#[test]
+fn operator_page_is_served_with_the_tally_security_model() {
+    let directory = TestDirectory::new("operator-page");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start(&project);
+
+    let (status, headers, body) = http(
+        daemon.web,
+        &format!("GET /operator HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(header(&headers, "content-type"), "text/html; charset=utf-8");
+    assert_eq!(header(&headers, "cache-control"), "no-store");
+    assert_eq!(header(&headers, "x-content-type-options"), "nosniff");
+    assert_eq!(header(&headers, "x-frame-options"), "DENY");
+    assert_eq!(header(&headers, "referrer-policy"), "no-referrer");
+    let policy = header(&headers, "content-security-policy");
+    assert!(policy.starts_with("default-src 'none';"), "{policy}");
+    assert!(
+        policy.contains(&format!("connect-src 'self' ws://{};", daemon.web)),
+        "{policy}"
+    );
+    assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.starts_with("<!doctype html>"));
+    assert!(
+        page.contains(&format!("const PROTOCOL = \"{CURRENT_PROTOCOL_VERSION}\";")),
+        "operator.html must be updated with the protocol identifier"
+    );
+    assert!(page.contains("\"freemix.control.v1\""));
+    assert!(page.contains("\"freemix.bearer.\""));
+    assert!(!page.contains(TOKEN), "the page never embeds the token");
+    assert!(page.contains("history.replaceState(null, \"\", location.pathname + location.search)"));
+
+    // The exact wire commands driven end to end below.
+    for payload in [
+        "[\"payload\", \"select_preview\"]",
+        "[\"payload\", \"cut\"]",
+        "[\"payload\", choice.kind], [\"duration_frames\", String(durationFrames())]",
+        "[\"payload\", \"fade_to_black\"], [\"active\", active ? \"1\" : \"0\"]",
+        "on ? \"record_stop\" : \"record_start\"",
+        "stream.desired ? \"stream_stop\" : \"stream_start\"",
+        "[\"payload\", \"input_audio_strip\"]",
+    ] {
+        assert!(page.contains(payload), "{payload}");
+    }
+    // AUTO offers every automatic kind (freemix-web's OperatorTransition).
+    for kind in ["fade", "alpha_fade", "slide", "zoom", "wipe"] {
+        assert!(page.contains(&format!("[\"{kind}\", ")), "{kind}");
+    }
+    // A mute names the revision its strip values came from; one refused as
+    // stale is retried once, after the page catches up, only while the
+    // strip still holds the values it was pressed on.
+    assert!(page.contains("], link.revision);"));
+    assert!(page.contains("mute && !mute.retried && code === \"revision_conflict\""));
+    assert!(page.contains("link.revision < retry.revision"));
+    assert!(page.contains("sameStrip(show.strips.get(retry.input), retry.strip)"));
+    // Disabled reasons (freemix-web's OperatorBlock::reason).
+    for reason in [
+        "notLive: \"Not connected to the show\"",
+        "\"This session lacks the \" + name + \" permission\"",
+        "alreadyOnPreview: \"Already on Preview\"",
+        "notInShow: \"No longer in the show\"",
+        "noAudioStrip: \"Waiting for this input's audio state\"",
+    ] {
+        assert!(page.contains(reason), "{reason}");
+    }
+    // State the page follows, including cue and script runs.
+    for event in [
+        "\"desired_switcher\", \"stinger_slots_changed\", \"cue_run_changed\", \"script_ran\"",
+        "name === \"playlist_changed\"",
+        "name === \"streams_changed\" || name === \"stream_target_changed\"",
+        "name === \"recording_changed\"",
+        "name === \"input_added\"",
+        "name === \"input_removed\"",
+        "\"audio_group_solo\"",
+    ] {
+        assert!(page.contains(event), "{event}");
+    }
+    // Accessible markup: labelled sections, live status, pressed toggles.
+    for markup in [
+        "aria-labelledby=\"preview-heading\"",
+        "role=\"log\" aria-live=\"polite\"",
+        "aria-describedby=\"why-transition\"",
+        "setAttribute(\"aria-pressed\"",
+        "aria-keyshortcuts=\"C\"",
+    ] {
+        assert!(page.contains(markup), "{markup}");
+    }
+
+    // The tally reads only the label part of `id~name~lifecycle`.
+    let (_, _, tally) = http(
+        daemon.web,
+        &format!("GET /tally HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+    );
+    let tally = String::from_utf8(tally).unwrap();
+    assert!(tally.contains("label: decodeURIComponent(parts[1])"));
+
+    let (status, _, body) = http(
+        daemon.web,
+        &format!("HEAD /operator HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(body, b"");
+}
+
+/// Sends one command record exactly as the operator page writes it.
+fn send_page_command(socket: &mut Browser, id: &str, expected: Option<u64>, payload: &str) {
+    let expected = expected.map_or_else(String::new, |revision| {
+        format!("\texpected_revision={revision}")
+    });
+    socket
+        .send(Message::text(format!(
+            "command\tprotocol={CURRENT_PROTOCOL_VERSION}\tid={id}\tidempotency_key={id}{expected}\t{payload}\n"
+        )))
+        .unwrap();
+}
+
+/// The result of command `id` and, when accepted, its durable event.
+fn page_command(
+    socket: &mut Browser,
+    id: &str,
+    expected: Option<u64>,
+    payload: &str,
+) -> Result<(u64, EventPayload), (String, u64)> {
+    send_page_command(socket, id, expected, payload);
+    let mut events = Vec::new();
+    let mut accepted = None;
+    loop {
+        match receive(socket) {
+            WireMessage::Event(event) => {
+                if accepted == Some(event.cursor.revision) {
+                    return Ok((event.cursor.revision, event.payload));
+                }
+                events.push(event);
+            }
+            WireMessage::CommandResult(CommandResult::Accepted {
+                id: found,
+                revision,
+                ..
+            }) if found == id => {
+                if let Some(event) = events
+                    .iter()
+                    .find(|event| event.cursor.revision == revision)
+                {
+                    return Ok((revision, event.payload.clone()));
+                }
+                accepted = Some(revision);
+            }
+            WireMessage::CommandResult(CommandResult::Rejected {
+                id: found,
+                code,
+                current_revision,
+                ..
+            }) if found == id => return Err((code, current_revision)),
+            _ => {}
+        }
+    }
+}
+
+fn strip(strips: &[fm_protocol::InputAudioStripStatus], value: u128) -> bool {
+    strips
+        .iter()
+        .find(|strip| strip.input == input(value))
+        .unwrap()
+        .muted
+}
+
+/// RC-014 operator page end to end: the page's exact wire records switch,
+/// fade, record, stream, and mute; every role limit is the server's; a
+/// stale mute is refused rather than reverting a newer strip; and a
+/// reconnect snapshot carries everything the page shows.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn operator_page_commands_drive_the_show_within_the_session_role() {
+    let directory = TestDirectory::new("operator");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, false, true);
+    let daemon = Daemon::start(&project);
+    let mute = |value: u128, muted: u8| {
+        format!(
+            "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted={muted}\tsoloed=0\tfollow_video=1\tdelay_samples=0",
+            input(value)
+        )
+    };
+
+    // A Viewer page sees the show but every command is refused by the server.
+    let (mut page, _, permissions, snapshot) = web_session(daemon.web, Role::Viewer);
+    assert_eq!(permissions, ["view_status"]);
+    assert_eq!(snapshot.streams.len(), 1);
+    assert_eq!(snapshot.streams[0].name, "Main destination");
+    assert!(!snapshot.streams[0].desired_running);
+    for (id, payload) in [
+        ("viewer-cut", "payload=cut".to_owned()),
+        (
+            "viewer-preview",
+            format!("payload=select_preview\tinput={}", input(3)),
+        ),
+        ("viewer-mute", mute(1, 1)),
+    ] {
+        let expected = (id == "viewer-mute").then_some(snapshot.revision);
+        assert_eq!(
+            page_command(&mut page, id, expected, &payload)
+                .unwrap_err()
+                .0,
+            "permission_denied",
+            "{id}"
+        );
+    }
+    page.close(None).unwrap();
+    drop(page);
+
+    // An Audio page mutes but cannot switch.
+    let (mut page, _, permissions, snapshot) = web_session(daemon.web, Role::Audio);
+    assert_eq!(permissions, ["view_status", "control_audio"]);
+    let (revision, event) = page_command(
+        &mut page,
+        "audio-mute",
+        Some(snapshot.revision),
+        &mute(1, 1),
+    )
+    .unwrap();
+    let EventPayload::DesiredSwitcher {
+        input_audio_strips, ..
+    } = event
+    else {
+        panic!("a mute replicates the whole switcher state: {event:?}");
+    };
+    assert!(strip(&input_audio_strips, 1));
+    assert!(!strip(&input_audio_strips, 2));
+    assert_eq!(
+        page_command(&mut page, "audio-cut", None, "payload=cut")
+            .unwrap_err()
+            .0,
+        "permission_denied"
+    );
+    // A mute built from an older revision is refused, not applied.
+    assert_eq!(
+        page_command(&mut page, "audio-stale", Some(revision - 1), &mute(1, 0)).unwrap_err(),
+        ("revision_conflict".to_owned(), revision)
+    );
+    page.close(None).unwrap();
+    drop(page);
+
+    // An Operator page drives the show.
+    let (mut page, _, permissions, snapshot) = web_session(daemon.web, Role::Operator);
+    for permission in ["select_preview", "transition", "control_audio"] {
+        assert!(permissions.iter().any(|granted| granted == permission));
+    }
+    assert!(strip(&snapshot.input_audio_strips, 1), "the mute survived");
+    let (_, event) = page_command(
+        &mut page,
+        "op-preview",
+        None,
+        &format!("payload=select_preview\tinput={}", input(3)),
+    )
+    .unwrap();
+    assert!(matches!(
+        event,
+        EventPayload::DesiredSwitcher { program, preview, .. }
+            if program == input(1) && preview == input(3)
+    ));
+    for kind in ["fade", "alpha_fade", "slide", "zoom", "wipe"] {
+        let (_, event) = page_command(
+            &mut page,
+            &format!("op-auto-{kind}"),
+            None,
+            &format!("payload={kind}\tduration_frames=13"),
+        )
+        .unwrap_or_else(|refusal| panic!("{kind} refused: {refusal:?}"));
+        assert!(
+            matches!(event, EventPayload::DesiredSwitcher { .. }),
+            "{kind}: {event:?}"
+        );
+    }
+    let (_, event) = page_command(&mut page, "op-cut", None, "payload=cut").unwrap();
+    assert!(matches!(event, EventPayload::DesiredSwitcher { .. }));
+    let (_, event) = page_command(
+        &mut page,
+        "op-ftb",
+        None,
+        "payload=fade_to_black\tactive=1\tduration_frames=25",
+    )
+    .unwrap();
+    assert!(matches!(
+        event,
+        EventPayload::DesiredSwitcher { fade_to_black, .. } if fade_to_black.target_active
+    ));
+    let (_, event) = page_command(
+        &mut page,
+        "op-rec",
+        None,
+        "payload=record_start\trecorder=1",
+    )
+    .unwrap();
+    assert!(matches!(
+        event,
+        EventPayload::RecordingChanged { recorder, active: true } if recorder.get() == 1
+    ));
+    let (_, event) = page_command(
+        &mut page,
+        "op-stream",
+        None,
+        &format!("payload=stream_start\ttarget={STREAM_ID}"),
+    )
+    .unwrap();
+    let EventPayload::StreamsChanged { streams } = event else {
+        panic!("expected the stream roster: {event:?}");
+    };
+    assert!(streams[0].desired_running);
+    // An unmute from the snapshot's strip values is stale after those
+    // commands; the page retries only from the revision it has caught up to.
+    let (code, current) =
+        page_command(&mut page, "op-unmute", Some(snapshot.revision), &mute(1, 0)).unwrap_err();
+    assert_eq!(code, "revision_conflict");
+    let (revision, event) =
+        page_command(&mut page, "op-unmute-retry", Some(current), &mute(1, 0)).unwrap();
+    let EventPayload::DesiredSwitcher {
+        input_audio_strips, ..
+    } = event
+    else {
+        panic!("{event:?}");
+    };
+    assert!(!strip(&input_audio_strips, 1));
+    page.close(None).unwrap();
+    drop(page);
+
+    // A reconnect snapshot carries every state the page shows.
+    let (mut page, _, _, snapshot) = web_session(daemon.web, Role::Operator);
+    assert_eq!(snapshot.revision, revision);
+    assert!(snapshot.desired_fade_to_black.target_active);
+    assert!(snapshot.recordings[0].desired_active);
+    assert!(!snapshot.recordings[1].desired_active);
+    assert!(snapshot.streams[0].desired_running);
+    assert!(!strip(&snapshot.input_audio_strips, 1));
+    // Lifting the fade and stopping the outputs are the same toggles.
+    for (id, payload) in [
+        (
+            "op-ftb-off",
+            "payload=fade_to_black\tactive=0\tduration_frames=25".to_owned(),
+        ),
+        ("op-rec-stop", "payload=record_stop\trecorder=1".to_owned()),
+        (
+            "op-stream-stop",
+            format!("payload=stream_stop\ttarget={STREAM_ID}"),
+        ),
+    ] {
+        page_command(&mut page, id, None, &payload)
+            .unwrap_or_else(|refusal| panic!("{id} refused: {refusal:?}"));
+    }
 }

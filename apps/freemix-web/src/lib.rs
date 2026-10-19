@@ -10,6 +10,7 @@ use fm_types::ProjectId;
 mod audio_strip;
 mod fade_to_black;
 mod manual_transition;
+mod operator;
 mod overlay;
 mod stinger;
 mod tally;
@@ -33,6 +34,11 @@ pub use fm_ui_model::title_editor::{
 pub use manual_transition::{
     ManualTransitionControl, ManualTransitionModel, ManualTransitionMotion,
     ManualTransitionPresentation, ManualTransitionProjection,
+};
+pub use operator::{
+    FadeToBlackPhase, OPERATOR_AUDIO_PERMISSION, OPERATOR_PREVIEW_PERMISSION,
+    OPERATOR_TRANSITION_PERMISSION, OperatorBlock, OperatorControl, OperatorSurface,
+    OperatorTransition, duration_frames, stream_state_label,
 };
 pub use overlay::{OverlayControl, OverlayControls};
 pub use stinger::{StingerControl, StingerControls};

@@ -198,7 +198,8 @@ permission- and protocol-gated Cut/Fade/Wipe controls and adds manual Fade/Wipe/
 Start, exact basis-point Position, Commit, and Cancel controls. Manual controls
 derive availability from Ready state, transition permission, and separate authoritative desired and realized
 manual projections. It also models protocol-gated FTB actions and exact state.
-Web still has no browser renderer or network runtime, and the remaining
+The `freemixd` gateway's self-contained `/operator` page (see the `RC-014`
+boundary) is the first browser surface for these controls; the remaining
 transition families plus cross-platform output acceptance keep item 5 and
 RC-007 planned.
 
@@ -3523,7 +3524,37 @@ Remaining gaps: the gateway is loopback-only, simulated-mode-only, without TLS,
 pairing, or per-device tokens, and admits one Web peer; Web peers receive no
 monitor frames, so there is no low-latency web preview; the page's JavaScript
 duplicates the Rust model and is only manually browser-verified; and FTB, audio
-tally, and Cut confirmation are not modelled. `RC-014` remains planned.
+tally, and Cut confirmation are not modelled on the tally page.
+
+The same gateway also serves a phone and tablet operator page at
+`/operator` (no protocol change; it pins the current protocol), with the tally page's
+headers, token handling, and reconnect, heartbeat, and resync driver. It
+shows the realized Program bus (desired-but-not-aired marked), a Preview bus
+(tap to preview), `CUT`, `AUTO` with a Fade, Alpha fade, Slide, Zoom, or Wipe
+picker and a 0.5-3 s duration converted to frames at the show rate, Fade to
+Black with its `LIVE` / `FADING TO BLACK` / `BLACK` / `FADING UP` phase from
+the realized position, both program recorders and every stream destination
+(desired and realized state) with start/stop, and a mute key per input
+strip. Programs, previews, Fade to Black, strips, recorders, and streams
+follow switcher, playlist, cue-run, and script-run events. Every control is
+gated by the granted role (Viewer, Audio, or Operator) and, when disabled,
+names why (`Not connected to the show`, `This session lacks the transition
+permission`, ...); the server authorizes every command again. A mute rewrites
+the whole strip, so it carries the revision its values came from; one
+refused as stale is retried once after the page catches up, only while the
+strip is unchanged, and an `audio_group_solo` event resynchronizes. Markup
+uses labelled sections, live status regions, `aria-pressed` toggles, and
+key shortcuts (`C`, `A`, `B`, `1`-`9`). `freemix-web`'s `OperatorSurface`
+is the transport-free model of the gating, disabled reasons, commands, and
+badges that the page mirrors. The tally page now reads only the label of an
+input's `id~name~lifecycle` entry (it showed the lifecycle suffix).
+Remaining operator gaps: one Web peer at a time (tally or operator), no
+monitor video, meters, or recorder realized state for Web peers (streams
+show the snapshot's realized state), no T-bar, stinger, overlay, or title
+keys, no Cut confirmation, English only, and the page is verified by
+page-source and wire tests plus headless-Chromium screenshots
+(`docs/progress/web-operator-*.png`), not by an automated browser test.
+`RC-014` remains planned.
 
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.

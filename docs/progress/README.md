@@ -415,6 +415,16 @@ the counts and lock chips.
 | `studio-stream-add-dialog.png` | After the removal, `ADD…`: the Add destination dialog filled in as Facebook Live, RTMPS, `live-api-s.facebook.com:443/rtmp`, with a typed (fake) stream key masked as dots and the eye toggle's hover help `Show what is typed here; secrets are masked by default`; the suggested name was "Destination 5", the bitrate defaults to 6000 kb/s, and `ADD` is enabled. |
 | `studio-add-input-solid.png` | 1920x1080 `--role admin`, the `+` tile (which now reads `colour · bars · stream · camera`): the sectioned Add input dialog with the four kinds, `SOLID COLOUR` chosen, the suggested name "Solid Colour 1", the `SAMPLE` swatch tagged `INPUT 8` / `SILENT` beside the colour presets, `input 8 · position 8`, and `CANCEL` / `ADD INPUT`. |
 | `studio-add-input-network.png` | The same dialog with `NETWORK STREAM`: name "Stage Left Camera" (`Name is free`), the Stream source section with the URL `rtsp://operator:••••••••@10.0.0.42:554/stream1` (the password in the URL is masked as typed, with an eye toggle), `RTSP stream`, the Connection section with the RTSP transport keys, Recovery (`HOLD LAST FRAME` / `BLACK`, give up after attempts), each section with its `▸ ADVANCED` disclosure, and the `CONNECTING` sample. |
+| `web-operator-phone.png` | Browser operator page (`/operator` on the `freemixd --web-listen` gateway, RC-014), headless Chromium at 390x844 as Operator, after tapping Camera 2 Close on Preview, picking `Wipe` and `1.5 s`, `AUTO`, tapping Remote Guest, starting recorder 1 and the YouTube destination, and muting Slides: the realized Program tile in red, the desired Preview in green (pressed), CUT/AUTO, the transition and duration pickers, Fade to Black `LIVE`, `REC`, `Stopped (start requested)` (the simulated daemon never realizes an RTMP push), `MUTED`, and the status line `Mute Slides accepted`. |
+| `web-operator-tablet-ftb.png` | The same page at 1180x820 (tablet landscape) after `FTB`: the badge reads `BLACK` once the realized position reaches black, and the key turns into `FROM BLACK`; Record and stream and Audio sit beside Transition. |
+| `web-operator-audio-role.png` | 390x844 with the Audio role: Preview, CUT/AUTO, FTB, recorders and streams are disabled, each section naming why (`This session lacks the select_preview permission`, `This session lacks the transition permission`), while the mute keys stay live. |
+| `web-operator-reconnecting.png` | 390x844 after the daemon is killed: the `RECONNECTING` pill, `Reconnect now`, empty buses (never stale Program), every control disabled with `Not connected to the show`, Fade to Black `UNKNOWN`, and the backoff countdown. |
+
+Web operator captures (2026-10-19, Protocol 2.59): Playwright Chromium
+(headless, device scale 2) against a simulated `freemixd serve --web-listen`
+show with five simulated inputs, a scene input, one output, and two stopped
+RTMP destinations (fake keys). The page was driven by clicks; only one Web
+peer is admitted at a time, so each capture is its own session.
 
 Round 5: captures of 2026-10-16 at Protocol 2.52, schema 49 (commit
 a821e6d). Added: `studio-workspace-docked.png` (the full docked workspace),
