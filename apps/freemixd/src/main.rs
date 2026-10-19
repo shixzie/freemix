@@ -4478,6 +4478,18 @@ impl StreamLinkMeter {
 /// malformed playlist is a lossy sample gap, never a target failure.
 #[cfg(feature = "native-media")]
 fn local_hls_status(directory: &Path) -> Option<StreamLocalStatus> {
+    local_hls_status_with(directory, |ancestor| disk::available_bytes(ancestor).ok())
+}
+
+/// [`local_hls_status`] with the free-space query `available`, which is
+/// given the directory's nearest existing ancestor. A test pins it: other
+/// writers on the same file system change the free space between any two
+/// real queries.
+#[cfg(feature = "native-media")]
+fn local_hls_status_with(
+    directory: &Path,
+    available: impl FnOnce(&Path) -> Option<u64>,
+) -> Option<StreamLocalStatus> {
     let text = std::fs::read_to_string(directory.join("index.m3u8")).ok()?;
     let text = match parse_master_m3u8(&text) {
         Ok(variants) => {
@@ -4498,7 +4510,7 @@ fn local_hls_status(directory: &Path) -> Option<StreamLocalStatus> {
         segments: segments.min(MAX_STREAM_LOCAL_SEGMENTS),
         target_duration_ms: target_duration_ms.min(MAX_STREAM_LOCAL_TARGET_DURATION_MS),
         free_bytes: disk::existing_ancestor(directory)
-            .and_then(|ancestor| disk::available_bytes(ancestor).ok())
+            .and_then(available)
             .unwrap_or(0),
     })
 }
@@ -22526,10 +22538,20 @@ mod tests {
         let status = local_hls_status(directory.path()).expect("a valid playlist samples");
         assert_eq!(status.segments, 3);
         assert_eq!(status.target_duration_ms, 2_000);
-        assert_eq!(
-            status.free_bytes,
-            disk::available_bytes(directory.path()).unwrap_or(0)
-        );
+        // Free space is measured on the directory itself, through a pinned
+        // query: concurrent tests write to the same file system, so two
+        // real queries need not agree.
+        let mut queried = None;
+        let pinned = local_hls_status_with(directory.path(), |ancestor| {
+            queried = Some(ancestor.to_path_buf());
+            Some(123_456_789)
+        })
+        .expect("a valid playlist samples");
+        assert_eq!(queried.as_deref(), Some(directory.path()));
+        assert_eq!(pinned.free_bytes, 123_456_789);
+        let unavailable =
+            local_hls_status_with(directory.path(), |_| None).expect("a valid playlist samples");
+        assert_eq!(unavailable.free_bytes, 0, "an unavailable query is zero");
     }
 
     #[cfg(feature = "native-media")]

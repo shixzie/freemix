@@ -244,6 +244,55 @@ fn the_system_audio_input_count_is_bounded() {
         engine.show().system_audio_inputs().count(),
         MAX_SYSTEM_AUDIO_INPUTS
     );
+    // Duplicating one of them would be a ninth too, and changes nothing.
+    let outcome = execute(
+        &mut engine,
+        "duplicate-one-more",
+        EngineCommand::InputLifecycle(EngineInputLifecycleEdit::Duplicate {
+            source: input(10),
+            input: input(40),
+            name: None,
+        }),
+    );
+    let refused = crate::rejection(&outcome);
+    assert_eq!(refused.code, RejectionCode::Conflict);
+    assert!(
+        refused
+            .fields
+            .iter()
+            .any(|issue| issue.code == "too_many_system_audio_inputs"),
+        "{refused:?}"
+    );
+    assert!(outcome.events.is_empty(), "nothing happened");
+    assert!(!engine.show().inputs().contains(&input(40)));
+    assert_eq!(
+        engine.show().system_audio_inputs().count(),
+        MAX_SYSTEM_AUDIO_INPUTS
+    );
+}
+
+#[test]
+fn a_duplicated_system_audio_input_keeps_its_device_and_is_undone() {
+    let mut engine = engine();
+    accept(&mut engine, "add", add(5, monitor()));
+    accept(
+        &mut engine,
+        "duplicate",
+        EngineCommand::InputLifecycle(EngineInputLifecycleEdit::Duplicate {
+            source: input(5),
+            input: input(6),
+            name: None,
+        }),
+    );
+    assert_eq!(
+        engine.show().system_audio_inputs().collect::<Vec<_>>(),
+        [(input(5), &monitor()), (input(6), &monitor())]
+    );
+    undo(&mut engine, "undo-duplicate");
+    assert_eq!(
+        engine.show().system_audio_inputs().collect::<Vec<_>>(),
+        [(input(5), &monitor())]
+    );
 }
 
 fn rejection_code(outcome: &EngineCommandOutcome) -> Option<RejectionCode> {

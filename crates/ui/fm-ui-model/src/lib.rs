@@ -4065,6 +4065,12 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
         .expect("validated removed input must exist");
     state.inputs.remove(index);
     state.input_names.remove(index);
+    // Its source entries leave with it, however it is removed (one input,
+    // a batch, or an undone duplicate), so an input later added under the
+    // same id is not shown as one.
+    state.network_streams.remove(&input);
+    state.capture_inputs.remove(&input);
+    state.system_audio_inputs.remove(&input);
     state
         .input_audio_strips
         .retain(|strip| strip.input != input);
@@ -4158,9 +4164,6 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             apply_input_added(state, input, name);
         }
         DurableChange::InputRemoved { input } => {
-            state.network_streams.remove(&input);
-            state.capture_inputs.remove(&input);
-            state.system_audio_inputs.remove(&input);
             apply_input_removed(state, input);
         }
         DurableChange::CaptureSettingsChanged { input, settings } => {

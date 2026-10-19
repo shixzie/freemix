@@ -332,3 +332,78 @@ fn secrets_are_undoable_and_listen_ports_are_exclusive() {
     relatency.settings.latency_ms = 400;
     accept(&mut engine, "relatency", set(6, relatency));
 }
+
+/// A duplicate or a replacement never makes a ninth network stream, and a
+/// listener's duplicate never takes its port a second time.
+#[test]
+fn duplicates_and_replacements_keep_the_count_and_ports_bounded() {
+    use fm_engine::EngineInputLifecycleEdit;
+    use fm_model::InputSourceSpec;
+
+    let duplicate = |source: u128, copy: u128| {
+        EngineCommand::InputLifecycle(EngineInputLifecycleEdit::Duplicate {
+            source: input(source),
+            input: input(copy),
+            name: None,
+        })
+    };
+    let mut engine = engine();
+    accept(
+        &mut engine,
+        "add-listener",
+        add_config(5, listener("srt://0.0.0.0:9000")),
+    );
+    let outcome = execute(&mut engine, "duplicate-listener", duplicate(5, 6));
+    let refused = rejection(&outcome);
+    assert_eq!(refused.code, RejectionCode::Conflict);
+    assert!(
+        refused
+            .fields
+            .iter()
+            .any(|issue| issue.code == "listen_port_in_use"),
+        "{refused:?}"
+    );
+    assert!(!engine.show().inputs().contains(&input(6)));
+
+    let limit = u128::try_from(MAX_NETWORK_STREAM_INPUTS).unwrap();
+    for value in 1..limit {
+        accept(
+            &mut engine,
+            &format!("add-{value}"),
+            add(10 + value, &format!("rtsp://camera-{value}.local/stream")),
+        );
+    }
+    assert_eq!(
+        engine.show().network_streams().count(),
+        MAX_NETWORK_STREAM_INPUTS
+    );
+    let outcome = execute(&mut engine, "duplicate-one-more", duplicate(11, 40));
+    assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
+    assert!(!engine.show().inputs().contains(&input(40)));
+    let outcome = execute(
+        &mut engine,
+        "replace-one-more",
+        EngineCommand::InputLifecycle(EngineInputLifecycleEdit::ReplaceSource {
+            input: input(1),
+            source: InputSourceSpec::Network(NetworkStreamConfig::new(
+                "rtsp://camera-extra.local/stream",
+            )),
+        }),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
+    // Another URL on a network stream is not a ninth.
+    accept(
+        &mut engine,
+        "replace-url",
+        EngineCommand::InputLifecycle(EngineInputLifecycleEdit::ReplaceSource {
+            input: input(11),
+            source: InputSourceSpec::Network(NetworkStreamConfig::new(
+                "rtsp://camera-new.local/stream",
+            )),
+        }),
+    );
+    assert_eq!(
+        engine.show().network_streams().count(),
+        MAX_NETWORK_STREAM_INPUTS
+    );
+}

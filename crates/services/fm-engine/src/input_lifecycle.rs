@@ -459,6 +459,19 @@ pub(crate) fn apply(
             if state.capture_settings(*source).is_some() {
                 crate::engine::check_capture_room(state)?;
             }
+            // A copy is one more input of its kind: system audio inputs and
+            // network streams stay bounded, and a listener's copy would
+            // take its port twice.
+            match state.input_source(*source) {
+                Some(InputSourceSpec::SystemAudio(_)) => {
+                    crate::engine::check_system_audio_room(state)?;
+                }
+                Some(InputSourceSpec::Network(config)) => {
+                    crate::engine::check_network_stream_room(state)?;
+                    crate::engine::check_listen_port(state, input, config)?;
+                }
+                _ => {}
+            }
             let mut staged = state.clone();
             staged.add_input(input, name).map_err(catalogue)?;
             if let Some(strip) = state.input_audio_strip(*source) {
@@ -520,6 +533,9 @@ pub(crate) fn apply(
             };
             if let InputSourceSpec::Network(config) = source {
                 crate::engine::check_listen_port(state, *input, config)?;
+                if !matches!(current, InputSourceSpec::Network(_)) {
+                    crate::engine::check_network_stream_room(state)?;
+                }
             }
             if matches!(source, InputSourceSpec::Device { .. })
                 && state.capture_settings(*input).is_none()

@@ -60,6 +60,10 @@ struct Source {
     start_error: Option<String>,
     closed: bool,
     reported: Option<(SystemAudioStatus, Instant)>,
+    /// The reopen count of the receiver connection last seen live: that
+    /// connection's brief stalls and rebuffering stay live (see
+    /// [`system_audio_status`]).
+    live_connection: Option<u32>,
 }
 
 /// The system audio inputs of one native daemon and their receivers.
@@ -116,6 +120,7 @@ impl NativeSystemAudio {
                 start_error: None,
                 closed,
                 reported: None,
+                live_connection: None,
             };
             if !closed {
                 audio.open(input, &mut source);
@@ -127,6 +132,7 @@ impl NativeSystemAudio {
 
     fn open(&self, input: InputId, source: &mut Source) {
         source.reported = None;
+        source.live_connection = None;
         if !SUPPORTED {
             source.receiver = None;
             source.start_error = Some(UNSUPPORTED.to_owned());
@@ -178,6 +184,7 @@ impl NativeSystemAudio {
                 start_error: None,
                 closed: true,
                 reported: None,
+                live_connection: None,
             });
             let changed = source.config != *config;
             if changed {
@@ -239,7 +246,9 @@ impl NativeSystemAudio {
         for (&input, source) in &mut self.sources {
             let status = match (&source.receiver, &source.start_error) {
                 _ if source.closed => SystemAudioStatus::default(),
-                (Some(receiver), _) => system_audio_status(&receiver.status()),
+                (Some(receiver), _) => {
+                    system_audio_status(&receiver.status(), &mut source.live_connection)
+                }
                 (None, Some(error)) => SystemAudioStatus {
                     state: SystemAudioState::Failed,
                     reopens: 0,
@@ -289,17 +298,33 @@ fn attempt_of(state: SystemAudioState) -> (&'static str, u32) {
 }
 
 /// The system audio status of an audio-only receiver's status: opening
-/// until the device delivers (and again while it stalls), live while it
-/// delivers, reopening between attempts.
-fn system_audio_status(status: &NetworkStreamStatus) -> SystemAudioStatus {
+/// until the device first delivers, live while it delivers, reopening
+/// between attempts.
+///
+/// A connection that went live stays live through its brief stalls and
+/// rebuffering: the device is open, and a stall that outlasts the timeout
+/// ends the connection, which then reports reopening. `live_connection`
+/// remembers the reopen count of the connection seen live; a reopen (a
+/// higher count) opens again.
+fn system_audio_status(
+    status: &NetworkStreamStatus,
+    live_connection: &mut Option<u32>,
+) -> SystemAudioStatus {
+    let opened = *live_connection == Some(status.reconnects);
     SystemAudioStatus {
         state: match status.state {
             NetworkStreamState::Idle => SystemAudioState::Idle,
+            NetworkStreamState::Buffering | NetworkStreamState::Stalled if opened => {
+                SystemAudioState::Live
+            }
             NetworkStreamState::Connecting
             | NetworkStreamState::Listening
             | NetworkStreamState::Buffering
             | NetworkStreamState::Stalled => SystemAudioState::Opening,
-            NetworkStreamState::Live => SystemAudioState::Live,
+            NetworkStreamState::Live => {
+                *live_connection = Some(status.reconnects);
+                SystemAudioState::Live
+            }
             NetworkStreamState::Reconnecting {
                 attempt,
                 next_in_ms,
@@ -364,16 +389,90 @@ mod tests {
             ),
             (NetworkStreamState::Failed, SystemAudioState::Failed),
         ] {
-            let status = system_audio_status(&NetworkStreamStatus {
-                state,
-                reconnects: 4,
-                last_error: Some("gone".into()),
-                ..NetworkStreamStatus::default()
-            });
+            let status = system_audio_status(
+                &NetworkStreamStatus {
+                    state,
+                    reconnects: 4,
+                    last_error: Some("gone".into()),
+                    ..NetworkStreamStatus::default()
+                },
+                &mut None,
+            );
             assert_eq!(status.state, expected);
             assert_eq!(status.reopens, 4);
             assert_eq!(status.last_error.as_deref(), Some("gone"));
         }
+    }
+
+    /// A live device that briefly stalls and rebuffers, with no reopen,
+    /// stays live instead of flapping to opening; once its connection ends
+    /// and reopens, the new connection opens again until it delivers.
+    #[test]
+    fn a_live_device_stays_live_through_a_brief_stall() {
+        let mut live_connection = None;
+        let mut state = |state, reconnects| {
+            system_audio_status(
+                &NetworkStreamStatus {
+                    state,
+                    reconnects,
+                    ..NetworkStreamStatus::default()
+                },
+                &mut live_connection,
+            )
+            .state
+        };
+        assert_eq!(
+            state(NetworkStreamState::Connecting, 0),
+            SystemAudioState::Opening
+        );
+        assert_eq!(
+            state(NetworkStreamState::Buffering, 0),
+            SystemAudioState::Opening
+        );
+        assert_eq!(state(NetworkStreamState::Live, 0), SystemAudioState::Live);
+        // A stall and its rebuffering within the same connection.
+        assert_eq!(
+            state(NetworkStreamState::Stalled, 0),
+            SystemAudioState::Live
+        );
+        assert_eq!(
+            state(NetworkStreamState::Buffering, 0),
+            SystemAudioState::Live
+        );
+        assert_eq!(state(NetworkStreamState::Live, 0), SystemAudioState::Live);
+        // The stall outlasts the timeout: the receiver reopens.
+        assert_eq!(
+            state(
+                NetworkStreamState::Reconnecting {
+                    attempt: 1,
+                    next_in_ms: 500
+                },
+                1
+            ),
+            SystemAudioState::Reopening {
+                attempt: 1,
+                next_in_ms: 500
+            }
+        );
+        assert_eq!(
+            state(NetworkStreamState::Connecting, 1),
+            SystemAudioState::Opening
+        );
+        assert_eq!(
+            state(NetworkStreamState::Buffering, 1),
+            SystemAudioState::Opening
+        );
+        assert_eq!(state(NetworkStreamState::Live, 1), SystemAudioState::Live);
+        assert_eq!(
+            state(NetworkStreamState::Stalled, 1),
+            SystemAudioState::Live
+        );
+        // A connection the reporter never saw live (its reopen happened
+        // between two reports) still opens.
+        assert_eq!(
+            state(NetworkStreamState::Buffering, 2),
+            SystemAudioState::Opening
+        );
     }
 
     #[test]

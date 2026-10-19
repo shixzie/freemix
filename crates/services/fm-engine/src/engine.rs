@@ -3058,14 +3058,7 @@ fn apply_input_catalogue_mutation(
             if let EngineInputSource::NetworkStream(config) = &source {
                 config.validate().map_err(network_stream_rejection)?;
                 check_listen_port(state, input, config)?;
-                let count = state.network_streams().count();
-                if count >= fm_types::network_stream::MAX_NETWORK_STREAM_INPUTS {
-                    let message = format!(
-                        "the show already has {count} network streams, the most it may hold"
-                    );
-                    return Err(Rejection::new(RejectionCode::Conflict, message.clone())
-                        .with_field(FieldIssue::new("kind", "too_many_network_streams", message)));
-                }
+                check_network_stream_room(state)?;
             }
             if let EngineInputSource::Capture(config) = &source {
                 config.validate().map_err(capture_rejection)?;
@@ -3160,6 +3153,18 @@ pub(crate) fn check_capture_room(state: &ShowState) -> Result<(), Rejection> {
 /// Refuses a network stream that would listen on a local port another
 /// network stream input (other than `input`) already listens on (IN-016,
 /// IN-017).
+/// Refuses another network stream once the show holds
+/// [`fm_types::network_stream::MAX_NETWORK_STREAM_INPUTS`] (IN-015).
+pub(crate) fn check_network_stream_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state.network_streams().count();
+    if count >= fm_types::network_stream::MAX_NETWORK_STREAM_INPUTS {
+        let message = format!("the show already has {count} network streams, the most it may hold");
+        return Err(Rejection::new(RejectionCode::Conflict, message.clone())
+            .with_field(FieldIssue::new("kind", "too_many_network_streams", message)));
+    }
+    Ok(())
+}
+
 pub(crate) fn check_listen_port(
     state: &ShowState,
     input: InputId,

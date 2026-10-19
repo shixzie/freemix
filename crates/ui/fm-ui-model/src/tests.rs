@@ -3044,3 +3044,88 @@ fn capture_inputs_follow_snapshot_edits_replacements_and_duplicates() {
     assert!(model.view().unwrap().capture_input(input(1)).is_none());
     assert_eq!(model.view().unwrap().capture_inputs.len(), 1);
 }
+
+/// AU-011: a batch removal (also how a duplicate is undone) forgets the
+/// removed inputs' system audio, capture, and network stream entries, so an
+/// input later added under the same id is not shown as one.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_batch_removal_forgets_the_removed_inputs_source_entries() {
+    use fm_protocol::{
+        CaptureInputConfig, InputLifecycleOperation, NetworkStreamConfig, SystemAudioBackend,
+        SystemAudioConfig, SystemAudioEntry, SystemAudioStatus, WireInputId,
+    };
+
+    let project = project(1);
+    let mut model = ClientModel::new(project);
+    let mut base = snapshot(project, 4);
+    base.system_audio_inputs = vec![SystemAudioEntry {
+        input: WireInputId::from_domain(input(3)),
+        config: SystemAudioConfig::new(SystemAudioBackend::Pulse, "@DEFAULT_MONITOR@"),
+        status: SystemAudioStatus::default(),
+    }];
+    model.install_snapshot(base.clone()).unwrap();
+    let engine = base.cursor.engine.clone();
+    let mut revision = 4;
+    let mut apply = |model: &mut ClientModel, change| {
+        revision += 1;
+        model
+            .apply_event(event(project, engine.clone(), revision, change))
+            .unwrap();
+    };
+    let remove_seven = || DurableChange::InputLifecycleChanged {
+        operation: InputLifecycleOperation::RemoveInputs {
+            inputs: vec![WireInputId::from_domain(input(7))],
+        },
+        added: Vec::new(),
+    };
+    let add_seven = |system_audio, capture, network_stream| DurableChange::InputAdded {
+        input: input(7),
+        name: "Seven".into(),
+        network_stream,
+        system_audio,
+        capture,
+    };
+
+    // A system audio duplicate, undone by a batch removal.
+    apply(
+        &mut model,
+        DurableChange::InputLifecycleChanged {
+            operation: InputLifecycleOperation::Duplicate {
+                source: WireInputId::from_domain(input(3)),
+                input: WireInputId::from_domain(input(7)),
+                name: None,
+            },
+            added: vec![(input(7), "Desktop 2".into())],
+        },
+    );
+    assert!(model.view().unwrap().system_audio_input(input(7)).is_some());
+    apply(&mut model, remove_seven());
+    // A capture input under the same id, removed the same way.
+    apply(
+        &mut model,
+        add_seven(None, Some(Box::new(CaptureInputConfig::new("cam-a"))), None),
+    );
+    assert!(model.view().unwrap().system_audio_input(input(7)).is_none());
+    apply(&mut model, remove_seven());
+    // A network stream under the same id, removed the same way.
+    apply(
+        &mut model,
+        add_seven(
+            None,
+            None,
+            Some(Box::new(NetworkStreamConfig::new("srt://127.0.0.1:9000"))),
+        ),
+    );
+    assert!(model.view().unwrap().capture_input(input(7)).is_none());
+    apply(&mut model, remove_seven());
+    // A plain input under the same id is none of them.
+    apply(&mut model, add_seven(None, None, None));
+    let view = model.view().unwrap();
+    assert!(view.system_audio_input(input(7)).is_none());
+    assert!(view.capture_input(input(7)).is_none());
+    assert!(view.network_stream(input(7)).is_none());
+    assert_eq!(view.system_audio_inputs.len(), 1);
+    assert_eq!(view.capture_inputs, []);
+    assert_eq!(view.network_streams, []);
+}
