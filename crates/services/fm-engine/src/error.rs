@@ -290,6 +290,12 @@ pub enum SnapshotError {
         event_sequence: u64,
         runtime_generation: u64,
     },
+    /// The saved script run resumes further ahead of the frame cursor than
+    /// its waits allow (RC-011, schema 56).
+    ScriptRunOutOfReach {
+        due_frame: u64,
+        frame_cursor: u64,
+    },
 }
 
 impl fmt::Display for SnapshotError {
@@ -331,6 +337,13 @@ impl fmt::Display for SnapshotError {
             } => write!(
                 formatter,
                 "persisted counters must agree and cover the {accepted_commands} accepted receipts (revision {revision}, event sequence {event_sequence}, runtime generation {runtime_generation})"
+            ),
+            Self::ScriptRunOutOfReach {
+                due_frame,
+                frame_cursor,
+            } => write!(
+                formatter,
+                "the saved script run resumes on frame {due_frame}, further past cursor {frame_cursor} than its waits allow"
             ),
         }
     }

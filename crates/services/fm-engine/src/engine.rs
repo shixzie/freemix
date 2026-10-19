@@ -2437,6 +2437,27 @@ impl Engine {
     }
 }
 
+/// A saved script run's last part was realized before the frame `cursor`,
+/// and its due frame is that part's frame plus one wait, so it lies within
+/// the run's waited frames of the cursor (RC-011, schema 56). A further one
+/// (a hand-edited project) would hold the cue clock, and block a local CLI
+/// run that plays the clock to its end, for ever.
+fn validate_script_run_reach(show: &ShowState, cursor: u64) -> Result<(), SnapshotError> {
+    match &show.script_run().running {
+        Some(run)
+            if cursor
+                .checked_add(u64::from(run.state.wait_frames))
+                .is_none_or(|reach| run.due_frame > reach) =>
+        {
+            Err(SnapshotError::ScriptRunOutOfReach {
+                due_frame: run.due_frame,
+                frame_cursor: cursor,
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
 fn validate_idle_restore(
     show: &ShowState,
     realized_switcher: &SwitcherState,
@@ -2522,6 +2543,8 @@ fn validate_idle_restore(
             }
         }
     }
+
+    validate_script_run_reach(show, cursor)?;
 
     // Every accepted command advances all three counters together, so they
     // must agree. Persisted receipts are a bounded retention window over the

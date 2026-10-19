@@ -345,6 +345,8 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
             entity: None,
             field: "cue_lists",
             kind: match error {
+                // List `0` is the cue clock's waiting script run (schema 56).
+                None if lists.iter().any(|list| list.id == 0) => ValidationErrorKind::OutOfRange,
                 None | Some(crate::CueListError::DuplicateCue(_)) => {
                     ValidationErrorKind::DuplicateId
                 }

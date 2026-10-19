@@ -2032,7 +2032,7 @@ Protocol 2.62 lets a script wait (RC-011).
   expression of at least 1 (anything else is a `runtime` failure). One
   run may wait at most 32 times (`waits` budget) for at most ten minutes
   of frames in all (`wait_frames` budget: `ceil(600 × frame rate)`, 15000
-  at 25 fps, 35964 at 59.94 fps); the instruction, action, variable, and
+  at 25 fps, 35965 at 59.94 fps); the instruction, action, variable, and
   string budgets cover the whole run, every part together. The new
   `script_failed` kinds are `waits` and `wait_frames` (`resource_exhausted`).
 - Design: the parts after a wait are evaluated on their due frame, not
@@ -2050,7 +2050,9 @@ Protocol 2.62 lets a script wait (RC-011).
   authority's clock may submit it; a client's is `unavailable`); it runs
   the next part on exactly its due frame, or the next frame once that has
   passed, journaled like any cue advance. When a cue list and the script
-  run are due on the same frame, the list advances first.
+  run are due on the same frame, the list advances first. No cue list may
+  take id `0` (the wire never carried one; the engine and project
+  validation now refuse it too).
 - A part that fails on its frame (a runtime error, an exhausted budget, or
   a refused action) is not a refusal: the advance is accepted, nothing of
   that frame is applied, the run ends, and the slot keeps the fault (its
@@ -2091,7 +2093,9 @@ Protocol 2.62 lets a script wait (RC-011).
   "wait_frames"}, "fault": null | {"script", "frame", "failure", "line",
   "column"}}` after `"scripts"` (schema 56). Validation refuses a run of a
   script the project lacks, a state that does not resume that script's
-  source within its limits, and both a run and a fault. A restarted
+  source within its limits, and both a run and a fault; a restore also
+  refuses a run due further past the saved frame cursor than its waited
+  frames (its last part ran before the cursor). A restarted
   authority restores the slot and resumes the run on its due engine
   frame, exactly like a waiting cue (the time the show was down does not
   count); journal replay reproduces every part.

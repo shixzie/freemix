@@ -236,14 +236,41 @@ pub(crate) fn check_action_references(
     Ok(())
 }
 
+/// The refusal of a list id of zero: the cue clock's list `0` is the
+/// waiting script run (schema 56).
+fn zero_list() -> Rejection {
+    Rejection::new(
+        RejectionCode::InvalidCommand,
+        "cue list id must not be zero",
+    )
+    .with_field(FieldIssue::new(
+        "list",
+        "zero",
+        "cue list id must not be zero",
+    ))
+}
+
 /// Applies a [`crate::EngineCommand::SetCueList`] to `state`.
 ///
 /// # Errors
 ///
-/// Refuses an invalid definition, an unknown reference, a list past the
-/// project bound, removing an unknown list, and changing or removing a cue
-/// whose deferred actions still wait.
+/// Refuses list id zero (the cue clock's list `0` is the waiting script
+/// run, schema 56), an invalid definition, an unknown reference, a list
+/// past the project bound, removing an unknown list, and changing or
+/// removing a cue whose deferred actions still wait.
 pub(crate) fn apply_set(
+    state: &mut ShowState,
+    list: u64,
+    definition: Option<&EngineCueListDefinition>,
+) -> Result<(), Rejection> {
+    if list == 0 && definition.is_some() {
+        return Err(zero_list());
+    }
+    replace(state, list, definition)
+}
+
+/// Creates, replaces, or removes list `list` (see [`apply_set`]).
+fn replace(
     state: &mut ShowState,
     list: u64,
     definition: Option<&EngineCueListDefinition>,

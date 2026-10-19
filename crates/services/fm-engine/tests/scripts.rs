@@ -558,6 +558,11 @@ fn waits_are_bounded_to_ten_minutes_of_frames() {
         fm_model::script_wait_frames(FrameRate::new(30_000, 1_001).unwrap()),
         17_983
     );
+    // 600 × 60000/1001 = 35964.04, rounded up.
+    assert_eq!(
+        fm_model::script_wait_frames(FrameRate::new(60_000, 1_001).unwrap()),
+        35_965
+    );
     accepted(&submit(&mut engine, "set", set(1, "wait 15000\nwait 1")));
     accepted(&submit(&mut engine, "set-2", set(2, "wait 15001")));
     let (code, reason, _) = refusal(&submit(&mut engine, "run-2", run(2)));
@@ -600,4 +605,94 @@ fn a_cue_never_runs_a_script_that_waits() {
     assert_eq!(rejection.fields[0].code, "script_waits");
     // A source that does not parse never waits.
     accepted(&submit(&mut engine, "broken-2", set(2, "wait (")));
+}
+
+/// The cue clock's list `0` is the waiting script run, so no cue list may
+/// take id `0`: one that did would have its waits routed to the script run
+/// and never resume.
+#[test]
+fn no_cue_list_takes_the_script_runs_list_zero() {
+    let mut engine = engine();
+    let outcome = submit(
+        &mut engine,
+        "list-0",
+        EngineCommand::SetCueList {
+            list: 0,
+            definition: Some(fm_engine::EngineCueListDefinition {
+                name: "Zero".to_owned(),
+                cues: vec![fm_model::Cue {
+                    id: 1,
+                    name: "One".to_owned(),
+                    actions: vec![
+                        fm_model::CueAction::Wait { frames: 3 },
+                        fm_model::CueAction::Preview { input: input(12) },
+                    ],
+                    auto_follow: false,
+                }],
+            }),
+        },
+    );
+    let rejection = &outcome.receipt.rejected().expect("refused").rejection;
+    assert_eq!(rejection.code, RejectionCode::InvalidCommand);
+    assert_eq!(
+        (
+            rejection.fields[0].field.as_str(),
+            rejection.fields[0].code.as_str()
+        ),
+        ("list", "zero")
+    );
+    assert_eq!(engine.show().cue_lists(), []);
+    // A restored show is checked the same way.
+    let mut show = engine.show().clone();
+    let list = fm_model::CueList {
+        id: 0,
+        name: "Zero".to_owned(),
+        cues: Vec::new(),
+        state: fm_model::CueRunState::default(),
+    };
+    assert!(show.set_cue_lists(vec![list]).is_err());
+}
+
+/// A saved run's due frame lies within its waited frames of the frame
+/// cursor; a hand-edited one further ahead is refused on restore, so the
+/// clock (and a local run that plays it to the end) is never held for
+/// ever.
+#[test]
+fn a_restored_run_due_beyond_its_waits_is_refused() {
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set", set(1, "cut 2\nwait 40\ncut 3")));
+    accepted(&submit(&mut engine, "run", run(1)));
+    tick(&mut engine, 2);
+    let snapshot = engine.snapshot().expect("idle");
+    let restore = |show: ShowState| {
+        Engine::restore_persisted(
+            show,
+            snapshot.realized_switcher().clone(),
+            snapshot.frame_rate(),
+            ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+            fm_engine::EngineRestoreState {
+                state_epoch: snapshot.state_epoch(),
+                revision: snapshot.revision(),
+                event_sequence: snapshot.event_sequence(),
+                runtime_generation: snapshot.runtime_generation(),
+                clock_time: snapshot.clock_time(),
+                frame_cursor: fm_scheduler::FrameNumber::new(snapshot.frames_rendered()),
+                receipts: snapshot.receipts().to_vec(),
+            },
+        )
+    };
+    let restored = restore(snapshot.show().clone()).expect("the saved run restores");
+    assert_eq!(restored.show().script_run(), snapshot.show().script_run());
+
+    let mut slot = snapshot.show().script_run().clone();
+    slot.running.as_mut().expect("the run waits").due_frame = u64::MAX / 2;
+    let mut show = snapshot.show().clone();
+    // The slot fits the script (the model checks no frame cursor) ...
+    show.set_script_run(slot, snapshot.frame_rate()).unwrap();
+    // ... but not the cursor it is restored at.
+    assert!(matches!(
+        restore(show).err(),
+        Some(fm_engine::SnapshotError::ScriptRunOutOfReach { due_frame, .. })
+            if due_frame == u64::MAX / 2
+    ));
 }

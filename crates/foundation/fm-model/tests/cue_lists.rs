@@ -218,6 +218,15 @@ fn projects_hold_a_bounded_set_of_uniquely_numbered_lists() {
         list(1, Vec::new(), CueRunState::default()),
     ];
     assert_eq!(validate_cue_lists(&duplicate), Err(None));
+    // List 0 is the cue clock's waiting script run (schema 56).
+    let zero = vec![list(0, Vec::new(), CueRunState::default())];
+    assert_eq!(validate_cue_lists(&zero), Err(None));
+    let mut project = project();
+    project.set_cue_lists(zero);
+    assert_eq!(
+        project.validate().unwrap_err()[0].kind,
+        fm_model::ValidationErrorKind::OutOfRange
+    );
     let mut invalid = list(2, Vec::new(), CueRunState::default());
     invalid.name = String::new();
     assert_eq!(

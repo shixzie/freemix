@@ -550,14 +550,15 @@ pub fn validate_cue_list(list: &CueList) -> Result<(), CueListError> {
 }
 
 /// Checks the project-level list rules: at most [`MAX_CUE_LISTS`] lists
-/// with unique ids, each structurally valid.
+/// with unique nonzero ids (the cue clock's list `0` is the waiting script
+/// run, schema 56), each structurally valid.
 ///
 /// # Errors
 ///
-/// Returns the first [`CueListError`], or `Err(None)` for too many lists
-/// or a duplicate list id.
+/// Returns the first [`CueListError`], or `Err(None)` for too many lists,
+/// a zero list id, or a duplicate list id.
 pub fn validate_cue_lists(lists: &[CueList]) -> Result<(), Option<CueListError>> {
-    if lists.len() > MAX_CUE_LISTS {
+    if lists.len() > MAX_CUE_LISTS || lists.iter().any(|list| list.id == 0) {
         return Err(None);
     }
     for (index, list) in lists.iter().enumerate() {
