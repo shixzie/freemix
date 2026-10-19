@@ -418,6 +418,22 @@ Source #54\n\
             path.into_os_string()
         };
         std::fs::write(dir.join("sources.txt"), SOURCES).unwrap();
+        // A script just written can be briefly busy to exec: another test
+        // thread forking in that window inherits its write descriptor until
+        // the fork execs (ETXTBSY), so a busy start is tried again.
+        let list = |lister: &SystemAudioLister| {
+            for _ in 0..200 {
+                let inventory = lister.list();
+                let busy = inventory
+                    .error_of(SystemAudioBackend::Pulse)
+                    .is_some_and(|error| error.contains("Text file busy"));
+                if !busy {
+                    return inventory;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the fake pactl stayed busy");
+        };
         let answering = script(
             "pactl-ok",
             &format!(
@@ -432,7 +448,7 @@ Source #54\n\
             asound: dir.join("no-asound"),
             timeout: Duration::from_secs(5),
         };
-        let inventory = lister.list();
+        let inventory = list(&lister);
         let pulse: Vec<(&str, bool)> = inventory
             .devices_of(SystemAudioBackend::Pulse)
             .map(|device| (device.device.as_str(), device.default))
@@ -454,7 +470,7 @@ Source #54\n\
             ..lister.clone()
         };
         assert_eq!(
-            refused.list().error_of(SystemAudioBackend::Pulse),
+            list(&refused).error_of(SystemAudioBackend::Pulse),
             Some("pactl failed: Connection failure: Connection refused")
         );
         let hanging = SystemAudioLister {
@@ -464,7 +480,7 @@ Source #54\n\
         };
         let started = Instant::now();
         assert_eq!(
-            hanging.list().error_of(SystemAudioBackend::Pulse),
+            list(&hanging).error_of(SystemAudioBackend::Pulse),
             Some("pactl did not answer within 200 ms")
         );
         assert!(started.elapsed() < Duration::from_secs(10));
