@@ -335,6 +335,8 @@ struct Observed {
 enum Transport {
     Raw {
         reader: BufReader<TcpStream>,
+        /// The start of a line whose rest has not arrived yet.
+        pending: Vec<u8>,
         writer: TcpStream,
     },
     Web(Box<WebSocket<TcpStream>>),
@@ -388,6 +390,7 @@ impl Session {
             name,
             Transport::Raw {
                 reader: BufReader::new(stream),
+                pending: Vec::new(),
                 writer,
             },
             client_type,
@@ -478,24 +481,28 @@ impl Session {
         }
     }
 
-    /// The next record, or `None` when none arrived within the read poll.
+    /// The next record, or `None` when none arrived within the read poll (on
+    /// a raw session the start of a partial line is kept for the next read:
+    /// on a loaded host a line can arrive in pieces further apart).
     fn read(&mut self) -> Option<WireMessage> {
         let name = self.name;
         match &mut self.transport {
-            Transport::Raw { reader, .. } => {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => panic!("{name}: daemon closed the session"),
-                    Ok(_) => Some(decode_line(&line).unwrap()),
-                    Err(error)
-                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                    {
-                        assert!(line.is_empty(), "{name}: a partial line timed out");
-                        None
-                    }
-                    Err(error) => panic!("{name}: {error}"),
+            Transport::Raw {
+                reader, pending, ..
+            } => match reader.read_until(b'\n', pending) {
+                Ok(0) => panic!("{name}: daemon closed the session"),
+                Ok(_) if !pending.ends_with(b"\n") => panic!("{name}: daemon closed mid-line"),
+                Ok(_) => {
+                    let line = String::from_utf8(std::mem::take(pending)).unwrap();
+                    Some(decode_line(&line).unwrap())
                 }
-            }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    None
+                }
+                Err(error) => panic!("{name}: {error}"),
+            },
             Transport::Web(socket) => match socket.read() {
                 Ok(Message::Text(text)) => Some(decode_line(text.as_str()).unwrap()),
                 Ok(Message::Ping(_) | Message::Pong(_)) => None,

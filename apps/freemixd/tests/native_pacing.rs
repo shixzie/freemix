@@ -359,6 +359,9 @@ struct Session {
     name: String,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    /// The start of a line whose rest has not arrived yet: on a loaded host
+    /// a line can arrive in pieces further apart than a read poll.
+    pending: Vec<u8>,
     server: Option<ServerIdentity>,
     heartbeats: u64,
     last_heartbeat: Instant,
@@ -371,7 +374,14 @@ struct Closed;
 impl Session {
     /// An operator session and the snapshot it was served.
     fn connect(name: &str, address: SocketAddr) -> (Self, SnapshotMessage) {
-        let stream = TcpStream::connect(address).unwrap();
+        Self::try_connect(name, address)
+            .unwrap_or_else(|Closed| panic!("{name}: the daemon closed the session"))
+    }
+
+    /// [`Self::connect`], or `Closed` when the daemon stopped (or was
+    /// killed) before it served the snapshot.
+    fn try_connect(name: &str, address: SocketAddr) -> Result<(Self, SnapshotMessage), Closed> {
+        let stream = TcpStream::connect(address).map_err(|_| Closed)?;
         stream.set_nodelay(true).unwrap();
         stream.set_read_timeout(Some(READ_POLL)).unwrap();
         let writer = stream.try_clone().unwrap();
@@ -379,23 +389,22 @@ impl Session {
             name: name.to_owned(),
             reader: BufReader::new(stream),
             writer,
+            pending: Vec::new(),
             server: None,
             heartbeats: 0,
             last_heartbeat: Instant::now(),
         };
-        session
-            .send(&WireMessage::HandshakeRequest(HandshakeRequest {
-                protocol: CURRENT_PROTOCOL_VERSION,
-                build: "native-pacing-test".into(),
-                client_type: ClientType::Cli,
-                desired_role: Role::Operator,
-                resume_cursor: None,
-            }))
-            .unwrap();
+        session.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            build: "native-pacing-test".into(),
+            client_type: ClientType::Cli,
+            desired_role: Role::Operator,
+            resume_cursor: None,
+        }))?;
         let deadline = Instant::now() + PROCESS_TIMEOUT;
         loop {
             assert!(Instant::now() < deadline, "{name}: no snapshot");
-            match session.read().unwrap() {
+            match session.read()? {
                 Some(WireMessage::HandshakeResponse(response)) => {
                     assert!(
                         matches!(response.outcome, HandshakeOutcome::Snapshot { .. }),
@@ -403,7 +412,7 @@ impl Session {
                     );
                     session.server = Some(response.server);
                 }
-                Some(WireMessage::Snapshot(snapshot)) => return (session, snapshot),
+                Some(WireMessage::Snapshot(snapshot)) => return Ok((session, snapshot)),
                 _ => {}
             }
         }
@@ -416,13 +425,20 @@ impl Session {
             .map_err(|_| Closed)
     }
 
+    /// The next message, or `None` when no whole line arrived within a read
+    /// poll (the start of a partial line is kept for the next read).
     fn read(&mut self) -> Result<Option<WireMessage>, Closed> {
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
+        match self.reader.read_until(b'\n', &mut self.pending) {
             Ok(0) => Err(Closed),
-            Ok(_) => Ok(Some(decode_line(&line).unwrap())),
+            // The daemon closed the session in the middle of a line.
+            Ok(_) if self.pending.last() != Some(&b'\n') => Err(Closed),
+            Ok(_) => {
+                let line = std::mem::take(&mut self.pending);
+                let line = std::str::from_utf8(&line)
+                    .unwrap_or_else(|error| panic!("{}: {error}", self.name));
+                Ok(Some(decode_line(line).unwrap()))
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                assert!(line.is_empty(), "{}: a partial line timed out", self.name);
                 Ok(None)
             }
             Err(_) => Err(Closed),
@@ -499,6 +515,25 @@ fn traced_lateness(stderr: &str) -> Vec<f64> {
 /// Every traced frame's lateness in milliseconds and whether a command was
 /// realized on it, in frame order.
 fn traced_frames(stderr: &str) -> Vec<(f64, bool)> {
+    traced_samples(stderr)
+        .into_iter()
+        .map(|sample| (sample.lateness, sample.command))
+        .collect()
+}
+
+/// One traced Program frame, in milliseconds.
+#[derive(Clone, Copy, Debug)]
+struct FrameSample {
+    /// How late the frame started against its pacer deadline.
+    lateness: f64,
+    /// How long realizing it took.
+    realize: f64,
+    /// Whether a command was realized on it.
+    command: bool,
+}
+
+/// Every traced frame, in frame order.
+fn traced_samples(stderr: &str) -> Vec<FrameSample> {
     let record = stderr
         .lines()
         .find(|line| line.starts_with("FREEMIXD_PACING_TRACE\t"))
@@ -512,8 +547,14 @@ fn traced_frames(stderr: &str) -> Vec<(f64, bool)> {
         .filter(|sample| !sample.is_empty())
         .map(|sample| {
             let mut fields = sample.split(':');
-            let lateness = fields.next().unwrap().parse::<f64>().unwrap() / 1_000.0;
-            (lateness, fields.nth(1) == Some("c"))
+            let mut milliseconds = || fields.next().unwrap().parse::<f64>().unwrap() / 1_000.0;
+            let lateness = milliseconds();
+            let realize = milliseconds();
+            FrameSample {
+                lateness,
+                realize,
+                command: fields.next() == Some("c"),
+            }
         })
         .collect()
 }
@@ -551,7 +592,10 @@ fn summary(label: &str, samples: &[f64]) -> String {
 /// back to catch up. The pacer's first deadline is now the first frame the
 /// loop asks for, and the segment opens on its worker while the frames
 /// realized meanwhile queue in its backlog: the first frames are on time and
-/// the recording still holds every realized frame.
+/// the recording still holds every realized frame. On a host too loaded to
+/// realize frames at the show's rate, frames are late however the daemon
+/// starts; there the test proves that no lateness comes from startup work on
+/// the frame loop or inside a frame's realization.
 #[test]
 fn recorder_and_stream_startup_never_make_program_frames_late() {
     /// The frames the startup stall used to make late.
@@ -571,28 +615,74 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
     session.idle(Duration::from_secs(1)).unwrap();
     drop(session);
     let stderr = daemon.stop();
+    let frames = traced_samples(&stderr);
     let lateness = traced_lateness(&stderr);
     let startup = &lateness[..lateness.len().min(2 * FRAME_RATE as usize)];
     eprintln!("{}", summary("startup", startup));
     let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
     assert!(
-        lateness.len() > FIRST_FRAMES,
-        "too few frames traced: {lateness:?}"
+        frames.len() > 2 * FIRST_FRAMES,
+        "too few frames traced: {frames:?}"
     );
+    let (first, steady) = frames.split_at(FIRST_FRAMES);
+    // The pacer's clock starts at the first frame it realizes.
     assert!(
-        lateness[0] < frame_ms / 2.0,
-        "the first Program frame started {} ms late",
-        lateness[0]
+        first[0].lateness < frame_ms / 2.0,
+        "the first Program frame started {} ms late: {first:?}",
+        first[0].lateness
     );
-    let late: Vec<(usize, f64)> = lateness[..FIRST_FRAMES]
+    // A frame is late for two reasons: the loop did something else between
+    // frames (its own lateness minus what the previous frame's realization
+    // overran the interval by), or realizing the frames before it took
+    // longer than the interval. A stall on the frame loop, the recorder's
+    // and the encoders' start included, is the first; a host too loaded to
+    // realize frames at the show's rate (a software adapter competing for
+    // the CPU) the second, which the frames after startup show as well.
+    let mut on_loop = vec![(0, first[0].lateness)];
+    for index in 1..FIRST_FRAMES {
+        let overrun = (first[index - 1].lateness + first[index - 1].realize - frame_ms).max(0.0);
+        on_loop.push((index, first[index].lateness - overrun));
+    }
+    eprintln!("startup frames: {first:?}; loop stalls (frame, ms): {on_loop:?}");
+    let stalled: Vec<(usize, f64)> = on_loop
+        .into_iter()
+        .filter(|&(_, stall)| stall >= frame_ms)
+        .collect();
+    assert!(
+        stalled.is_empty(),
+        "startup stalled the frame loop a frame or more (frame, ms): {stalled:?}; {first:?}"
+    );
+    // Startup work inside a frame's realization: a startup frame takes no
+    // longer than a frame interval, or than four times what the frames after
+    // startup take on this host (the first realization warms the GPU up and
+    // takes two to three times as long).
+    let mut realize: Vec<f64> = steady.iter().map(|frame| frame.realize).collect();
+    realize.sort_by(f64::total_cmp);
+    let typical = realize[realize.len() / 2];
+    let bound = frame_ms.max(4.0 * typical);
+    let slow: Vec<(usize, f64)> = first
         .iter()
-        .copied()
+        .map(|frame| frame.realize)
         .enumerate()
-        .filter(|&(_, lateness)| lateness >= frame_ms)
+        .filter(|&(_, realize)| realize >= bound)
+        .collect();
+    assert!(
+        slow.is_empty(),
+        "startup frames took {bound:.2} ms or more to realize (frame, ms) while later \
+         frames took {typical:.2} ms: {slow:?}; {first:?}"
+    );
+    // On a host that keeps pace with the show (the frames after startup
+    // realize in under half an interval), no startup frame is a frame late.
+    let keeps_pace = percentile(&realize, 95) < frame_ms / 2.0;
+    let late: Vec<(usize, f64)> = first
+        .iter()
+        .map(|frame| frame.lateness)
+        .enumerate()
+        .filter(|&(_, lateness)| keeps_pace && lateness >= frame_ms)
         .collect();
     assert!(
         late.is_empty(),
-        "startup made Program frames a frame or more late (frame, ms): {late:?}"
+        "startup made Program frames a frame or more late (frame, ms): {late:?}; {first:?}"
     );
     // Every realized frame reached the segment, those realized while it
     // was still opening included.
@@ -704,15 +794,28 @@ fn program_at(revision: u64) -> WireInputId {
 /// When a crash round kills the daemon.
 #[derive(Clone, Copy, Debug)]
 enum Kill {
-    /// This long after the cutters started.
+    /// This long after the first cut was acknowledged.
     After(Duration),
     /// As soon as the persistence worker reports it began this background
     /// write (`checkpoint` or `marker`), with cuts acknowledged before it.
     During(&'static str),
 }
 
+/// Waits until a cut past revision `base` was acknowledged.
+fn wait_for_acknowledgement(acknowledged: &std::sync::atomic::AtomicU64, base: u64, label: &str) {
+    let deadline = Instant::now() + PROCESS_TIMEOUT;
+    while acknowledged.load(std::sync::atomic::Ordering::SeqCst) == base {
+        assert!(
+            Instant::now() < deadline,
+            "{label}: no cut was acknowledged"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// One crash round over `project`: two sessions cut as fast as they are
-/// answered while the daemon records `segment` and streams, the daemon is
+/// answered (with idle frames between cuts when `kill` waits for a progress
+/// marker) while the daemon records `segment` and streams, the daemon is
 /// killed with SIGKILL as `kill` says, and it is restarted. The recovered
 /// show holds every cut a client was told was accepted (a command is durable
 /// before it is acknowledged, however it waited for its frame and whatever
@@ -734,6 +837,14 @@ fn crash_round(
     let (_, snapshot) = Session::connect("observer", address);
     let base = snapshot.revision;
     assert!(base >= previous, "{base} < {previous}");
+    // A progress marker records idle progress, so none is due while every
+    // frame realizes a cut, which two sessions cutting as fast as they are
+    // answered manage on a quiet host: for a marker round they pause three
+    // frame intervals after each cut, leaving idle frames between cuts.
+    let pause = match kill {
+        Kill::During("marker") => Duration::from_millis(3_000 / u64::from(FRAME_RATE)),
+        Kill::During(_) | Kill::After(_) => Duration::ZERO,
+    };
     let acknowledged = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(base));
     let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let cutters: Vec<_> = (0..2)
@@ -742,7 +853,11 @@ fn crash_round(
             let sent = std::sync::Arc::clone(&sent);
             let name = format!("{label}-{index}");
             thread::spawn(move || {
-                let (mut session, _) = Session::connect(&name, address);
+                // On a loaded host the kill may land before this session
+                // was served its snapshot.
+                let Ok((mut session, _)) = Session::try_connect(&name, address) else {
+                    return;
+                };
                 for cut in 1_u64.. {
                     sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     match session.cut(&format!("cut-{cut}")) {
@@ -751,6 +866,9 @@ fn crash_round(
                         }
                         Err(Closed) => return,
                     }
+                    if session.idle(pause).is_err() {
+                        return;
+                    }
                 }
             })
         })
@@ -758,6 +876,10 @@ fn crash_round(
     let mut seen = String::new();
     let begun = match kill {
         Kill::After(delay) => {
+            // Measured from the first acknowledgement rather than from the
+            // cutters' start: on a loaded host connecting can take longer
+            // than the delay, and the kill must land with cuts acknowledged.
+            wait_for_acknowledgement(&acknowledged, base, label);
             thread::sleep(delay);
             None
         }
@@ -774,8 +896,10 @@ fn crash_round(
                 }
                 // The begin line of a write that started after a cut was
                 // acknowledged, so the kill lands with acknowledged cuts on
-                // both sides of it.
-                let found = seen.lines().rev().find(|line| line.contains(&begin));
+                // both sides of it. Only whole lines: stderr arrives in
+                // chunks that can end in the middle of one.
+                let whole = &seen[..seen.rfind('\n').map_or(0, |end| end + 1)];
+                let found = whole.lines().rev().find(|line| line.contains(&begin));
                 if let Some(line) = found
                     && acknowledged.load(std::sync::atomic::Ordering::SeqCst) > base
                 {

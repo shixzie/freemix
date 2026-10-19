@@ -265,6 +265,8 @@ fn start_native(project: &Path) -> Result<NativeDaemon, String> {
 
 struct Client {
     reader: BufReader<TcpStream>,
+    /// The start of a line whose rest has not arrived yet.
+    pending: Vec<u8>,
     writer: TcpStream,
     server: Option<ServerIdentity>,
     heartbeats: u64,
@@ -281,6 +283,7 @@ impl Client {
         let mut client = Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            pending: Vec::new(),
             server: None,
             heartbeats: 0,
             last_heartbeat: Instant::now(),
@@ -326,14 +329,17 @@ impl Client {
         }
     }
 
-    /// The next message within half a second, if any. No line from the
-    /// daemon ever carries the PIN.
+    /// The next message within half a second, if any (the start of a
+    /// partial line is kept for the next poll: on a loaded host a line can
+    /// arrive in pieces further apart). No line from the daemon ever carries
+    /// the PIN.
     fn poll(&mut self) -> Option<WireMessage> {
         self.heartbeat();
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
+        match self.reader.read_until(b'\n', &mut self.pending) {
             Ok(0) => panic!("daemon closed"),
+            Ok(_) if !self.pending.ends_with(b"\n") => panic!("daemon closed mid-line"),
             Ok(_) => {
+                let line = String::from_utf8(std::mem::take(&mut self.pending)).unwrap();
                 assert!(!line.contains(PIN), "the PIN reached the wire: {line}");
                 Some(decode_line(&line).unwrap())
             }
@@ -343,7 +349,6 @@ impl Client {
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                assert!(line.is_empty(), "a partial line timed out");
                 None
             }
             Err(error) => panic!("read failed: {error}"),

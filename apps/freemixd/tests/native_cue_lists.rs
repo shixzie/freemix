@@ -260,6 +260,8 @@ fn drain(mut reader: impl Read + Send + 'static) -> mpsc::Receiver<String> {
 /// An admin Studio session that heartbeats while it waits.
 struct Client {
     reader: BufReader<TcpStream>,
+    /// The start of a line whose rest has not arrived yet.
+    pending: Vec<u8>,
     writer: TcpStream,
     server: ServerIdentity,
     heartbeats: u64,
@@ -312,6 +314,7 @@ impl Client {
         };
         let mut client = Self {
             reader,
+            pending: Vec::new(),
             writer,
             server,
             heartbeats: 0,
@@ -356,15 +359,19 @@ impl Client {
         self.last_heartbeat = Instant::now();
     }
 
-    /// The next message, or `None` when none arrived within the read timeout.
+    /// The next message, or `None` when no whole line arrived within the
+    /// read timeout (the start of a partial line is kept for the next read:
+    /// on a loaded host a line can arrive in pieces further apart).
     fn receive(&mut self) -> Option<WireMessage> {
         self.heartbeat_if_due();
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
+        match self.reader.read_until(b'\n', &mut self.pending) {
             Ok(0) => panic!("daemon closed the session"),
-            Ok(_) => Some(decode_line(&line).unwrap()),
+            Ok(_) if !self.pending.ends_with(b"\n") => panic!("daemon closed mid-line"),
+            Ok(_) => {
+                let line = String::from_utf8(std::mem::take(&mut self.pending)).unwrap();
+                Some(decode_line(&line).unwrap())
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                assert!(line.is_empty(), "a partial line timed out: {line:?}");
                 None
             }
             Err(error) => panic!("{error}"),
