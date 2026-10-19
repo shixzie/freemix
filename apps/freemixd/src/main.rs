@@ -12607,9 +12607,12 @@ struct GroupOutcome {
 /// - if the append fails, the copy is dropped: no member applied, nothing
 ///   was published, no receipt was kept, and every admitted member is
 ///   refused as not durable (retryable), as a single command whose append
-///   failed is. Members refused or answered from a receipt are refused the
-///   same way, since their answers were decided against the group's
-///   unrecorded state.
+///   failed is. Members refused or answered from a receipt the group made
+///   are refused the same way, since their answers were decided against
+///   the group's unrecorded state. A member answered from the receipt of a
+///   command durable before the group keeps that answer (it touched no
+///   journal), and a member the session refused keeps its refusal, at the
+///   live revision.
 ///
 /// A refused command is never journaled: its receipt rides the next
 /// checkpoint, as for one command. `admit` runs before each member on the
@@ -12677,8 +12680,27 @@ fn execute_command_group(
             drop(speculation);
             recorder.discard()?;
             let current_revision = control.borrow().diagnostics().current_revision;
+            let base_revision = durable.position().revision;
             let attempted = staged.position().revision;
             for (outcome, member) in outcomes.iter_mut().zip(members) {
+                match &mut outcome.delivery.result {
+                    // Answered from the receipt of a command durable before
+                    // the group: exactly the answer it gets alone, which
+                    // touches no journal. Denying it now would contradict
+                    // the acknowledgement it already had.
+                    CommandResult::Accepted { revision, .. } if *revision <= base_revision => {
+                        continue;
+                    }
+                    // A session's refusal stands, but at the revision the
+                    // daemon is really at, not one the dropped group reached.
+                    CommandResult::Rejected {
+                        current_revision: reported,
+                        ..
+                    } if !outcome.admitted => {
+                        *reported = current_revision;
+                    }
+                    _ => {}
+                }
                 if outcome.admitted {
                     eprintln!(
                         "FREEMIXD_DURABILITY\tv=1\tcommand={}\trevision={attempted}\terror={error}",
@@ -23626,6 +23648,92 @@ mod tests {
         assert_eq!(revisions, [Some(1), Some(2), None, Some(3), Some(4)]);
         assert_eq!(store.attempts.get(), 2);
         assert_eq!(durable_revisions(&subscription), [1, 2, 3, 4]);
+    }
+
+    /// A group whose append fails answers only what the failure undid as not
+    /// durable. A retried command whose acceptance was durable before the
+    /// group is answered from its receipt exactly as it would be alone (it
+    /// was acknowledged once and must never be denied afterwards), and a
+    /// session's refusal names the revision the daemon is really at, not
+    /// one the dropped group reached.
+    #[test]
+    fn a_failed_group_commit_keeps_answers_that_did_not_depend_on_it() {
+        let store = FlakyJournal::new();
+        let mut durable = test_project();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let server = test_server(&control.borrow());
+        let earlier = test_command("earlier", "earlier-key", CommandPayload::Cut);
+        let alone = execute_authority_command(
+            &control,
+            &store,
+            &mut durable,
+            &operator(),
+            &server,
+            &earlier,
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            alone.result,
+            CommandResult::Accepted { revision: 1, .. }
+        ));
+
+        store.available.set(false);
+        let fresh = test_command("fresh", "fresh-key", CommandPayload::Cut);
+        let limited = test_command("limited", "limited-key", CommandPayload::Cut);
+        let members = group_members(&[fresh, earlier.clone(), limited.clone()], &server);
+        let outcomes = execute_command_group(
+            &control,
+            &store,
+            &mut durable,
+            &members,
+            None,
+            |member, speculation, _, _| {
+                Ok((member == 2).then(|| {
+                    session_rejection(
+                        &limited,
+                        &SessionError::InboundRateLimited,
+                        speculation.diagnostics().current_revision,
+                    )
+                }))
+            },
+        )
+        .unwrap();
+
+        assert!(
+            matches!(
+                &outcomes[0].delivery.result,
+                CommandResult::Rejected {
+                    reason: Some(fm_protocol::RefusalReason::NotDurable),
+                    current_revision: 1,
+                    ..
+                }
+            ),
+            "{:?}",
+            outcomes[0].delivery.result
+        );
+        assert!(
+            matches!(
+                &outcomes[1].delivery.result,
+                CommandResult::Accepted { id, revision: 1, .. } if *id == earlier.id
+            ),
+            "{:?}",
+            outcomes[1].delivery.result
+        );
+        assert!(
+            matches!(
+                &outcomes[2].delivery.result,
+                CommandResult::Rejected {
+                    current_revision: 1,
+                    ..
+                }
+            ),
+            "{:?}",
+            outcomes[2].delivery.result
+        );
+        assert_eq!(control.borrow().diagnostics().current_revision, 1);
     }
 
     /// A crash while a group's append was being written: the log holds the
