@@ -59,6 +59,17 @@ pub fn target_source(grading: &GradingStatus, target: GradeTarget) -> Option<&Wi
     }
 }
 
+/// The library grade the authority links `target` to, with its value: a
+/// draft still equal to it is sent and copied by reference.
+fn authority_link(grading: &GradingStatus, target: GradeTarget) -> Option<(NonZeroU32, Grade)> {
+    match target_source(grading, target)? {
+        WireGradeSource::Library(grade) => grading
+            .library_grade(*grade)
+            .map(|entry| (*grade, (*entry.value).clone())),
+        WireGradeSource::Inline(_) => None,
+    }
+}
+
 /// The grade the authority applies to `target`: its resolved source, or
 /// [`Grade::IDENTITY`] when ungraded (or naming an unknown library grade).
 #[must_use]
@@ -342,8 +353,9 @@ pub struct GradeBinding {
     /// adopted from the authority.
     settled: u64,
     last_send: Option<Duration>,
-    /// A library grade applied as is: sent by reference while the draft
-    /// still equals its value.
+    /// A library grade applied as is, or the one the authority linked the
+    /// target to: sent (and copied) by reference whenever the draft equals
+    /// its current value, so a drag back to a linked grade relinks it.
     library: Option<(NonZeroU32, Grade)>,
     /// Send even an unchanged draft (a library grade applied to a target
     /// that already had its values inline).
@@ -369,7 +381,7 @@ impl GradeBinding {
             authority,
             revision,
             last_send: None,
-            library: None,
+            library: authority_link(grading, target),
             force_send: false,
             in_flight: false,
             refused: false,
@@ -417,6 +429,17 @@ impl GradeBinding {
     pub fn sync(&mut self, grading: &GradingStatus, revision: u64) -> SyncOutcome {
         self.authority = target_grade(grading, self.target);
         self.revision = revision;
+        // The remembered link follows the library: its current value, or
+        // nothing once the grade is gone.
+        self.library = self
+            .library
+            .take()
+            .and_then(|(grade, _)| {
+                grading
+                    .library_grade(grade)
+                    .map(|entry| (grade, (*entry.value).clone()))
+            })
+            .or_else(|| authority_link(grading, self.target));
         if self.document.grade() == &self.authority {
             if self.document.is_dirty() || self.refused || self.in_flight {
                 self.document.mark_saved(revision);
@@ -436,7 +459,7 @@ impl GradeBinding {
         }
         self.document
             .reset_from_authority(self.authority.clone(), revision);
-        self.library = None;
+        self.library = authority_link(grading, self.target);
         self.settle();
         SyncOutcome::Reset
     }
@@ -539,9 +562,6 @@ impl GradeBinding {
             .as_ref()
             .filter(|(_, value)| *value == draft)
             .map(|(grade, _)| *grade);
-        if library.is_none() {
-            self.library = None;
-        }
         let force = self.force_send;
         self.settle();
         // A drag's first set opens its server undo step; the rest, and the
@@ -556,7 +576,10 @@ impl GradeBinding {
         if !dragging {
             self.drag = None;
         }
-        if draft == self.authority && !force {
+        // While a set is in flight the authority may not show it yet: a draft
+        // back to that stale grade (a drag cancelled or returned to its
+        // start before the echo) must still be sent.
+        if draft == self.authority && !force && !self.in_flight {
             // Undone back to the grade on air: nothing to send.
             if gesture.is_some_and(|gesture| !gesture.continues) && dragging {
                 // Nothing sent yet: the drag opens its step later.
@@ -858,9 +881,27 @@ mod tests {
             GradeCommand::from_payload(&command.payload()),
             Some(command)
         );
-        // Undoing back to the grade on air sends nothing.
+        // Undoing while the clear is in flight sends the grade back: the
+        // server may already have cleared it.
         binding.document_mut().undo().unwrap();
-        assert_eq!(binding.poll(MS(5), true), None);
+        assert_eq!(
+            binding.poll(MS(5), true),
+            Some(GradeCommand::Set {
+                target,
+                source: Some(WireGradeSource::Inline(Box::new(graded(400)))),
+                gesture: None,
+            })
+        );
+        // Once the authority reports it, undoing back to the grade on air
+        // sends nothing.
+        let grading = grading_with(target, Some(graded(400)));
+        assert_eq!(binding.sync(&grading, 4), SyncOutcome::Confirmed);
+        binding
+            .document_mut()
+            .reset_param(GradeParam::Exposure)
+            .unwrap();
+        binding.document_mut().undo().unwrap();
+        assert_eq!(binding.poll(MS(10), true), None);
     }
 
     #[test]
@@ -992,6 +1033,139 @@ mod tests {
                 source: None,
                 gesture: None,
             }]
+        );
+    }
+
+    fn drag_to(binding: &mut GradeBinding, value: i16) {
+        binding
+            .document_mut()
+            .update_gesture(|grade| {
+                grade.exposure_millistops = value;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn linked(target: GradeTarget, look: &Grade) -> GradingStatus {
+        let mut grading = GradingStatus::default();
+        grading.library.push(LibraryGradeStatus {
+            grade: id(4),
+            name: "Night".into(),
+            value: Box::new(look.clone()),
+        });
+        let source = WireGradeSource::Library(id(4));
+        match target {
+            GradeTarget::Input(input) => {
+                grading.inputs.insert(input, source);
+            }
+            GradeTarget::Layer { scene, layer } => {
+                grading.layers.insert((scene, layer), source);
+            }
+            GradeTarget::Program => grading.program = Some(source),
+        }
+        grading
+    }
+
+    #[test]
+    fn a_drag_cancelled_before_its_echo_still_sends_the_start_back() {
+        let target = GradeTarget::Input(input(1));
+        let mut binding = GradeBinding::new(target, &GradingStatus::default(), 1);
+        binding.document_mut().begin_gesture().unwrap();
+        drag_to(&mut binding, 400);
+        let first = binding.poll(MS(0), true).expect("the drag sends");
+        assert!(matches!(
+            first,
+            GradeCommand::Set {
+                source: Some(_),
+                ..
+            }
+        ));
+        let token = binding.drag_token().unwrap();
+        // Escape before the authority reported the set: the draft is back
+        // on the (stale) authority grade, yet the server has 400.
+        binding.document_mut().cancel_gesture().unwrap();
+        assert_eq!(
+            binding.poll(MS(10), true),
+            Some(GradeCommand::Set {
+                target,
+                source: None,
+                gesture: Some(GradeGesture {
+                    token,
+                    continues: true,
+                }),
+            }),
+            "the cancel continues the drag back to its start"
+        );
+        assert_eq!(binding.drag_token(), None);
+    }
+
+    #[test]
+    fn a_linked_target_is_copied_and_dragged_back_by_reference() {
+        let own = GradeTarget::Input(input(1));
+        let other = GradeTarget::Input(input(2));
+        let look = graded(-700);
+        // Input 1 and input 2 both use library grade 4; Program is ungraded.
+        let mut grading = linked(own, &look);
+        grading
+            .inputs
+            .insert(input(2), WireGradeSource::Library(id(4)));
+        let mut binding = GradeBinding::new(own, &grading, 3);
+        assert_eq!(binding.copy_source(), Some(WireGradeSource::Library(id(4))));
+        // The link is copied, and a target already linked is left alone.
+        assert_eq!(
+            binding.copy_commands(&[other, GradeTarget::Program], &grading),
+            vec![GradeCommand::Set {
+                target: GradeTarget::Program,
+                source: Some(WireGradeSource::Library(id(4))),
+                gesture: None,
+            }]
+        );
+
+        // A drag away and back to the library value relinks the target, so
+        // the server sees the drag end where it started.
+        binding.document_mut().begin_gesture().unwrap();
+        drag_to(&mut binding, 100);
+        let first = binding.poll(MS(0), true).unwrap();
+        let token = binding.drag_token().unwrap();
+        assert!(matches!(
+            first,
+            GradeCommand::Set {
+                source: Some(WireGradeSource::Inline(_)),
+                ..
+            }
+        ));
+        let mut moved = grading.clone();
+        moved
+            .inputs
+            .insert(input(1), WireGradeSource::Inline(Box::new(graded(100))));
+        assert_eq!(binding.sync(&moved, 4), SyncOutcome::Confirmed);
+        drag_to(&mut binding, -700);
+        binding.document_mut().commit_gesture().unwrap();
+        assert_eq!(
+            binding.poll(MS(10), true),
+            Some(GradeCommand::Set {
+                target: own,
+                source: Some(WireGradeSource::Library(id(4))),
+                gesture: Some(GradeGesture {
+                    token,
+                    continues: true,
+                }),
+            })
+        );
+
+        // The remembered link follows the library value and goes with it.
+        assert_eq!(binding.sync(&grading, 5), SyncOutcome::Confirmed);
+        *grading.library[0].value = graded(250);
+        assert_eq!(binding.sync(&grading, 6), SyncOutcome::Reset);
+        assert_eq!(binding.document().grade(), &graded(250));
+        assert_eq!(binding.copy_source(), Some(WireGradeSource::Library(id(4))));
+        let mut gone = GradingStatus::default();
+        gone.inputs
+            .insert(input(1), WireGradeSource::Inline(Box::new(graded(250))));
+        binding.sync(&gone, 7);
+        assert_eq!(
+            binding.copy_source(),
+            Some(WireGradeSource::Inline(Box::new(graded(250))))
         );
     }
 
