@@ -1028,7 +1028,7 @@ impl StudioShell {
                 } else {
                     None
                 };
-                let count = u64::try_from(ticked.len()).unwrap_or(u64::MAX);
+                let count = u64::try_from(pending).unwrap_or(u64::MAX);
                 if ui
                     .add_enabled(
                         apply_reason.is_none(),
