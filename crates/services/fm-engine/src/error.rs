@@ -296,6 +296,13 @@ pub enum SnapshotError {
         due_frame: u64,
         frame_cursor: u64,
     },
+    /// Cue list `list`'s waiting cue resumes further ahead of the frame
+    /// cursor than the wait before its next action allows (RC-017).
+    CueRunOutOfReach {
+        list: u64,
+        due_frame: u64,
+        frame_cursor: u64,
+    },
 }
 
 impl fmt::Display for SnapshotError {
@@ -344,6 +351,14 @@ impl fmt::Display for SnapshotError {
             } => write!(
                 formatter,
                 "the saved script run resumes on frame {due_frame}, further past cursor {frame_cursor} than its waits allow"
+            ),
+            Self::CueRunOutOfReach {
+                list,
+                due_frame,
+                frame_cursor,
+            } => write!(
+                formatter,
+                "cue list {list}'s waiting cue resumes on frame {due_frame}, further past cursor {frame_cursor} than its wait allows"
             ),
         }
     }

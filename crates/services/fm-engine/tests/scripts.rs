@@ -546,6 +546,41 @@ fn a_part_that_fails_on_its_frame_faults_the_run_and_applies_nothing() {
     );
 }
 
+/// A fault's line and column name the source that ran, so an accepted edit
+/// of the faulted script clears it (as a removal does); an edit of another
+/// script leaves it, and an undo of the edit does not bring it back.
+#[test]
+fn an_edit_of_the_faulted_script_clears_its_fault() {
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set", set(1, "wait 3\ncut 9\n")));
+    accepted(&submit(&mut engine, "set-2", set(2, "cut 2")));
+    accepted(&submit(&mut engine, "run", run(1)));
+    drive(&mut engine, 5);
+    let fault = engine.show().script_run().fault.expect("the run faulted");
+    assert_eq!(fault.script, 1);
+
+    accepted(&submit(&mut engine, "edit-other", set(2, "cut 3")));
+    assert_eq!(engine.show().script_run().fault, Some(fault));
+
+    accepted(&submit(&mut engine, "edit", set(1, "wait 3\ncut 2\n")));
+    assert_eq!(
+        *engine.show().script_run(),
+        fm_model::ScriptRunState::default()
+    );
+    assert_eq!(engine.cue_advance_frame(), None);
+    // The fault is live state, not part of the edit: an undo restores the
+    // old source without it.
+    accepted(&submit(
+        &mut engine,
+        "undo",
+        EngineCommand::Undo {
+            expected_edit: None,
+        },
+    ));
+    assert_eq!(engine.show().script(1).unwrap().source, "wait 3\ncut 9\n");
+    assert_eq!(engine.show().script_run().fault, None);
+}
+
 #[test]
 fn waits_are_bounded_to_ten_minutes_of_frames() {
     let mut engine = engine();

@@ -3335,6 +3335,72 @@ fn scripts_replicate_from_snapshot_records_and_events() {
     assert_eq!(model.state().unwrap().active_script_run(), None);
 }
 
+/// Protocol 2.62: the authority clears a fault when its script is edited
+/// (the fault's line named the old source), so a `script_changed` for the
+/// faulted script clears it here too; an edit of another script keeps it.
+#[test]
+fn an_edit_of_the_faulted_script_clears_its_fault() {
+    use fm_protocol::{ScriptSpec, ScriptStateMessage, ScriptStatus};
+
+    let script = |id: u64, source: &str| ScriptStatus {
+        id,
+        spec: ScriptSpec {
+            name: format!("Script {id}"),
+            source: source.into(),
+        },
+    };
+    let faulted = fm_protocol::ScriptRunStatus::Faulted {
+        frame: 30,
+        failure: fm_protocol::ScriptFailureKind::Refused,
+        line: 2,
+        column: 1,
+    };
+    let project_id = project(10);
+    let identity = engine("engine-a", 1, "log-a");
+    let mut model = ClientModel::new(project_id);
+    let mut installed = snapshot(project_id, 7);
+    installed.script_states = 2;
+    model.install_snapshot(installed).unwrap();
+    for (id, run) in [(1, faulted), (2, fm_protocol::ScriptRunStatus::Idle)] {
+        model
+            .apply_script_state(ScriptStateMessage {
+                revision: 7,
+                script: script(id, "wait 3\ncut 9"),
+                run,
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        model.state().unwrap().active_script_run(),
+        Some((1, faulted))
+    );
+
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            8,
+            DurableChange::ScriptChanged(Box::new(script(2, "cut 2"))),
+        ))
+        .unwrap();
+    assert_eq!(model.state().unwrap().script_run_status(1), faulted);
+
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            9,
+            DurableChange::ScriptChanged(Box::new(script(1, "wait 3\ncut 2"))),
+        ))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.active_script_run(), None);
+    assert_eq!(
+        state.script_run_status(1),
+        fm_protocol::ScriptRunStatus::Idle
+    );
+}
+
 /// Protocol 2.61: each script step a `cue_run_changed` reports becomes
 /// that script's last run, attributed to the list, without touching the
 /// other scripts' runs; a run naming a script the project lacks, or more

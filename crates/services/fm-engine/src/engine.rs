@@ -2458,6 +2458,44 @@ fn validate_script_run_reach(show: &ShowState, cursor: u64) -> Result<(), Snapsh
     }
 }
 
+/// A waiting cue's pending step follows a wait (project validation), and
+/// the cue stack schedules it on the frame that wait was reached plus the
+/// wait's frames at the engine rate. That frame ran before the frame
+/// `cursor`, and a waiting cue's actions cannot change, so its due frame
+/// lies within that wait of the cursor (RC-017). A further one (a
+/// hand-edited project) would hold its list, and block a local CLI run
+/// that plays the clock to its end, for ever.
+fn validate_cue_run_reach(
+    show: &ShowState,
+    cursor: u64,
+    frame_rate: FrameRate,
+) -> Result<(), SnapshotError> {
+    for list in show.cue_lists() {
+        let Some(pending) = list.state.pending else {
+            continue;
+        };
+        let wait = list
+            .cue(pending.cue)
+            .and_then(|cue| cue.actions.get(pending.action.checked_sub(1)?))
+            .and_then(|action| match action {
+                fm_model::CueAction::Wait { frames } => Some(*frames),
+                fm_model::CueAction::Delay { millis } => {
+                    Some(fm_model::delay_frames(*millis, frame_rate))
+                }
+                _ => None,
+            });
+        let reach = wait.and_then(|wait| cursor.checked_add(u64::from(wait)));
+        if reach.is_none_or(|reach| pending.due_frame > reach) {
+            return Err(SnapshotError::CueRunOutOfReach {
+                list: list.id,
+                due_frame: pending.due_frame,
+                frame_cursor: cursor,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_idle_restore(
     show: &ShowState,
     realized_switcher: &SwitcherState,
@@ -2545,6 +2583,7 @@ fn validate_idle_restore(
     }
 
     validate_script_run_reach(show, cursor)?;
+    validate_cue_run_reach(show, cursor, frame_rate)?;
 
     // Every accepted command advances all three counters together, so they
     // must agree. Persisted receipts are a bounded retention window over the

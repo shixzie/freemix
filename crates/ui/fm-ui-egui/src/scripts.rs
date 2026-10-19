@@ -926,6 +926,31 @@ mod tests {
         assert_eq!(marked_line(&window, &idle_state()), Some(1));
     }
 
+    /// Regression (Protocol 2.62): editing a script whose waiting run
+    /// faulted kept the fault, which then marked a line of the new source.
+    /// The edit clears it, here as on the authority.
+    #[test]
+    fn an_edit_of_the_faulted_script_unmarks_its_line() {
+        let faulted = ScriptRunStatus::Faulted {
+            frame: 160,
+            failure: ScriptFailureKind::Refused,
+            line: 3,
+            column: 1,
+        };
+        let state = crate::hover_audit::script_run_fixture(true, faulted);
+        let mut window = ScriptsWindow::default();
+        window.follow(replicated(&state));
+        assert_eq!(window.selected, Some(1));
+        assert_eq!(marked_line(&window, &state), Some(3));
+
+        let source = "preview 2\ncut\nwait 5\n";
+        let state = crate::hover_audit::script_edited_after_run_fixture(faulted, source);
+        window.follow(replicated(&state));
+        assert_eq!(window.source, source);
+        assert_eq!(run_status(&state, 1), ScriptRunStatus::Idle);
+        assert_eq!(marked_line(&window, &state), None);
+    }
+
     /// Regression (Protocol 2.60): a cue GO refused by its script step
     /// carries the same typed `script_failed` reason as a refused run, and
     /// the window used to pin it on the script this console last ran,

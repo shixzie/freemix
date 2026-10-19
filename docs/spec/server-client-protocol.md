@@ -2066,7 +2066,12 @@ Protocol 2.62 lets a script wait (RC-011).
 - While a run waits, another `script_run`, a `script_set` or
   `script_remove` of the running script, and an undo or redo restoring
   one, are refused `conflict` with `reason=script_running:<script>`.
-  Removing a faulted script clears its fault.
+  An accepted `script_set` (or an undo or redo restoring one) or
+  `script_remove` of the faulted script clears its fault, since the
+  fault's line and column name the source that ran: no
+  `script_run_changed` follows, so a client clears the script's faulted
+  `run` on its `script_changed` or `script_removed`. An edit of another
+  script keeps the fault.
 - Authority: a direct `script_run` of a script whose source holds `wait`
   needs, up front, the permission of every action verb the source holds in
   any branch (as an armed cue chain's script step since 2.60), on top of
@@ -2095,7 +2100,10 @@ Protocol 2.62 lets a script wait (RC-011).
   script the project lacks, a state that does not resume that script's
   source within its limits, and both a run and a fault; a restore also
   refuses a run due further past the saved frame cursor than its waited
-  frames (its last part ran before the cursor). A restarted
+  frames (its last part ran before the cursor), and a waiting cue due
+  further past it than the wait before the cue's next action at the
+  engine rate (the cue reached that wait before the cursor, and a waiting
+  cue cannot be edited). A restarted
   authority restores the slot and resumes the run on its due engine
   frame, exactly like a waiting cue (the time the show was down does not
   count); journal replay reproduces every part.

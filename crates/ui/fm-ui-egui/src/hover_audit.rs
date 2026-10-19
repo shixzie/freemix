@@ -2236,7 +2236,23 @@ pub(crate) fn script_run_fixture(
     operator: bool,
     run: fm_protocol::ScriptRunStatus,
 ) -> StudioUiState {
+    ready_over(&script_run_model(run), operator)
+}
+
+fn script_run_model(run: fm_protocol::ScriptRunStatus) -> ClientModel {
     let mut model = model(Variant::default());
+    apply_audit_change(
+        &mut model,
+        fm_ui_model::DurableChange::ScriptRunChanged {
+            script: 1,
+            frame: 130,
+            run,
+        },
+    );
+    model
+}
+
+fn apply_audit_change(model: &mut ClientModel, change: fm_ui_model::DurableChange) {
     let state = model.state().unwrap().clone();
     let cursor = model.reconnect_cursor().unwrap().clone();
     model
@@ -2245,15 +2261,27 @@ pub(crate) fn script_run_fixture(
                 revision: cursor.revision.checked_next().unwrap(),
                 ..cursor
             },
-            change: fm_ui_model::DurableChange::ScriptRunChanged {
-                script: 1,
-                frame: 130,
-                run,
-            },
+            change,
             edit_history: state.edit_history(),
         })
         .unwrap();
-    ready_over(&model, operator)
+}
+
+/// The audit's show with script 1's run in state `run`, after script 1's
+/// source was then replaced by `source` (Protocol 2.62), for an operator.
+#[cfg(test)]
+pub(crate) fn script_edited_after_run_fixture(
+    run: fm_protocol::ScriptRunStatus,
+    source: &str,
+) -> StudioUiState {
+    let mut model = script_run_model(run);
+    let mut script = audit_scripts().remove(0);
+    script.spec.source = source.into();
+    apply_audit_change(
+        &mut model,
+        fm_ui_model::DurableChange::ScriptChanged(Box::new(script)),
+    );
+    ready_over(&model, true)
 }
 
 /// The audit's show once cue list 1 ("Show open") ran script 1 ("Opening")

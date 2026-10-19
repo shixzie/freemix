@@ -291,3 +291,69 @@ fn title_cues_are_authored_and_fired_locally() {
     let lists = succeed(&["cue-lists", &project]);
     assert!(lists.contains("standby=-, live=2"), "{lists}");
 }
+
+/// A saved waiting cue (as the daemon saves one) is due within the wait
+/// before its next action of the frame cursor: such a project restores and
+/// a local cue command plays the wait out. A hand-edited one due further
+/// ahead is refused on load instead of holding the cue clock (and the
+/// command) for ever.
+#[test]
+fn a_saved_waiting_cue_restores_and_one_out_of_reach_is_refused() {
+    let root = Root::new("reach");
+    let project = root.project();
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "8",
+        "Hold",
+        "10:Hold:0:wait.5,take.2.cut.0",
+    ]);
+    let manifest = PathBuf::from(&project).join("project.json");
+    let saved = fs::read_to_string(&manifest).unwrap();
+    let prefix = "\"frames_rendered\": ";
+    let start = saved.find(prefix).unwrap() + prefix.len();
+    let cursor: u64 = saved[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap();
+    let idle = "\"state\": {\"standby\": 10, \"live\": null, \"pending\": null, \
+                \"played\": [], \"fault\": null}";
+    assert!(saved.contains(idle), "{saved}");
+    let waiting = |due: u64| {
+        saved.replace(
+            idle,
+            &format!(
+                "\"state\": {{\"standby\": null, \"live\": 10, \"pending\": \
+                 {{\"cue\": 10, \"action\": 1, \"due_frame\": {due}}}, \"played\": [10], \
+                 \"fault\": null}}"
+            ),
+        )
+    };
+
+    // One frame past the wait: refused, and the project is left alone.
+    let edited = waiting(cursor + 6);
+    fs::write(&manifest, &edited).unwrap();
+    fail(&["cue-lists", &project], "further past cursor");
+    fail(&["cue-standby", &project, "8", "10"], "further past cursor");
+    assert_eq!(fs::read_to_string(&manifest).unwrap(), edited);
+
+    // Within the wait: restored, and a local cue command plays it out.
+    fs::write(&manifest, waiting(cursor + 5)).unwrap();
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(
+        lists.contains(&format!("pending=10.1@{}", cursor + 5)),
+        "{lists}"
+    );
+    let status = succeed(&["cue-standby", &project, "8", "10"]);
+    assert!(
+        status.contains("Program(desired=2, realized=2)"),
+        "{status}"
+    );
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(
+        lists.contains("standby=10, live=10, pending=-, played=[10], fault=-"),
+        "{lists}"
+    );
+}

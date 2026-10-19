@@ -1009,3 +1009,88 @@ fn a_cue_run_reports_each_script_step_as_a_direct_run_would() {
         Some(fm_model::CueFault { cue: 2, action: 1 })
     );
 }
+
+/// A saved waiting cue was scheduled on a frame before the frame cursor,
+/// its due frame that frame plus the wait before its next action, so it
+/// lies within that wait of the cursor; a hand-edited one further ahead is
+/// refused on restore, so the cue clock (and a local run that plays it to
+/// the end) is never held for ever.
+#[test]
+fn a_restored_cue_due_beyond_its_wait_is_refused() {
+    let mut engine = engine();
+    let waits = vec![cut(2), CueAction::Wait { frames: 40 }, cut(3)];
+    accepted(&submit(
+        &mut engine,
+        "set-1",
+        set(1, vec![cue(10, waits, false)]),
+    ));
+    let delays = vec![
+        cue(20, vec![CueAction::Delay { millis: 1_000 }], true),
+        cue(21, Vec::new(), false),
+    ];
+    accepted(&submit(&mut engine, "set-2", set(2, delays)));
+    let go = accepted(&submit(&mut engine, "go-1", control(1, GO)));
+    engine.tick().unwrap();
+    let delayed = accepted(&submit(&mut engine, "go-2", control(2, GO)));
+    engine.tick().unwrap();
+    let snapshot = engine.snapshot().expect("idle");
+    let cursor = snapshot.frames_rendered();
+    let due = |list: u64| {
+        snapshot
+            .show()
+            .cue_list(list)
+            .unwrap()
+            .state
+            .pending
+            .expect("the cue waits")
+            .due_frame
+    };
+    assert_eq!((due(1), due(2)), (go + 40, delayed + 25));
+    let restore = |show: ShowState| {
+        Engine::restore_persisted(
+            show,
+            snapshot.realized_switcher().clone(),
+            snapshot.frame_rate(),
+            fm_clock::ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+            fm_engine::EngineRestoreState {
+                state_epoch: snapshot.state_epoch(),
+                revision: snapshot.revision(),
+                event_sequence: snapshot.event_sequence(),
+                runtime_generation: snapshot.runtime_generation(),
+                clock_time: snapshot.clock_time(),
+                frame_cursor: fm_scheduler::FrameNumber::new(cursor),
+                receipts: snapshot.receipts().to_vec(),
+            },
+        )
+    };
+    let restored = restore(snapshot.show().clone()).expect("the saved cues restore");
+    assert_eq!(restored.show().cue_lists(), snapshot.show().cue_lists());
+    assert_eq!(restored.cue_advance_frame(), Some((2, delayed + 25)));
+
+    let moved = |list: u64, due_frame: u64| {
+        let mut show = snapshot.show().clone();
+        let mut lists = show.cue_lists().to_vec();
+        let found = lists.iter_mut().find(|found| found.id == list).unwrap();
+        found.state.pending.as_mut().unwrap().due_frame = due_frame;
+        // The lists fit the show (the model checks no frame cursor) ...
+        show.set_cue_lists(lists).unwrap();
+        show
+    };
+    // ... and each may be due up to its wait past the cursor ...
+    restore(moved(1, cursor + 40)).expect("a wait from the cursor restores");
+    restore(moved(2, cursor + 25)).expect("a delay from the cursor restores");
+    // ... but no further.
+    for (list, due_frame) in [(1, cursor + 41), (2, cursor + 26), (1, u64::MAX)] {
+        assert!(
+            matches!(
+                restore(moved(list, due_frame)).err(),
+                Some(fm_engine::SnapshotError::CueRunOutOfReach {
+                    list: refused,
+                    due_frame: at,
+                    frame_cursor,
+                }) if refused == list && at == due_frame && frame_cursor == cursor
+            ),
+            "list {list} due {due_frame}"
+        );
+    }
+}

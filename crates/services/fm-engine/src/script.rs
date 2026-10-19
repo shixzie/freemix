@@ -55,7 +55,9 @@
 //!   refused with [`RefusalReason::ScriptRunning`], as is an edit or
 //!   removal of the running script (the saved state belongs to its
 //!   source). [`crate::EngineCommand::StopScript`] ends the run (or clears
-//!   the fault) on its target frame: a live operation without undo.
+//!   the fault) on its target frame: a live operation without undo. An
+//!   accepted edit or removal of the faulted script clears its fault too:
+//!   the fault's line and column name the source that ran.
 //! - The slot is project state: it is saved with the project and journaled
 //!   with every command, so a restarted show resumes the run on its due
 //!   engine frame, exactly like a waiting cue (the time the show was down
@@ -130,7 +132,8 @@ pub(crate) fn waits_in_cue(script: u64, owner: &str) -> Rejection {
 /// Refuses script id zero, an invalid name or source, a script past the
 /// project bound, removing an unknown script, removing a script a cue
 /// runs, adding a wait to a script a cue runs, and changing or removing
-/// the running script.
+/// the running script. Replacing or removing a faulted script clears its
+/// fault.
 pub(crate) fn apply_set(
     state: &mut ShowState,
     script: u64,
@@ -213,6 +216,11 @@ pub(crate) fn apply_set(
     };
     if let Some(index) = existing {
         state.scripts_mut()[index] = next;
+        // The fault's line and column belong to the source that ran: an
+        // edit clears it, as a removal does (Protocol 2.62).
+        if state.script_run().script() == Some(script) {
+            state.script_run_mut().fault = None;
+        }
         return Ok(());
     }
     if state.scripts().len() >= fm_model::MAX_SCRIPTS {

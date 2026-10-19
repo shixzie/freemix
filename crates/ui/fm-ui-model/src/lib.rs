@@ -4654,7 +4654,16 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.cue_lists.retain(|candidate| candidate.id != list);
         }
         DurableChange::CueRunChanged(update) => cue_lists::apply_run(state, *update),
-        DurableChange::ScriptChanged(script) => scripts::apply_script(state, *script),
+        DurableChange::ScriptChanged(script) => {
+            // An accepted edit clears the edited script's fault, whose line
+            // named the old source (Protocol 2.62).
+            if state.active_script_run.is_some_and(|(found, run)| {
+                found == script.id && matches!(run, fm_protocol::ScriptRunStatus::Faulted { .. })
+            }) {
+                state.active_script_run = None;
+            }
+            scripts::apply_script(state, *script);
+        }
         DurableChange::ScriptRemoved { script } => {
             state.scripts.retain(|candidate| candidate.id != script);
             state.script_runs.retain(|run| run.script != script);
