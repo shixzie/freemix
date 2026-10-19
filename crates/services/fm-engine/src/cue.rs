@@ -211,6 +211,11 @@ pub(crate) fn check_action_references(
             }));
         }
     }
+    if let Some(script) = action.script()
+        && state.script(script).is_none()
+    {
+        return Err(crate::script::unknown_script(script));
+    }
     if let CueAction::Stream { target, .. } = action {
         let target = StreamTargetId::from_non_zero(target.get());
         if state.desired_switcher().stream_running(target).is_none() {
@@ -273,6 +278,10 @@ pub(crate) fn apply_set(
                 fm_model::CueListError::TooManyListActions { .. } => {
                     RefusalReason::bounds("list_actions", fm_model::MAX_CUE_LIST_ACTIONS as u64)
                 }
+                fm_model::CueListError::TooManyScriptSteps { .. } => RefusalReason::bounds(
+                    "script_steps",
+                    fm_model::MAX_CUE_LIST_SCRIPT_STEPS as u64,
+                ),
                 fm_model::CueListError::TooMuchText { .. } => {
                     RefusalReason::bounds("text", fm_model::MAX_CUE_LIST_TEXT_BYTES as u64)
                 }
@@ -524,7 +533,10 @@ pub(crate) fn expand(
                 ],
             }
         }
-        CueAction::Wait { .. } | CueAction::Delay { .. } => Vec::new(),
+        // A script step is run by `Engine::apply_cue_actions`.
+        CueAction::Wait { .. } | CueAction::Delay { .. } | CueAction::RunScript { .. } => {
+            Vec::new()
+        }
     }
 }
 

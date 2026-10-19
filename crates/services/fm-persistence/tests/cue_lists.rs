@@ -1,5 +1,6 @@
-//! RC-017 at schema 48 (media actions and millisecond delays): the project's operator cue lists, with their
-//! standby pointer and run state, round-trip exactly and strictly in
+//! RC-017 at schema 48 (media actions and millisecond delays; schema 55
+//! script steps): the project's operator cue lists, with their standby
+//! pointer and run state, round-trip exactly and strictly in
 //! `project.json`; references are project validation.
 
 use std::{
@@ -115,6 +116,11 @@ fn project() -> Project {
         startup: StartupPolicy::Stopped,
         required_capabilities: Vec::new(),
     });
+    project.set_scripts(vec![fm_model::Script {
+        id: 5,
+        name: "Open".into(),
+        source: "cut 2\n".into(),
+    }]);
     project
 }
 
@@ -242,6 +248,7 @@ fn clips_list() -> CueList {
                     input: input(12),
                     operation: CueMediaOperation::Play,
                 },
+                CueAction::RunScript { script: 5 },
             ],
             auto_follow: false,
         }],
@@ -270,7 +277,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 54"));
+    assert!(text.contains("\"schema_version\": 55"));
     assert!(text.contains("\"cue_lists\": ["), "{text}");
     assert!(
         text.contains("{\"type\": \"wait\", \"frames\": 30}"),
@@ -290,6 +297,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         "{\"type\": \"media_seek\", \"input\": 12, \"frame\": 250}",
         "{\"type\": \"media_pause\", \"input\": 12}",
         "{\"type\": \"media_play\", \"input\": 12}",
+        "{\"type\": \"run_script\", \"script\": 5}",
         "\"pending\": {\"cue\": 1, \"action\": 2, \"due_frame\": 45}",
     ] {
         assert!(text.contains(token), "{token}: {text}");
@@ -327,6 +335,14 @@ fn cue_lists_round_trip_exactly_and_strictly() {
             "{\"type\": \"delay\", \"millis\": 1500}",
             "{\"type\": \"delay\", \"millis\": 1.5}",
         ),
+        (
+            "{\"type\": \"run_script\", \"script\": 5}",
+            "{\"type\": \"run_script\", \"script\": \"Open\"}",
+        ),
+        (
+            "{\"type\": \"run_script\", \"script\": 5}",
+            "{\"type\": \"run_script\"}",
+        ),
         (",\n    \"cue_lists\": [", ",\n    \"cue_list\": ["),
     ] {
         let malformed = text.replacen(from, to, 1);
@@ -357,6 +373,14 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         (
             "{\"type\": \"media_pause\", \"input\": 12}",
             "{\"type\": \"media_pause\", \"input\": 10}",
+        ),
+        (
+            "{\"type\": \"run_script\", \"script\": 5}",
+            "{\"type\": \"run_script\", \"script\": 0}",
+        ),
+        (
+            "{\"type\": \"run_script\", \"script\": 5}",
+            "{\"type\": \"run_script\", \"script\": 6}",
         ),
         ("\"standby\": 4", "\"standby\": 5"),
         ("\"action\": 7", "\"action\": 6"),

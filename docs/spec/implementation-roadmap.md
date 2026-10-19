@@ -3330,7 +3330,17 @@ chain was armed, and an edit (or undo/redo) of a list whose cue is waiting
 also needs whatever permission it adds to the armed chain. The same
 classes gate the web tally's GO and `freemix-server` session scopes, and
 Studio disables GO and a cue's fire key with a reason when the session
-lacks one. Studio docks a Cues panel
+lacks one. A cue can run a project script as one step (`run_script`,
+Protocol 2.60, schema 55): the script runs on the step's frame against the
+show the frame's earlier actions left, all or nothing and sharing the
+frame's one take of Program; a failed script fails the step with its typed
+`script_failed` reason (a GO is refused whole; a step after a wait sets the
+list's fault and applies nothing of its frame). A script cannot fire a cue
+or run a script, so nesting stops at one level; a list runs at most eight
+scripts; a script a cue runs cannot be removed; and since a step may run
+later against an unknown show, a GO needs the permission of every verb the
+script holds in any branch, and an edit of a script an armed chain runs
+needs whatever permission its new verbs add. Studio docks a Cues panel
 (list picker, inline cue and action editor covering every action kind, a big GO key with the standby
 cue, Back, Skip, Stop, Reset, per-cue standby and fire keys, and `G` for
 GO) with English and Spanish hover help; the phone tally page adds GO and
@@ -3371,10 +3381,15 @@ action and instruction counts) with English and Spanish hover help, and
 `freemix-cli` has local and `remote-` `scripts`, `script-set`,
 `script-remove`, and `script-run` (by id or name). Remaining gaps: no Wasm
 component runtime or declared capability manifest; scripts cannot wait,
-loop across frames, or read state beyond Program and Preview; the budget
-is counted in instructions, not wall-clock time; a cue cannot trigger a
-script yet; and a refused action's own typed reason is folded into
-`script_failed` (its code and message are kept). `RC-011` remains planned.
+loop across frames, or read state beyond Program and Preview (a `wait`
+statement was not added: spanning frames would need a persisted per-run
+pending action list and its own clock and fault handling, so a script that
+must span frames is split into script steps of a cue separated by cue
+waits); the budget is counted in instructions, not wall-clock time; and a
+refused action's own typed reason is folded into `script_failed` (its code
+and message are kept). A cue can run a script as one step (Protocol 2.60,
+schema 55; see `RC-017` above for its frame, failure, recursion, removal,
+and authority semantics). `RC-011` remains planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

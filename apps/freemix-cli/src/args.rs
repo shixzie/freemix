@@ -6014,7 +6014,8 @@ fn parse_remote_playlist(
 ///   list (`-` for none) of `<id>:<name>:<follow 0|1>:<actions>` and
 ///   `<actions>` a `,`-separated list (empty for none) of wire action
 ///   tokens, e.g. `take.3.fade.25`, `overlay_on.1.4`, `wait.50`,
-///   `delay.1500`, `media_restart.4`, `media_seek.4.250` — except that
+///   `delay.1500`, `media_restart.4`, `media_seek.4.250`, `run_script.2`
+///   (runs project script 2 as one step, Protocol 2.60) — except that
 ///   `title_text.<input>.<field>.<text>` takes plain text. A backslash
 ///   escapes the next character, so names and title text may hold the
 ///   separators: `\;`, `\:`, `\,`, and `\\` stand for `;`, `:`, `,`, and
@@ -7075,8 +7076,10 @@ mod tests {
         assert_eq!(split_escaped(r"dangling\", ',', usize::MAX), None);
         assert_eq!(unescape(r"a\,b\;c\:d\\e"), r"a,b;c:d\e");
 
-        let cues =
-            cue_specs(r"1:Open\: cold:0:title_text.2.1.a\, b\; c:d \\ e,delay.40;2:B:1:").unwrap();
+        let cues = cue_specs(
+            r"1:Open\: cold:0:title_text.2.1.a\, b\; c:d \\ e,delay.40,run_script.3;2:B:1:",
+        )
+        .unwrap();
         assert_eq!(cues.len(), 2);
         assert_eq!(cues[0].name, "Open: cold");
         assert_eq!(
@@ -7090,8 +7093,10 @@ mod tests {
                     text: r"a, b; c:d \ e".into(),
                 },
                 fm_protocol::WireCueAction::Delay { millis: 40 },
+                fm_protocol::WireCueAction::RunScript { script: 3 },
             ]
         );
+        assert!(cue_specs("1:A:0:run_script.x").is_err());
         assert!(cues[1].auto_follow);
         // Escapes belong in names and title text only.
         assert!(cue_specs(r"1:A:0:wait.\5").is_err());

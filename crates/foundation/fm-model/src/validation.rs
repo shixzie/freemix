@@ -20,6 +20,8 @@ pub enum EntityRef {
     Grade(crate::GradeId),
     Lut(crate::LutId),
     AnimationPreset(crate::AnimationPresetId),
+    /// A project script (RC-011), by id.
+    Script(u64),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -383,6 +385,15 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                 entity: Some(EntityRef::StreamTarget(*target)),
                 field: "cue_lists.cues.actions.target",
                 kind: ValidationErrorKind::MissingReference(EntityRef::StreamTarget(*target)),
+            });
+        }
+        if let Some(script) = action.script()
+            && !project.scripts().iter().any(|found| found.id == script)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Script(script)),
+                field: "cue_lists.cues.actions.script",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Script(script)),
             });
         }
     }

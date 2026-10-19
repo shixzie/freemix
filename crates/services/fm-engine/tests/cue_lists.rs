@@ -678,3 +678,208 @@ fn list_edits_put_new_cues_on_standby() {
     ));
     assert_eq!(engine.show().cue_list(1).unwrap().state.standby, Some(9));
 }
+
+fn set_script(script: u64, source: &str) -> EngineCommand {
+    EngineCommand::SetScript {
+        script,
+        definition: Some(fm_engine::EngineScriptDefinition {
+            name: format!("Script {script}"),
+            source: source.to_owned(),
+        }),
+    }
+}
+
+/// A cue's script step (schema 55) runs the script on the step's frame,
+/// against the show as the earlier actions left it; the script a cue runs
+/// must exist and cannot be removed while a cue names it.
+#[test]
+fn a_script_step_runs_on_its_frame_against_the_show_then() {
+    let mut engine = engine();
+    accepted(&submit(
+        &mut engine,
+        "script",
+        set_script(5, "if program == 2\n  overlay 1, 4\nend\ncut 3\n"),
+    ));
+    let unknown = submit(
+        &mut engine,
+        "unknown",
+        set(
+            1,
+            vec![cue(1, vec![CueAction::RunScript { script: 9 }], false)],
+        ),
+    );
+    assert_eq!(
+        refusal(&unknown),
+        (
+            RejectionCode::NotFound,
+            Some(RefusalReason::UnknownId {
+                kind: fm_command::IdKind::Script,
+                id: 9,
+            })
+        )
+    );
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![cue(
+                1,
+                vec![
+                    cut(2),
+                    CueAction::Wait { frames: 3 },
+                    CueAction::RunScript { script: 5 },
+                ],
+                false,
+            )],
+        ),
+    ));
+    let removed = submit(
+        &mut engine,
+        "remove",
+        EngineCommand::SetScript {
+            script: 5,
+            definition: None,
+        },
+    );
+    assert_eq!(refusal(&removed).0, RejectionCode::Conflict);
+    assert!(engine.show().script(5).is_some());
+
+    let go = accepted(&submit(&mut engine, "go", control(1, GO)));
+    let cursor = engine.frame_cursor().get();
+    let frames = drive(&mut engine, go - cursor + 6);
+    assert_eq!(
+        program_changes(&frames),
+        vec![(go, input(2)), (go + 3, input(3))]
+    );
+    // The script saw the GO's cut to 2 on its own frame, so it keyed 4.
+    assert_eq!(overlay_on(&engine, 1), Some(input(4)));
+    let state = &engine.show().cue_list(1).unwrap().state;
+    assert_eq!((state.pending, state.fault), (None, None));
+}
+
+/// A text field-only lower third, for the frame title-text bound.
+fn title_show() -> ShowState {
+    use fm_titles::{
+        Alignment, Bounds, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId,
+        FieldValue, Style, TemplateId, TitleFieldSet, TitleTemplate,
+    };
+    let id = |value: u128| NonZeroU128::new(value).unwrap();
+    let template = TitleTemplate {
+        id: TemplateId::new(id(9)),
+        name: "Lower third".into(),
+        width: 64,
+        height: 16,
+        background: Color::TRANSPARENT,
+        fields: vec![FieldDefinition {
+            id: FieldId::new(id(1)),
+            name: "name".into(),
+            default: FieldValue::Text(String::new()),
+        }],
+        elements: vec![Element {
+            id: ElementId::new(id(1)),
+            name: "bar".into(),
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 16,
+            },
+            z_index: 0,
+            visible: true,
+            style: Style {
+                fill: Color::BLACK,
+                background: None,
+                opacity: 255,
+                font: None,
+                alignment: Alignment::default(),
+            },
+            color_field: None,
+            kind: ElementKind::Rectangle,
+        }],
+        animation: fm_titles::TitleAnimation::default(),
+    };
+    let mut show = ShowState::new(
+        "title cue show",
+        [1, 2, 3]
+            .into_iter()
+            .map(|value| (input(value), format!("Input {value}")))
+            .collect(),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    show.set_title(
+        input(3),
+        fm_engine::EngineTitle::new(
+            "Lower third",
+            TitleFieldSet::from_template(&template).unwrap(),
+        ),
+    )
+    .unwrap();
+    show
+}
+
+/// One frame's event carries every title text it set, so a cue frame
+/// whose script steps would set more than one script run's whole budget
+/// of text is refused whole (the script stops at the title text past the
+/// bound, keeping its resource-exhausted code); the script alone is within
+/// it.
+#[test]
+fn a_cue_frame_sets_at_most_one_runs_worth_of_title_text() {
+    let mut engine = Engine::new(
+        title_show(),
+        FrameRate::new(25, 1).unwrap(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+    let text = "x".repeat(fm_model::MAX_CUE_TEXT_BYTES);
+    accepted(&submit(
+        &mut engine,
+        "script",
+        set_script(
+            5,
+            &format!("let t = \"{text}\"\nrepeat 64\n  title_text 3, 1, t\nend\n"),
+        ),
+    ));
+    accepted(&submit(
+        &mut engine,
+        "run",
+        EngineCommand::RunScript { script: 5 },
+    ));
+    let one = CueAction::TitleText {
+        input: input(3),
+        field: fm_model::TitleFieldId::new(NonZeroU128::MIN),
+        text: "y".into(),
+    };
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![
+                cue(1, vec![CueAction::RunScript { script: 5 }], false),
+                cue(2, vec![one, CueAction::RunScript { script: 5 }], false),
+            ],
+        ),
+    ));
+    accepted(&submit(&mut engine, "go1", control(1, GO)));
+    let revision = engine.revision();
+    let refused = submit(&mut engine, "go2", control(1, GO));
+    assert_eq!(
+        refusal(&refused),
+        (
+            RejectionCode::ResourceExhausted,
+            Some(RefusalReason::ScriptFailed {
+                failure: fm_command::ScriptFailureKind::Refused,
+                line: 3,
+                column: 3,
+            })
+        )
+    );
+    let message = &refused.receipt.rejected().unwrap().rejection.message;
+    assert!(
+        message.contains("8192 bytes of title text on one frame"),
+        "{message}"
+    );
+    assert_eq!(engine.revision(), revision);
+}

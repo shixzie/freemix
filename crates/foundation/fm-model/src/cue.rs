@@ -18,8 +18,18 @@
 //!
 //! References are checked against the owning project: every input a cue
 //! names must exist (and so cannot be removed while a cue names it), every
-//! stream target must exist, and channel, slot, and recorder numbers are
-//! range-checked here.
+//! stream target and project script must exist (schema 55: a script a cue
+//! runs cannot be removed while a cue names it), and channel, slot, and
+//! recorder numbers are range-checked here.
+//!
+//! A [`CueAction::RunScript`] runs one project script (RC-011) as one step
+//! of its cue, on the frame the step runs: the script's actions are that
+//! step's actions, planned on the show as it stands after the earlier
+//! actions of the frame, all or nothing. A script cannot run a cue or
+//! another script, so the nesting is at most one level deep. Whether the
+//! step takes Program depends on what the script does when it runs, so it
+//! is not counted by [`validate_cue_list_definition`]; the engine still
+//! refuses a second take of Program on one frame when the step runs.
 
 use core::fmt;
 
@@ -36,6 +46,9 @@ pub const MAX_CUE_ACTIONS: usize = 16;
 /// Most actions (waits included) one list holds across all its cues, so a
 /// whole list always fits one protocol record.
 pub const MAX_CUE_LIST_ACTIONS: usize = 256;
+/// Most script steps ([`CueAction::RunScript`]) one list holds (schema 55),
+/// so one frame never runs more than this many scripts.
+pub const MAX_CUE_LIST_SCRIPT_STEPS: usize = 8;
 /// Longest list or cue name, in UTF-8 bytes.
 pub const MAX_CUE_NAME_BYTES: usize = 64;
 /// Longest title text one action sets, in UTF-8 bytes.
@@ -103,6 +116,8 @@ pub enum CueAction {
     /// Defers the cue's remaining actions by `millis` milliseconds (`1..=`
     /// [`MAX_CUE_DELAY_MS`]), converted to frames by [`delay_frames`].
     Delay { millis: u32 },
+    /// Runs project script `script` (nonzero) as one step (schema 55).
+    RunScript { script: u64 },
 }
 
 /// A media transport operation a cue runs.
@@ -151,7 +166,17 @@ impl CueAction {
             | Self::Record { .. }
             | Self::Stream { .. }
             | Self::Wait { .. }
-            | Self::Delay { .. } => None,
+            | Self::Delay { .. }
+            | Self::RunScript { .. } => None,
+        }
+    }
+
+    /// The project script the action runs.
+    #[must_use]
+    pub const fn script(&self) -> Option<u64> {
+        match self {
+            Self::RunScript { script } => Some(*script),
+            _ => None,
         }
     }
 
@@ -161,7 +186,8 @@ impl CueAction {
         matches!(self, Self::Wait { .. } | Self::Delay { .. })
     }
 
-    /// Whether the action changes Program (a take or a playlist start).
+    /// Whether the action changes Program (a take or a playlist start). A
+    /// script step is not counted: what it takes is known only when it runs.
     #[must_use]
     pub const fn takes_program(&self) -> bool {
         matches!(self, Self::Take { .. } | Self::PlaylistStart)
@@ -277,6 +303,10 @@ pub enum CueListError {
     TooManyListActions {
         count: usize,
     },
+    /// The list runs more than [`MAX_CUE_LIST_SCRIPT_STEPS`] scripts.
+    TooManyScriptSteps {
+        count: usize,
+    },
     TooMuchText {
         bytes: usize,
     },
@@ -325,6 +355,10 @@ impl fmt::Display for CueListError {
             Self::TooManyListActions { count } => write!(
                 formatter,
                 "cue list has {count} actions; the limit is {MAX_CUE_LIST_ACTIONS}"
+            ),
+            Self::TooManyScriptSteps { count } => write!(
+                formatter,
+                "cue list runs {count} scripts; the limit is {MAX_CUE_LIST_SCRIPT_STEPS}"
             ),
             Self::TooMuchText { bytes } => write!(
                 formatter,
@@ -386,6 +420,7 @@ pub fn cue_action_is_valid(action: &CueAction) -> bool {
         }
         CueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         CueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
+        CueAction::RunScript { script } => *script != 0,
         CueAction::Preview { .. }
         | CueAction::Media { .. }
         | CueAction::TitleOff { .. }
@@ -419,6 +454,7 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
     }
     let mut actions = 0_usize;
     let mut text = 0_usize;
+    let mut scripts = 0_usize;
     // The cue that took Program on the frame an auto-follow carries into
     // the next cue, if any.
     let mut carried: Option<u64> = None;
@@ -444,6 +480,9 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
             if let CueAction::TitleText { text: value, .. } = action {
                 text += value.len();
             }
+            if action.script().is_some() {
+                scripts += 1;
+            }
             if action.is_wait() {
                 taker = None;
             } else if action.takes_program() {
@@ -468,6 +507,9 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
     }
     if text > MAX_CUE_LIST_TEXT_BYTES {
         return Err(CueListError::TooMuchText { bytes: text });
+    }
+    if scripts > MAX_CUE_LIST_SCRIPT_STEPS {
+        return Err(CueListError::TooManyScriptSteps { count: scripts });
     }
     Ok(())
 }

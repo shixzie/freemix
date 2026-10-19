@@ -4187,8 +4187,9 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         project.input_categories().to_vec(),
         project.input_lifecycles(),
     )?;
-    show.set_cue_lists(project.cue_lists().to_vec())?;
+    // Scripts first: a cue may run one (schema 55).
     show.set_scripts(project.scripts().to_vec())?;
+    show.set_cue_lists(project.cue_lists().to_vec())?;
     Ok(())
 }
 
@@ -5866,7 +5867,7 @@ Usage:
   freemix-cli remote-cue-lists <127.0.0.1:port>
   freemix-cli cue-list-set <project.freemix> <list> <name> <-|id:name:0|1:action[,action...][;...]> [--key <key>] [--expect <revision>]
   freemix-cli remote-cue-list-set <127.0.0.1:port> <list> <name> <-|id:name:0|1:action[,action...][;...]> [--key <key>] [--expect <revision>]
-    actions: preview.<input> take.<input|->.<cut|fade|...>.<frames> overlay_on.<channel>.<input> overlay_off.<channel> title_on.<input>.<channel> title_text.<input>.<field>.<text> title_off.<input> fade_to_black.<0|1>.<frames> playlist_start playlist_stop audio_gain.<input>.<millidB> audio_mute.<input>.<0|1> record.<1|2>.<0|1> stream.<target>.<0|1> wait.<frames>
+    actions: preview.<input> take.<input|->.<cut|fade|...>.<frames> overlay_on.<channel>.<input> overlay_off.<channel> title_on.<input>.<channel> title_text.<input>.<field>.<text> title_off.<input> fade_to_black.<0|1>.<frames> playlist_start playlist_stop audio_gain.<input>.<millidB> audio_mute.<input>.<0|1> record.<1|2>.<0|1> stream.<target>.<0|1> wait.<frames> delay.<millis> run_script.<script>
   freemix-cli cue-list-remove <project.freemix> <list> [--key <key>] [--expect <revision>]
   freemix-cli remote-cue-list-remove <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
   freemix-cli go <project.freemix> <list> [cue] [--key <key>] [--expect <revision>]

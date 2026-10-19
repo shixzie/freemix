@@ -12,7 +12,8 @@
 //!   `audio_mute.<input>.<0|1>`, `record.<recorder>.<0|1>`,
 //!   `stream.<target>.<0|1>`, `media_play.<input>`, `media_pause.<input>`,
 //!   `media_restart.<input>`, `media_seek.<input>.<frame>`, `wait.<frames>`,
-//!   `delay.<millis>` (the media and delay tokens since Protocol 2.51).
+//!   `delay.<millis>` (the media and delay tokens since Protocol 2.51),
+//!   `run_script.<script>` (Protocol 2.60, a nonzero project script id).
 //! * `state` is `<standby>:<live>:<pending>:<played>:<fault>`, each of
 //!   `standby` and `live` a cue id or `-`, `pending`
 //!   `<cue>.<action>.<due frame>` or `-`, `played` `.`-separated ascending
@@ -30,10 +31,10 @@ use core::num::NonZeroU128;
 use crate::{
     CodecError, CueListSpec, CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus,
     CueRunStatus, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
-    MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
-    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, MediaTime, MediaTransportState,
-    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireOverlayChannelId,
-    WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
+    MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES,
+    MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, MediaTime,
+    MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation,
+    WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
 };
 
 use super::media::{FieldSource, Push};
@@ -100,6 +101,7 @@ fn action_is_valid(action: &WireCueAction) -> bool {
         } => transition(*duration_frames),
         WireCueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         WireCueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
+        WireCueAction::RunScript { script } => *script != 0,
         _ => true,
     }
 }
@@ -119,6 +121,7 @@ pub fn validate_spec(spec: &CueListSpec) -> Result<(), CodecError> {
     }
     let mut actions = 0_usize;
     let mut text = 0_usize;
+    let mut scripts = 0_usize;
     for (index, cue) in spec.cues.iter().enumerate() {
         if spec.cues[..index].iter().any(|other| other.id == cue.id)
             || !cue_name_is_valid(&cue.name)
@@ -136,9 +139,15 @@ pub fn validate_spec(spec: &CueListSpec) -> Result<(), CodecError> {
             if let WireCueAction::TitleText { text: value, .. } = action {
                 text += value.len();
             }
+            if matches!(action, WireCueAction::RunScript { .. }) {
+                scripts += 1;
+            }
         }
     }
-    if actions > MAX_CUE_LIST_ACTIONS || text > MAX_CUE_LIST_TEXT_BYTES {
+    if actions > MAX_CUE_LIST_ACTIONS
+        || text > MAX_CUE_LIST_TEXT_BYTES
+        || scripts > MAX_CUE_LIST_SCRIPT_STEPS
+    {
         return Err(CodecError::TooManyItems("cues"));
     }
     Ok(())
@@ -190,6 +199,7 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
         },
         WireCueAction::Wait { frames } => format!("wait.{frames}"),
         WireCueAction::Delay { millis } => format!("delay.{millis}"),
+        WireCueAction::RunScript { script } => format!("run_script.{script}"),
     }
 }
 
@@ -309,6 +319,9 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
         },
         ["delay", millis] => WireCueAction::Delay {
             millis: parse_u32(millis)?,
+        },
+        ["run_script", script] => WireCueAction::RunScript {
+            script: parse_canonical_u64(script)?,
         },
         _ => return None,
     })

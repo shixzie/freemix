@@ -1,5 +1,6 @@
 //! RC-017 cue lists (schema 48): bounded definitions (millisecond delays
-//! included), consistent run states, and project-level list rules.
+//! included), consistent run states, and project-level list rules; a cue
+//! that runs a project script (schema 55).
 
 use std::num::NonZeroU128;
 
@@ -300,4 +301,87 @@ fn auto_follow_chains_take_program_at_most_once_per_frame() {
         .to_string(),
         "cue 1 auto-follows into cue 2 and both take Program on one frame"
     );
+}
+
+fn project() -> fm_model::Project {
+    use fm_types::{
+        AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, ProjectId, SampleFormat,
+        SampleRate, ScanMode, VideoDimensions, VideoFormat,
+    };
+    let frame_rate = FrameRate::new(30, 1).unwrap();
+    fm_model::Project::new(
+        ProjectId::new(NonZeroU128::MIN),
+        "Show",
+        fm_model::ProjectSettings {
+            frame_rate,
+            video: VideoFormat {
+                dimensions: VideoDimensions::new(1920, 1080).unwrap(),
+                frame_rate,
+                pixel_format: PixelFormat::Rgba8,
+                scan: ScanMode::Progressive,
+                color: ColorMetadata::default(),
+            },
+            audio: AudioFormat {
+                sample_rate: SampleRate::new(48_000).unwrap(),
+                sample_format: SampleFormat::F32,
+                channels: ChannelLayout::stereo(),
+            },
+        },
+    )
+}
+
+/// A cue may run a project script (schema 55): the id is nonzero and names
+/// a script the project holds. The step is not counted as a take, since
+/// what the script takes is known only when it runs.
+#[test]
+fn a_cue_runs_a_script_the_project_holds() {
+    let runs = CueAction::RunScript { script: 7 };
+    assert_eq!(runs.script(), Some(7));
+    assert_eq!(runs.input(), None);
+    assert!(!runs.takes_program() && !runs.is_wait());
+    assert!(fm_model::cue_action_is_valid(&runs));
+    assert!(!fm_model::cue_action_is_valid(&CueAction::RunScript {
+        script: 0
+    }));
+    // A list runs at most MAX_CUE_LIST_SCRIPT_STEPS scripts.
+    let steps = |count: usize| vec![cue(1, vec![CueAction::RunScript { script: 7 }; count])];
+    assert_eq!(
+        validate_cue_list_definition("Show", &steps(fm_model::MAX_CUE_LIST_SCRIPT_STEPS)),
+        Ok(())
+    );
+    assert_eq!(
+        validate_cue_list_definition("Show", &steps(fm_model::MAX_CUE_LIST_SCRIPT_STEPS + 1)),
+        Err(CueListError::TooManyScriptSteps {
+            count: fm_model::MAX_CUE_LIST_SCRIPT_STEPS + 1
+        })
+    );
+    // A take beside a script step is a valid definition.
+    assert_eq!(
+        validate_cue_list_definition("Show", &[cue(1, vec![runs.clone(), cut(1)])]),
+        Ok(())
+    );
+
+    let mut project = project();
+    project.set_cue_lists(vec![list(
+        1,
+        vec![cue(1, vec![runs])],
+        CueRunState {
+            standby: Some(1),
+            ..CueRunState::default()
+        },
+    )]);
+    let missing = fm_model::EntityRef::Script(7);
+    let errors = project.validate().unwrap_err();
+    assert!(
+        errors.iter().any(|error| error.entity == Some(missing)
+            && error.field == "cue_lists.cues.actions.script"
+            && error.kind == fm_model::ValidationErrorKind::MissingReference(missing)),
+        "{errors:?}"
+    );
+    project.set_scripts(vec![fm_model::Script {
+        id: 7,
+        name: "Open".into(),
+        source: "cut 1\n".into(),
+    }]);
+    assert_eq!(project.validate(), Ok(()));
 }

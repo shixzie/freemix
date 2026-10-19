@@ -33,6 +33,8 @@ pub const MAX_CUES: usize = 64;
 pub const MAX_CUE_ACTIONS: usize = 16;
 /// Most actions one list holds across all its cues.
 pub const MAX_CUE_LIST_ACTIONS: usize = 256;
+/// Most script steps one list holds (Protocol 2.60).
+pub const MAX_CUE_LIST_SCRIPT_STEPS: usize = 8;
 /// Longest list or cue name, in UTF-8 bytes.
 pub const MAX_CUE_NAME_BYTES: usize = 64;
 /// Longest title text one action sets, in UTF-8 bytes.
@@ -117,6 +119,11 @@ pub enum WireCueAction {
     /// fires, rounded up (Protocol 2.51).
     Delay {
         millis: u32,
+    },
+    /// Runs project script `script` (nonzero) as one step (Protocol 2.60):
+    /// its actions are the step's actions, all or nothing.
+    RunScript {
+        script: u64,
     },
 }
 

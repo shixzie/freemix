@@ -22,8 +22,9 @@
 //! `playlist_stop`, `audio_gain` (`input`, `gain_milli_db`), `audio_mute`
 //! (`input`, `muted`), `record` (`recorder`, `start`), `stream` (`target`,
 //! `start`), `media_play`, `media_pause`, and `media_restart` (`input`),
-//! `media_seek` (`input`, `frame`), `wait` (`frames`), and `delay`
-//! (`millis`). Bounds and references are reported by project validation.
+//! `media_seek` (`input`, `frame`), `wait` (`frames`), `delay`
+//! (`millis`), and `run_script` (`script`, a project script id; schema 55).
+//! Bounds and references are reported by project validation.
 
 use core::fmt::Write as _;
 
@@ -176,6 +177,9 @@ fn write_action(output: &mut String, action: &CueAction) {
         CueAction::Delay { millis } => {
             write!(output, "{{\"type\": \"delay\", \"millis\": {millis}}}")
         }
+        CueAction::RunScript { script } => {
+            write!(output, "{{\"type\": \"run_script\", \"script\": {script}}}")
+        }
     };
     result.expect("writing to a string cannot fail");
 }
@@ -279,6 +283,7 @@ fn input(object: &mut Object) -> Result<InputId, DecodeError> {
     Ok(InputId::new(object.nonzero_u128("input")?))
 }
 
+#[allow(clippy::too_many_lines)] // one arm per action type
 fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
     let mut object = Object::new(value, "cue action")?;
     let action = match object.string("type")?.as_str() {
@@ -373,6 +378,9 @@ fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
         },
         "delay" => CueAction::Delay {
             millis: object.u32("millis")?,
+        },
+        "run_script" => CueAction::RunScript {
+            script: object.u64("script")?,
         },
         value => return Err(super::unknown_enum("cue action", value)),
     };

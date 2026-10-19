@@ -10,7 +10,9 @@ use fm_protocol::{ScriptRunChange, ScriptStatus};
 
 use crate::{BusSelection, CueRunUpdate, ManualTransitionStatus, ModelError, ProjectState};
 
-pub use fm_script::{FailureKind as ScriptCheckKind, ScriptFailure as ScriptCheck};
+pub use fm_script::{
+    FailureKind as ScriptCheckKind, ScriptFailure as ScriptCheck, Verb as ScriptVerb,
+};
 
 /// An accepted script run as a durable change.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -119,4 +121,14 @@ pub(crate) fn apply_script(state: &mut ProjectState, script: ScriptStatus) {
 #[must_use]
 pub fn check_script_syntax(source: &str) -> Option<ScriptCheck> {
     fm_script::parse(source).err()
+}
+
+/// Every action verb `source` holds, in any branch: what any run of it can
+/// ask for (a cue running it needs their permissions, Protocol 2.60).
+/// Empty for a source that does not parse.
+#[must_use]
+pub fn script_verbs(source: &str) -> Vec<ScriptVerb> {
+    fm_script::parse(source)
+        .map(|program| program.verbs())
+        .unwrap_or_default()
 }

@@ -191,3 +191,55 @@ fn script_edits_respect_their_bounds() {
     fail(&["script-set", &project, "0", "Zero", &short], "script");
     succeed(&["script-set", &project, "1", "Short", &short]);
 }
+
+/// RC-011/RC-017 (Protocol 2.60): a cue runs a project script as one step
+/// after its wait; a script a cue runs cannot be removed, and a cue whose
+/// script fails is refused with the script's typed reason.
+#[test]
+fn a_cue_runs_a_script_and_holds_it() {
+    let root = Root::new("cue");
+    let project = root.project();
+    let source = root.source("opening.fms", OPENING);
+    succeed(&["script-set", &project, "3", "Opening", &source]);
+    fail(
+        &[
+            "cue-list-set",
+            &project,
+            "7",
+            "Show",
+            "10:Open:0:run_script.4",
+        ],
+        "(reason: unknown_id:script:4)",
+    );
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "7",
+        "Show",
+        "10:Open:0:wait.2,run_script.3;20:Again:0:run_script.3",
+    ]);
+    let listed = succeed(&["cue-lists", &project]);
+    assert!(listed.contains("actions=wait.2,run_script.3)"), "{listed}");
+
+    // The wait holds two frames, then the script takes input 2 and keys
+    // input 1, exactly as running it directly does.
+    let status = succeed(&["go", &project, "7"]);
+    assert!(
+        status.contains("Program(desired=2, realized=2)"),
+        "{status}"
+    );
+    assert!(status.contains("Overlays(desired=[1:1:on"), "{status}");
+    fail(
+        &["script-remove", &project, "3"],
+        "script 3 is run by cue list 7",
+    );
+
+    // On Program 2 the script asks for input 3, which the project lacks:
+    // the GO is refused where the script stopped and nothing changes.
+    let before = succeed(&["status", &project]);
+    fail(
+        &["go", &project, "7"],
+        "(reason: script_failed:refused:3:1)",
+    );
+    assert_eq!(succeed(&["status", &project]), before);
+}

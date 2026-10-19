@@ -3,7 +3,7 @@
 
 use fm_script::{
     Budget, Effect, FailureKind, InputRef, Limits, MAX_SOURCE_BYTES, MediaOperation, ScriptAction,
-    ScriptHost, Span, TakeEffect, parse, run, run_source,
+    ScriptHost, Span, TakeEffect, Verb, parse, run, run_source,
 };
 
 /// A host that records actions and refuses inputs above `inputs`.
@@ -548,4 +548,36 @@ fn a_long_elif_chain_runs_flat() {
     // The `let`, then each of the 251 conditions tried costs one for its
     // `if` or `elif` and one for its value, then the `cut` and its input.
     assert_eq!(report.0.instructions, 2 + 2 * 251 + 2);
+}
+
+/// A program's verbs cover every branch and loop body, whatever a run
+/// takes, so they bound what any run of it can ask for (a cue that runs a
+/// script needs their permissions up front).
+#[test]
+fn verbs_cover_every_branch_whatever_a_run_takes() {
+    let program = parse(
+        "# never taken\n\
+         if false\n  mute 1\nelif program == 99\n  title_text 1, 1, \"x\"\nelse\n  cut\nend\n\
+         repeat 0\n  preview 2\nend\n\
+         while false\n  gain 1, 0\nend\n\
+         stop\nrecord_start 1\n",
+    )
+    .expect("parses");
+    assert_eq!(
+        program.verbs(),
+        vec![
+            Verb::Preview,
+            Verb::Cut,
+            Verb::TitleText,
+            Verb::Gain,
+            Verb::Mute,
+            Verb::RecordStart
+        ]
+    );
+    // A run only performs the `cut`.
+    let mut recorder = host();
+    let report = run(&program, &mut recorder, Limits::default());
+    assert_eq!(report.failure, None);
+    assert_eq!(recorder.actions.len(), 1);
+    assert_eq!(parse("let x = 1\n").expect("parses").verbs(), []);
 }

@@ -522,6 +522,41 @@ pub struct Program {
     pub(crate) statements: Vec<parser::Statement>,
 }
 
+impl Program {
+    /// Every action verb the program holds, in any branch or loop, in
+    /// [`Verb::ALL`] order. Every action any run of the program can ask for
+    /// is one of these verbs, whatever the host answers, so the set bounds
+    /// what the program can do before it runs.
+    #[must_use]
+    pub fn verbs(&self) -> Vec<Verb> {
+        let mut found = [false; Verb::ALL.len()];
+        let mut blocks: Vec<&[parser::Statement]> = vec![&self.statements];
+        while let Some(block) = blocks.pop() {
+            for statement in block {
+                match &statement.kind {
+                    parser::StatementKind::Action { verb, .. } => {
+                        if let Some(index) = Verb::ALL.iter().position(|known| known == verb) {
+                            found[index] = true;
+                        }
+                    }
+                    parser::StatementKind::If { arms, otherwise } => {
+                        blocks.extend(arms.iter().map(|(_, _, body)| body.as_slice()));
+                        blocks.push(otherwise);
+                    }
+                    parser::StatementKind::Repeat { body, .. }
+                    | parser::StatementKind::While { body, .. } => blocks.push(body),
+                    parser::StatementKind::Let { .. } | parser::StatementKind::Stop => {}
+                }
+            }
+        }
+        Verb::ALL
+            .into_iter()
+            .zip(found)
+            .filter_map(|(verb, used)| used.then_some(verb))
+            .collect()
+    }
+}
+
 /// Parses and runs `source`: a syntax error is reported like a run
 /// failure, with no instructions used.
 pub fn run_source(source: &str, host: &mut dyn ScriptHost, limits: Limits) -> ScriptReport {

@@ -56,7 +56,13 @@ against the run planned on a copy of the show, so its dynamic branches are
 covered; a cue GO is checked for the whole chain it arms (waits and
 auto-follows), which the daemon's cue clock later runs on that up-front
 authority; and an edit to a list whose chain is armed needs whatever
-permission it adds to that chain.
+permission it adds to that chain. A cue step that runs a script may run on a
+later frame whose show (and so the script's branches) is unknown when the
+chain is armed, so the GO needs the permission of every action verb the
+script holds in any branch; an edit of a script an armed chain runs needs
+whatever permission its new verbs add, and a script a cue runs cannot be
+removed. Scripts cannot fire cues or other scripts, so automation never
+nests deeper than a cue running one script.
 
 ## 4. Guest and browser isolation
 

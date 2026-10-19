@@ -805,6 +805,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                                 input: wire(4),
                                 operation: WireCueMediaOperation::Pause,
                             },
+                            WireCueAction::RunScript { script: 1 },
                         ],
                     ),
                 ],

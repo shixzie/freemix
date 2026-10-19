@@ -19,6 +19,14 @@
 //!   refused with [`RefusalReason::ScriptFailed`] naming the line and column
 //!   and nothing changes. A run is a journaled live operation without undo,
 //!   like a GO; the actions it performed are reported with the event.
+//!
+//! A cue's [`CueAction::RunScript`] step (schema 55) runs a script the same
+//! way, inside the cue's frame: its actions apply after the frame's earlier
+//! actions, share that frame's one take of Program and transition rule, and
+//! are realized with the rest of the frame. A failed run fails the step like
+//! any refused cue action, with the same [`RefusalReason::ScriptFailed`]. A
+//! script cannot run a cue or another script, so runs never nest deeper.
+//! Removing a script a cue runs is refused.
 
 use fm_automation::FiredCueAction;
 use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode, ScriptFailureKind};
@@ -30,12 +38,10 @@ use fm_script::{
     Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, ScriptAction, ScriptFailure,
     ScriptHost, TakeEffect,
 };
-use fm_switcher::TransitionKind;
-use fm_titles::FieldId;
 use fm_types::InputId;
 
 use crate::engine::{CueFrame, CuePlan};
-use crate::{Engine, EngineCommand, EngineEvent, ShowState};
+use crate::{Engine, EngineEvent, ShowState};
 use fm_scheduler::FrameNumber;
 
 /// One script's name and source.
@@ -61,7 +67,8 @@ pub(crate) fn unknown_script(script: u64) -> Rejection {
 /// # Errors
 ///
 /// Refuses script id zero, an invalid name or source, a script past the
-/// project bound, and removing an unknown script.
+/// project bound, removing an unknown script, and removing a script a cue
+/// runs.
 pub(crate) fn apply_set(
     state: &mut ShowState,
     script: u64,
@@ -73,6 +80,22 @@ pub(crate) fn apply_set(
         .position(|candidate| candidate.id == script);
     let Some(definition) = definition else {
         let index = existing.ok_or_else(|| unknown_script(script))?;
+        if let Some(list) = state.cue_lists().iter().find(|list| {
+            list.cues
+                .iter()
+                .flat_map(|cue| &cue.actions)
+                .any(|action| action.script() == Some(script))
+        }) {
+            return Err(Rejection::new(
+                RejectionCode::Conflict,
+                format!("script {script} is run by cue list {}", list.id),
+            )
+            .with_field(FieldIssue::new(
+                "script",
+                "script_in_use",
+                "remove the script from every cue list first",
+            )));
+        }
         state.scripts_mut().remove(index);
         return Ok(());
     };
@@ -148,7 +171,7 @@ const fn failure_kind(kind: FailureKind) -> ScriptFailureKind {
 
 /// The refusal of a run that stopped at `failure`. A refused action keeps
 /// the code and field issues of the refusal the show gave it.
-fn failure_rejection(
+pub(crate) fn failure_rejection(
     script: u64,
     failure: &ScriptFailure,
     refused: Option<Rejection>,
@@ -307,17 +330,14 @@ fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, Str
     })
 }
 
-/// The sandbox's only window on the show: a copy of the show the run's
-/// actions apply to in order.
-struct Host<'e> {
+/// The sandbox's only window on the show: the show of the frame the run
+/// lands on, which its actions apply to in order.
+struct Host<'e, 'f> {
     engine: &'e Engine,
     script: u64,
     target_frame: FrameNumber,
-    show: ShowState,
-    runtime: Vec<EngineCommand>,
-    transition: Option<TransitionKind>,
-    title_texts: Vec<(InputId, FieldId, String)>,
-    takes: usize,
+    show: &'f mut ShowState,
+    frame: CueFrame<'f>,
     step: usize,
     /// The show's refusal of the action that stopped the run.
     refused: Option<Rejection>,
@@ -326,7 +346,7 @@ struct Host<'e> {
     requested: Vec<CueAction>,
 }
 
-impl Host<'_> {
+impl Host<'_, '_> {
     fn number(&self, input: InputId) -> u32 {
         self.show
             .inputs()
@@ -337,7 +357,7 @@ impl Host<'_> {
     }
 }
 
-impl ScriptHost for Host<'_> {
+impl ScriptHost for Host<'_, '_> {
     fn program(&self) -> u32 {
         self.number(self.show.desired_switcher().program())
     }
@@ -352,7 +372,7 @@ impl ScriptHost for Host<'_> {
             host.refused = Some(rejection);
             Err(message)
         };
-        let action = match cue_action(&self.show, action) {
+        let action = match cue_action(self.show, action) {
             Ok(action) => action,
             Err(message) => {
                 let rejection = Rejection::new(RejectionCode::NotFound, message);
@@ -369,7 +389,7 @@ impl ScriptHost for Host<'_> {
             return refuse(self, rejection);
         }
         if let Err(rejection) =
-            crate::cue::check_action_references(&self.show, &action, "the script")
+            crate::cue::check_action_references(self.show, &action, "the script")
         {
             return refuse(self, rejection);
         }
@@ -380,24 +400,127 @@ impl ScriptHost for Host<'_> {
         }];
         let mut show = self.show.clone();
         let mut frame = CueFrame {
-            runtime: &mut self.runtime,
-            transition: &mut self.transition,
-            title_texts: &mut self.title_texts,
-            takes: self.takes,
+            runtime: &mut *self.frame.runtime,
+            transition: &mut *self.frame.transition,
+            title_texts: &mut *self.frame.title_texts,
+            takes: self.frame.takes,
         };
         let applied =
             self.engine
                 .apply_cue_actions(&mut show, &fired, self.target_frame, &mut frame);
-        self.takes = frame.takes;
+        self.frame.takes = frame.takes;
         match applied {
             Ok(()) => {
-                self.show = show;
+                *self.show = show;
                 self.step += 1;
                 Ok(())
             }
             Err((_, _, rejection)) => refuse(self, rejection),
         }
     }
+}
+
+/// What one run of a script on a frame did.
+pub(crate) struct ScriptOutcome {
+    pub(crate) report: fm_script::ScriptReport,
+    /// The show's refusal of the action that stopped the run, if one did.
+    pub(crate) refused: Option<Rejection>,
+    /// Every action the run asked for (see [`requested_actions`]).
+    pub(crate) requested: Vec<CueAction>,
+}
+
+impl ScriptOutcome {
+    /// The refusal of a run that stopped early.
+    pub(crate) fn failure(self, script: u64) -> Option<Rejection> {
+        self.report
+            .failure
+            .as_ref()
+            .map(|failure| failure_rejection(script, failure, self.refused))
+    }
+}
+
+/// Runs script `script` in the sandbox on `show`, the show of the frame
+/// the run lands on as earlier actions of that frame left it, collecting
+/// what its actions realize into `frame`. A run that stops early leaves
+/// `show` and `frame` holding its earlier actions; the caller discards
+/// them.
+///
+/// # Errors
+///
+/// Refuses an unknown script and a syntax error before anything runs.
+pub(crate) fn run_on(
+    engine: &Engine,
+    script: u64,
+    target_frame: FrameNumber,
+    show: &mut ShowState,
+    frame: &mut CueFrame<'_>,
+) -> Result<ScriptOutcome, Rejection> {
+    let found = show.script(script).ok_or_else(|| unknown_script(script))?;
+    let program = fm_script::parse(&found.source)
+        .map_err(|failure| failure_rejection(script, &failure, None))?;
+    let mut host = Host {
+        engine,
+        script,
+        target_frame,
+        show,
+        frame: CueFrame {
+            runtime: &mut *frame.runtime,
+            transition: &mut *frame.transition,
+            title_texts: &mut *frame.title_texts,
+            takes: frame.takes,
+        },
+        step: 0,
+        refused: None,
+        requested: Vec::new(),
+    };
+    let report = fm_script::run(&program, &mut host, Limits::default());
+    frame.takes = host.frame.takes;
+    Ok(ScriptOutcome {
+        report,
+        refused: host.refused,
+        requested: host.requested,
+    })
+}
+
+/// Runs script `script` on a copy of the show for `target_frame`.
+fn run_alone(
+    engine: &Engine,
+    script: u64,
+    target_frame: FrameNumber,
+) -> Result<(ScriptOutcome, CuePlan), Rejection> {
+    let mut show = engine.show().clone();
+    let mut runtime = Vec::new();
+    let mut transition = None;
+    let mut title_texts = Vec::new();
+    let outcome = run_on(
+        engine,
+        script,
+        target_frame,
+        &mut show,
+        &mut CueFrame {
+            runtime: &mut runtime,
+            transition: &mut transition,
+            title_texts: &mut title_texts,
+            takes: 0,
+        },
+    )?;
+    let event = EngineEvent::ScriptRan {
+        script,
+        frame: target_frame.get(),
+        actions: outcome.report.actions,
+        instructions: outcome.report.instructions,
+        title_texts,
+        applied: runtime.clone(),
+    };
+    Ok((
+        outcome,
+        CuePlan {
+            show: Box::new(show),
+            event,
+            runtime,
+            transition,
+        },
+    ))
 }
 
 /// Plans a [`crate::EngineCommand::RunScript`] for `target_frame`: the show
@@ -411,23 +534,11 @@ pub(crate) fn plan(
     script: u64,
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
-    let (mut host, report) = run(engine, script, target_frame)?;
-    if let Some(failure) = &report.failure {
-        return Err(failure_rejection(script, failure, host.refused.take()));
+    let (outcome, plan) = run_alone(engine, script, target_frame)?;
+    match outcome.failure(script) {
+        Some(rejection) => Err(rejection),
+        None => Ok(plan),
     }
-    Ok(CuePlan {
-        show: Box::new(host.show),
-        event: EngineEvent::ScriptRan {
-            script,
-            frame: target_frame.get(),
-            actions: report.actions,
-            instructions: report.instructions,
-            title_texts: host.title_texts,
-            applied: host.runtime.clone(),
-        },
-        runtime: host.runtime,
-        transition: host.transition,
-    })
 }
 
 /// Every show action a [`crate::EngineCommand::RunScript`] planned for
@@ -441,34 +552,18 @@ pub(crate) fn requested_actions(
     script: u64,
     target_frame: FrameNumber,
 ) -> Vec<CueAction> {
-    run(engine, script, target_frame).map_or_else(|_| Vec::new(), |(host, _)| host.requested)
+    run_alone(engine, script, target_frame)
+        .map_or_else(|_| Vec::new(), |(outcome, _)| outcome.requested)
 }
 
-/// Runs script `script` in the sandbox against a copy of the show.
-fn run(
-    engine: &Engine,
-    script: u64,
-    target_frame: FrameNumber,
-) -> Result<(Host<'_>, fm_script::ScriptReport), Rejection> {
-    let found = engine
-        .show()
-        .script(script)
-        .ok_or_else(|| unknown_script(script))?;
-    let program = fm_script::parse(&found.source)
-        .map_err(|failure| failure_rejection(script, &failure, None))?;
-    let mut host = Host {
-        engine,
-        script,
-        target_frame,
-        show: engine.show().clone(),
-        runtime: Vec::new(),
-        transition: None,
-        title_texts: Vec::new(),
-        takes: 0,
-        step: 0,
-        refused: None,
-        requested: Vec::new(),
-    };
-    let report = fm_script::run(&program, &mut host, Limits::default());
-    Ok((host, report))
+/// Every action verb script `script` holds, in any branch (see
+/// [`fm_script::Program::verbs`]): what any run of it can ask for,
+/// whatever the show it runs on. Empty for a source that does not parse
+/// (its runs fail before acting); `None` for an unknown script.
+pub(crate) fn verbs(state: &ShowState, script: u64) -> Option<Vec<fm_script::Verb>> {
+    state.script(script).map(|found| {
+        fm_script::parse(&found.source)
+            .map(|program| program.verbs())
+            .unwrap_or_default()
+    })
 }

@@ -11334,9 +11334,10 @@ fn restore_engine_with_titles(
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
     restore_presets_favorites_and_media(&mut show, canonical)?;
-    // Checked against the restored titles and media inputs.
-    show.set_cue_lists(canonical.cue_lists().to_vec())?;
+    // Checked against the restored titles, media inputs, and scripts (a cue
+    // may run one, schema 55).
     show.set_scripts(canonical.scripts().to_vec())?;
+    show.set_cue_lists(canonical.cue_lists().to_vec())?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,

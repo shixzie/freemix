@@ -6426,6 +6426,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ScriptReasonNotSaved,
         t("el guion aún no está en el proyecto"),
     ),
+    (
+        Msg::ScriptReasonRunByCue,
+        t("una lista de cues ejecuta este guion; quítelo antes de cada cue"),
+    ),
     (Msg::TabCues, t("Cues")),
     (
         Msg::TabCuesHover,
@@ -6575,6 +6579,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueActMediaSeek, t("Buscar en medio")),
     (Msg::CueActMediaRestart, t("Reiniciar medio")),
     (Msg::CueActDelay, t("Retardo")),
+    (Msg::CueActRunScript, t("Guion")),
+    (
+        Msg::CueParamScriptHover,
+        t(
+            "El guion del proyecto que este paso ejecuta en su fotograma: todas sus acciones o ninguna, y si falla, falla el cue. Dispararlo requiere el permiso de cada acción que contiene el guion, en cualquier rama",
+        ),
+    ),
     (
         Msg::CueParamMediaHover,
         t("La entrada de medios cuyo transporte controla esta acción"),
@@ -6654,6 +6665,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("el show no tiene nada que esta acción pueda nombrar"),
     ),
     (Msg::CueReasonNoStandby, t("no hay ningún cue en espera")),
+    (
+        Msg::CueReasonNoScriptsLeft,
+        t("esta lista ya ejecuta el máximo de 8 guiones"),
+    ),
     (
         Msg::CueReasonChainPreview,
         t(

@@ -1398,6 +1398,17 @@ impl Engine {
         crate::script::requested_actions(self, script, self.scheduler.pacer().next_frame())
     }
 
+    /// Every action verb script `script` holds, in any branch or loop
+    /// (RC-011): whatever show a run of it meets, it can only ask for
+    /// actions of these verbs. This bounds what a cue's
+    /// [`fm_model::CueAction::RunScript`] step can do on a later frame,
+    /// where the show (and so the branches taken) may differ from now.
+    /// Empty for a source that does not parse; `None` for an unknown script.
+    #[must_use]
+    pub fn script_verbs(&self, script: u64) -> Option<Vec<fm_script::Verb>> {
+        crate::script::verbs(self.show(), script)
+    }
+
     /// Steps a cue operation or advance on the current show for
     /// `target_frame`: the list's next run state and, for a GO or advance,
     /// every due action applied in order to a copy of the show.
@@ -1545,8 +1556,26 @@ impl Engine {
         } = frame;
         for fired in actions {
             let refuse = |rejection: Rejection| (fired.cue, fired.step, rejection);
+            // A script step runs the script on this frame's show (schema 55);
+            // its own actions come back through here, never another script.
+            if let fm_model::CueAction::RunScript { script } = &fired.action {
+                let mut nested = CueFrame {
+                    runtime,
+                    transition,
+                    title_texts,
+                    takes: *takes,
+                };
+                let outcome = crate::script::run_on(self, *script, target_frame, show, &mut nested)
+                    .map_err(refuse)?;
+                *takes = nested.takes;
+                if let Some(rejection) = outcome.failure(*script) {
+                    return Err(refuse(rejection));
+                }
+                continue;
+            }
             if let fm_model::CueAction::TitleText { input, field, text } = &fired.action {
                 title_texts.push((*input, FieldId::new(field.get()), text.clone()));
+                check_frame_title_texts(title_texts).map_err(refuse)?;
             }
             let realized = &self.realized_switcher;
             let commands = crate::cue::expand(show, &fired.action, |input| {
@@ -2452,6 +2481,33 @@ pub(crate) struct CuePlan {
     pub(crate) event: EngineEvent,
     pub(crate) runtime: Vec<EngineCommand>,
     pub(crate) transition: Option<TransitionKind>,
+}
+
+/// Most title text bytes the actions of one cue or script frame may set:
+/// what one script run's whole action budget can set
+/// ([`fm_script::DEFAULT_ACTIONS`] texts of [`fm_model::MAX_CUE_TEXT_BYTES`]).
+pub(crate) const MAX_FRAME_TITLE_TEXT_BYTES: usize =
+    fm_script::DEFAULT_ACTIONS as usize * fm_model::MAX_CUE_TEXT_BYTES;
+
+/// Refuses a frame whose actions set more title text than its event may
+/// carry: a cue list and a lone script run stay far inside the bound, only
+/// script steps on one cue frame can reach it.
+fn check_frame_title_texts(title_texts: &[(InputId, FieldId, String)]) -> Result<(), Rejection> {
+    let bytes: usize = title_texts.iter().map(|(_, _, text)| text.len()).sum();
+    if title_texts.len() > fm_model::MAX_CUE_LIST_ACTIONS || bytes > MAX_FRAME_TITLE_TEXT_BYTES {
+        return Err(Rejection::new(
+            RejectionCode::ResourceExhausted,
+            format!(
+                "the actions set more than {MAX_FRAME_TITLE_TEXT_BYTES} bytes of title text on \
+                 one frame"
+            ),
+        )
+        .with_reason(RefusalReason::bounds(
+            "title_text",
+            MAX_FRAME_TITLE_TEXT_BYTES as u64,
+        )));
+    }
+    Ok(())
 }
 
 /// What the actions applied so far on one frame collected: their runtime

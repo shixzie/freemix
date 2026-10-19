@@ -189,6 +189,20 @@ fn replicated(state: &StudioUiState) -> &[ScriptStatus] {
         .map_or(&[][..], fm_ui_model::ProjectState::scripts)
 }
 
+/// Whether a cue list runs script `script` (Protocol 2.60): the authority
+/// refuses to remove it.
+#[must_use]
+pub fn run_by_cue(state: &StudioUiState, script: u64) -> bool {
+    state.project_state.as_ref().is_some_and(|project| {
+        project
+            .cue_lists()
+            .iter()
+            .flat_map(|list| &list.spec.cues)
+            .flat_map(|cue| &cue.actions)
+            .any(|action| matches!(action, fm_protocol::WireCueAction::RunScript { script: run } if *run == script))
+    })
+}
+
 /// Why the draft cannot be saved, if it cannot.
 #[must_use]
 pub fn save_block(
@@ -470,7 +484,9 @@ fn draw_editor(
             window.failure = None;
             intents.push(StudioIntent::Script(ScriptIntent::Run { script }));
         }
-        let remove = edit.or_else(|| (!saved).then_some(Msg::ScriptReasonNotSaved.en()));
+        let remove = edit
+            .or_else(|| (!saved).then_some(Msg::ScriptReasonNotSaved.en()))
+            .or_else(|| run_by_cue(state, script).then_some(Msg::ScriptReasonRunByCue.en()));
         if ui
             .add_enabled(remove.is_none(), Button::new(l.text(Msg::ScriptRemove)))
             .hint(l.text(Msg::ScriptRemoveHover), remove.unwrap_or(""))

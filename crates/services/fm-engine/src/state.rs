@@ -1240,7 +1240,8 @@ impl ShowState {
     /// # Errors
     ///
     /// Returns [`ShowError::InvalidCueList`] when a list breaks a bound or
-    /// names an input, title, or stream target outside this show.
+    /// names an input, title, stream target, or script outside this show
+    /// (so restore the scripts first).
     pub fn set_cue_lists(&mut self, lists: Vec<fm_model::CueList>) -> Result<(), ShowError> {
         if fm_model::validate_cue_lists(&lists).is_err() {
             return Err(ShowError::InvalidCueList("definition"));

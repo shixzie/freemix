@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.59 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.60 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1917,6 +1917,65 @@ every input, sent only to sessions that ask for it.
   shows it alone. Inputs with no picture, such as system audio, get no
   thumbnail (and are tried again at most every 500 ms).
 - 2.58 is refused.
+
+Protocol 2.60 lets a cue run a project script (RC-011, RC-017).
+
+- A cue action may be `run_script.<script>` (a nonzero project script id,
+  canonical decimal). A list holds at most 8 such steps
+  (`MAX_CUE_LIST_SCRIPT_STEPS`); a `cue_list_set` with more, with script
+  `0`, or with a non-canonical id is malformed. The script must exist: a
+  list naming an unknown script is refused `not_found` (reason
+  `unknown_id:script:<id>`), and `script_remove` of a script any cue list
+  runs is refused `conflict` with field issue `script:script_in_use`
+  (remove the step first; editing the script stays allowed).
+- Semantics: the step runs the script in the `script_run` sandbox on the
+  frame the step runs (the GO's frame, or a wait's due frame for an
+  advance), on the show as the frame's earlier actions left it, so
+  `program` and `preview` read the effect of those actions. The script's
+  actions are the step's actions: they share the frame's one take of
+  Program and transition-in-flight rule with the cue's other actions, are
+  realized together with them, and their title texts are reported in the
+  frame's `cue_run_changed` (`titles`). No `script_ran` event is sent for a
+  script a cue runs. One frame's actions may set at most 8192 bytes of
+  title text (one script run's whole action budget), which only script
+  steps can reach; past it the action is refused `resource_exhausted`.
+- Failure: a script step that fails (a syntax or runtime error, an
+  exhausted budget, or a refused action) fails the step exactly like a
+  refused cue action, with the script's typed reason
+  `script_failed:<kind>:<line>:<column>` (a refused action keeps its own
+  code), the message prefixed `cue <cue> action <n>:`. A GO is refused
+  whole and nothing of its frame applies; a step after a wait sets the
+  list's `fault` to that step, nothing of that frame applies, and the
+  rest of the cue (and its follow) is dropped.
+- Recursion: a script cannot fire a cue or run another script (the
+  language has no such verb), so a cue's script never nests deeper than
+  one level and a cue chain cannot loop through scripts.
+- Authority: a step may run on a later frame against a show nobody knows
+  when the chain is armed, so a `cue_go` whose armed chain holds a
+  `run_script` step needs the permission of every action verb the script's
+  source holds, in any branch or loop body (`preview` needs
+  `select_preview`; `gain`, `mute`, and `unmute` need `control_audio`;
+  `title_text` needs `edit_project`; every other verb `transition`), not
+  only the branches it would take now; a source that does not parse needs
+  nothing (its run fails). A direct `script_run` keeps its exact check of
+  the run planned now. A `script_set` (or an undo or redo restoring one) of
+  a script that a waiting cue's armed chain runs additionally needs every
+  permission the edited source's verbs need that the script's verbs did
+  not, like an armed `cue_list_set`; an edit of a script no armed chain
+  runs is a plain `edit_project` edit. Studio mirrors this: GO and a cue's
+  fire key are disabled with a reason when a script step's verbs need a
+  permission the session lacks.
+- Durability: a cue action may be `{"type": "run_script", "script": <id>}`
+  (schema 55); a project whose cue runs a script it does not hold fails
+  validation (`cue_lists.cues.actions.script`). Restores install the
+  scripts before the cue lists.
+- `freemix-cli` accepts `run_script.<script>` in `cue-list-set` and lists
+  it in `cue-lists`. Studio's Cues panel adds a Script action with a
+  picker of the project's scripts, disables it once a list runs 8, and
+  Edit > Scripts disables Delete for a script a cue runs, each with English
+  and Spanish hover help.
+- Scripts cannot `wait`: a script's actions always land on one frame.
+- 2.59 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

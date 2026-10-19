@@ -36,7 +36,8 @@ pub use animation_presets::AnimationPresetsStatus;
 pub use cue_lists::CueRunUpdate;
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
 pub use scripts::{
-    ScriptCheck, ScriptCheckKind, ScriptRunReport, ScriptRunUpdate, check_script_syntax,
+    ScriptCheck, ScriptCheckKind, ScriptRunReport, ScriptRunUpdate, ScriptVerb,
+    check_script_syntax, script_verbs,
 };
 pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 

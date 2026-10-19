@@ -1298,6 +1298,7 @@ dependencies = [
  "fm-grade",
  "fm-model",
  "fm-protocol",
+ "fm-script",
  "fm-switcher",
  "fm-titles",
  "fm-types",

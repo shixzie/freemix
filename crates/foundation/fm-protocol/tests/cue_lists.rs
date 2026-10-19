@@ -18,7 +18,7 @@ use fm_protocol::{
     WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.59\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.60\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -139,6 +139,7 @@ fn spec() -> CueListSpec {
                         input: input(6),
                         operation: WireCueMediaOperation::Pause,
                     },
+                    WireCueAction::RunScript { script: 4 },
                 ],
             },
         ],
@@ -180,7 +181,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 59));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 60));
 }
 
 #[test]
@@ -200,7 +201,8 @@ fn cue_commands_round_trip_exactly() {
     assert!(line.contains("audio_gain.3.-12500"), "{line}");
     assert!(
         line.contains(
-            "media_restart.6%2Fdelay.1500%2Fmedia_seek.6.0%2Fmedia_play.6%2Fmedia_pause.6"
+            "media_restart.6%2Fdelay.1500%2Fmedia_seek.6.0%2Fmedia_play.6%2Fmedia_pause.6\
+             %2Frun_script.4"
         ),
         "{line}"
     );
@@ -257,6 +259,10 @@ fn cue_commands_are_strict() {
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Edelay.0",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Edelay.3600001",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Edelay.01",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Erun_script.0",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Erun_script.04",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Erun_script",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Erun_script.x",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_play.0",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_play.6.1",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_seek.6",

@@ -3,7 +3,9 @@
 //! starts it, so automation never does what the session could not do
 //! directly. A GO is checked for the whole chain it arms (its waits and
 //! auto-follows run later on the clock); an edit of a list whose cue is
-//! waiting needs what it adds to the armed chain.
+//! waiting needs what it adds to the armed chain. A cue's script step
+//! needs every verb its script holds; an edit of a script an armed chain
+//! runs needs what its new verbs add.
 
 use fm_auth::{AuthorizationDenial, DenialReason};
 use fm_model::{
@@ -43,6 +45,7 @@ const TRANSITION_ONLY: &[CommandClass] = &[CommandClass::Transition];
 const TRANSITION_AND_AUDIO: &[CommandClass] =
     &[CommandClass::Transition, CommandClass::ControlAudio];
 const EDIT_ONLY: &[CommandClass] = &[CommandClass::EditProject];
+const EDIT_AND_TRANSITION: &[CommandClass] = &[CommandClass::EditProject, CommandClass::Transition];
 
 fn granted(classes: &'static [CommandClass]) -> ControlService<Grants> {
     let show = ShowState::new(
@@ -329,6 +332,8 @@ fn each_cue_action_needs_the_class_of_its_direct_command() {
     }
     assert_eq!(cue_action_class(&CueAction::Wait { frames: 1 }), None);
     assert_eq!(cue_action_class(&CueAction::Delay { millis: 1 }), None);
+    // A script step needs the classes of its script's verbs instead.
+    assert_eq!(cue_action_class(&CueAction::RunScript { script: 1 }), None);
 }
 
 /// The regression: a Transition-only session used to change audio by
@@ -619,6 +624,301 @@ fn an_edit_to_an_armed_chain_needs_what_it_adds() {
     );
     assert_denied(
         &submit(&mut control, &session(), "undo-mute", undo),
+        "ControlAudio",
+    );
+}
+
+fn run_step(script: u64) -> WireCueAction {
+    WireCueAction::RunScript { script }
+}
+
+fn wait(frames: u32) -> WireCueAction {
+    WireCueAction::Wait { frames }
+}
+
+fn cue_state(control: &ControlService<Grants>) -> fm_model::CueRunState {
+    control.engine.show().cue_list(7).unwrap().state.clone()
+}
+
+/// Runs the clock through the waiting cue's due frame.
+fn advance(control: &mut ControlService<Grants>, id: &str) -> CommandSubmission {
+    let (list, due) = control.cue_advance_frame().unwrap();
+    let advanced = submit(
+        control,
+        &admin(),
+        id,
+        CommandPayload::CueAdvance { list, frame: due },
+    );
+    while control.frame_cursor() <= due {
+        control.tick(&server_identity()).unwrap();
+    }
+    advanced
+}
+
+/// A cue's script step (Protocol 2.60) may run on a later frame against a
+/// show nobody knows yet, so a GO needs the class of every verb the script
+/// holds, in any branch, not only the branches it would take now.
+#[test]
+fn a_cue_that_runs_a_script_needs_every_verb_the_script_holds() {
+    let mut control = granted(TRANSITION_ONLY);
+    submit(
+        &mut control,
+        &admin(),
+        "script",
+        set_script(1, "if program == 3\n  mute 3\nend\ncut 2"),
+    );
+    submit(
+        &mut control,
+        &admin(),
+        "list",
+        set_list(vec![cue(10, false, vec![run_step(1)])]),
+    );
+    // Run directly, the script only cuts on this show: transition is enough.
+    assert_eq!(
+        control.required_classes(&run_script()).additional(),
+        [CommandClass::Transition]
+    );
+    // A cue running it needs control_audio for the branch not taken now.
+    assert_eq!(
+        control.required_classes(&go(None)).additional(),
+        [CommandClass::Transition, CommandClass::ControlAudio]
+    );
+    assert_denied(
+        &submit(&mut control, &session(), "go", go(None)),
+        "ControlAudio",
+    );
+    assert_eq!(program(&control), input(1));
+
+    let mut control = granted(TRANSITION_AND_AUDIO);
+    submit(
+        &mut control,
+        &admin(),
+        "script",
+        set_script(1, "if program == 3\n  mute 3\nend\ncut 2"),
+    );
+    submit(
+        &mut control,
+        &admin(),
+        "list",
+        set_list(vec![cue(10, false, vec![run_step(1)])]),
+    );
+    let fired = submit(&mut control, &session(), "go", go(None));
+    assert!(fired.is_accepted(), "{:?}", fired.output.result);
+    assert_eq!(program(&control), input(2));
+    assert!(!strip(&control, 3).muted);
+}
+
+/// A script step after a wait runs on its due frame, on the show of that
+/// frame, on the authority the GO checked up front.
+#[test]
+fn a_script_step_after_a_wait_runs_on_the_show_of_its_frame() {
+    let mut control = granted(TRANSITION_AND_AUDIO);
+    submit(
+        &mut control,
+        &admin(),
+        "script",
+        set_script(1, "if program == 2\n  mute 3\nend\ncut 3"),
+    );
+    submit(
+        &mut control,
+        &admin(),
+        "list",
+        set_list(vec![cue(10, false, vec![cut(2), wait(3), run_step(1)])]),
+    );
+    let fired = submit(&mut control, &session(), "go", go(None));
+    assert!(fired.is_accepted(), "{:?}", fired.output.result);
+    assert_eq!(program(&control), input(2));
+    assert!(!strip(&control, 3).muted);
+    let advanced = advance(&mut control, "advance");
+    assert!(advanced.is_accepted(), "{:?}", advanced.output.result);
+    // The script saw the cut to 2 the GO made, so it muted 3.
+    assert!(strip(&control, 3).muted);
+    assert_eq!(program(&control), input(3));
+    let state = cue_state(&control);
+    assert_eq!((state.pending, state.fault), (None, None));
+}
+
+/// A failing script fails its step: a GO is refused whole with the
+/// script's typed reason and nothing of the frame applies; a deferred step
+/// stops its cue with the fault set, nothing of that frame applied.
+#[test]
+fn a_failing_script_fails_its_cue_step_with_a_typed_reason() {
+    let mut control = granted(TRANSITION_ONLY);
+    submit(
+        &mut control,
+        &admin(),
+        "script",
+        set_script(1, "cut 3\npreview 9"),
+    );
+    submit(
+        &mut control,
+        &admin(),
+        "list",
+        set_list(vec![
+            cue(
+                10,
+                false,
+                vec![WireCueAction::Preview { input: wire(3) }, run_step(1)],
+            ),
+            cue(
+                20,
+                false,
+                vec![
+                    cut(2),
+                    wait(2),
+                    WireCueAction::Preview { input: wire(1) },
+                    run_step(1),
+                ],
+            ),
+        ]),
+    );
+    let refused = submit(&mut control, &admin(), "go", go(None));
+    let CommandResult::Rejected {
+        message, reason, ..
+    } = &refused.output.result
+    else {
+        panic!("expected a refusal: {:?}", refused.output.result);
+    };
+    assert_eq!(
+        reason,
+        &Some(fm_protocol::RefusalReason::ScriptFailed {
+            failure: fm_protocol::ScriptFailureKind::Refused,
+            line: 2,
+            column: 1,
+        })
+    );
+    assert!(
+        message.starts_with("cue 10 action 2: script 1 stopped at"),
+        "{message}"
+    );
+    assert_eq!(program(&control), input(1));
+    assert_eq!(control.engine.show().desired_switcher().preview(), input(2));
+    assert_eq!(cue_state(&control).live, None);
+
+    // Deferred: the GO's cut lands, the advance's frame does not.
+    let fired = submit(&mut control, &admin(), "go20", go(Some(20)));
+    assert!(fired.is_accepted(), "{:?}", fired.output.result);
+    assert_eq!(program(&control), input(2));
+    let preview = control.engine.show().desired_switcher().preview();
+    let advanced = advance(&mut control, "advance");
+    assert!(advanced.is_accepted(), "{:?}", advanced.output.result);
+    assert_eq!(program(&control), input(2));
+    assert_eq!(control.engine.show().desired_switcher().preview(), preview);
+    let state = cue_state(&control);
+    assert_eq!(state.pending, None);
+    assert_eq!(state.fault, Some(fm_model::CueFault { cue: 20, action: 3 }));
+}
+
+/// A script step shares its frame's one take of Program.
+#[test]
+fn a_script_step_cannot_take_program_twice_on_its_frame() {
+    let mut control = granted(TRANSITION_ONLY);
+    submit(&mut control, &admin(), "script", set_script(1, "cut 3"));
+    submit(
+        &mut control,
+        &admin(),
+        "list",
+        set_list(vec![cue(10, false, vec![cut(2), run_step(1)])]),
+    );
+    let refused = submit(&mut control, &admin(), "go", go(None));
+    let CommandResult::Rejected { message, .. } = &refused.output.result else {
+        panic!("expected a refusal: {:?}", refused.output.result);
+    };
+    assert!(message.contains("more than once on one frame"), "{message}");
+    assert_eq!(program(&control), input(1));
+}
+
+/// A list may only run scripts the show holds, a script a cue runs cannot
+/// be removed, and an edit of a script an armed chain runs needs what its
+/// new verbs add.
+#[test]
+fn scripts_a_cue_runs_are_held_and_armed_edits_need_what_they_add() {
+    let mut control = granted(EDIT_AND_TRANSITION);
+    let unknown = submit(
+        &mut control,
+        &admin(),
+        "unknown",
+        set_list(vec![cue(10, false, vec![run_step(1)])]),
+    );
+    let CommandResult::Rejected { code, .. } = &unknown.output.result else {
+        panic!("expected a refusal: {:?}", unknown.output.result);
+    };
+    assert_eq!(code, "not_found");
+
+    submit(&mut control, &admin(), "script", set_script(1, "cut 3"));
+    submit(&mut control, &admin(), "other", set_script(2, "cut 3"));
+    let listed = submit(
+        &mut control,
+        &admin(),
+        "list",
+        set_list(vec![cue(10, false, vec![cut(2), wait(30), run_step(1)])]),
+    );
+    assert!(listed.is_accepted(), "{:?}", listed.output.result);
+    let removal = submit(
+        &mut control,
+        &admin(),
+        "remove",
+        CommandPayload::RemoveScript { script: 1 },
+    );
+    let CommandResult::Rejected { code, fields, .. } = &removal.output.result else {
+        panic!("expected a refusal: {:?}", removal.output.result);
+    };
+    assert_eq!(code, "conflict");
+    assert_eq!(fields[0].code, "script_in_use");
+    assert!(control.engine.show().script(1).is_some());
+
+    // Not armed: an edit runs nothing, so it is a plain edit.
+    assert_eq!(
+        control
+            .required_classes(&set_script(1, "cut 3\nmute 3"))
+            .additional(),
+        []
+    );
+    let fired = submit(&mut control, &admin(), "go", go(None));
+    assert!(fired.is_accepted(), "{:?}", fired.output.result);
+    assert!(cue_state(&control).pending.is_some());
+
+    // Armed: adding a mute needs control_audio; staying within the verbs
+    // the GO authorized, or editing a script the chain does not run, is a
+    // plain edit.
+    assert_denied(
+        &submit(
+            &mut control,
+            &session(),
+            "add-mute",
+            set_script(1, "cut 3\nmute 3"),
+        ),
+        "ControlAudio",
+    );
+    let recut = submit(&mut control, &session(), "recut", set_script(1, "cut 1"));
+    assert!(recut.is_accepted(), "{:?}", recut.output.result);
+    let other = submit(
+        &mut control,
+        &session(),
+        "other-mute",
+        set_script(2, "mute 3"),
+    );
+    assert!(other.is_accepted(), "{:?}", other.output.result);
+    // An undo or redo restoring a script the armed chain runs is checked
+    // the same: undoing back to the cut adds only transition, redoing the
+    // mute needs control_audio.
+    let redo_target = submit(
+        &mut control,
+        &admin(),
+        "admin-mute",
+        set_script(1, "mute 3"),
+    );
+    assert!(redo_target.is_accepted(), "{:?}", redo_target.output.result);
+    let undo = CommandPayload::Undo {
+        expected_edit: None,
+    };
+    let undone = submit(&mut control, &session(), "undo", undo);
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    let redo = CommandPayload::Redo {
+        expected_edit: None,
+    };
+    assert_denied(
+        &submit(&mut control, &session(), "redo", redo),
         "ControlAudio",
     );
 }

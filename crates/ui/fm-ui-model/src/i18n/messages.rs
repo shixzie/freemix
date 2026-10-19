@@ -2385,6 +2385,7 @@ messages! {
     ScriptReasonTooLong => t("the script is longer than 4096 bytes or holds control characters"),
     ScriptReasonSyntax => t("fix the syntax error first"),
     ScriptReasonNotSaved => t("the script is not in the project yet"),
+    ScriptReasonRunByCue => t("a cue list runs this script; remove it from every cue first"),
     TabCues => t("Cues"),
     TabCuesHover => t("Operator cue lists: build cues of show actions and fire them in order with GO"),
     ShortcutGroupCues => t("Cue list"),
@@ -2453,6 +2454,8 @@ messages! {
     CueActMediaSeek => t("Media seek"),
     CueActMediaRestart => t("Media restart"),
     CueActDelay => t("Delay"),
+    CueActRunScript => t("Script"),
+    CueParamScriptHover => t("The project script this step runs on its frame: all of its actions or none, and a failed run fails the cue. Firing needs the permission of every action the script holds, in any branch"),
     CueParamMediaHover => t("The media input whose transport this action controls"),
     CueParamSeekHover => t("Source frame to seek to; kept inside the clip's trim"),
     CueParamDelayHover => t("Milliseconds to wait before this cue's remaining actions run; rounded up to whole frames at the show rate"),
@@ -2486,6 +2489,7 @@ messages! {
     CueReasonChainPreview => t("a cue this runs selects Preview, which needs the select_preview permission this session lacks"),
     CueReasonChainAudio => t("a cue this runs changes audio, which needs the control_audio permission this session lacks"),
     CueReasonChainTitle => t("a cue this runs sets title text, which needs the edit_project permission this session lacks"),
+    CueReasonNoScriptsLeft => t("this list already runs the maximum of 8 scripts"),
 
     // Stream destinations (OR-006).
     StreamStartAllKey => t("START ALL"),

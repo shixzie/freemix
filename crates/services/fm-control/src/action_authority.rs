@@ -21,6 +21,17 @@
 //!   will run, so it also needs every class the edited chain runs that the
 //!   chain armed before the edit did not (an undo or redo of such an edit
 //!   too).
+//! - A cue's `run_script` step (Protocol 2.60) runs a script on the frame
+//!   the step runs, which for a step after a wait or in a followed cue is a
+//!   later frame whose show (and so the branches the script takes) is not
+//!   known when the chain is armed. Such a step therefore needs the class of
+//!   every action verb the script's source holds, in any branch
+//!   ([`fm_script::Program::verbs`]): a bound on whatever it asks for when
+//!   it runs. A source that does not parse needs nothing; its run fails.
+//! - An edit of a script (`script_set`, and an undo or redo restoring one)
+//!   that a waiting cue's armed chain runs needs every class the edited
+//!   source's verbs need that the script's verbs did not, like an armed
+//!   list edit. A script a cue runs cannot be removed.
 //!
 //! The other cue controls (standby, back, skip, stop, reset) never perform
 //! an action and need only `transition`.
@@ -29,6 +40,7 @@ use fm_auth::CommandClass;
 use fm_engine::Engine;
 use fm_model::{CueAction, cue_chain_actions};
 use fm_protocol::{CommandPayload, CueOperation};
+use fm_script::Verb;
 
 /// Every command class, in the order a [`ClassSet`] lists them.
 pub const CLASSES: [CommandClass; 6] = [
@@ -97,7 +109,8 @@ impl FromIterator<CommandClass> for ClassSet {
 }
 
 /// The class the direct command equivalent to `action` needs; `None` for a
-/// wait or delay, which performs nothing.
+/// wait or delay, which performs nothing, and for a script step, which
+/// needs the classes of its script's verbs ([`script_classes`]) instead.
 #[must_use]
 pub const fn cue_action_class(action: &CueAction) -> Option<CommandClass> {
     Some(match action {
@@ -122,12 +135,73 @@ pub const fn cue_action_class(action: &CueAction) -> Option<CommandClass> {
         CueAction::TitleText { .. } => CommandClass::EditProject,
         // Strip gain and mute (`input_audio_strip_set`).
         CueAction::AudioGain { .. } | CueAction::AudioMute { .. } => CommandClass::ControlAudio,
-        CueAction::Wait { .. } | CueAction::Delay { .. } => return None,
+        CueAction::Wait { .. } | CueAction::Delay { .. } | CueAction::RunScript { .. } => {
+            return None;
+        }
     })
 }
 
-fn classes<'a>(actions: impl IntoIterator<Item = &'a CueAction>) -> ClassSet {
-    actions.into_iter().filter_map(cue_action_class).collect()
+/// The class the direct command equivalent to a script action of `verb`
+/// needs (the class of its [`CueAction`], see [`cue_action_class`]).
+#[must_use]
+pub const fn verb_class(verb: Verb) -> CommandClass {
+    match verb {
+        Verb::Preview => CommandClass::SelectPreview,
+        Verb::TitleText => CommandClass::EditProject,
+        Verb::Gain | Verb::Mute | Verb::Unmute => CommandClass::ControlAudio,
+        Verb::Cut
+        | Verb::Transition
+        | Verb::Stinger
+        | Verb::Overlay
+        | Verb::OverlayOff
+        | Verb::TitleOn
+        | Verb::TitleOff
+        | Verb::Ftb
+        | Verb::FtbOff
+        | Verb::PlaylistStart
+        | Verb::PlaylistStop
+        | Verb::RecordStart
+        | Verb::RecordStop
+        | Verb::StreamStart
+        | Verb::StreamStop
+        | Verb::Play
+        | Verb::Pause
+        | Verb::Seek
+        | Verb::Restart => CommandClass::Transition,
+    }
+}
+
+fn verb_classes(verbs: impl IntoIterator<Item = Verb>) -> ClassSet {
+    verbs.into_iter().map(verb_class).collect()
+}
+
+/// The classes a cue step running script `script` needs: those of every
+/// verb its source holds, in any branch. Empty for an unknown script (the
+/// step is refused) or a source that does not parse (its run fails).
+pub fn script_classes(engine: &Engine, script: u64) -> ClassSet {
+    verb_classes(engine.script_verbs(script).unwrap_or_default())
+}
+
+fn classes<'a>(engine: &Engine, actions: impl IntoIterator<Item = &'a CueAction>) -> ClassSet {
+    let mut set = ClassSet::default();
+    for action in actions {
+        match action.script() {
+            Some(script) => set.union(script_classes(engine, script)),
+            None => set.extend(cue_action_class(action)),
+        }
+    }
+    set
+}
+
+/// Whether a waiting cue's armed chain runs script `script`.
+fn armed_chain_runs(engine: &Engine, script: u64) -> bool {
+    engine.show().cue_lists().iter().any(|list| {
+        list.state.pending.is_some_and(|pending| {
+            cue_chain_actions(&list.cues, pending.cue, pending.action)
+                .into_iter()
+                .any(|action| action.script() == Some(script))
+        })
+    })
 }
 
 /// The classes of the show actions `payload` performs or arms on `engine`
@@ -136,7 +210,9 @@ fn classes<'a>(actions: impl IntoIterator<Item = &'a CueAction>) -> ClassSet {
 /// before anything runs (an unknown list, script, or cue).
 pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
     match payload {
-        CommandPayload::RunScript { script } => classes(&engine.script_run_actions(*script)),
+        CommandPayload::RunScript { script } => {
+            classes(engine, &engine.script_run_actions(*script))
+        }
         CommandPayload::CueControl {
             list,
             operation: CueOperation::Go { cue },
@@ -145,7 +221,7 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             .cue_list(*list)
             .and_then(|found| cue.or(found.state.standby).map(|cue| (found, cue)))
             .map_or_else(ClassSet::default, |(found, cue)| {
-                classes(cue_chain_actions(&found.cues, cue, 0))
+                classes(engine, cue_chain_actions(&found.cues, cue, 0))
             }),
         CommandPayload::SetCueList { list, spec } => {
             let Some(found) = engine.show().cue_list(*list) else {
@@ -154,9 +230,22 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             let Some(pending) = found.state.pending else {
                 return ClassSet::default();
             };
-            let armed = classes(cue_chain_actions(&found.cues, pending.cue, pending.action));
+            let armed = classes(
+                engine,
+                cue_chain_actions(&found.cues, pending.cue, pending.action),
+            );
             let edited: Vec<fm_model::Cue> = spec.cues.iter().map(crate::cue::domain_cue).collect();
-            classes(cue_chain_actions(&edited, pending.cue, pending.action)).without(armed)
+            classes(
+                engine,
+                cue_chain_actions(&edited, pending.cue, pending.action),
+            )
+            .without(armed)
+        }
+        CommandPayload::SetScript { script, spec } if armed_chain_runs(engine, *script) => {
+            let edited = fm_script::parse(&spec.source)
+                .map(|program| program.verbs())
+                .unwrap_or_default();
+            verb_classes(edited).without(script_classes(engine, *script))
         }
         _ => ClassSet::default(),
     }

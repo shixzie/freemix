@@ -20,12 +20,13 @@
 use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, Vec2};
 use fm_protocol::{
     AutoTransitionKind, CueListSpec, CueListStatus, CueOperation, CueRunStatus, MAX_CUE_ACTIONS,
-    MAX_CUE_DELAY_MS, MAX_CUE_LISTS, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
-    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS, MAX_CUE_TRANSITION_FRAMES,
+    MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus, TransitionFavoriteEffect, WireCue, WireCueAction,
+    WireCueMediaOperation, WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireStreamTargetId,
 };
 use fm_types::InputId;
-use fm_ui_model::{ClientView, ProjectState};
+use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
 
 use crate::edit_history::stinger_edit_lock_reason;
 use crate::gating::{Capability, Hint, unavailable_reason};
@@ -124,7 +125,8 @@ pub fn list_edit_block(state: &StudioUiState, list: &CueListStatus) -> Option<&'
 }
 
 /// The permission an action needs beyond the `transition` every cue
-/// control needs: the permission of the equivalent direct command.
+/// control needs: the permission of the equivalent direct command. A
+/// script step needs those of its script's verbs ([`verb_capability`]).
 const fn action_capability(action: &WireCueAction) -> Option<Capability> {
     match action {
         WireCueAction::Preview { .. } => Some(Capability::SelectPreview),
@@ -136,21 +138,50 @@ const fn action_capability(action: &WireCueAction) -> Option<Capability> {
     }
 }
 
+/// The permission a script action of `verb` needs beyond `transition`.
+const fn verb_capability(verb: ScriptVerb) -> Option<Capability> {
+    match verb {
+        ScriptVerb::Preview => Some(Capability::SelectPreview),
+        ScriptVerb::Gain | ScriptVerb::Mute | ScriptVerb::Unmute => Some(Capability::Audio),
+        ScriptVerb::TitleText => Some(Capability::EditProject),
+        _ => None,
+    }
+}
+
 /// Why this session may not fire cue `cue` of `list`, if it may not. A GO
 /// runs the cue and every cue it auto-follows into, and the authority
 /// checks that whole chain up front: each action needs the permission its
-/// equivalent direct command needs.
+/// equivalent direct command needs, and a script step (of `scripts`) the
+/// permission of every action its script holds, in any branch.
 #[must_use]
-pub fn chain_block(state: &StudioUiState, list: &CueListStatus, cue: u64) -> Option<&'static str> {
+pub fn chain_block(
+    state: &StudioUiState,
+    scripts: &[ScriptStatus],
+    list: &CueListStatus,
+    cue: u64,
+) -> Option<&'static str> {
     let start = list.spec.cues.iter().position(|found| found.id == cue)?;
     let (mut preview, mut audio, mut title) = (false, false, false);
     for found in &list.spec.cues[start..] {
         for action in &found.actions {
-            match action_capability(action) {
-                Some(Capability::SelectPreview) => preview = true,
-                Some(Capability::Audio) => audio = true,
-                Some(Capability::EditProject) => title = true,
-                Some(Capability::Transition) | None => {}
+            let needs: Vec<Option<Capability>> = match action {
+                WireCueAction::RunScript { script } => scripts
+                    .iter()
+                    .find(|candidate| candidate.id == *script)
+                    .map(|found| script_verbs(&found.spec.source))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(verb_capability)
+                    .collect(),
+                action => vec![action_capability(action)],
+            };
+            for need in needs {
+                match need {
+                    Some(Capability::SelectPreview) => preview = true,
+                    Some(Capability::Audio) => audio = true,
+                    Some(Capability::EditProject) => title = true,
+                    Some(Capability::Transition) | None => {}
+                }
             }
         }
         if !found.auto_follow {
@@ -272,10 +303,11 @@ pub enum ActionKind {
     MediaRestart,
     Wait,
     Delay,
+    RunScript,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Preview,
         Self::Take,
         Self::OverlayOn,
@@ -296,6 +328,7 @@ impl ActionKind {
         Self::MediaRestart,
         Self::Wait,
         Self::Delay,
+        Self::RunScript,
     ];
 
     #[must_use]
@@ -323,6 +356,7 @@ impl ActionKind {
             },
             WireCueAction::Wait { .. } => Self::Wait,
             WireCueAction::Delay { .. } => Self::Delay,
+            WireCueAction::RunScript { .. } => Self::RunScript,
         }
     }
 
@@ -350,11 +384,13 @@ impl ActionKind {
             Self::MediaRestart => Msg::CueActMediaRestart.en(),
             Self::Wait => Msg::CueActWait.en(),
             Self::Delay => Msg::CueActDelay.en(),
+            Self::RunScript => Msg::CueActRunScript.en(),
         }
     }
 
     /// A fresh action of this kind naming the show's first input, title,
-    /// field, or stream target, or `None` when the show has none to name.
+    /// field, stream target, or script, or `None` when the show has none to
+    /// name.
     #[must_use]
     pub fn default_action(
         self,
@@ -431,6 +467,9 @@ impl ActionKind {
             Self::MediaRestart => transport(WireCueMediaOperation::Restart)?,
             Self::Wait => WireCueAction::Wait { frames: 25 },
             Self::Delay => WireCueAction::Delay { millis: 1_000 },
+            Self::RunScript => WireCueAction::RunScript {
+                script: project.scripts().first()?.id,
+            },
         })
     }
 }
@@ -633,7 +672,7 @@ impl CuePanel {
             control.or_else(|| {
                 list.state
                     .standby
-                    .and_then(|standby| chain_block(state, &list, standby))
+                    .and_then(|standby| chain_block(state, project.scripts(), &list, standby))
             }),
         );
         let standby_name = list
@@ -730,7 +769,19 @@ impl CuePanel {
         if draft.spec.cues.is_empty() {
             ui.label(caption(l.text(Msg::CueListEmpty)));
         }
-        let names = Names { l, view, project };
+        let script_steps = draft
+            .spec
+            .cues
+            .iter()
+            .flat_map(|cue| &cue.actions)
+            .filter(|action| matches!(action, WireCueAction::RunScript { .. }))
+            .count();
+        let names = Names {
+            l,
+            view,
+            project,
+            scripts_full: script_steps >= MAX_CUE_LIST_SCRIPT_STEPS,
+        };
         let mut edit_row = None;
         let conflicts = take_conflicts(&draft.spec.cues);
         for index in 0..draft.spec.cues.len() {
@@ -750,7 +801,7 @@ impl CuePanel {
                         .map(|cue| (cue.id, cue.name.clone()))
                 });
             // Firing runs the saved cue and every cue it follows into.
-            let fire = control.or_else(|| chain_block(state, &list, id));
+            let fire = control.or_else(|| chain_block(state, project.scripts(), &list, id));
             let row = draw_cue_row(
                 ui,
                 &names,
@@ -805,6 +856,8 @@ struct Names<'a> {
     l: Locale,
     view: &'a ClientView,
     project: &'a ProjectState,
+    /// Whether the list already runs its maximum of scripts.
+    scripts_full: bool,
 }
 
 impl Names<'_> {
@@ -1154,7 +1207,17 @@ fn draw_actions(
                             .selected_text(RichText::new(l.tr(current.label())).size(legible(11.0)))
                             .show_ui(ui, |ui| {
                                 for kind in ActionKind::ALL {
-                                    let fresh = kind.default_action(names.view, names.project);
+                                    let full = kind == ActionKind::RunScript
+                                        && current != ActionKind::RunScript
+                                        && names.scripts_full;
+                                    let fresh = (!full)
+                                        .then(|| kind.default_action(names.view, names.project))
+                                        .flatten();
+                                    let reason = if full {
+                                        Msg::CueReasonNoScriptsLeft
+                                    } else {
+                                        Msg::CueReasonNothingToName
+                                    };
                                     let response = ui
                                         .add_enabled(
                                             fresh.is_some(),
@@ -1165,7 +1228,7 @@ fn draw_actions(
                                         )
                                         .hint(
                                             l.text(Msg::CueActionKindHover),
-                                            edit.unwrap_or(Msg::CueReasonNothingToName.en()),
+                                            edit.unwrap_or(reason.en()),
                                         );
                                     if response.clicked()
                                         && kind != current
@@ -1671,6 +1734,38 @@ fn draw_params(
                 enabled,
             )
         }
+        WireCueAction::RunScript { script } => {
+            let scripts = names.project.scripts();
+            let hover = l.text(Msg::CueParamScriptHover);
+            let current = scripts
+                .iter()
+                .find(|found| found.id == *script)
+                .map_or_else(|| script.to_string(), |found| found.spec.name.clone());
+            let mut change = None;
+            let width = fit_width(ui, 110.0);
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("script")
+                    .width(width)
+                    .truncate()
+                    .selected_text(RichText::new(current).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for found in scripts {
+                            if ui
+                                .selectable_label(found.id == *script, &found.spec.name)
+                                .on_hover_text(hover)
+                                .clicked()
+                                && found.id != *script
+                            {
+                                *script = found.id;
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    })
+                    .response
+                    .hint(hover, edit.unwrap_or(""));
+            });
+            change
+        }
     }
 }
 
@@ -1878,35 +1973,71 @@ mod tests {
             .with_switcher_permissions(false, true);
 
         // Cue 10 follows into cue 20's mute.
-        assert_eq!(chain_block(&operator, &status, 10), None);
+        assert_eq!(chain_block(&operator, &[], &status, 10), None);
         assert_eq!(
-            chain_block(&transition_only, &status, 10),
+            chain_block(&transition_only, &[], &status, 10),
             Some(Msg::CueReasonChainAudio.en())
         );
         assert_eq!(
-            chain_block(&transition_only, &status, 20),
+            chain_block(&transition_only, &[], &status, 20),
             Some(Msg::CueReasonChainAudio.en())
         );
         // Cue 30 selects Preview and sets title text.
         assert_eq!(
-            chain_block(&transition_only, &status, 30),
+            chain_block(&transition_only, &[], &status, 30),
             Some(Msg::CueReasonChainPreview.en())
         );
         assert_eq!(
-            chain_block(&operator, &status, 30),
+            chain_block(&operator, &[], &status, 30),
             Some(Msg::CueReasonChainTitle.en())
         );
         let admin = operator.clone().with_edit_project_permission(true);
-        assert_eq!(chain_block(&admin, &status, 30), None);
+        assert_eq!(chain_block(&admin, &[], &status, 30), None);
         // Cue 20 does not follow on into cue 30.
         status.spec.cues[2].actions.clear();
-        assert_eq!(chain_block(&operator, &status, 20), None);
+        assert_eq!(chain_block(&operator, &[], &status, 20), None);
+        // A script step needs what every verb of its script needs, in any
+        // branch (Protocol 2.60).
+        let script = |source: &str| fm_protocol::ScriptStatus {
+            id: 5,
+            spec: fm_protocol::ScriptSpec {
+                name: "Open".into(),
+                source: source.into(),
+            },
+        };
+        status.spec.cues[2].actions = vec![WireCueAction::RunScript { script: 5 }];
+        let muting = [script("if program == 9\n  mute 2\nend\ncut 1\n")];
+        assert_eq!(
+            chain_block(&transition_only, &muting, &status, 30),
+            Some(Msg::CueReasonChainAudio.en())
+        );
+        assert_eq!(chain_block(&operator, &muting, &status, 30), None);
+        let titling = [script("title_text 3, 1, \"x\"\n")];
+        assert_eq!(
+            chain_block(&operator, &titling, &status, 30),
+            Some(Msg::CueReasonChainTitle.en())
+        );
+        assert_eq!(
+            chain_block(&transition_only, &[script("cut 1\n")], &status, 30),
+            None
+        );
+        // An unknown script or a syntax error needs nothing more: the run
+        // fails at the authority.
+        assert_eq!(chain_block(&transition_only, &[], &status, 30), None);
+        assert_eq!(
+            chain_block(&transition_only, &[script("mute 1\nif\n")], &status, 30),
+            None
+        );
         // Every reason is translated.
         let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
         for msg in [
             Msg::CueReasonChainPreview,
             Msg::CueReasonChainAudio,
             Msg::CueReasonChainTitle,
+            Msg::CueReasonNoScriptsLeft,
+            Msg::CueParamScriptHover,
+            Msg::CueActRunScript,
+            Msg::ScriptReasonRunByCue,
         ] {
             assert_ne!(spanish.text(msg), msg.en());
         }
@@ -1943,6 +2074,10 @@ mod tests {
         assert_eq!(
             ActionKind::of(&WireCueAction::Delay { millis: 40 }),
             ActionKind::Delay
+        );
+        assert_eq!(
+            ActionKind::of(&WireCueAction::RunScript { script: 2 }),
+            ActionKind::RunScript
         );
         let clip = WireInputId::new(core::num::NonZeroU128::new(4).unwrap());
         for (operation, kind) in [
