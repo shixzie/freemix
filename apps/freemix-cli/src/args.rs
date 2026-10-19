@@ -1587,9 +1587,12 @@ pub enum ScriptCommand {
     Run {
         script: ScriptRef,
     },
-    /// Stops the run paused at a wait, or clears a failed run's report
-    /// (`script_stop`, Protocol 2.62).
-    Stop,
+    /// Stops run `run` paused at a wait, or clears its failed run's
+    /// report; with no `run`, stops every run and clears every report
+    /// (`script_stop`, Protocol 2.62; `--run` since 2.69).
+    Stop {
+        run: Option<u64>,
+    },
 }
 
 /// A script named on the command line: its id, or else its exact name.
@@ -6185,8 +6188,9 @@ fn unescape(value: &str) -> String {
 /// * `script-remove <script>`;
 /// * `script-run <script>`, where the script is its id or, when that is not
 ///   a nonzero number, its exact name;
-/// * `script-stop`: stops the run paused at a wait, or clears a failed
-///   run's report (Protocol 2.62).
+/// * `script-stop [--run <run>]`: stops run `<run>` paused at a wait, or
+///   clears its failed run's report; without `--run`, stops every run and
+///   clears every report (Protocol 2.62; `--run` since 2.69).
 fn parse_script(
     command: &str,
     arguments: impl Iterator<Item = String>,
@@ -6225,7 +6229,20 @@ fn parse_script(
         "script-run" => ScriptCommand::Run {
             script: ScriptRef::parse(required(&mut arguments, "script")?),
         },
-        "script-stop" => ScriptCommand::Stop,
+        "script-stop" => ScriptCommand::Stop {
+            run: if arguments.next_if(|argument| argument == "--run").is_some() {
+                let run = number(&required(&mut arguments, "run")?, "run")?;
+                if run == 0 {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "run",
+                        value: "0".to_owned(),
+                    });
+                }
+                Some(run)
+            } else {
+                None
+            },
+        },
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
     };
     let (key, expected_revision) = command_options(arguments)?;

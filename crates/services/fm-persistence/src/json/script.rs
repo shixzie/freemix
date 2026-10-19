@@ -9,20 +9,22 @@
 //! The source is stored verbatim (it may hold a syntax error); bounds and
 //! duplicate ids are reported by project validation.
 //!
-//! The show's script run slot follows (schema 56): the run waiting at a
-//! `wait` with its interpreter state, or the fault the last run ended with.
+//! The show's script runs follow (schema 56, several since schema 60): the
+//! last run id issued, the runs waiting at a `wait` with their interpreter
+//! state, and the fault each script's last run ended with, both in
+//! ascending run order.
 //!
 //! ```text
-//! "script_run": {"running": {"script": 1, "started_frame": 40,
-//!   "due_frame": 65, "path": [{"statement": 2, "branch": 1},
-//!   {"statement": 0, "branch": 0}], "variables": [{"name": "n", "int": 3},
-//!   {"name": "label", "string": "Live"}, {"name": "on", "bool": true}],
-//!   "instructions": 18, "actions": 2, "waits": 1, "wait_frames": 25},
-//!  "fault": null}
+//! "script_runs": {"last_run": 3, "runs": [{"run": 2, "script": 1,
+//!   "started_frame": 40, "due_frame": 65, "path": [{"statement": 2,
+//!   "branch": 1}, {"statement": 0, "branch": 0}], "variables": [{"name":
+//!   "n", "int": 3}, {"name": "label", "string": "Live"}, {"name": "on",
+//!   "bool": true}], "instructions": 18, "actions": 2, "waits": 1,
+//!   "wait_frames": 25}], "faults": []}
 //! ```
 //!
-//! A fault is `{"script", "frame", "failure", "line", "column", "reason",
-//! "message"}`, `failure` one of `syntax`, `runtime`, `refused`,
+//! A fault is `{"run", "script", "frame", "failure", "line", "column",
+//! "reason", "message"}`, `failure` one of `syntax`, `runtime`, `refused`,
 //! `instructions`, `actions`, `variables`, `string_bytes`, `waits`, and
 //! `wait_frames`. `reason` and `message` (schema 57) say what the run was
 //! refused with ([`fm_command::FaultDetail`]): the refused action's typed
@@ -95,32 +97,41 @@ fn parse_failure(token: &str) -> Result<FailureKind, DecodeError> {
     })
 }
 
-/// Writes `,\n    "script_run": {...}` (schema 56).
+/// Writes `,\n    "script_runs": {...}` (schema 60).
 pub(crate) fn write_script_run(output: &mut String, state: &ScriptRunState) {
-    output.push_str(",\n    \"script_run\": {\"running\": ");
-    match &state.running {
-        None => output.push_str("null"),
-        Some(run) => write_run(output, run),
-    }
-    output.push_str(", \"fault\": ");
-    match &state.fault {
-        None => output.push_str("null"),
-        Some(fault) => {
-            write!(
-                output,
-                "{{\"script\": {}, \"frame\": {}, \"failure\": \"{}\", \"line\": {}, \"column\": {}",
-                fault.script,
-                fault.frame,
-                failure_token(fault.failure),
-                fault.at.line,
-                fault.at.column
-            )
-            .expect("writing to a string cannot fail");
-            write_fault_detail(output, &fault.detail);
-            output.push('}');
+    write!(
+        output,
+        ",\n    \"script_runs\": {{\"last_run\": {}, \"runs\": [",
+        state.last_run
+    )
+    .expect("writing to a string cannot fail");
+    for (index, run) in state.runs.iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
         }
+        write_run(output, run);
     }
-    output.push('}');
+    output.push_str("], \"faults\": [");
+    for (index, fault) in state.faults.iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(
+            output,
+            "{{\"run\": {}, \"script\": {}, \"frame\": {}, \"failure\": \"{}\", \"line\": {}, \
+             \"column\": {}",
+            fault.run,
+            fault.script,
+            fault.frame,
+            failure_token(fault.failure),
+            fault.at.line,
+            fault.at.column
+        )
+        .expect("writing to a string cannot fail");
+        write_fault_detail(output, &fault.detail);
+        output.push('}');
+    }
+    output.push_str("]}");
 }
 
 /// Writes `, "reason": <token or null>, "message": "<text>"` (schema 57).
@@ -162,8 +173,8 @@ pub(crate) fn parse_fault_detail(object: &mut Object) -> Result<FaultDetail, Dec
 fn write_run(output: &mut String, run: &ScriptRun) {
     write!(
         output,
-        "{{\"script\": {}, \"started_frame\": {}, \"due_frame\": {}, \"path\": [",
-        run.script, run.started_frame, run.due_frame
+        "{{\"run\": {}, \"script\": {}, \"started_frame\": {}, \"due_frame\": {}, \"path\": [",
+        run.run, run.script, run.started_frame, run.due_frame
     )
     .expect("writing to a string cannot fail");
     for (index, point) in run.state.path.iter().enumerate() {
@@ -206,13 +217,15 @@ fn write_run(output: &mut String, run: &ScriptRun) {
     .expect("writing to a string cannot fail");
 }
 
-/// Parses `"script_run"` from the project object (schema 56).
+/// Parses `"script_runs"` from the project object (schema 60).
 pub(crate) fn parse_script_run(object: &mut Object) -> Result<ScriptRunState, DecodeError> {
-    let mut object = Object::new(object.take("script_run")?, "script run")?;
-    let running = parse_optional(object.take("running")?, parse_run)?;
-    let fault = parse_optional(object.take("fault")?, |value| {
+    let mut object = Object::new(object.take("script_runs")?, "script runs")?;
+    let last_run = object.u64("last_run")?;
+    let runs = parse_array(object.take("runs")?, "script runs", parse_run)?;
+    let faults = parse_array(object.take("faults")?, "script faults", |value| {
         let mut fault = Object::new(value, "script fault")?;
         let parsed = ScriptFault {
+            run: fault.u64("run")?,
             script: fault.u64("script")?,
             frame: fault.u64("frame")?,
             failure: parse_failure(&fault.string("failure")?)?,
@@ -223,11 +236,16 @@ pub(crate) fn parse_script_run(object: &mut Object) -> Result<ScriptRunState, De
         Ok(parsed)
     })?;
     object.finish()?;
-    Ok(ScriptRunState { running, fault })
+    Ok(ScriptRunState {
+        last_run,
+        runs,
+        faults,
+    })
 }
 
 fn parse_run(value: Value) -> Result<ScriptRun, DecodeError> {
     let mut object = Object::new(value, "script running")?;
+    let run = object.u64("run")?;
     let script = object.u64("script")?;
     let started_frame = object.u64("started_frame")?;
     let due_frame = object.u64("due_frame")?;
@@ -268,6 +286,7 @@ fn parse_run(value: Value) -> Result<ScriptRun, DecodeError> {
     };
     object.finish()?;
     Ok(ScriptRun {
+        run,
         script,
         started_frame,
         due_frame,

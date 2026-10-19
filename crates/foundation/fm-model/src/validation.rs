@@ -331,8 +331,8 @@ fn validate_scripts(project: &Project, errors: &mut Vec<ValidationError>) {
     .is_err()
     {
         errors.push(ValidationError {
-            entity: project.script_run().script().map(EntityRef::Script),
-            field: "script_run",
+            entity: None,
+            field: "script_runs",
             kind: ValidationErrorKind::OutOfRange,
         });
     }

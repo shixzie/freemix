@@ -2525,7 +2525,7 @@ pub(crate) fn script_payload(
         } => CommandPayload::RunScript {
             script: resolve(&name)?,
         },
-        ScriptCommand::Stop => CommandPayload::StopScript,
+        ScriptCommand::Stop { run } => CommandPayload::StopScript { run },
     })
 }
 
@@ -2597,8 +2597,8 @@ fn script(
 /// one wait of a list (each list holds at most
 /// [`fm_model::MAX_CUE_LIST_ACTIONS`]), a list's armed GO (at most one per
 /// list), or a script part (at most [`fm_model::MAX_SCRIPT_WAITS`] per
-/// run), and nothing a cue or a script step runs starts another waiting
-/// run. A clock beyond that bound is refused instead of ticking for ever.
+/// run, at most [`fm_model::MAX_SCRIPT_RUNS`] runs, Protocol 2.69), and
+/// nothing a cue or a script step runs starts another waiting run. A clock beyond that bound is refused instead of ticking for ever.
 fn run_cue_clock(engine: &mut Engine) -> AppResult<Vec<CueScriptRan>> {
     let rate = engine.frame_rate();
     let longest_wait = u64::from(
@@ -2610,7 +2610,9 @@ fn run_cue_clock(engine: &mut Engine) -> AppResult<Vec<CueScriptRan>> {
     let max_advances =
         u64::try_from(fm_model::MAX_CUE_LISTS * (fm_model::MAX_CUE_LIST_ACTIONS + 1))
             .unwrap_or(u64::MAX)
-            .saturating_add(u64::from(fm_model::MAX_SCRIPT_WAITS));
+            .saturating_add(
+                u64::from(fm_model::MAX_SCRIPT_WAITS) * fm_model::MAX_SCRIPT_RUNS as u64,
+            );
     let mut advances = 0_u64;
     let mut cue_scripts = Vec::new();
     while let Some((list, due)) = engine.cue_advance_frame() {
@@ -5976,8 +5978,8 @@ Usage:
   freemix-cli remote-script-remove <127.0.0.1:port> <script> [--key <key>] [--expect <revision>]
   freemix-cli script-run <project.freemix> <script|name> [--key <key>] [--expect <revision>]
   freemix-cli remote-script-run <127.0.0.1:port> <script|name> [--key <key>] [--expect <revision>]
-  freemix-cli script-stop <project.freemix> [--key <key>] [--expect <revision>]
-  freemix-cli remote-script-stop <127.0.0.1:port> [--key <key>] [--expect <revision>]
+  freemix-cli script-stop <project.freemix> [--run <run>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-script-stop <127.0.0.1:port> [--run <run>] [--key <key>] [--expect <revision>]
   freemix-cli remote-undo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-redo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-lock <127.0.0.1:port> <on|off> [--input <input>] [--key <key>] [--expect <revision>]

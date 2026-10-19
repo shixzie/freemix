@@ -776,6 +776,12 @@ pub enum DurableChange {
         frame: u64,
         run: fm_protocol::ScriptRunStatus,
     },
+    /// Every script run was stopped and every fault cleared on `frame`
+    /// (Protocol 2.69); `scripts` are idle now.
+    ScriptRunsStopped {
+        frame: u64,
+        scripts: Vec<u64>,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -1022,6 +1028,9 @@ impl DurableProjectEvent {
             EventPayload::ScriptRunChanged { script, frame, run } => {
                 DurableChange::ScriptRunChanged { script, frame, run }
             }
+            EventPayload::ScriptRunsStopped { frame, scripts } => {
+                DurableChange::ScriptRunsStopped { frame, scripts }
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -1122,9 +1131,9 @@ pub struct ProjectState {
     /// The last accepted run of each script since this snapshot, direct
     /// or by a cue's script step (Protocol 2.61), the latest last.
     script_runs: Vec<ScriptRunReport>,
-    /// The one script whose run waits or faulted, with that state
-    /// (Protocol 2.62); every other script is idle.
-    active_script_run: Option<(u64, fm_protocol::ScriptRunStatus)>,
+    /// Every script whose run waits or faulted, with that state (Protocol
+    /// 2.62; several since 2.69); every other script is idle.
+    script_run_states: BTreeMap<u64, fm_protocol::ScriptRunStatus>,
     /// Every input's non-default lifecycle (Protocol 2.38).
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -1328,17 +1337,23 @@ impl ProjectState {
     /// next part, faulted, or idle.
     #[must_use]
     pub fn script_run_status(&self, script: u64) -> fm_protocol::ScriptRunStatus {
-        self.active_script_run
-            .as_ref()
-            .filter(|(found, _)| *found == script)
-            .map_or(fm_protocol::ScriptRunStatus::Idle, |(_, run)| run.clone())
+        self.script_run_states
+            .get(&script)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    /// Returns the one script whose run waits or faulted, with its state
-    /// (Protocol 2.62); `None` while every script is idle.
+    /// Returns every script whose run waits or faulted, with its state, in
+    /// run order (Protocol 2.69); empty while every script is idle.
     #[must_use]
-    pub fn active_script_run(&self) -> Option<(u64, fm_protocol::ScriptRunStatus)> {
-        self.active_script_run.clone()
+    pub fn active_script_runs(&self) -> Vec<(u64, fm_protocol::ScriptRunStatus)> {
+        let mut runs: Vec<_> = self
+            .script_run_states
+            .iter()
+            .map(|(script, run)| (*script, run.clone()))
+            .collect();
+        runs.sort_by_key(|(_, run)| scripts::run_id(run));
+        runs
     }
 
     /// Returns the last accepted run of script `script` replicated since
@@ -2775,7 +2790,7 @@ impl ClientModel {
             scripts: Vec::new(),
             script_states_pending: snapshot.script_states,
             script_runs: Vec::new(),
-            active_script_run: None,
+            script_run_states: BTreeMap::new(),
             input_lifecycle,
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
@@ -3151,10 +3166,25 @@ impl ClientModel {
         }
         scripts::validate_script(&message.script)?;
         if message.run != fm_protocol::ScriptRunStatus::Idle {
-            if state.active_script_run.is_some() {
+            // Run ids are unique, and at most MAX_SCRIPT_RUNS runs wait.
+            let id = scripts::run_id(&message.run);
+            let waiting = state
+                .script_run_states
+                .values()
+                .filter(|run| matches!(run, fm_protocol::ScriptRunStatus::Waiting { .. }))
+                .count();
+            if state
+                .script_run_states
+                .values()
+                .any(|run| scripts::run_id(run) == id)
+                || (matches!(message.run, fm_protocol::ScriptRunStatus::Waiting { .. })
+                    && waiting >= fm_protocol::MAX_SCRIPT_RUNS)
+            {
                 return Err(ModelError::ScriptStateMismatch);
             }
-            state.active_script_run = Some((message.script.id, message.run));
+            state
+                .script_run_states
+                .insert(message.script.id, message.run);
         }
         state.scripts.push(message.script);
         state.script_states_pending -= 1;
@@ -4140,6 +4170,15 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidScript(*script))
             };
         }
+        DurableChange::ScriptRunsStopped { scripts, .. } => {
+            return match scripts
+                .iter()
+                .find(|script| state.script(**script).is_none())
+            {
+                Some(script) => Err(ModelError::InvalidScript(*script)),
+                None => Ok(()),
+            };
+        }
         DurableChange::ScriptRan(update) => {
             scripts::validate_run(update, state)?;
             (
@@ -4697,33 +4736,24 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::ScriptChanged(script) => {
             // An accepted edit clears the edited script's fault, whose line
             // named the old source (Protocol 2.62).
-            if state
-                .active_script_run
-                .as_ref()
-                .is_some_and(|(found, run)| {
-                    *found == script.id
-                        && matches!(run, fm_protocol::ScriptRunStatus::Faulted { .. })
-                })
-            {
-                state.active_script_run = None;
+            if matches!(
+                state.script_run_states.get(&script.id),
+                Some(fm_protocol::ScriptRunStatus::Faulted { .. })
+            ) {
+                state.script_run_states.remove(&script.id);
             }
             scripts::apply_script(state, *script);
         }
         DurableChange::ScriptRemoved { script } => {
             state.scripts.retain(|candidate| candidate.id != script);
             state.script_runs.retain(|run| run.script != script);
-            if state
-                .active_script_run
-                .as_ref()
-                .is_some_and(|(found, _)| *found == script)
-            {
-                state.active_script_run = None;
-            }
+            state.script_run_states.remove(&script);
         }
         DurableChange::ScriptRan(update) => scripts::apply_run(state, *update),
         DurableChange::ScriptRunChanged { script, run, .. } => {
             scripts::set_run_status(state, script, run);
         }
+        DurableChange::ScriptRunsStopped { .. } => state.script_run_states.clear(),
         DurableChange::GradeChanged(change) => state.grading.apply(change),
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TransitionFavoriteChanged { slot, favorite } => {

@@ -6422,8 +6422,8 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.68.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 68));
+    // The previous protocol is refused; the current one is 2.69.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 69));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
         protocol: ProtocolVersion::new(2, 67),
@@ -6442,7 +6442,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 68)
+        ProtocolVersion::new(2, 69)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8612,13 +8612,15 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     assert_eq!(
         first.run,
         ScriptRunStatus::Waiting {
+            run: 1,
             started_frame: first.frame,
             due_frame: due,
             waits: 1,
             wait_frames: 10,
+            line: 2,
         }
     );
-    // One run at a time.
+    // One run of a script at a time.
     admin.send(&command(
         "again",
         "again-key",
@@ -8640,10 +8642,12 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     );
     assert_eq!((second.frame, second.program), (due, input(1)));
     let waiting = ScriptRunStatus::Waiting {
+        run: 1,
         started_frame: first.frame,
         due_frame: due + 5000,
         waits: 2,
         wait_frames: 5010,
+        line: 4,
     };
     assert_eq!(second.run, waiting);
     let (late, scripts) = script_sync(&daemon);
@@ -8667,7 +8671,11 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
         .unwrap();
     admin.handshake_as(Role::Admin, None);
     admin.receive_snapshot();
-    admin.send(&command("stop", "stop-key", CommandPayload::StopScript));
+    admin.send(&command(
+        "stop",
+        "stop-key",
+        CommandPayload::StopScript { run: Some(1) },
+    ));
     assert_eq!(accepted_revision(&mut admin, "stop"), 4);
     match durable_event_at(&mut admin, 4).payload {
         EventPayload::ScriptRunChanged { script, run, .. } => {
@@ -8678,7 +8686,7 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     admin.send(&command(
         "stop-again",
         "stop-again-key",
-        CommandPayload::StopScript,
+        CommandPayload::StopScript { run: None },
     ));
     assert!(matches!(
         admin.next_result(),
@@ -8698,8 +8706,196 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     let stored = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(
         stored.project().script_run(),
-        &fm_model::ScriptRunState::default()
+        &fm_model::ScriptRunState {
+            last_run: 1,
+            ..fm_model::ScriptRunState::default()
+        }
     );
+}
+
+/// Protocol 2.69, end to end through the simulated daemon: two scripts'
+/// runs wait at once, each with its own id; the clock resumes their parts
+/// interleaved, each on its own due frame; a late joiner reads both runs;
+/// a SIGKILL and journal replay restore both exactly (the same ids, due
+/// frames, and wait lines); a stop of one run leaves the other; a stop of
+/// every run idles the rest with `script_runs_stopped`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn two_waiting_scripts_interleave_replay_and_stop_one_or_all() {
+    use fm_protocol::{ScriptRunStatus, ScriptSpec};
+
+    fn ran_event(client: &mut Client, revision: u64) -> fm_protocol::ScriptRunChange {
+        match durable_event_at(client, revision).payload {
+            EventPayload::ScriptRan(change) => *change,
+            other => panic!("expected script_ran at {revision}, got {other:?}"),
+        }
+    }
+
+    let directory = TestDirectory::new("script-concurrent");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    for (id, name, source) in [
+        (1, "Timer", "cut 2\nwait 30\ncut 1\nwait 5000\ncut 2\n"),
+        (2, "Score", "wait 5\nmute 1\nwait 6000\nmute 2\n"),
+    ] {
+        admin.send(&command(
+            &format!("set-{id}"),
+            &format!("set-{id}-key"),
+            CommandPayload::SetScript {
+                script: id,
+                spec: Box::new(ScriptSpec {
+                    name: name.into(),
+                    source: source.into(),
+                }),
+            },
+        ));
+        assert_eq!(accepted_revision(&mut admin, &format!("set-{id}")), id);
+    }
+    admin.send(&command(
+        "run-1",
+        "run-1-key",
+        CommandPayload::RunScript { script: 1 },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "run-1"), 3);
+    let timer = ran_event(&mut admin, 3);
+    admin.send(&command(
+        "run-2",
+        "run-2-key",
+        CommandPayload::RunScript { script: 2 },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "run-2"), 4);
+    let score = ran_event(&mut admin, 4);
+    assert!(matches!(
+        timer.run,
+        ScriptRunStatus::Waiting {
+            run: 1,
+            line: 2,
+            ..
+        }
+    ));
+    assert!(matches!(
+        score.run,
+        ScriptRunStatus::Waiting {
+            run: 2,
+            line: 1,
+            ..
+        }
+    ));
+
+    // The clock resumes the score first (its wait is shorter), then the
+    // timer, each on its own due frame.
+    let first = ran_event(&mut admin, 5);
+    let second = ran_event(&mut admin, 6);
+    assert_eq!((first.script, first.frame), (2, score.frame + 5));
+    assert_eq!((second.script, second.frame), (1, timer.frame + 30));
+    assert_eq!(second.program, input(1));
+    let score_waiting = ScriptRunStatus::Waiting {
+        run: 2,
+        started_frame: score.frame,
+        due_frame: score.frame + 6005,
+        waits: 2,
+        wait_frames: 6005,
+        line: 3,
+    };
+    let timer_waiting = ScriptRunStatus::Waiting {
+        run: 1,
+        started_frame: timer.frame,
+        due_frame: timer.frame + 5030,
+        waits: 2,
+        wait_frames: 5030,
+        line: 4,
+    };
+    assert_eq!(first.run, score_waiting);
+    assert_eq!(second.run, timer_waiting);
+    let (late, scripts) = script_sync(&daemon);
+    assert_eq!(late.revision, 6);
+    let runs = |scripts: &[fm_protocol::ScriptStateMessage]| {
+        scripts
+            .iter()
+            .map(|state| (state.script.id, state.run.clone()))
+            .collect::<Vec<_>>()
+    };
+    let both = vec![(1, timer_waiting.clone()), (2, score_waiting.clone())];
+    assert_eq!(runs(&scripts), both);
+    drop(admin);
+    // Killed, not stopped: the runs live only in the journal.
+    daemon.stop();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, scripts) = script_sync(&daemon);
+    assert_eq!(recovered.revision, 6);
+    assert_eq!(recovered.desired_program, input(1));
+    assert_eq!(runs(&scripts), both);
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    // A second run of a waiting script is refused; stopping one run leaves
+    // the other waiting.
+    admin.send(&command(
+        "again",
+        "again-key",
+        CommandPayload::RunScript { script: 2 },
+    ));
+    assert!(matches!(
+        admin.next_result(),
+        CommandResult::Rejected {
+            reason: Some(fm_protocol::RefusalReason::ScriptRunning { script: 2 }),
+            ..
+        }
+    ));
+    admin.send(&command(
+        "stop-2",
+        "stop-2-key",
+        CommandPayload::StopScript { run: Some(2) },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "stop-2"), 7);
+    match durable_event_at(&mut admin, 7).payload {
+        EventPayload::ScriptRunChanged { script, run, .. } => {
+            assert_eq!((script, run), (2, ScriptRunStatus::Idle));
+        }
+        other => panic!("expected script_run_changed, got {other:?}"),
+    }
+    let (_, scripts) = script_sync(&daemon);
+    assert_eq!(
+        runs(&scripts),
+        vec![(1, timer_waiting), (2, ScriptRunStatus::Idle)]
+    );
+    admin.send(&command(
+        "stop-all",
+        "stop-all-key",
+        CommandPayload::StopScript { run: None },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "stop-all"), 8);
+    match durable_event_at(&mut admin, 8).payload {
+        EventPayload::ScriptRunsStopped { scripts, .. } => assert_eq!(scripts, vec![1]),
+        other => panic!("expected script_runs_stopped, got {other:?}"),
+    }
+    drop(admin);
+    daemon.stop();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, scripts) = script_sync(&daemon);
+    assert_eq!(recovered.revision, 8);
+    assert!(
+        scripts
+            .iter()
+            .all(|state| state.run == ScriptRunStatus::Idle)
+    );
+    daemon.stop();
 }
 
 /// Protocol 2.63, end to end through the daemon: a part refused after a
@@ -8750,6 +8946,7 @@ fn a_deferred_script_failure_reaches_clients_with_its_reason() {
     let id = second.get().get();
 
     let faulted = ScriptRunStatus::Faulted {
+        run: 1,
         frame: started + 5,
         failure: ScriptFailureKind::Refused,
         line: 3,

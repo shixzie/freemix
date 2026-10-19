@@ -20,7 +20,7 @@ use fm_protocol::{
     encode_refusal_reason,
 };
 
-const PREFIX: &str = "command\tprotocol=2.68\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.69\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -83,7 +83,7 @@ fn spec() -> ScriptSpec {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 68));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 69));
 }
 
 #[test]
@@ -199,10 +199,12 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
         actions: 3,
         instructions: 41,
         run: ScriptRunStatus::Waiting {
+            run: 6,
             started_frame: 990,
             due_frame: 1_025,
             waits: 2,
             wait_frames: 35,
+            line: 7,
         },
         program: input(3),
         preview: input(4),
@@ -247,7 +249,7 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
     assert!(
         line.contains(
             "\tevent=script_ran\tscript=4\tframe=1000\tactions=3\tinstructions=41\t\
-             run=waiting%3A990%3A1025%3A2%3A35\t"
+             run=waiting%3A6%3A990%3A1025%3A2%3A35%3A7\t"
         ),
         "{line}"
     );
@@ -303,8 +305,9 @@ fn script_failures_are_typed_refusals() {
 /// and strictly; `script_stop`; `script_run_changed`; the clock's
 /// `cue_advance` of list 0; and the `script_running` refusal.
 #[test]
+#[allow(clippy::too_many_lines)] // every run state spelling
 fn script_waits_round_trip_exactly() {
-    let line = round_trip(&command(CommandPayload::StopScript));
+    let line = round_trip(&command(CommandPayload::StopScript { run: None }));
     assert_eq!(line, format!("{PREFIX}\tpayload=script_stop\n"));
     let line = round_trip(&command(CommandPayload::CueAdvance { list: 0, frame: 40 }));
     assert_eq!(
@@ -316,15 +319,18 @@ fn script_waits_round_trip_exactly() {
         (ScriptRunStatus::Idle, "idle"),
         (
             ScriptRunStatus::Waiting {
+                run: 1,
                 started_frame: 0,
                 due_frame: 25,
                 waits: 1,
                 wait_frames: 25,
+                line: 3,
             },
-            "waiting:0:25:1:25",
+            "waiting:1:0:25:1:25:3",
         ),
         (
             ScriptRunStatus::Faulted {
+                run: 12,
                 frame: 30,
                 failure: ScriptFailureKind::Refused,
                 line: 4,
@@ -332,19 +338,20 @@ fn script_waits_round_trip_exactly() {
                 detail: detail(Some(RefusalReason::ProjectLocked), "locked"),
             },
             &format!(
-                "faulted:30:refused:4:1:{}:6c6f636b6564",
+                "faulted:12:30:refused:4:1:{}:6c6f636b6564",
                 hex("project_locked")
             ),
         ),
         (
             ScriptRunStatus::Faulted {
+                run: 2,
                 frame: 30,
                 failure: ScriptFailureKind::WaitFramesBudget,
                 line: 2,
                 column: 3,
                 detail: detail(None, "x"),
             },
-            "faulted:30:wait_frames:2:3:-:78",
+            "faulted:2:30:wait_frames:2:3:-:78",
         ),
     ] {
         let line = round_trip(&event(EventPayload::ScriptRunChanged {
@@ -366,13 +373,19 @@ fn script_waits_round_trip_exactly() {
         run: ScriptRunStatus::Idle,
     }));
     for bad in [
-        "waiting:25:25:1:25",
-        "waiting:0:25:0:25",
-        "waiting:0:25:1:0",
-        "waiting:0:25:1",
-        "faulted:30:refused:0:1:-:78",
-        "faulted:30:bogus:1:1:-:78",
-        "faulted:30:refused:1:1",
+        "waiting:1:25:25:1:25:1",
+        "waiting:1:0:25:0:25:1",
+        "waiting:1:0:25:1:0:1",
+        "waiting:1:0:25:1:25:0",
+        "waiting:0:0:25:1:25:1",
+        "waiting:01:0:25:1:25:1",
+        "waiting:1:0:25:1:25",
+        "waiting:0:25:1:25",
+        "faulted:1:30:refused:0:1:-:78",
+        "faulted:1:30:bogus:1:1:-:78",
+        "faulted:1:30:refused:1:1",
+        "faulted:0:30:refused:1:1:-:78",
+        "faulted:30:refused:1:1:-:78",
         "running",
         "",
     ] {
@@ -384,14 +397,33 @@ fn script_waits_round_trip_exactly() {
             script: 2,
             frame: 30,
             run: ScriptRunStatus::Waiting {
+                run: 1,
                 started_frame: 5,
                 due_frame: 5,
                 waits: 1,
                 wait_frames: 1,
+                line: 1,
             },
         }))
         .is_err()
     );
+    for (run, line) in [(0, 1), (1, 0)] {
+        assert!(
+            encode_line(&event(EventPayload::ScriptRunChanged {
+                script: 2,
+                frame: 30,
+                run: ScriptRunStatus::Waiting {
+                    run,
+                    started_frame: 5,
+                    due_frame: 6,
+                    waits: 1,
+                    wait_frames: 1,
+                    line,
+                },
+            }))
+            .is_err()
+        );
+    }
 
     let reason = RefusalReason::ScriptRunning { script: 3 };
     let wire = encode_refusal_reason(&reason).unwrap();
@@ -414,6 +446,7 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
     };
     let message = "the show has no input named \"Cam 9\"; ñ";
     let run = ScriptRunStatus::Faulted {
+        run: 4,
         frame: 75,
         failure: ScriptFailureKind::Refused,
         line: 3,
@@ -421,7 +454,7 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
         detail: detail(Some(reason.clone()), message),
     };
     let wire = format!(
-        "faulted%3A75%3Arefused%3A3%3A1%3A{}%3A{}",
+        "faulted%3A4%3A75%3Arefused%3A3%3A1%3A{}%3A{}",
         hex("unknown_id:input:9"),
         hex(message)
     );
@@ -454,6 +487,7 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
             script: 2,
             frame: 75,
             run: ScriptRunStatus::Faulted {
+                run: 4,
                 frame: 75,
                 failure: ScriptFailureKind::Runtime,
                 line: 1,
@@ -476,7 +510,7 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
     // A decoder refuses the same, and malformed hex or reason tokens.
     let valid = round_trip(&faulted(detail(None, "x")));
     assert!(
-        valid.contains("run=faulted%3A75%3Aruntime%3A1%3A1%3A-%3A78\t"),
+        valid.contains("run=faulted%3A4%3A75%3Aruntime%3A1%3A1%3A-%3A78\t"),
         "{valid}"
     );
     for bad in [
@@ -499,4 +533,59 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
         assert_ne!(broken, valid);
         assert!(decode_line(&broken).is_err(), "{bad}");
     }
+}
+
+/// Protocol 2.69: several runs wait at once. `script_stop` names one run
+/// or, without `run`, stops them all; `script_runs_stopped` names the
+/// scripts a stop of every run idled, exactly and strictly.
+#[test]
+fn concurrent_runs_stop_one_or_all_exactly() {
+    assert_eq!(fm_protocol::MAX_SCRIPT_RUNS, 8);
+    let line = round_trip(&command(CommandPayload::StopScript { run: Some(17) }));
+    assert_eq!(line, format!("{PREFIX}\tpayload=script_stop\trun=17\n"));
+    for bad in ["run=0", "run=017", "run=x", "run=", "run=-1"] {
+        let broken = format!("{PREFIX}\tpayload=script_stop\t{bad}\n");
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    assert!(encode_line(&command(CommandPayload::StopScript { run: Some(0) })).is_err());
+
+    let line = round_trip(&event(EventPayload::ScriptRunsStopped {
+        frame: 90,
+        scripts: vec![1, 4, 16],
+    }));
+    assert!(
+        line.contains("\tevent=script_runs_stopped\tframe=90\tscripts=1%2C4%2C16"),
+        "{line}"
+    );
+    let all: Vec<u64> = (1..=16).collect();
+    round_trip(&event(EventPayload::ScriptRunsStopped {
+        frame: 90,
+        scripts: all,
+    }));
+    for bad in [
+        Vec::new(),
+        vec![0, 1],
+        vec![2, 1],
+        vec![3, 3],
+        (1..=17).collect(),
+    ] {
+        assert!(
+            encode_line(&event(EventPayload::ScriptRunsStopped {
+                frame: 90,
+                scripts: bad.clone(),
+            }))
+            .is_err(),
+            "{bad:?}"
+        );
+    }
+    for bad in ["", "0", "2%2C1", "1%2C1", "1%2C", "01", "a"] {
+        let broken = line.replacen("scripts=1%2C4%2C16", &format!("scripts={bad}"), 1);
+        assert_ne!(broken, line);
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+
+    let reason = RefusalReason::bounds("script_runs", 8);
+    let wire = encode_refusal_reason(&reason).unwrap();
+    assert_eq!(wire, "bounds_exceeded:script_runs:8");
+    assert_eq!(decode_refusal_reason(&wire).unwrap(), reason);
 }

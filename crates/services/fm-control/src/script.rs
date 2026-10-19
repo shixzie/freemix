@@ -46,7 +46,7 @@ pub fn script_engine_command(payload: &CommandPayload) -> EngineCommand {
             definition: None,
         },
         CommandPayload::RunScript { script } => EngineCommand::RunScript { script: *script },
-        CommandPayload::StopScript => EngineCommand::StopScript,
+        CommandPayload::StopScript { run } => EngineCommand::StopScript { run: *run },
         _ => unreachable!("only script commands are delegated"),
     }
 }
@@ -69,20 +69,33 @@ pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
 }
 
 /// The run state of script `script` on `engine` (Protocol 2.62): waiting
-/// or faulted when the show's run slot names it, idle otherwise.
+/// or faulted when one of the show's runs is the script's, idle otherwise.
+/// Since Protocol 2.69 it names the run and the line of the `wait` a
+/// waiting run stopped at.
 #[must_use]
 pub fn run_status(engine: &Engine, script: u64) -> ScriptRunStatus {
-    let slot = engine.show().script_run();
-    if let Some(run) = slot.running.as_ref().filter(|run| run.script == script) {
+    let runs = engine.show().script_run();
+    if let Some(run) = runs.run_of(script) {
+        // A waiting script is never edited, so its source parses and leads
+        // to the wait; line 1 only stands in for a restore that broke that.
+        let line = engine
+            .show()
+            .script(script)
+            .and_then(|found| fm_script::parse(&found.source).ok())
+            .and_then(|program| program.wait_at(&run.state))
+            .map_or(1, |at| at.line.max(1));
         return ScriptRunStatus::Waiting {
+            run: run.run,
             started_frame: run.started_frame,
             due_frame: run.due_frame,
             waits: run.state.waits,
             wait_frames: run.state.wait_frames,
+            line,
         };
     }
-    if let Some(fault) = slot.fault.as_ref().filter(|fault| fault.script == script) {
+    if let Some(fault) = runs.fault_of(script) {
         return ScriptRunStatus::Faulted {
+            run: fault.run,
             frame: fault.frame,
             failure: fm_engine::script_failure_kind(fault.failure),
             line: fault.at.line,
@@ -100,6 +113,15 @@ pub fn script_run_changed(engine: &Engine, script: u64, frame: u64) -> EventPayl
         script,
         frame,
         run: run_status(engine, script),
+    }
+}
+
+/// The event of a stop of every run (Protocol 2.69): `scripts` were
+/// waiting or faulted and are idle now.
+pub fn script_runs_stopped(frame: u64, scripts: &[u64]) -> EventPayload {
+    EventPayload::ScriptRunsStopped {
+        frame,
+        scripts: scripts.to_vec(),
     }
 }
 

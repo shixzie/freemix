@@ -562,7 +562,9 @@ fn decode_command_payload(
         "script_run" => CommandPayload::RunScript {
             script: super::script::decode_script_id(fields)?,
         },
-        "script_stop" => CommandPayload::StopScript,
+        "script_stop" => CommandPayload::StopScript {
+            run: super::script::decode_optional_run_id(fields)?,
+        },
         "input_capture_set" => CommandPayload::SetCaptureSettings {
             input: fields.canonical_input("input")?,
             settings: Box::new(super::capture::decode_settings(fields)?),
@@ -2514,6 +2516,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             script: super::script::decode_script_id(fields)?,
             frame: fields.canonical_required("frame")?,
             run: super::script::decode_run(&fields.required("run")?)?,
+        },
+        "script_runs_stopped" => EventPayload::ScriptRunsStopped {
+            frame: fields.canonical_required("frame")?,
+            scripts: super::script::decode_script_list(&fields.required("scripts")?)?,
         },
         "playlist_changed" => EventPayload::PlaylistChanged {
             frame: fields.canonical_required("frame")?,

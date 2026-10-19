@@ -96,37 +96,99 @@ pub(super) fn state_count_is_valid(count: u16) -> bool {
     usize::from(count) <= MAX_SCRIPTS
 }
 
-/// Encodes a run status (Protocol 2.62): `idle`,
-/// `waiting:<started>:<due>:<waits>:<wait frames>`, or
-/// `faulted:<frame>:<failure>:<line>:<column>:<reason>:<message>` (the
-/// detail since Protocol 2.63, see
+/// Refuses run id zero (Protocol 2.69).
+pub(super) fn validate_run_id(run: u64) -> Result<(), CodecError> {
+    if run == 0 {
+        Err(invalid("run", "0"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Decodes an optional nonzero `run` field (Protocol 2.69).
+pub(super) fn decode_optional_run_id(
+    fields: &mut dyn FieldSource,
+) -> Result<Option<u64>, CodecError> {
+    fields
+        .optional("run")
+        .map(|value| {
+            parse_canonical_u64(&value)
+                .filter(|run| *run != 0)
+                .ok_or_else(|| invalid("run", value))
+        })
+        .transpose()
+}
+
+/// Encodes the scripts of `script_runs_stopped` (Protocol 2.69): 1 to
+/// [`MAX_SCRIPTS`] nonzero ids, ascending, comma separated.
+pub(super) fn encode_script_list(scripts: &[u64]) -> Result<String, CodecError> {
+    if !script_list_is_valid(scripts) {
+        return Err(invalid("scripts", format!("{scripts:?}")));
+    }
+    Ok(scripts
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// Decodes the scripts of `script_runs_stopped` (see
+/// [`encode_script_list`]).
+pub(super) fn decode_script_list(value: &str) -> Result<Vec<u64>, CodecError> {
+    let scripts = value
+        .split(',')
+        .map(parse_canonical_u64)
+        .collect::<Option<Vec<u64>>>()
+        .filter(|scripts| script_list_is_valid(scripts));
+    scripts.ok_or_else(|| invalid("scripts", value))
+}
+
+fn script_list_is_valid(scripts: &[u64]) -> bool {
+    (1..=MAX_SCRIPTS).contains(&scripts.len())
+        && scripts.first().is_some_and(|first| *first != 0)
+        && scripts.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+/// Encodes a run status (Protocol 2.62; the run id and the wait's line
+/// since Protocol 2.69): `idle`,
+/// `waiting:<run>:<started>:<due>:<waits>:<wait frames>:<line>`, or
+/// `faulted:<run>:<frame>:<failure>:<line>:<column>:<reason>:<message>`
+/// (the detail since Protocol 2.63, see
 /// [`super::refusal::encode_fault_detail`]).
 pub(super) fn encode_run(run: &ScriptRunStatus) -> Result<String, CodecError> {
     Ok(match run {
         ScriptRunStatus::Idle => "idle".to_owned(),
         ScriptRunStatus::Waiting {
+            run: id,
             started_frame,
             due_frame,
             waits,
             wait_frames,
+            line,
         } => {
-            if due_frame <= started_frame || *waits == 0 || *wait_frames == 0 {
+            if *id == 0
+                || due_frame <= started_frame
+                || *waits == 0
+                || *wait_frames == 0
+                || *line == 0
+            {
                 return Err(invalid("run", format!("{run:?}")));
             }
-            format!("waiting:{started_frame}:{due_frame}:{waits}:{wait_frames}")
+            format!("waiting:{id}:{started_frame}:{due_frame}:{waits}:{wait_frames}:{line}")
         }
         ScriptRunStatus::Faulted {
+            run: id,
             frame,
             failure,
             line,
             column,
             detail,
         } => {
-            if *line == 0 || *column == 0 {
+            if *id == 0 || *line == 0 || *column == 0 {
                 return Err(invalid("run", format!("{run:?}")));
             }
             format!(
-                "faulted:{frame}:{}:{line}:{column}:{}",
+                "faulted:{id}:{frame}:{}:{line}:{column}:{}",
                 failure.token(),
                 super::refusal::encode_fault_detail("run", detail, ':')?
             )
@@ -137,6 +199,7 @@ pub(super) fn encode_run(run: &ScriptRunStatus) -> Result<String, CodecError> {
 /// Decodes a run status (see [`encode_run`]).
 pub(super) fn decode_run(value: &str) -> Result<ScriptRunStatus, CodecError> {
     let number = |token: &str| parse_canonical_u64(token);
+    let id = |token: &str| parse_canonical_u64(token).filter(|value| *value != 0);
     let small = |token: &str| {
         parse_canonical_u64(token)
             .and_then(|value| u32::try_from(value).ok())
@@ -145,27 +208,44 @@ pub(super) fn decode_run(value: &str) -> Result<ScriptRunStatus, CodecError> {
     let parts: Vec<&str> = value.split(':').collect();
     let run = match parts.as_slice() {
         ["idle"] => Some(ScriptRunStatus::Idle),
-        ["waiting", started, due, waits, frames] => number(started)
+        ["waiting", run, started, due, waits, frames, line] => id(run)
+            .zip(number(started))
             .zip(number(due))
             .zip(small(waits))
             .zip(small(frames))
-            .filter(|(((started, due), _), _)| due > started)
+            .zip(small(line))
+            .filter(|(((((_, started), due), _), _), _)| due > started)
             .map(
-                |(((started_frame, due_frame), waits), wait_frames)| ScriptRunStatus::Waiting {
-                    started_frame,
-                    due_frame,
-                    waits,
-                    wait_frames,
+                |(((((run, started_frame), due_frame), waits), wait_frames), line)| {
+                    ScriptRunStatus::Waiting {
+                        run,
+                        started_frame,
+                        due_frame,
+                        waits,
+                        wait_frames,
+                        line,
+                    }
                 },
             ),
-        ["faulted", frame, failure, line, column, reason, message] => {
+        [
+            "faulted",
+            run,
+            frame,
+            failure,
+            line,
+            column,
+            reason,
+            message,
+        ] => {
             let detail = super::refusal::decode_fault_detail("run", reason, message)?;
-            number(frame)
+            id(run)
+                .zip(number(frame))
                 .zip(fm_command::ScriptFailureKind::from_token(failure))
                 .zip(small(line))
                 .zip(small(column))
                 .map(
-                    |(((frame, failure), line), column)| ScriptRunStatus::Faulted {
+                    |((((run, frame), failure), line), column)| ScriptRunStatus::Faulted {
+                        run,
                         frame,
                         failure,
                         line,

@@ -358,19 +358,21 @@ fn a_run_replays_from_its_receipt() {
 }
 
 /// Ticks `frames` frames as the daemon cue clock does: before each frame,
-/// the advance due on that frame (a cue list's, or list 0 for the waiting
-/// script run) is submitted. Returns the frames and every advance outcome.
+/// every advance due on that frame (a cue list's, or list 0 for each
+/// waiting script run) is submitted. Returns the frames and every advance
+/// outcome.
 fn drive(engine: &mut Engine, frames: u64) -> (Vec<FrameResult>, Vec<EngineCommandOutcome>) {
     let mut advances = Vec::new();
     let frames = (0..frames)
         .map(|_| {
             let cursor = engine.frame_cursor().get();
-            if let Some((list, due)) = engine.cue_advance_frame()
+            let mut turn = 0;
+            while let Some((list, due)) = engine.cue_advance_frame()
                 && due == cursor
             {
                 let outcome = submit(
                     engine,
-                    &format!("advance-{cursor}"),
+                    &format!("advance-{cursor}-{turn}"),
                     EngineCommand::CueAdvance {
                         list,
                         frame: cursor,
@@ -378,11 +380,16 @@ fn drive(engine: &mut Engine, frames: u64) -> (Vec<FrameResult>, Vec<EngineComma
                 );
                 assert_eq!(accepted(&outcome), cursor);
                 advances.push(outcome);
+                turn += 1;
             }
             engine.tick().unwrap()
         })
         .collect();
     (frames, advances)
+}
+
+fn stop(run: Option<u64>) -> EngineCommand {
+    EngineCommand::StopScript { run }
 }
 
 /// RC-011 waits: a run's parts after a `wait` run on their due frame (the
@@ -409,12 +416,17 @@ fn a_waiting_run_resumes_on_its_due_frame_and_reads_the_show_then() {
     ));
     let start = accepted(&submit(&mut engine, "run", run(1)));
     let slot = engine.show().script_run().clone();
-    let waiting = slot.running.as_ref().expect("the run waits");
+    let waiting = slot.run_of(1).expect("the run waits");
     assert_eq!(
-        (waiting.script, waiting.started_frame, waiting.due_frame),
-        (1, start, start + 5)
+        (
+            waiting.run,
+            waiting.script,
+            waiting.started_frame,
+            waiting.due_frame
+        ),
+        (1, 1, start, start + 5)
     );
-    assert_eq!(slot.fault, None);
+    assert_eq!(slot.faults, []);
     assert_eq!(engine.cue_advance_frame(), Some((0, start + 5)));
     // The first part's action applied on its frame.
     assert_eq!(engine.show().desired_switcher().preview(), input(12));
@@ -446,21 +458,27 @@ fn a_waiting_run_resumes_on_its_due_frame_and_reads_the_show_then() {
     assert_eq!(program_changes(&frames), vec![(start + 10, input(13))]);
     assert_eq!(
         *engine.show().script_run(),
-        fm_model::ScriptRunState::default()
+        fm_model::ScriptRunState {
+            last_run: 1,
+            ..fm_model::ScriptRunState::default()
+        }
     );
     assert_eq!(engine.cue_advance_frame(), None);
 }
 
 #[test]
-fn one_run_waits_at_a_time_and_its_script_is_frozen_until_it_stops() {
+fn a_script_runs_once_at_a_time_and_is_frozen_until_it_stops() {
     let mut engine = engine();
     accepted(&submit(&mut engine, "set-1", set(1, "wait 50\ncut 2")));
-    accepted(&submit(&mut engine, "set-2", set(2, "cut 3")));
+    accepted(&submit(&mut engine, "set-2", set(2, "preview 3")));
     accepted(&submit(&mut engine, "run", run(1)));
+    // Another script runs alongside (Protocol 2.69).
+    accepted(&submit(&mut engine, "run-other", run(2)));
     let busy = Some(RefusalReason::ScriptRunning { script: 1 });
+    let (_, _, message) = refusal(&submit(&mut engine, "run-twice", run(1)));
+    assert!(message.contains("already running (run 1)"), "{message}");
     for (key, command) in [
         ("run-again", run(1)),
-        ("run-other", run(2)),
         ("edit", set(1, "cut 2")),
         (
             "remove",
@@ -482,7 +500,7 @@ fn one_run_waits_at_a_time_and_its_script_is_frozen_until_it_stops() {
     accepted(&submit(&mut engine, "edit-other", set(2, "cut 4")));
 
     // A stop ends the run on its frame: nothing more of it runs.
-    let outcome = submit(&mut engine, "stop", EngineCommand::StopScript);
+    let outcome = submit(&mut engine, "stop", stop(Some(1)));
     let frame = accepted(&outcome);
     assert!(outcome.events.iter().any(|event| matches!(
         &event.payload,
@@ -490,19 +508,21 @@ fn one_run_waits_at_a_time_and_its_script_is_frozen_until_it_stops() {
     )));
     assert_eq!(
         *engine.show().script_run(),
-        fm_model::ScriptRunState::default()
+        fm_model::ScriptRunState {
+            last_run: 1,
+            ..fm_model::ScriptRunState::default()
+        }
     );
     assert_eq!(engine.cue_advance_frame(), None);
     let (frames, advances) = drive(&mut engine, 60);
     assert_eq!(advances.len(), 0, "{advances:?}");
     assert_eq!(program_changes(&frames), Vec::new());
-    let (code, _, message) = refusal(&submit(
-        &mut engine,
-        "stop-again",
-        EngineCommand::StopScript,
-    ));
+    let (code, _, message) = refusal(&submit(&mut engine, "stop-again", stop(None)));
     assert_eq!(code, RejectionCode::Conflict);
     assert!(message.contains("no script is running"), "{message}");
+    let (code, _, message) = refusal(&submit(&mut engine, "stop-1-again", stop(Some(1))));
+    assert_eq!(code, RejectionCode::NotFound);
+    assert!(message.contains("no script run 1"), "{message}");
     // A stopped script runs and edits again; a stop is never undone.
     accepted(&submit(&mut engine, "edit-after", set(1, "cut 2")));
     accepted(&submit(&mut engine, "run-after", run(1)));
@@ -527,10 +547,11 @@ fn a_part_that_fails_on_its_frame_faults_the_run_and_applies_nothing() {
     // The mute before the refused cut did not apply either.
     assert!(!engine.show().input_audio_strip(input(13)).unwrap().muted);
     let slot = engine.show().script_run();
-    assert_eq!(slot.running, None);
+    assert_eq!(slot.runs, []);
     assert_eq!(
-        slot.fault,
+        slot.fault_of(1).cloned(),
         Some(fm_model::ScriptFault {
+            run: 1,
             script: 1,
             frame: start + 3,
             failure: fm_script::FailureKind::Refused,
@@ -544,10 +565,13 @@ fn a_part_that_fails_on_its_frame_faults_the_run_and_applies_nothing() {
     );
     // The clock never retries a fault; a new run or a stop clears it.
     assert_eq!(engine.cue_advance_frame(), None);
-    accepted(&submit(&mut engine, "stop", EngineCommand::StopScript));
+    accepted(&submit(&mut engine, "stop", stop(Some(1))));
     assert_eq!(
         *engine.show().script_run(),
-        fm_model::ScriptRunState::default()
+        fm_model::ScriptRunState {
+            last_run: 1,
+            ..fm_model::ScriptRunState::default()
+        }
     );
 }
 
@@ -580,8 +604,8 @@ fn a_deferred_fault_carries_the_refused_actions_reason() {
     let fault = engine
         .show()
         .script_run()
-        .fault
-        .clone()
+        .fault_of(1)
+        .cloned()
         .expect("the run faulted");
     assert_eq!(
         (fault.failure, fault.at),
@@ -599,15 +623,15 @@ fn a_deferred_fault_carries_the_refused_actions_reason() {
     );
 
     // A runtime error refuses no action: the failure's message is kept.
-    accepted(&submit(&mut engine, "stop", EngineCommand::StopScript));
+    accepted(&submit(&mut engine, "stop", stop(None)));
     accepted(&submit(&mut engine, "set-3", set(1, "wait 3\ncut 1 / 0\n")));
     accepted(&submit(&mut engine, "run-3", run(1)));
     drive(&mut engine, 5);
     let fault = engine
         .show()
         .script_run()
-        .fault
-        .clone()
+        .fault_of(1)
+        .cloned()
         .expect("the run faulted");
     assert_eq!(fault.failure, fm_script::FailureKind::Runtime);
     assert_eq!(fault.detail.reason, None);
@@ -631,18 +655,21 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
     let fault = engine
         .show()
         .script_run()
-        .fault
-        .clone()
+        .fault_of(1)
+        .cloned()
         .expect("the run faulted");
     assert_eq!(fault.script, 1);
 
     accepted(&submit(&mut engine, "edit-other", set(2, "cut 3")));
-    assert_eq!(engine.show().script_run().fault, Some(fault));
+    assert_eq!(engine.show().script_run().fault_of(1), Some(&fault));
 
     accepted(&submit(&mut engine, "edit", set(1, "wait 3\ncut 2\n")));
     assert_eq!(
         *engine.show().script_run(),
-        fm_model::ScriptRunState::default()
+        fm_model::ScriptRunState {
+            last_run: 1,
+            ..fm_model::ScriptRunState::default()
+        }
     );
     assert_eq!(engine.cue_advance_frame(), None);
     // The fault is live state, not part of the edit: an undo restores the
@@ -655,7 +682,7 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
         },
     ));
     assert_eq!(engine.show().script(1).unwrap().source, "wait 3\ncut 9\n");
-    assert_eq!(engine.show().script_run().fault, None);
+    assert_eq!(engine.show().script_run().fault_of(1), None);
 }
 
 #[test]
@@ -797,7 +824,7 @@ fn a_restored_run_due_beyond_its_waits_is_refused() {
     assert_eq!(restored.show().script_run(), snapshot.show().script_run());
 
     let mut slot = snapshot.show().script_run().clone();
-    slot.running.as_mut().expect("the run waits").due_frame = u64::MAX / 2;
+    slot.runs.first_mut().expect("the run waits").due_frame = u64::MAX / 2;
     let mut show = snapshot.show().clone();
     // The slot fits the script (the model checks no frame cursor) ...
     show.set_script_run(slot, snapshot.frame_rate()).unwrap();
@@ -834,4 +861,276 @@ fn an_out_of_range_title_number_is_refused_for_what_it_is() {
             "{source}: {message}"
         );
     }
+}
+
+/// The `(script, frame)` of every part an advance ran.
+fn parts_ran(advances: &[EngineCommandOutcome]) -> Vec<(u64, u64)> {
+    advances
+        .iter()
+        .flat_map(|outcome| &outcome.events)
+        .filter_map(|event| match &event.payload {
+            EngineEvent::ScriptRan { script, frame, .. } => Some((*script, *frame)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn muted(engine: &Engine, value: u128) -> bool {
+    engine.show().input_audio_strip(input(value)).unwrap().muted
+}
+
+/// Protocol 2.69: runs of different scripts wait together, each with its
+/// own id, and each part runs on its own due frame, interleaved.
+#[test]
+fn runs_of_different_scripts_wait_together_and_interleave() {
+    let mut engine = engine();
+    accepted(&submit(
+        &mut engine,
+        "set-1",
+        set(1, "wait 3\npreview 2\nwait 4\npreview 3\n"),
+    ));
+    accepted(&submit(
+        &mut engine,
+        "set-2",
+        set(2, "wait 2\nmute 1\nwait 3\nmute 2\n"),
+    ));
+    let start = accepted(&submit(&mut engine, "run-1", run(1)));
+    assert_eq!(accepted(&submit(&mut engine, "run-2", run(2))), start);
+    let runs = engine.show().script_run().clone();
+    assert_eq!(
+        runs.runs
+            .iter()
+            .map(|run| (run.run, run.script, run.due_frame))
+            .collect::<Vec<_>>(),
+        vec![(1, 1, start + 3), (2, 2, start + 2)]
+    );
+    assert_eq!(runs.last_run, 2);
+    // The earliest due goes first, whatever its id.
+    assert_eq!(engine.cue_advance_frame(), Some((0, start + 2)));
+
+    let (_, advances) = drive(&mut engine, 10);
+    assert_eq!(
+        parts_ran(&advances),
+        vec![
+            (2, start + 2),
+            (1, start + 3),
+            (2, start + 5),
+            (1, start + 7)
+        ]
+    );
+    assert_eq!(engine.show().desired_switcher().preview(), input(13));
+    assert!(muted(&engine, 11) && muted(&engine, 12));
+    assert_eq!(engine.show().script_run().runs, []);
+    assert_eq!(engine.cue_advance_frame(), None);
+    // Ids are never reused.
+    accepted(&submit(&mut engine, "run-1-again", run(1)));
+    assert_eq!(engine.show().script_run().run_of(1).unwrap().run, 3);
+}
+
+/// Runs due on the same frame resume on it together, also when the first
+/// advance is accepted ahead of that frame and holds it.
+#[test]
+fn runs_due_on_the_same_frame_resume_together() {
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set-1", set(1, "wait 5\npreview 2\n")));
+    accepted(&submit(&mut engine, "set-2", set(2, "wait 5\nmute 1\n")));
+    let start = accepted(&submit(&mut engine, "run-1", run(1)));
+    accepted(&submit(&mut engine, "run-2", run(2)));
+    let due = start + 5;
+    assert_eq!(engine.cue_advance_frame(), Some((0, due)));
+    let advance = || EngineCommand::CueAdvance {
+        list: 0,
+        frame: due,
+    };
+    // Both advances are accepted ahead, for the same frame.
+    assert_eq!(accepted(&submit(&mut engine, "advance-1", advance())), due);
+    assert_eq!(engine.cue_advance_frame(), Some((0, due)));
+    assert_eq!(accepted(&submit(&mut engine, "advance-2", advance())), due);
+    assert_eq!(engine.cue_advance_frame(), None);
+    // Any other command waits for the held frame.
+    let (_, reason, _) = refusal(&submit(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(13)),
+    ));
+    assert_eq!(reason, Some(RefusalReason::CueScheduled { frame: due }));
+    tick(&mut engine, 7);
+    assert_eq!(engine.show().desired_switcher().preview(), input(12));
+    assert!(muted(&engine, 11));
+    assert_eq!(engine.show().script_run().runs, []);
+}
+
+/// At most `MAX_SCRIPT_RUNS` runs wait; a run that does not wait is never
+/// bounded by them.
+#[test]
+fn the_waiting_runs_are_bounded() {
+    let mut engine = engine();
+    let bound = fm_model::MAX_SCRIPT_RUNS as u64;
+    for script in 1..=bound + 2 {
+        let source = if script == bound + 2 {
+            "preview 2"
+        } else {
+            "wait 100\ncut 2"
+        };
+        accepted(&submit(
+            &mut engine,
+            &format!("set-{script}"),
+            set(script, source),
+        ));
+    }
+    for script in 1..=bound {
+        accepted(&submit(&mut engine, &format!("run-{script}"), run(script)));
+    }
+    let (code, reason, message) = refusal(&submit(&mut engine, "run-over", run(bound + 1)));
+    assert_eq!(code, RejectionCode::ResourceExhausted);
+    assert_eq!(reason, Some(RefusalReason::bounds("script_runs", bound)));
+    assert!(message.contains("stop one first"), "{message}");
+    assert_eq!(engine.show().script_run().runs.len() as u64, bound);
+    accepted(&submit(&mut engine, "run-quick", run(bound + 2)));
+    // A stop makes room.
+    accepted(&submit(&mut engine, "stop-3", stop(Some(3))));
+    accepted(&submit(&mut engine, "run-over-again", run(bound + 1)));
+    assert_eq!(
+        engine.show().script_run().run_of(bound + 1).unwrap().run,
+        bound + 1
+    );
+}
+
+/// A part that fails faults its own run only; a stop ends one run or
+/// clears one fault, and a stop of every run ends them all at once.
+#[test]
+fn a_fault_or_stop_touches_only_its_own_run_until_all_are_stopped() {
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set-1", set(1, "wait 2\ncut 9\n")));
+    accepted(&submit(&mut engine, "set-2", set(2, "wait 4\npreview 2\n")));
+    accepted(&submit(
+        &mut engine,
+        "set-3",
+        set(3, "wait 50\npreview 3\n"),
+    ));
+    accepted(&submit(&mut engine, "set-4", set(4, "wait 60\nmute 1\n")));
+    for script in 1..=4 {
+        accepted(&submit(&mut engine, &format!("run-{script}"), run(script)));
+    }
+    drive(&mut engine, 6);
+    let runs = engine.show().script_run().clone();
+    assert_eq!(runs.fault_of(1).map(|fault| fault.run), Some(1));
+    assert_eq!(engine.show().desired_switcher().preview(), input(12));
+    assert_eq!(
+        runs.runs.iter().map(|run| run.run).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+
+    // Stop run 3: run 4 still waits and the fault stays.
+    let outcome = submit(&mut engine, "stop-3", stop(Some(3)));
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        EngineEvent::ScriptRunChanged { script: 3, .. }
+    )));
+    let runs = engine.show().script_run().clone();
+    assert_eq!(runs.runs.len(), 1);
+    assert_eq!(runs.run_of(4).map(|run| run.run), Some(4));
+    assert!(runs.fault_of(1).is_some());
+    // Clearing run 1's fault names its run too.
+    accepted(&submit(&mut engine, "clear-1", stop(Some(1))));
+    assert_eq!(engine.show().script_run().faults, []);
+
+    accepted(&submit(&mut engine, "rerun-3", run(3)));
+    accepted(&submit(&mut engine, "rerun-1", run(1)));
+    drive(&mut engine, 3);
+    let outcome = submit(&mut engine, "stop-all", stop(None));
+    let frame = accepted(&outcome);
+    assert!(
+        outcome.events.iter().any(|event| matches!(
+            &event.payload,
+            EngineEvent::ScriptRunsStopped { scripts, frame: at }
+                if *scripts == vec![1, 3, 4] && *at == frame
+        )),
+        "{:?}",
+        outcome.events
+    );
+    assert_eq!(
+        *engine.show().script_run(),
+        fm_model::ScriptRunState {
+            last_run: 6,
+            ..fm_model::ScriptRunState::default()
+        }
+    );
+    let (frames, advances) = drive(&mut engine, 70);
+    assert_eq!(advances.len(), 0);
+    assert_eq!(program_changes(&frames), Vec::new());
+    assert!(!muted(&engine, 11));
+}
+
+/// Two interleaved runs saved mid-wait and restored resume exactly as the
+/// show that kept running: the same parts on the same frames, the same
+/// ids, the same show.
+#[test]
+fn two_interleaved_runs_restore_and_replay_deterministically() {
+    let build = || {
+        let mut engine = engine();
+        accepted(&submit(
+            &mut engine,
+            "set-1",
+            set(
+                1,
+                "let n = 0\nrepeat 3\n  wait 3\n  let n = n + 1\n  mute n\nend\n",
+            ),
+        ));
+        accepted(&submit(
+            &mut engine,
+            "set-2",
+            set(
+                2,
+                "repeat 2\n  wait 4\n  if program == 1\n    cut 2\n  else\n    cut 1\n  end\nend\n",
+            ),
+        ));
+        accepted(&submit(&mut engine, "run-1", run(1)));
+        tick(&mut engine, 1);
+        accepted(&submit(&mut engine, "run-2", run(2)));
+        let (_, advances) = drive(&mut engine, 5);
+        (engine, parts_ran(&advances))
+    };
+    let (mut original, before) = build();
+    let (twin, twin_before) = build();
+    assert_eq!(before, twin_before);
+    assert_eq!(original.show(), twin.show());
+    assert_eq!(
+        original.show().script_run().runs.len(),
+        2,
+        "{:?}",
+        original.show().script_run()
+    );
+
+    let snapshot = original.snapshot().expect("idle");
+    let mut restored = Engine::restore_persisted(
+        snapshot.show().clone(),
+        snapshot.realized_switcher().clone(),
+        snapshot.frame_rate(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+        fm_engine::EngineRestoreState {
+            state_epoch: snapshot.state_epoch(),
+            revision: snapshot.revision(),
+            event_sequence: snapshot.event_sequence(),
+            runtime_generation: snapshot.runtime_generation(),
+            clock_time: snapshot.clock_time(),
+            frame_cursor: fm_scheduler::FrameNumber::new(snapshot.frames_rendered()),
+            receipts: snapshot.receipts().to_vec(),
+        },
+    )
+    .expect("both runs restore");
+    let (original_frames, original_advances) = drive(&mut original, 12);
+    let (restored_frames, restored_advances) = drive(&mut restored, 12);
+    let after = parts_ran(&original_advances);
+    assert_eq!(after, parts_ran(&restored_advances));
+    // Both scripts ran after the save, interleaved.
+    assert!(after.iter().any(|(script, _)| *script == 1));
+    assert!(after.iter().any(|(script, _)| *script == 2));
+    assert_eq!(
+        program_changes(&original_frames),
+        program_changes(&restored_frames)
+    );
+    assert_eq!(original.show(), restored.show());
+    assert_eq!(original.show().script_run().runs, []);
+    assert_eq!(original.show().script_run().last_run, 2);
 }

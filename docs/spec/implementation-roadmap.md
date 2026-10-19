@@ -3648,10 +3648,33 @@ cue chain never waits on a script; cue waits remain the way to space a
 cue's script steps. Studio's Scripts window shows "(running)", the next
 part's frame with Stop run, or the failed part with Clear failed run;
 `freemix-cli` adds local and remote `script-stop` and prints run state in
-`scripts` and `script-run`. Remaining gaps for waits: one waiting run per
-show (a second is refused rather than queued); a waiting run's later parts
-are not previewed anywhere; and a local `freemix-cli script-run` runs every
-part on the simulated clock before it returns. `RC-011` remains planned.
+`scripts` and `script-run`. Remaining gaps for waits: a waiting run's later
+parts are not previewed anywhere; and a local `freemix-cli script-run` runs
+every part on the simulated clock before it returns. `RC-011` remains
+planned.
+
+Concurrent script runs (Protocol 2.69, schema 60): the one run slot became a
+bounded set, so a lower-third timer and a score update can wait side by
+side. Up to 8 runs wait at once, each of a different script; a run gets an
+id (the show's last issued id plus one, persisted as `last_run`) when its
+first part waits, so ids survive saves, restarts, and journal replay and are
+never reused. Design choice: a second run of a script that already waits is
+refused `script_running` rather than allowed, because two runs of one source
+act on the same titles and inputs and would fight; the operator stops the
+first (or the script finishes) and runs it again. A run that would wait
+while 8 do is refused `bounds_exceeded:script_runs:8`. Each run is
+authorized on its own, as before. The cue clock still drives every run as
+list `0` (the earliest due, the lowest id on a tie); runs due on the same
+frame resume on that frame together, the later advance joining the frame
+the first holds. A failed part faults its own run only, and each script
+keeps its own fault. `script_stop run=<id>` ends one run or clears its
+fault; `script_stop` alone ends every run and clears every fault
+(`script_runs_stopped`). Wire `run` states name the run id and, while
+waiting, the line of the `wait` (the run's current step). Studio's Scripts
+window lists every active run with its own Stop (or Clear) and Stop all
+runs; the CLI's `script-stop` takes `--run`. Remaining gaps: runs cannot be
+queued behind the bound, and a stop of every run is one command, not a
+selection.
 
 Deferred fault reasons (Protocol 2.63, schema 57): a script part that fails
 after a wait, and a cue action refused when its wait ends, now keep what a

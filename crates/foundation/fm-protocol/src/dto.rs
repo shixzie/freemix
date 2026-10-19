@@ -1754,9 +1754,13 @@ pub enum CommandPayload {
     RunScript {
         script: u64,
     },
-    /// Ends the waiting script run, or clears the last run's fault
-    /// (Protocol 2.62). Wire payload `script_stop`, no fields.
-    StopScript,
+    /// Ends waiting script run `run`, or clears that run's fault
+    /// (Protocol 2.62); with no `run`, ends every waiting run and clears
+    /// every fault (Protocol 2.69). Wire payload `script_stop`, optional
+    /// nonzero `run`.
+    StopScript {
+        run: Option<u64>,
+    },
     /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
     /// Wire payloads `grade_input_set` and `grade_input_clear`.
     SetInputGrade {
@@ -2564,6 +2568,13 @@ pub enum EventPayload {
         script: u64,
         frame: u64,
         run: crate::ScriptRunStatus,
+    },
+    /// Every script run was stopped and every fault cleared on `frame`
+    /// (Protocol 2.69): `scripts` (ascending, nonzero, at most
+    /// [`crate::MAX_SCRIPTS`]) were waiting or faulted and are idle now.
+    ScriptRunsStopped {
+        frame: u64,
+        scripts: Vec<u64>,
     },
     /// A playlist command was accepted for `frame`: the complete playlist
     /// afterwards and the desired Program and Preview. When the command put

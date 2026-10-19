@@ -3152,10 +3152,20 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         },
     };
     let waiting = fm_protocol::ScriptRunStatus::Waiting {
+        run: 1,
         started_frame: 20,
         due_frame: 30,
         waits: 1,
         wait_frames: 10,
+        line: 2,
+    };
+    let waiting_2 = fm_protocol::ScriptRunStatus::Waiting {
+        run: 2,
+        started_frame: 40,
+        due_frame: 50,
+        waits: 1,
+        wait_frames: 10,
+        line: 2,
     };
     let project_id = project(10);
     let identity = engine("engine-a", 1, "log-a");
@@ -3191,7 +3201,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
     assert!(state.scripts_complete());
     // Protocol 2.62: the record carries the run paused at a wait.
     assert_eq!(state.script_run_status(1), waiting);
-    assert_eq!(state.active_script_run(), Some((1, waiting.clone())));
+    assert_eq!(state.active_script_runs(), vec![(1, waiting.clone())]);
     assert_eq!(state.scripts(), [script(1, "cut 2")]);
     assert_eq!(
         model.apply_script_state(ScriptStateMessage {
@@ -3215,7 +3225,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         frame: 40,
         actions: 2,
         instructions: 5,
-        run: waiting.clone(),
+        run: waiting_2.clone(),
         effects: CueRunUpdate {
             list: 0,
             frame: 40,
@@ -3244,12 +3254,12 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         .unwrap();
     let state = model.state().unwrap();
     assert_eq!(state.switcher().desired.program, input(3));
-    // The one run slot moves to script 2.
-    assert_eq!(state.active_script_run(), Some((2, waiting)));
+    // Protocol 2.69: script 2's run waits alongside script 1's.
     assert_eq!(
-        state.script_run_status(1),
-        fm_protocol::ScriptRunStatus::Idle
+        state.active_script_runs(),
+        vec![(1, waiting.clone()), (2, waiting_2)]
     );
+    assert_eq!(state.script_run_status(1), waiting);
     assert_eq!(
         state.last_script_run(),
         Some(ScriptRunReport {
@@ -3270,6 +3280,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
     );
     // A part that failed on its frame faults the run.
     let faulted = fm_protocol::ScriptRunStatus::Faulted {
+        run: 2,
         frame: 30,
         failure: fm_protocol::ScriptFailureKind::Refused,
         line: 2,
@@ -3336,7 +3347,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             DurableChange::ScriptRemoved { script: 2 },
         ))
         .unwrap();
-    assert_eq!(model.state().unwrap().active_script_run(), None);
+    assert_eq!(model.state().unwrap().active_script_runs(), []);
 }
 
 /// Protocol 2.62: the authority clears a fault when its script is edited
@@ -3354,6 +3365,7 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
         },
     };
     let faulted = fm_protocol::ScriptRunStatus::Faulted {
+        run: 1,
         frame: 30,
         failure: fm_protocol::ScriptFailureKind::Refused,
         line: 2,
@@ -3382,8 +3394,8 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
             .unwrap();
     }
     assert_eq!(
-        model.state().unwrap().active_script_run(),
-        Some((1, faulted.clone()))
+        model.state().unwrap().active_script_runs(),
+        vec![(1, faulted.clone())]
     );
 
     model
@@ -3405,9 +3417,110 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
         ))
         .unwrap();
     let state = model.state().unwrap();
-    assert_eq!(state.active_script_run(), None);
+    assert_eq!(state.active_script_runs(), []);
     assert_eq!(
         state.script_run_status(1),
+        fm_protocol::ScriptRunStatus::Idle
+    );
+}
+
+/// Protocol 2.69: a snapshot carries several scripts' runs, each with its
+/// own id; stopping one leaves the others, `script_runs_stopped` idles
+/// every one, and a snapshot naming one run id twice is refused.
+#[test]
+fn concurrent_script_runs_replicate_and_stop() {
+    use fm_protocol::{ScriptSpec, ScriptStateMessage, ScriptStatus};
+
+    let script = |id: u64| ScriptStatus {
+        id,
+        spec: ScriptSpec {
+            name: format!("Script {id}"),
+            source: "wait 5\ncut 2".into(),
+        },
+    };
+    let waiting = |run: u64| fm_protocol::ScriptRunStatus::Waiting {
+        run,
+        started_frame: 20,
+        due_frame: 25,
+        waits: 1,
+        wait_frames: 5,
+        line: 1,
+    };
+    let project_id = project(10);
+    let identity = engine("engine-a", 1, "log-a");
+    let install = |runs: &[(u64, u64)]| {
+        let mut model = ClientModel::new(project_id);
+        let mut installed = snapshot(project_id, 7);
+        installed.script_states = 3;
+        model.install_snapshot(installed).unwrap();
+        let mut result = Ok(());
+        for (id, run) in runs {
+            result = result.and_then(|()| {
+                model.apply_script_state(ScriptStateMessage {
+                    revision: 7,
+                    script: script(*id),
+                    run: waiting(*run),
+                })
+            });
+        }
+        (model, result)
+    };
+    assert_eq!(
+        install(&[(1, 4), (2, 4)]).1,
+        Err(ModelError::ScriptStateMismatch)
+    );
+    let (mut model, result) = install(&[(1, 9), (2, 4), (3, 6)]);
+    result.unwrap();
+    let state = model.state().unwrap();
+    // Listed in run order.
+    assert_eq!(
+        state.active_script_runs(),
+        vec![(2, waiting(4)), (3, waiting(6)), (1, waiting(9))]
+    );
+
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            8,
+            DurableChange::ScriptRunChanged {
+                script: 3,
+                frame: 22,
+                run: fm_protocol::ScriptRunStatus::Idle,
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        model.state().unwrap().active_script_runs(),
+        vec![(2, waiting(4)), (1, waiting(9))]
+    );
+    assert_eq!(
+        model.apply_event(event(
+            project_id,
+            identity.clone(),
+            9,
+            DurableChange::ScriptRunsStopped {
+                frame: 23,
+                scripts: vec![1, 7],
+            },
+        )),
+        Err(ModelError::InvalidScript(7))
+    );
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            9,
+            DurableChange::ScriptRunsStopped {
+                frame: 23,
+                scripts: vec![1, 2],
+            },
+        ))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.active_script_runs(), []);
+    assert_eq!(
+        state.script_run_status(2),
         fm_protocol::ScriptRunStatus::Idle
     );
 }

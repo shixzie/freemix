@@ -14,11 +14,12 @@
 //! | [`crate::CommandPayload::SetScript`] | `script_set` | `script` (nonzero), `name`, `source` (lowercase hex of its UTF-8 bytes) |
 //! | [`crate::CommandPayload::RemoveScript`] | `script_remove` | `script` |
 //! | [`crate::CommandPayload::RunScript`] | `script_run` | `script` |
-//! | [`crate::CommandPayload::StopScript`] | `script_stop` | none (Protocol 2.62) |
+//! | [`crate::CommandPayload::StopScript`] | `script_stop` | optional `run` (Protocol 2.62; `run` since 2.69) |
 //! | [`crate::EventPayload::ScriptChanged`] | `script_changed` | `script`, `name`, `source` |
 //! | [`crate::EventPayload::ScriptRemoved`] | `script_removed` | `script` |
 //! | [`crate::EventPayload::ScriptRan`] | `script_ran` | `script`, `frame`, `actions`, `instructions`, `run` (Protocol 2.62), and the desired show state of `cue_run_changed` |
 //! | [`crate::EventPayload::ScriptRunChanged`] | `script_run_changed` | `script`, `frame`, `run` (Protocol 2.62) |
+//! | [`crate::EventPayload::ScriptRunsStopped`] | `script_runs_stopped` | `frame`, `scripts` (Protocol 2.69) |
 //!
 //! A snapshot names how many `script_state` records follow it
 //! ([`crate::SnapshotMessage::script_states`]), one per script in project
@@ -28,12 +29,15 @@
 //! # Waits (Protocol 2.62)
 //!
 //! A script's `wait FRAMES` spans frames: the run's parts after a wait run
-//! on their due frame, on the show as it is then. The authority keeps one
-//! waiting run at a time, saved with the project; its cue clock resumes it
-//! with `cue_advance` naming list `0`. `run` reports a script's run state
-//! ([`ScriptRunStatus`]): `idle`, `waiting:<started frame>:<due
-//! frame>:<waits passed>:<frames waited>`, or `faulted:<frame>:<failure>:
-//! <line>:<column>:<reason>:<message>` when a part failed on its frame
+//! on their due frame, on the show as it is then. Since Protocol 2.69 the
+//! authority keeps up to [`MAX_SCRIPT_RUNS`] runs waiting at once, each of
+//! a different script, saved with the project; its cue clock resumes them
+//! with `cue_advance` naming list `0` (the earliest due run first, the
+//! lowest run id on a tie). `run` reports a script's run state
+//! ([`ScriptRunStatus`]): `idle`, `waiting:<run>:<started frame>:<due
+//! frame>:<waits passed>:<frames waited>:<wait line>`, or
+//! `faulted:<run>:<frame>:<failure>:<line>:<column>:<reason>:<message>`
+//! when a part failed on its frame
 //! (nothing of that frame applied; `failure` a
 //! [`fm_command::ScriptFailureKind`] token). Since Protocol 2.63 the fault
 //! says what the run was refused with ([`fm_command::FaultDetail`]):
@@ -44,9 +48,13 @@
 //! characters or surrounding whitespace.
 //! `script_ran` reports each part that ran (counts cover the whole run so
 //! far) and `script_run_changed` a stop, a cleared fault, or a fault.
-//! `script_stop` ends the waiting run or clears the fault; another
-//! `script_run`, or an edit or removal of the running script, is refused
-//! with `script_running:<script>` until then.
+//! `script_stop run=<run>` ends that run or clears its fault, and
+//! `script_stop` alone ends every run and clears every fault
+//! (`script_runs_stopped` names the scripts it idled). A `script_run` of a
+//! script already waiting, or an edit or removal of it, is refused with
+//! `script_running:<script>` until then; a run that would wait while
+//! [`MAX_SCRIPT_RUNS`] already do is refused with
+//! `bounds_exceeded:script_runs:8`.
 
 use crate::{
     CueMediaTransport, CueTitleText, FadeToBlackState, InputAudioStripStatus,
@@ -60,6 +68,8 @@ pub const MAX_SCRIPTS: usize = 16;
 pub const MAX_SCRIPT_NAME_BYTES: usize = 64;
 /// Longest script source, in UTF-8 bytes.
 pub const MAX_SCRIPT_SOURCE_BYTES: usize = 4_096;
+/// Most script runs waiting at once (Protocol 2.69).
+pub const MAX_SCRIPT_RUNS: usize = 8;
 
 /// A script's name and source.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,26 +86,32 @@ pub struct ScriptStatus {
     pub spec: ScriptSpec,
 }
 
-/// A script's run (Protocol 2.62).
+/// A script's run (Protocol 2.62). Since Protocol 2.69 several scripts
+/// run at once, at most [`MAX_SCRIPT_RUNS`] waiting, and each run names
+/// its id: nonzero, issued in order by the authority, never reused.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ScriptRunStatus {
     /// Not running, and the last run did not fault.
     #[default]
     Idle,
-    /// Waiting at a `wait`: started on `started_frame`, resumes on
-    /// `due_frame`, having passed `waits` waits of `wait_frames` frames in
-    /// all.
+    /// Run `run` waits at the `wait` on `line` (1-based, Protocol 2.69):
+    /// started on `started_frame`, resumes on `due_frame`, having passed
+    /// `waits` waits of `wait_frames` frames in all.
     Waiting {
+        run: u64,
         started_frame: u64,
         due_frame: u64,
         waits: u32,
         wait_frames: u32,
+        line: u32,
     },
-    /// The part due on `frame` failed at `line`:`column` (1-based):
-    /// nothing of that frame applied and the run ended. `detail` says what
-    /// the run was refused with (Protocol 2.63): a refused action's typed
-    /// reason and message, else the failure's own message.
+    /// The part of run `run` due on `frame` failed at `line`:`column`
+    /// (1-based): nothing of that frame applied and the run ended.
+    /// `detail` says what the run was refused with (Protocol 2.63): a
+    /// refused action's typed reason and message, else the failure's own
+    /// message.
     Faulted {
+        run: u64,
         frame: u64,
         failure: fm_command::ScriptFailureKind,
         line: u32,

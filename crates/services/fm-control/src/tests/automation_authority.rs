@@ -1067,10 +1067,12 @@ fn a_waiting_script_needs_every_verb_up_front_and_resumes_on_the_clock() {
         panic!("expected script_ran: {:?}", ran.output.events);
     };
     let fm_protocol::ScriptRunStatus::Waiting {
+        run: 1,
         started_frame,
         due_frame,
         waits: 1,
         wait_frames: 5,
+        line: 2,
     } = change.run
     else {
         panic!("expected a waiting run: {:?}", change.run);
@@ -1078,7 +1080,7 @@ fn a_waiting_script_needs_every_verb_up_front_and_resumes_on_the_clock() {
     assert_eq!(due_frame, started_frame + 5);
     assert_eq!(control.cue_advance_frame(), Some((0, due_frame)));
     assert_eq!(control.script_states()[0].run, change.run);
-    // Another run waits for this one.
+    // Another run of the same script waits for this one.
     let busy = submit(&mut control, &session(), "again", run_script());
     let CommandResult::Rejected { reason, .. } = &busy.output.result else {
         panic!("expected a refusal: {:?}", busy.output.result);
@@ -1122,7 +1124,12 @@ fn a_stop_and_a_fault_publish_the_run_state() {
         set_script(1, "wait 3\ncut 7"),
     );
     submit(&mut control, &session(), "run", run_script());
-    let stopped = submit(&mut control, &session(), "stop", CommandPayload::StopScript);
+    let stopped = submit(
+        &mut control,
+        &session(),
+        "stop",
+        CommandPayload::StopScript { run: Some(1) },
+    );
     assert!(
         matches!(
             stopped.output.events[0].payload,
@@ -1153,6 +1160,7 @@ fn a_stop_and_a_fault_publish_the_run_state() {
     assert_eq!(
         run,
         &fm_protocol::ScriptRunStatus::Faulted {
+            run: 2,
             frame: *frame,
             failure: fm_protocol::ScriptFailureKind::Refused,
             line: 2,
@@ -1165,4 +1173,138 @@ fn a_stop_and_a_fault_publish_the_run_state() {
     );
     assert_eq!(&control.script_states()[0].run, run);
     assert_eq!(program(&control), input(1));
+}
+
+/// Protocol 2.69: runs of different scripts wait together. Each run is
+/// authorized on its own (its script's verbs, up front), each script's
+/// state names its run, the clock resumes them in due order, and a stop
+/// ends one run or every run.
+#[test]
+#[allow(clippy::too_many_lines)] // one walk through every run state
+fn concurrent_runs_are_authorized_reported_and_stopped_each() {
+    let mut control = granted(TRANSITION_ONLY);
+    submit(
+        &mut control,
+        &admin(),
+        "set-1",
+        set_script(1, "wait 4\ncut 2\nwait 4\ncut 1"),
+    );
+    submit(
+        &mut control,
+        &admin(),
+        "set-2",
+        set_script(2, "wait 2\ncut 3\nwait 20\ncut 1"),
+    );
+    submit(
+        &mut control,
+        &admin(),
+        "set-3",
+        set_script(3, "wait 3\nmute 1"),
+    );
+    assert!(submit(&mut control, &session(), "run-1", run_script()).is_accepted());
+    // Script 3 may mute later: this session may not, even while another
+    // run it was allowed waits.
+    assert_denied(
+        &submit(
+            &mut control,
+            &session(),
+            "run-3",
+            CommandPayload::RunScript { script: 3 },
+        ),
+        "ControlAudio",
+    );
+    let ran = submit(
+        &mut control,
+        &session(),
+        "run-2",
+        CommandPayload::RunScript { script: 2 },
+    );
+    assert!(ran.is_accepted(), "{:?}", ran.output.result);
+    let states = control.script_states();
+    let runs: Vec<_> = states
+        .iter()
+        .map(|state| match state.run {
+            fm_protocol::ScriptRunStatus::Waiting { run, due_frame, .. } => {
+                Some((state.script.id, run, due_frame))
+            }
+            _ => None,
+        })
+        .collect();
+    let (Some((1, 1, due_1)), Some((2, 2, due_2)), None) = (runs[0], runs[1], runs[2]) else {
+        panic!("{runs:?}");
+    };
+    // The earliest due resumes first, the lowest run on a tie.
+    let order = if due_2 < due_1 { [2, 1] } else { [1, 2] };
+    assert_eq!(control.cue_advance_frame(), Some((0, due_1.min(due_2))));
+    for (turn, script) in order.into_iter().enumerate() {
+        let advanced = advance(&mut control, &format!("advance-{turn}"));
+        let EventPayload::ScriptRan(change) = &advanced.output.events[0].payload else {
+            panic!("{:?}", advanced.output.events);
+        };
+        assert_eq!(change.script, script);
+    }
+    assert_eq!(program(&control), input(if order[1] == 1 { 2 } else { 3 }));
+
+    // Stop run 2 only: run 1 carries on.
+    let stopped = submit(
+        &mut control,
+        &session(),
+        "stop-2",
+        CommandPayload::StopScript { run: Some(2) },
+    );
+    assert!(
+        matches!(
+            stopped.output.events[0].payload,
+            EventPayload::ScriptRunChanged {
+                script: 2,
+                run: fm_protocol::ScriptRunStatus::Idle,
+                ..
+            }
+        ),
+        "{:?}",
+        stopped.output.events
+    );
+    assert!(matches!(
+        control.script_states()[0].run,
+        fm_protocol::ScriptRunStatus::Waiting { run: 1, .. }
+    ));
+    // A stop of a run that already ended is refused.
+    let again = submit(
+        &mut control,
+        &session(),
+        "stop-2-again",
+        CommandPayload::StopScript { run: Some(2) },
+    );
+    assert!(!again.is_accepted());
+
+    assert!(
+        submit(
+            &mut control,
+            &session(),
+            "rerun-2",
+            CommandPayload::RunScript { script: 2 },
+        )
+        .is_accepted()
+    );
+    let all = submit(
+        &mut control,
+        &session(),
+        "stop-all",
+        CommandPayload::StopScript { run: None },
+    );
+    assert!(
+        matches!(
+            &all.output.events[0].payload,
+            EventPayload::ScriptRunsStopped { scripts, .. } if *scripts == vec![1, 2]
+        ),
+        "{:?}",
+        all.output.events
+    );
+    assert!(
+        control
+            .script_states()
+            .iter()
+            .all(|state| state.run == fm_protocol::ScriptRunStatus::Idle)
+    );
+    assert_eq!(control.cue_advance_frame(), None);
 }

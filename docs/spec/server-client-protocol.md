@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.68 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.69 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2054,7 +2054,8 @@ Protocol 2.62 lets a script wait (RC-011).
   turns left of each enclosing `repeat`), the variables, and the budget
   used, all bounded by the run's limits. The show has one run slot: either
   one run waiting for its next part or the fault the last one ended with,
-  never both.
+  never both. (Protocol 2.69 replaces the slot with up to 8 runs of
+  different scripts and one fault per script; see below.)
 - Resumption: the authority's cue clock resumes the run. `cue_advance`
   may now name list `0`, meaning the waiting script run (still only the
   authority's clock may submit it; a client's is `unavailable`); it runs
@@ -2100,7 +2101,8 @@ Protocol 2.62 lets a script wait (RC-011).
   (`due_frame` after `started_frame`, `waits` and `wait_frames` nonzero),
   or `faulted:<frame>:<failure>:<line>:<column>` (`failure` a
   `script_failed` kind token). At most one script reports a non-idle
-  `run`.
+  `run` (several since Protocol 2.69, which also adds the run id and the
+  wait line).
 - Durability: the project gains required
   `"script_run": {"running": null | {"script", "started_frame",
   "due_frame", "path": [{"statement", "branch"}], "variables": [{"name",
@@ -2396,6 +2398,56 @@ operator picks a device instead of typing its name.
   name field stays editable for a device the list does not show. The CLI
   prints the list with `remote-system-audio-devices`.
 - 2.67 is refused.
+
+Protocol 2.69 lets several scripts' runs wait at once (RC-011, schema 60), so
+a lower-third timer and a score update can run side by side.
+
+- At most 8 runs wait at once, each of a different script. A run gets its id
+  when its first part waits: nonzero, the show's last issued id plus one,
+  saved with the project (`last_run`), so ids are never reused and journal
+  replay issues the same ones. A `script_run` of a script that already
+  waits is refused `script_running:<script>` (a second run of one source
+  would fight the first over the same titles and inputs; stop it first),
+  and a run that would wait while 8 do is refused
+  `bounds_exceeded:script_runs:8` (`resource_exhausted`). A run that does
+  not wait is never bounded by them. Each run is authorized on its own, as
+  before: a direct run of a script holding `wait` needs every verb's class up
+  front; the clock resumes it under its own authority.
+- `run` names the run and the step it is at:
+  `waiting:<run>:<started_frame>:<due_frame>:<waits>:<wait_frames>:<line>`
+  (`line` the 1-based line of the `wait` the run is paused at) and
+  `faulted:<run>:<frame>:<failure>:<line>:<column>:<reason>:<message>`; a
+  run id is nonzero. Several scripts may report a non-idle `run`, each
+  with a distinct run id.
+- `script_stop` takes an optional nonzero `run`: with it, that run ends (or
+  its fault clears) and `script_run_changed` reports its script idle; a run
+  that neither waits nor faulted is refused `not_found` (field `run`,
+  `unknown`). Without it every run ends and every fault clears, published as
+  `event=script_runs_stopped` with `frame` and `scripts` (the scripts that
+  were waiting or faulted: 1 to 16 nonzero ids, strictly ascending,
+  comma separated); with nothing to stop it is refused `conflict`.
+- The cue clock still resumes every run as list `0`: `cue_advance` list `0`
+  runs the earliest due run's next part (the lowest run id on a tie). A
+  run due on the frame another list-0 advance already holds joins it: its
+  advance is accepted while the frame is held, planned on the show the first
+  part left and realized after it on the same frame, so runs due together
+  resume together. A part that fails faults its own run only; the clock's
+  retry policy for refused advances is unchanged.
+- Durability (schema 60): `"script_run"` is replaced by required
+  `"script_runs": {"last_run", "runs": [{"run", "script", "started_frame",
+  "due_frame", "path", "variables", "instructions", "actions", "waits",
+  "wait_frames"}], "faults": [{"run", "script", "frame", "failure", "line",
+  "column", "reason", "message"}]}`. Validation refuses more than 8 runs, a
+  run id of zero or past `last_run`, ids out of ascending order in either
+  list or shared between them, and a script named twice across both; a
+  restore refuses any run due further past the frame cursor than its waited
+  frames.
+- Studio's Scripts window lists every active run below the editor (script,
+  run id, wait line and wait count, next frame; or the frame a failed run
+  failed on), each with Stop this run or Clear this report, and Stop all
+  runs. The CLI's `script-stop` and `remote-script-stop` take `--run <run>`;
+  `ScriptRun(...)` lines print `run=` and, while waiting, `line=`.
+- 2.68 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

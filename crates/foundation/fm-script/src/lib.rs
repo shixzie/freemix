@@ -672,6 +672,15 @@ impl Program {
         false
     }
 
+    /// Where the `wait` a run in `suspended` stopped at is written (its
+    /// 1-based line and column), or `None` when `suspended` does not lead
+    /// through this program to a `wait`. A host reports it as the step a
+    /// waiting run is at.
+    #[must_use]
+    pub fn wait_at(&self, suspended: &Suspended) -> Option<Span> {
+        machine::wait_at(&self.statements, &suspended.path)
+    }
+
     /// Whether `suspended` is a state a run of this program under `limits`
     /// can stop in: its path leads through this program's blocks to a
     /// `wait`, and its variables and budget use are within `limits`. A host

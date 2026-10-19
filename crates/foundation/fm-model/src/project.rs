@@ -914,7 +914,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(59);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(60);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1451,14 +1451,15 @@ impl Project {
         self.scripts = scripts;
     }
 
-    /// The script run waiting, or the last run's fault (RC-011, schema 56).
+    /// The script runs waiting and each script's last fault (RC-011,
+    /// schema 56; several runs since schema 60).
     #[must_use]
     pub const fn script_run(&self) -> &crate::ScriptRunState {
         &self.script_run
     }
 
-    /// Replaces the run slot without checking it; [`Project::validate`]
-    /// reports one that does not fit the scripts.
+    /// Replaces the script runs without checking them; [`Project::validate`]
+    /// reports runs that do not fit the scripts.
     pub fn set_script_run(&mut self, script_run: crate::ScriptRunState) {
         self.script_run = script_run;
     }

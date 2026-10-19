@@ -2226,6 +2226,23 @@ fn scenes(language: Language) -> Vec<Scene> {
             },
             script_run_fixture(false, paused_run()),
         ),
+        // Protocol 2.69: several runs at once, each with its own Stop.
+        (
+            "dialog/scripts-concurrent-runs",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(2));
+            },
+            concurrent_runs_fixture(true),
+        ),
+        (
+            "viewer/scripts-concurrent-runs",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+            },
+            concurrent_runs_fixture(false),
+        ),
         (
             "dialog/scripts-run-faulted",
             &|shell| {
@@ -2235,6 +2252,7 @@ fn scenes(language: Language) -> Vec<Scene> {
             script_run_fixture(
                 true,
                 fm_protocol::ScriptRunStatus::Faulted {
+                    run: 3,
                     frame: 160,
                     failure: fm_protocol::ScriptFailureKind::Refused,
                     line: 3,
@@ -2386,11 +2404,38 @@ fn dock_scenes(locale: Locale) -> Vec<Scene> {
 /// Script 1 paused at its second wait, resuming on frame 150.
 fn paused_run() -> fm_protocol::ScriptRunStatus {
     fm_protocol::ScriptRunStatus::Waiting {
+        run: 3,
         started_frame: 100,
         due_frame: 150,
         waits: 2,
         wait_frames: 50,
+        line: 2,
     }
+}
+
+/// Protocol 2.69: script 1 paused (run 3) while script 2's run 5 failed,
+/// for an operator or a viewer.
+pub(crate) fn concurrent_runs_fixture(operator: bool) -> StudioUiState {
+    let mut model = script_run_model(paused_run());
+    apply_audit_change(
+        &mut model,
+        fm_ui_model::DurableChange::ScriptRunChanged {
+            script: 2,
+            frame: 140,
+            run: fm_protocol::ScriptRunStatus::Faulted {
+                run: 5,
+                frame: 140,
+                failure: fm_protocol::ScriptFailureKind::Runtime,
+                line: 2,
+                column: 4,
+                detail: fm_protocol::FaultDetail {
+                    reason: None,
+                    message: "wait needs 1 or more frames, not 0".to_owned(),
+                },
+            },
+        },
+    );
+    ready_over(&model, operator)
 }
 
 /// The audit's show with script 1's run in state `run` (Protocol 2.62),

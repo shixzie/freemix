@@ -534,9 +534,12 @@ pub enum EngineCommand {
     RunScript {
         script: u64,
     },
-    /// Ends the waiting script run, or clears the last run's fault, on the
-    /// command's target frame (RC-011, schema 56). A live operation.
-    StopScript,
+    /// Ends waiting script run `run`, or clears that run's fault, on the
+    /// command's target frame (RC-011, schema 56); with no `run`, ends every
+    /// waiting run and clears every fault (schema 60). A live operation.
+    StopScript {
+        run: Option<u64>,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -753,12 +756,19 @@ pub enum EngineEvent {
         title_texts: Vec<(InputId, FieldId, FieldValue)>,
         applied: Vec<EngineCommand>,
     },
-    /// The show's script run slot changed on `frame` without a part running
-    /// (RC-011, schema 56): script `script`'s run was stopped, its fault
-    /// cleared, or a part due on `frame` failed (the slot then holds the
-    /// fault). The slot is read from [`ShowState::script_run`].
+    /// Script `script`'s run changed on `frame` without a part running
+    /// (RC-011, schema 56): its run was stopped, its fault cleared, or a
+    /// part due on `frame` failed (the script then holds the fault). The
+    /// runs are read from [`ShowState::script_run`].
     ScriptRunChanged {
         script: u64,
+        frame: u64,
+    },
+    /// Every script run was stopped and every fault cleared on `frame`
+    /// (RC-011, schema 60): `scripts` (ascending) are the scripts that were
+    /// waiting or faulted, all idle now.
+    ScriptRunsStopped {
+        scripts: Vec<u64>,
         frame: u64,
     },
 }
@@ -1408,7 +1418,8 @@ impl Engine {
     /// Returns the only `(list, frame)` a [`EngineCommand::CueAdvance`] is
     /// accepted for (RC-017): the earliest waiting cue's due frame, or the
     /// next frame once that has passed. `None` while no cue waits. The
-    /// waiting script run (RC-011) is list `0`, due on its resume frame; a
+    /// waiting script runs (RC-011) are list `0`, due on the earliest
+    /// run's resume frame (see [`fm_model::ScriptRunState::next_due`]); a
     /// cue list due on the same frame goes first.
     #[must_use]
     pub fn cue_advance_frame(&self) -> Option<(u64, u64)> {
@@ -1416,8 +1427,7 @@ impl Engine {
         let script = self
             .show()
             .script_run()
-            .running
-            .as_ref()
+            .next_due()
             .map(|run| (0, run.due_frame));
         let earliest = match (cue, script) {
             (Some(cue), Some(script)) if script.1 < cue.1 => Some(script),
@@ -1914,7 +1924,9 @@ impl Engine {
             Ok(EngineCommand::RunScript { script }) => {
                 Some(crate::script::plan(self, *script, target_frame))
             }
-            Ok(EngineCommand::StopScript) => Some(crate::script::plan_stop(self, target_frame)),
+            Ok(EngineCommand::StopScript { run }) => {
+                Some(crate::script::plan_stop(self, *run, target_frame))
+            }
             _ => None,
         };
         let cue_transition = match &cue {
@@ -2018,7 +2030,14 @@ impl Engine {
                     usage,
                 }));
             }
-            if let Some(frame) = cue_held_until {
+            // Another script run due on the held frame joins it (schema
+            // 60): it is planned on the show the held advance left, and
+            // realized after it on the same frame, so runs due together
+            // resume together.
+            if let Some(frame) = cue_held_until
+                && !(matches!(&command, EngineCommand::CueAdvance { list: 0, .. })
+                    && frame == target_frame)
+            {
                 return Err(Rejection::new(
                     RejectionCode::Conflict,
                     format!("cue actions are scheduled for frame {}", frame.get()),
@@ -2035,7 +2054,7 @@ impl Engine {
                         | EngineCommand::CueAdvance { .. }
                         | EngineCommand::SetCueList { .. }
                         | EngineCommand::RunScript { .. }
-                        | EngineCommand::StopScript
+                        | EngineCommand::StopScript { .. }
                         | EngineCommand::SetScript { .. }
                 )
             {
@@ -2465,18 +2484,16 @@ impl Engine {
 /// (a hand-edited project) would hold the cue clock, and block a local CLI
 /// run that plays the clock to its end, for ever.
 fn validate_script_run_reach(show: &ShowState, cursor: u64) -> Result<(), SnapshotError> {
-    match &show.script_run().running {
-        Some(run)
-            if cursor
-                .checked_add(u64::from(run.state.wait_frames))
-                .is_none_or(|reach| run.due_frame > reach) =>
-        {
-            Err(SnapshotError::ScriptRunOutOfReach {
-                due_frame: run.due_frame,
-                frame_cursor: cursor,
-            })
-        }
-        _ => Ok(()),
+    match show.script_run().runs.iter().find(|run| {
+        cursor
+            .checked_add(u64::from(run.state.wait_frames))
+            .is_none_or(|reach| run.due_frame > reach)
+    }) {
+        Some(run) => Err(SnapshotError::ScriptRunOutOfReach {
+            due_frame: run.due_frame,
+            frame_cursor: cursor,
+        }),
+        None => Ok(()),
     }
 }
 
@@ -2845,7 +2862,7 @@ impl EngineMutation {
                 | EngineCommand::CueAdvance { .. }
                 | EngineCommand::RealizeCueActions(_)
                 | EngineCommand::RunScript { .. }
-                | EngineCommand::StopScript
+                | EngineCommand::StopScript { .. }
         ) {
             let Some(plan) = self.cue else {
                 return Err(Rejection::new(
@@ -3390,7 +3407,7 @@ impl EngineMutation {
             | EngineCommand::RealizeCueActions(_)
             | EngineCommand::SetScript { .. }
             | EngineCommand::RunScript { .. }
-            | EngineCommand::StopScript => {
+            | EngineCommand::StopScript { .. } => {
                 unreachable!("cue mutations return before switcher command mapping")
             }
             EngineCommand::Grade(_)
@@ -4098,7 +4115,7 @@ fn apply_runtime(
         | EngineCommand::RealizeCueActions(_)
         | EngineCommand::SetScript { .. }
         | EngineCommand::RunScript { .. }
-        | EngineCommand::StopScript => {
+        | EngineCommand::StopScript { .. } => {
             unreachable!("cue commands are realized by the engine tick")
         }
         EngineCommand::Grade(_)
@@ -4318,7 +4335,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RealizeCueActions(_)
         | EngineCommand::SetScript { .. }
         | EngineCommand::RunScript { .. }
-        | EngineCommand::StopScript => None,
+        | EngineCommand::StopScript { .. } => None,
     }
 }
 

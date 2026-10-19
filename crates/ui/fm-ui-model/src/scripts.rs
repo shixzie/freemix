@@ -9,8 +9,11 @@
 //! A script that waits (Protocol 2.62) runs in parts: each part arrives as
 //! a `script_ran` whose `run` says whether the run waits again, and a stop,
 //! a cleared fault, or a part that failed on its frame as
-//! `script_run_changed`. At most one script's run waits or faulted at a
-//! time; [`ProjectState::script_run_status`] reports each script's.
+//! `script_run_changed`. Since Protocol 2.69 runs of several scripts wait
+//! at once (each script at most one run, named by its run id), and a stop
+//! of every run arrives as `script_runs_stopped`;
+//! [`ProjectState::script_run_status`] reports each script's and
+//! [`ProjectState::active_script_runs`] lists them all.
 
 use fm_protocol::{ScriptRunChange, ScriptStatus};
 
@@ -121,18 +124,32 @@ pub(crate) fn apply_run(state: &mut ProjectState, update: ScriptRunUpdate) {
     crate::cue_lists::apply_effects(state, update.effects);
 }
 
-/// Records script `script`'s run state: the authority keeps one run slot,
-/// so a waiting or faulted run replaces any other script's, and an idle
-/// one empties the slot.
+/// Records script `script`'s run state: each script has at most one run
+/// (Protocol 2.69), so a waiting or faulted run replaces the script's own,
+/// and an idle one drops it. Other scripts' runs stay.
 pub(crate) fn set_run_status(
     state: &mut ProjectState,
     script: u64,
     run: fm_protocol::ScriptRunStatus,
 ) {
-    state.active_script_run = match run {
+    match run {
+        fm_protocol::ScriptRunStatus::Idle => {
+            state.script_run_states.remove(&script);
+        }
+        run => {
+            state.script_run_states.insert(script, run);
+        }
+    }
+}
+
+/// The run id a run state names, if any.
+#[must_use]
+pub const fn run_id(run: &fm_protocol::ScriptRunStatus) -> Option<u64> {
+    match run {
         fm_protocol::ScriptRunStatus::Idle => None,
-        run => Some((script, run)),
-    };
+        fm_protocol::ScriptRunStatus::Waiting { run, .. }
+        | fm_protocol::ScriptRunStatus::Faulted { run, .. } => Some(*run),
+    }
 }
 
 /// Records `run` as its script's last run and the latest of all.

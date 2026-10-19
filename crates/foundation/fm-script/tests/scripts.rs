@@ -811,3 +811,35 @@ fn a_saved_state_that_does_not_fit_the_program_is_refused() {
         assert!(!program.accepts(&broken, &limits), "{broken:?}");
     }
 }
+
+/// Protocol 2.69: a waiting run reports the `wait` it stopped at, through
+/// branches and loops, and a state that does not fit names none.
+#[test]
+fn a_suspended_run_names_the_wait_it_stopped_at() {
+    let program = parse(
+        "let n = 0\n\
+         repeat 2\n  \
+           if n == 0\n    wait 3\n  else\n    wait 4\n  end\n  \
+           let n = n + 1\n\
+         end\n",
+    )
+    .expect("parses");
+    let mut recorder = host();
+    let limits = Limits::default();
+    let first = run(&program, &mut recorder, limits)
+        .suspension
+        .expect("waits");
+    assert_eq!(
+        program.wait_at(&first.state),
+        Some(fm_script::Span::new(4, 5))
+    );
+    let second = fm_script::resume(&program, &first.state, &mut recorder, limits)
+        .suspension
+        .expect("waits again");
+    assert_eq!(
+        program.wait_at(&second.state),
+        Some(fm_script::Span::new(6, 5))
+    );
+    let other = parse("cut 1\n").expect("parses");
+    assert_eq!(other.wait_at(&second.state), None);
+}

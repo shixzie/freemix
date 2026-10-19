@@ -122,6 +122,30 @@ pub(crate) fn path_is_valid(statements: &[Statement], path: &[ResumePoint]) -> b
     }
 }
 
+/// The `wait` statement `path` leads to through `statements`, if it is
+/// valid (see [`path_is_valid`]).
+pub(crate) fn wait_at(statements: &[Statement], path: &[ResumePoint]) -> Option<Span> {
+    if !path_is_valid(statements, path) {
+        return None;
+    }
+    let mut block = statements;
+    let mut at = None;
+    for point in path {
+        let statement = block.get(usize::try_from(point.statement).ok()?)?;
+        at = Some(statement.at);
+        block = match &statement.kind {
+            StatementKind::If { arms, otherwise } => {
+                let branch = usize::try_from(point.branch).ok()?;
+                arms.get(branch)
+                    .map_or(otherwise.as_slice(), |arm| arm.2.as_slice())
+            }
+            StatementKind::Repeat { body, .. } | StatementKind::While { body, .. } => body,
+            _ => &[],
+        };
+    }
+    at
+}
+
 impl<'h> Machine<'h> {
     fn new(host: &'h mut dyn ScriptHost, limits: Limits) -> Self {
         Self {

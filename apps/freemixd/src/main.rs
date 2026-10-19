@@ -14070,7 +14070,7 @@ fn command_base_ticks(
         | CommandPayload::SetScript { .. }
         | CommandPayload::RemoveScript { .. }
         | CommandPayload::RunScript { .. }
-        | CommandPayload::StopScript
+        | CommandPayload::StopScript { .. }
         | CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }

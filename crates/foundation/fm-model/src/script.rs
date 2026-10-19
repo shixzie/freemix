@@ -9,9 +9,9 @@
 //! `fm-script` and the engine when it runs.
 //!
 //! A script with `wait` spans frames (schema 56): the project saves the
-//! one run waiting ([`ScriptRunState`]) with its interpreter state, so a
-//! saved or restarted show resumes it on its due frame, or the fault the
-//! last run ended with.
+//! runs waiting ([`ScriptRunState`], several at once since schema 60) with
+//! their interpreter state, so a saved or restarted show resumes each on
+//! its due frame, and the fault each script's last run ended with.
 
 use core::fmt;
 
@@ -159,9 +159,16 @@ pub fn script_limits(rate: fm_types::FrameRate) -> fm_script::Limits {
     }
 }
 
+/// Most script runs one show keeps waiting at once (schema 60). A run of a
+/// script already waiting is refused, so each run is a different script.
+pub const MAX_SCRIPT_RUNS: usize = 8;
+
 /// A run waiting at a `wait` (schema 56): what it resumes and when.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptRun {
+    /// The run's identity (schema 60): nonzero, issued in order by the
+    /// show ([`ScriptRunState::last_run`]) and never reused.
+    pub run: u64,
     /// The script running.
     pub script: u64,
     /// The frame the run started on.
@@ -176,6 +183,8 @@ pub struct ScriptRun {
 /// that frame was applied and the run ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptFault {
+    /// The run that failed (schema 60).
+    pub run: u64,
     pub script: u64,
     pub frame: u64,
     pub failure: fm_script::FailureKind,
@@ -186,30 +195,91 @@ pub struct ScriptFault {
     pub detail: fm_command::FaultDetail,
 }
 
-/// The show's one script run slot (schema 56): the run waiting, or the
-/// fault the last one ended with. Never both.
+/// The show's script runs (schema 60): up to [`MAX_SCRIPT_RUNS`] runs
+/// waiting at once, and the fault each script's last run ended with. A
+/// script has at most one of either: a new run of it clears its fault, and
+/// a run of a script already waiting is refused. Both lists are in
+/// ascending run order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScriptRunState {
-    pub running: Option<ScriptRun>,
-    pub fault: Option<ScriptFault>,
+    /// The last run id the show issued (zero before the first run): the
+    /// next run is `last_run + 1`, so ids are never reused, also across a
+    /// save and restore.
+    pub last_run: u64,
+    pub runs: Vec<ScriptRun>,
+    pub faults: Vec<ScriptFault>,
 }
 
 impl ScriptRunState {
-    /// The script running or faulted, if any.
+    /// Script `script`'s waiting run, if any.
     #[must_use]
-    pub fn script(&self) -> Option<u64> {
-        self.running
-            .as_ref()
+    pub fn run_of(&self, script: u64) -> Option<&ScriptRun> {
+        self.runs.iter().find(|run| run.script == script)
+    }
+
+    /// Script `script`'s last fault, if any.
+    #[must_use]
+    pub fn fault_of(&self, script: u64) -> Option<&ScriptFault> {
+        self.faults.iter().find(|fault| fault.script == script)
+    }
+
+    /// The waiting run `run`, if any.
+    #[must_use]
+    pub fn run(&self, run: u64) -> Option<&ScriptRun> {
+        self.runs.iter().find(|found| found.run == run)
+    }
+
+    /// The waiting run the cue clock resumes first: the earliest due, the
+    /// lowest run id on a tie.
+    #[must_use]
+    pub fn next_due(&self) -> Option<&ScriptRun> {
+        self.runs.iter().min_by_key(|run| (run.due_frame, run.run))
+    }
+
+    /// The script that waiting or faulted run `run` belongs to, if any.
+    #[must_use]
+    pub fn script_of(&self, run: u64) -> Option<u64> {
+        self.run(run).map(|found| found.script).or_else(|| {
+            self.faults
+                .iter()
+                .find(|fault| fault.run == run)
+                .map(|fault| fault.script)
+        })
+    }
+
+    /// Every script waiting or faulted, ascending.
+    #[must_use]
+    pub fn scripts(&self) -> Vec<u64> {
+        let mut scripts: Vec<u64> = self
+            .runs
+            .iter()
             .map(|run| run.script)
-            .or(self.fault.as_ref().map(|fault| fault.script))
+            .chain(self.faults.iter().map(|fault| fault.script))
+            .collect();
+        scripts.sort_unstable();
+        scripts.dedup();
+        scripts
+    }
+
+    /// Whether nothing waits and nothing faulted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty() && self.faults.is_empty()
+    }
+
+    /// Clears script `script`'s fault, if any.
+    pub fn clear_fault_of(&mut self, script: u64) {
+        self.faults.retain(|fault| fault.script != script);
     }
 }
 
-/// Checks the run slot against the project's `scripts` at `rate`: a run
-/// names a script whose source parses and accepts the saved state under
-/// [`script_limits`], and resumes no earlier than its waits allow; a fault
-/// names a script, a position, and a valid detail (schema 57). A run and a
-/// fault are never both set.
+/// Checks the script runs against the project's `scripts` at `rate`: at
+/// most [`MAX_SCRIPT_RUNS`] runs; run ids nonzero, at most
+/// [`ScriptRunState::last_run`], ascending in each list and unique across
+/// both; each script at most once across both; a run names a script whose
+/// source parses and accepts the saved state under [`script_limits`], and
+/// resumes no earlier than its waits allow; a fault names a script, a
+/// position, and a valid detail (schema 57).
 ///
 /// # Errors
 ///
@@ -220,27 +290,48 @@ pub fn validate_script_run(
     rate: fm_types::FrameRate,
 ) -> Result<(), ScriptError> {
     let known = |script: u64| scripts.iter().find(|found| found.id == script);
-    if let Some(run) = &state.running {
-        let valid = state.fault.is_none()
-            && known(run.script).is_some_and(|script| {
-                fm_script::parse(&script.source)
-                    .is_ok_and(|program| program.accepts(&run.state, &script_limits(rate)))
-            })
-            && run
-                .started_frame
-                .checked_add(u64::from(run.state.wait_frames))
-                .is_some_and(|earliest| run.due_frame >= earliest);
+    let ascending = |ids: &[u64]| ids.windows(2).all(|pair| pair[0] < pair[1]);
+    let run_ids: Vec<u64> = state.runs.iter().map(|run| run.run).collect();
+    let fault_ids: Vec<u64> = state.faults.iter().map(|fault| fault.run).collect();
+    let mut owners: Vec<u64> = state
+        .runs
+        .iter()
+        .map(|run| run.script)
+        .chain(state.faults.iter().map(|fault| fault.script))
+        .collect();
+    owners.sort_unstable();
+    let shape = state.runs.len() <= MAX_SCRIPT_RUNS
+        && ascending(&run_ids)
+        && ascending(&fault_ids)
+        && run_ids
+            .iter()
+            .chain(&fault_ids)
+            .all(|id| (1..=state.last_run).contains(id))
+        && !run_ids.iter().any(|id| fault_ids.contains(id))
+        && owners.windows(2).all(|pair| pair[0] != pair[1]);
+    if !shape {
+        return Err(ScriptError::InvalidRun);
+    }
+    for run in &state.runs {
+        let valid = known(run.script).is_some_and(|script| {
+            fm_script::parse(&script.source)
+                .is_ok_and(|program| program.accepts(&run.state, &script_limits(rate)))
+        }) && run
+            .started_frame
+            .checked_add(u64::from(run.state.wait_frames))
+            .is_some_and(|earliest| run.due_frame >= earliest);
         if !valid {
             return Err(ScriptError::InvalidRun);
         }
     }
-    if let Some(fault) = &state.fault
-        && (known(fault.script).is_none()
+    for fault in &state.faults {
+        if known(fault.script).is_none()
             || fault.at.line == 0
             || fault.at.column == 0
-            || !fault.detail.is_valid())
-    {
-        return Err(ScriptError::InvalidRun);
+            || !fault.detail.is_valid()
+        {
+            return Err(ScriptError::InvalidRun);
+        }
     }
     Ok(())
 }

@@ -2551,7 +2551,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::CueControl { .. }
         | CommandPayload::CueAdvance { .. }
         | CommandPayload::RunScript { .. }
-        | CommandPayload::StopScript => CommandClass::Transition,
+        | CommandPayload::StopScript { .. } => CommandClass::Transition,
     }
 }
 
@@ -2734,7 +2734,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetScript { .. }
         | CommandPayload::RemoveScript { .. }
         | CommandPayload::RunScript { .. }
-        | CommandPayload::StopScript) => script::script_engine_command(payload),
+        | CommandPayload::StopScript { .. }) => script::script_engine_command(payload),
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
@@ -3450,6 +3450,9 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
             EngineEvent::ScriptChanged { script } => Some(script::script_changed(engine, *script)),
             EngineEvent::ScriptRunChanged { script, frame } => {
                 Some(script::script_run_changed(engine, *script, *frame))
+            }
+            EngineEvent::ScriptRunsStopped { scripts, frame } => {
+                Some(script::script_runs_stopped(*frame, scripts))
             }
             EngineEvent::ScriptRan {
                 script,

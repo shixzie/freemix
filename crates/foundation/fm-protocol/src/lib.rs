@@ -167,8 +167,9 @@ pub use scene_layer::{
     WireLayerKey, WireLayerMask, WireLumaKey,
 };
 pub use script::{
-    MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange, ScriptRunStatus,
-    ScriptSpec, ScriptStateMessage, ScriptStatus, script_name_is_valid, script_source_is_valid,
+    MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange,
+    ScriptRunStatus, ScriptSpec, ScriptStateMessage, ScriptStatus, script_name_is_valid,
+    script_source_is_valid,
 };
 pub use stream_target::{
     DEFAULT_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_RECONNECT_ATTEMPTS,

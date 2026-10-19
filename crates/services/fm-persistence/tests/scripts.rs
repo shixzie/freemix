@@ -104,13 +104,13 @@ fn scripts_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 59"));
+    assert!(text.contains("\"schema_version\": 60"));
     assert!(
         text.contains(
             ",\n    \"scripts\": [\n      {\"id\": 3, \"name\": \"Open \\\"show\\\"\", \"source\": \
              \"# open\\npreview 2\\r\\n\\ttransition fade, 25\\ntitle_text \\\"Lower\\\", 1, \
              \\\"a\\\\\\\\b\\\"\"},\n      {\"id\": 1, \"name\": \"Draft\", \"source\": \"if \
-             program ==\\n\"}\n    ],\n    \"script_run\": {\"running\": null, \"fault\": null}\n  },"
+             program ==\\n\"}\n    ],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []}\n  },"
         ),
         "{text}"
     );
@@ -118,7 +118,7 @@ fn scripts_round_trip_exactly_and_strictly() {
     // An empty script list is written as an empty array.
     store.save(&stored(project()).unwrap()).unwrap();
     let empty = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(empty.contains(",\n    \"scripts\": [],\n    \"script_run\": {\"running\": null, \"fault\": null}\n  },"), "{empty}");
+    assert!(empty.contains(",\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []}\n  },"), "{empty}");
 
     store.save(&stored(expected).unwrap()).unwrap();
     for (from, to) in [
@@ -196,7 +196,8 @@ fn script_bounds_are_validated() {
 
 /// Schema 56: a script run waiting at a `wait` (its interpreter state) and
 /// a run's fault round-trip exactly and strictly; a run that does not fit
-/// its script is project validation.
+/// its script is project validation. Schema 60: several runs, each with
+/// its id, and the last id issued.
 #[test]
 #[allow(clippy::too_many_lines)] // one round-trip walk
 fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
@@ -248,42 +249,76 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     let directory = TestDirectory::new("script-run");
     let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
     let mut expected = project();
-    expected.set_scripts(vec![Script {
-        id: 2,
-        name: "Count".into(),
-        source: source.into(),
-    }]);
+    expected.set_scripts(vec![
+        Script {
+            id: 2,
+            name: "Count".into(),
+            source: source.into(),
+        },
+        Script {
+            id: 3,
+            name: "Pause".into(),
+            source: "wait 5\n".into(),
+        },
+    ]);
     expected.set_script_run(ScriptRunState {
-        running: Some(ScriptRun {
-            script: 2,
-            started_frame: 40,
-            due_frame: 65,
-            state,
-        }),
-        fault: None,
+        last_run: 7,
+        runs: vec![
+            ScriptRun {
+                run: 4,
+                script: 2,
+                started_frame: 40,
+                due_frame: 65,
+                state,
+            },
+            ScriptRun {
+                run: 7,
+                script: 3,
+                started_frame: 60,
+                due_frame: 65,
+                state: Suspended {
+                    path: vec![ResumePoint {
+                        statement: 0,
+                        branch: 0,
+                    }],
+                    variables: Vec::new(),
+                    instructions: 1,
+                    actions: 0,
+                    waits: 1,
+                    wait_frames: 5,
+                },
+            },
+        ],
+        faults: Vec::new(),
     });
     store.save(&stored(expected.clone()).unwrap()).unwrap();
     assert_eq!(store.load().unwrap().project(), &expected);
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
     assert!(
         text.contains(
-            ",\n    \"script_run\": {\"running\": {\"script\": 2, \"started_frame\": 40, \
-             \"due_frame\": 65, \"path\": [{\"statement\": 3, \"branch\": 2}, {\"statement\": 0, \
-             \"branch\": 0}], \"variables\": [{\"name\": \"n\", \"int\": 2}, {\"name\": \
-             \"label\", \"string\": \"Li\\\"ve\"}, {\"name\": \"on\", \"bool\": true}], \
-             \"instructions\": 11, \"actions\": 0, \"waits\": 1, \"wait_frames\": 25}, \
-             \"fault\": null}\n  },"
+            ",\n    \"script_runs\": {\"last_run\": 7, \"runs\": [{\"run\": 4, \"script\": 2, \
+             \"started_frame\": 40, \"due_frame\": 65, \"path\": [{\"statement\": 3, \"branch\": 2}, \
+             {\"statement\": 0, \"branch\": 0}], \"variables\": [{\"name\": \"n\", \"int\": 2}, \
+             {\"name\": \"label\", \"string\": \"Li\\\"ve\"}, {\"name\": \"on\", \"bool\": true}], \
+             \"instructions\": 11, \"actions\": 0, \"waits\": 1, \"wait_frames\": 25}, {\"run\": 7, \
+             \"script\": 3, \"started_frame\": 60, \"due_frame\": 65, \"path\": [{\"statement\": 0, \
+             \"branch\": 0}], \"variables\": [], \"instructions\": 1, \"actions\": 0, \"waits\": 1, \
+             \"wait_frames\": 5}], \"faults\": []}\n  },"
         ),
         "{text}"
     );
 
     for (from, to) in [
-        ("\"script_run\": {", "\"script_runs\": {"),
+        ("\"script_runs\": {", "\"script_run\": {"),
+        ("\"last_run\": 7, ", ""),
+        ("{\"run\": 4, ", "{"),
+        ("\"run\": 4, ", "\"run\": -4, "),
         ("\"int\": 2}", "\"int\": 2, \"bool\": true}"),
         ("{\"name\": \"n\", \"int\": 2}", "{\"name\": \"n\"}"),
         ("\"wait_frames\": 25}", "\"wait_frames\": 25, \"extra\": 1}"),
         ("\"branch\": 2}", "\"branch\": -2}"),
-        ("\"fault\": null}", "\"fault\": {\"script\": 2}}"),
+        ("\"faults\": []", "\"faults\": [{\"script\": 2}]"),
+        ("\"faults\": []", "\"faults\": null"),
     ] {
         let malformed = text.replacen(from, to, 1);
         assert_ne!(malformed, text, "{from}");
@@ -298,6 +333,11 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     // end, is refused by project validation.
     for (from, to) in [
         ("\"script\": 2, \"started", "\"script\": 9, \"started"),
+        // Two runs of one script, a run id past the last issued, or runs
+        // out of order.
+        ("\"script\": 3, \"started", "\"script\": 2, \"started"),
+        ("\"last_run\": 7", "\"last_run\": 6"),
+        ("{\"run\": 7, ", "{\"run\": 3, "),
         (
             "{\"statement\": 3, \"branch\": 2}",
             "{\"statement\": 2, \"branch\": 2}",
@@ -321,8 +361,10 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
 
     let mut faulted = expected;
     faulted.set_script_run(ScriptRunState {
-        running: None,
-        fault: Some(ScriptFault {
+        last_run: 7,
+        runs: Vec::new(),
+        faults: vec![ScriptFault {
+            run: 5,
             script: 2,
             frame: 90,
             failure: FailureKind::Budget(fm_script::Budget::WaitFrames),
@@ -331,16 +373,16 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
                 reason: None,
                 message: "wait frame budget exceeded".to_owned(),
             },
-        }),
+        }],
     });
     store.save(&stored(faulted.clone()).unwrap()).unwrap();
     assert_eq!(store.load().unwrap().project(), &faulted);
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
     assert!(
         text.contains(
-            "\"script_run\": {\"running\": null, \"fault\": {\"script\": 2, \"frame\": 90, \
-             \"failure\": \"wait_frames\", \"line\": 5, \"column\": 3, \"reason\": null, \
-             \"message\": \"wait frame budget exceeded\"}}"
+            "\"script_runs\": {\"last_run\": 7, \"runs\": [], \"faults\": [{\"run\": 5, \
+             \"script\": 2, \"frame\": 90, \"failure\": \"wait_frames\", \"line\": 5, \"column\": 3, \
+             \"reason\": null, \"message\": \"wait frame budget exceeded\"}]}"
         ),
         "{text}"
     );
@@ -355,8 +397,10 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     // exactly; a reason no token names, a missing field, or a message out
     // of bounds is refused.
     faulted.set_script_run(ScriptRunState {
-        running: None,
-        fault: Some(ScriptFault {
+        last_run: 7,
+        runs: Vec::new(),
+        faults: vec![ScriptFault {
+            run: 5,
             script: 2,
             frame: 90,
             failure: FailureKind::Refused,
@@ -368,7 +412,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
                 }),
                 message: "input 4 is the \"source\" of overlay 2".to_owned(),
             },
-        }),
+        }],
     });
     store.save(&stored(faulted.clone()).unwrap()).unwrap();
     assert_eq!(store.load().unwrap().project(), &faulted);
@@ -377,7 +421,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
         text.contains(
             "\"failure\": \"refused\", \"line\": 2, \"column\": 1, \
              \"reason\": \"input_in_use:4:overlay:2\", \
-             \"message\": \"input 4 is the \\\"source\\\" of overlay 2\"}}"
+             \"message\": \"input 4 is the \\\"source\\\" of overlay 2\"}]}"
         ),
         "{text}"
     );

@@ -6500,14 +6500,59 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Descartar el informe de la ejecución fallida en todas las consolas"),
     ),
     (
-        Msg::ScriptReasonRunning,
-        t("otra ejecución de guion está en pausa en un wait; deténgala primero"),
+        Msg::ScriptReasonRunLimit,
+        t("ya hay 8 ejecuciones de guion en pausa en un wait; detenga una primero"),
     ),
     (
         Msg::ScriptReasonThisRunning,
         t("este guion está en marcha; detenga primero su ejecución"),
     ),
     (Msg::ScriptListRunning, t("{name} (en marcha)")),
+    (
+        Msg::ScriptActiveRuns,
+        t("Ejecuciones activas: {count} de {max} como máximo en pausa"),
+    ),
+    (
+        Msg::ScriptActiveRunsHover,
+        t(
+            "Cada ejecución de guion en pausa en un wait y cada informe de ejecución fallida, tal como los ven todas las consolas. Varios guiones pueden ejecutarse a la vez; cada guion, una sola vez a la vez",
+        ),
+    ),
+    (
+        Msg::ScriptActiveRunWaiting,
+        t(
+            "{name}, ejecución {run}: en pausa en el wait de la línea {line} (espera {waits}); siguiente parte en el fotograma {frame}",
+        ),
+    ),
+    (
+        Msg::ScriptActiveRunFaulted,
+        t("{name}, ejecución {run}: falló en el fotograma {frame}"),
+    ),
+    (
+        Msg::ScriptActiveRunHover,
+        t(
+            "Una ejecución de guion: su guion, su número de ejecución en el servidor, dónde está en pausa y el fotograma en que se ejecuta su siguiente parte",
+        ),
+    ),
+    (Msg::ScriptStopThisRun, t("Detener esta ejecución")),
+    (
+        Msg::ScriptStopThisRunHover,
+        t(
+            "Detener solo esta ejecución: no se ejecuta nada más de ella, lo que ya hizo se mantiene y las demás ejecuciones siguen",
+        ),
+    ),
+    (Msg::ScriptClearThisFault, t("Borrar este informe")),
+    (
+        Msg::ScriptClearThisFaultHover,
+        t("Descartar solo el informe de esta ejecución fallida, en todas las consolas"),
+    ),
+    (Msg::ScriptStopAll, t("Detener todas las ejecuciones")),
+    (
+        Msg::ScriptStopAllHover,
+        t(
+            "Detener todas las ejecuciones de guion en pausa y borrar todos los informes de ejecuciones fallidas, en todas las consolas; lo que las ejecuciones ya hicieron se mantiene",
+        ),
+    ),
     (Msg::MenuScripts, t("Guiones…")),
     (
         Msg::MenuScriptsHover,

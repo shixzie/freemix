@@ -365,8 +365,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("list", list)?;
             record.field("frame", frame)?;
         }
-        CommandPayload::StopScript => {
+        CommandPayload::StopScript { run } => {
             record.field("payload", "script_stop")?;
+            if let Some(run) = run {
+                super::script::validate_run_id(*run)?;
+                record.field("run", run)?;
+            }
         }
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
@@ -2281,6 +2285,11 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("script", script)?;
             record.field("frame", frame)?;
             record.field_string("run", super::script::encode_run(run)?)?;
+        }
+        EventPayload::ScriptRunsStopped { frame, scripts } => {
+            record.field("event", "script_runs_stopped")?;
+            record.field("frame", frame)?;
+            record.field_string("scripts", super::script::encode_script_list(scripts)?)?;
         }
         EventPayload::GradeChanged(change) => {
             record.field("event", "grade_changed")?;

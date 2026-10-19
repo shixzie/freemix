@@ -9,6 +9,10 @@
 //!   exactly the wait's due engine frame. Show time is engine frames, so the
 //!   frames the daemon was down for do not count toward the wait.
 //!
+//! - Two scripts' waiting runs (RC-011, Protocol 2.69) resume interleaved,
+//!   each on its exact due frame, survive a SIGKILL with the same run ids
+//!   and due frames, and stop one at a time or all at once.
+//!
 //! The tests need a native GPU adapter and `FFmpeg`/`ffprobe`. Without an
 //! adapter they are skipped unless `FM_REQUIRE_NATIVE_MEDIA=1`; without the
 //! tools unless `FM_REQUIRE_FFMPEG=1`.
@@ -35,8 +39,9 @@ use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProjec
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     CueListSpec, CueListStateMessage, CueOperation, CueRunChange, EventPayload, HandshakeRequest,
-    HeartbeatMessage, Role, ServerIdentity, TransitionFavoriteEffect, WireCue, WireCueAction,
-    WireInputId, WireMessage, WireRecorderSlot, decode_line, encode_line,
+    HeartbeatMessage, Role, ScriptRunStatus, ScriptSpec, ScriptStateMessage, ServerIdentity,
+    TransitionFavoriteEffect, WireCue, WireCueAction, WireInputId, WireMessage, WireRecorderSlot,
+    decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -268,6 +273,8 @@ struct Client {
     last_heartbeat: Instant,
     /// The `cue_list_state` records that followed the snapshot.
     lists: Vec<CueListStateMessage>,
+    /// The `script_state` records that followed the snapshot.
+    scripts: Vec<ScriptStateMessage>,
 }
 
 impl Client {
@@ -320,6 +327,7 @@ impl Client {
             heartbeats: 0,
             last_heartbeat: Instant::now(),
             lists: Vec::new(),
+            scripts: Vec::new(),
         };
         let snapshot = loop {
             if let Some(WireMessage::Snapshot(snapshot)) = client.receive() {
@@ -327,11 +335,15 @@ impl Client {
             }
             assert!(Instant::now() < deadline, "no snapshot");
         };
-        while client.lists.len() < usize::from(snapshot.cue_list_states) {
-            if let Some(WireMessage::CueListState(state)) = client.receive() {
-                client.lists.push(state);
+        while client.lists.len() < usize::from(snapshot.cue_list_states)
+            || client.scripts.len() < usize::from(snapshot.script_states)
+        {
+            match client.receive() {
+                Some(WireMessage::CueListState(state)) => client.lists.push(state),
+                Some(WireMessage::ScriptState(state)) => client.scripts.push(state),
+                _ => {}
             }
-            assert!(Instant::now() < deadline, "missing cue_list_state records");
+            assert!(Instant::now() < deadline, "missing snapshot state records");
         }
         client
     }
@@ -415,6 +427,25 @@ impl Client {
             }
         }
         panic!("timed out waiting for cue_run_changed");
+    }
+
+    /// The next script event: `script_ran`, `script_run_changed`, or
+    /// `script_runs_stopped` (RC-011).
+    fn script_event(&mut self) -> EventPayload {
+        let deadline = Instant::now() + EVENT_TIMEOUT;
+        while Instant::now() < deadline {
+            if let Some(WireMessage::Event(event)) = self.receive()
+                && matches!(
+                    event.payload,
+                    EventPayload::ScriptRan(_)
+                        | EventPayload::ScriptRunChanged { .. }
+                        | EventPayload::ScriptRunsStopped { .. }
+                )
+            {
+                return event.payload;
+            }
+        }
+        panic!("timed out waiting for a script event");
     }
 
     /// Keeps the session served for `duration`.
@@ -681,6 +712,132 @@ fn a_cue_wait_survives_sigkill_and_completes_on_its_due_frame() {
     assert_eq!(advance.fired, Vec::<u64>::new());
     assert_eq!(advance.state.pending, None);
     assert_eq!(advance.state.standby, Some(20));
+    drop(client);
+    let stderr = daemon.stop();
+    assert!(!stderr.contains("FREEMIXD_CUE\t"), "{stderr}");
+}
+
+fn script_ran(client: &mut Client) -> fm_protocol::ScriptRunChange {
+    match client.script_event() {
+        EventPayload::ScriptRan(change) => *change,
+        other => panic!("expected script_ran, got {other:?}"),
+    }
+}
+
+/// Protocol 2.69 on the native daemon: two scripts' runs wait at once and
+/// the cue clock resumes their parts interleaved, each on exactly its due
+/// engine frame. A SIGKILL mid-wait loses nothing: journal replay restores
+/// both runs with their ids, due frames, and wait lines, and the clock
+/// resumes them on those frames. A stop ends one run, then every run.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn two_script_runs_interleave_and_survive_sigkill() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("script-runs.freemix");
+    let recordings = directory.path().join("recordings");
+    fs::create_dir_all(&recordings).unwrap();
+    let output = recordings.join("program.mp4");
+    save_project(&project, false);
+    let Some(daemon) = DaemonProcess::start(&project, &output) else {
+        return;
+    };
+    let mut client = Client::connect(daemon.address);
+    for (id, name, source) in [
+        (1, "Timer", "cut 2\nwait 40\ncut 1\nwait 75\ncut 2\n"),
+        (2, "Score", "wait 15\nmute 1\nwait 400\nmute 2\n"),
+    ] {
+        client.command(
+            &format!("set-{id}"),
+            CommandPayload::SetScript {
+                script: id,
+                spec: Box::new(ScriptSpec {
+                    name: name.into(),
+                    source: source.into(),
+                }),
+            },
+        );
+    }
+    client.command("run-1", CommandPayload::RunScript { script: 1 });
+    let timer = script_ran(&mut client);
+    client.command("run-2", CommandPayload::RunScript { script: 2 });
+    let score = script_ran(&mut client);
+    assert_eq!((timer.script, score.script), (1, 2));
+    assert!(matches!(timer.run, ScriptRunStatus::Waiting { run: 1, .. }));
+    assert!(matches!(score.run, ScriptRunStatus::Waiting { run: 2, .. }));
+
+    // Interleaved, each on its exact due frame.
+    let mut parts = [script_ran(&mut client), script_ran(&mut client)];
+    parts.sort_by_key(|part| part.frame);
+    let expected = {
+        let mut expected = vec![(1, timer.frame + 40), (2, score.frame + 15)];
+        expected.sort_by_key(|(_, frame)| *frame);
+        expected
+    };
+    assert_eq!(
+        parts
+            .iter()
+            .map(|part| (part.script, part.frame))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let waiting: Vec<(u64, ScriptRunStatus)> = {
+        let mut waiting: Vec<_> = parts
+            .iter()
+            .map(|part| (part.script, part.run.clone()))
+            .collect();
+        waiting.sort_by_key(|(script, _)| *script);
+        waiting
+    };
+    assert!(matches!(
+        waiting[0].1,
+        ScriptRunStatus::Waiting { run: 1, line: 4, due_frame, .. } if due_frame == timer.frame + 115
+    ));
+    assert!(matches!(
+        waiting[1].1,
+        ScriptRunStatus::Waiting { run: 2, line: 3, due_frame, .. } if due_frame == score.frame + 415
+    ));
+    drop(client);
+    daemon.crash();
+
+    let Some(daemon) = DaemonProcess::start(&project, &output) else {
+        panic!("the native daemon started once but not after the crash");
+    };
+    let mut client = Client::connect(daemon.address);
+    let restored: Vec<_> = client
+        .scripts
+        .iter()
+        .map(|state| (state.script.id, state.run.clone()))
+        .collect();
+    assert_eq!(restored, waiting, "journal replay restores both runs");
+    // The clock resumes the timer's last part on its due frame; it ends.
+    let last = loop {
+        let part = script_ran(&mut client);
+        if part.script == 1 {
+            break part;
+        }
+    };
+    assert_eq!(last.frame, timer.frame + 115);
+    assert_eq!(last.run, ScriptRunStatus::Idle);
+    // The timer runs again as run 3 alongside the score; a stop ends run 3
+    // alone, and a stop of every run then ends the score.
+    client.command("rerun-1", CommandPayload::RunScript { script: 1 });
+    let again = script_ran(&mut client);
+    assert!(matches!(again.run, ScriptRunStatus::Waiting { run: 3, .. }));
+    client.command("stop-3", CommandPayload::StopScript { run: Some(3) });
+    match client.script_event() {
+        EventPayload::ScriptRunChanged { script, run, .. } => {
+            assert_eq!((script, run), (1, ScriptRunStatus::Idle));
+        }
+        other => panic!("expected script_run_changed, got {other:?}"),
+    }
+    client.command("stop-all", CommandPayload::StopScript { run: None });
+    match client.script_event() {
+        EventPayload::ScriptRunsStopped { scripts, .. } => assert_eq!(scripts, vec![2]),
+        other => panic!("expected script_runs_stopped, got {other:?}"),
+    }
     drop(client);
     let stderr = daemon.stop();
     assert!(!stderr.contains("FREEMIXD_CUE\t"), "{stderr}");

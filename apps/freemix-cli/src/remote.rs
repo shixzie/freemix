@@ -222,29 +222,33 @@ pub(crate) fn print_script_ran(script: u64, frame: u64, actions: u32, instructio
 }
 
 /// Prints script `script`'s run state (Protocol 2.62):
-/// `ScriptRun(script=…, state=idle)`, `state=waiting` with the frame the
-/// next part runs on and the waits so far, or `state=faulted` with the
-/// failed part's frame, failure kind, position, and (Protocol 2.63)
+/// `ScriptRun(script=…, state=idle)`, `state=waiting` with the run id and
+/// the line of the wait it is paused at (Protocol 2.69), the frame the next
+/// part runs on, and the waits so far, or `state=faulted` with the run id,
+/// the failed part's frame, failure kind, position, and (Protocol 2.63)
 /// what it was refused with.
 pub(crate) fn print_script_run(script: u64, run: &fm_protocol::ScriptRunStatus) {
     match run {
         fm_protocol::ScriptRunStatus::Idle => println!("ScriptRun(script={script}, state=idle)"),
         fm_protocol::ScriptRunStatus::Waiting {
+            run,
             started_frame,
             due_frame,
             waits,
             wait_frames,
+            line,
         } => println!(
-            "ScriptRun(script={script}, state=waiting, started_frame={started_frame}, due_frame={due_frame}, waits={waits}, wait_frames={wait_frames})"
+            "ScriptRun(script={script}, run={run}, state=waiting, line={line}, started_frame={started_frame}, due_frame={due_frame}, waits={waits}, wait_frames={wait_frames})"
         ),
         fm_protocol::ScriptRunStatus::Faulted {
+            run,
             frame,
             failure,
             line,
             column,
             detail,
         } => println!(
-            "ScriptRun(script={script}, state=faulted, frame={frame}, failure={}, line={line}, column={column}, {})",
+            "ScriptRun(script={script}, run={run}, state=faulted, frame={frame}, failure={}, line={line}, column={column}, {})",
             failure.token(),
             fault_detail(detail)
         ),
@@ -282,7 +286,7 @@ pub fn script(
     let role = match payload {
         CommandPayload::RunScript { .. } => Role::Admin,
         // Stopping a run is a transition-class operator control.
-        CommandPayload::StopScript => Role::Operator,
+        CommandPayload::StopScript { .. } => Role::Operator,
         _ => Role::Graphics,
     };
     let mut remote = Remote::connect(address, role)?;
@@ -1417,7 +1421,7 @@ impl CommandCompletion {
             CommandPayload::SetScript { .. } | CommandPayload::RemoveScript { .. } => {
                 Self::Script { run: false }
             }
-            CommandPayload::RunScript { .. } | CommandPayload::StopScript => {
+            CommandPayload::RunScript { .. } | CommandPayload::StopScript { .. } => {
                 Self::Script { run: true }
             }
             _ => Self::Switcher,
@@ -1717,7 +1721,9 @@ impl Remote {
                                     | CommandCompletion::History
                             )
                         }
-                        EventPayload::ScriptRan(_) | EventPayload::ScriptRunChanged { .. } => {
+                        EventPayload::ScriptRan(_)
+                        | EventPayload::ScriptRunChanged { .. }
+                        | EventPayload::ScriptRunsStopped { .. } => {
                             completion == CommandCompletion::Script { run: true }
                         }
                         EventPayload::TransitionFavoriteChanged { .. } => matches!(

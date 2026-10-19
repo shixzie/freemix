@@ -290,9 +290,10 @@ pub enum RefusalReason {
         line: u32,
         column: u32,
     },
-    /// Script `script` is running (waiting at a `wait`): another run, or
-    /// an edit or removal of it, waits until it ends or is stopped
-    /// (RC-011, Protocol 2.62).
+    /// Script `script` is running (waiting at a `wait`): another run of
+    /// it, or an edit or removal of it, waits until it ends or is stopped
+    /// (RC-011, Protocol 2.62; runs of other scripts may wait alongside it
+    /// since Protocol 2.69).
     ScriptRunning { script: u64 },
     /// The command could not be made durable.
     NotDurable,
