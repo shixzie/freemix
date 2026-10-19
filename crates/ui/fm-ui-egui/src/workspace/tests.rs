@@ -1035,6 +1035,67 @@ fn chip_rect(output: &egui::FullOutput, text: &str) -> Option<Rect> {
     found.into_iter().max_by(|a, b| a.min.y.total_cmp(&b.min.y))
 }
 
+/// Regression: at a 760-point window the padlock's UNLOCKED ran under
+/// the REC badge and read "UN". The top bar sheds detail instead: no two
+/// of its words overlap, none is cut by a clip, and none leaves the
+/// window, in English and Spanish, from wide to narrow.
+#[test]
+fn the_top_bar_never_overlaps_or_clips_its_words() {
+    fn collect(shape: &egui::Shape, clip: Rect, out: &mut Vec<(String, Rect, Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                out.push((
+                    text.galley.text().to_owned(),
+                    text.visual_bounding_rect(),
+                    clip,
+                ));
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, clip, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let state = crate::hover_audit::bank_fixture();
+    for language in [
+        fm_ui_model::i18n::Language::English,
+        fm_ui_model::i18n::Language::Spanish,
+    ] {
+        for width in [1_920.0, 1_280.0, 1_000.0, 760.0, 640.0, 560.0] {
+            let context = egui::Context::default();
+            let mut shell = StudioShell::default();
+            shell.set_locale(crate::l10n::Locale::new(language));
+            let size = vec2(width, 700.0);
+            frame_at(&context, &mut shell, &state, size, Vec::new());
+            let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+            let mut words = Vec::new();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, clipped.clip_rect, &mut words);
+            }
+            // The top bar sits under the 26-point menu bar.
+            words.retain(|(_, rect, _)| rect.center().y > 28.0 && rect.center().y < 70.0);
+            assert!(
+                words.iter().any(|(text, ..)| text == "REC"),
+                "{language:?} {width}: {words:?}"
+            );
+            for (index, (text, rect, clip)) in words.iter().enumerate() {
+                assert!(
+                    clip.expand(0.5).contains_rect(*rect) && rect.right() <= width,
+                    "{language:?} {width}: {text:?} is cut ({rect:?} in {clip:?})"
+                );
+                for (other, other_rect, _) in &words[index + 1..] {
+                    assert!(
+                        !rect.shrink(0.5).intersects(other_rect.shrink(0.5)),
+                        "{language:?} {width}: {text:?} overlaps {other:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn tiny_windows_and_maximised_tiles_draw_without_panicking() {
     let context = egui::Context::default();

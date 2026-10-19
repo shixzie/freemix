@@ -429,6 +429,16 @@ pub(crate) fn section_header(ui: &mut Ui, title: &str, trailing: impl FnOnce(&mu
 }
 
 /// A small rounded status pill with colored text on a tinted fill.
+/// The width [`pill`] takes for `text`.
+pub(crate) fn pill_width(ui: &Ui, text: &str) -> f32 {
+    let font = FontId::new(legible(10.0), FontFamily::Proportional);
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+        .size()
+        .x
+        + 14.0
+}
+
 pub(crate) fn pill(ui: &mut Ui, text: &str, color: Color32, filled: bool) -> Response {
     let font = FontId::new(legible(10.0), FontFamily::Proportional);
     let galley = ui.painter().layout_no_wrap(
@@ -755,8 +765,8 @@ pub(crate) fn small_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.into()).size(legible(11.0))).min_size(Vec2::new(0.0, 20.0))
 }
 
-/// A painted key glyph. The console fonts have no `▲`, `▼`, or `✕`, so
-/// list keys paint their symbol instead of typing it.
+/// A painted key glyph. The console fonts have no reliable `▲`, `▼`, `▶`,
+/// or `✕`, so list keys paint their symbol instead of typing it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeyIcon {
     /// Move the row earlier: an up-pointing triangle.
@@ -767,6 +777,9 @@ pub(crate) enum KeyIcon {
     Remove,
     /// Put the row on standby: a filled dot.
     Dot,
+    /// Fire or play the row now, or show what is folded under it: a
+    /// right-pointing triangle.
+    Play,
 }
 
 /// Paints `icon` centred in `rect`, about `extent` points across.
@@ -791,6 +804,14 @@ pub(crate) fn paint_key_icon(
         }
         KeyIcon::Dot => {
             painter.circle_filled(centre, half * 0.55, color);
+        }
+        KeyIcon::Play => {
+            let points = vec![
+                centre + Vec2::new(-half * 0.6, -half * 0.75),
+                centre + Vec2::new(half * 0.75, 0.0),
+                centre + Vec2::new(-half * 0.6, half * 0.75),
+            ];
+            painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
         }
         KeyIcon::Remove => {
             let stroke = Stroke::new(1.6, color);

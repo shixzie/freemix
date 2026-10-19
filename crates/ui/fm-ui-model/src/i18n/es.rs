@@ -6706,11 +6706,27 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::CueArmedNote,
-        t("Armado: «{name}» se dispara en {time} (fotograma {frame})"),
+        t("Armado: «{name}» se dispara en {time}, a las {clock} UTC"),
+    ),
+    (
+        Msg::CueArmedDueNote,
+        t("Armado: «{name}» vence ahora; esperando a que el servidor lo dispare"),
+    ),
+    (
+        Msg::CueArmedOverdueNote,
+        t(
+            "Armado: «{name}» lleva {time} de retraso; el servidor aún no ha informado de que lo disparó",
+        ),
     ),
     (
         Msg::CueArmedFrameNote,
-        t("Armado: «{name}» se dispara en el fotograma {frame}"),
+        t("Armado: «{name}» se dispara en el fotograma de motor {frame}"),
+    ),
+    (
+        Msg::CueArmedHover,
+        t(
+            "Vence en el fotograma de motor {frame}. Esta consola estima la cuenta atrás y la hora a partir del último fotograma que informó el servidor; el servidor dispara el cue en ese fotograma con su propio reloj, aunque esta consola se cierre.",
+        ),
     ),
     (
         Msg::CueReasonArmDelay,
@@ -6744,6 +6760,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::CueListRemoveHover,
         t("Eliminar esta lista de cues (se puede deshacer)"),
     ),
+    (Msg::CueListNameLabel, t("Nombre de la lista")),
     (
         Msg::CueListNameHover,
         t("Nombre de esta lista de cues: hasta 64 bytes; pulse Intro para guardar"),
@@ -6803,7 +6820,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::CueFaultNote,
-        t("El cue {cue} se detuvo en la acción {action}: la autoridad la rechazó."),
+        t("El cue «{cue}» se detuvo en la acción {action}."),
     ),
     (
         Msg::CueTakeFollowNote,
@@ -7083,6 +7100,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::CuePvWaitTime, t("Esperar {time} y después:")),
+    (Msg::CuePvCueEnds, t("El cue termina")),
     (Msg::CuePvScript, t("Ejecutar el script {name}")),
     (Msg::CuePvFollow, t("Después sigue el cue {name}:")),
     (

@@ -57,7 +57,7 @@ pub(crate) fn utc_clock_hover(locale: Locale, seconds_since_epoch: u64) -> Strin
     locale.format(Msg::ClockHover, &[("date", Arg::Str(&locale.date(days)))])
 }
 
-fn utc_now_seconds() -> u64 {
+pub(crate) fn utc_now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
@@ -65,11 +65,18 @@ fn utc_now_seconds() -> u64 {
 
 /// The top-bar edit group: the project padlock beside Undo and Redo keys,
 /// each with its hover explanation and (when available) its intent.
-fn edit_controls(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+/// A `compact` padlock shows only its glyph; its hover still says whether
+/// edits are locked.
+fn edit_controls(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    compact: bool,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = l10n::locale(ui.ctx());
     let padlock = padlock_toggle(state);
     let summary = edit_lock_summary(state);
-    let response = padlock_button(ui, padlock);
+    let response = padlock_button(ui, padlock, compact);
     let hover = format!(
         "{}\n{}",
         l.text(if padlock.locked {
@@ -119,6 +126,9 @@ fn edit_controls(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioInt
     });
 }
 
+/// Width of the Undo and Redo keys.
+const HISTORY_KEY_WIDTH: f32 = 28.0;
+
 /// A compact Undo or Redo key with a painted turn-back arrow.
 fn history_key(ui: &mut Ui, enabled: bool, redo: bool) -> egui::Response {
     let sense = if enabled {
@@ -126,7 +136,7 @@ fn history_key(ui: &mut Ui, enabled: bool, redo: bool) -> egui::Response {
     } else {
         Sense::hover()
     };
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(28.0, 24.0), sense);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(HISTORY_KEY_WIDTH, 24.0), sense);
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let hovered = enabled && response.hovered();
@@ -191,8 +201,9 @@ fn paint_turn_arrow(painter: &egui::Painter, center: egui::Pos2, color: Color32,
     ));
 }
 
-/// The show name, ellipsized so on-air badges and the clock keep their place.
-fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
+/// The show name, ellipsized to `max_width` (full name on hover) so the
+/// on-air badges and the clock keep their place.
+fn show_name_label(ui: &mut Ui, state: &StudioUiState, max_width: f32) {
     let l = l10n::locale(ui.ctx());
     match state.view.as_ref().map(|view| view.show_name.as_str()) {
         Some(name) => {
@@ -201,146 +212,375 @@ fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
             } else {
                 name
             };
-            // Long show names end in an ellipsis (full name on hover)
-            // so the on-air badges and clock keep their place.
-            let max_width = (ui.available_width() * 0.35).max(120.0);
             ui.scope(|ui| {
                 ui.set_max_width(max_width);
-                ui.add(
-                    egui::Label::new(RichText::new(name).size(15.0).strong().color(text_color()))
-                        .truncate(),
-                );
+                ui.add(egui::Label::new(show_name_text(name)).truncate());
             });
         }
         None => {
-            ui.label(
-                RichText::new(l.text(Msg::NoSynchronizedShow))
-                    .size(15.0)
-                    .color(muted_color()),
-            )
-            .on_hover_text(l.text(Msg::ShowNameHover));
+            ui.scope(|ui| {
+                ui.set_max_width(max_width);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(l.text(Msg::NoSynchronizedShow))
+                            .size(15.0)
+                            .color(muted_color()),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(l.text(Msg::ShowNameHover));
+            });
         }
     }
 }
 
-#[allow(clippy::too_many_lines)] // one immediate-mode bar
-pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
-    let l = l10n::locale(ui.ctx());
-    l10n::leading_row(ui, l, |ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        // Wordmark.
-        ui.label(
-            RichText::new("FREEMIX")
-                .size(13.0)
-                .strong()
-                .extra_letter_spacing(2.5)
-                .color(accent_color()),
-        );
-        ui.label(
-            RichText::new("STUDIO")
-                .size(crate::theme::legible(10.5))
-                .extra_letter_spacing(1.5)
-                .color(muted_color()),
-        );
-        divider(ui);
-        show_name_label(ui, state);
-        let status = state.connection_status;
-        pill(
-            ui,
-            l.tr(status.operator_label()),
-            connection_color(status),
-            false,
-        )
-        .on_hover_text(l.text(Msg::ConnectionPillHover));
-        if let Some(view) = &state.view {
-            ui.label(
-                mono(l.format(
-                    Msg::RevisionShort,
-                    &[("revision", Arg::Plain(view.cursor.revision.get()))],
-                ))
-                .size(crate::theme::legible(11.0))
-                .color(text_dim_color()),
-            )
-            .on_hover_text(l.text(Msg::RevisionHover));
-        }
-        if state.pending_commands > 0 {
-            pill(
-                ui,
-                &l.format(
-                    Msg::PendingPill,
-                    &[("count", Arg::from(state.pending_commands))],
-                ),
-                AMBER,
-                false,
-            );
-        }
-        if state.view.is_some() {
-            divider(ui);
-            edit_controls(ui, state, intents);
-        }
-
-        ui.with_layout(trailing_layout(l), |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let now = utc_now_seconds();
-            ui.label(
-                mono(format_utc_clock(l, now))
-                    .size(17.0)
-                    .color(text_color()),
-            )
-            .on_hover_text(utc_clock_hover(l, now));
-            ui.label(
-                RichText::new("UTC")
-                    .size(crate::theme::legible(10.0))
-                    .color(muted_color()),
-            );
-            divider(ui);
-            let air = on_air(state);
-            let stream_color = if air.stream_live {
-                PROGRAM
-            } else if air.stream_desired {
-                AMBER
-            } else {
-                muted_color()
-            };
-            on_air_badge(ui, l.text(Msg::Live), stream_color, air.stream_live).on_hover_text(
-                l.text(if air.stream_live {
-                    Msg::LiveHoverLive
-                } else if air.stream_desired {
-                    Msg::LiveHoverDesired
-                } else {
-                    Msg::LiveHoverIdle
-                }),
-            );
-            on_air_badge(
-                ui,
-                l.text(Msg::BadgeRec),
-                if air.recording {
-                    PROGRAM
-                } else {
-                    muted_color()
-                },
-                air.recording,
-            )
-            .on_hover_text(l.text(if air.recording {
-                Msg::RecHoverRecording
-            } else {
-                Msg::RecHoverIdle
-            }));
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(500));
-        });
-    });
+fn show_name_text(name: &str) -> RichText {
+    RichText::new(name).size(15.0).strong().color(text_color())
 }
 
-/// The project edit padlock: a painted lock glyph plus its state. Locked
-/// reads as an amber chip (a deliberate hold on edits, like a pending state);
-/// unlocked is an unlit outline. Clicks are reported only when toggling is
-/// available.
-fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
+fn wordmark() -> RichText {
+    RichText::new("FREEMIX")
+        .size(13.0)
+        .strong()
+        .extra_letter_spacing(2.5)
+        .color(accent_color())
+}
+
+fn product_name() -> RichText {
+    RichText::new("STUDIO")
+        .size(crate::theme::legible(10.5))
+        .extra_letter_spacing(1.5)
+        .color(muted_color())
+}
+
+fn revision_text(l: Locale, revision: u64) -> RichText {
+    mono(l.format(Msg::RevisionShort, &[("revision", Arg::Plain(revision))]))
+        .size(crate::theme::legible(11.0))
+        .color(text_dim_color())
+}
+
+fn clock_text(l: Locale, now: u64) -> RichText {
+    mono(format_utc_clock(l, now))
+        .size(17.0)
+        .color(text_color())
+}
+
+fn utc_caption() -> RichText {
+    RichText::new("UTC")
+        .size(crate::theme::legible(10.0))
+        .color(muted_color())
+}
+
+/// How much of the top bar is drawn. A narrow window sheds detail, least
+/// needed first, so the edit keys and the on-air badges never overlap or
+/// clip: the padlock drops its word (the glyph and its hover stay), then
+/// the STUDIO word, the revision (the status bar and history keep it),
+/// the UTC caption (the clock's hover says UTC), and the wordmark.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum BarFit {
+    Full,
+    PadlockGlyph,
+    NoProduct,
+    NoRevision,
+    NoUtcCaption,
+    NoWordmark,
+}
+
+impl BarFit {
+    const ALL: [Self; 6] = [
+        Self::Full,
+        Self::PadlockGlyph,
+        Self::NoProduct,
+        Self::NoRevision,
+        Self::NoUtcCaption,
+        Self::NoWordmark,
+    ];
+
+    fn leading_spacing(self) -> f32 {
+        if self == Self::Full {
+            LEADING_SPACING
+        } else {
+            COMPACT_LEADING_SPACING
+        }
+    }
+}
+
+/// Spacing between the top bar's leading and trailing items; a bar that
+/// sheds detail packs its leading items closer.
+const LEADING_SPACING: f32 = 10.0;
+const COMPACT_LEADING_SPACING: f32 = 7.0;
+const TRAILING_SPACING: f32 = 8.0;
+/// The narrowest the show name gets before the bar sheds more.
+const MIN_SHOW_NAME: f32 = 96.0;
+/// Least room between the leading and trailing groups.
+const BAR_GAP: f32 = 12.0;
+/// Width of an on-air badge.
+const BADGE_WIDTH: f32 = 58.0;
+/// Width of the padlock as a glyph-only key.
+const PADLOCK_GLYPH_WIDTH: f32 = 28.0;
+
+/// The widths the top bar's items take, measured in the console language.
+struct BarWidths {
+    wordmark: f32,
+    product: f32,
+    show_name: f32,
+    pill: f32,
+    revision: Option<f32>,
+    pending: Option<f32>,
+    padlock: Option<f32>,
+    clock: f32,
+    utc: f32,
+}
+
+fn text_width(ui: &Ui, text: RichText) -> f32 {
+    egui::WidgetText::from(text)
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::FontSelection::Default,
+        )
+        .size()
+        .x
+}
+
+impl BarWidths {
+    fn measure(ui: &Ui, l: Locale, state: &StudioUiState, now: u64) -> Self {
+        let pill = |text: &str| crate::theme::pill_width(ui, text);
+        let show_name = state.view.as_ref().map_or_else(
+            || {
+                text_width(
+                    ui,
+                    RichText::new(l.text(Msg::NoSynchronizedShow)).size(15.0),
+                )
+            },
+            |view| {
+                let name = if view.show_name.is_empty() {
+                    l.text(Msg::UntitledShow)
+                } else {
+                    view.show_name.as_str()
+                };
+                text_width(ui, show_name_text(name))
+            },
+        );
+        Self {
+            wordmark: text_width(ui, wordmark()),
+            product: text_width(ui, product_name()),
+            show_name,
+            pill: pill(l.tr(state.connection_status.operator_label())),
+            revision: state
+                .view
+                .as_ref()
+                .map(|view| text_width(ui, revision_text(l, view.cursor.revision.get()))),
+            pending: (state.pending_commands > 0).then(|| {
+                pill(&l.format(
+                    Msg::PendingPill,
+                    &[("count", Arg::from(state.pending_commands))],
+                ))
+            }),
+            padlock: state.view.as_ref().map(|_| padlock_width(ui, l)),
+            clock: text_width(ui, clock_text(l, now)),
+            utc: text_width(ui, utc_caption()),
+        }
+    }
+
+    /// The leading group's width at `fit`, with the show name at `name`.
+    fn leading(&self, fit: BarFit, name: f32) -> f32 {
+        let mut items = vec![name, self.pill];
+        if fit < BarFit::NoWordmark {
+            items.extend([self.wordmark, 1.0]);
+        }
+        if fit < BarFit::NoProduct {
+            items.push(self.product);
+        }
+        if fit < BarFit::NoRevision {
+            items.extend(self.revision);
+        }
+        items.extend(self.pending);
+        if let Some(padlock) = self.padlock {
+            let padlock = if fit < BarFit::PadlockGlyph {
+                padlock
+            } else {
+                PADLOCK_GLYPH_WIDTH
+            };
+            // The divider, the padlock, and the Undo and Redo keys.
+            items.extend([1.0, padlock, 2.0 * HISTORY_KEY_WIDTH + 2.0]);
+        }
+        gaps(&items, fit.leading_spacing())
+    }
+
+    /// The trailing group's width at `fit`.
+    fn trailing(&self, fit: BarFit) -> f32 {
+        let mut items = vec![self.clock, 1.0, BADGE_WIDTH, BADGE_WIDTH];
+        if fit < BarFit::NoUtcCaption {
+            items.push(self.utc);
+        }
+        gaps(&items, TRAILING_SPACING)
+    }
+
+    /// The fullest bar that fits `width` with the whole show name, else
+    /// the fullest that fits it shortened to [`MIN_SHOW_NAME`], else the
+    /// most compact; with the most the show name may take.
+    fn fit(&self, width: f32) -> (BarFit, f32) {
+        let room = |fit| width - self.leading(fit, 0.0) - self.trailing(fit) - BAR_GAP;
+        let fits = |least: f32| BarFit::ALL.into_iter().find(|fit| room(*fit) >= least);
+        let fit = fits(self.show_name)
+            .or_else(|| fits(MIN_SHOW_NAME))
+            .unwrap_or(BarFit::NoWordmark);
+        (
+            fit,
+            room(fit).max(MIN_SHOW_NAME.min(self.show_name)).max(24.0),
+        )
+    }
+}
+
+/// Items' widths plus the spacing between them.
+fn gaps(items: &[f32], spacing: f32) -> f32 {
+    #[allow(clippy::cast_precision_loss)] // a handful of items
+    let between = items.len().saturating_sub(1) as f32 * spacing;
+    items.iter().sum::<f32>() + between
+}
+
+pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     let l = l10n::locale(ui.ctx());
+    let now = utc_now_seconds();
+    let rect = ui.available_rect_before_wrap();
+    let widths = BarWidths::measure(ui, l, state, now);
+    let (fit, name_width) = widths.fit(rect.width());
+    let trailing = widths.trailing(fit);
+    let (lead_rect, trail_rect) = {
+        let split = (rect.width() - trailing - BAR_GAP).max(0.0);
+        let near = rect.width() - trailing;
+        match l.direction() {
+            fm_ui_model::i18n::TextDirection::LeftToRight => (
+                egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + split, rect.max.y)),
+                egui::Rect::from_min_max(egui::pos2(rect.left() + near, rect.min.y), rect.max),
+            ),
+            fm_ui_model::i18n::TextDirection::RightToLeft => (
+                egui::Rect::from_min_max(egui::pos2(rect.right() - split, rect.min.y), rect.max),
+                egui::Rect::from_min_max(rect.min, egui::pos2(rect.right() - near, rect.max.y)),
+            ),
+        }
+    };
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(lead_rect)
+            .layout(l10n::leading_layout(l)),
+        |ui| {
+            // Whatever the estimate missed is clipped, never overlapped.
+            ui.set_clip_rect(lead_rect.intersect(ui.clip_rect()));
+            draw_leading(ui, state, fit, name_width, intents);
+        },
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(trail_rect)
+            .layout(trailing_layout(l)),
+        |ui| draw_trailing(ui, state, fit, now),
+    );
+}
+
+/// The top bar's reading-order side: the wordmark, the show, the
+/// connection, the revision, pending commands, and the edit keys.
+fn draw_leading(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    fit: BarFit,
+    name_width: f32,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    ui.spacing_mut().item_spacing.x = fit.leading_spacing();
+    if fit < BarFit::NoWordmark {
+        ui.label(wordmark());
+        if fit < BarFit::NoProduct {
+            ui.label(product_name());
+        }
+        divider(ui);
+    }
+    show_name_label(ui, state, name_width);
+    let status = state.connection_status;
+    pill(
+        ui,
+        l.tr(status.operator_label()),
+        connection_color(status),
+        false,
+    )
+    .on_hover_text(l.text(Msg::ConnectionPillHover));
+    if let Some(view) = &state.view
+        && fit < BarFit::NoRevision
+    {
+        ui.label(revision_text(l, view.cursor.revision.get()))
+            .on_hover_text(l.text(Msg::RevisionHover));
+    }
+    if state.pending_commands > 0 {
+        pill(
+            ui,
+            &l.format(
+                Msg::PendingPill,
+                &[("count", Arg::from(state.pending_commands))],
+            ),
+            AMBER,
+            false,
+        );
+    }
+    if state.view.is_some() {
+        divider(ui);
+        edit_controls(ui, state, fit >= BarFit::PadlockGlyph, intents);
+    }
+}
+
+/// The top bar's far side: the UTC clock and the on-air badges.
+fn draw_trailing(ui: &mut Ui, state: &StudioUiState, fit: BarFit, now: u64) {
+    let l = l10n::locale(ui.ctx());
+    ui.spacing_mut().item_spacing.x = TRAILING_SPACING;
+    ui.label(clock_text(l, now))
+        .on_hover_text(utc_clock_hover(l, now));
+    if fit < BarFit::NoUtcCaption {
+        ui.label(utc_caption());
+    }
+    divider(ui);
+    let air = on_air(state);
+    let stream_color = if air.stream_live {
+        PROGRAM
+    } else if air.stream_desired {
+        AMBER
+    } else {
+        muted_color()
+    };
+    on_air_badge(ui, l.text(Msg::Live), stream_color, air.stream_live).on_hover_text(l.text(
+        if air.stream_live {
+            Msg::LiveHoverLive
+        } else if air.stream_desired {
+            Msg::LiveHoverDesired
+        } else {
+            Msg::LiveHoverIdle
+        },
+    ));
+    on_air_badge(
+        ui,
+        l.text(Msg::BadgeRec),
+        if air.recording {
+            PROGRAM
+        } else {
+            muted_color()
+        },
+        air.recording,
+    )
+    .on_hover_text(l.text(if air.recording {
+        Msg::RecHoverRecording
+    } else {
+        Msg::RecHoverIdle
+    }));
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(500));
+}
+
+/// The padlock's width with its word: one width for both states, so
+/// toggling never shifts the bar, wide enough for the longer word in the
+/// console language.
+fn padlock_width(ui: &Ui, l: Locale) -> f32 {
     let font = FontId::new(10.5, FontFamily::Proportional);
-    // One width for both states, so toggling never shifts the bar; wide
-    // enough for the longer word in the console language.
     let label_width = [Msg::Locked, Msg::Unlocked]
         .map(|word| {
             ui.painter()
@@ -350,7 +590,22 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
         })
         .into_iter()
         .fold(0.0_f32, f32::max);
-    let size = Vec2::new((29.0 + label_width + 9.0).max(104.0), 24.0);
+    (29.0 + label_width + 9.0).max(104.0)
+}
+
+/// The project edit padlock: a painted lock glyph plus its state. Locked
+/// reads as an amber chip (a deliberate hold on edits, like a pending state);
+/// unlocked is an unlit outline. A `compact` padlock is the glyph alone.
+/// Clicks are reported only when toggling is available.
+fn padlock_button(ui: &mut Ui, padlock: PadlockToggle, compact: bool) -> egui::Response {
+    let l = l10n::locale(ui.ctx());
+    let font = FontId::new(10.5, FontFamily::Proportional);
+    let width = if compact {
+        PADLOCK_GLYPH_WIDTH
+    } else {
+        padlock_width(ui, l)
+    };
+    let size = Vec2::new(width, 24.0);
     let sense = if padlock.enabled {
         Sense::click()
     } else {
@@ -391,21 +646,32 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
             Stroke::new(1.0, stroke.gamma_multiply(dim)),
             StrokeKind::Inside,
         );
+        let glyph_centre = if compact {
+            rect.center()
+        } else {
+            rect.left_center() + Vec2::new(15.0, 0.0)
+        };
         paint_lock_glyph(
             painter,
-            rect.left_center() + Vec2::new(15.0, 0.0),
+            glyph_centre,
             1.0,
             glyph.gamma_multiply(dim),
             padlock.locked,
         );
-        painter.text(
-            rect.left_center() + Vec2::new(29.0, 0.5),
-            Align2::LEFT_CENTER,
-            l.tr(padlock.label()),
-            font,
-            text.gamma_multiply(dim),
-        );
+        if !compact {
+            painter.text(
+                rect.left_center() + Vec2::new(29.0, 0.5),
+                Align2::LEFT_CENTER,
+                l.tr(padlock.label()),
+                font,
+                text.gamma_multiply(dim),
+            );
+        }
     }
+    let label = l.tr(padlock.label()).to_owned();
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, padlock.enabled, &label)
+    });
     response
 }
 
@@ -417,7 +683,7 @@ fn divider(ui: &mut Ui) {
 
 /// Broadcast-style on-air badge: solid red with a lamp when lit, outlined otherwise.
 fn on_air_badge(ui: &mut Ui, label: &str, color: Color32, lit: bool) -> egui::Response {
-    let size = Vec2::new(58.0, 24.0);
+    let size = Vec2::new(BADGE_WIDTH, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();

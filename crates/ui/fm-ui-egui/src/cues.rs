@@ -13,9 +13,12 @@
 //! Arm GO (Protocol 2.64) arms the cue on standby to fire by itself after a
 //! delay typed beside it (seconds, `MM:SS`, or `HH:MM:SS`, up to 24 hours),
 //! with GO's gates; Disarm cancels it. The armed cue's chip reads ARMED and
-//! a note counts it down, extrapolated at the show rate from the newest
-//! frame a cue record reported ([`ProjectState::cue_frame`]), so the
-//! countdown is approximate; the server's clock fires it on its frame.
+//! a note counts it down to the UTC time it fires at, extrapolated at the
+//! show rate from the newest frame a cue record reported
+//! ([`ProjectState::cue_frame`]), so the countdown is approximate; the
+//! server's clock fires it on its frame (in the note's hover). Once due
+//! the note never counts below zero: it says the cue waits for the server,
+//! and past a second how late it is ([`armed_note`]).
 //!
 //! Under the GO key a "GO will:" box previews what firing the standby cue
 //! does, step by step with current values and the steps the session may
@@ -53,10 +56,10 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::keymap;
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
-use crate::playlist::{countdown_timecode, estimated_frame, key_button};
+use crate::playlist::{estimated_frame, key_button, nominal_fps};
 use crate::theme::{
-    ERROR, KeyIcon, PREVIEW, PROGRAM, Tone, add_icon_button, border_color, caption, empty_state,
-    field_label, legible, raised_color, small_button, status_chip,
+    AMBER, ERROR, KeyIcon, PREVIEW, PROGRAM, Tone, add_icon_button, border_color, caption,
+    empty_state, field_label, legible, paint_key_icon, raised_color, small_button, status_chip,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -111,14 +114,21 @@ pub enum CueIntent {
     Control { list: u64, operation: CueOperation },
 }
 
-/// The note under a list whose deferred action was refused: where its cue
-/// stopped and, since Protocol 2.63, what the server refused it with.
+/// The note under a list whose deferred action was refused: which cue
+/// stopped (by name, from `cues`) and where, and, since Protocol 2.63,
+/// what the server refused it with.
 #[must_use]
-pub(crate) fn fault_note(l: Locale, state: &StudioUiState, fault: &CueFaultStatus) -> String {
-    let (cue, action) = (
-        fault.cue.to_string(),
-        (u32::from(fault.action) + 1).to_string(),
-    );
+pub(crate) fn fault_note(
+    l: Locale,
+    state: &StudioUiState,
+    cues: &[WireCue],
+    fault: &CueFaultStatus,
+) -> String {
+    let cue = cues
+        .iter()
+        .find(|cue| cue.id == fault.cue)
+        .map_or_else(|| fault.cue.to_string(), |cue| cue.name.clone());
+    let action = (u32::from(fault.action) + 1).to_string();
     let mut text = l.format(
         Msg::CueFaultNote,
         &[("cue", Arg::Str(&cue)), ("action", Arg::Str(&action))],
@@ -126,6 +136,80 @@ pub(crate) fn fault_note(l: Locale, state: &StudioUiState, fault: &CueFaultStatu
     text.push(' ');
     text.push_str(&crate::scripts::fault_detail_text(l, state, &fault.detail));
     text
+}
+
+/// Whole seconds in `frames` at `rate`, rounded up, so a countdown reads
+/// 0:00 only once the frame is due.
+fn whole_seconds(frames: u64, rate: FrameRate) -> u64 {
+    let numerator = u128::from(rate.numerator()).max(1);
+    let seconds = (u128::from(frames) * u128::from(rate.denominator())).div_ceil(numerator);
+    u64::try_from(seconds).unwrap_or(u64::MAX)
+}
+
+/// A countdown or lateness as `M:SS`, or `H:MM:SS` from an hour.
+fn clock_span(seconds: u64) -> String {
+    if seconds >= 3_600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3_600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+/// The armed GO's note, and whether it is late. Before the due frame it
+/// counts down to the UTC wall-clock time the cue fires at; once due it
+/// says the cue waits for the server; more than a second past due (this
+/// console's estimate runs ahead of the server's clock, or the server
+/// stalled) it says how late. It never counts below zero. `now_frame`
+/// is the estimated engine frame (`None` before a cue frame arrived: the
+/// due frame is all there is), `wall_now` UTC seconds since the epoch.
+fn armed_note(
+    l: Locale,
+    name: &str,
+    due_frame: u64,
+    now_frame: Option<u64>,
+    rate: FrameRate,
+    wall_now: u64,
+) -> (String, bool) {
+    let Some(now_frame) = now_frame else {
+        let frame = due_frame.to_string();
+        let note = l.format(
+            Msg::CueArmedFrameNote,
+            &[("name", Arg::Str(name)), ("frame", Arg::Str(&frame))],
+        );
+        return (note, false);
+    };
+    if now_frame < due_frame {
+        let seconds = whole_seconds(due_frame - now_frame, rate);
+        let time = clock_span(seconds);
+        let clock = crate::chrome::format_utc_clock(l, wall_now.saturating_add(seconds));
+        let note = l.format(
+            Msg::CueArmedNote,
+            &[
+                ("name", Arg::Str(name)),
+                ("time", Arg::Str(&time)),
+                ("clock", Arg::Str(&clock)),
+            ],
+        );
+        return (note, false);
+    }
+    let late = now_frame - due_frame;
+    if late <= nominal_fps(rate) {
+        let note = l.format(Msg::CueArmedDueNote, &[("name", Arg::Str(name))]);
+        return (note, false);
+    }
+    let late_seconds =
+        u128::from(late) * u128::from(rate.denominator()) / u128::from(rate.numerator()).max(1);
+    let time = clock_span(u64::try_from(late_seconds).unwrap_or(u64::MAX));
+    let note = l.format(
+        Msg::CueArmedOverdueNote,
+        &[("name", Arg::Str(name)), ("time", Arg::Str(&time))],
+    );
+    (note, true)
 }
 
 /// Why cue controls (GO and the transport keys) are unavailable for the
@@ -1071,26 +1155,19 @@ impl CuePanel {
                 .iter()
                 .find(|cue| cue.id == armed.cue)
                 .map_or_else(|| armed.cue.to_string(), |cue| cue.name.clone());
-            let frame = armed.due_frame.to_string();
             let rate = project.frame_rate();
-            let note = match self.now_frame(rate, now) {
-                Some(now_frame) => {
-                    let time = countdown_timecode(armed.due_frame.saturating_sub(now_frame), rate);
-                    l.format(
-                        Msg::CueArmedNote,
-                        &[
-                            ("name", Arg::Str(&name)),
-                            ("time", Arg::Str(&time)),
-                            ("frame", Arg::Str(&frame)),
-                        ],
-                    )
-                }
-                None => l.format(
-                    Msg::CueArmedFrameNote,
-                    &[("name", Arg::Str(&name)), ("frame", Arg::Str(&frame))],
-                ),
-            };
-            ui.label(RichText::new(note).size(legible(12.0)).strong());
+            let (note, late) = armed_note(
+                l,
+                &name,
+                armed.due_frame,
+                self.now_frame(rate, now),
+                rate,
+                crate::chrome::utc_now_seconds(),
+            );
+            let frame = armed.due_frame.to_string();
+            let text = RichText::new(note).size(legible(12.0)).strong();
+            ui.label(if late { text.color(AMBER) } else { text })
+                .on_hover_text(l.format(Msg::CueArmedHover, &[("frame", Arg::Str(&frame))]));
             ui.ctx().request_repaint_after(Duration::from_millis(200));
         }
         let show = Show::of(state);
@@ -1104,7 +1181,7 @@ impl CuePanel {
             ));
         }
         if let Some(fault) = &list.state.fault {
-            ui.label(RichText::new(fault_note(l, state, fault)).color(ERROR));
+            ui.label(RichText::new(fault_note(l, state, &list.spec.cues, fault)).color(ERROR));
         }
         if !state.can_transition {
             ui.label(caption(l.text(Msg::CueViewOnly)));
@@ -1115,15 +1192,18 @@ impl CuePanel {
             return;
         };
         let mut change = None;
-        let name = ui
-            .add_enabled(
-                list_edit.is_none(),
-                TextEdit::singleline(&mut draft.spec.name).desired_width(ui.available_width()),
-            )
-            .hint(l.text(Msg::CueListNameHover), list_edit.unwrap_or(""));
-        if name.lost_focus() {
-            change = Some(Change::Commit);
-        }
+        ui.horizontal(|ui| {
+            ui.label(field_label(l.text(Msg::CueListNameLabel)));
+            let name = ui
+                .add_enabled(
+                    list_edit.is_none(),
+                    TextEdit::singleline(&mut draft.spec.name).desired_width(ui.available_width()),
+                )
+                .hint(l.text(Msg::CueListNameHover), list_edit.unwrap_or(""));
+            if name.lost_focus() {
+                change = Some(Change::Commit);
+            }
+        });
         ui.add_space(4.0);
         if draft.spec.cues.is_empty() {
             ui.label(caption(l.text(Msg::CueListEmpty)));
@@ -1141,6 +1221,12 @@ impl CuePanel {
             project,
             scripts_full: script_steps >= MAX_CUE_LIST_SCRIPT_STEPS,
             show,
+            count_width: draft
+                .spec
+                .cues
+                .iter()
+                .map(|cue| count_key_width(ui, &count_label(l, cue.actions.len())))
+                .fold(COUNT_KEY_WIDTH, f32::max),
         };
         let mut edit_row = None;
         let conflicts = take_conflicts(&draft.spec.cues);
@@ -1294,6 +1380,9 @@ struct Names<'a> {
     scripts_full: bool,
     /// The show the cue previews read, once synced.
     show: Option<Show>,
+    /// One width for every row's action-count key, so the rows' keys
+    /// line up.
+    count_width: f32,
 }
 
 impl Names<'_> {
@@ -1316,7 +1405,7 @@ enum RowEdit {
 const CHIP_WIDTH: f32 = 64.0;
 /// Width of a cue row's standby, fire, move, and remove keys.
 const ROW_KEY_WIDTH: f32 = 28.0;
-/// Width of a cue row's action-count key.
+/// Least width of a cue row's action-count key.
 const COUNT_KEY_WIDTH: f32 = 36.0;
 /// The narrowest name field a one-line cue row keeps; narrower docks move
 /// the follow box and keys to a second line.
@@ -1402,7 +1491,8 @@ fn draw_cue_row(
     let role = CueRole::of(&list.state, id);
     let mut result = None;
     let stroke = match role {
-        CueRole::Live | CueRole::Waiting | CueRole::Armed => Stroke::new(1.5, PROGRAM),
+        CueRole::Live | CueRole::Waiting => Stroke::new(1.5, PROGRAM),
+        CueRole::Armed => Stroke::new(1.5, AMBER),
         CueRole::Standby => Stroke::new(1.5, PREVIEW),
         _ => Stroke::new(1.0, border_color()),
     };
@@ -1417,7 +1507,7 @@ fn draw_cue_row(
                 let open = expanded == Some(id);
                 let spacing = ui.spacing().item_spacing.x;
                 let controls = row_controls_width(ui, l.text(Msg::CueFollow));
-                let head = CHIP_WIDTH + COUNT_KEY_WIDTH + 2.0 * spacing;
+                let head = CHIP_WIDTH + names.count_width + 2.0 * spacing;
                 let two_line_name = ui.available_width() - head - spacing;
                 let one_line = two_line_name - controls >= MIN_ONE_LINE_NAME;
                 let name_width = if one_line {
@@ -1438,7 +1528,7 @@ fn draw_cue_row(
                         result = Some(RowEdit::Change(Change::Commit));
                     }
                     if !one_line {
-                        if count_key(ui, l, cues[index].actions.len(), open) {
+                        if count_key(ui, l, cues[index].actions.len(), names.count_width, open) {
                             result = Some(RowEdit::Expand(id));
                         }
                         return;
@@ -1454,7 +1544,9 @@ fn draw_cue_row(
                         removed = matches!(change, RowControl::Removed);
                         result = Some(RowEdit::Change(Change::Commit));
                     }
-                    if !removed && count_key(ui, l, cues[index].actions.len(), open) {
+                    if !removed
+                        && count_key(ui, l, cues[index].actions.len(), names.count_width, open)
+                    {
                         result = Some(RowEdit::Expand(id));
                     }
                 });
@@ -1497,29 +1589,67 @@ fn draw_cue_row(
     result
 }
 
-/// A cue's state chip hover: the state help, then what firing the saved
-/// cue does.
+/// A cue's state chip hover: what firing the saved cue does, then the
+/// state help under it.
 fn chip_hover(ui: &mut Ui, names: &Names<'_>, list: &CueListStatus, id: u64) {
     let l = names.l;
     ui.set_max_width(380.0);
-    ui.label(l.text(Msg::CueStateHover));
     let saved = list.spec.cues.iter().find(|cue| cue.id == id);
     if let (Some(show), Some(saved)) = (&names.show, saved)
         && let Some(preview) = cue_preview::preview(l, show, &list.spec.cues, id)
     {
-        ui.separator();
         let title = l.format(Msg::CuePvFireTitle, &[("name", Arg::Str(&saved.name))]);
         ui.label(RichText::new(title).size(legible(11.0)).strong());
         cue_preview::draw_lines(ui, l, &preview, 24);
+        ui.separator();
+        ui.label(caption(l.text(Msg::CueStateHover)));
+    } else {
+        ui.label(l.text(Msg::CueStateHover));
     }
 }
 
-/// The action-count key, which opens and closes a cue's actions.
-fn count_key(ui: &mut Ui, l: Locale, count: usize, open: bool) -> bool {
-    let label = format!("{count} {}", if open { "−" } else { "+" });
-    ui.add(key_button(&label, None, COUNT_KEY_WIDTH))
-        .on_hover_text(l.text(Msg::CueExpandHover))
-        .clicked()
+/// The action-count key's label: "16 actions", after room for the
+/// disclosure triangle the key paints.
+fn count_label(l: Locale, count: usize) -> String {
+    let count = l.format(
+        Msg::ScriptActionCount,
+        &[(
+            "count",
+            Arg::Count(u64::try_from(count).unwrap_or(u64::MAX)),
+        )],
+    );
+    format!("    {count}")
+}
+
+/// The action-count key's width: its `label`, at least
+/// [`COUNT_KEY_WIDTH`].
+fn count_key_width(ui: &Ui, label: &str) -> f32 {
+    let font = egui::FontId::proportional(legible(10.5));
+    let text = ui.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    (text + 2.0 * ui.spacing().button_padding.x + 2.0).max(COUNT_KEY_WIDTH)
+}
+
+/// The action-count key, which opens and closes a cue's actions: a
+/// disclosure triangle (right while folded, down while open) before the
+/// count, the key lit while open.
+fn count_key(ui: &mut Ui, l: Locale, count: usize, width: f32, open: bool) -> bool {
+    let label = count_label(l, count);
+    let response = ui
+        .add(key_button(&label, None, width).selected(open))
+        .on_hover_text(l.text(Msg::CueExpandHover));
+    let color = ui.style().interact(&response).text_color();
+    let icon = egui::Rect::from_center_size(
+        response.rect.left_center() + Vec2::new(ui.spacing().button_padding.x + 5.0, 0.0),
+        Vec2::splat(10.0),
+    );
+    let glyph = if open { KeyIcon::Down } else { KeyIcon::Play };
+    paint_key_icon(ui.painter(), icon, glyph, 8.0, color);
+    response.clicked()
 }
 
 /// What a row's follow box and keys did to the working copy.
@@ -1568,10 +1698,15 @@ fn row_controls(
             operation: CueOperation::Standby { cue: id },
         }));
     }
-    if ui
-        .add_enabled(fire.is_none(), key_button("▶", None, ROW_KEY_WIDTH))
-        .hint(l.text(Msg::CueFireHover), fire.unwrap_or(""))
-        .clicked()
+    if add_icon_button(
+        ui,
+        fire.is_none(),
+        key_button("", None, ROW_KEY_WIDTH),
+        KeyIcon::Play,
+        l.text(Msg::CueFireHover),
+    )
+    .hint(l.text(Msg::CueFireHover), fire.unwrap_or(""))
+    .clicked()
     {
         intents.push(StudioIntent::Cue(CueIntent::Control {
             list,
@@ -2528,6 +2663,58 @@ mod tests {
         assert_eq!(panel.now_frame(rate, later), None);
     }
 
+    /// The armed note never counts below zero: it counts down to the UTC
+    /// time the cue fires at, says the cue is due while the server has
+    /// not fired it yet, and past a second says how late it is.
+    #[test]
+    fn the_armed_note_never_shows_a_negative_countdown() {
+        let rate = FrameRate::new(25, 1).unwrap();
+        let en = Locale::ENGLISH;
+        let wall = 20 * 3_600 + 22 * 60 + 21;
+        assert_eq!(
+            armed_note(en, "Guest", 900, Some(100), rate, wall),
+            (
+                "Armed: \"Guest\" fires in 0:32, at 20:22:53 UTC".to_owned(),
+                false
+            )
+        );
+        // A part second rounds up: 0:00 is never shown.
+        assert_eq!(
+            armed_note(en, "Guest", 900, Some(899), rate, wall).0,
+            "Armed: \"Guest\" fires in 0:01, at 20:22:22 UTC"
+        );
+        for now in [900, 925] {
+            assert_eq!(
+                armed_note(en, "Guest", 900, Some(now), rate, wall),
+                (
+                    "Armed: \"Guest\" is due now; waiting for the server to fire it".to_owned(),
+                    false
+                )
+            );
+        }
+        assert_eq!(
+            armed_note(en, "Guest", 900, Some(1_000), rate, wall),
+            (
+                "Armed: \"Guest\" is 0:04 overdue; the server has not reported firing it yet"
+                    .to_owned(),
+                true
+            )
+        );
+        assert_eq!(
+            armed_note(en, "Guest", 900, Some(900 + 25 * 3_661), rate, wall).0,
+            "Armed: \"Guest\" is 1:01:01 overdue; the server has not reported firing it yet"
+        );
+        assert_eq!(
+            armed_note(en, "Guest", 900, None, rate, wall).0,
+            "Armed: \"Guest\" fires on engine frame 900"
+        );
+        let es = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            armed_note(es, "Guest", 900, Some(100), rate, wall).0,
+            "Armado: «Guest» se dispara en 0:32, a las 20:22:53 UTC"
+        );
+    }
+
     /// An operator who empties the delay field to type a new one keeps it
     /// empty (Arm GO disabled) instead of having the default typed back in
     /// front of the cursor.
@@ -2577,14 +2764,23 @@ mod tests {
                 message: "Stinger slot 2 has not finished realizing".into(),
             },
         };
+        let cues = [WireCue {
+            id: 30,
+            name: "Close".into(),
+            auto_follow: false,
+            actions: Vec::new(),
+        }];
         assert_eq!(
-            fault_note(Locale::ENGLISH, &state, &fault),
-            "Cue 30 stopped at action 2: the authority refused it. The server said: \
+            fault_note(Locale::ENGLISH, &state, &cues, &fault),
+            "Cue \"Close\" stopped at action 2. The server said: \
              Stinger 2 is still being prepared; try again in a moment."
         );
+        // A cue no longer in the list is named by its number.
+        assert!(fault_note(Locale::ENGLISH, &state, &[], &fault).starts_with("Cue \"30\" stopped"));
         let spanish = fault_note(
             Locale::new(fm_ui_model::i18n::Language::Spanish),
             &state,
+            &cues,
             &fault,
         );
         assert!(
@@ -2593,7 +2789,7 @@ mod tests {
         );
         fault.detail.reason = None;
         assert!(
-            fault_note(Locale::ENGLISH, &state, &fault)
+            fault_note(Locale::ENGLISH, &state, &cues, &fault)
                 .ends_with("The server said: Stinger slot 2 has not finished realizing"),
         );
     }

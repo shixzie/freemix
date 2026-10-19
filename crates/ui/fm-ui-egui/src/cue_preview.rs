@@ -346,6 +346,20 @@ pub(crate) fn preview(l: Locale, show: &Show, cues: &[WireCue], cue: u64) -> Opt
             break;
         }
     }
+    // A chain that ends on a wait holds its last cue until the wait
+    // passes; say so rather than leave "then:" hanging.
+    if walk
+        .out
+        .lines
+        .last()
+        .is_some_and(|line| line.kind == LineKind::Wait)
+    {
+        walk.push(
+            LineKind::Action,
+            l.text(Msg::CuePvCueEnds).to_owned(),
+            Vec::new(),
+        );
+    }
     let mut out = walk.out;
     out.bus_input = walk.first_take.or(walk.first_preview).flatten();
     Some(out)

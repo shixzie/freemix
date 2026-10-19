@@ -82,17 +82,6 @@ pub(crate) fn leading_layout(locale: Locale) -> Layout {
     .with_cross_align(Align::Center)
 }
 
-/// [`egui::Ui::horizontal_centered`] in reading order: a vertically
-/// centered row that starts on the leading side.
-pub(crate) fn leading_row<R>(
-    ui: &mut egui::Ui,
-    locale: Locale,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<R> {
-    let size = ui.available_size_before_wrap();
-    ui.allocate_ui_with_layout(size, leading_layout(locale), add_contents)
-}
-
 /// A row that packs from where reading ends, for trailing clusters such as
 /// the top bar's clock and on-air badges.
 pub(crate) fn trailing_layout(locale: Locale) -> Layout {
