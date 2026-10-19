@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeMix LiveLAN</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #eee;
+    font: 16px system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; align-items: center;
+    justify-content: center; min-height: 100%; gap: 12px; padding: 12px;
+    box-sizing: border-box; }
+  video { width: 100%; max-height: 85vh; background: #000; }
+  form { display: flex; gap: 8px; }
+  input { font-size: 20px; width: 9em; padding: 6px; letter-spacing: 0.2em; }
+  button { font-size: 18px; padding: 6px 14px; }
+  #status { min-height: 1.4em; color: #bbb; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <video id="video" controls autoplay muted playsinline hidden></video>
+  <form id="pin-form" hidden>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off"
+      pattern="[0-9]*" maxlength="12" aria-label="PIN" placeholder="PIN">
+    <button type="submit">Watch</button>
+  </form>
+  <p id="status">Connecting...</p>
+</main>
+<script>
+"use strict";
+const video = document.getElementById("video");
+const form = document.getElementById("pin-form");
+const pinInput = document.getElementById("pin");
+const status = document.getElementById("status");
+const playlist = "/live/index.m3u8";
+let pin = "";
+let retry = null;
+
+function later(delay) {
+  clearTimeout(retry);
+  retry = setTimeout(join, delay);
+}
+
+async function join() {
+  let response;
+  try {
+    response = await fetch("/v1/live/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "pin=" + pin,
+      credentials: "same-origin",
+    });
+  } catch (error) {
+    status.textContent = "The mixer is not reachable. Retrying...";
+    later(3000);
+    return;
+  }
+  const reason = response.status === 204 ? "" : await response.text();
+  if (response.status === 204) {
+    form.hidden = true;
+    play();
+  } else if (response.status === 401) {
+    video.hidden = true;
+    form.hidden = false;
+    status.textContent = pin === "" ? "Enter the PIN to watch." : "Wrong PIN.";
+    pin = "";
+    pinInput.focus();
+  } else if (response.status === 429) {
+    status.textContent = "Too many wrong PINs. Try again in a minute.";
+    pin = "";
+    later(60000);
+  } else if (reason === "full") {
+    status.textContent = "The viewer limit is reached. Retrying...";
+    later(5000);
+  } else {
+    video.hidden = true;
+    status.textContent = "LiveLAN is off. Waiting for the mixer...";
+    later(3000);
+  }
+}
+
+function play() {
+  if (!video.canPlayType("application/vnd.apple.mpegurl")) {
+    status.textContent =
+      "This browser cannot play HLS directly. Use Safari, or Chrome or Edge on Android.";
+    return;
+  }
+  video.hidden = false;
+  status.textContent = "Live. Unmute with the video controls.";
+  video.src = playlist;
+  video.play().catch(() => {});
+}
+
+// A lost session (PIN change, idle, restart) or a stream that is not
+// published yet: join again and reload the playlist.
+video.addEventListener("error", () => {
+  status.textContent = "Reconnecting...";
+  later(2000);
+});
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  pin = pinInput.value.replace(/[^0-9]/g, "");
+  pinInput.value = "";
+  join();
+});
+
+join();
+</script>
+</body>
+</html>

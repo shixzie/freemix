@@ -59,6 +59,7 @@ fm-title-render = { path = "../../crates/services/fm-title-render" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-video = { path = "../../crates/media/fm-video" }
 fs4 = "0.13"
+getrandom = "0.3"
 winit = { version = "0.30.13", optional = true, features = ["rwh_06"] }
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 

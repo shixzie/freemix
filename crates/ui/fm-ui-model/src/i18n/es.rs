@@ -6921,4 +6921,95 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::SaDetailReopens,
         plural("reabierto {count} vez", "reabierto {count} veces"),
     ),
+    (Msg::MenuLiveLan, t("Espectadores LiveLAN…")),
+    (
+        Msg::MenuLiveLanHover,
+        t(
+            "Permita que quien esté en la red local vea Programa o una salida en un navegador, con PIN opcional",
+        ),
+    ),
+    (Msg::LiveLanTitle, t("Espectadores LiveLAN")),
+    (
+        Msg::LiveLanIntro,
+        t(
+            "Los espectadores de esta red abren la dirección de abajo en un navegador (Safari, o Chrome en Android) para mirar. Los ajustes se guardan con el proyecto; el servidor debe ejecutarse con --live-lan-listen.",
+        ),
+    ),
+    (
+        Msg::LiveLanStatusHover,
+        t("El estado de la emisión LiveLAN según lo informa el servidor"),
+    ),
+    (
+        Msg::LiveLanUnavailableDetail,
+        t("Este servidor no tiene escucha LiveLAN: inícielo con --native-media --live-lan-listen"),
+    ),
+    (
+        Msg::LiveLanFailedDetail,
+        t("La emisión no pudo iniciarse; el servidor lo reintenta cada pocos segundos"),
+    ),
+    (Msg::LiveLanViewers, t("{count} de {max} mirando")),
+    (Msg::LiveLanEgress, t("{kbps} kbps hacia los espectadores")),
+    (Msg::LiveLanEnable, t("Compartir en la red local")),
+    (
+        Msg::LiveLanEnableHover,
+        t("Inicia o detiene la emisión LiveLAN; al detenerla termina la sesión de cada espectador"),
+    ),
+    (Msg::LiveLanSource, t("Los espectadores ven")),
+    (
+        Msg::LiveLanSourceHover,
+        t(
+            "Elija qué ven los espectadores: Programa, o una salida con el audio que esa salida escucha",
+        ),
+    ),
+    (
+        Msg::LiveLanSourceOptionHover,
+        t("Emitir {source} a los espectadores"),
+    ),
+    (Msg::LiveLanMaxViewers, t("Límite de espectadores")),
+    (
+        Msg::LiveLanMaxViewersHover,
+        t(
+            "Cuántas personas pueden mirar a la vez (de 1 a 32); una más espera hasta que se libere un puesto",
+        ),
+    ),
+    (Msg::LiveLanAddress, t("Dirección para espectadores")),
+    (Msg::LiveLanAddressNone, t("Aún no hay dirección")),
+    (Msg::LiveLanCopy, t("Copiar dirección")),
+    (
+        Msg::LiveLanCopyHover,
+        t("Copia la dirección para espectadores al portapapeles para compartirla"),
+    ),
+    (Msg::LiveLanPinLabel, t("PIN de espectadores")),
+    (
+        Msg::LiveLanPinHover,
+        t(
+            "De 4 a 12 dígitos que los espectadores escriben antes de mirar. Se guarda con el proyecto y no vuelve a mostrarse",
+        ),
+    ),
+    (
+        Msg::LiveLanPinStored,
+        t("Hay un PIN; los espectadores deben escribirlo"),
+    ),
+    (
+        Msg::LiveLanPinNone,
+        t("Sin PIN: cualquiera en la red puede mirar"),
+    ),
+    (Msg::LiveLanPinSet, t("Establecer PIN")),
+    (
+        Msg::LiveLanPinSetHover,
+        t(
+            "Sustituye el PIN guardado por el escrito; los espectadores actuales deben introducir el nuevo",
+        ),
+    ),
+    (Msg::LiveLanPinClear, t("Quitar PIN")),
+    (
+        Msg::LiveLanPinClearHover,
+        t("Permite que cualquiera en la red mire sin PIN"),
+    ),
+    (Msg::LiveLanReasonPinDigits, t("escriba de 4 a 12 dígitos")),
+    (Msg::LiveLanReasonNoPin, t("no hay ningún PIN")),
+    (
+        Msg::LiveLanReasonNoAddress,
+        t("el servidor no ha informado ninguna dirección"),
+    ),
 ];

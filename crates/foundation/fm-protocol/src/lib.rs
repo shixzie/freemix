@@ -7,6 +7,7 @@ mod cue;
 mod display_output;
 mod dto;
 mod input_lifecycle;
+mod live_lan;
 mod media;
 mod monitor_image;
 mod network_stream;
@@ -115,6 +116,12 @@ pub use input_lifecycle::{
     InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason, MAX_BATCH_IMPORT_ITEMS,
     MAX_INPUT_CATEGORIES, MAX_INPUT_CATEGORY_NAME_BYTES, MAX_INPUT_SOURCE_BYTES,
     WireGeneratorVideo, WireInputSource,
+};
+pub use live_lan::{
+    DEFAULT_LIVE_LAN_VIEWERS, LiveLanConfig, LiveLanEntry, LiveLanPin, LiveLanPinError,
+    LiveLanSource, LiveLanState, LiveLanStatus, MAX_LIVE_LAN_PIN_DIGITS, MAX_LIVE_LAN_URL_BYTES,
+    MAX_LIVE_LAN_VIEWERS, MIN_LIVE_LAN_PIN_DIGITS, MIN_LIVE_LAN_VIEWERS, live_lan_pin_is_valid,
+    live_lan_url_is_valid,
 };
 pub use media::{
     MAX_MEDIA_AUDIO_TRACKS, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_EVENTS, MAX_MEDIA_FRAME,

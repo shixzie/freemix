@@ -1066,6 +1066,27 @@ pub enum Command {
     RemoteDisplayInventory {
         address: SocketAddr,
     },
+    /// Prints the `LiveLAN` viewer stream's settings (OR-017).
+    LiveLan {
+        path: PathBuf,
+    },
+    /// Prints a daemon's `LiveLAN` settings and status (Protocol 2.57).
+    RemoteLiveLan {
+        address: SocketAddr,
+    },
+    /// Edits the `LiveLAN` viewer stream; absent options keep their value.
+    LiveLanSet {
+        path: PathBuf,
+        edit: LiveLanEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteLiveLanSet {
+        address: SocketAddr,
+        edit: LiveLanEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteAudioStrip {
         address: SocketAddr,
         input: u128,
@@ -1576,6 +1597,8 @@ pub enum ArgsError {
     },
     /// A display-output spec does not parse (OR-011).
     InvalidDisplayOutput(String),
+    /// A `LiveLAN` PIN is not 4 to 12 digits; the value is never echoed.
+    InvalidLiveLanPin,
     /// A network stream URL or setting is unusable (IN-015). Never names
     /// the URL, which may carry credentials.
     InvalidNetworkStream(NetworkStreamError),
@@ -1610,6 +1633,12 @@ impl core::fmt::Display for ArgsError {
             }
             Self::InvalidLadder(error) => write!(formatter, "{error}"),
             Self::InvalidReconnect(error) => write!(formatter, "{error}"),
+            Self::InvalidLiveLanPin => write!(
+                formatter,
+                "--pin must be {}-{} digits",
+                fm_types::live_lan::MIN_LIVE_LAN_PIN_DIGITS,
+                fm_types::live_lan::MAX_LIVE_LAN_PIN_DIGITS
+            ),
             Self::InvalidDisplayOutput(error) => {
                 write!(formatter, "invalid display-output spec: {error}")
             }
@@ -1940,6 +1969,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-display-output-clear"
         | "remote-display-output-list"
         | "remote-display-inventory") => parse_display_output(display, arguments),
+        live @ ("live-lan" | "remote-live-lan" | "live-lan-set" | "remote-live-lan-set") => {
+            parse_live_lan(live, arguments)
+        }
         "remote-audio-strip" => parse_remote_audio_strip(arguments),
         "remote-rename" => parse_remote_rename(arguments),
         "remote-input-reorder" => parse_reorder(arguments, true),
@@ -4968,6 +5000,121 @@ fn parse_display_output(
             }
         }
         _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+    })
+}
+
+/// A `LiveLAN` edit from the command line (OR-017): every absent field keeps
+/// the current value. The PIN is validated here and never echoed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LiveLanEdit {
+    pub enabled: Option<bool>,
+    pub source: Option<fm_types::live_lan::LiveLanSource>,
+    pub max_viewers: Option<u8>,
+    pub pin: SecretEdit,
+}
+
+/// `live-lan`, `live-lan-set`, and their `remote-` forms (OR-017).
+fn parse_live_lan(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let target = required(
+        &mut arguments,
+        if remote { "address" } else { "project path" },
+    )?;
+    if !command.ends_with("-set") {
+        reject_extra(&mut arguments)?;
+        return Ok(if remote {
+            Command::RemoteLiveLan {
+                address: socket_address(&target)?,
+            }
+        } else {
+            Command::LiveLan {
+                path: PathBuf::from(target),
+            }
+        });
+    }
+    let mut edit = LiveLanEdit::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--enable" | "--disable" => {
+                let enabled = option == "--enable";
+                if edit.enabled == Some(!enabled) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--enable",
+                        conflicts: "--disable",
+                    });
+                }
+                edit.enabled = Some(enabled);
+            }
+            "--source" => {
+                let value = required(&mut arguments, "LiveLAN source")?;
+                edit.source = Some(value.parse().map_err(|_| ArgsError::InvalidChoice {
+                    field: "LiveLAN source",
+                    value,
+                })?);
+            }
+            "--max-viewers" => {
+                edit.max_viewers = Some(number(
+                    &required(&mut arguments, "max viewers")?,
+                    "max viewers",
+                )?);
+            }
+            "--pin" => {
+                if edit.pin == SecretEdit::Clear {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--pin",
+                        conflicts: "--clear-pin",
+                    });
+                }
+                let pin = secret("--pin", required(&mut arguments, "LiveLAN PIN")?)?;
+                if !fm_types::live_lan::live_lan_pin_is_valid(&pin) {
+                    return Err(ArgsError::InvalidLiveLanPin);
+                }
+                edit.pin = SecretEdit::Set(pin);
+            }
+            "--clear-pin" => {
+                if matches!(edit.pin, SecretEdit::Set(_)) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--clear-pin",
+                        conflicts: "--pin",
+                    });
+                }
+                edit.pin = SecretEdit::Clear;
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(if remote {
+        Command::RemoteLiveLanSet {
+            address: socket_address(&target)?,
+            edit,
+            key,
+            expected_revision,
+        }
+    } else {
+        Command::LiveLanSet {
+            path: PathBuf::from(target),
+            edit,
+            key,
+            expected_revision,
+        }
     })
 }
 

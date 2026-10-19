@@ -475,6 +475,11 @@ pub enum EngineCommand {
         slot: fm_types::display::DisplayOutputSlot,
         config: Option<Box<fm_types::display::DisplayOutputConfig>>,
     },
+    /// Replaces the `LiveLAN` viewer stream's configuration (OR-017), its PIN
+    /// already resolved to the exact one it will hold. A project edit,
+    /// undone by restoring the previous configuration; the daemon realizes
+    /// it live.
+    SetLiveLan(Box<fm_types::live_lan::LiveLanConfig>),
     /// Reconfigures network stream input `input` (IN-015). A project edit
     /// that honours the input's padlock, undone by restoring the previous
     /// configuration; the daemon reconnects the stream live.
@@ -677,6 +682,9 @@ pub enum EngineEvent {
         slot: fm_types::display::DisplayOutputSlot,
         config: Option<Box<fm_types::display::DisplayOutputConfig>>,
     },
+    /// The `LiveLAN` configuration changed (or the edit was undone or redone)
+    /// (OR-017); it is read from [`ShowState::live_lan`].
+    LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
     /// A network stream input was reconfigured (or the edit was undone or
     /// redone) (IN-015).
     NetworkStreamChanged {
@@ -2607,6 +2615,35 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetLiveLan(config) = self.command {
+            state
+                .set_live_lan((*config).clone())
+                .map_err(|error| match error {
+                    fm_types::live_lan::LiveLanConfigError::UnknownOutput(output) => {
+                        Rejection::new(
+                            RejectionCode::NotFound,
+                            format!("{error} ({})", error.code()),
+                        )
+                        .with_reason(RefusalReason::UnknownId {
+                            kind: fm_command::IdKind::Output,
+                            id: output.get().get(),
+                        })
+                    }
+                    fm_types::live_lan::LiveLanConfigError::MaxViewers => {
+                        Rejection::new(RejectionCode::InvalidCommand, error.to_string()).with_field(
+                            fm_command::FieldIssue::new(
+                                "max_viewers",
+                                error.code(),
+                                error.to_string(),
+                            ),
+                        )
+                    }
+                })?;
+            events.push(EngineEvent::LiveLanChanged(config));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetNetworkStream { input, config } = self.command {
             if state.network_stream(input).is_none() {
                 return Err(if state.inputs().contains(&input) {
@@ -2991,6 +3028,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackOutputDuration { .. }
             | EngineCommand::SetFadeToBlackCurve { .. }
             | EngineCommand::SetDisplayOutput { .. }
+            | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
@@ -3507,6 +3545,7 @@ fn apply_runtime(
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
+            | EngineCommand::SetLiveLan(_)
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
@@ -3693,6 +3732,7 @@ fn apply_runtime(
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
@@ -3887,6 +3927,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
@@ -3918,6 +3959,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetFadeToBlackOutputDuration { .. })
         && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
+        && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::SetNetworkStream { .. })
         && !matches!(command, EngineCommand::SetCaptureSettings { .. })
         && !matches!(command, EngineCommand::AnimationPreset(_))

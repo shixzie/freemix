@@ -158,6 +158,7 @@ impl EngineCommand {
             | Self::SetFadeToBlackOutputDuration { .. }
             | Self::SetFadeToBlackCurve { .. }
             | Self::SetDisplayOutput { .. }
+            | Self::SetLiveLan(_)
             | Self::SetNetworkStream { .. }
             | Self::SetCaptureSettings { .. }
             | Self::SetCueList { .. }
@@ -914,6 +915,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. } => fade_to_black_inverse(state, command),
+        EngineCommand::SetLiveLan(_) => Some(EngineCommand::SetLiveLan(Box::new(
+            state.live_lan().clone(),
+        ))),
         EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),

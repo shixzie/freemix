@@ -6,6 +6,7 @@ mod color;
 pub mod display;
 mod fade_to_black;
 mod id;
+pub mod live_lan;
 mod memory;
 pub mod network_stream;
 mod scaling;

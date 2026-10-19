@@ -118,6 +118,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::input_lifecycle::write_input_lifecycle(output, project);
     super::audio_mixer::write_audio_mixer(output, project);
     super::display_output::write_display_outputs(output, project);
+    super::live_lan::write_live_lan(output, project);
     output.push_str("\n  },");
 }
 

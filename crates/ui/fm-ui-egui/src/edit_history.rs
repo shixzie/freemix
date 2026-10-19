@@ -635,6 +635,8 @@ mod tests {
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
+            live_lan: fm_protocol::LiveLanEntry::default(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         };
         snapshot.edit_locks.project = locks.project;
         snapshot.edit_locks.inputs = locks

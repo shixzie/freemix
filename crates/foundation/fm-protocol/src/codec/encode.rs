@@ -410,6 +410,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "clear_display_output")?;
             record.field("slot", slot)?;
         }
+        CommandPayload::SetLiveLan { config, pin } => {
+            record.field("payload", "live_lan_set")?;
+            super::live_lan::encode_set(config, pin, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::SetCaptureSettings { input, settings } => {
             record.field("payload", "input_capture_set")?;
             record.field("input", input)?;
@@ -1534,6 +1540,14 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "stream_targets",
         super::stream_target::encode_entries(&message.stream_targets)?,
+    )?;
+    record.field_string(
+        "live_lan",
+        super::live_lan::encode_entry(&message.live_lan)?,
+    )?;
+    record.field_string(
+        "live_lan_status",
+        super::live_lan::encode_snapshot_status(&message.live_lan_status)?,
     )
 }
 
@@ -2205,6 +2219,12 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("event", "fade_to_black_curve_changed")?;
             record.field("curve", curve.token())?;
         }
+        EventPayload::LiveLanChanged(entry) => {
+            record.field("event", "live_lan_changed")?;
+            super::live_lan::encode_changed(entry, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         EventPayload::DisplayOutputChanged { slot, config } => {
             record.field("event", "display_output_changed")?;
             super::display_output::encode_changed(*slot, config.as_deref(), &mut |name, value| {
@@ -2467,6 +2487,12 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::DisplayOutputStatus(status) => {
             record.field("event", "display_output_status")?;
             super::display_output::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::LiveLanStatus(status) => {
+            record.field("event", "live_lan_status")?;
+            super::live_lan::encode_status(status, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

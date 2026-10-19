@@ -238,3 +238,67 @@ fn the_project_padlock_refuses_slot_edits() {
     }
     assert_eq!(engine.show().display_outputs().len(), 1);
 }
+
+/// OR-017: the `LiveLAN` configuration is an undoable project edit behind the
+/// project padlock; an unknown output or viewer limit out of range is
+/// refused and changes nothing, and nothing ever renders the PIN.
+#[test]
+fn live_lan_is_an_undoable_padlocked_project_edit() {
+    use fm_types::live_lan::{LiveLanConfig, LiveLanPin, LiveLanSource};
+    let configured = LiveLanConfig {
+        enabled: true,
+        source: LiveLanSource::Output(output(2)),
+        max_viewers: 4,
+        pin: Some(LiveLanPin::parse("97531").unwrap()),
+    };
+    let set = |config: &LiveLanConfig| EngineCommand::SetLiveLan(Box::new(config.clone()));
+    assert_eq!(set(&configured).kind(), EngineCommandKind::ProjectEdit);
+    assert!(!format!("{:?}", set(&configured)).contains("97531"));
+
+    let mut engine = engine();
+    assert_eq!(engine.show().live_lan(), &LiveLanConfig::default());
+    let outcome = accept(&mut engine, "live-lan", set(&configured));
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        EngineEvent::LiveLanChanged(config) if **config == configured
+    )));
+    assert_eq!(engine.show().live_lan(), &configured);
+    undo(&mut engine, "live-lan-undo");
+    assert_eq!(engine.show().live_lan(), &LiveLanConfig::default());
+    redo(&mut engine, "live-lan-redo");
+    assert_eq!(engine.show().live_lan(), &configured);
+
+    let unknown = LiveLanConfig {
+        source: LiveLanSource::Output(output(9)),
+        ..configured.clone()
+    };
+    let refused = execute(&mut engine, "live-lan-unknown", set(&unknown));
+    assert_eq!(rejection(&refused).code, RejectionCode::NotFound);
+    let crowded = LiveLanConfig {
+        max_viewers: 0,
+        ..configured.clone()
+    };
+    let refused = execute(&mut engine, "live-lan-crowded", set(&crowded));
+    assert_eq!(rejection(&refused).code, RejectionCode::InvalidCommand);
+    assert!(!format!("{:?}", rejection(&refused)).contains("97531"));
+    assert_eq!(engine.show().live_lan(), &configured);
+
+    accept(
+        &mut engine,
+        "live-lan-lock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: true,
+        },
+    );
+    let outcome = execute(
+        &mut engine,
+        "live-lan-locked",
+        set(&LiveLanConfig::default()),
+    );
+    assert_eq!(
+        EditRejectionKind::of(rejection(&outcome)),
+        Some(EditRejectionKind::ProjectLocked)
+    );
+    assert_eq!(engine.show().live_lan(), &configured);
+}

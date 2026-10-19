@@ -162,6 +162,7 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
         });
     }
     validate_display_outputs(project, errors);
+    validate_live_lan(project, errors);
     for &output in project.fade_to_black_excluded_outputs() {
         if !project
             .outputs()
@@ -1400,6 +1401,31 @@ fn validate_capabilities<'a>(
 
 /// Display outputs (OR-011): usable selectors and modes, existing source
 /// outputs, and no display claimed by both slots.
+/// The `LiveLAN` configuration (OR-017): a viewer limit in range and a source
+/// output the project holds.
+fn validate_live_lan(project: &Project, errors: &mut Vec<ValidationError>) {
+    let outputs = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .collect::<Vec<_>>();
+    match project.live_lan().check(&outputs) {
+        Ok(()) => {}
+        Err(fm_types::live_lan::LiveLanConfigError::MaxViewers) => errors.push(ValidationError {
+            entity: None,
+            field: "live_lan.max_viewers",
+            kind: ValidationErrorKind::OutOfRange,
+        }),
+        Err(fm_types::live_lan::LiveLanConfigError::UnknownOutput(output)) => {
+            errors.push(ValidationError {
+                entity: None,
+                field: "live_lan.source",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
+            });
+        }
+    }
+}
+
 fn validate_display_outputs(project: &Project, errors: &mut Vec<ValidationError>) {
     let outputs = project
         .outputs()

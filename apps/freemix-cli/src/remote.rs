@@ -80,6 +80,80 @@ pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Prints the daemon's `LiveLAN` settings and status (Protocol 2.57).
+pub fn live_lan(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    print_live_lan(state.live_lan(), &state.live_lan_status());
+    Ok(())
+}
+
+/// Edits the daemon's `LiveLAN` viewer stream (Protocol 2.57): each absent
+/// option keeps the daemon's current value, then prints the result.
+pub fn set_live_lan(
+    address: SocketAddr,
+    edit: &crate::args::LiveLanEdit,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let current = *remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?
+        .live_lan();
+    let payload = CommandPayload::SetLiveLan {
+        config: fm_protocol::LiveLanEntry {
+            enabled: edit.enabled.unwrap_or(current.enabled),
+            source: edit.source.unwrap_or(current.source),
+            max_viewers: edit.max_viewers.unwrap_or(current.max_viewers),
+            has_pin: false,
+        },
+        pin: edit.pin.clone(),
+    };
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.execute(payload, key, expected_revision, CommandCompletion::Project)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    print_live_lan(state.live_lan(), &state.live_lan_status());
+    Ok(())
+}
+
+/// Prints one `LiveLan(...)` line: the settings, whether a PIN is set (never
+/// the PIN), and the status.
+pub(crate) fn print_live_lan(
+    entry: &fm_protocol::LiveLanEntry,
+    status: &fm_protocol::LiveLanStatus,
+) {
+    println!(
+        "LiveLan(enabled={}, source={}, max_viewers={}, pin={}, state={}, url={}, viewers={}, \
+         egress_kbps={})",
+        entry.enabled,
+        entry.source,
+        entry.max_viewers,
+        if entry.has_pin { "set" } else { "none" },
+        status.state.token(),
+        if status.url.is_empty() {
+            "none"
+        } else {
+            status.url.as_str()
+        },
+        status.viewers,
+        status.egress_kbps
+    );
+}
+
 /// Prints the cue lists of the daemon at `address` with their run state
 /// (RC-017).
 pub fn cue_lists(address: SocketAddr) -> RemoteResult<()> {
@@ -1066,6 +1140,7 @@ impl CommandCompletion {
             | CommandPayload::SetCaptureSettings { .. }
             | CommandPayload::SetStreamTarget { .. }
             | CommandPayload::RemoveStreamTarget { .. }
+            | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
@@ -1340,6 +1415,7 @@ impl Remote {
                         | EventPayload::SceneAnimationChanged { .. }
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }
+                        | EventPayload::LiveLanChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }
                         | EventPayload::CaptureSettingsChanged { .. }
                         | EventPayload::StreamTargetChanged { .. } => matches!(

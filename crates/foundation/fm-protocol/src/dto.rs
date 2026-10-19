@@ -1954,6 +1954,15 @@ pub enum CommandPayload {
         input: WireInputId,
         settings: Box<crate::CaptureSettings>,
     },
+    /// Configures the `LiveLAN` viewer stream (Protocol 2.57, OR-017): whether
+    /// it runs, what it shows, how many viewers it admits, and an edit of
+    /// its access PIN (which a client cannot read back, so it may keep it).
+    /// `config.has_pin` is not sent. A padlocked, undoable project edit
+    /// applied live.
+    SetLiveLan {
+        config: crate::LiveLanEntry,
+        pin: crate::SecretEdit,
+    },
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2406,6 +2415,10 @@ pub struct SnapshotMessage {
     /// Every configured stream destination in authored order, without its
     /// stream key (Protocol 2.52, OR-006).
     pub stream_targets: Vec<crate::StreamTargetEntry>,
+    /// The `LiveLAN` configuration, without its PIN (Protocol 2.57, OR-017).
+    pub live_lan: crate::LiveLanEntry,
+    /// The `LiveLAN` stream's latest runtime status (Protocol 2.57).
+    pub live_lan_status: crate::LiveLanStatus,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2571,6 +2584,9 @@ pub enum EventPayload {
         slot: crate::DisplayOutputSlot,
         config: Option<Box<crate::DisplayOutputConfig>>,
     },
+    /// The `LiveLAN` configuration changed, or that edit was undone or redone
+    /// (Protocol 2.57). It carries whether a PIN is stored, never the PIN.
+    LiveLanChanged(crate::LiveLanEntry),
     /// A network stream input was reconfigured, or that edit was undone or
     /// redone (Protocol 2.46). The URL is redacted.
     NetworkStreamChanged {
@@ -2714,6 +2730,8 @@ pub enum RuntimeLifecycleEvent {
     },
     /// The capture devices the daemon can open changed (Protocol 2.47).
     CaptureDevices(crate::CaptureInventory),
+    /// The `LiveLAN` stream's runtime status changed (Protocol 2.57).
+    LiveLanStatus(crate::LiveLanStatus),
 }
 
 /// Runtime progress references durable state but has an independent sequence.

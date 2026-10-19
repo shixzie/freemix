@@ -207,6 +207,8 @@ fn snapshot_locked(
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         stream_targets: Vec::new(),
+        live_lan: fm_protocol::LiveLanEntry::default(),
+        live_lan_status: fm_protocol::LiveLanStatus::default(),
     }))
 }
 

@@ -159,12 +159,12 @@ fn display_output_slots_round_trip_exactly_and_strictly() {
     assert_eq!(loaded.project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 52"));
+    assert!(text.contains("\"schema_version\": 53"));
     let first = "{\"slot\": 1, \"display\": {\"id\": \"cg:69733382\", \"name\": \"DELL \\\"U2720Q\\\"\"}, \"source\": \"program\", \"mode\": \"current\", \"scaling\": \"fit\", \"hdr\": \"off\"}";
     let second = "{\"slot\": 2, \"display\": {\"index\": 1}, \"source\": \"output:41\", \"mode\": {\"width\": 1920, \"height\": 1080, \"refresh_millihertz\": 59940}, \"scaling\": \"1:1\", \"hdr\": \"auto\"}";
     assert!(
         text.contains(&format!(
-            "\"display_outputs\": [\n      {first},\n      {second}\n    ]\n  }},"
+            "\"display_outputs\": [\n      {first},\n      {second}\n    ],\n    \"live_lan\": "
         )),
         "{text}"
     );
@@ -239,6 +239,78 @@ fn display_output_slots_round_trip_exactly_and_strictly() {
             "\"display\": {\"index\": 1}",
             "\"display\": {\"id\": \"cg:69733382\"}",
         ),
+    ] {
+        let invalid = text.replacen(from, to, 1);
+        assert_ne!(invalid, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::Validation(_))),
+            "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+}
+
+/// OR-017 at schema 53: the `LiveLAN` configuration round-trips exactly,
+/// its PIN stored in the bundle, and is strict about its shape. A refused
+/// PIN is never echoed into the error.
+#[test]
+fn live_lan_round_trips_exactly_and_strictly() {
+    use fm_types::live_lan::{LiveLanConfig, LiveLanPin, LiveLanSource};
+    let directory = TestDirectory::new("live-lan");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    expected
+        .set_live_lan(LiveLanConfig {
+            enabled: true,
+            source: LiveLanSource::Output(OutputId::new(id(41))),
+            max_viewers: 12,
+            pin: Some(LiveLanPin::parse("024680").unwrap()),
+        })
+        .unwrap();
+    store.save(&stored(expected.clone())).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    let live_lan = "\"live_lan\": {\"enabled\": true, \"source\": \"output:41\", \"max_viewers\": 12, \"pin\": \"024680\"}\n  },";
+    assert!(text.contains(live_lan), "{text}");
+
+    let mut open = expected.clone();
+    open.set_live_lan(LiveLanConfig::default()).unwrap();
+    store.save(&stored(open.clone())).unwrap();
+    assert_eq!(store.load().unwrap().project(), &open);
+    store.save(&stored(expected)).unwrap();
+
+    for (from, to) in [
+        ("\"enabled\": true", "\"enabled\": 1"),
+        (
+            "\"source\": \"output:41\", \"max",
+            "\"source\": \"preview\", \"max",
+        ),
+        ("\"max_viewers\": 12", "\"max_viewers\": 300"),
+        ("\"pin\": \"024680\"", "\"pin\": \"24a8\""),
+        ("\"pin\": \"024680\"", "\"pin\": \"123\""),
+        ("\"pin\": \"024680\"", "\"pin\": 2468"),
+        (", \"pin\": \"024680\"", ""),
+        ("\"pin\": \"024680\"}", "\"pin\": \"024680\", \"port\": 80}"),
+        ("\"live_lan\": {", "\"livelan\": {"),
+    ] {
+        let malformed = text.replacen(from, to, 1);
+        assert_ne!(malformed, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), malformed).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(
+            matches!(error, StoreError::MalformedManifest { .. }),
+            "{from} -> {to}: {error:?}"
+        );
+        assert!(!format!("{error:?} {error}").contains("24a8"), "{error}");
+    }
+    for (from, to) in [
+        (
+            "\"source\": \"output:41\", \"max",
+            "\"source\": \"output:99\", \"max",
+        ),
+        ("\"max_viewers\": 12", "\"max_viewers\": 0"),
+        ("\"max_viewers\": 12", "\"max_viewers\": 33"),
     ] {
         let invalid = text.replacen(from, to, 1);
         assert_ne!(invalid, text, "{from}");

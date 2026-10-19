@@ -1262,6 +1262,50 @@ pub fn run(command: Command) -> AppResult<()> {
             expected_revision,
         )?,
         Command::RemoteDisplayOutputList { address } => remote::display_outputs(address)?,
+        Command::LiveLan { path } => {
+            let project = inspect_engine(&path)?;
+            let config = project.engine.show().live_lan();
+            // A local project has no media plane: an enabled stream waits.
+            remote::print_live_lan(
+                &fm_protocol::LiveLanEntry::from_config(config),
+                &fm_protocol::LiveLanStatus::default().for_config(config.enabled),
+            );
+        }
+        Command::LiveLanSet {
+            path,
+            edit,
+            key,
+            expected_revision,
+        } => {
+            let current = inspect_engine(&path)?.engine.show().live_lan().clone();
+            let pin = match edit.pin {
+                fm_protocol::SecretEdit::Keep => current.pin,
+                fm_protocol::SecretEdit::Clear => None,
+                fm_protocol::SecretEdit::Set(pin) => Some(
+                    fm_types::live_lan::LiveLanPin::parse(&pin)
+                        .map_err(|_| crate::args::ArgsError::InvalidLiveLanPin)?,
+                ),
+            };
+            mutate(
+                &path,
+                EngineCommand::SetLiveLan(Box::new(fm_types::live_lan::LiveLanConfig {
+                    enabled: edit.enabled.unwrap_or(current.enabled),
+                    source: edit.source.unwrap_or(current.source),
+                    max_viewers: edit.max_viewers.unwrap_or(current.max_viewers),
+                    pin,
+                })),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::RemoteLiveLan { address } => remote::live_lan(address)?,
+        Command::RemoteLiveLanSet {
+            address,
+            edit,
+            key,
+            expected_revision,
+        } => remote::set_live_lan(address, &edit, key, expected_revision)?,
         Command::NetworkStreamInputAdd {
             path,
             input,
@@ -4336,18 +4380,26 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
     Ok(())
 }
 
-/// Seeds the show's display-output slots from the project (OR-011).
+/// Seeds the show's display-output slots (OR-011) and `LiveLAN`
+/// configuration (OR-017) from the project.
 fn restore_display_outputs(show: &mut ShowState, project: &Project) -> AppResult<()> {
     for (&slot, config) in project.display_outputs() {
         show.set_display_output(slot, Some(config.clone()))?;
     }
+    show.set_live_lan(project.live_lan().clone())?;
     Ok(())
 }
 
-/// Folds the show's display-output slots (OR-011) into the project. Every
+/// Folds the show's `LiveLAN` configuration (OR-017) and display-output
+/// slots (OR-011) into the project. Every
 /// slot is cleared first, so a display moving between slots is never
 /// claimed twice.
 fn sync_display_outputs(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    if project.live_lan() != show.live_lan() {
+        project
+            .set_live_lan(show.live_lan().clone())
+            .map_err(|error| format!("project cannot take LiveLAN: {error}"))?;
+    }
     if project.display_outputs() == show.display_outputs() {
         return Ok(());
     }
@@ -5630,6 +5682,8 @@ Usage:
   freemix-cli display-output-set <show.freemix> <slot:1|2> <display=index:N|name:NAME|id:ID[,source=program|preview|output:ID][,mode=current|WxH[@HZ]][,scaling=fit|fill|stretch|1:1][,hdr=off|auto]> [--key <key>] [--expect <revision>]
   freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli display-output-list <show.freemix>
+  freemix-cli live-lan <show.freemix>
+  freemix-cli live-lan-set <show.freemix> [--enable|--disable] [--source program|output:<id>] [--max-viewers <1..=32>] [--pin <4-12 digits>|--clear-pin] [--key <key>] [--expect <revision>]
   freemix-cli input-add-stream <show.freemix> <nonzero-input-id> <name> <rtsp|rtp|udp|tcp|http|https|rtmp|rtmps|srt URL or .m3u8> [stream options]
   freemix-cli input-stream-set <show.freemix> <input> [--url <url>] [stream options] [--key <key>] [--expect <revision>]
   freemix-cli input-stream-status <show.freemix>
@@ -5721,6 +5775,8 @@ Usage:
   freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-list <127.0.0.1:port>
   freemix-cli remote-display-inventory <127.0.0.1:port>
+  freemix-cli remote-live-lan <127.0.0.1:port>
+  freemix-cli remote-live-lan-set <127.0.0.1:port> [live-lan-set options]
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-retry <127.0.0.1:port> <running-stream-id> [--key <key>] [--expect <revision>]

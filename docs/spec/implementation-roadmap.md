@@ -2209,6 +2209,23 @@ authored target once and a remote single-key or multi-key RTMP ladder is not
 implemented. Studio and Web show the existing roster only. `OR-007` and
 `OR-017` therefore remain planned, and item 3 remains incomplete.
 
+Current implementation boundary for `OR-017` (LiveLAN, Protocol 2.57,
+schema 53): LiveLAN is project configuration (`enabled`, Program or one
+output, a 1..=32 viewer limit, and an optional 4..=12-digit PIN stored like
+a stream key) edited by the padlocked, undoable `live_lan_set` command from
+Studio's Output › LiveLAN viewers… window and the CLI's `live-lan-set` /
+`remote-live-lan-set` (`live-lan` / `remote-live-lan` print it, never the
+PIN). Native `freemixd` with `--live-lan-listen <addr:port>` (any address,
+LAN included) serves a viewer page, PIN-gated cookie sessions with
+per-address rate limiting and the viewer limit, and a one-second-segment
+H.264/AAC HLS stream of the chosen source encoded off the render loop into a
+private temporary directory; it reports `live_lan_status` (state, viewer
+URL, viewers, egress kbps). The page plays HLS natively only (Safari, iOS,
+Chrome or Edge on Android): there is no bundled MSE player for desktop
+Chrome or Firefox, no TLS, no per-viewer bandwidth breakdown, no measured
+latency class, and the supervised Studio daemon does not start a listener.
+`OR-017` therefore remains planned.
+
 Current implementation boundary for item 4: native `freemixd` runs two
 independently configured program recorder destinations with per-slot project
 output selection. Slot one is `--record-program` (with optional

@@ -475,11 +475,16 @@ pub struct ProjectSnapshot {
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
+    /// The `LiveLAN` configuration, without its PIN (Protocol 2.57).
+    pub live_lan: fm_protocol::LiveLanEntry,
+    /// The `LiveLAN` stream's latest status (Protocol 2.57).
+    pub live_lan_status: fm_protocol::LiveLanStatus,
 }
 
 impl ProjectSnapshot {
     /// Adds the project identity omitted by the current protocol snapshot DTO.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one conversion per snapshot field
     pub fn from_protocol(project_id: ProjectId, message: SnapshotMessage) -> Self {
         let stingers = protocol_stingers(message.stingers);
         let streams = protocol_streams(message.streams);
@@ -579,6 +584,8 @@ impl ProjectSnapshot {
             capture_inputs: message.capture_inputs,
             system_audio_inputs: message.system_audio_inputs,
             stream_targets: message.stream_targets,
+            live_lan: message.live_lan,
+            live_lan_status: message.live_lan_status,
         }
     }
 }
@@ -724,6 +731,8 @@ pub enum DurableChange {
         slot: fm_protocol::DisplayOutputSlot,
         config: Option<Box<fm_protocol::DisplayOutputConfig>>,
     },
+    /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
+    LiveLanChanged(fm_protocol::LiveLanEntry),
     /// A network stream input was reconfigured (Protocol 2.46); the URL is
     /// redacted.
     NetworkStreamChanged {
@@ -975,6 +984,7 @@ impl DurableProjectEvent {
             EventPayload::DisplayOutputChanged { slot, config } => {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
+            EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
             EventPayload::CueListChanged(list) => DurableChange::CueListChanged(list),
             EventPayload::CueListRemoved { list } => DurableChange::CueListRemoved { list },
             EventPayload::CueRunChanged(change) => {
@@ -1099,9 +1109,25 @@ pub struct ProjectState {
     /// Every configured stream destination in authored order (Protocol
     /// 2.52).
     stream_targets: Vec<fm_protocol::StreamTargetEntry>,
+    /// The `LiveLAN` configuration, without its PIN (Protocol 2.57).
+    live_lan: fm_protocol::LiveLanEntry,
+    /// The `LiveLAN` stream's status as last reported (Protocol 2.57).
+    live_lan_status: fm_protocol::LiveLanStatus,
 }
 
 impl ProjectState {
+    /// The `LiveLAN` configuration, without its PIN (Protocol 2.57).
+    #[must_use]
+    pub const fn live_lan(&self) -> &fm_protocol::LiveLanEntry {
+        &self.live_lan
+    }
+
+    /// The `LiveLAN` stream's status as clients see it (Protocol 2.57).
+    #[must_use]
+    pub fn live_lan_status(&self) -> fm_protocol::LiveLanStatus {
+        self.live_lan_status.for_config(self.live_lan.enabled)
+    }
+
     /// Network stream input `input`'s redacted config and latest status
     /// (Protocol 2.46).
     #[must_use]
@@ -1506,6 +1532,10 @@ pub struct ClientView {
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
+    /// The `LiveLAN` configuration, without its PIN (Protocol 2.57).
+    pub live_lan: fm_protocol::LiveLanEntry,
+    /// The `LiveLAN` stream's status (Protocol 2.57).
+    pub live_lan_status: fm_protocol::LiveLanStatus,
 }
 
 impl ClientView {
@@ -1878,6 +1908,8 @@ pub enum ModelError {
     InvalidAudioMixerChange,
     /// A display-output change shows an unknown output (Protocol 2.42).
     InvalidDisplayOutputChange,
+    /// A `LiveLAN` change streams an unknown output (Protocol 2.57).
+    InvalidLiveLanChange,
     /// A `cue_list_state` arrived that the snapshot did not announce or at
     /// another revision (Protocol 2.50).
     CueListStateMismatch,
@@ -2016,6 +2048,9 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidDisplayOutputChange => {
                 formatter.write_str("display-output change shows an unknown output")
+            }
+            Self::InvalidLiveLanChange => {
+                formatter.write_str("LiveLAN change streams an unknown output")
             }
             Self::CueListStateMismatch => {
                 formatter.write_str("cue list state does not match the snapshot it follows")
@@ -2269,6 +2304,21 @@ impl ClientModel {
         Ok(())
     }
 
+    /// Records the `LiveLAN` stream's status from a `live_lan_status` runtime
+    /// event (Protocol 2.57).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_live_lan_status(
+        &mut self,
+        status: fm_protocol::LiveLanStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        state.live_lan_status = status;
+        Ok(())
+    }
+
     /// Records a display-output slot's runtime state from a
     /// `display_output_status` runtime event (Protocol 2.42).
     ///
@@ -2371,6 +2421,8 @@ impl ClientModel {
                 .cloned()
                 .collect(),
             stream_targets: state.stream_targets.clone(),
+            live_lan: state.live_lan,
+            live_lan_status: state.live_lan_status(),
         })
     }
 
@@ -2613,6 +2665,8 @@ impl ClientModel {
                 .map(|entry| (entry.input.to_domain(), entry))
                 .collect(),
             stream_targets: snapshot.stream_targets,
+            live_lan: snapshot.live_lan,
+            live_lan_status: snapshot.live_lan_status,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -3818,6 +3872,16 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidAudioMixerChange)
             };
         }
+        DurableChange::LiveLanChanged(entry) => {
+            return match entry.source {
+                fm_protocol::LiveLanSource::Output(output)
+                    if !state.outputs.iter().any(|status| status.output == output) =>
+                {
+                    Err(ModelError::InvalidLiveLanChange)
+                }
+                _ => Ok(()),
+            };
+        }
         DurableChange::DisplayOutputChanged { config, .. } => {
             return match config.as_deref().map(|config| config.source) {
                 Some(fm_protocol::DisplayOutputSource::Output(output))
@@ -4277,6 +4341,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.display_outputs.remove(&slot);
             }
         },
+        DurableChange::LiveLanChanged(entry) => {
+            // Disabled, it forgets its last report, as the server does.
+            if !entry.enabled {
+                state.live_lan_status = fm_protocol::LiveLanStatus::default();
+            }
+            state.live_lan = entry;
+        }
         DurableChange::FadeToBlackOutputChanged { output, affected } => {
             state
                 .fade_to_black_excluded_outputs

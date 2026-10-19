@@ -7435,3 +7435,201 @@ fn system_audio_inputs_replicate_with_their_status() {
     assert_eq!(control.snapshot().snapshot.system_audio_inputs, []);
     assert_eq!(control.system_audio_status(input(5)), None);
 }
+
+/// Protocol 2.57 (OR-017): the `LiveLAN` configuration is a padlocked,
+/// undoable project edit whose PIN edit keeps, clears, or replaces the
+/// stored PIN without ever echoing it; the media plane's status is a
+/// runtime event and the snapshot shows it as clients should see it.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario from edit to runtime state
+fn live_lan_is_an_undoable_project_edit_with_runtime_status() {
+    use fm_protocol::{
+        LiveLanEntry, LiveLanPin, LiveLanSource, LiveLanState, LiveLanStatus, SecretEdit,
+    };
+    let mut control = mixer_service();
+    let set = |id: &str, enabled: bool, pin: SecretEdit| {
+        command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::SetLiveLan {
+                config: LiveLanEntry {
+                    enabled,
+                    source: LiveLanSource::Output(output(8)),
+                    max_viewers: 6,
+                    has_pin: false,
+                },
+                pin,
+            },
+        )
+    };
+    assert_eq!(
+        control
+            .required_classes(&set("c", true, SecretEdit::Keep).payload)
+            .primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            set("op", true, SecretEdit::Keep),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+
+    let admin = principal(Role::Admin);
+    let applied = control
+        .submit(&admin, set("one", true, SecretEdit::Set("13579".into())), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    let expected = LiveLanEntry {
+        enabled: true,
+        source: LiveLanSource::Output(output(8)),
+        max_viewers: 6,
+        has_pin: true,
+    };
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::LiveLanChanged(expected)
+    );
+    assert_eq!(
+        control
+            .live_lan()
+            .pin
+            .as_ref()
+            .map(LiveLanPin::expose_secret),
+        Some("13579")
+    );
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(snapshot.live_lan, expected);
+    // Enabled, but nothing has reported: unavailable.
+    assert_eq!(snapshot.live_lan_status.state, LiveLanState::Unavailable);
+    for message in applied.output.clone().into_wire_messages() {
+        let line = fm_protocol::encode_line(&message).unwrap();
+        assert!(!line.contains("13579"), "{line}");
+    }
+    let line =
+        fm_protocol::encode_line(&WireMessage::Snapshot(control.snapshot().snapshot.clone()))
+            .unwrap();
+    assert!(!line.contains("13579"));
+
+    // Keep keeps the PIN; an unknown output is refused.
+    let kept = control
+        .submit(&admin, set("two", true, SecretEdit::Keep), 0)
+        .unwrap();
+    assert!(kept.is_accepted(), "{:?}", kept.output.result);
+    assert!(control.live_lan().pin.is_some());
+    let unknown = control
+        .submit(
+            &admin,
+            command(
+                "three",
+                "three-key",
+                CommandPayload::SetLiveLan {
+                    config: LiveLanEntry {
+                        source: LiveLanSource::Output(output(99)),
+                        ..expected
+                    },
+                    pin: SecretEdit::Keep,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
+
+    // The media plane reports it live, once.
+    let reported = LiveLanStatus {
+        state: LiveLanState::Live,
+        url: "http://192.168.1.20:8090/".into(),
+        viewers: 2,
+        egress_kbps: 5_000,
+    };
+    let event = control
+        .set_live_lan_status(&server_identity(), &reported)
+        .unwrap()
+        .expect("a changed status is published");
+    assert!(matches!(
+        &event.event,
+        RuntimeLifecycleEvent::LiveLanStatus(status) if *status == reported
+    ));
+    let line = fm_protocol::encode_line(&WireMessage::RuntimeEvent(event.clone())).unwrap();
+    assert_eq!(
+        fm_protocol::decode_line(&line).unwrap(),
+        WireMessage::RuntimeEvent(event)
+    );
+    assert!(
+        control
+            .set_live_lan_status(&server_identity(), &reported)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(control.snapshot().snapshot.live_lan_status, reported);
+    let snapshot = WireMessage::Snapshot(control.snapshot().snapshot.clone());
+    let line = fm_protocol::encode_line(&snapshot).unwrap();
+    assert_eq!(fm_protocol::decode_line(&line).unwrap(), snapshot);
+
+    // Clearing the PIN and disabling: the snapshot shows it off.
+    let off = control
+        .submit(&admin, set("four", false, SecretEdit::Clear), 0)
+        .unwrap();
+    assert!(off.is_accepted(), "{:?}", off.output.result);
+    assert_eq!(control.live_lan().pin, None);
+    assert_eq!(
+        control.snapshot().snapshot.live_lan_status,
+        LiveLanStatus::default()
+    );
+    // Undo restores the PIN exactly.
+    let undo = control
+        .submit(
+            &admin,
+            command(
+                "u",
+                "u",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undo.is_accepted(), "{:?}", undo.output.result);
+    assert_wire_exact(&control, &undo);
+    assert_eq!(
+        control
+            .live_lan()
+            .pin
+            .as_ref()
+            .map(LiveLanPin::expose_secret),
+        Some("13579")
+    );
+    // The disabled run's report is forgotten: unavailable until the media
+    // plane reports again.
+    assert_eq!(
+        control.snapshot().snapshot.live_lan_status.state,
+        LiveLanState::Unavailable
+    );
+
+    // The padlock refuses the edit.
+    let lock = control
+        .submit(
+            &admin,
+            command(
+                "lock",
+                "lock",
+                CommandPayload::SetEditLock {
+                    scope: fm_protocol::EditLockScope::Project,
+                    locked: true,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(lock.is_accepted());
+    let locked = control
+        .submit(&admin, set("five", false, SecretEdit::Keep), 0)
+        .unwrap();
+    assert!(!locked.is_accepted());
+    assert!(control.live_lan().enabled);
+}

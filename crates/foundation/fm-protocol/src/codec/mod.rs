@@ -8,6 +8,7 @@ mod encode;
 mod grade;
 mod input_lifecycle;
 mod layout;
+mod live_lan;
 mod media;
 mod network_stream;
 mod playlist;

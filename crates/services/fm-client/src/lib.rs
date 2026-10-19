@@ -1460,6 +1460,9 @@ impl Client {
         if let RuntimeLifecycleEvent::DisplayInventory(inventory) = &event.event {
             self.model.apply_display_inventory(inventory.clone());
         }
+        if let RuntimeLifecycleEvent::LiveLanStatus(status) = &event.event {
+            self.model.apply_runtime_live_lan_status(status.clone())?;
+        }
         self.apply_runtime_source_status(&event.event)?;
         self.runtime_server = Some(event.server);
         self.runtime_sequence = Some((event.generation, event.sequence));
@@ -1566,6 +1569,7 @@ impl Client {
             | CommandPayload::SetFadeToBlackCurve { .. }
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
+            | CommandPayload::SetLiveLan { .. }
             | CommandPayload::SetNetworkStream { .. }
             | CommandPayload::SetCaptureSettings { .. }
             | CommandPayload::Stinger { .. }

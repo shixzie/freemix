@@ -200,6 +200,8 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         stream_targets: Vec::new(),
+        live_lan: fm_protocol::LiveLanEntry::default(),
+        live_lan_status: fm_protocol::LiveLanStatus::default(),
     })
 }
 
@@ -1064,12 +1066,17 @@ fn snapshot_stream_targets_carry_srt_latency_and_passphrase_presence() {
     ];
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.contains("%7E0%7E300%7E1%2C2%7E"), "{encoded}");
-    assert!(encoded.ends_with("%7E1%7E0%7E%7E0\n"), "{encoded}");
+    assert!(
+        encoded.ends_with(
+            "%7E1%7E0%7E%7E0\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+        ),
+        "{encoded}"
+    );
     assert_eq!(decode_line(&encoded).unwrap(), message);
     // SRT without a latency, or a passphrase off SRT, is refused.
     for (from, to) in [
         ("%7E0%7E300%7E1%2C", "%7E0%7E%7E1%2C"),
-        ("%7E1%7E0%7E%7E0\n", "%7E1%7E0%7E%7E1\n"),
+        ("%7E1%7E0%7E%7E0\tlive", "%7E1%7E0%7E%7E1\tlive"),
     ] {
         assert!(encoded.contains(from), "{from}");
         assert!(decode_line(&encoded.replacen(from, to, 1)).is_err());
@@ -2775,7 +2782,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.56\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.57\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2784,7 +2791,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.56\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.57\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2994,7 +3001,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -3002,7 +3009,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -3109,7 +3116,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.56\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.57\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3119,7 +3126,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.56\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.57\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3303,7 +3310,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.56\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.57\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3351,7 +3358,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 56));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3405,7 +3412,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.56\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.57\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3866,7 +3873,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\n"
+                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
             ),
             "{encoded}"
         );
@@ -4188,7 +4195,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.56\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.57\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4228,7 +4235,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 56));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4300,7 +4307,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.56\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.57\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4599,7 +4606,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 56));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {
@@ -4704,7 +4711,7 @@ mod playlists {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\n"
+                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
             ),
             "{encoded}"
         );

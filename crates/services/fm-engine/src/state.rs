@@ -214,6 +214,8 @@ pub struct ShowState {
     /// The configured fullscreen display outputs by slot (OR-011).
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
+    /// The `LiveLAN` viewer stream's configuration (OR-017).
+    live_lan: fm_types::live_lan::LiveLanConfig,
     /// Every configured stream destination's authored configuration in
     /// authored order (OR-006), parallel to the switcher's stream inventory.
     /// The switcher owns the desired running flags; each entry's own
@@ -300,6 +302,7 @@ impl ShowState {
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
+            live_lan: fm_types::live_lan::LiveLanConfig::default(),
             stream_targets: Vec::new(),
         })
     }
@@ -824,6 +827,33 @@ impl ShowState {
         crate::audio_mixer::validate_group_state(monitor.state)
             .map_err(|_| ShowError::InvalidAudioMonitorGain(monitor.state.gain_millidb))?;
         self.audio_monitor = monitor;
+        Ok(())
+    }
+
+    /// The `LiveLAN` viewer stream's configuration (OR-017).
+    #[must_use]
+    pub const fn live_lan(&self) -> &fm_types::live_lan::LiveLanConfig {
+        &self.live_lan
+    }
+
+    /// Replaces the `LiveLAN` configuration, checked against the show's
+    /// outputs exactly as [`fm_model::Project::set_live_lan`] checks it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::live_lan::LiveLanConfigError`]. Nothing
+    /// changes on error.
+    pub fn set_live_lan(
+        &mut self,
+        config: fm_types::live_lan::LiveLanConfig,
+    ) -> Result<(), fm_types::live_lan::LiveLanConfigError> {
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|(output, _)| *output)
+            .collect::<Vec<_>>();
+        config.check(&outputs)?;
+        self.live_lan = config;
         Ok(())
     }
 

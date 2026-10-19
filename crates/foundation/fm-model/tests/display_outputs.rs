@@ -98,7 +98,7 @@ fn config(text: &str) -> DisplayOutputConfig {
 
 #[test]
 fn schema_40_starts_without_display_outputs_and_bounds_slots() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 52);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 53);
     assert_eq!(MAX_DISPLAY_OUTPUTS, 2);
     assert_eq!(DisplayOutputSlot::new(0), None);
     assert_eq!(DisplayOutputSlot::new(3), None);
@@ -258,6 +258,75 @@ fn validation_reports_restored_slots_that_break_the_rules() {
             "display_outputs.display",
             ValidationErrorKind::DuplicateReference
         )),
+        "{kinds:?}"
+    );
+}
+
+/// OR-017 (schema 53): the `LiveLAN` configuration starts disabled on Program,
+/// is checked against the project's outputs, pins the output it streams,
+/// and is reported by validation when restored broken.
+#[test]
+fn live_lan_config_is_checked_and_pins_its_output() {
+    use fm_types::live_lan::{
+        DEFAULT_LIVE_LAN_VIEWERS, LiveLanConfig, LiveLanConfigError, LiveLanPin, LiveLanSource,
+    };
+    let mut project = project();
+    assert_eq!(project.live_lan(), &LiveLanConfig::default());
+    assert!(!project.live_lan().enabled);
+    assert_eq!(project.live_lan().max_viewers, DEFAULT_LIVE_LAN_VIEWERS);
+
+    let before = project.clone();
+    let unknown = LiveLanConfig {
+        enabled: true,
+        source: LiveLanSource::Output(output(99)),
+        ..LiveLanConfig::default()
+    };
+    assert_eq!(
+        project.set_live_lan(unknown),
+        Err(LiveLanConfigError::UnknownOutput(output(99)))
+    );
+    let crowded = LiveLanConfig {
+        max_viewers: 0,
+        ..LiveLanConfig::default()
+    };
+    assert_eq!(
+        project.set_live_lan(crowded),
+        Err(LiveLanConfigError::MaxViewers)
+    );
+    assert_eq!(project, before);
+
+    let clean = LiveLanConfig {
+        enabled: true,
+        source: LiveLanSource::Output(output(41)),
+        max_viewers: 4,
+        pin: Some(LiveLanPin::parse("2468").unwrap()),
+    };
+    assert_eq!(
+        project.set_live_lan(clean.clone()),
+        Ok(LiveLanConfig::default())
+    );
+    assert_eq!(project.live_lan(), &clean);
+    assert_eq!(project.validate(), Ok(()));
+    assert_eq!(
+        project.remove_output(output(41)),
+        Err(RemoveOutputError::LiveLanReference { output: output(41) })
+    );
+    project.set_live_lan(LiveLanConfig::default()).unwrap();
+    assert_eq!(project.remove_output(output(41)), Ok(()));
+
+    project.restore_live_lan(LiveLanConfig {
+        source: LiveLanSource::Output(output(77)),
+        max_viewers: 33,
+        ..LiveLanConfig::default()
+    });
+    let kinds = project
+        .validate()
+        .unwrap_err()
+        .iter()
+        .map(|error| (error.field, error.kind))
+        .collect::<Vec<_>>();
+    assert!(
+        kinds.contains(&("live_lan.max_viewers", ValidationErrorKind::OutOfRange)),
         "{kinds:?}"
     );
 }

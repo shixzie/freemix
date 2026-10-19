@@ -86,6 +86,7 @@ struct ProjectDto {
         fm_types::display::DisplayOutputSlot,
         fm_types::display::DisplayOutputConfig,
     )>,
+    live_lan: fm_types::live_lan::LiveLanConfig,
 }
 
 struct EditLocks {
@@ -140,6 +141,7 @@ impl ProjectDto {
                 super::audio_mixer::parse_fade_to_black_output_durations(&mut object)?,
             fade_to_black_curve: super::audio_mixer::parse_fade_to_black_curve(&mut object)?,
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
+            live_lan: super::live_lan::parse_live_lan(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -249,6 +251,9 @@ impl ProjectDto {
         for (slot, config) in self.display_outputs {
             project.restore_display_output(slot, config);
         }
+        // An unknown source output and a viewer limit out of range are
+        // reported by project validation.
+        project.restore_live_lan(self.live_lan);
         project
     }
 }

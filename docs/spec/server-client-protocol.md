@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.56 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.57 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1761,6 +1761,48 @@ Protocol 2.56 folds a grade drag into one undo step (SW-019).
   standalone set each (one undo step per target).
 - No durability change: journals and history record sets without gestures.
 - 2.55 is refused.
+
+Protocol 2.57 adds LiveLAN (OR-017): a browser viewer stream of Program or
+one project output for people on the local network, optionally behind a
+PIN.
+
+- `payload=live_lan_set` carries required `enabled=0|1`,
+  `source=program|output:<id>`, and `max_viewers` (1..=32), and an optional
+  `pin` edit: absent keeps the stored PIN, empty clears it, and 4..=12 ASCII
+  digits replace it. Any other PIN is refused as field `pin` with the value
+  reported as `***`; `***` itself is refused. It is a padlocked, undoable
+  `edit_project` command; an unknown output is `not_found` and a viewer
+  limit out of range `invalid_command` (field issue `max_viewers`).
+- `event=live_lan_changed` carries `enabled`, `source`, `max_viewers`, and
+  `has_pin=0|1`; no event, snapshot, refusal, or log line ever carries the
+  PIN.
+- `runtime_event` `event=live_lan_status` carries
+  `state=off|unavailable|starting|live|failed`, `url` (empty, or
+  `http://` plus at most 64 bytes of graphic ASCII without `,` or `~`,
+  ending in `/`), `viewers`, and `egress_kbps`.
+- Each snapshot gains, after `stream_targets`,
+  `live_lan=<enabled>~<source>~<max_viewers>~<has_pin>` and
+  `live_lan_status=<state>~<viewers>~<egress_kbps>~<url>`. A disabled
+  LiveLAN is `off` with nothing else; an enabled one that no listener
+  reports is `unavailable`, and a disabled one forgets its last report.
+- An output LiveLAN streams cannot be removed (`conflict`).
+- The native daemon serves LiveLAN only with `--live-lan-listen <addr:port>`
+  (any address, LAN included, and `--native-media`), announced as
+  `FREEMIXD_LIVE_LAN_READY\tv=1\taddress=<addr>`. `GET /` is the viewer
+  page; `POST /v1/live/session` with body `pin=<digits>` (empty without a
+  PIN) answers `204` and an `HttpOnly; SameSite=Strict` session cookie, `401`
+  for a wrong PIN, `429` after five wrong PINs from one address within a
+  minute, and `503` while LiveLAN is off or the viewer limit is watching;
+  `GET /live/index.m3u8` and `GET /live/segment-<digits>.ts` need the
+  cookie. The encoder writes one-second H.264/AAC HLS segments into a
+  private temporary directory, so the delay is a few seconds. A change of
+  source or PIN, or disabling, ends every session. A viewer is a session
+  that fetched media within ten seconds.
+- Durability: the project gains required
+  `"live_lan": {"enabled", "source", "max_viewers", "pin"}` with `pin` a
+  digit string or `null`, stored in the bundle under the same trust model
+  as stream keys (schema 53).
+- 2.56 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

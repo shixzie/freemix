@@ -17,7 +17,7 @@ use fm_protocol::{
 };
 use fm_types::network_stream::{AudioChannels, SrtKeyLength, StreamMode};
 
-const PREFIX: &str = "command\tprotocol=2.56\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.57\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -105,7 +105,7 @@ fn set(url: Option<StreamUrl>, settings: NetworkStreamSettings) -> CommandPayloa
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 56));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
 }
 
 #[test]
@@ -575,5 +575,7 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         system_audio_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         stream_targets: Vec::new(),
+        live_lan: fm_protocol::LiveLanEntry::default(),
+        live_lan_status: fm_protocol::LiveLanStatus::default(),
     })
 }

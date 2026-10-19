@@ -381,6 +381,10 @@ pub enum RemoveOutputError {
         output: OutputId,
         slot: fm_types::display::DisplayOutputSlot,
     },
+    /// `LiveLAN` streams the output (OR-017).
+    LiveLanReference {
+        output: OutputId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -778,6 +782,9 @@ impl std::fmt::Display for RemoveOutputError {
                 formatter,
                 "output {output} is shown by display output {slot}"
             ),
+            Self::LiveLanReference { output } => {
+                write!(formatter, "output {output} is streamed by LiveLAN")
+            }
         }
     }
 }
@@ -907,7 +914,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(52);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(53);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -957,6 +964,7 @@ pub struct Project {
     fade_to_black_curve: fm_types::FadeToBlackCurve,
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
+    live_lan: fm_types::live_lan::LiveLanConfig,
 }
 
 impl Project {
@@ -993,6 +1001,7 @@ impl Project {
             fade_to_black_output_durations: BTreeMap::new(),
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
             display_outputs: BTreeMap::new(),
+            live_lan: fm_types::live_lan::LiveLanConfig::default(),
         }
     }
 
@@ -1309,6 +1318,38 @@ impl Project {
         slot: fm_types::display::DisplayOutputSlot,
     ) -> Option<fm_types::display::DisplayOutputConfig> {
         self.display_outputs.remove(&slot)
+    }
+
+    /// The `LiveLAN` viewer stream's configuration (OR-017, schema 53).
+    #[must_use]
+    pub const fn live_lan(&self) -> &fm_types::live_lan::LiveLanConfig {
+        &self.live_lan
+    }
+
+    /// Replaces the `LiveLAN` configuration and returns the previous one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`fm_types::live_lan::LiveLanConfigError`] for a viewer
+    /// limit out of range or an unknown source output. Nothing changes on
+    /// error.
+    pub fn set_live_lan(
+        &mut self,
+        config: fm_types::live_lan::LiveLanConfig,
+    ) -> Result<fm_types::live_lan::LiveLanConfig, fm_types::live_lan::LiveLanConfigError> {
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.id)
+            .collect::<Vec<_>>();
+        config.check(&outputs)?;
+        Ok(std::mem::replace(&mut self.live_lan, config))
+    }
+
+    /// Restores a persisted `LiveLAN` configuration without checking it;
+    /// problems are reported by [`Self::validate`].
+    pub fn restore_live_lan(&mut self, config: fm_types::live_lan::LiveLanConfig) {
+        self.live_lan = config;
     }
 
     /// Chooses whether Fade to Black fades `output`. Unknown outputs are
@@ -3481,7 +3522,8 @@ impl Project {
         Ok(())
     }
 
-    /// Removes an output that no stream destination references.
+    /// Removes an output that no stream destination, display output, or
+    /// `LiveLAN` stream references.
     ///
     /// # Errors
     ///
@@ -3509,6 +3551,9 @@ impl Project {
                 output,
                 slot: *slot,
             });
+        }
+        if self.live_lan.source == fm_types::live_lan::LiveLanSource::Output(output) {
+            return Err(RemoveOutputError::LiveLanReference { output });
         }
         self.outputs.retain(|candidate| candidate.id != output);
         self.fade_to_black_excluded_outputs.remove(&output);

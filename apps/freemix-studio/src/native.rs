@@ -2688,6 +2688,7 @@ fn intent_payload(
             CommandPayload::SetDisplayOutput { slot, config }
         }
         StudioIntent::ClearDisplayOutput { slot } => CommandPayload::ClearDisplayOutput { slot },
+        StudioIntent::SetLiveLan { config, pin } => CommandPayload::SetLiveLan { config, pin },
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -3415,6 +3416,8 @@ mod tests {
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
+            live_lan: fm_protocol::LiveLanEntry::default(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         }
     }
 
@@ -6081,6 +6084,26 @@ mod tests {
         assert_eq!(
             intent_payload(StudioIntent::ClearDisplayOutput { slot }, None),
             Ok(CommandPayload::ClearDisplayOutput { slot })
+        );
+        // OR-017: the LiveLAN window's intent is the Protocol 2.57 command,
+        // and neither form ever shows a new PIN.
+        let live_lan = fm_protocol::LiveLanEntry {
+            enabled: true,
+            source: fm_protocol::LiveLanSource::Program,
+            max_viewers: 4,
+            has_pin: false,
+        };
+        let intent = StudioIntent::SetLiveLan {
+            config: live_lan,
+            pin: fm_protocol::SecretEdit::Set("482916".into()),
+        };
+        assert!(!format!("{intent:?}").contains("482916"));
+        assert_eq!(
+            intent_payload(intent, None),
+            Ok(CommandPayload::SetLiveLan {
+                config: live_lan,
+                pin: fm_protocol::SecretEdit::Set("482916".into()),
+            })
         );
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
         assert!(intent_payload(StudioIntent::RequestCaptureDevices, None).is_err());

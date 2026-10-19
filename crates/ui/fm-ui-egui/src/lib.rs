@@ -51,6 +51,7 @@ mod input_bank;
 mod input_catalogue;
 mod input_lifecycle;
 mod l10n;
+mod live_lan;
 mod media_transport;
 mod menu;
 mod meter_ballistics;
@@ -104,6 +105,7 @@ pub use input_catalogue::{
     add_input_availability, catalogue_refusal_code, catalogue_refusal_message, input_name_problem,
     input_usage_reason, next_free_input_id, remove_input_availability, suggested_input_name,
 };
+pub use live_lan::{live_lan_block_reason, live_lan_set_intent};
 pub use media_transport::{
     MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
 };
@@ -202,6 +204,13 @@ pub enum StudioIntent {
     SetDisplayOutput {
         slot: fm_protocol::DisplayOutputSlot,
         config: Box<fm_protocol::DisplayOutputConfig>,
+    },
+    /// Stores the `LiveLAN` viewer stream's settings (OR-017, Protocol 2.57).
+    /// The PIN edit keeps, clears, or replaces the stored PIN; its `Debug`
+    /// form never shows a new PIN.
+    SetLiveLan {
+        config: fm_protocol::LiveLanEntry,
+        pin: fm_protocol::SecretEdit,
     },
     /// Clears one fullscreen display-output slot (OR-011, Protocol 2.42).
     ClearDisplayOutput {
@@ -1419,6 +1428,8 @@ pub struct StudioShell {
     designer: scene_designer::DesignerWindow,
     /// The Fullscreen outputs dialog and its slot drafts (OR-011).
     display_outputs: display_outputs::DisplayOutputsDialog,
+    /// The `LiveLAN` viewers window and the PIN being typed (OR-017).
+    live_lan: live_lan::LiveLanWindow,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
     stream_targets: stream_targets::StreamTargetsUi,
     /// Tab drags, native window placement, and the layout name dialog.
@@ -1777,6 +1788,7 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
+        self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.draw_stream_target_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
@@ -1891,6 +1903,7 @@ impl Default for StudioShell {
             animation: studio_animation::AnimationWindow::default(),
             designer: scene_designer::DesignerWindow::default(),
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
+            live_lan: live_lan::LiveLanWindow::default(),
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
         }
@@ -2846,6 +2859,8 @@ mod tests {
             input_lifecycle: vec![fm_ui_model::InputLifecycleStatus::default()],
             input_categories: Vec::new(),
             stream_targets: Vec::new(),
+            live_lan: fm_protocol::LiveLanEntry::default(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         }
     }
 

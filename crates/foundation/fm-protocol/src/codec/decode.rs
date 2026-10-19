@@ -511,6 +511,10 @@ fn decode_command_payload(
         "clear_display_output" => CommandPayload::ClearDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
         },
+        "live_lan_set" => {
+            let (config, pin) = super::live_lan::decode_set(fields)?;
+            CommandPayload::SetLiveLan { config, pin }
+        }
         "input_capture_set" => CommandPayload::SetCaptureSettings {
             input: fields.canonical_input("input")?,
             settings: Box::new(super::capture::decode_settings(fields)?),
@@ -1644,6 +1648,10 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
             &fields.required("system_audio_inputs")?,
         )?,
         stream_targets: super::stream_target::decode_entries(&fields.required("stream_targets")?)?,
+        live_lan: super::live_lan::decode_entry(&fields.required("live_lan")?)?,
+        live_lan_status: super::live_lan::decode_snapshot_status(
+            &fields.required("live_lan_status")?,
+        )?,
     })
 }
 
@@ -2341,6 +2349,9 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 super::network_stream::Secrets::Redacted,
             )?),
         },
+        "live_lan_changed" => {
+            EventPayload::LiveLanChanged(super::live_lan::decode_changed(fields)?)
+        }
         "display_output_changed" => {
             let (slot, config) = super::display_output::decode_changed(fields)?;
             EventPayload::DisplayOutputChanged {
@@ -2700,6 +2711,9 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         }
         "capture_devices" => {
             RuntimeLifecycleEvent::CaptureDevices(super::capture::decode_inventory(fields)?)
+        }
+        "live_lan_status" => {
+            RuntimeLifecycleEvent::LiveLanStatus(super::live_lan::decode_status(fields)?)
         }
         "system_audio_status" => {
             let (input, status) = super::system_audio::decode_status(fields)?;

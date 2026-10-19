@@ -23,6 +23,7 @@ mod cue;
 mod display_output;
 mod grade;
 mod input_lifecycle;
+mod live_lan;
 mod media;
 mod network_stream;
 mod playlist;
@@ -569,6 +570,11 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                         .system_audio_inputs()
                         .any(|(candidate, _)| candidate == *input)
                 });
+                // A disabled LiveLAN forgets its last report (see
+                // `refresh_snapshot`).
+                if !control.engine.show().live_lan().enabled {
+                    control.live_lan_status = fm_protocol::LiveLanStatus::default();
+                }
                 control.snapshot = snapshot_record(
                     &control.engine,
                     &control.identity,
@@ -577,6 +583,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                     &control.network_states,
                     &control.capture_states,
                     &control.system_audio_states,
+                    &control.live_lan_status,
                 );
 
                 let live_events = submission
@@ -859,6 +866,9 @@ pub struct ControlService<A = Policy> {
     /// Each system audio input's capture status as the media plane last
     /// reported it (AU-011).
     system_audio_states: BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
+    /// The `LiveLAN` stream's status as the media plane last reported it
+    /// (OR-017); clients see it through [`live_lan::wire_status`].
+    live_lan_status: fm_protocol::LiveLanStatus,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -900,6 +910,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &fm_protocol::LiveLanStatus::default(),
         );
         Self {
             engine,
@@ -926,6 +937,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             capture_states: BTreeMap::new(),
             capture_inventory: fm_protocol::CaptureInventory::default(),
             system_audio_states: BTreeMap::new(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         }
     }
 
@@ -1167,6 +1179,52 @@ impl<A: AuthorizationHook> ControlService<A> {
                 input: WireInputId::from_domain(input),
                 status: Box::new(status),
             },
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// The `LiveLAN` configuration the media plane realizes (OR-017), its PIN
+    /// included.
+    #[must_use]
+    pub fn live_lan(&self) -> &fm_protocol::LiveLanConfig {
+        self.engine.show().live_lan()
+    }
+
+    /// The `LiveLAN` status as clients see it (OR-017).
+    #[must_use]
+    pub fn live_lan_status(&self) -> fm_protocol::LiveLanStatus {
+        live_lan::wire_status(self.engine.show(), &self.live_lan_status)
+    }
+
+    /// Records the `LiveLAN` stream's status as the media plane observes it
+    /// (OR-017). A change of what clients see refreshes the snapshot and
+    /// returns the published `live_lan_status` runtime event; an unchanged
+    /// view returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_live_lan_status(
+        &mut self,
+        server: &ServerIdentity,
+        status: &fm_protocol::LiveLanStatus,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        let before = self.live_lan_status();
+        self.live_lan_status = status.clone();
+        let after = self.live_lan_status();
+        if before == after {
+            return Ok(None);
+        }
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::LiveLanStatus(after),
         )?;
         let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
         Ok(Some(event))
@@ -1798,6 +1856,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                 capture::engine_command(*input, settings)
             }
             payload => stream_target::engine_command(self.engine.show(), payload)
+                .or_else(|| live_lan::engine_command(self.engine.show(), payload))
                 .unwrap_or_else(|| engine_command(payload)),
         };
         let replay_payload = history_target
@@ -1993,6 +2052,12 @@ impl<A: AuthorizationHook> ControlService<A> {
 
     /// Rebuilds the cached snapshot from the engine and runtime state.
     fn refresh_snapshot(&mut self) {
+        // A disabled LiveLAN forgets its last report, so enabling it again
+        // never shows the previous run's status before the media plane
+        // reports.
+        if !self.engine.show().live_lan().enabled {
+            self.live_lan_status = fm_protocol::LiveLanStatus::default();
+        }
         self.snapshot = snapshot_record(
             &self.engine,
             &self.identity,
@@ -2001,6 +2066,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &self.network_states,
             &self.capture_states,
             &self.system_audio_states,
+            &self.live_lan_status,
         );
     }
 
@@ -2237,6 +2303,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetFadeToBlackOutputDuration { .. }
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
+        | EngineCommand::SetLiveLan(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::SetStreamTarget { .. } => "project",
@@ -2317,7 +2384,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::SetStreamTarget { .. }
-        | CommandPayload::RemoveStreamTarget { .. } => CommandClass::EditProject,
+        | CommandPayload::RemoveStreamTarget { .. }
+        | CommandPayload::SetLiveLan { .. } => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -2483,6 +2551,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::SetStreamTarget { .. }
         | CommandPayload::RemoveStreamTarget { .. } => {
             unreachable!("stream destination commands resolve against the show")
+        }
+        CommandPayload::SetLiveLan { .. } => {
+            unreachable!("LiveLAN edits resolve their PIN against the show")
         }
         CommandPayload::SetCaptureSettings { input, settings } => {
             capture::engine_command(*input, settings)
@@ -2933,6 +3004,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetDisplayOutput { .. } => {
             return display_output::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetLiveLan(_) => {
+            return live_lan::wire_edit_payload(command);
+        }
         command @ EngineCommand::SetNetworkStream { .. } => {
             return network_stream::wire_edit_payload(command);
         }
@@ -3310,6 +3384,13 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     if let Some(payload) = outcome
         .events
         .iter()
+        .find_map(|event| live_lan::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
         .find_map(|event| network_stream::changed(&event.payload))
     {
         return payload;
@@ -3501,6 +3582,7 @@ fn project_engine(engine: &Engine, ticks: u64) -> Result<EngineSnapshot, EngineE
     projected.snapshot().map_err(EngineError::from)
 }
 
+#[allow(clippy::too_many_arguments)] // the engine plus each runtime status the snapshot shows
 fn snapshot_record(
     engine: &Engine,
     identity: &EngineIdentity,
@@ -3509,6 +3591,7 @@ fn snapshot_record(
     network_states: &BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
     capture_states: &BTreeMap<InputId, fm_protocol::CaptureStatus>,
     system_audio_states: &BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
+    live_lan_status: &fm_protocol::LiveLanStatus,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
@@ -3586,6 +3669,8 @@ fn snapshot_record(
         capture_inputs: capture::wire_entries(engine.show(), capture_states),
         system_audio_inputs: system_audio::wire_entries(engine.show(), system_audio_states),
         stream_targets: stream_target::wire_entries(engine.show()),
+        live_lan: live_lan::wire_entry(engine.show()),
+        live_lan_status: live_lan::wire_status(engine.show(), live_lan_status),
     };
 
     SnapshotRecord {

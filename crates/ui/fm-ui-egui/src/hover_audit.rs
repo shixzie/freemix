@@ -322,6 +322,8 @@ fn model(variant: Variant) -> ClientModel {
         // the rows' Retry / Edit / Remove keys and the destination dialog
         // are audited enabled and disabled.
         stream_targets: stream_target_entries(),
+        live_lan: fm_protocol::LiveLanEntry::default(),
+        live_lan_status: fm_protocol::LiveLanStatus::default(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -1194,6 +1196,19 @@ fn with_display_inventory(mut state: StudioUiState, presenter: bool) -> StudioUi
     state
 }
 
+/// `state` with `LiveLAN` configured as `config` and reporting `status`.
+fn with_live_lan(
+    mut state: StudioUiState,
+    config: fm_protocol::LiveLanEntry,
+    status: &fm_protocol::LiveLanStatus,
+) -> StudioUiState {
+    if let Some(view) = state.view.as_mut() {
+        view.live_lan = config;
+        view.live_lan_status = status.for_config(config.enabled);
+    }
+    state
+}
+
 fn meters() -> AudioMetersMessage {
     let channel = |peak| AudioMeterChannel {
         peak_millionths: peak,
@@ -1872,6 +1887,87 @@ fn scenes(language: Language) -> Vec<Scene> {
         ),
     ];
     for (name, open, state) in fullscreen {
+        scenes.push(Scene::console(name, shell(open), state));
+    }
+    // OR-017: the LiveLAN viewers window live with a PIN stored and one
+    // typed, off, waiting for a listener on an output, failed, for a
+    // viewer, and under the padlock.
+    let live = fm_protocol::LiveLanStatus {
+        state: fm_protocol::LiveLanState::Live,
+        url: "http://192.168.1.20:8090/".into(),
+        viewers: 3,
+        egress_kbps: 7_800,
+    };
+    let sharing = fm_protocol::LiveLanEntry {
+        enabled: true,
+        source: fm_protocol::LiveLanSource::Program,
+        max_viewers: 8,
+        has_pin: true,
+    };
+    let on_output = fm_protocol::LiveLanEntry {
+        source: fm_protocol::LiveLanSource::Output(fm_types::OutputId::new(
+            NonZeroU128::new(2).unwrap(),
+        )),
+        has_pin: false,
+        ..sharing
+    };
+    let live_lan: Vec<(&str, Configure, StudioUiState)> = vec![
+        (
+            "dialog/live-lan",
+            &|shell| {
+                shell.live_lan.open = true;
+                shell.live_lan.pin = "4321".into();
+            },
+            with_live_lan(ready(true, Variant::default()), sharing, &live),
+        ),
+        (
+            "dialog/live-lan-off",
+            &|shell| shell.live_lan.open = true,
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/live-lan-unavailable",
+            &|shell| shell.live_lan.open = true,
+            with_live_lan(
+                ready(true, Variant::default()),
+                on_output,
+                &fm_protocol::LiveLanStatus::default(),
+            ),
+        ),
+        (
+            "dialog/live-lan-failed",
+            &|shell| shell.live_lan.open = true,
+            with_live_lan(
+                ready(true, Variant::default()),
+                on_output,
+                &fm_protocol::LiveLanStatus {
+                    state: fm_protocol::LiveLanState::Failed,
+                    ..fm_protocol::LiveLanStatus::default()
+                },
+            ),
+        ),
+        (
+            "viewer/live-lan",
+            &|shell| shell.live_lan.open = true,
+            with_live_lan(ready(false, Variant::default()), sharing, &live),
+        ),
+        (
+            "operator/live-lan-locked",
+            &|shell| shell.live_lan.open = true,
+            with_live_lan(
+                ready(
+                    true,
+                    Variant {
+                        locked: true,
+                        ..Variant::default()
+                    },
+                ),
+                sharing,
+                &live,
+            ),
+        ),
+    ];
+    for (name, open, state) in live_lan {
         scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.extend(animation_scenes(locale));

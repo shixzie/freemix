@@ -102,6 +102,8 @@ mod grading;
 mod hls_server;
 mod journal;
 mod latest_record;
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+mod live_lan;
 mod media_clock;
 mod monitor_tap;
 #[cfg(feature = "native-media")]
@@ -110,6 +112,8 @@ mod native_captures;
 mod native_catalogue;
 #[cfg(feature = "native-media")]
 mod native_files;
+#[cfg(feature = "native-media")]
+mod native_live_lan;
 #[cfg(feature = "native-media")]
 mod native_streams;
 #[cfg(feature = "native-media")]
@@ -755,6 +759,8 @@ struct NativeDaemon {
     /// Whether the last Preview composite failed (reported once per run of
     /// failures).
     preview_failed: bool,
+    /// The `LiveLAN` viewer stream (OR-017), while `--live-lan-listen` runs.
+    live_lan: Option<native_live_lan::NativeLiveLan>,
 }
 
 #[cfg(feature = "native-media")]
@@ -4968,7 +4974,17 @@ impl NativeDaemon {
             display_pacing: display_outputs::PresentationPacing::default(),
             latest_preview: None,
             preview_failed: false,
+            live_lan: None,
         })
+    }
+
+    /// Streams `LiveLAN` to the running `--live-lan-listen` listener (OR-017).
+    fn attach_live_lan(
+        &mut self,
+        handle: live_lan::LiveLanHandle,
+        settings: fm_model::ProjectSettings,
+    ) {
+        self.live_lan = Some(native_live_lan::NativeLiveLan::new(handle, settings));
     }
 
     #[cfg(feature = "display-surface")]
@@ -5050,12 +5066,18 @@ impl NativeDaemon {
 
     /// Reports each network stream input's receive status as it changes
     /// (IN-015): a state change at once, other changes at most once a
-    /// second.
+    /// second. The `LiveLAN` status (OR-017) is reported the same way.
     fn report_network_streams(
         &mut self,
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
     ) -> AppResult<()> {
+        if let Some(live_lan) = &mut self.live_lan {
+            let status = live_lan.status(control.live_lan().enabled);
+            control
+                .set_live_lan_status(server, &status)
+                .map_err(|error| AppFailure(format!("LiveLAN status: {error}")))?;
+        }
         for (input, status) in self.network.statuses(Instant::now()) {
             control
                 .set_network_stream_status(server, input, status)
@@ -6807,6 +6829,20 @@ impl NativeDaemon {
                 .clone()
                 .map(|audio| (audio, live_audio.clone(), override_audio.clone()))
         };
+        // The LiveLAN stream (OR-017) takes the frame its source shows, with
+        // the audio that output hears.
+        let next_sequence = audio
+            .as_ref()
+            .map(|audio| audio.timing().sequence().get().saturating_add(1));
+        let live_lan_capture = self
+            .live_lan
+            .as_ref()
+            .and_then(native_live_lan::NativeLiveLan::capturing)
+            .and_then(|source| {
+                audio
+                    .clone()
+                    .map(|audio| (source.output(), audio, live_audio.clone()))
+            });
         if let Some(audio) = audio {
             self.rotate_due_recorders(audio.timing().sequence());
             Self::capture_recorders(
@@ -6838,6 +6874,30 @@ impl NativeDaemon {
                     overrides: &overrides,
                 },
             );
+        }
+        if let Some((output, audio, live)) = live_lan_capture
+            && let Some(live_lan) = &mut self.live_lan
+        {
+            let block = CaptureAudio {
+                faded: audio,
+                live,
+                excluded: &fade_to_black_excluded,
+                overrides: &override_audio,
+            }
+            .for_output(output, &self.latest_project_outputs)
+            .clone();
+            live_lan.capture(
+                &self.runtime,
+                resolve_project_output_texture(
+                    output,
+                    &self.latest_project_outputs,
+                    self.latest_output.as_ref(),
+                ),
+                block,
+            );
+        }
+        if let (Some(live_lan), Some(sequence)) = (&mut self.live_lan, next_sequence) {
+            live_lan.sync(control.live_lan(), &self.runtime, sequence);
         }
         if let Some((frame, input)) = monitor_frame {
             self.monitor.capture(
@@ -8448,6 +8508,8 @@ enum Command {
         web_listen: Option<SocketAddr>,
         status_listen: Option<SocketAddr>,
         hls_listen: Option<SocketAddr>,
+        /// The `LiveLAN` viewer listener (OR-017); any address, LAN included.
+        live_lan_listen: Option<SocketAddr>,
         once: bool,
         native_media: bool,
         /// True when display outputs open real borderless windows.
@@ -8569,6 +8631,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut web_listen: Option<SocketAddr> = None;
             let mut status_listen: Option<SocketAddr> = None;
             let mut hls_listen: Option<SocketAddr> = None;
+            let mut live_lan_listen: Option<SocketAddr> = None;
             let mut once = false;
             let mut native_media = false;
             let mut fullscreen_program = false;
@@ -8811,6 +8874,17 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     })?);
                     continue;
                 }
+                if let Some(value) = option.strip_prefix("--live-lan-listen=") {
+                    if live_lan_listen.is_some() {
+                        return Err(
+                            AppFailure("duplicate option `--live-lan-listen`".into()).into()
+                        );
+                    }
+                    live_lan_listen = Some(value.parse().map_err(|error| {
+                        AppFailure(format!("invalid LiveLAN listen address: {error}"))
+                    })?);
+                    continue;
+                }
                 if let Some(value) = option.strip_prefix("--hls-listen=") {
                     if hls_listen.is_some() {
                         return Err(AppFailure("duplicate option `--hls-listen`".into()).into());
@@ -8856,6 +8930,19 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         })?;
                         status_listen = Some(value.parse().map_err(|error| {
                             AppFailure(format!("invalid status listen address: {error}"))
+                        })?);
+                    }
+                    "--live-lan-listen" => {
+                        if live_lan_listen.is_some() {
+                            return Err(
+                                AppFailure("duplicate option `--live-lan-listen`".into()).into()
+                            );
+                        }
+                        let value = arguments.next().ok_or_else(|| {
+                            AppFailure("missing value for --live-lan-listen".into())
+                        })?;
+                        live_lan_listen = Some(value.parse().map_err(|error| {
+                            AppFailure(format!("invalid LiveLAN listen address: {error}"))
                         })?);
                     }
                     "--hls-listen" => {
@@ -9184,6 +9271,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 && web_listen.is_none()
                 && status_listen.is_none()
                 && hls_listen.is_none()
+                && live_lan_listen.is_none()
                 && record_fallback_dir.is_none()
                 && diagnostic_stop_after.is_none()
                 && !recover_to_checkpoint;
@@ -9354,6 +9442,19 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     .into());
                 }
             }
+            if live_lan_listen.is_some() {
+                if !native_media {
+                    return Err(
+                        AppFailure("--live-lan-listen requires --native-media".into()).into(),
+                    );
+                }
+                if fullscreen_program {
+                    return Err(AppFailure(
+                        "--live-lan-listen cannot be combined with --fullscreen-program".into(),
+                    )
+                    .into());
+                }
+            }
             if capture_inventory.is_some() && !native_media {
                 return Err(AppFailure(
                     "--diagnostic-capture-inventory requires --native-media".into(),
@@ -9366,6 +9467,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 web_listen,
                 status_listen,
                 hls_listen,
+                live_lan_listen,
                 once,
                 native_media,
                 fullscreen_program,
@@ -9532,6 +9634,7 @@ fn run(command: Command) -> AppResult<()> {
             web_listen,
             status_listen,
             hls_listen,
+            live_lan_listen,
             once,
             native_media,
             fullscreen_program,
@@ -9593,6 +9696,7 @@ fn run(command: Command) -> AppResult<()> {
                     web_listen,
                     status_listen,
                     hls_listen,
+                    live_lan_listen,
                 },
                 once,
                 if native_media {
@@ -9739,6 +9843,7 @@ struct ServeListeners {
     web_listen: Option<SocketAddr>,
     status_listen: Option<SocketAddr>,
     hls_listen: Option<SocketAddr>,
+    live_lan_listen: Option<SocketAddr>,
 }
 
 #[cfg(feature = "display-surface")]
@@ -9770,6 +9875,7 @@ fn serve_program_worker(
             web_listen: None,
             status_listen: None,
             hls_listen: None,
+            live_lan_listen: None,
         },
         once,
         NativeServeMode::Program(Box::new(ProgramServeSetup {
@@ -9995,6 +10101,7 @@ fn serve_inner(
         web_listen,
         status_listen,
         hls_listen,
+        live_lan_listen,
     } = listeners;
     if !listen.ip().is_loopback() {
         return Err(AppFailure(format!(
@@ -10311,6 +10418,22 @@ fn serve_inner(
         }
         None => None,
     };
+    // The LiveLAN viewer listener (OR-017) serves whatever the project's
+    // LiveLAN settings allow; it may bind a LAN address.
+    let live_lan_listener = match live_lan_listen {
+        Some(address) => {
+            if native.is_none() {
+                return Err(AppFailure("--live-lan-listen requires --native-media".into()).into());
+            }
+            let listener = live_lan::LiveLanServer::start(address)?;
+            #[cfg(feature = "native-media")]
+            if let Some(native) = native.as_mut() {
+                native.attach_live_lan(listener.handle(), durable.project().settings().clone());
+            }
+            Some(listener)
+        }
+        None => None,
+    };
     server.mark_ready()?;
     process_shutdown.observe_service(server.status());
     let readiness = ReadinessRecord {
@@ -10335,6 +10458,13 @@ fn serve_inner(
     }
     if let Some(listener) = hls_listener.as_ref() {
         println!("FREEMIXD_HLS_READY\tv=1\taddress={}", listener.address());
+        std::io::stdout().flush()?;
+    }
+    if let Some(listener) = live_lan_listener.as_ref() {
+        println!(
+            "FREEMIXD_LIVE_LAN_READY\tv=1\taddress={}",
+            listener.address()
+        );
         std::io::stdout().flush()?;
     }
     if let Some(duration) = diagnostic_stop_after {
@@ -10364,6 +10494,7 @@ fn serve_inner(
     let gateway_result = web_gateway.map(web::WebGateway::shutdown);
     let status_result = operator_status.map(StatusListener::shutdown);
     let hls_result = hls_listener.map(HlsServer::shutdown);
+    let live_lan_result = live_lan_listener.map(live_lan::LiveLanServer::shutdown);
     let _shutdown_reason = session_result?;
     if let Some(result) = gateway_result {
         result?;
@@ -10372,6 +10503,9 @@ fn serve_inner(
         result?;
     }
     if let Some(result) = hls_result {
+        result?;
+    }
+    if let Some(result) = live_lan_result {
         result?;
     }
     if native.is_some() {
@@ -11406,21 +11540,29 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
     Ok(())
 }
 
-/// Seeds the show's display-output slots from the project (OR-011).
+/// Seeds the show's display-output slots (OR-011) and `LiveLAN`
+/// configuration (OR-017) from the project.
 fn restore_display_outputs(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
     for (&slot, config) in project.display_outputs() {
         show.set_display_output(slot, Some(config.clone()))?;
     }
+    show.set_live_lan(project.live_lan().clone())?;
     Ok(())
 }
 
-/// Folds the show's display-output slots (OR-011) into the stored project.
+/// Folds the show's `LiveLAN` configuration (OR-017) and display-output
+/// slots (OR-011) into the stored project.
 /// Every slot is cleared first, so a display moving between slots is never
 /// claimed twice.
 fn sync_project_display_outputs(
     project: &mut fm_model::Project,
     show: &ShowState,
 ) -> AppResult<()> {
+    if project.live_lan() != show.live_lan() {
+        project
+            .set_live_lan(show.live_lan().clone())
+            .map_err(|error| AppFailure(format!("project cannot take LiveLAN: {error}")))?;
+    }
     if project.display_outputs() == show.display_outputs() {
         return Ok(());
     }
@@ -13248,6 +13390,7 @@ fn command_base_ticks(
         | CommandPayload::SetFadeToBlackCurve { .. }
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
+        | CommandPayload::SetLiveLan { .. }
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::UpdateOverlay { .. }
@@ -14551,7 +14694,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--live-lan-listen 0.0.0.0:8090] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -15203,6 +15346,7 @@ mod tests {
                 web_listen: None,
                 status_listen: None,
                 hls_listen: None,
+                live_lan_listen: None,
                 once: true,
                 native_media: false,
                 fullscreen_program: false,
@@ -15272,6 +15416,64 @@ mod tests {
             Command::Serve { listen, once: false, native_media: false, .. }
                 if listen == DEFAULT_LISTEN.parse::<SocketAddr>().unwrap()
         ));
+    }
+
+    /// OR-017: `--live-lan-listen` takes any address (a LAN one included)
+    /// but needs native media.
+    #[test]
+    fn parses_live_lan_listen_as_a_native_option() {
+        for arguments in [
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--live-lan-listen",
+                "0.0.0.0:8090",
+            ]),
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--live-lan-listen=0.0.0.0:8090",
+            ]),
+        ] {
+            assert!(matches!(
+                parse_args(arguments).unwrap(),
+                Command::Serve {
+                    live_lan_listen: Some(address),
+                    native_media: true,
+                    ..
+                } if address == "0.0.0.0:8090".parse().unwrap()
+            ));
+        }
+        for (arguments, expected) in [
+            (
+                strings(&["serve", "show.freemix", "--live-lan-listen", "0.0.0.0:8090"]),
+                "--live-lan-listen requires --native-media",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--live-lan-listen=0.0.0.0:1",
+                    "--live-lan-listen",
+                    "0.0.0.0:2",
+                ]),
+                "duplicate option `--live-lan-listen`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--live-lan-listen",
+                ]),
+                "missing value for --live-lan-listen",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
     }
 
     #[test]

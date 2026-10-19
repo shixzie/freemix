@@ -1310,6 +1310,14 @@ impl StudioShell {
             self.open_display_outputs(intents);
             ui.close();
         }
+        if ui
+            .button(l.text(Msg::MenuLiveLan))
+            .on_hover_text(l.text(Msg::MenuLiveLanHover))
+            .clicked()
+        {
+            self.live_lan.open = true;
+            ui.close();
+        }
     }
 
     /// Output ▸ Stingers: assign the Preview input to a slot, or clear a slot.

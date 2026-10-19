@@ -800,6 +800,8 @@ fn serve_streams_snapshot_peer(
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
+            live_lan: fm_protocol::LiveLanEntry::default(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         }),
     );
 }
@@ -1695,6 +1697,8 @@ fn write_handshake_snapshot(
             }],
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: SNAPSHOT_STREAM_TARGETS.with(|cell| cell.borrow().clone()),
+            live_lan: fm_protocol::LiveLanEntry::default(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         }),
     );
     for (scene, layout) in SNAPSHOT_LAYOUTS.with(|cell| cell.borrow().clone()) {
@@ -1806,6 +1810,8 @@ fn write_handshake_version_with_fade_to_black(
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
+            live_lan: fm_protocol::LiveLanEntry::default(),
+            live_lan_status: fm_protocol::LiveLanStatus::default(),
         }),
     );
 }
@@ -3900,7 +3906,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 52,
+  "schema_version": 53,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4107,7 +4113,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 52", "\"schema_version\": 47"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 53", "\"schema_version\": 47"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4121,7 +4127,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 47 is unsupported; expected 52",
+        "title template schema 47 is unsupported; expected 53",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4139,7 +4145,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 52,
+  "schema_version": 53,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4402,7 +4408,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 52,
+  "schema_version": 53,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4632,7 +4638,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 52,
+  "schema_version": 53,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4729,7 +4735,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 52,
+  "schema_version": 53,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5954,13 +5960,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        52
+        53
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 52);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 53);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5973,7 +5979,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 52);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 53);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -6049,7 +6055,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        52
+        53
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -6057,7 +6063,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 52);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 53);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -6067,7 +6073,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 52);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 53);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -6075,7 +6081,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 52);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 53);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -7214,6 +7220,181 @@ fn local_display_output_slots_persist_and_refuse_conflicts() {
     assert_eq!(stored.project().display_output(slot(1)), None);
     assert!(stored.project().display_output(slot(2)).is_some());
     fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-017: the local `LiveLAN` settings are a validated, persisted project
+/// edit; absent options keep their value, the PIN is stored but never
+/// printed, and a streamed output cannot be removed.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn local_live_lan_settings_persist_and_never_print_the_pin() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    let shown = invoke_bounded(&["live-lan", context.project_path()]);
+    assert_success(&shown);
+    assert_eq!(
+        stdout(&shown),
+        "LiveLan(enabled=false, source=program, max_viewers=8, pin=none, state=off, url=none, \
+         viewers=0, egress_kbps=0)"
+    );
+    for arguments in [
+        vec!["audio-bus-add", context.project_path(), "20", "Master"],
+        vec![
+            "scene-input-add",
+            context.project_path(),
+            "10",
+            "10",
+            "Program",
+        ],
+        vec![
+            "output-add",
+            context.project_path(),
+            "30",
+            "10",
+            "20",
+            "Clean",
+        ],
+    ] {
+        assert_success(&invoke_bounded(&arguments));
+    }
+    let set = invoke_bounded(&[
+        "live-lan-set",
+        context.project_path(),
+        "--enable",
+        "--source",
+        "output:30",
+        "--max-viewers",
+        "4",
+        "--pin",
+        "246813",
+    ]);
+    assert_success(&set);
+    assert!(!stdout(&set).contains("246813"), "{}", stdout(&set));
+    // A bad PIN, an unknown output, a viewer limit out of range, and
+    // conflicting options are refused without touching the project or
+    // echoing the PIN.
+    let bad_pin = invoke_bounded(&["live-lan-set", context.project_path(), "--pin", "12x45"]);
+    assert_failure_contains(&bad_pin, "--pin must be 4-12 digits");
+    assert!(!String::from_utf8_lossy(&bad_pin.stderr).contains("12x45"));
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "live-lan-set",
+            context.project_path(),
+            "--source",
+            "output:99",
+        ]),
+        "not_found",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "live-lan-set",
+            context.project_path(),
+            "--max-viewers",
+            "33",
+        ]),
+        "viewer limit must be 1 to 32",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "live-lan-set",
+            context.project_path(),
+            "--pin",
+            "1234",
+            "--clear-pin",
+        ]),
+        "--clear-pin",
+    );
+    assert_failure_contains(
+        &invoke_bounded(&["output-remove", context.project_path(), "30"]),
+        "streamed by LiveLAN",
+    );
+
+    let shown = invoke_bounded(&["live-lan", context.project_path()]);
+    assert_success(&shown);
+    assert_eq!(
+        stdout(&shown),
+        "LiveLan(enabled=true, source=output:30, max_viewers=4, pin=set, state=unavailable, \
+         url=none, viewers=0, egress_kbps=0)"
+    );
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let live_lan = stored.project().live_lan();
+    assert!(live_lan.enabled);
+    assert_eq!(
+        live_lan
+            .pin
+            .as_ref()
+            .map(fm_types::live_lan::LiveLanPin::expose_secret),
+        Some("246813")
+    );
+
+    // Absent options keep their value; `--clear-pin` clears the PIN.
+    assert_success(&invoke_bounded(&[
+        "live-lan-set",
+        context.project_path(),
+        "--disable",
+        "--clear-pin",
+    ]));
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let live_lan = stored.project().live_lan();
+    assert!(!live_lan.enabled);
+    assert_eq!(live_lan.pin, None);
+    assert_eq!(live_lan.max_viewers, 4);
+    assert_eq!(
+        live_lan.source,
+        fm_types::live_lan::LiveLanSource::Output(OutputId::new(NonZeroU128::new(30).unwrap()))
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// Protocol 2.57: `remote-live-lan-set` keeps every absent setting at the
+/// daemon's value, sends the PIN only in the command, and prints the
+/// replicated result with `pin=set`.
+#[test]
+fn remote_live_lan_set_merges_the_daemon_settings() {
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-live-lan",
+        payload: CommandPayload::SetLiveLan {
+            config: fm_protocol::LiveLanEntry {
+                enabled: true,
+                source: fm_protocol::LiveLanSource::Program,
+                max_viewers: 5,
+                has_pin: false,
+            },
+            pin: fm_protocol::SecretEdit::Set("8642".into()),
+        },
+        event: EventPayload::LiveLanChanged(fm_protocol::LiveLanEntry {
+            enabled: true,
+            source: fm_protocol::LiveLanSource::Program,
+            max_viewers: 5,
+            has_pin: true,
+        }),
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-live-lan-set",
+        &server.address(),
+        "--enable",
+        "--max-viewers",
+        "5",
+        "--pin",
+        "8642",
+        "--key",
+        "remote-live-lan",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains(
+            "LiveLan(enabled=true, source=program, max_viewers=5, pin=set, state=unavailable, \
+             url=none, viewers=0, egress_kbps=0)"
+        ),
+        "{}",
+        stdout(&output)
+    );
+    assert!(!stdout(&output).contains("8642"));
+    server.finish();
 }
 
 #[test]

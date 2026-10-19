@@ -7,6 +7,7 @@ mod display_output;
 mod encoder;
 mod grade;
 mod input_lifecycle;
+mod live_lan;
 mod media_playback;
 mod network_stream;
 mod scene_animation;
