@@ -3100,6 +3100,8 @@ pub enum WireMessage {
     HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage),
     AudioMeters(AudioMetersMessage),
     StreamStatus(StreamStatusMessage),
+    /// Lossy realized recorder status (Protocol 2.66).
+    RecorderStatus(crate::RecorderStatusMessage),
     MonitorFrame(MonitorFrameMessage),
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),

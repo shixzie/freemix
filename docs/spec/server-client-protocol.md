@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.65 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.66 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2283,6 +2283,47 @@ tally page (RC-017).
   `cue_run_changed` frame at the snapshot's `frame_rate`; English and
   Spanish strings.
 - 2.64 is refused.
+
+Protocol 2.66 reports realized recorder state and feeds Web pages live
+status and Program meters (RC-014).
+
+- New lossy, non-resumable record `recorder_status` with server identity,
+  an independent strictly increasing `sequence`, and `recorders`: one
+  `<slot>:<state>:<elapsed_ms>:<failure>` entry per recorder slot (at most
+  two) in strict slot order, `;` separated. `state` is `unavailable` (no
+  output is configured for the slot), `off`, `starting` (a segment is
+  opening or awaiting its first muxed output), `recording`, or `failed`.
+  `elapsed_ms` is how long the slot has been recording, kept across segment
+  rotations, and is `0` in every other state. `failure` is a sanitized short
+  code (the failure notice's leading identifier tokens, such as `start`,
+  `startup:mux_readiness_timeout`, or `capture:missing_output`; never a
+  path), at most 64 bytes, escaped like a `stream_status` failure, and
+  present exactly when `state` is `failed`. A failure stays reported until
+  the slot is started or stopped again. Native `freemixd` builds the record
+  at most every 250 ms; the simulated daemon never sends it. It never
+  advances or carries a durable revision; snapshots keep only the desired
+  `recordings` roster. Clients validate identity and sequence exactly as
+  for `stream_status`.
+- Raw Studio peers receive `recorder_status` in its own latest-wins slot
+  beside meters and stream status.
+- Web peers (the gateway's sessions) whose role carries `view_status`
+  receive a bounded lossy feed: `audio_meters` with the Master channels only
+  (`inputs` empty, `monitor=-`), `stream_status`, and `recorder_status`.
+  Each kind is latest-wins, and one feed record is handed to the gateway at
+  a time, only while at most two other records are queued for the session
+  and unacknowledged; meters at most every 66 ms (about 15 Hz), each status
+  kind at most every 250 ms. Feed records are not charged to the session's
+  outbound rate window and are dropped, never queued, for a peer that
+  stops reading. Web peers still receive no monitor frames, thumbnails,
+  per-input or monitor-bus meters, or exact previews.
+- The operator page shows each recorder's realized state (`REC` with its
+  running time, `STARTING`, `FAILED (<code>)`, `OFF`, `NOT CONFIGURED`) and
+  each destination's newest sample (running time, bitrate, failure), and
+  Program meters (RMS, peak, 1.5 s peak hold, CLIP); without
+  `recorder_status` it keeps the requested state and its note. The tally
+  page shows what is recording or streaming (or starting or failed) and a
+  slim Program level. Both pages only display this status.
+- 2.65 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

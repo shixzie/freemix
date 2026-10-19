@@ -30,8 +30,8 @@ use fm_persistence::StoredProject;
 use fm_protocol::{
     AudioMetersMessage, ClientType, CommandPayload, CommandResult, ErrorMessage,
     HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeResponse,
-    HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, ServerIdentity, StreamStatusMessage,
-    StructuredError, WireMessage, encode_line,
+    HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, RecorderStatusMessage,
+    ServerIdentity, StreamStatusMessage, StructuredError, WireMessage, encode_line,
 };
 use fm_server::{Server, Session, SessionError, SyncPayload};
 
@@ -49,6 +49,7 @@ use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
 use crate::title_render::TitleAssets;
 use crate::web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
+use crate::web_feed::{WEB_FEED_MAX_QUEUED, WebFeed, web_meters};
 
 /// The most raw TCP control sessions served at once, by the simulated and
 /// the native daemon alike (Studio, CLI and automation peers). A further raw
@@ -104,6 +105,9 @@ struct Outbound {
     command_result: bool,
     accounted: bool,
     channel_sent: bool,
+    /// A Web peer's lossy feed record (see [`WebFeed`]): never charged to the
+    /// session's outbound rate window, and at most one is queued at a time.
+    feed: bool,
 }
 
 enum OutboundWrite {
@@ -158,7 +162,12 @@ struct Peer {
     outbound: VecDeque<Outbound>,
     audio_meters: bool,
     stream_status: bool,
+    /// Raw Studio peers take `recorder_status` like `stream_status` (2.66).
+    recorder_status: bool,
     monitor_frames: bool,
+    /// A Web peer's lossy status feed, when its role may view status
+    /// (Protocol 2.66).
+    web_feed: Option<WebFeed>,
     /// The peer's input thumbnail feed while it is subscribed (Protocol
     /// 2.59).
     thumbnails: Option<ThumbnailOutbox>,
@@ -238,6 +247,8 @@ impl QueueRefusal {
 enum LossySlot {
     Meter,
     StreamStatus,
+    /// The latest `recorder_status` (Protocol 2.66).
+    RecorderStatus,
     PreviewFrame,
     ProgramFrame,
     /// The latest exact title or scene preview (`title_preview_frame` or
@@ -249,7 +260,7 @@ enum LossySlot {
 }
 
 impl LossySlot {
-    const COUNT: usize = 6;
+    const COUNT: usize = 7;
 
     const fn index(self) -> usize {
         match self {
@@ -259,6 +270,7 @@ impl LossySlot {
             Self::ProgramFrame => 3,
             Self::TitlePreview => 4,
             Self::Thumbnail => 5,
+            Self::RecorderStatus => 6,
         }
     }
 
@@ -358,7 +370,9 @@ impl Peer {
             outbound: VecDeque::new(),
             audio_meters: false,
             stream_status: false,
+            recorder_status: false,
             monitor_frames: false,
+            web_feed: None,
             thumbnails: None,
             lossy: LossyRecords::default(),
             held_result: None,
@@ -398,6 +412,7 @@ impl Peer {
             command_result: matches!(message, WireMessage::CommandResult(_)),
             accounted,
             channel_sent: false,
+            feed: false,
         });
         Ok(())
     }
@@ -464,8 +479,34 @@ impl Peer {
     /// Coalesces the latest stream status independently of the meter slot so
     /// neither lossy record can evict the other.
     fn replace_stream_status(&mut self, bytes: Vec<u8>) {
-        if self.stream_status && self.phase == Phase::Active {
+        if self.phase != Phase::Active {
+            return;
+        }
+        if let Some(feed) = self.web_feed.as_mut() {
+            feed.offer_stream_status(bytes);
+        } else if self.stream_status {
             self.lossy.replace(LossySlot::StreamStatus, bytes);
+        }
+    }
+
+    /// Coalesces the latest recorder status in its own slot (Protocol 2.66).
+    fn replace_recorder_status(&mut self, bytes: Vec<u8>) {
+        if self.phase != Phase::Active {
+            return;
+        }
+        if let Some(feed) = self.web_feed.as_mut() {
+            feed.offer_recorder_status(bytes);
+        } else if self.recorder_status {
+            self.lossy.replace(LossySlot::RecorderStatus, bytes);
+        }
+    }
+
+    /// Offers a Web peer's feed the Master meters of `web_bytes`.
+    fn replace_web_meter(&mut self, web_bytes: &[u8]) {
+        if self.phase == Phase::Active
+            && let Some(feed) = self.web_feed.as_mut()
+        {
+            feed.offer_meters(web_bytes.to_vec());
         }
     }
 
@@ -950,6 +991,9 @@ pub(super) fn run(
             }
             if let Some(status) = native.take_stream_status() {
                 publish_stream_status(&mut peers, status);
+            }
+            if let Some(status) = native.take_recorder_status(authority) {
+                publish_recorder_status(&mut peers, status);
             }
         }
         let realizing = native.as_deref();
@@ -1703,6 +1747,7 @@ impl Runtime<'_> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // one handshake: authorize, admit, then subscribe
     fn handshake(
         &self,
         peer: &mut Peer,
@@ -1789,6 +1834,16 @@ impl Runtime<'_> {
         peer.subscription = Some(subscription);
         peer.audio_meters = !peer.transport.is_web() && request.client_type == ClientType::Studio;
         peer.stream_status = peer.audio_meters;
+        peer.recorder_status = peer.audio_meters;
+        // Web pages whose role may view status get the bounded lossy feed:
+        // Master meters, stream and recorder status (Protocol 2.66).
+        peer.web_feed = (peer.transport.is_web()
+            && handshake
+                .server_hello
+                .permissions
+                .iter()
+                .any(|permission| permission == VIEW_STATUS_PERMISSION))
+        .then(WebFeed::default);
         peer.monitor_frames = monitor_frames_eligible(
             peer.transport.is_web(),
             request.client_type,
@@ -1894,6 +1949,8 @@ fn write_web_peer(peer: &mut Peer) -> WriteOutcome {
         outbound,
         session,
         handshake_written,
+        phase,
+        web_feed,
         ..
     } = peer;
     let Transport::Web(web) = transport else {
@@ -1927,6 +1984,24 @@ fn write_web_peer(peer: &mut Peer) -> WriteOutcome {
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => return WriteOutcome::Failed,
         }
+    }
+    // One lossy feed record joins the queue only while it is nearly idle
+    // and none is in flight: everything else the peer is owed goes first,
+    // and a peer that stops reading stops receiving feed records.
+    if *phase == Phase::Active
+        && outbound.len() <= WEB_FEED_MAX_QUEUED
+        && !outbound.iter().any(|record| record.feed)
+        && let Some(bytes) = web_feed.as_mut().and_then(|feed| feed.next(Instant::now()))
+    {
+        outbound.push_back(Outbound {
+            write: OutboundWrite::Web(bytes),
+            accounting: Accounting::Raw,
+            handshake_response: false,
+            command_result: false,
+            accounted: false,
+            channel_sent: false,
+            feed: true,
+        });
     }
     for record in outbound.iter_mut().filter(|record| !record.channel_sent) {
         let OutboundWrite::Web(bytes) = &record.write else {
@@ -2075,11 +2150,29 @@ fn write_lossy(peer: &mut Peer) -> WriteOutcome {
 }
 
 fn publish_audio_meters(peers: &mut [Peer], meters: AudioMetersMessage) {
+    // Web pages take only the Master meters, encoded once for all of them.
+    if peers.iter().any(|peer| peer.web_feed.is_some())
+        && let Ok(web) = encode_line(&WireMessage::AudioMeters(web_meters(&meters)))
+    {
+        for peer in peers.iter_mut() {
+            peer.replace_web_meter(web.as_bytes());
+        }
+    }
     let Ok(bytes) = encode_line(&WireMessage::AudioMeters(meters)).map(String::into_bytes) else {
         return;
     };
     for peer in peers {
         peer.replace_meter(bytes.clone());
+    }
+}
+
+fn publish_recorder_status(peers: &mut [Peer], status: RecorderStatusMessage) {
+    let Ok(bytes) = encode_line(&WireMessage::RecorderStatus(status)).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_recorder_status(bytes.clone());
     }
 }
 
@@ -2104,6 +2197,9 @@ fn publish_monitor_frame(peers: &mut [Peer], tap: MonitorTap, bytes: &[u8]) {
 /// draining.
 fn discard_unstarted_lossy_records(peer: &mut Peer) {
     peer.lossy.discard_unstarted();
+    // A Web peer's feed records not handed over yet are dropped, and no
+    // further one follows the goodbye.
+    peer.web_feed = None;
 }
 
 enum ShutdownQueue {
@@ -2344,7 +2440,8 @@ mod tests {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
         ));
 
-        // Web transports are excluded from the lossy side channel entirely.
+        // Web transports never use the raw lossy slots; a Web page's status
+        // feed is its own (see `web_status_feed_is_lossy_paced_...`).
         let (inbound_sender, inbound) = mpsc::channel();
         let (outbound_sender, _outbound) = mpsc::sync_channel(8);
         let (_acknowledgement_sender, acknowledgements) = mpsc::channel();
@@ -3131,6 +3228,152 @@ mod tests {
         // An acknowledgement for a record never handed over is a relay bug.
         acknowledge.send(()).unwrap();
         assert!(matches!(write_peer(&mut peer), WriteOutcome::Failed));
+    }
+
+    fn recorder_status_message(sequence: u64) -> RecorderStatusMessage {
+        RecorderStatusMessage {
+            server: identity(),
+            sequence,
+            samples: vec![
+                fm_protocol::RecorderStatusSample {
+                    recorder: fm_protocol::WireRecorderSlot::new(1).unwrap(),
+                    realized: fm_protocol::RecorderRealizedState::Recording,
+                    elapsed_ms: 12_345,
+                    failure: None,
+                },
+                fm_protocol::RecorderStatusSample {
+                    recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
+                    realized: fm_protocol::RecorderRealizedState::Failed,
+                    elapsed_ms: 0,
+                    failure: Some("start".into()),
+                },
+            ],
+        }
+    }
+
+    /// Protocol 2.66: a Web peer that may view status gets a lossy feed of
+    /// Master meters, recorder status, and stream status. One feed record is
+    /// handed over at a time, only behind a nearly idle queue and never
+    /// charged to the rate window, so everything else the peer is owed goes
+    /// first; a peer that does not acknowledge it gets no further one, and
+    /// a newer record of a kind replaces the waiting one.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn web_status_feed_is_lossy_paced_and_never_ahead_of_owed_records() {
+        let (mut peer, outbound, acknowledge, _inbound) = web_peer();
+        peer.web_feed = Some(WebFeed::default());
+        let handed = |outbound: &mpsc::Receiver<Vec<u8>>| -> Vec<WireMessage> {
+            outbound
+                .try_iter()
+                .flat_map(|bytes| LineDecoder::new().push(&bytes).unwrap())
+                .collect()
+        };
+        let mut meters = meters_message();
+        meters.master.push(AudioMeterChannel {
+            peak_millionths: 900_000,
+            rms_millionths: 400_000,
+        });
+        meters.inputs = vec![fm_protocol::InputAudioMeters {
+            input: fm_protocol::WireInputId::new(NonZeroU128::new(3).unwrap()),
+            channels: meters.master.clone(),
+        }];
+        meters.monitor = Some(fm_protocol::AudioMonitorMeters {
+            solo: false,
+            output: fm_protocol::AudioMonitorOutputState::Off,
+            channels: meters.master.clone(),
+        });
+        let mut older = meters.clone();
+        older.sequence = 6;
+        publish_audio_meters(std::slice::from_mut(&mut peer), older);
+        publish_audio_meters(std::slice::from_mut(&mut peer), meters.clone());
+        publish_recorder_status(std::slice::from_mut(&mut peer), recorder_status_message(1));
+        publish_stream_status(std::slice::from_mut(&mut peer), status_message());
+        // Web peers never use the raw lossy slots.
+        assert!(peer.lossy.is_empty());
+
+        // A busy queue goes first; no feed record joins it.
+        for index in 0..3 {
+            peer.queue(&filler(index), Accounting::Session).unwrap();
+        }
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(handed(&outbound), (0..3).map(filler).collect::<Vec<_>>());
+        for _ in 0..3 {
+            acknowledge.send(()).unwrap();
+        }
+
+        // Idle: the newest Master-only meter record is handed over.
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        let [WireMessage::AudioMeters(web)] = &handed(&outbound)[..] else {
+            panic!("expected one meter record");
+        };
+        assert_eq!(web.sequence, 7);
+        assert_eq!(web.master, meters.master);
+        assert!(web.inputs.is_empty() && web.monitor.is_none());
+
+        // Unacknowledged, it holds back every further feed record, but not
+        // a command result.
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(handed(&outbound), Vec::<WireMessage>::new());
+        peer.queue(&command_result("cut"), Accounting::Session)
+            .unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(handed(&outbound), [command_result("cut")]);
+
+        // Acknowledged, the statuses follow one at a time: recorders first.
+        publish_recorder_status(std::slice::from_mut(&mut peer), recorder_status_message(2));
+        for _ in 0..2 {
+            acknowledge.send(()).unwrap();
+        }
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(
+            handed(&outbound),
+            [WireMessage::RecorderStatus(recorder_status_message(2))]
+        );
+        acknowledge.send(()).unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(
+            handed(&outbound),
+            [WireMessage::StreamStatus(status_message())]
+        );
+        acknowledge.send(()).unwrap();
+        // A meter within its interval waits; nothing else is pending.
+        publish_audio_meters(std::slice::from_mut(&mut peer), meters);
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(handed(&outbound), Vec::<WireMessage>::new());
+        thread::sleep(crate::web_feed::WEB_METER_INTERVAL);
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert!(matches!(
+            &handed(&outbound)[..],
+            [WireMessage::AudioMeters(_)]
+        ));
+        acknowledge.send(()).unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert!(peer.outbound.is_empty());
+
+        // Shutdown drops the feed: nothing follows the goodbye.
+        publish_stream_status(std::slice::from_mut(&mut peer), status_message());
+        discard_unstarted_lossy_records(&mut peer);
+        thread::sleep(crate::web_feed::WEB_STATUS_INTERVAL);
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(handed(&outbound), Vec::<WireMessage>::new());
+    }
+
+    /// Raw Studio peers keep the recorder status in its own lossy slot.
+    #[test]
+    fn raw_peers_take_recorder_status_in_its_own_slot() {
+        let (mut peer, mut client) = active_eligible_peer();
+        publish_recorder_status(std::slice::from_mut(&mut peer), recorder_status_message(1));
+        assert!(peer.lossy.slot(LossySlot::RecorderStatus).is_empty());
+        peer.recorder_status = true;
+        publish_recorder_status(std::slice::from_mut(&mut peer), recorder_status_message(2));
+        assert!(!peer.lossy.slot(LossySlot::RecorderStatus).is_empty());
+        let expected = encode_line(&WireMessage::RecorderStatus(recorder_status_message(2)))
+            .unwrap()
+            .into_bytes();
+        while !peer.lossy.is_empty() {
+            assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        }
+        assert_eq!(read_exact(&mut client, expected.len()), expected);
     }
 
     /// Regression: a raw peer that sent more messages than its inbound queue

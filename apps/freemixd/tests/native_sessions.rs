@@ -32,7 +32,8 @@ use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProjec
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     EventPayload, HandshakeOutcome, HandshakeRequest, HeartbeatMessage, InputThumbnailSubscription,
-    Role, ServerIdentity, SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
+    RecorderRealizedState, RecorderStatusMessage, Role, ServerIdentity, SnapshotMessage,
+    WireInputId, WireMessage, WireRecorderSlot, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -329,7 +330,11 @@ struct Observed {
     switcher: Vec<(u64, WireInputId)>,
     monitor_frames: usize,
     audio_meters: usize,
+    /// Per-input meter readings across every `audio_meters` record.
+    input_meters: usize,
     thumbnails: usize,
+    /// Every `recorder_status` record, in arrival order (Protocol 2.66).
+    recorder_status: Vec<(Instant, RecorderStatusMessage)>,
 }
 
 enum Transport {
@@ -549,7 +554,15 @@ impl Session {
                 }
             }
             WireMessage::MonitorFrame(_) => self.observed.monitor_frames += 1,
-            WireMessage::AudioMeters(_) => self.observed.audio_meters += 1,
+            WireMessage::AudioMeters(meters) => {
+                self.observed.audio_meters += 1;
+                self.observed.input_meters += meters.inputs.len();
+            }
+            WireMessage::RecorderStatus(status) => {
+                self.observed
+                    .recorder_status
+                    .push((Instant::now(), status.clone()));
+            }
             WireMessage::InputThumbnail(_) => self.observed.thumbnails += 1,
             _ => {}
         }
@@ -758,14 +771,17 @@ fn studio_cli_and_web_pages_drive_one_native_show_together() {
         session.assert_in_order(12);
     }
 
-    // The Studio peer gets the lossy side channels; Web pages never do.
+    // The Studio peer gets every lossy side channel; Web pages get only
+    // the Master meters and statuses (Protocol 2.66), never monitor frames,
+    // thumbnails, or per-input meters.
     studio.until("monitor frames, meters, and thumbnails", |observed| {
         observed.monitor_frames > 0 && observed.audio_meters > 0 && observed.thumbnails > 0
     });
-    for session in [&operator, &tally] {
+    for session in [&mut operator, &mut tally] {
+        session.until("Master meters", |observed| observed.audio_meters > 0);
         assert_eq!(session.observed.monitor_frames, 0);
-        assert_eq!(session.observed.audio_meters, 0);
         assert_eq!(session.observed.thumbnails, 0);
+        assert_eq!(session.observed.input_meters, 0);
     }
 
     // Fill every raw slot: a ninth raw connection is refused at once with a
@@ -986,6 +1002,143 @@ fn web_pages_keep_up_with_a_cut_every_frame() {
         (0..BURST)
             .map(|index| format!("burst-{index}"))
             .collect::<Vec<_>>()
+    );
+
+    let stderr = daemon.stop();
+    assert!(
+        !stderr.contains("closed="),
+        "a session was dropped: {stderr}"
+    );
+}
+
+/// The latest `recorder_status` sample `session` saw for `slot`.
+fn recorder_sample(
+    session: &Session,
+    slot: u8,
+) -> Option<(Instant, fm_protocol::RecorderStatusSample)> {
+    let (at, status) = session.observed.recorder_status.last()?;
+    status
+        .samples
+        .iter()
+        .find(|sample| sample.recorder == WireRecorderSlot::new(slot).unwrap())
+        .map(|sample| (*at, sample.clone()))
+}
+
+/// Protocol 2.66: the operator and tally pages follow each recorder's
+/// realized state (`recording` with its elapsed time, `off` after a stop,
+/// `unavailable` for an unconfigured slot) and the Master meters, each at a
+/// bounded rate, while only the Operator page may start or stop a recorder.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn web_pages_follow_recorders_and_master_meters_at_a_bounded_rate() {
+    const WINDOW: Duration = Duration::from_secs(3);
+
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("web-status");
+    let project = directory.0.join("show.freemix");
+    let recording = directory.0.join("program.mp4");
+    save_project(&project);
+    let Some(daemon) = DaemonProcess::start(&project, &recording) else {
+        return;
+    };
+    let slot = |value| WireRecorderSlot::new(value).unwrap();
+    let (mut operator, _) = Session::web("operator", daemon.web, Role::Operator);
+    let (mut tally, _) = Session::web("tally", daemon.web, Role::Viewer);
+
+    // Recorder 1 records from startup; recorder 2 has no output.
+    for session in [&mut operator, &mut tally] {
+        session.until("recorder 1 recording", |observed| {
+            observed.recorder_status.last().is_some_and(|(_, status)| {
+                status.samples.len() == 2
+                    && status.samples[0].realized == RecorderRealizedState::Recording
+                    && status.samples[0].elapsed_ms > 0
+                    && status.samples[1].realized == RecorderRealizedState::Unavailable
+                    && status.samples[1].failure.is_none()
+            })
+        });
+    }
+
+    // Over a window, the tally is fed Master meters at about 15 Hz and the
+    // recorder status at about 4 Hz, never more, and the elapsed time
+    // follows the wall clock.
+    let meters_before = tally.observed.audio_meters;
+    let statuses_before = tally.observed.recorder_status.len();
+    let (first_at, first) = recorder_sample(&tally, 1).unwrap();
+    let started = Instant::now();
+    while started.elapsed() < WINDOW {
+        tally.receive();
+    }
+    let meters = tally.observed.audio_meters - meters_before;
+    let statuses = tally.observed.recorder_status.len() - statuses_before;
+    let seconds = usize::try_from(WINDOW.as_secs()).unwrap();
+    assert!(
+        (2 * seconds..=16 * seconds + 2).contains(&meters),
+        "{meters} meter records in {WINDOW:?}"
+    );
+    assert!(
+        (seconds..=4 * seconds + 2).contains(&statuses),
+        "{statuses} recorder status records in {WINDOW:?}"
+    );
+    assert_eq!(tally.observed.input_meters, 0);
+    assert_eq!(tally.observed.monitor_frames, 0);
+    let sequences: Vec<u64> = tally
+        .observed
+        .recorder_status
+        .iter()
+        .map(|(_, status)| status.sequence)
+        .collect();
+    assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    let (last_at, last) = recorder_sample(&tally, 1).unwrap();
+    assert_eq!(last.realized, RecorderRealizedState::Recording);
+    let advanced = last.elapsed_ms.saturating_sub(first.elapsed_ms);
+    let waited = u64::try_from(last_at.duration_since(first_at).as_millis()).unwrap();
+    assert!(
+        advanced + 600 >= waited && advanced <= waited + 600,
+        "elapsed advanced {advanced} ms over {waited} ms"
+    );
+
+    // The Viewer tally may see, not control.
+    let refused = tally.command(
+        "tally-stop",
+        CommandPayload::RecordStop { recorder: slot(1) },
+    );
+    assert!(
+        matches!(&refused, CommandResult::Rejected { code, .. } if code == "permission_denied"),
+        "{refused:?}"
+    );
+
+    // The Operator page stops recorder 1: both pages see it off.
+    let stopped = operator.command("stop-1", CommandPayload::RecordStop { recorder: slot(1) });
+    assert!(
+        matches!(stopped, CommandResult::Accepted { .. }),
+        "{stopped:?}"
+    );
+    for session in [&mut operator, &mut tally] {
+        session.until("recorder 1 off", |observed| {
+            observed.recorder_status.last().is_some_and(|(_, status)| {
+                status.samples[0].realized == RecorderRealizedState::Off
+                    && status.samples[0].elapsed_ms == 0
+            })
+        });
+    }
+
+    // Started again, it records a new run from zero.
+    let restarted = operator.command("start-1", CommandPayload::RecordStart { recorder: slot(1) });
+    assert!(
+        matches!(restarted, CommandResult::Accepted { .. }),
+        "{restarted:?}"
+    );
+    tally.until("recorder 1 recording again", |observed| {
+        observed.recorder_status.last().is_some_and(|(_, status)| {
+            status.samples[0].realized == RecorderRealizedState::Recording
+        })
+    });
+    let (_, again) = recorder_sample(&tally, 1).unwrap();
+    assert!(
+        again.elapsed_ms < last.elapsed_ms,
+        "{again:?} after {last:?}"
     );
 
     let stderr = daemon.stop();

@@ -46,6 +46,19 @@
   label { display: grid; gap: .25rem; }
   input, select { min-height: 44px; padding: 0 .5rem; border-radius: 8px; border: 1px solid #fff6;
     background: #111; color: #fff; }
+  /* Recorders and destinations on air (Protocol 2.66): status only. */
+  #outputs { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: center; margin-top: .75rem; }
+  #outputs span { padding: .15rem .6rem; border-radius: 999px; background: #000a; font-weight: 800;
+    letter-spacing: .05em; font-size: clamp(.85rem, 2.6vw, 1.3rem); font-variant-numeric: tabular-nums; }
+  #outputs span[data-tone="on"] { color: #ff6b7a; }
+  #outputs span[data-tone="on"]::before { content: "\25CF  "; }
+  #outputs span[data-tone="failed"] { color: #ffb000; }
+  #outputs span[data-tone="starting"] { color: #ffe2a0; }
+  /* A slim Program audio level per Master channel. */
+  #vu { display: grid; gap: 3px; width: min(100%, 24rem); margin-top: .6rem; }
+  #vu span { display: block; height: 6px; border-radius: 3px; background: #000a; overflow: hidden; }
+  #vu span i { display: block; height: 100%; width: 100%; transform-origin: left; transform: scaleX(0);
+    background: linear-gradient(to right, #1fa34a 0 63.6%, #e3a21a 63.6% 81.8%, #e5322d 81.8% 100%); }
   .full header, .full #status { display: none; }
   [hidden] { display: none !important; }
 </style>
@@ -68,6 +81,8 @@
   <div id="label" aria-live="polite">FreeMix Tally</div>
   <div id="state" role="status" aria-live="polite">OFFLINE</div>
   <div id="lock" hidden><span id="lock-text"></span></div>
+  <div id="outputs" role="status" aria-live="off" data-i18n-label="outputsLabel" aria-label="Recording and streaming" hidden></div>
+  <div id="vu" aria-hidden="true" hidden></div>
   <div id="cue" hidden aria-live="polite"></div>
   <div id="board" role="list" data-i18n-label="inputs" aria-label="Inputs" hidden></div>
   <form id="setup" hidden autocomplete="off">
@@ -88,7 +103,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.65";
+  const PROTOCOL = "2.66";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -147,6 +162,15 @@
       stateOffline: "OFFLINE",
       chooseInput: "Choose an input",
       tallyLabel: "Tally: {state}",
+      outputsLabel: "Recording and streaming",
+      recRunning: "REC {slot} {time}",
+      recStarting: "REC {slot} STARTING",
+      recFailed: "REC {slot} FAILED ({reason})",
+      streamRunning: "{name} LIVE {time}",
+      streamStarting: "{name} STARTING",
+      streamReconnecting: "{name} RECONNECTING",
+      streamFailed: "{name} FAILED ({reason})",
+      streamUnnamed: "Stream {id}",
       lockProject: "Project locked",
       lockInput: "Input locked",
       editsLocked: "Edits locked: {lock}",
@@ -206,6 +230,15 @@
       stateOffline: "DESCONECTADO",
       chooseInput: "Elija una entrada",
       tallyLabel: "Tally: {state}",
+      outputsLabel: "Grabación y transmisión",
+      recRunning: "REC {slot} {time}",
+      recStarting: "REC {slot} INICIANDO",
+      recFailed: "REC {slot} FALLIDO ({reason})",
+      streamRunning: "{name} VIVO {time}",
+      streamStarting: "{name} INICIANDO",
+      streamReconnecting: "{name} RECONECTANDO",
+      streamFailed: "{name} FALLIDO ({reason})",
+      streamUnnamed: "Transmisión {id}",
       lockProject: "Proyecto bloqueado",
       lockInput: "Entrada bloqueada",
       editsLocked: "Edición bloqueada: {lock}",
@@ -238,6 +271,7 @@
     lock: $("lock"), lockText: $("lock-text"),
     go: $("go"), standby: $("standby"), cue: $("cue"), language: $("language"),
     armDelay: $("arm-delay"), arm: $("arm"), disarm: $("disarm"),
+    outputs: $("outputs"), vu: $("vu"),
   };
 
   const store = window.sessionStorage;
@@ -333,7 +367,21 @@
     // countdown is approximate: the server's frame clock decides.
     rate: 0,
     cueFrame: null,
+    // Stream destination names by target id, for the outputs line.
+    streamNames: new Map(),
   };
+  // Lossy live status (Protocol 2.66), latest-wins, with the local time each
+  // kind arrived and its sequence; cleared with the connection.
+  const telemetry = {
+    recorders: null, recordersAt: 0, recorderSequence: -1,
+    streams: new Map(), streamsAt: 0, streamSequence: -1,
+    meters: null, metersAt: 0, meterSequence: -1,
+  };
+  // Lossy status older than this is not shown (the daemon stops sending
+  // `stream_status` once no destination runs).
+  const TELEMETRY_STALE_MS = 2000;
+  const METER_STALE_MS = 1000;
+  const LOSSY = "lossy";
   let selected = store.getItem("freemix.tally.input") || "";
   let choosing = !selected;
   let commandCounter = 0;
@@ -431,6 +479,31 @@
     const ids = [...show.cueLists.keys()].sort((a, b) => Number(a) - Number(b));
     return ids.length ? { id: ids[0], ...show.cueLists.get(ids[0]) } : null;
   }
+  // `target:name:desired_running:realized:detail`, comma separated.
+  function streamNames(value) {
+    return new Map((value ? value.split(",") : []).map((item) => {
+      const parts = item.split(":");
+      if (parts.length !== 5) throw new Error("malformed stream");
+      return [parts[0], decodeURIComponent(parts[1])];
+    }));
+  }
+  // A lossy record of this session's server with a newer sequence, else -1.
+  function freshLossy(record, last) {
+    if (link.phase !== "live" || !sameServer(record)) return -1;
+    const sequence = Number(required(record, "sequence"));
+    return sequence > last ? sequence : -1;
+  }
+  function clearTelemetry() {
+    telemetry.recorders = null;
+    telemetry.recordersAt = 0;
+    telemetry.recorderSequence = -1;
+    telemetry.streams = new Map();
+    telemetry.streamsAt = 0;
+    telemetry.streamSequence = -1;
+    telemetry.meters = null;
+    telemetry.metersAt = 0;
+    telemetry.meterSequence = -1;
+  }
   function base64Url(text) {
     return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
@@ -464,12 +537,15 @@
     };
     socket.onmessage = (event) => {
       if (socket !== link.socket || typeof event.data !== "string") return;
+      // Lossy status records repaint only the outputs line and level.
+      let full = false;
       try {
-        for (const line of event.data.split("\n")) if (line) receive(decodeRecord(line));
+        for (const line of event.data.split("\n")) if (line && receive(decodeRecord(line)) !== LOSSY) full = true;
       } catch (error) {
         closeSocket();
+        full = true;
       }
-      render();
+      if (full) render(); else renderOutputs();
     };
     socket.onclose = () => { if (socket === link.socket) transportClosed(); };
     render();
@@ -492,6 +568,7 @@
     link.server = null;
     goSent = goRetry = null;
     link.permissions = [];
+    clearTelemetry();
     if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
     link.attempt += 1;
     const delay = Math.min(INITIAL_BACKOFF_MS * 2 ** Math.min(link.attempt - 1, 20), MAX_BACKOFF_MS);
@@ -567,6 +644,7 @@
           project: required(record, "project_locked") === "1",
           inputs: new Set(lockedInputs ? lockedInputs.split(",") : []),
         };
+        show.streamNames = streamNames(required(record, "streams"));
         show.cueLists = new Map(); // its cue_list_state records follow
         show.cueFrame = null;
         {
@@ -596,11 +674,16 @@
           // A playlist take, a cue's actions, or a script run move Program too.
           show.desired = { program: required(record, "program"), preview: required(record, "preview") };
           trackDesired(revision, show.desired.program, show.desired.preview);
+          if (name === "cue_run_changed" || name === "script_ran") {
+            show.streamNames = streamNames(required(record, "streams"));
+          }
           if (name === "cue_run_changed") {
             const list = show.cueLists.get(required(record, "list"));
             if (list) { list.standby = cueStandby(record); list.armed = cueArmed(record); }
             noteCueFrame(record);
           }
+        } else if (name === "streams_changed" || name === "stream_target_changed") {
+          show.streamNames = streamNames(required(record, "streams"));
         } else if (name === "cue_list_changed") {
           show.cueLists.set(required(record, "list"), cueList(record));
         } else if (name === "cue_list_removed") {
@@ -674,12 +757,50 @@
         }
         return;
       }
+      case "recorder_status": {
+        const sequence = freshLossy(record, telemetry.recorderSequence);
+        if (sequence < 0) return LOSSY;
+        // `<slot>:<state>:<elapsed_ms>:<failure>`, `;` separated.
+        telemetry.recorders = required(record, "recorders").split(";").map((item) => {
+          const parts = item.split(":");
+          if (parts.length !== 4) throw new Error("malformed recorder status");
+          return { slot: parts[0], state: parts[1], elapsedMs: Number(parts[2]),
+            failure: parts[3] ? decodeURIComponent(parts[3]) : "" };
+        });
+        telemetry.recordersAt = Date.now();
+        telemetry.recorderSequence = sequence;
+        return LOSSY;
+      }
+      case "stream_status": {
+        const sequence = freshLossy(record, telemetry.streamSequence);
+        if (sequence < 0) return LOSSY;
+        // `target:realized:connected:muxed:enqueued:dropped:reconnects:
+        // uptime_ms:bitrate_kbps:failure[:local triple]`, `;` separated.
+        telemetry.streams = new Map(required(record, "samples").split(";").map((item) => {
+          const parts = item.split(":");
+          if (parts.length !== 10 && parts.length !== 13) throw new Error("malformed stream sample");
+          return [parts[0], { realized: parts[1], uptimeMs: Number(parts[7]),
+            failure: parts[9] ? decodeURIComponent(parts[9]) : "" }];
+        }));
+        telemetry.streamsAt = Date.now();
+        telemetry.streamSequence = sequence;
+        return LOSSY;
+      }
+      case "audio_meters": {
+        const sequence = freshLossy(record, telemetry.meterSequence);
+        if (sequence < 0) return LOSSY;
+        // Master `<peak>:<rms>` millionths, comma separated.
+        telemetry.meters = required(record, "master").split(",").map((item) => Number(item.split(":")[0]) / 1e6);
+        telemetry.metersAt = Date.now();
+        telemetry.meterSequence = sequence;
+        return LOSSY;
+      }
       case "error":
         // Includes server_shutting_down: reconnect after backoff.
         closeSocket();
         return;
       default:
-        return; // Lossy telemetry is not sent to Web peers; ignore anything else.
+        return; // Not shown on this page.
     }
   }
 
@@ -704,7 +825,7 @@
       ui.status.textContent = tr("goStale");
     }
     if (link.phase === "waiting") render();
-    else if (link.phase === "live") renderCue();
+    else if (link.phase === "live") { renderCue(); renderOutputs(); }
   }
 
   // ---- Presentation: mirrors freemix-web's TallyPresentation. ----
@@ -785,6 +906,7 @@
     ui.lockText.textContent = lock ? tr(LOCK_KEY[lock]) : "";
     ui.lock.setAttribute("aria-label", lock ? tr("editsLocked", { lock: tr(LOCK_KEY[lock]) }) : "");
     ui.status.textContent = statusText();
+    renderOutputs();
     ui.setup.hidden = link.phase !== "idle" && link.phase !== "stopped";
     ui.board.hidden = !choosing || link.phase !== "live";
     if (!ui.board.hidden) renderBoard();
@@ -825,6 +947,73 @@
     }
     if (ui.cue.textContent !== text) ui.cue.textContent = text;
     return cues;
+  }
+
+  // H:MM:SS of a running time.
+  function clock(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const pad = (value) => String(value).padStart(2, "0");
+    return Math.floor(total / 3600) + ":" + pad(Math.floor(total / 60) % 60) + ":" + pad(total % 60);
+  }
+  function fresh(at) { return at > 0 && Date.now() - at < TELEMETRY_STALE_MS; }
+  // The outputs line: every recorder and destination that is recording,
+  // live, starting, or failed, from the daemon's realized status; and a
+  // slim Program level per Master channel. Status only: nothing here acts.
+  function renderOutputs() {
+    const live = link.phase === "live";
+    const chips = [];
+    if (live && fresh(telemetry.recordersAt)) {
+      for (const recorder of telemetry.recorders) {
+        const slot = recorder.slot;
+        if (recorder.state === "recording") {
+          chips.push(["on", tr("recRunning", { slot,
+            time: clock(recorder.elapsedMs + Date.now() - telemetry.recordersAt) })]);
+        } else if (recorder.state === "starting") {
+          chips.push(["starting", tr("recStarting", { slot })]);
+        } else if (recorder.state === "failed") {
+          chips.push(["failed", tr("recFailed", { slot, reason: recorder.failure })]);
+        }
+      }
+    }
+    if (live && fresh(telemetry.streamsAt)) {
+      for (const [id, sample] of telemetry.streams) {
+        const name = show.streamNames.get(id) || tr("streamUnnamed", { id });
+        if (sample.realized === "live" || sample.realized === "congested") {
+          chips.push(["on", tr("streamRunning", { name,
+            time: clock(sample.uptimeMs + (sample.uptimeMs > 0 ? Date.now() - telemetry.streamsAt : 0)) })]);
+        } else if (sample.realized === "starting") {
+          chips.push(["starting", tr("streamStarting", { name })]);
+        } else if (sample.realized === "waiting_to_reconnect") {
+          chips.push(["starting", tr("streamReconnecting", { name })]);
+        } else if (sample.realized === "failed" || sample.realized === "unavailable") {
+          chips.push(["failed", tr("streamFailed", { name, reason: sample.failure || sample.realized })]);
+        }
+      }
+    }
+    ui.outputs.hidden = chips.length === 0;
+    if (ui.outputs.children.length !== chips.length) {
+      ui.outputs.replaceChildren(...chips.map(() => document.createElement("span")));
+    }
+    chips.forEach(([tone, text], index) => {
+      const chip = ui.outputs.children[index];
+      chip.dataset.tone = tone;
+      if (chip.textContent !== text) chip.textContent = text;
+    });
+    const meters = live && telemetry.meters && Date.now() - telemetry.metersAt < METER_STALE_MS ? telemetry.meters : [];
+    ui.vu.hidden = meters.length === 0;
+    if (ui.vu.children.length !== meters.length) {
+      ui.vu.replaceChildren(...meters.map(() => {
+        const bar = document.createElement("span");
+        bar.append(document.createElement("i"));
+        return bar;
+      }));
+    }
+    // The same -60..+6 dBFS scale as the operator page.
+    meters.forEach((peak, index) => {
+      const db = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+      const position = Math.min(1, Math.max(0, (db + 60) / 66));
+      ui.vu.children[index].firstChild.style.transform = "scaleX(" + position.toFixed(3) + ")";
+    });
   }
 
   function renderBoard() {

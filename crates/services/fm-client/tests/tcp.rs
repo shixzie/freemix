@@ -1981,3 +1981,58 @@ fn input_thumbnails_of_removed_inputs_are_forgotten() {
     assert_eq!(session.latest_input_thumbnails().len(), 1);
     server_thread.join().unwrap();
 }
+
+fn recorder_status(sequence: u64) -> fm_protocol::RecorderStatusMessage {
+    fm_protocol::RecorderStatusMessage {
+        server: server(),
+        sequence,
+        samples: vec![fm_protocol::RecorderStatusSample {
+            recorder: fm_protocol::WireRecorderSlot::new(1).unwrap(),
+            realized: fm_protocol::RecorderRealizedState::Recording,
+            elapsed_ms: sequence * 250,
+            failure: None,
+        }],
+    }
+}
+
+/// Protocol 2.66: `recorder_status` is lossy, retained latest-wins, and
+/// strictly ordered like `stream_status`; a foreign identity disconnects.
+#[test]
+fn recorder_status_is_ephemeral_and_strictly_ordered() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        peer.send(&WireMessage::RecorderStatus(recorder_status(5)));
+        peer.send(&WireMessage::RecorderStatus(recorder_status(6)));
+        let mut foreign = recorder_status(7);
+        foreign.server.engine_id = "engine-b".to_owned();
+        peer.send(&WireMessage::RecorderStatus(foreign));
+    });
+
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::RecorderStatus { status } if status.sequence == 5
+    ));
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::RecorderStatus { status } if status.sequence == 6
+    ));
+    let latest = session.latest_recorder_status().expect("retained status");
+    assert_eq!(latest.samples[0].elapsed_ms, 1_500);
+    assert_eq!(session.client().last_applied_cursor().unwrap().revision, 4);
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(matches!(
+        session.client().state(),
+        ConnectionState::Backoff(_)
+    ));
+    assert!(session.latest_recorder_status().is_none());
+    server_thread.join().unwrap();
+}

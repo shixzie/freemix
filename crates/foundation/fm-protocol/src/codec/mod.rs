@@ -12,6 +12,7 @@ mod live_lan;
 mod media;
 mod network_stream;
 mod playlist;
+mod recorder_status;
 mod refusal;
 mod scene_layer;
 mod scene_layout;

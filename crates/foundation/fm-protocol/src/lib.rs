@@ -12,6 +12,7 @@ mod live_lan;
 mod media;
 mod monitor_image;
 mod network_stream;
+mod recorder_status;
 mod scene_layer;
 mod script;
 mod stream_target;
@@ -153,6 +154,9 @@ pub use network_stream::{
     NetworkStreamError, NetworkStreamSettings, NetworkStreamState, NetworkStreamStatus,
     ReconnectPolicy, RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode,
     StreamProtocol, StreamUrl, redact_stream_url, validate_stream_url,
+};
+pub use recorder_status::{
+    MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
 pub use scene_layer::{
     MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,

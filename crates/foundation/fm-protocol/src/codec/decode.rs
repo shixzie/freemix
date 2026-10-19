@@ -112,6 +112,11 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "audio_meters" => WireMessage::AudioMeters(decode_audio_meters(&mut fields)?),
         "stream_status" => WireMessage::StreamStatus(decode_stream_status(&mut fields)?),
+        "recorder_status" => WireMessage::RecorderStatus(crate::RecorderStatusMessage {
+            server: decode_server_identity(&mut fields)?,
+            sequence: fields.canonical_required("sequence")?,
+            samples: super::recorder_status::decode_samples(&fields.required("recorders")?)?,
+        }),
         "monitor_frame" => WireMessage::MonitorFrame(decode_monitor_frame(&mut fields)?),
         "input_thumbnail_subscription" => {
             WireMessage::InputThumbnailSubscription(crate::InputThumbnailSubscription {

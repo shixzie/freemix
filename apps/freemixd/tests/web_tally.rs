@@ -1041,6 +1041,7 @@ fn web_tally_arms_and_disarms_a_timed_go_within_its_role() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one page: served, secured, and every contract it names
 fn operator_page_is_served_with_the_tally_security_model() {
     let directory = TestDirectory::new("operator-page");
     let project = directory.0.join("show.freemix");
@@ -1108,18 +1109,41 @@ fn operator_page_is_served_with_the_tally_security_model() {
     ] {
         assert!(page.contains(reason), "{reason}");
     }
-    // Web peers see only the requested recorder state (realized recorder
-    // progress is not on their wire), so the badge says so instead of
-    // claiming a file is being written.
+    // A daemon that reports realized recorder state (`recorder_status`,
+    // Protocol 2.66; the native daemon) is shown as such, with the running
+    // time or the failure; one that does not (this simulated daemon) leaves
+    // only the requested state, so the badge says so instead of claiming a
+    // file is being written.
     for wording in [
         "recorderRequestedOn: \"REQUESTED: REC\"",
         "recorderRequestedOff: \"REQUESTED: OFF\"",
-        "recorderNote: \"Recorders show the requested state: the daemon does not tell web pages whether a file is being written.\"",
+        "recorderNote: \"Recorders show the requested state: this daemon does not report whether a file is being written.\"",
         "tr(on ? \"recorderRequestedOn\" : \"recorderRequestedOff\")",
+        "recorderRecording: \"REC {time}\"",
+        "recorderFailed: \"FAILED ({reason})\"",
+        "recorderUnavailable: \"NOT CONFIGURED\"",
+        "streamLastFailure: \"{state} — last error: {detail}\"",
+        "ui.recorderNote.hidden = !live || reported;",
     ] {
         assert!(page.contains(wording), "{wording}");
     }
     assert!(!page.contains("\"REC\" : \"STOPPED\""));
+    // The lossy status feed (Protocol 2.66): realized recorders, stream
+    // samples, and Master meters, each checked against the session's server
+    // and its own sequence, repainting only their part of the page.
+    for source in [
+        "case \"recorder_status\":",
+        "case \"stream_status\":",
+        "case \"audio_meters\":",
+        "freshLossy(record, telemetry.recorderSequence)",
+        "required(record, \"master\")",
+        "if (full) render(); else renderOutputs();",
+        "const TELEMETRY_STALE_MS = 2000;",
+        "const METER_HOLD_MS = 1500;",
+        "id=\"meters\"",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
     // State the page follows, including cue and script runs.
     for event in [
         "\"desired_switcher\", \"stinger_slots_changed\", \"cue_run_changed\", \"script_ran\"",
@@ -1150,6 +1174,19 @@ fn operator_page_is_served_with_the_tally_security_model() {
     );
     let tally = String::from_utf8(tally).unwrap();
     assert!(tally.contains("label: decodeURIComponent(parts[1])"));
+    // The tally shows what records and streams, and a Program level, from
+    // the same lossy feed (Protocol 2.66); it only displays them.
+    for source in [
+        "case \"recorder_status\":",
+        "case \"stream_status\":",
+        "case \"audio_meters\":",
+        "recRunning: \"REC {slot} {time}\"",
+        "streamRunning: \"{name} LIVE {time}\"",
+        "id=\"outputs\" role=\"status\" aria-live=\"off\"",
+        "id=\"vu\" aria-hidden=\"true\"",
+    ] {
+        assert!(tally.contains(source), "{source}");
+    }
 
     let (status, _, body) = http(
         daemon.web,
@@ -1664,6 +1701,19 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
             "t(\"Sin destinos de transmisión\")",
         ),
         ("recorderRequestedOn: \"PEDIDO: REC\"", "PEDIDO"),
+        (
+            "meterStale: \"MEDIDORES OBSOLETOS\"",
+            "t(\"MEDIDORES OBSOLETOS\")",
+        ),
+        (
+            "meterLegend: \"RMS · PICO · RETENCIÓN · CLIP\"",
+            "\"RMS · RETENCIÓN · CLIP\"",
+        ),
+        ("recorderFailed: \"FALLIDO ({reason})\"", "t(\"FALLIDO\")"),
+        (
+            "streamLastFailure: \"{state} — último error: {detail}\"",
+            "t(\"Último error: {failure}\")",
+        ),
     ];
     for (path, spanish) in [("/tally", tally), ("/operator", operator)] {
         let (_, _, body) = http(
@@ -1723,5 +1773,47 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
                 "Studio's es catalog lacks {catalog}"
             );
         }
+    }
+}
+
+/// Every served page's inline script parses: `node --check` on each when
+/// Node.js is on the `PATH` (skipped otherwise; the pages ship no build
+/// step, so this is their only syntax gate besides a browser).
+#[test]
+fn page_scripts_parse_with_node_when_available() {
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: page script syntax check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("node-check");
+    for (name, page) in [
+        ("tally", include_str!("../src/web/tally.html")),
+        ("operator", include_str!("../src/web/operator.html")),
+        ("live_lan", include_str!("../src/web/live_lan.html")),
+    ] {
+        let scripts: Vec<&str> = page
+            .split("<script>")
+            .skip(1)
+            .map(|rest| rest.split_once("</script>").expect("closed script").0)
+            .collect();
+        assert!(!scripts.is_empty(), "{name} has no inline script");
+        let path = directory.0.join(format!("{name}.js"));
+        fs::write(&path, scripts.join("\n")).unwrap();
+        let output = ProcessCommand::new("node")
+            .arg("--check")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

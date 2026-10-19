@@ -647,6 +647,7 @@ impl Client {
             | WireMessage::Heartbeat(_)
             | WireMessage::AudioMeters(_)
             | WireMessage::StreamStatus(_)
+            | WireMessage::RecorderStatus(_)
             | WireMessage::MonitorFrame(_)
             | WireMessage::InputThumbnailSubscription(_)
             | WireMessage::InputThumbnail(_)

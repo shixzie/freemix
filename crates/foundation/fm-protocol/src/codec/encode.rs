@@ -86,6 +86,13 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::AudioMeters(message) => encode_audio_meters(&mut record, message)?,
         WireMessage::StreamStatus(message) => encode_stream_status(&mut record, message)?,
+        WireMessage::RecorderStatus(message) => {
+            let recorders = super::recorder_status::encode_samples(&message.samples)?;
+            record.kind("recorder_status");
+            encode_server_identity(&mut record, &message.server)?;
+            record.field("sequence", message.sequence)?;
+            record.field_string("recorders", recorders)?;
+        }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
         WireMessage::InputThumbnailSubscription(message) => {
             record.kind("input_thumbnail_subscription");

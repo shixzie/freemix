@@ -112,7 +112,8 @@ contains an optional loopback-only WebSocket control listener at `/v1/control`,
 gated by `FREEMIXD_WEB_TOKEN`; it relays exact-current wire records through the
 same bounded scheduler and admits at most 16 Web peers at once, each its own
 control session (see the item 10 web tally boundary). This is transport
-groundwork only: Web peers do not receive audio meters, and RC-008 remains
+groundwork only (Protocol 2.66 later gives Web pages a bounded Master-meter and
+status feed, see the item 10 web tally boundary), and RC-008 remains
 planned until process and browser acceptance evidence exists.
 Native Studio command, event, and reconnect flows can now use the same bounded
 loopback WebSocket transport and current-session reducer. Native Studio
@@ -3675,8 +3676,9 @@ key shortcuts (`C`, `A`, `B`, `1`-`9`). `freemix-web`'s `OperatorSurface`
 is the transport-free model of the gating, disabled reasons, commands, and
 badges that the page mirrors. The tally page now reads only the label of an
 input's `id~name~lifecycle` entry (it showed the lifecycle suffix).
-Remaining operator gaps: no monitor video, meters, or recorder realized
-state for Web peers (streams show the snapshot's realized state), no T-bar,
+Remaining operator gaps: no monitor video or per-input meters for Web peers
+(Protocol 2.66 below adds Master meters and realized recorder and
+destination status), no T-bar,
 stinger, overlay, or title keys, no Cut confirmation, and the pages are
 verified by page-source and wire tests plus headless-Chromium screenshots
 (`docs/progress/web-operator-*.png`, `docs/progress/web-tally-*.png`), not by
@@ -3720,6 +3722,50 @@ browser's preferred languages. The operator page's recorders now say
 note that the daemon does not tell web pages whether a file is being written,
 because Web peers only receive the desired recorder state.
 
+Live recorder, destination, and audio status on the Web pages (Protocol
+2.66, no schema change): native `freemixd` reports each recorder slot's
+realized state in a new lossy `recorder_status` record (`unavailable`,
+`off`, `starting`, `recording` with the time recorded so far, kept across
+segment rotations, or `failed` with a sanitized short code such as `start`
+or `capture:missing_output`, latched until the slot is started or stopped
+again), built at most every 250 ms (`apps/freemixd/src/recorder_status.rs`).
+Raw Studio peers take it in its own latest-wins slot; `fm-client` validates
+and retains it like `stream_status`. Web sessions whose role may view status
+(Viewer, Audio, Operator) now get a bounded lossy feed
+(`apps/freemixd/src/web_feed.rs`): `audio_meters` cut to the Master channels,
+`stream_status`, and `recorder_status`, each latest-wins, one record handed
+to the gateway at a time and only while at most two other records wait for
+the relay, meters at most every 66 ms (about 15 Hz, about 12 Hz at 25 fps)
+and each status at most every 250 ms, never charged to the session's
+outbound rate window. Commands, results, heartbeats, and events always go
+first, and a browser that stops reading stops receiving feed records instead
+of building a backlog. The operator page shows `REC 0:12:34`, `STARTING`,
+`FAILED (start)`, `OFF`, or `NOT CONFIGURED` per recorder (with "start/stop
+requested" while desired and realized differ), each destination's running
+time, bitrate, and failure from its newest sample (a running destination's
+retained failure reads "last error"), and a Program audio
+section with per-channel RMS and peak bars on a -60 to +6 dBFS scale in
+Studio's zones (green, amber from -18, red from -6), a 1.5 s peak hold
+falling 20 dB/s, a CLIP lamp, and `METERS STALE` after a second without a
+record. A daemon that sends no `recorder_status` (the simulated daemon)
+keeps the requested-state badge and its note. The tally page shows chips
+for what is recording, live, starting, or failed, with running times, and a
+slim Program level per channel; neither page gains a control. Lossy records
+repaint only the outputs and meters, never the whole page, and timers
+advance between records. English and Spanish strings; process tests
+(`native_sessions.rs`) follow both pages through recording, a Viewer's
+refused stop, an Operator stop and restart, and check the feed rates; a
+`node --check` test parses every page script when Node.js is installed.
+Screenshots against a native daemon recording and streaming a media clip:
+`docs/progress/web-operator-recording-meters.png`,
+`docs/progress/web-operator-recording-meters-phone-es.png`, and
+`docs/progress/web-tally-recording.png`.
+Remaining gaps: no per-input meters or audio tally on the pages, the tally
+receives meters it only draws as a thin level (there is no per-session
+opt-out), the simulated daemon sends no meters or realized recorder state,
+and the recorder failure code is terse (the full reason stays in the
+daemon's `FREEMIXD_RECORDER_FAILURE` notice).
+
 
 The native daemon serves several control sessions and the Web gateway (no
 protocol or schema change): `freemixd serve --native-media` now admits the
@@ -3732,7 +3778,8 @@ peer keeps its own role and permissions, heartbeat and handshake deadlines,
 live subscription, inbound and outbound rate limits, outbound queue, and
 lossy side channels (Program monitor frames, meters, stream status, and input
 thumbnails with their per-peer budgets go to raw Studio peers with
-`view_status`; Web peers get none). Because a native command waits for and
+`view_status`; Web peers got none until Protocol 2.66's bounded Master-meter
+and status feed). Because a native command waits for and
 realizes the pacer's next frame, the native scheduler dispatches at most one
 command per loop pass, round-robin across peers, and reads, answers
 heartbeats, and writes every peer between commands; command throughput stays

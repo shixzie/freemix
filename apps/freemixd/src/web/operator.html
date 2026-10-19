@@ -76,6 +76,27 @@
     border: 1px solid var(--line); background: #111; }
   #status { padding: .5rem .75rem; padding-bottom: max(.5rem, env(safe-area-inset-bottom)); font-size: .9rem;
     color: #ddd; background: var(--panel); border-top: 1px solid var(--line); }
+  /* Program audio meters: RMS bright, peak dim above it, a peak-hold line,
+     and a CLIP lamp. Zones as in Studio: green below -18 dBFS, amber from
+     -18, red from -6, on a -60..+6 dBFS scale. */
+  .meters { display: grid; gap: .45rem; }
+  .meter { display: grid; grid-template-columns: 1.6rem 1fr 4.6rem; align-items: center; gap: .5rem;
+    font-size: .8rem; font-variant-numeric: tabular-nums; }
+  .meter .ch { color: var(--muted); font-weight: 700; text-align: center; }
+  .meter .track { position: relative; height: 18px; border-radius: 4px; background: #0c0c0c;
+    border: 1px solid #ffffff1f; overflow: hidden; }
+  .meter .fill { position: absolute; inset: 0; clip-path: inset(0 100% 0 0);
+    background: linear-gradient(to right, #1fa34a 0 63.6%, #e3a21a 63.6% 81.8%, #e5322d 81.8% 100%); }
+  .meter .peak { opacity: .35; }
+  .meter .hold { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: #fff; display: none; }
+  .meter .zero { position: absolute; top: 0; bottom: 0; width: 1px; left: 90.9%; background: #ffffff80; }
+  .meter .value { text-align: right; color: #ddd; }
+  .meter .value[data-clip="1"] { color: #fff; background: var(--program); border-radius: 4px; padding: 0 .25rem; font-weight: 800; }
+  .scale { position: relative; height: 1rem; margin: .1rem 4.6rem 0 2.1rem; font-size: .7rem; color: var(--muted); }
+  .scale span { position: absolute; transform: translateX(-50%); }
+  .meters[data-stale="1"] .fill, .meters[data-stale="1"] .hold { opacity: .25; }
+  .row .state[data-tone="failed"] { color: var(--warn); }
+  .row .state[data-tone="starting"] { color: #ffe2a0; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [hidden] { display: none !important; }
 </style>
@@ -145,10 +166,17 @@
   <section aria-labelledby="outputs-heading">
     <h2 id="outputs-heading" data-i18n="outputs">Record and stream</h2>
     <div id="recorders"></div>
-    <p id="recorder-note" class="why" hidden style="color:var(--muted)" data-i18n="recorderNote">Recorders show the requested state: the daemon does not tell web pages whether a file is being written.</p>
+    <p id="recorder-note" class="why" hidden style="color:var(--muted)" data-i18n="recorderNote">Recorders show the requested state: this daemon does not report whether a file is being written.</p>
     <div id="streams"></div>
     <p id="no-streams" class="why" hidden style="color:var(--muted)" data-i18n="noStreams">No stream destinations are configured.</p>
     <p id="why-outputs" class="why" aria-live="polite"></p>
+  </section>
+
+  <section aria-labelledby="meters-heading">
+    <h2 id="meters-heading" data-i18n="programAudio">Program audio</h2>
+    <div id="meters" class="meters" role="group" data-i18n-label="metersLabel" aria-label="Program audio level meters"></div>
+    <div id="meter-scale" class="scale" aria-hidden="true"></div>
+    <p id="meter-note" class="why" style="color:var(--muted)" aria-live="polite"></p>
   </section>
 
   <section aria-labelledby="audio-heading">
@@ -162,7 +190,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.65";
+  const PROTOCOL = "2.66";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -182,6 +210,23 @@
   ];
   const DURATIONS_MS = [500, 1000, 1500, 2000, 3000];
   // Mirrors freemix-web's stream_state_label: realized state and label key.
+  // Realized recorder states (`recorder_status`, Protocol 2.66) and label keys.
+  const RECORDER_KEY = {
+    unavailable: "recorderUnavailable", off: "recorderOff", starting: "recorderStarting",
+    recording: "recorderRecording", failed: "recorderFailed",
+  };
+  // Lossy status older than this is not trusted: the daemon stops sending
+  // `stream_status` once no destination runs, so the snapshot state rules.
+  const TELEMETRY_STALE_MS = 2000;
+  // Meters: the dBFS scale, Studio's zones, peak hold 1.5 s then 20 dB/s,
+  // CLIP lit 2 s after a peak at or above 0 dBFS, stale after 1 s.
+  const METER_MIN_DB = -60;
+  const METER_MAX_DB = 6;
+  const METER_HOLD_MS = 1500;
+  const METER_FALL_DB_PER_S = 20;
+  const METER_CLIP_MS = 2000;
+  const METER_STALE_MS = 1000;
+  const METER_SCALE_DB = [-48, -36, -24, -18, -12, -6, 0, 6];
   const STREAM_KEY = {
     stopped: "streamStopped", starting: "streamStarting", live: "streamLive",
     waiting_to_reconnect: "streamReconnecting", congested: "streamCongested", failed: "streamFailed",
@@ -245,7 +290,13 @@
       recorderRequestedOff: "REQUESTED: OFF",
       recorderStateOn: "Recorder {slot}: recording requested",
       recorderStateOff: "Recorder {slot}: stop requested",
-      recorderNote: "Recorders show the requested state: the daemon does not tell web pages whether a file is being written.",
+      recorderNote: "Recorders show the requested state: this daemon does not report whether a file is being written.",
+      recorderUnavailable: "NOT CONFIGURED",
+      recorderOff: "OFF",
+      recorderStarting: "STARTING",
+      recorderRecording: "REC {time}",
+      recorderFailed: "FAILED ({reason})",
+      recorderStateLabel: "Recorder {slot}: {state}",
       record: "Record",
       stop: "Stop",
       startRecorder: "Start recorder {slot}",
@@ -260,10 +311,21 @@
       streamStartRequested: "{state} (start requested)",
       streamStopRequested: "{state} (stop requested)",
       streamDetail: "{state} — {detail}",
+      streamLastFailure: "{state} — last error: {detail}",
+      streamElapsed: "{state} {time}",
+      streamBitrate: "{state} · {rate} Mb/s",
       goLive: "Go live",
       startStream: "Start stream {name}",
       stopStream: "Stop stream {name}",
       noStreams: "No stream destinations are configured.",
+      programAudio: "Program audio",
+      metersLabel: "Program audio level meters",
+      meterWaiting: "Waiting for audio meters (the daemon sends them only with native media).",
+      meterStale: "METERS STALE",
+      meterLegend: "RMS · PEAK · HOLD · CLIP",
+      meterChannel: "Channel {channel}",
+      meterSilent: "−∞",
+      meterClip: "CLIP",
       audio: "Audio",
       mute: "Mute",
       muted: "MUTED",
@@ -358,7 +420,13 @@
       recorderRequestedOff: "PEDIDO: APAGADO",
       recorderStateOn: "Grabador {slot}: grabación pedida",
       recorderStateOff: "Grabador {slot}: parada pedida",
-      recorderNote: "Los grabadores muestran el estado pedido: el daemon no informa a las páginas web de si se está escribiendo un archivo.",
+      recorderNote: "Los grabadores muestran el estado pedido: este daemon no informa de si se está escribiendo un archivo.",
+      recorderUnavailable: "SIN CONFIGURAR",
+      recorderOff: "APAGADO",
+      recorderStarting: "INICIANDO",
+      recorderRecording: "REC {time}",
+      recorderFailed: "FALLIDO ({reason})",
+      recorderStateLabel: "Grabador {slot}: {state}",
       record: "Grabar",
       stop: "Detener",
       startRecorder: "Iniciar grabador {slot}",
@@ -373,10 +441,21 @@
       streamStartRequested: "{state} (inicio pedido)",
       streamStopRequested: "{state} (parada pedida)",
       streamDetail: "{state} — {detail}",
+      streamLastFailure: "{state} — último error: {detail}",
+      streamElapsed: "{state} {time}",
+      streamBitrate: "{state} · {rate} Mb/s",
       goLive: "Iniciar",
       startStream: "Iniciar la transmisión {name}",
       stopStream: "Detener la transmisión {name}",
       noStreams: "No hay destinos de transmisión configurados.",
+      programAudio: "Audio de Programa",
+      metersLabel: "Medidores de nivel del audio de Programa",
+      meterWaiting: "Esperando los medidores de audio (el daemon solo los envía con medios nativos).",
+      meterStale: "MEDIDORES OBSOLETOS",
+      meterLegend: "RMS · PICO · RETENCIÓN · CLIP",
+      meterChannel: "Canal {channel}",
+      meterSilent: "−∞",
+      meterClip: "CLIP",
       audio: "Audio",
       mute: "Silenciar",
       muted: "SILENCIADA",
@@ -433,6 +512,7 @@
     recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
     whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
     whyAudio: $("why-audio"), recorderNote: $("recorder-note"), language: $("language"),
+    meters: $("meters"), meterScale: $("meter-scale"), meterNote: $("meter-note"),
   };
 
   const store = window.sessionStorage;
@@ -502,6 +582,15 @@
     ftb: { target: false, position: 0 }, realizedFtb: { target: false, position: 0 },
     strips: new Map(), recordings: [false, false], streams: [],
   };
+  // Lossy live status (Protocol 2.66), latest-wins, each kind with its own
+  // sequence and the local time it arrived; cleared with the connection.
+  const telemetry = {
+    recorders: null, recordersAt: 0, recorderSequence: -1,
+    streams: new Map(), streamsAt: 0, streamSequence: -1,
+    meters: null, metersAt: 0, meterSequence: -1,
+  };
+  // Per-channel peak hold and CLIP lamp: { holdDb, holdAt, clipAt }.
+  let meterHolds = [];
   const choice = {
     kind: store.getItem("freemix.operator.kind") || "fade",
     durationMs: Number(store.getItem("freemix.operator.duration")) || 1000,
@@ -599,6 +688,51 @@
     }
     return active;
   }
+  // `recorder_status` `recorders`: `<slot>:<state>:<elapsed_ms>:<failure>`,
+  // `;` separated.
+  function parseRecorderStatus(value) {
+    const recorders = [null, null];
+    for (const item of value.split(";")) {
+      const parts = item.split(":");
+      if (parts.length !== 4 || (parts[0] !== "1" && parts[0] !== "2") || !RECORDER_KEY[parts[1]]) {
+        throw new Error("malformed recorder status");
+      }
+      recorders[Number(parts[0]) - 1] = {
+        state: parts[1], elapsedMs: Number(parts[2]), failure: parts[3] ? decodeURIComponent(parts[3]) : "",
+      };
+    }
+    return recorders;
+  }
+  // `stream_status` `samples`: `target:realized:connected:muxed:enqueued:
+  // dropped:reconnects:uptime_ms:bitrate_kbps:failure[:local triple]`.
+  function parseStreamSamples(value) {
+    const samples = new Map();
+    for (const item of value.split(";")) {
+      const parts = item.split(":");
+      if (parts.length !== 10 && parts.length !== 13) throw new Error("malformed stream sample");
+      samples.set(parts[0], {
+        realized: parts[1], uptimeMs: Number(parts[7]), bitrateKbps: Number(parts[8]),
+        failure: parts[9] ? decodeURIComponent(parts[9]) : "",
+      });
+    }
+    return samples;
+  }
+  // `audio_meters` `master`: `<peak>:<rms>` millionths of full scale, comma
+  // separated, one per Master channel.
+  function parseMeterChannels(value) {
+    return value.split(",").map((item) => {
+      const [peak, rms] = item.split(":").map(Number);
+      if (!Number.isFinite(peak) || !Number.isFinite(rms)) throw new Error("malformed meter");
+      return { peak: peak / 1e6, rms: rms / 1e6 };
+    });
+  }
+  // A lossy record of this session's server and a newer sequence; anything
+  // else is dropped (it is only telemetry).
+  function freshLossy(record, last) {
+    if (link.phase !== "live" || !sameServer(record)) return -1;
+    const sequence = Number(required(record, "sequence"));
+    return sequence > last ? sequence : -1;
+  }
   function parseFtb(record, prefix) {
     return {
       target: required(record, prefix + "ftb_target_active") === "1",
@@ -638,12 +772,16 @@
     };
     socket.onmessage = (event) => {
       if (socket !== link.socket || typeof event.data !== "string") return;
+      // Lossy status records repaint only their own part of the page, so
+      // meters at about 15 Hz never rebuild the controls under a finger.
+      let full = false;
       try {
-        for (const line of event.data.split("\n")) if (line) receive(decodeRecord(line));
+        for (const line of event.data.split("\n")) if (line && receive(decodeRecord(line)) !== LOSSY) full = true;
       } catch (error) {
         closeSocket();
+        full = true;
       }
-      render();
+      if (full) render(); else renderOutputs();
     };
     socket.onclose = () => { if (socket === link.socket) transportClosed(); };
     render();
@@ -665,6 +803,7 @@
     link.pendingHeartbeat = 0;
     link.server = null;
     link.permissions = [];
+    clearTelemetry();
     // Unresolved commands may or may not have applied; the next snapshot tells.
     if (pending.size) note(tr("noteLost", { count: pending.size }));
     pending.clear();
@@ -699,6 +838,21 @@
       show.desiredByRevision.delete(show.desiredByRevision.keys().next().value);
     }
   }
+
+  function clearTelemetry() {
+    telemetry.recorders = null;
+    telemetry.recordersAt = 0;
+    telemetry.recorderSequence = -1;
+    telemetry.streams = new Map();
+    telemetry.streamsAt = 0;
+    telemetry.streamSequence = -1;
+    telemetry.meters = null;
+    telemetry.metersAt = 0;
+    telemetry.meterSequence = -1;
+    meterHolds = [];
+  }
+  // What `receive` returns for a lossy status record.
+  const LOSSY = "lossy";
 
   // Events that carry the whole switcher state, including cue and script runs.
   const SWITCHER_EVENTS = new Set(["desired_switcher", "stinger_slots_changed", "cue_run_changed", "script_ran"]);
@@ -811,12 +965,37 @@
         }
         return;
       }
+      case "recorder_status": {
+        const sequence = freshLossy(record, telemetry.recorderSequence);
+        if (sequence < 0) return LOSSY;
+        telemetry.recorders = parseRecorderStatus(required(record, "recorders"));
+        telemetry.recordersAt = Date.now();
+        telemetry.recorderSequence = sequence;
+        return LOSSY;
+      }
+      case "stream_status": {
+        const sequence = freshLossy(record, telemetry.streamSequence);
+        if (sequence < 0) return LOSSY;
+        telemetry.streams = parseStreamSamples(required(record, "samples"));
+        telemetry.streamsAt = Date.now();
+        telemetry.streamSequence = sequence;
+        return LOSSY;
+      }
+      case "audio_meters": {
+        const sequence = freshLossy(record, telemetry.meterSequence);
+        if (sequence < 0) return LOSSY;
+        telemetry.meters = parseMeterChannels(required(record, "master"));
+        telemetry.metersAt = Date.now();
+        telemetry.meterSequence = sequence;
+        paintMeters();
+        return LOSSY;
+      }
       case "error":
         // Includes server_shutting_down: reconnect after backoff.
         closeSocket();
         return;
       default:
-        return; // Lossy telemetry is not sent to Web peers; ignore anything else.
+        return; // Not shown on this page.
     }
   }
 
@@ -894,6 +1073,7 @@
       }
     }
     if (link.phase === "waiting") render();
+    else if (link.phase === "live") renderOutputs(); // elapsed times, hold decay, staleness
   }
 
   // ---- Control gating: mirrors freemix-web's OperatorSurface::gate. ----
@@ -1064,52 +1244,7 @@
     setDisabled(ui.ftb, transitionReason);
     ui.whyTransition.textContent = transitionReason;
 
-    syncChildren(ui.recorders, live ? ["1", "2"] : [], (slot) => {
-      const row = document.createElement("div");
-      row.className = "row";
-      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
-      row.querySelector("button").addEventListener("click", () => toggleRecorder(Number(slot)));
-      return row;
-    }, (row, slot) => {
-      // Web peers see only the requested (desired) recorder state: the
-      // daemon's realized recorder progress is not on their wire, so the
-      // badge says "requested" and never claims a file is being written.
-      const on = show.recordings[Number(slot) - 1];
-      row.querySelector(".name").textContent = tr("recorder", { slot });
-      const state = row.querySelector(".state");
-      state.textContent = tr(on ? "recorderRequestedOn" : "recorderRequestedOff");
-      state.setAttribute("aria-label", tr(on ? "recorderStateOn" : "recorderStateOff", { slot }));
-      state.dataset.on = on ? "1" : "0";
-      const button = row.querySelector("button");
-      button.textContent = tr(on ? "stop" : "record");
-      button.setAttribute("aria-label", tr(on ? "stopRecorder" : "startRecorder", { slot }));
-      setDisabled(button, transitionReason);
-    });
-    ui.recorderNote.hidden = !live;
-    const streamIds = live ? show.streams.map((stream) => stream.id) : [];
-    syncChildren(ui.streams, streamIds, (id) => {
-      const row = document.createElement("div");
-      row.className = "row";
-      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
-      row.querySelector("button").addEventListener("click", () => toggleStream(id));
-      return row;
-    }, (row, id) => {
-      const stream = show.streams.find((candidate) => candidate.id === id);
-      row.querySelector(".name").textContent = stream.name;
-      const state = row.querySelector(".state");
-      let text = STREAM_KEY[stream.realized] ? tr(STREAM_KEY[stream.realized]) : stream.realized;
-      // Desired and realized differ until the destination catches up.
-      if (stream.desired && stream.realized === "stopped") text = tr("streamStartRequested", { state: text });
-      else if (!stream.desired && stream.realized !== "stopped") text = tr("streamStopRequested", { state: text });
-      state.textContent = stream.detail ? tr("streamDetail", { state: text, detail: stream.detail }) : text;
-      state.dataset.on = stream.realized === "live" ? "1" : "0";
-      const button = row.querySelector("button");
-      button.textContent = tr(stream.desired ? "stop" : "goLive");
-      button.setAttribute("aria-label", tr(stream.desired ? "stopStream" : "startStream", { name: stream.name }));
-      setDisabled(button, transitionReason);
-    });
-    ui.noStreams.hidden = !live || show.streams.length > 0;
-    ui.whyOutputs.textContent = transitionReason;
+    renderOutputs();
 
     syncChildren(ui.strips, ids, (id) => {
       const row = document.createElement("div");
@@ -1129,6 +1264,186 @@
       setDisabled(button, gate("audio", id));
     });
     ui.whyAudio.textContent = sectionReason("audio");
+  }
+
+  // H:MM:SS of a duration, for recorder and destination running times.
+  function clock(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const pad = (value) => String(value).padStart(2, "0");
+    return Math.floor(total / 3600) + ":" + pad(Math.floor(total / 60) % 60) + ":" + pad(total % 60);
+  }
+  function fresh(at) { return at > 0 && Date.now() - at < TELEMETRY_STALE_MS; }
+
+  // One recorder row: the realized state when the daemon reports it
+  // (`recorder_status`), otherwise only the requested state with a note.
+  function recorderText(slot, on) {
+    const realized = fresh(telemetry.recordersAt) && telemetry.recorders ? telemetry.recorders[slot - 1] : null;
+    if (!realized) {
+      return { text: tr(on ? "recorderRequestedOn" : "recorderRequestedOff"),
+        label: tr(on ? "recorderStateOn" : "recorderStateOff", { slot }), tone: on ? "on" : "", reported: false };
+    }
+    const elapsed = realized.state === "recording"
+      ? realized.elapsedMs + Date.now() - telemetry.recordersAt : 0;
+    let text = tr(RECORDER_KEY[realized.state], { time: clock(elapsed), reason: realized.failure });
+    // Desired and realized differ until the recorder catches up.
+    if (on && (realized.state === "off" || realized.state === "failed")) text = tr("streamStartRequested", { state: text });
+    else if (!on && (realized.state === "recording" || realized.state === "starting")) text = tr("streamStopRequested", { state: text });
+    const tone = realized.state === "recording" ? "on" : realized.state === "failed" ? "failed"
+      : realized.state === "starting" ? "starting" : "";
+    return { text, label: tr("recorderStateLabel", { slot, state: text }), tone, reported: true };
+  }
+  // One destination row: the snapshot's desired and realized state, made
+  // fresher by its newest `stream_status` sample (running time, bitrate,
+  // failure) while the daemon sends one.
+  function streamText(stream) {
+    const sample = fresh(telemetry.streamsAt) ? telemetry.streams.get(stream.id) : null;
+    const realized = sample ? sample.realized : stream.realized;
+    let text = STREAM_KEY[realized] ? tr(STREAM_KEY[realized]) : realized;
+    if (sample && sample.uptimeMs > 0 && (realized === "live" || realized === "congested")) {
+      text = tr("streamElapsed", { state: text, time: clock(sample.uptimeMs + Date.now() - telemetry.streamsAt) });
+      if (sample.bitrateKbps > 0) {
+        text = tr("streamBitrate", { state: text, rate: (sample.bitrateKbps / 1000).toLocaleString(language,
+          { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+      }
+    }
+    // Desired and realized differ until the destination catches up.
+    if (stream.desired && realized === "stopped") text = tr("streamStartRequested", { state: text });
+    else if (!stream.desired && realized !== "stopped") text = tr("streamStopRequested", { state: text });
+    const detail = sample ? sample.failure || (realized === "failed" ? stream.detail : "") : stream.detail;
+    // A running destination keeps reporting the failure it recovered from.
+    const recovered = realized === "live" || realized === "congested";
+    if (detail) text = tr(recovered ? "streamLastFailure" : "streamDetail", { state: text, detail });
+    const tone = realized === "live" ? "on" : realized === "failed" || realized === "unavailable" ? "failed"
+      : realized === "starting" || realized === "waiting_to_reconnect" || realized === "congested" ? "starting" : "";
+    return { text, tone };
+  }
+
+  // The recorder and destination rows and the meters: everything the lossy
+  // status records and the clock change between full renders.
+  function renderOutputs() {
+    const live = link.phase === "live";
+    const transitionReason = gate("transition");
+    let reported = false;
+    syncChildren(ui.recorders, live ? ["1", "2"] : [], (slot) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
+      row.querySelector("button").addEventListener("click", () => toggleRecorder(Number(slot)));
+      return row;
+    }, (row, slot) => {
+      const on = show.recordings[Number(slot) - 1];
+      const shown = recorderText(Number(slot), on);
+      reported = reported || shown.reported;
+      row.querySelector(".name").textContent = tr("recorder", { slot });
+      const state = row.querySelector(".state");
+      if (state.textContent !== shown.text) state.textContent = shown.text;
+      state.setAttribute("aria-label", shown.label);
+      state.dataset.on = shown.tone === "on" ? "1" : "0";
+      state.dataset.tone = shown.tone;
+      const button = row.querySelector("button");
+      button.textContent = tr(on ? "stop" : "record");
+      button.setAttribute("aria-label", tr(on ? "stopRecorder" : "startRecorder", { slot }));
+      setDisabled(button, transitionReason);
+    });
+    // Only a daemon that reports realized recorder state (native media)
+    // tells whether a file is being written.
+    ui.recorderNote.hidden = !live || reported;
+    const streamIds = live ? show.streams.map((stream) => stream.id) : [];
+    syncChildren(ui.streams, streamIds, (id) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
+      row.querySelector("button").addEventListener("click", () => toggleStream(id));
+      return row;
+    }, (row, id) => {
+      const stream = show.streams.find((candidate) => candidate.id === id);
+      row.querySelector(".name").textContent = stream.name;
+      const state = row.querySelector(".state");
+      const shown = streamText(stream);
+      if (state.textContent !== shown.text) state.textContent = shown.text;
+      state.dataset.on = shown.tone === "on" ? "1" : "0";
+      state.dataset.tone = shown.tone;
+      const button = row.querySelector("button");
+      button.textContent = tr(stream.desired ? "stop" : "goLive");
+      button.setAttribute("aria-label", tr(stream.desired ? "stopStream" : "startStream", { name: stream.name }));
+      setDisabled(button, transitionReason);
+    });
+    ui.noStreams.hidden = !live || show.streams.length > 0;
+    ui.whyOutputs.textContent = transitionReason;
+    paintMeters();
+  }
+
+  // ---- Program audio meters. ----
+  function decibels(linear) { return linear > 0 ? 20 * Math.log10(linear) : -Infinity; }
+  function meterPosition(db) {
+    return Math.min(1, Math.max(0, (db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)));
+  }
+  function channelName(index, count) {
+    if (count === 1) return "M";
+    if (count === 2) return index === 0 ? "L" : "R";
+    return String(index + 1);
+  }
+  function fillScale() {
+    ui.meterScale.replaceChildren(...METER_SCALE_DB.map((db) => {
+      const mark = document.createElement("span");
+      mark.style.left = (meterPosition(db) * 100) + "%";
+      mark.textContent = db > 0 ? "+" + db : String(db);
+      return mark;
+    }));
+  }
+  // Paints the newest Master reading; called per meter record and by the
+  // page tick, so holds decay and stale meters dim without new records.
+  function paintMeters() {
+    const now = Date.now();
+    const live = link.phase === "live";
+    const channels = live && telemetry.meters ? telemetry.meters : [];
+    const stale = !live || !telemetry.metersAt || now - telemetry.metersAt > METER_STALE_MS;
+    ui.meters.dataset.stale = stale ? "1" : "0";
+    ui.meterScale.hidden = channels.length === 0;
+    const noteText = !live ? "" : !telemetry.meters ? tr("meterWaiting") : stale ? tr("meterStale") : tr("meterLegend");
+    if (ui.meterNote.textContent !== noteText) ui.meterNote.textContent = noteText;
+    if (ui.meters.children.length !== channels.length) {
+      ui.meters.replaceChildren(...channels.map(() => {
+        const row = document.createElement("div");
+        row.className = "meter";
+        row.innerHTML = "<span class=\"ch\"></span><span class=\"track\" aria-hidden=\"true\"><span class=\"fill peak\"></span><span class=\"fill rms\"></span><span class=\"zero\"></span><span class=\"hold\"></span></span><span class=\"value\"></span>";
+        return row;
+      }));
+      meterHolds = channels.map(() => ({ holdDb: -Infinity, holdAt: 0, clipAt: 0 }));
+    }
+    channels.forEach((channel, index) => {
+      const row = ui.meters.children[index];
+      const hold = meterHolds[index];
+      const peakDb = stale ? -Infinity : decibels(channel.peak);
+      const rmsDb = stale ? -Infinity : decibels(channel.rms);
+      // Hold the highest recent peak 1.5 s, then let it fall 20 dB/s.
+      const held = hold.holdDb - Math.max(0, now - hold.holdAt - METER_HOLD_MS) * METER_FALL_DB_PER_S / 1000;
+      if (peakDb >= held) {
+        hold.holdDb = peakDb;
+        hold.holdAt = now;
+      } else if (now - hold.holdAt > METER_HOLD_MS) {
+        hold.holdDb = held;
+        hold.holdAt = now - METER_HOLD_MS;
+      }
+      if (!stale && channel.peak >= 1) hold.clipAt = now;
+      const clip = hold.clipAt > 0 && now - hold.clipAt < METER_CLIP_MS;
+      const reveal = (db) => "inset(0 " + ((1 - meterPosition(db)) * 100).toFixed(2) + "% 0 0)";
+      row.querySelector(".rms").style.clipPath = reveal(rmsDb);
+      row.querySelector(".peak").style.clipPath = reveal(peakDb);
+      const marker = row.querySelector(".hold");
+      const holdPosition = meterPosition(hold.holdDb);
+      marker.style.display = holdPosition > 0 ? "block" : "none";
+      marker.style.left = "calc(" + (holdPosition * 100).toFixed(2) + "% - 1px)";
+      const name = channelName(index, channels.length);
+      row.querySelector(".ch").textContent = name;
+      row.setAttribute("aria-label", tr("meterChannel", { channel: name }));
+      const value = row.querySelector(".value");
+      const text = clip ? tr("meterClip") : Number.isFinite(hold.holdDb)
+        ? hold.holdDb.toLocaleString(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " dB"
+        : tr("meterSilent");
+      if (value.textContent !== text) value.textContent = text;
+      value.dataset.clip = clip ? "1" : "0";
+    });
   }
 
   // ---- Commands. The server authorizes every command again. ----
@@ -1268,6 +1583,7 @@
   });
 
   ui.role.value = role();
+  fillScale();
   applyLanguage();
   ui.status.textContent = tr("notConnected");
   setInterval(tick, 250);

@@ -9,9 +9,9 @@ use fm_protocol::{
     DiagnosticsRequest, DiagnosticsResponse, DurableGap, ErrorMessage, EventMessage,
     HandshakeOutcome, HeartbeatAcknowledgementMessage, InputThumbnailImage, InputThumbnailMessage,
     LineDecoder, MonitorFrameAssembler, MonitorFrameMessage, MonitorImage, MonitorTap,
-    RuntimeEventMessage, ScenePreviewImage, ScenePreviewRequest, StreamStatusMessage,
-    TitlePreviewAssembler, TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest,
-    WireInputId, WireMessage, decode_input_thumbnail, encode_line,
+    RecorderStatusMessage, RuntimeEventMessage, ScenePreviewImage, ScenePreviewRequest,
+    StreamStatusMessage, TitlePreviewAssembler, TitlePreviewFrameMessage, TitlePreviewImage,
+    TitlePreviewRequest, WireInputId, WireMessage, decode_input_thumbnail, encode_line,
 };
 
 #[cfg(feature = "std-websocket")]
@@ -369,6 +369,10 @@ pub enum SessionEvent {
     StreamStatus {
         status: StreamStatusMessage,
     },
+    /// The realized recorder slots (Protocol 2.66).
+    RecorderStatus {
+        status: RecorderStatusMessage,
+    },
     /// One valid `monitor_frame` part arrived for `tap`. When `complete` is
     /// `true` it finished its group and the decoded image is available from
     /// [`TcpSession::latest_monitor_frame`]; pixels are never carried here.
@@ -499,6 +503,8 @@ pub struct TcpSession {
     latest_audio_meters: Option<AudioMetersMessage>,
     last_stream_status_sequence: Option<u64>,
     latest_stream_status: Option<StreamStatusMessage>,
+    last_recorder_status_sequence: Option<u64>,
+    latest_recorder_status: Option<RecorderStatusMessage>,
     /// Last completed monitor frame sequence per [`MonitorTap::index`].
     monitor_sequences: [Option<u64>; 2],
     monitor_assemblers: [MonitorFrameAssembler; 2],
@@ -627,6 +633,8 @@ impl TcpSession {
             latest_audio_meters: None,
             last_stream_status_sequence: None,
             latest_stream_status: None,
+            last_recorder_status_sequence: None,
+            latest_recorder_status: None,
             monitor_sequences: [None, None],
             monitor_assemblers: [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()],
             latest_monitor: [None, None],
@@ -675,6 +683,12 @@ impl TcpSession {
     #[must_use]
     pub const fn latest_stream_status(&self) -> Option<&StreamStatusMessage> {
         self.latest_stream_status.as_ref()
+    }
+
+    /// The latest realized recorder status (Protocol 2.66).
+    #[must_use]
+    pub const fn latest_recorder_status(&self) -> Option<&RecorderStatusMessage> {
+        self.latest_recorder_status.as_ref()
     }
 
     /// The latest fully assembled and decoded monitor image for `tap` and
@@ -1263,6 +1277,9 @@ impl TcpSession {
                     WireMessage::StreamStatus(status) => {
                         self.validate_stream_status(&status)?;
                     }
+                    WireMessage::RecorderStatus(status) => {
+                        self.validate_recorder_status(&status)?;
+                    }
                     WireMessage::MonitorFrame(frame) => {
                         self.validate_monitor_frame(&frame)?;
                     }
@@ -1350,6 +1367,10 @@ impl TcpSession {
             WireMessage::StreamStatus(status) => {
                 self.validate_stream_status(&status)?;
                 Ok(SessionEvent::StreamStatus { status })
+            }
+            WireMessage::RecorderStatus(status) => {
+                self.validate_recorder_status(&status)?;
+                Ok(SessionEvent::RecorderStatus { status })
             }
             WireMessage::MonitorFrame(frame) => {
                 let complete = self.validate_monitor_frame(&frame)?;
@@ -1638,6 +1659,8 @@ impl TcpSession {
         self.latest_audio_meters = None;
         self.last_stream_status_sequence = None;
         self.latest_stream_status = None;
+        self.last_recorder_status_sequence = None;
+        self.latest_recorder_status = None;
         self.monitor_sequences = [None, None];
         for assembler in &mut self.monitor_assemblers {
             assembler.reset();
@@ -1690,6 +1713,28 @@ impl TcpSession {
         }
         self.last_stream_status_sequence = Some(status.sequence);
         self.latest_stream_status = Some(status.clone());
+        Ok(())
+    }
+
+    /// Like [`Self::validate_stream_status`]: a foreign identity or a
+    /// non-increasing sequence disconnects.
+    fn validate_recorder_status(
+        &mut self,
+        status: &RecorderStatusMessage,
+    ) -> Result<(), TcpSessionError> {
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == status.server);
+        let valid_sequence = self
+            .last_recorder_status_sequence
+            .is_none_or(|sequence| status.sequence > sequence);
+        if !valid_identity || !valid_sequence {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        self.last_recorder_status_sequence = Some(status.sequence);
+        self.latest_recorder_status = Some(status.clone());
         Ok(())
     }
 }

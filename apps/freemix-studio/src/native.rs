@@ -1220,6 +1220,7 @@ fn run_worker(
                     | SessionEvent::AudioMeters { .. }
                     | SessionEvent::InputThumbnail { .. }
                     | SessionEvent::StreamStatus { .. }
+                    | SessionEvent::RecorderStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. },
                 )) => true,
@@ -1637,6 +1638,7 @@ fn resume_pending_command(
     true
 }
 
+#[allow(clippy::too_many_lines)] // one timeout: exit, reconnect, or drain each event kind
 fn handle_heartbeat_timeout(
     runtime: &mut StudioRuntime,
     requests: &Receiver<WorkerRequest>,
@@ -1691,6 +1693,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::RuntimeEvent { .. }
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
+                        | SessionEvent::RecorderStatus { .. }
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
@@ -2236,6 +2239,7 @@ fn receive_command_event(
             SessionEvent::AudioMeters { .. }
                 | SessionEvent::InputThumbnail { .. }
                 | SessionEvent::StreamStatus { .. }
+                | SessionEvent::RecorderStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
         ) {

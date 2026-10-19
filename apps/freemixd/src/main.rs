@@ -74,9 +74,10 @@ use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, CommandMessage,
     CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse, ErrorMessage,
     EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatMessage, MonitorTap, ProtocolVersion, RecordingStatus, ResumeCursor,
-    RuntimeEventMessage, ServerHello, ServerIdentity, StreamStatus, StreamStatusMessage,
-    StructuredError, WireMessage, WireStreamTargetId, choose_handshake_outcome, encode_line,
+    HeartbeatMessage, MonitorTap, ProtocolVersion, RecorderStatusMessage, RecordingStatus,
+    ResumeCursor, RuntimeEventMessage, ServerHello, ServerIdentity, StreamStatus,
+    StreamStatusMessage, StructuredError, WireMessage, WireStreamTargetId,
+    choose_handshake_outcome, encode_line,
 };
 #[cfg(test)]
 use fm_protocol::{CodecError, EventMessage, HeartbeatAcknowledgementMessage, LineDecoder};
@@ -130,12 +131,15 @@ mod pacing_trace;
 mod display_outputs;
 mod playlist_clock;
 mod sessions;
+mod web_feed;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod preflight;
 #[cfg(feature = "display-surface")]
 mod program_surface;
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+mod recorder_status;
 #[cfg(feature = "native-media")]
 mod recording_session;
 mod scene_preview;
@@ -736,6 +740,9 @@ struct NativeDaemon {
     monitor_output: freemixd::monitor_output::MonitorOutputSlot,
     stream_status_sequence: u64,
     pending_stream_status: Option<StreamStatusMessage>,
+    /// Realized recorder slot bookkeeping behind `recorder_status`
+    /// (Protocol 2.66).
+    recorder_status: recorder_status::RecorderStatusTracker,
     /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
     monitor: NativeMonitorTap,
     /// Title inputs realized as live source frames rendered off the loop;
@@ -5031,6 +5038,7 @@ impl NativeDaemon {
             },
             stream_status_sequence: 0,
             pending_stream_status: None,
+            recorder_status: recorder_status::RecorderStatusTracker::default(),
             monitor: NativeMonitorTap::new(stored.project().settings()),
             titles,
             files,
@@ -6002,6 +6010,30 @@ impl NativeDaemon {
         self.pending_stream_status.take()
     }
 
+    /// The realized recorder slots (Protocol 2.66), at most every
+    /// [`recorder_status::RECORDER_STATUS_INTERVAL`].
+    fn take_recorder_status(&mut self, server: &ServerIdentity) -> Option<RecorderStatusMessage> {
+        let configured = [
+            self.record_program.is_some(),
+            self.record_program_2.is_some(),
+        ];
+        let views: [recorder_status::SlotView<'_>; RECORDER_SLOTS] =
+            std::array::from_fn(|slot| match &self.recorders[slot] {
+                ProgramRecording::Off if configured[slot] => recorder_status::SlotView::Off,
+                ProgramRecording::Off => recorder_status::SlotView::Unconfigured,
+                ProgramRecording::Running(recorder) => {
+                    if let Some(failure) = recorder.capture.first_failure.as_deref() {
+                        recorder_status::SlotView::Failed(failure)
+                    } else if recorder.is_settling() {
+                        recorder_status::SlotView::Settling
+                    } else {
+                        recorder_status::SlotView::Running
+                    }
+                }
+            });
+        self.recorder_status.poll(server, views, Instant::now())
+    }
+
     /// Whether any eligible session currently wants monitor frames; without
     /// demand no readback runs.
     fn set_monitor_demand(&mut self, demand: bool) {
@@ -6281,6 +6313,7 @@ impl NativeDaemon {
         if active {
             self.open_pending_recording(slot, stored);
         } else {
+            self.recorder_status.stopped(slot);
             self.retire_running_recording(slot, None);
         }
     }
@@ -6307,6 +6340,7 @@ impl NativeDaemon {
             };
             if let OpenPoll::Failed(failure) = recorder.poll_open() {
                 self.recorders[slot] = ProgramRecording::Off;
+                self.recorder_status.failed(slot, &failure);
                 eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
                 continue;
             }
@@ -6332,6 +6366,8 @@ impl NativeDaemon {
             // timeout helper; cancel and report the partial segment.
             recorder.priming = None;
             recorder.request_cancel();
+            self.recorder_status
+                .failed(slot, &format!("startup:{failure}"));
             self.retire_running_recording(
                 slot,
                 Some(recorder_failure_notice(
@@ -6353,6 +6389,7 @@ impl NativeDaemon {
         if self.recorders[slot].is_running() {
             return;
         }
+        self.recorder_status.started(slot);
         let names = self.segment_names.clone();
         let segment = match next_slot_segment_path(
             slot,
@@ -6363,10 +6400,9 @@ impl NativeDaemon {
             Ok(Some(segment)) => segment,
             Ok(None) => return,
             Err(error) => {
-                eprintln!(
-                    "{}",
-                    recorder_failure_notice(slot + 1, &format!("start:{error}"), false)
-                );
+                let failure = format!("start:{error}");
+                self.recorder_status.failed(slot, &failure);
+                eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
                 return;
             }
         };
@@ -6387,10 +6423,9 @@ impl NativeDaemon {
             Ok(recorder) => self.recorders[slot] = ProgramRecording::Running(Box::new(recorder)),
             Err(error) => {
                 self.recorders[slot] = ProgramRecording::Off;
-                eprintln!(
-                    "{}",
-                    recorder_failure_notice(slot + 1, &format!("start:{error}"), false)
-                );
+                let failure = format!("start:{error}");
+                self.recorder_status.failed(slot, &failure);
+                eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
             }
         }
     }
@@ -6532,10 +6567,9 @@ impl NativeDaemon {
             }
             Err(error) => {
                 self.recorders[slot] = ProgramRecording::Off;
-                eprintln!(
-                    "{}",
-                    recorder_failure_notice(slot + 1, &format!("rotate:{error}"), false)
-                );
+                let failure = format!("rotate:{error}");
+                self.recorder_status.failed(slot, &failure);
+                eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
             }
         }
     }
@@ -7945,6 +7979,11 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn take_stream_status(&mut self) -> Option<StreamStatusMessage> {
+        None
+    }
+
+    #[allow(clippy::unused_self)]
+    fn take_recorder_status(&mut self, _server: &ServerIdentity) -> Option<RecorderStatusMessage> {
         None
     }
 
