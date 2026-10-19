@@ -866,3 +866,131 @@ fn write_animation_curve_editor_screenshot() {
     std::fs::write(&path, png).unwrap();
     println!("wrote {} ({width}x{height})", path.display());
 }
+
+/// The harness document plus a second element (2) fading in over 0..20.
+fn two_elements(harness: &mut Harness) {
+    let mut clip = harness.document.clip().clone();
+    clip.set_key(
+        TrackKey::new(2, Phase::In, Property::Opacity),
+        Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+    )
+    .unwrap();
+    clip.set_key(
+        TrackKey::new(2, Phase::In, Property::Opacity),
+        Keyframe::new(20, Value::Scalar(255), Easing::Linear),
+    )
+    .unwrap();
+    harness.document.reset_from_authority(clip, 2);
+    harness.document.set_targets([
+        TargetOutline::new(
+            TARGET,
+            "Bar",
+            TargetKind::Shape,
+            TargetBounds::new(100, 800, 900, 160),
+        ),
+        TargetOutline::new(
+            2,
+            "Name",
+            TargetKind::Text,
+            TargetBounds::new(120, 820, 600, 60),
+        ),
+    ]);
+}
+
+fn span(document: &AnimDocument<u32>, target: u32) -> (u32, u32) {
+    document
+        .target_spans()
+        .into_iter()
+        .find(|span| span.0 == target)
+        .map(|span| (span.1, span.2))
+        .unwrap()
+}
+
+#[test]
+fn key_jump_buttons_and_ctrl_arrows_move_the_playhead_between_keys() {
+    let mut harness = Harness::new(EditorMode::Advanced);
+    harness.document.set_playhead(5);
+    let output = harness.idle();
+    let previous = action_spec(
+        TimelineAction::PreviousKey,
+        &harness.document,
+        &harness.state,
+        Locale::ENGLISH,
+    );
+    assert_eq!(previous.disabled_reason, None);
+    assert!(
+        previous
+            .hover(TimelineAction::PreviousKey)
+            .contains("[Ctrl+Left arrow]")
+    );
+    harness.click(Harness::rect_of(&output, TimelineAction::NextKey).center());
+    assert_eq!(harness.document.playhead(), 20);
+    let next = action_spec(
+        TimelineAction::NextKey,
+        &harness.document,
+        &harness.state,
+        Locale::ENGLISH,
+    );
+    assert_eq!(
+        next.disabled_reason,
+        Some("there is no key after the playhead in this phase")
+    );
+    // The click gave the timeline the keyboard.
+    harness.key(Key::ArrowLeft, egui::Modifiers::COMMAND);
+    assert_eq!(harness.document.playhead(), 0);
+    assert!(
+        harness.document.selection().is_empty(),
+        "nothing was nudged"
+    );
+}
+
+#[test]
+fn the_snap_toggle_turns_snapping_off_and_on() {
+    let mut harness = Harness::new(EditorMode::Advanced);
+    let output = harness.idle();
+    let snap = output.arrange.snap.unwrap();
+    harness.click(snap.center());
+    assert!(!harness.document.view().snapping());
+    harness.click(snap.center());
+    assert!(harness.document.view().snapping());
+}
+
+#[test]
+fn the_stagger_menu_cascades_elements_in_one_undo_step() {
+    let mut harness = Harness::new(EditorMode::Simple);
+    let output = harness.idle();
+    assert_eq!(
+        stagger_reason(Locale::ENGLISH, &harness.document, &harness.state),
+        Some("animate at least two elements in this phase first"),
+        "one element has nothing to stagger against"
+    );
+    assert!(output.arrange.stagger_apply.is_none());
+
+    two_elements(&mut harness);
+    harness.state.stagger_frames = 8;
+    let output = harness.idle();
+    assert_eq!(
+        stagger_reason(Locale::ENGLISH, &harness.document, &harness.state),
+        None
+    );
+    harness.click(output.arrange.stagger.unwrap().center());
+    let output = harness.idle();
+    let apply = output.arrange.stagger_apply.expect("the menu is open");
+    harness.click(apply.center());
+    assert_eq!(span(&harness.document, TARGET), (0, 20));
+    assert_eq!(span(&harness.document, 2), (8, 28));
+    assert_eq!(harness.document.phase_frames(), 50);
+    assert_eq!(harness.document.undo_depth(), 1);
+    let output = harness.idle();
+    assert!(
+        output.arrange.stagger_apply.is_none(),
+        "Apply closes the menu"
+    );
+
+    // A lock disables it with the lock's reason.
+    harness.state.lock_reason = Some("the project is locked");
+    assert_eq!(
+        stagger_reason(Locale::ENGLISH, &harness.document, &harness.state),
+        Some("the project is locked")
+    );
+}

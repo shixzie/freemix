@@ -22,6 +22,8 @@ pub enum TimelineAction {
     ToggleLoop,
     StepBack,
     StepForward,
+    PreviousKey,
+    NextKey,
     KeyAtPlayhead,
     Delete,
     Copy,
@@ -33,11 +35,13 @@ pub enum TimelineAction {
 
 impl TimelineAction {
     /// Every transport control, in bar order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::PlayPause,
         Self::ToggleLoop,
         Self::StepBack,
         Self::StepForward,
+        Self::PreviousKey,
+        Self::NextKey,
         Self::KeyAtPlayhead,
         Self::Delete,
         Self::Copy,
@@ -56,6 +60,8 @@ impl TimelineAction {
             Self::ToggleLoop => "L",
             Self::StepBack => locale.text(Msg::AnimKeyStepBack),
             Self::StepForward => locale.text(Msg::AnimKeyStepForward),
+            Self::PreviousKey => locale.text(Msg::AnimKeyPreviousKey),
+            Self::NextKey => locale.text(Msg::AnimKeyNextKey),
             Self::KeyAtPlayhead => "K",
             Self::Delete => locale.text(Msg::AnimKeyDelete),
             Self::Copy => "Ctrl+C",
@@ -147,6 +153,28 @@ pub fn action_spec<T: Copy + Ord>(
             busy.or_else(|| {
                 (document.playhead() >= document.phase_frames())
                     .then(|| l.text(Msg::AnimReasonLastFrame))
+            }),
+            false,
+        ),
+        TimelineAction::PreviousKey => (
+            "◀♦",
+            l.text(Msg::AnimPreviousKeyHover),
+            busy.or_else(|| {
+                document
+                    .previous_key_frame()
+                    .is_none()
+                    .then(|| l.text(Msg::AnimReasonNoPreviousKey))
+            }),
+            false,
+        ),
+        TimelineAction::NextKey => (
+            "♦▶",
+            l.text(Msg::AnimNextKeyHover),
+            busy.or_else(|| {
+                document
+                    .next_key_frame()
+                    .is_none()
+                    .then(|| l.text(Msg::AnimReasonNoNextKey))
             }),
             false,
         ),
@@ -243,6 +271,12 @@ pub fn perform<T: Copy + Ord>(
         }
         TimelineAction::StepBack => document.step(-step),
         TimelineAction::StepForward => document.step(step),
+        TimelineAction::PreviousKey => {
+            document.jump_to_key(false);
+        }
+        TimelineAction::NextKey => {
+            document.jump_to_key(true);
+        }
         TimelineAction::KeyAtPlayhead => {
             if document.mode() == EditorMode::Simple {
                 return Err(AnimEditorError::EmptySelection);
@@ -396,6 +430,13 @@ pub(super) fn handle_keys<T: Copy + Ord>(
         }
         if input.consume_key(Modifiers::COMMAND, Key::Z) {
             events.push(Shortcut::Action(TimelineAction::Undo));
+        }
+        // Before the plain arrows, which ignore only Shift and Alt.
+        if input.consume_key(Modifiers::COMMAND, Key::ArrowLeft) {
+            events.push(Shortcut::Action(TimelineAction::PreviousKey));
+        }
+        if input.consume_key(Modifiers::COMMAND, Key::ArrowRight) {
+            events.push(Shortcut::Action(TimelineAction::NextKey));
         }
         if input.consume_key(Modifiers::COMMAND, Key::A) {
             events.push(Shortcut::SelectAll);

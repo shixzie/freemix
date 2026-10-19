@@ -4,9 +4,10 @@
 //! [`AnimationTimelineWidget`] draws, top to bottom:
 //!
 //! * a header with the phase tabs (`IN`, the non-editable `HOLD`, `OUT`),
-//!   the phase length, and zoom-to-fit;
+//!   the phase length, zoom-to-fit, the snapping toggle, and the Stagger
+//!   menu that cascades element animations one after another ([`arrange`]);
 //! * the transport bar ([`transport`]): play/pause, loop, frame steps, the
-//!   timecode readout, key at playhead, delete, copy/paste, undo/redo, and
+//!   previous/next key jumps, the timecode readout, key at playhead, delete, copy/paste, undo/redo, and
 //!   the Simple/Advanced toggle, each with hover text naming its shortcut and
 //!   a reason when disabled;
 //! * the time ruler and rows ([`tracks`]): in Simple mode one bar per
@@ -39,8 +40,8 @@ use core::time::Duration;
 use egui::{CornerRadius, DragValue, Frame, Margin, Rect, Response, RichText, Stroke, Ui, Vec2};
 use fm_animation::{MAX_PHASE_FRAMES, Phase, Property, TrackKey};
 use fm_ui_model::animation_editor::{
-    AnimDocument, AnimEditorError, EditorMode, MAX_FRAMES_PER_PIXEL, MIN_FRAMES_PER_PIXEL,
-    PresetSource,
+    AnimDocument, AnimEditorError, DEFAULT_STAGGER_FRAMES, EditorMode, MAX_FRAMES_PER_PIXEL,
+    MIN_FRAMES_PER_PIXEL, PresetSource, StaggerOrder,
 };
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
@@ -51,6 +52,7 @@ use crate::theme::{
     line_width, muted_color, panel_color, section_label, text_color, text_dim_color, widget_color,
 };
 
+pub mod arrange;
 pub mod curve_editor;
 pub mod inspector;
 pub mod library;
@@ -62,6 +64,7 @@ pub mod transport;
 #[cfg(test)]
 mod tests;
 
+pub use arrange::{ArrangeRects, stagger_reason};
 pub use curve_editor::{CURVE_EDITOR_SIZE, CurveFrame, CurveLayout};
 pub use library::{LibraryEdit, LibraryRequest, UserPresetItem};
 pub use overlay::{OverlayOptions, paint_canvas_overlay, paint_document_overlay};
@@ -161,6 +164,10 @@ pub struct AnimationTimelineState<T> {
     pub library_requests: Vec<LibraryRequest>,
     /// What the "My presets" row holds between frames.
     pub library: LibraryEdit,
+    /// The Stagger menu's step in frames.
+    pub stagger_frames: u32,
+    /// The Stagger menu's order.
+    pub stagger_order: StaggerOrder,
     pub(crate) notice: Option<Notice>,
     last_time: Option<f64>,
     length_edit: Option<u32>,
@@ -194,6 +201,8 @@ impl<T> Default for AnimationTimelineState<T> {
             library_reason: None,
             library_requests: Vec::new(),
             library: LibraryEdit::default(),
+            stagger_frames: DEFAULT_STAGGER_FRAMES,
+            stagger_order: StaggerOrder::TopFirst,
             notice: None,
             last_time: None,
             length_edit: None,
@@ -252,6 +261,8 @@ pub struct TimelineOutput {
     pub transport: Vec<(TimelineAction, Rect)>,
     /// Each phase tab's rect.
     pub phase_tabs: Vec<(Phase, Rect)>,
+    /// The snapping toggle and Stagger menu rects.
+    pub arrange: ArrangeRects,
     /// Ruler and row layout.
     pub tracks: TrackGeometry,
 }
@@ -312,6 +323,7 @@ impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
 
         let mut transport_rects = Vec::new();
         let mut phase_tabs = Vec::new();
+        let mut arrange = ArrangeRects::default();
         let inner = Frame::new()
             .fill(panel_color())
             .stroke(Stroke::new(line_width(), border_color()))
@@ -319,7 +331,7 @@ impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
             .inner_margin(Margin::same(8))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
-                header(ui, l, document, state, &mut phase_tabs);
+                arrange = header(ui, l, document, state, &mut phase_tabs);
                 for (action, shift) in
                     transport::draw_transport(ui, l, document, state, &mut transport_rects)
                 {
@@ -364,6 +376,7 @@ impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
             actions,
             transport: transport_rects,
             phase_tabs,
+            arrange,
             tracks: geometry,
         }
     }
@@ -396,14 +409,15 @@ fn follow_playhead<T: Copy + Ord>(document: &mut AnimDocument<T>, geometry: &Tra
     }
 }
 
-/// Phase tabs, the hold segment, the phase length, and zoom-to-fit.
+/// Phase tabs, the hold segment, the phase length, zoom-to-fit, snapping,
+/// and Stagger.
 fn header<T: Copy + Ord>(
     ui: &mut Ui,
     l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
     tabs: &mut Vec<(Phase, Rect)>,
-) {
+) -> ArrangeRects {
     let idle = document.drag().is_none();
     let busy = l.text(Msg::AnimReasonDrag);
     let lock = state.lock_reason.map(|reason| l.tr(reason));
@@ -489,7 +503,10 @@ fn header<T: Copy + Ord>(
         if fit.clicked() {
             fit_view(document, state.track_width);
         }
-    });
+        ui.separator();
+        arrange::draw(ui, l, document, state)
+    })
+    .inner
 }
 
 /// Zooms so the whole shown phase (plus a little margin) fits `width`.

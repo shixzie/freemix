@@ -178,7 +178,11 @@ pub fn target_keys<T: Copy + Ord>(document: &AnimDocument<T>, target: T) -> KeyS
 /// An element's name: its outline's (an unnamed outline is "Element N" by
 /// its outline position), or "Element N" numbering the animated elements
 /// without an outline in id order.
-fn target_name<T: Copy + Ord>(l: Locale, document: &AnimDocument<T>, target: T) -> String {
+pub(super) fn target_name<T: Copy + Ord>(
+    l: Locale,
+    document: &AnimDocument<T>,
+    target: T,
+) -> String {
     if let Some(index) = document
         .targets()
         .iter()

@@ -2823,7 +2823,16 @@ taken becomes `Name (2)`. `freemix-cli preset-save`, `preset-export`, and
 `preset-import` do the same offline, and `title-animation-preset` and
 `scene-animation-preset` accept `--preset user:<id>`. The timeline ruler
 labels steps that divide the frame rate (at 30 fps: 0:00, 0:10, 0:20,
-1:00), never a frame count that drifts across seconds. Remaining
+1:00), never a frame count that drifts across seconds. The timeline
+header's `Stagger…` menu cascades whole element animations in the shown
+phase (`AnimDocument::stagger`: the k-th element, top or bottom first,
+starts k steps after the earliest start, each keeping its own timing and
+easing; two or more elements with selected keys scope it, and the phase
+grows to hold the last one) as one undo step that auto-saves through the
+existing `title_animation_set`/`scene_animation_set` edits, so it needs no
+protocol change. A `Snap` toggle turns drag snapping off (Shift then snaps
+instead of freeing), and the transport's previous/next key keys
+(Ctrl+Left/Right) jump the playhead between the phase's keys. Remaining
 limitations: Studio imports and exports by typed path (there is no file
 dialog), and a preset applies to one target at a time.
 

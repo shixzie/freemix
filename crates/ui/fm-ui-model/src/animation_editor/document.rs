@@ -117,6 +117,7 @@ pub struct TimelineView {
     frames_per_pixel: f32,
     scroll_frame: f32,
     snap_threshold_px: f32,
+    snapping: bool,
 }
 
 impl Default for TimelineView {
@@ -125,6 +126,7 @@ impl Default for TimelineView {
             frames_per_pixel: DEFAULT_FRAMES_PER_PIXEL,
             scroll_frame: 0.0,
             snap_threshold_px: DEFAULT_SNAP_THRESHOLD_PX,
+            snapping: true,
         }
     }
 }
@@ -144,6 +146,23 @@ impl TimelineView {
     #[must_use]
     pub const fn snap_threshold_px(&self) -> f32 {
         self.snap_threshold_px
+    }
+
+    /// Whether drags snap to landmarks unless Shift is held (`true`, the
+    /// default) or only while Shift is held (`false`).
+    #[must_use]
+    pub const fn snapping(&self) -> bool {
+        self.snapping
+    }
+
+    pub const fn set_snapping(&mut self, snapping: bool) {
+        self.snapping = snapping;
+    }
+
+    /// Whether a drag with Shift held (`shift`) snaps.
+    #[must_use]
+    pub const fn snaps_with(&self, shift: bool) -> bool {
+        self.snapping != shift
     }
 
     /// Sets the zoom, clamped to
@@ -282,6 +301,8 @@ pub enum AnimEditorError<T> {
     ZeroSpan,
     /// The action needs a non-empty key selection.
     EmptySelection,
+    /// Staggering needs at least two animated elements in the shown phase.
+    TooFewTargets,
     /// Paste with nothing copied.
     EmptyClipboard,
     /// A drag update/commit/cancel with no drag in progress.
@@ -314,6 +335,7 @@ impl<T> AnimEditorError<T> {
             Self::UnknownTarget(_) => "anim-editor-unknown-target",
             Self::ZeroSpan => "anim-editor-zero-span",
             Self::EmptySelection => "anim-editor-empty-selection",
+            Self::TooFewTargets => "anim-editor-too-few-targets",
             Self::EmptyClipboard => "anim-editor-empty-clipboard",
             Self::NoDrag => "anim-editor-no-drag",
             Self::DragActive => "anim-editor-drag-active",

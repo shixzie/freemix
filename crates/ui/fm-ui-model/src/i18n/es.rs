@@ -3556,6 +3556,83 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::AnimKeyDelete, t("Supr")),
     (Msg::AnimKeyRedo, t("Ctrl+Mayús+Z")),
+    (Msg::AnimKeyPreviousKey, t("Ctrl+flecha izquierda")),
+    (Msg::AnimKeyNextKey, t("Ctrl+flecha derecha")),
+    (
+        Msg::AnimPreviousKeyHover,
+        t("Llevar el cabezal a la clave anterior de esta fase"),
+    ),
+    (
+        Msg::AnimNextKeyHover,
+        t("Llevar el cabezal a la clave siguiente de esta fase"),
+    ),
+    (
+        Msg::AnimReasonNoPreviousKey,
+        t("no hay ninguna clave antes del cabezal en esta fase"),
+    ),
+    (
+        Msg::AnimReasonNoNextKey,
+        t("no hay ninguna clave después del cabezal en esta fase"),
+    ),
+    (Msg::AnimSnap, t("Imán")),
+    (
+        Msg::AnimSnapOnHover,
+        t(
+            "El imán está activado: las claves, los tiradores y el cabezal arrastrados se pegan a otras claves, al cabezal, a los extremos de la fase y a los segundos enteros.\nMantenga Mayús al arrastrar para moverlos libremente. Haga clic para desactivar el imán.",
+        ),
+    ),
+    (
+        Msg::AnimSnapOffHover,
+        t(
+            "El imán está desactivado: los arrastres avanzan fotograma a fotograma sin pegarse.\nMantenga Mayús al arrastrar para pegarlos igualmente. Haga clic para activar el imán.",
+        ),
+    ),
+    (Msg::AnimStagger, t("Escalonar…")),
+    (
+        Msg::AnimStaggerHover,
+        t(
+            "Escalonar los elementos para que la animación de cada uno empiece unos fotogramas después de la anterior (barra, luego nombre, luego cargo). Actúa sobre los elementos con claves seleccionadas si hay dos o más; si no, sobre todos los elementos animados. Un solo paso de deshacer.",
+        ),
+    ),
+    (Msg::AnimStaggerStep, t("Separación")),
+    (
+        Msg::AnimStaggerStepHover,
+        t(
+            "Fotogramas entre el inicio de un elemento y el del siguiente. Con 0, todos los elementos empiezan a la vez.",
+        ),
+    ),
+    (Msg::AnimStaggerTopFirst, t("Arriba primero")),
+    (
+        Msg::AnimStaggerTopFirstHover,
+        t("La fila de arriba empieza primero y luego cada fila de debajo"),
+    ),
+    (Msg::AnimStaggerBottomFirst, t("Abajo primero")),
+    (
+        Msg::AnimStaggerBottomFirstHover,
+        t(
+            "La fila de abajo empieza primero y luego cada fila de encima (útil para una SALIDA que deshace la ENTRADA)",
+        ),
+    ),
+    (
+        Msg::AnimStaggerOrderHover,
+        t("Los elementos en el orden en que empezarán"),
+    ),
+    (Msg::AnimStaggerApply, t("Aplicar escalonado")),
+    (
+        Msg::AnimReasonTooFewTargets,
+        t("anime primero al menos dos elementos en esta fase"),
+    ),
+    (
+        Msg::AnimErrTooFewTargets,
+        t("Para escalonar hacen falta al menos dos elementos animados en esta fase"),
+    ),
+    (
+        Msg::AnimStaggerApplyHover,
+        plural(
+            "Hacer que {count} elemento empiece {step} después del anterior; cada uno conserva su ritmo y su suavizado, y la fase se alarga si el último terminara después de ella. Un solo paso de deshacer.",
+            "Hacer que {count} elementos empiecen {step} después del anterior; cada uno conserva su ritmo y su suavizado, y la fase se alarga si el último terminara después de ella. Un solo paso de deshacer.",
+        ),
+    ),
     (
         Msg::AnimReasonDrag,
         t("termine primero el arrastre en curso"),

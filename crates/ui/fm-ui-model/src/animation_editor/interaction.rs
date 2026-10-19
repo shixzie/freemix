@@ -8,7 +8,8 @@
 //! refuses (a collision, say) keeps the last valid state and reports the
 //! typed error, which [`DragSession::rejected`] keeps for display.
 //!
-//! Modifiers: `shift` disables snapping during drags (and extends a click
+//! Modifiers: `shift` inverts snapping during drags (off while
+//! [`super::TimelineView::snapping`] is on, the default; on while it is off) (and extends a click
 //! selection along a track), `alt` extends a retime handle without scaling,
 //! and `ctrl` toggles click/box selection.
 
@@ -43,7 +44,7 @@ pub enum PresetSource {
 /// Keyboard modifiers held during a pointer action.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Modifiers {
-    /// Disables snapping; shift-click extends along a track.
+    /// Inverts snapping; shift-click extends along a track.
     pub shift: bool,
     /// Retime handles extend without scaling.
     pub alt: bool,
@@ -445,12 +446,13 @@ impl<T: Copy + Ord> AnimDocument<T> {
         modifiers: Modifiers,
     ) -> Result<Option<Snap>, AnimEditorError<T>> {
         let threshold = self.view.snap_threshold_frames();
+        let snaps = self.view.snaps_with(modifiers.shift);
         let snap_to = |frame: u32| -> (u32, Option<Snap>) {
-            if modifiers.shift {
-                (frame, None)
-            } else {
+            if snaps {
                 let snap = drag.snaps.snap(frame, threshold);
                 (snap.map_or(frame, |snap| snap.frame), snap)
+            } else {
+                (frame, None)
             }
         };
         let origin = &drag.origin;
