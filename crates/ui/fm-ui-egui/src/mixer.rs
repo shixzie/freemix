@@ -1345,8 +1345,20 @@ fn draw_monitor_output(
     };
     ui.vertical_centered(|ui| {
         let size = fitted_font_size(ui, text, crate::theme::legible(8.5), ui.available_width());
-        ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).truncate())
-            .on_hover_text(hover);
+        let state =
+            ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).truncate());
+        // Beside the state, growing upwards from its bottom edge (else
+        // above it), so the help never covers the level and mute keys
+        // under it.
+        let mut tooltip = egui::Tooltip::for_enabled(&state);
+        tooltip.popup = tooltip
+            .popup
+            .align(egui::RectAlign::LEFT_END)
+            .align_alternatives(&[egui::RectAlign::RIGHT_END, egui::RectAlign::TOP_START]);
+        tooltip.show(|ui| {
+            ui.set_max_width(ui.spacing().tooltip_width);
+            ui.label(hover);
+        });
     });
     let mut gain_millidb = monitor.gain_millidb;
     let mut muted = monitor.muted;
@@ -1389,7 +1401,10 @@ fn draw_monitor_output(
 
 /// The monitor device editor: commits on Enter or focus loss and returns
 /// the trimmed text when it differs from `current` (empty: no device).
-/// Text the server would refuse is never sent.
+/// Text the server would refuse is never sent. While not being edited, a
+/// set device shows as a key whose text ends in an ellipsis when it does
+/// not fit the strip (an ALSA name rarely does), with the full name on
+/// hover; clicking it opens the field.
 fn device_entry(
     ui: &mut Ui,
     current: &str,
@@ -1397,6 +1412,32 @@ fn device_entry(
     (placeholder, hover, reason): (&str, &str, &str),
 ) -> Option<String> {
     let id = ui.make_persistent_id("monitor-device");
+    let editing_id = id.with("editing");
+    let field_id = id.with("field");
+    let editing = ui.data(|data| data.get_temp::<bool>(editing_id).unwrap_or(false));
+    if !editing && !current.is_empty() {
+        let l = l10n::locale(ui.ctx());
+        let shown = ui
+            .add_enabled(
+                enabled,
+                egui::Button::new(RichText::new(current).monospace())
+                    .truncate()
+                    .fill(ui.visuals().extreme_bg_color)
+                    .min_size(Vec2::new(ui.available_width(), 0.0)),
+            )
+            .hint(
+                &l.format(
+                    Msg::MonitorDeviceShownHover,
+                    &[("device", Arg::Str(current))],
+                ),
+                reason,
+            );
+        if shown.clicked() {
+            ui.data_mut(|data| data.insert_temp(editing_id, true));
+            ui.memory_mut(|memory| memory.request_focus(field_id));
+        }
+        return None;
+    }
     let mut text = ui
         .data_mut(|data| data.get_temp::<String>(id))
         .unwrap_or_else(|| current.to_owned());
@@ -1404,6 +1445,7 @@ fn device_entry(
         .add_enabled(
             enabled,
             egui::TextEdit::singleline(&mut text)
+                .id(field_id)
                 .char_limit(fm_protocol::MAX_AUDIO_MONITOR_DEVICE_BYTES)
                 .hint_text(RichText::new(placeholder).monospace())
                 .font(egui::TextStyle::Monospace),
@@ -1414,6 +1456,11 @@ fn device_entry(
         ui.data_mut(|data| data.insert_temp(id, text));
         None
     } else {
+        // Focus requested by the key lands on the next frame.
+        let opening = ui.memory(|memory| memory.focused() == Some(field_id));
+        if editing && !opening && !response.gained_focus() {
+            ui.data_mut(|data| data.remove::<bool>(editing_id));
+        }
         ui.data_mut(|data| data.remove::<String>(id));
         // Enter on the same device reopens it, so a failed device can be
         // retried; leaving the field unchanged sends nothing.

@@ -1577,7 +1577,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                l.text(Msg::SaPreview),
+                l.text(Msg::ThumbAudioOnly),
                 FontId::new(10.0, FontFamily::Proportional),
                 muted_color(),
             );

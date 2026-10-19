@@ -153,9 +153,9 @@ fn draw_contents(
         let (chip, tone, detail) = status_chip_of(l, &status);
         ui.horizontal(|ui| {
             ui.label(section_label(l.text(Msg::LiveLanTitle)));
-            // Unavailable or failed, the hover says why, not only what.
-            status_chip(ui, chip, tone, 96.0)
-                .on_hover_text(detail.unwrap_or_else(|| l.text(Msg::LiveLanStatusHover)));
+            // Unavailable or failed, the line under the chip says why; the
+            // hover does not repeat it.
+            status_chip(ui, chip, tone, 96.0).on_hover_text(l.text(Msg::LiveLanStatusHover));
             if status.state == LiveLanState::Live {
                 ui.label(l.format(
                     Msg::LiveLanViewers,
@@ -182,6 +182,7 @@ fn draw_contents(
         }
         ui.horizontal(|ui| {
             ui.label(l.text(Msg::LiveLanAddress));
+            ui.add_space(8.0);
             let address = if status.url.is_empty() {
                 l.text(Msg::LiveLanAddressNone)
             } else {

@@ -2030,6 +2030,7 @@ fn scenes(language: Language) -> Vec<Scene> {
                     line: 3,
                     column: 1,
                     since: None,
+                    detail: None,
                 });
             },
             ready(true, Variant::default()),

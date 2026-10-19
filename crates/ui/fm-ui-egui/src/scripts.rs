@@ -39,6 +39,8 @@ use crate::{StudioIntent, StudioShell, StudioUiState};
 
 const DIALOG_WIDTH: f32 = 760.0;
 const LIST_WIDTH: f32 = 180.0;
+/// The space between the list and the editor, its divider in the middle.
+const DIVIDER_GAP: f32 = 12.0;
 /// Refusal identifiers remembered so each is read once.
 const SEEN_REFUSALS: usize = 32;
 
@@ -63,7 +65,7 @@ pub enum ScriptIntent {
 }
 
 /// Where a refused run stopped.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RunFailure {
     pub(crate) script: u64,
     pub(crate) failure: ScriptFailureKind,
@@ -72,10 +74,23 @@ pub(crate) struct RunFailure {
     /// The script's replicated last run when the refusal arrived: a later
     /// accepted run (from any console or a cue) supersedes the stop.
     pub(crate) since: Option<ScriptRunReport>,
+    /// Why the server refused the run, from its English refusal text (for
+    /// a refused action, the action's own refusal), when it says.
+    pub(crate) detail: Option<String>,
+}
+
+/// The reason in a refused run's English refusal text
+/// (`script 3 stopped at line 4:1: action refused: <reason>`), if any.
+fn failure_detail(message: &str) -> Option<String> {
+    let (_, stop) = message.split_once(" stopped at ")?;
+    let mut parts = stop.splitn(3, ": ");
+    let (_at, _kind) = (parts.next()?, parts.next()?);
+    let detail = parts.next()?.trim();
+    (!detail.is_empty()).then(|| detail.to_owned())
 }
 
 /// What the window reports about a script's last run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LastRun {
     /// A run this console asked for stopped here.
     Stopped(RunFailure),
@@ -102,6 +117,7 @@ pub(crate) fn last_run(
     let ran = replicated_run(state, script);
     window
         .failure
+        .clone()
         .filter(|failure| failure.script == script && failure.since == ran)
         .map(LastRun::Stopped)
         .or_else(|| ran.map(LastRun::Ran))
@@ -194,7 +210,11 @@ impl ScriptsWindow {
     /// Drops where `script`'s last run stopped once its saved text changes,
     /// so the editor never marks a line of a text that did not run.
     fn forget_failure(&mut self, script: u64) {
-        if self.failure.is_some_and(|failure| failure.script == script) {
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.script == script)
+        {
             self.failure = None;
         }
     }
@@ -227,6 +247,7 @@ impl ScriptsWindow {
                     line: *line,
                     column: *column,
                     since: replicated_run(state, script),
+                    detail: failure_detail(&refusal.message),
                 });
             }
         }
@@ -236,7 +257,7 @@ impl ScriptsWindow {
     /// (Protocol 2.61: a cue's script step counts), so the editor no longer
     /// marks its line.
     pub(crate) fn forget_superseded_failure(&mut self, state: &StudioUiState) {
-        if let Some(failure) = self.failure
+        if let Some(failure) = &self.failure
             && replicated_run(state, failure.script) != failure.since
         {
             self.failure = None;
@@ -308,6 +329,24 @@ pub fn save_block(
             Some(Msg::ScriptReasonTooLong.en())
         } else if scripts.len() >= MAX_SCRIPTS && !scripts.iter().any(|found| found.id == script) {
             Some(Msg::ScriptReasonLimit.en())
+        } else {
+            None
+        }
+    })
+}
+
+/// Why script `script` cannot be deleted, if it cannot: the edit gate,
+/// then a script not in the project yet, a run of it paused at a wait, or
+/// a cue list that runs it.
+#[must_use]
+pub fn remove_block(state: &StudioUiState, script: u64, saved: bool) -> Option<&'static str> {
+    crate::cues::edit_block(state).or_else(|| {
+        if !saved {
+            Some(Msg::ScriptReasonNotSaved.en())
+        } else if paused_script(state) == Some(script) {
+            Some(Msg::ScriptReasonThisRunning.en())
+        } else if run_by_cue(state, script) {
+            Some(Msg::ScriptReasonRunByCue.en())
         } else {
             None
         }
@@ -393,12 +432,16 @@ fn draw_contents(
     ui.label(caption(l.text(Msg::ScriptsIntro)));
     ui.add_space(6.0);
     let scripts = replicated(state);
-    ui.horizontal_top(|ui| {
+    // The divider between the list and the editor is painted once the row's
+    // height is known. A `ui.separator()` here took the whole available
+    // height, which in an auto-sized modal is last frame's size, so the
+    // window grew on every frame.
+    let row = ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(LIST_WIDTH);
             draw_list(ui, state, window, scripts);
         });
-        ui.separator();
+        let (gap, _) = ui.allocate_exact_size(egui::vec2(DIVIDER_GAP, 0.0), egui::Sense::hover());
         ui.vertical(|ui| {
             if window.selected.is_some() {
                 draw_editor(ui, state, window, scripts, intents);
@@ -406,7 +449,14 @@ fn draw_contents(
                 ui.label(RichText::new(l.text(Msg::ScriptsEmpty)).color(muted_color()));
             }
         });
+        gap.center().x
     });
+    let divider = row.inner;
+    ui.painter().vline(
+        divider,
+        row.response.rect.y_range(),
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
     ui.add_space(6.0);
     ui.label(caption(l.text(Msg::ScriptReference)));
 }
@@ -469,6 +519,7 @@ fn marked_line(window: &ScriptsWindow, state: &StudioUiState) -> Option<u32> {
     }
     window
         .failure
+        .as_ref()
         .filter(|failure| Some(failure.script) == window.selected)
         .map(|failure| failure.line)
         .or_else(
@@ -591,9 +642,7 @@ fn draw_editor(
             window.failure = None;
             intents.push(StudioIntent::Script(ScriptIntent::Run { script }));
         }
-        let remove = edit
-            .or_else(|| (!saved).then_some(Msg::ScriptReasonNotSaved.en()))
-            .or_else(|| run_by_cue(state, script).then_some(Msg::ScriptReasonRunByCue.en()));
+        let remove = remove_block(state, script, saved);
         if ui
             .add_enabled(remove.is_none(), Button::new(l.text(Msg::ScriptRemove)))
             .hint(l.text(Msg::ScriptRemoveHover), remove.unwrap_or(""))
@@ -608,28 +657,36 @@ fn draw_editor(
     // The last run of this script: where it stopped, or what it did.
     match last_run(window, state, script) {
         Some(LastRun::Stopped(failure)) => {
-            ui.label(
-                RichText::new(l.format(
-                    Msg::ScriptLastFailure,
-                    &[
-                        (
-                            "failure",
-                            Arg::Str(
-                                l.text(fm_ui_model::i18n::script_failure_msg(failure.failure)),
-                            ),
-                        ),
-                        ("line", Arg::Plain(u64::from(failure.line))),
-                        ("column", Arg::Plain(u64::from(failure.column))),
-                    ],
-                ))
-                .color(ERROR),
-            )
-            .on_hover_text(l.text(Msg::ScriptLastRunHover));
+            let mut text = l.format(
+                Msg::ScriptLastFailure,
+                &[
+                    (
+                        "failure",
+                        Arg::Str(l.text(fm_ui_model::i18n::script_failure_msg(failure.failure))),
+                    ),
+                    ("line", Arg::Plain(u64::from(failure.line))),
+                    ("column", Arg::Plain(u64::from(failure.column))),
+                ],
+            );
+            if let Some(detail) = &failure.detail {
+                text.push(' ');
+                text.push_str(&l.format(Msg::ScriptFailureDetail, &[("detail", Arg::Str(detail))]));
+            }
+            ui.label(RichText::new(text).color(ERROR))
+                .on_hover_text(l.text(Msg::ScriptLastRunHover));
         }
         Some(LastRun::Ran(ran)) => {
+            let actions = l.format(
+                Msg::ScriptActionCount,
+                &[("count", Arg::Count(u64::from(ran.actions)))],
+            );
+            let instructions = l.format(
+                Msg::ScriptInstructionCount,
+                &[("count", Arg::Count(u64::from(ran.instructions)))],
+            );
             let counts = [
-                ("actions", Arg::Count(u64::from(ran.actions))),
-                ("instructions", Arg::Count(u64::from(ran.instructions))),
+                ("actions", Arg::Str(&actions)),
+                ("instructions", Arg::Str(&instructions)),
                 ("frame", Arg::Plain(ran.frame)),
             ];
             let text = match ran.cue_list {
@@ -676,7 +733,7 @@ fn draw_run_status(
                 &[
                     ("frame", Arg::Plain(due_frame)),
                     ("waits", Arg::Plain(u64::from(waits))),
-                    ("frames", Arg::Plain(u64::from(wait_frames))),
+                    ("count", Arg::Count(u64::from(wait_frames))),
                 ],
             ),
             Msg::ScriptRunWaitingHover,
@@ -743,6 +800,143 @@ mod tests {
         }
     }
 
+    /// The Scripts window's screen rectangle over `passes` frames of the
+    /// whole console on `state`, opened on its first script.
+    fn window_rects(state: &StudioUiState, passes: u32) -> Vec<egui::Rect> {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        shell.open_scripts(state);
+        (0..passes)
+            .map(|pass| {
+                context.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1920.0, 1080.0),
+                    )),
+                    time: Some(f64::from(pass) / 60.0),
+                    ..egui::RawInput::default()
+                });
+                let mut ui = egui::Ui::new(
+                    context.clone(),
+                    egui::Id::new("scripts-window-size"),
+                    egui::UiBuilder::new()
+                        .layer_id(egui::LayerId::background())
+                        .max_rect(context.viewport_rect()),
+                );
+                let _intents = shell.draw(&mut ui, state);
+                drop(ui);
+                let _output = context.end_pass();
+                context
+                    .memory(|memory| memory.area_rect(egui::Id::new("studio-scripts")))
+                    .expect("the Scripts window is drawn")
+            })
+            .collect()
+    }
+
+    /// Regression (round 6): the vertical separator between the list and
+    /// the editor took the auto-sized modal's whole available height, so
+    /// the window grew taller every frame until it filled the screen and
+    /// pushed its title off the top. Its size must settle and stay put.
+    #[test]
+    fn the_scripts_window_keeps_its_size_frame_after_frame() {
+        let waiting = ScriptRunStatus::Waiting {
+            started_frame: 196,
+            due_frame: 1696,
+            waits: 1,
+            wait_frames: 1500,
+        };
+        for state in [
+            crate::hover_audit::script_run_fixture(true, ScriptRunStatus::Idle),
+            crate::hover_audit::script_run_fixture(true, waiting),
+        ] {
+            let rects = window_rects(&state, 120);
+            let settled = rects[4];
+            for (pass, rect) in rects.iter().enumerate().skip(4) {
+                assert_eq!(*rect, settled, "the window changed size on pass {pass}");
+            }
+            assert!(
+                settled.top() > 0.0 && settled.height() < 900.0,
+                "the window does not fit the screen: {settled:?}"
+            );
+        }
+    }
+
+    /// Round 6: Delete script looked enabled while the script's run was
+    /// paused at a wait, although the authority refuses it.
+    #[test]
+    fn a_waiting_script_cannot_be_deleted() {
+        let waiting = ScriptRunStatus::Waiting {
+            started_frame: 196,
+            due_frame: 1696,
+            waits: 1,
+            wait_frames: 1500,
+        };
+        let state = crate::hover_audit::script_run_fixture(true, waiting);
+        assert_eq!(
+            remove_block(&state, 1, true),
+            Some(Msg::ScriptReasonThisRunning.en())
+        );
+        let idle = crate::hover_audit::script_run_fixture(true, ScriptRunStatus::Idle);
+        // Idle, the audit show's cue list still runs it.
+        assert_eq!(
+            remove_block(&idle, 1, true),
+            Some(Msg::ScriptReasonRunByCue.en())
+        );
+        assert_eq!(
+            remove_block(&idle, 1, false),
+            Some(Msg::ScriptReasonNotSaved.en())
+        );
+    }
+
+    /// Round 6: the run reports pluralize their counts in both languages,
+    /// and the wait line says the waits add up to its frames rather than
+    /// that they were already waited.
+    #[test]
+    fn run_reports_pluralize_their_counts() {
+        let english = l10n::Locale::ENGLISH;
+        let spanish = l10n::Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let count = |l: l10n::Locale, msg: Msg, n: u64| l.format(msg, &[("count", Arg::Count(n))]);
+        assert_eq!(count(english, Msg::ScriptActionCount, 1), "1 action");
+        assert_eq!(count(english, Msg::ScriptActionCount, 2), "2 actions");
+        assert_eq!(
+            count(english, Msg::ScriptInstructionCount, 1),
+            "1 instruction"
+        );
+        assert_eq!(count(spanish, Msg::ScriptActionCount, 1), "1 acción");
+        assert_eq!(count(spanish, Msg::ScriptActionCount, 3), "3 acciones");
+        let waiting = english.format(
+            Msg::ScriptRunWaiting,
+            &[
+                ("frame", Arg::Plain(1696)),
+                ("waits", Arg::Plain(1)),
+                ("count", Arg::Count(1500)),
+            ],
+        );
+        assert!(
+            waiting.contains("frame 1696") && waiting.contains("total 1,500 frames"),
+            "{waiting}"
+        );
+        assert!(!waiting.contains("waited so far"), "{waiting}");
+    }
+
+    /// The refused action's own reason is read from the server's English
+    /// refusal text when it gives one.
+    #[test]
+    fn a_refused_run_keeps_the_actions_reason() {
+        assert_eq!(
+            failure_detail(
+                "script 3 stopped at line 4:1: action refused: the show has no input \"Sponsor Loop\""
+            )
+            .as_deref(),
+            Some("the show has no input \"Sponsor Loop\"")
+        );
+        assert_eq!(
+            failure_detail("run: script stopped at line 2, column 1"),
+            None
+        );
+        assert_eq!(failure_detail("unrelated refusal"), None);
+    }
+
     #[test]
     fn an_unchanged_draft_follows_its_script_and_an_edited_one_does_not() {
         let mut window = ScriptsWindow::default();
@@ -805,6 +999,7 @@ mod tests {
             line: 2,
             column: 1,
             since: None,
+            detail: None,
         });
         window.source = "preview 2\ncut 2".into();
         assert!(window.dirty());
@@ -822,6 +1017,7 @@ mod tests {
             line: 2,
             column: 1,
             since: None,
+            detail: None,
         });
         scripts[0].spec.source = "cut 3".into();
         window.follow(&scripts);
@@ -835,6 +1031,7 @@ mod tests {
             line: 1,
             column: 1,
             since: None,
+            detail: None,
         });
         scripts.push(script(2, "cut 1"));
         window.follow(&scripts);
@@ -867,16 +1064,17 @@ mod tests {
             line: 2,
             column: 1,
             since: None,
+            detail: None,
         };
-        window.failure = Some(stopped);
+        window.failure = Some(stopped.clone());
         assert_eq!(last_run(&window, &state, 1), Some(LastRun::Ran(ran)));
         window.forget_superseded_failure(&state);
         assert_eq!(window.failure, None);
         let other = RunFailure {
             script: 2,
-            ..stopped
+            ..stopped.clone()
         };
-        window.failure = Some(other);
+        window.failure = Some(other.clone());
         window.forget_superseded_failure(&state);
         assert_eq!(last_run(&window, &state, 2), Some(LastRun::Stopped(other)));
         // A stop noted after the cue run stands until the next run.
@@ -884,7 +1082,7 @@ mod tests {
             since: Some(ran),
             ..stopped
         };
-        window.failure = Some(latest);
+        window.failure = Some(latest.clone());
         window.forget_superseded_failure(&state);
         assert_eq!(last_run(&window, &state, 1), Some(LastRun::Stopped(latest)));
 
@@ -918,6 +1116,7 @@ mod tests {
             line: 2,
             column: 1,
             since: None,
+            detail: None,
         });
         assert_eq!(marked_line(&window, &idle_state()), Some(2));
         window.source = "preview 2\nif program = 1\nend".into();
@@ -1000,6 +1199,7 @@ mod tests {
                 line: 2,
                 column: 1,
                 since: None,
+                detail: None,
             })
         );
     }

@@ -91,7 +91,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ReasonNothingToUndo,
-        t("no hay ninguna edición del proyecto que deshacer"),
+        t(
+            "no hay ninguna edición del proyecto que deshacer; solo se pueden deshacer las ediciones hechas desde que el servidor abrió el show",
+        ),
     ),
     (
         Msg::ReasonNothingToRedo,
@@ -973,10 +975,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::RowSegments, plural("{count} seg.", "{count} seg.")),
-    (
-        Msg::RowRequestedNoSample,
-        t("Solicitado · sin muestra de transporte"),
-    ),
+    (Msg::RowRequestedNoSample, t("Iniciado · sin datos")),
     (Msg::RowDesiredOff, t("Apagado por decisión")),
     (Msg::StingerStateUnavailable, t("ESTADO NO DISPONIBLE")),
     (Msg::StingerUnconfigured, t("SIN CONFIGURAR")),
@@ -1069,7 +1068,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::InputCountHover,
         t("Entradas del show / el máximo que admite un show"),
     ),
-    (Msg::AddTileKinds, t("color · barras · red · cámara")),
+    (
+        Msg::AddTileKinds,
+        t("color · barras · red · cámara · audio"),
+    ),
     (Msg::NoThumbnail, t("sin miniatura")),
     // Tally.
     (Msg::TallyProgram, t("PROGRAMA")),
@@ -1488,6 +1490,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MonitorDeviceHover,
         t(
             "Dispositivo de auriculares para el bus de monitoreo: un nombre de salida ALSA como default o hw:CARD=Headset,DEV=0. Pulsa Intro para reproducir el bus de monitoreo en él, o vacía el campo para detenerlo; el Programa nunca cambia",
+        ),
+    ),
+    (
+        Msg::MonitorDeviceShownHover,
+        t(
+            "Dispositivo de auriculares: {device}. Haz clic para cambiarlo, o vacíalo para detenerlo; el Programa nunca cambia",
         ),
     ),
     (Msg::MonitorOutputPlaying, t("AURIC. ACTIVOS")),
@@ -2110,7 +2118,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AddInputIntro,
         t(
-            "Añade al final del banco una entrada generada en vivo, un flujo de red o una cámara, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
+            "Añade al final del banco una entrada generada en vivo, un flujo de red, una cámara o el audio del sistema, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
         ),
     ),
     (Msg::AddInputKind, t("Tipo")),
@@ -6341,8 +6349,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ScriptRunWaiting,
-        t(
-            "En marcha: la siguiente parte se ejecuta en el fotograma {frame} (espera {waits} de esta ejecución, {frames} fotogramas esperados hasta ahora)",
+        plural(
+            "En marcha: la siguiente parte se ejecuta en el fotograma {frame} (espera {waits} de esta ejecución; sus esperas suman {count} fotograma hasta ahora, contando esta)",
+            "En marcha: la siguiente parte se ejecuta en el fotograma {frame} (espera {waits} de esta ejecución; sus esperas suman {count} fotogramas hasta ahora, contando esta)",
         ),
     ),
     (
@@ -6360,7 +6369,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ScriptRunFaultedHover,
         t(
-            "Una parte de la ejecución posterior a un wait falló al llegar su fotograma; la ejecución terminó ahí. Borre el informe o ejecute el guion de nuevo",
+            "Una parte de la ejecución posterior a un wait falló al llegar su fotograma; la ejecución terminó ahí. El servidor indica dónde falló, no por qué se rechazó una acción. Borre el informe o ejecute el guion de nuevo",
         ),
     ),
     (Msg::ScriptStop, t("Detener ejecución")),
@@ -6447,18 +6456,25 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ScriptLastRun,
-        t(
-            "Última ejecución: {actions} acciones en {instructions} instrucciones, en el fotograma {frame}",
-        ),
+        t("Última ejecución: {actions} en {instructions}, en el fotograma {frame}"),
     ),
     (
         Msg::ScriptLastFailure,
         t("La última ejecución se detuvo con {failure} en la línea {line}, columna {column}."),
     ),
     (
+        Msg::ScriptActionCount,
+        plural("{count} acción", "{count} acciones"),
+    ),
+    (
+        Msg::ScriptInstructionCount,
+        plural("{count} instrucción", "{count} instrucciones"),
+    ),
+    (Msg::ScriptFailureDetail, t("El servidor dijo: {detail}")),
+    (
         Msg::ScriptLastRunByCue,
         t(
-            "Última ejecución por la lista de cues {list}: {actions} acciones en {instructions} instrucciones, en el fotograma {frame}",
+            "Última ejecución por la lista de cues {list}: {actions} en {instructions}, en el fotograma {frame}",
         ),
     ),
     (
@@ -7139,7 +7155,6 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::SaReasonDeviceInvalid,
         t("use de 1 a 128 caracteres imprimibles, sin empezar por - ni por un espacio"),
     ),
-    (Msg::SaPreview, t("Solo audio")),
     (Msg::SaBadgeOpening, t("ABRIENDO")),
     (Msg::SaBadgeReopening, t("REABRIENDO {attempt}")),
     (

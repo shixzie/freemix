@@ -284,6 +284,7 @@ fn draw_row(
         pos2(text_left, rect.min.y + 20.0),
         Vec2::new(CHIP_WIDTH.min(text_right - text_left), 15.0),
     );
+    let mut detail_cut = false;
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::same(4), graphite_color());
@@ -331,6 +332,7 @@ fn draw_row(
             detail_color,
             text_right - detail_left,
         );
+        detail_cut = detail_galley.elided;
         painter.galley(
             pos2(
                 detail_left,
@@ -346,7 +348,12 @@ fn draw_row(
         id.with("info"),
         Sense::hover(),
     )
-    .on_hover_text(tooltip);
+    .on_hover_text(if detail_cut {
+        // The detail line ends in an ellipsis: the hover leads with it.
+        format!("{}\n{tooltip}", row.detail)
+    } else {
+        tooltip.to_owned()
+    });
     ui.add_space(1.0);
     if let (Some((_, draw)), Some((extras, collapsed))) = (extras, extras_rect) {
         let mut child = ui.new_child(
@@ -769,7 +776,7 @@ mod tests {
             (requested.status, requested.tone),
             ("NOT LIVE", Tone::Pending)
         );
-        assert_eq!(requested.detail, "Requested · no transport sample");
+        assert_eq!(requested.detail, "Started · no stats");
         let off = stream_row(
             Locale::ENGLISH,
             &stream(false, StreamRealizedState::Stopped),

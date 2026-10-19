@@ -406,15 +406,15 @@ the counts and lock chips.
 | `studio-mixer-monitor.png` | The native session's audio mixer maximised (double-click its tab) with `▾ GAIN · BAL · DLY` open (AU-001, Protocol 2.44): solo mode `PFL` lit on the `MON` strip, Field Feed (the only input with audio, a 440 Hz tone over UDP) soloed at -3.0 dB with its lit amber `S`, so `MON` reads `SOLO LISTEN` and meters the pre-fader solo at -21.0 while Master reads -24.0; the group strips Cameras (-6 dB, holding Camera 1 and 2), Talkback (Host Mic and Guest Line), and the parent group All Mics, with Talkback's parent picker reading `In All Mics` and the others `Top level`. These are daemon meters (no synthetic feed). |
 | `studio-spanish-refusal.png` | 1920x1080 `--lang es --role admin`, simulated daemon: after right-clicking Camera 1 Wide, `Quitar…`, and `QUITAR`, the typed refusal toast `ERROR · Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la escena 100. Quite esa capa de la escena primero.`, now entirely in Spanish (the earlier capture quoted the daemon's English detail). |
 | `studio-fullscreen-outputs.png` | 1920x1080 `--role admin` against a native daemon started with `--diagnostic-display-inventory` listing two displays (DELL U2720Q, HDR, three modes; Venue LED Wall 1920x1080@50): Output › `Fullscreen outputs…` (OR-011, Protocol 2.42) with `2 displays connected` and `Refresh displays`; Output 1 `STANDBY`, `Waiting: the display is not connected`, targeting `name:Projector (not connected)` with Program bus / Current mode / Fit inside / Off (SDR); Output 2 `ACTIVE`, `On Venue LED Wall at 1920×1080 @ 50 Hz; SDR`, showing Program Output with Fill; each slot with `Save and apply`, `Discard changes`, and `Clear`. |
-| `studio-workspace-docked.png` | 1920x1080 `--role admin`, round 6 (Protocol 2.62): the full docked Default workspace on the "Evening Broadcast" show mid-run. The Evening Run cue list has played Pre-show standby and Show open (Camera 1 Wide faded to Program, Main Scene on Preview, REC 2 `RECORDING`, the top bar's `REC` and amber `LIVE`), so the Cues tab shows Show open `LIVE` and Host intro `STANDBY`; Recording & streams lists all five destinations at once, with YouTube Main, Twitch Backup, and Venue SRT Feed started (amber `NOT LIVE`, amber-outlined `STOP`, `RETRY` lit, `EDIT…` and `✕` disabled) and Facebook Live and Local HLS Archive `OFF`. The input bank has live thumbnails (`FEED · SIM` pictures, the `PGM TAP · SIM` / `PVW TAP · SIM` tap frames, Host Laptop's synthetic stream card) and Desktop Audio's `audio only` meter placeholder; the mixer's `MON` strip shows the headphone device `hw:CARD=Headset,DEV=0` (clipped), `PHONES IDLE`, and `-6.0 dB`. Replaces the Protocol 2.59 capture. |
+| `studio-workspace-docked.png` | 1920x1080 `--role admin`, round 6 (Protocol 2.62): the full docked Default workspace on the "Evening Broadcast" show mid-run. The Evening Run cue list has played Pre-show standby and Show open (Camera 1 Wide faded to Program, Main Scene on Preview, REC 2 `RECORDING`, the top bar's `REC` and amber `LIVE`), so the Cues tab shows Show open `LIVE` and Host intro `STANDBY`; Recording & streams lists all five destinations at once, with YouTube Main, Twitch Backup, and Venue SRT Feed started (amber `NOT LIVE`, `Started · no stats`, amber-outlined `STOP`, `RETRY` lit, `EDIT…` and `✕` disabled) and Facebook Live and Local HLS Archive `OFF`. The input bank has live thumbnails (`FEED · SIM` pictures, the `PGM TAP · SIM` / `PVW TAP · SIM` tap frames, Host Laptop's synthetic stream card) and Desktop Audio's `audio only` meter placeholder; the `+` tile reads `colour · bars · stream · camera · audio`; the mixer's `MON` strip shows the headphone device as `hw:CARD=H…` (ellipsized, full name on hover), `PHONES IDLE`, and `-6.0 dB`. Replaces the Protocol 2.59 capture (recaptured after the round 6 fixes). |
 | `studio-cues.png` | The Cues panel popped out (900x720 window capture) on the same session (RC-017): the list picker with `New list` / `Delete list`, the full-width `GO` key, `Standby: Host intro`, `Step back` / `Skip` / `Stop` / `Reset`, the editable list name, and eight cue rows: Pre-show standby `PLAYED`, Show open `LIVE` (red border) opened with its three actions (Take Preview with Fade 30 frames, Stream YouTube Main On, Stream Twitch Backup On) and `Add action`, Host intro `STANDBY` (green border), Guest interview with `Follow` ticked, and per-row standby (`●`), go-this-cue (`▶`), move, remove, and action-count keys. |
 | `studio-cues-script.png` | Round 6: the Cues panel popped out (900x640 crop of the window, RC-017/RC-011, Protocol 2.60) after `GO` on Host intro and Guest interview: Guest interview `LIVE` and opened, its first action a `Script` step naming the project script `Guest in` (`run_script.2`), then `Take` `(Preview)` `Wipe` `20 frames`; Guest off `STANDBY`, the earlier cues `PLAYED`. |
-| `studio-scripts-failed.png` | Round 6: Edit › Scripts… (RC-011, Protocol 2.62), cropped to the dialog: Break bumper (`transition`, `wait 50`, `cut "Sponsor Loop"`) ran its first part, waited 50 frames, and its second part was refused (the show has no Sponsor Loop input): line 4 is marked red in the editor, the red status reads `The run failed on frame 145 with a refused action at line 4, column 1; nothing of that frame was applied.` beside `Clear failed run`. |
-| `studio-scripts-cue-run.png` | Round 6: the same window on Guest in after cue 4 of Evening Run ran it: `Last run by cue list Evening Run: 3 actions in 8 instructions, on frame 172` (Protocol 2.61); `Delete script` is disabled because a cue runs the script. |
-| `studio-scripts-waiting.png` | Round 6: Camera rotation (`let`, `repeat 4`, `if program == 1` … `else` … `end`, `wait 1500`) run from the CLI and paused at its first wait: the list reads `Camera rotation (running)`, the blue status `Running: the next part runs on frame 1696 (wait 1 of this run, 1500 frames waited so far)`, `Stop run`, and `Last run: 1 actions in 18 instructions, on frame 196`; `Save script` and `Run script` are disabled. |
-| `studio-livelan-unavailable.png` | Round 6: Output › LiveLAN viewers… (OR-017, Protocol 2.57), cropped, on the simulated daemon with LiveLAN enabled in the project (`Share on the local network` ticked, `Viewers see` Program, `Viewer limit` 8, no PIN): the amber `UNAVAILABLE` chip hovered, its tooltip explaining that the server has no LiveLAN listener and how to start one (`freemixd serve <show.freemix> --native-media --live-lan-listen 0.0.0.0:8090`); `Viewer address No address yet`. |
-| `studio-mixer-phones.png` | Round 6: the docked audio mixer (580x475 crop, AU-001 headphone output, Protocol 2.53) with the `MON` strip's headphone controls: device `hw:CARD=Headset,DEV=0` (set offline; the field shows `hw:CARD=Hea`), `PHONES IDLE` (the simulated daemon renders no audio), headphone level `-6.0 dB`, and the headphone mute `M` lit red. Synthetic meter feed, so `MON` reads `--`. |
-| `studio-add-input-system-audio.png` | Round 6: the `+` tile's Add input dialog (AU-011) (Protocol 2.55) with `SYSTEM AUDIO` chosen: suggested name "System Audio 1", Audio system `PulseAudio / PipeWire` (or `ALSA`), Source device `@DEFAULT_MONITOR@` with its hint, and the `Audio only` / `SILENT` sample tagged `INPUT 8`; behind the dialog, Desktop Audio (input 6, a PulseAudio system audio input) shows its `audio only` meter placeholder tile. |
+| `studio-scripts-failed.png` | Round 6: Edit › Scripts… (RC-011, Protocol 2.62), cropped to the dialog: Break bumper (`transition`, `wait 50`, `cut "Sponsor Loop"`) ran its first part, waited 50 frames, and its second part was refused (the show has no Sponsor Loop input): line 4 is marked red in the editor, the red status reads `The run failed on frame 105 with a refused action at line 4, column 1; nothing of that frame was applied.` beside `Clear failed run`, and `Last run: 1 action in 5 instructions, on frame 55`. A part after a wait is reported from the replicated fault, which carries no reason; a run refused on its first frame adds the server's reason (`The server said: …`). Recaptured after the round 6 fixes: the window keeps its size. |
+| `studio-scripts-cue-run.png` | Round 6: the same window on Guest in after cue 4 of Evening Run ran it: `Last run by cue list Evening Run: 3 actions in 8 instructions, on frame 111` (Protocol 2.61); `Delete script` is disabled because a cue runs the script. Recaptured after the round 6 fixes. |
+| `studio-scripts-waiting.png` | Round 6: Camera rotation (`let`, `repeat 4`, `if program == 1` … `else` … `end`, `wait 1500`) run from the CLI and paused at its first wait: the list reads `Camera rotation (running)`, the blue status `Running: the next part runs on frame 1636 (wait 1 of this run; its waits total 1,500 frames so far, this one included)`, `Stop run`, and `Last run: 1 action in 18 instructions, on frame 136`; `Save script`, `Run script`, and `Delete script` are disabled. Recaptured after the round 6 fixes. |
+| `studio-livelan-unavailable.png` | Round 6: Output › LiveLAN viewers… (OR-017, Protocol 2.57), cropped, on the simulated daemon with LiveLAN enabled in the project (`Share on the local network` ticked, `Viewers see` Program, `Viewer limit` 8, no PIN): the amber `UNAVAILABLE` chip hovered: its tooltip is the one-line `The LiveLAN stream's state as the server reports it`, while the paragraph under the chip explains that the server has no LiveLAN listener and how to start one (`freemixd serve <show.freemix> --native-media --live-lan-listen 0.0.0.0:8090`); `Viewer address` and `No address yet` are spaced apart. Recaptured after the round 6 fixes. |
+| `studio-mixer-phones.png` | Round 6: the docked audio mixer (580x475 crop, AU-001 headphone output, Protocol 2.53) with the `MON` strip's headphone controls: device `hw:CARD=Headset,DEV=0` (set offline) shown as a key reading `hw:CARD=H…` (click to edit; full name on hover), `PHONES IDLE` (the simulated daemon renders no audio) hovered, its tooltip beside the state to the left instead of over the level and mute keys, headphone level `-6.0 dB`, and the headphone mute `M` lit red. Synthetic meter feed, so `MON` reads `--`. Recaptured after the round 6 fixes. |
+| `studio-add-input-system-audio.png` | Round 6: the `+` tile's Add input dialog (AU-011) (Protocol 2.55) with `SYSTEM AUDIO` chosen: suggested name "System Audio 1", Audio system `PulseAudio / PipeWire` (or `ALSA`), Source device `@DEFAULT_MONITOR@` with its hint, and the `audio only` / `SILENT` sample tagged `INPUT 8`; the intro now names system audio. Behind the dialog, Desktop Audio (input 6, a PulseAudio system audio input) shows its `audio only` meter placeholder tile and the `+` tile reads `colour · bars · stream · camera · audio`. Recaptured after the round 6 fixes. |
 | `studio-streams-five.png` | The Recording & streams panel popped out (820x610 window capture, OR-006) with five destinations, each one compact row with its `RETRY` / `EDIT…` / remove (`✕`) keys inside the row left of `START`/`STOP`: YouTube Main (RTMPS with backup), Twitch Backup (RTMP), and Venue SRT Feed (SRT) started and amber `NOT LIVE` with amber-outlined `STOP` keys and enabled `RETRY`; Facebook Live (RTMPS) and Local HLS Archive `OFF` with `START`, `EDIT…`, and remove enabled. `EDIT…` and remove are disabled on running destinations (remove also while a cue names the destination); `ADD…` is disabled at five destinations. In a narrow dock the three keys fold into one `···` menu key (`RETRY`, `EDIT…`, `Remove destination…`). Recaptured after the layout fixes (no cue lists in that show). |
 | `studio-stream-status-hover.png` | The same window hovering YouTube Main's status chip: the status tooltip with `Desired on · realized not live`, `State: NOT LIVE`, the destination and backup URLs, `Output: Program Output · target 6,000 kb/s`, `Stream key: stored (never shown)`, and `No transport sample yet` (the simulated daemon sends no stream samples, so the bitrate / dropped / reconnects / uptime line is absent). |
 | `studio-stream-edit-dialog.png` | 1920x1080, `EDIT…` on Facebook Live: the Edit destination dialog with the Destination section (Name, `RTMP` / `RTMPS` / `SRT` / `HLS` with RTMPS lit, Server `live-api-s.facebook.com:443/rtmp` and the resolved `rtmps://…` URL under it, the Backup server placeholder), a replacement stream key being typed and shown as dots beside the eye toggle, Output and video (Program Output, 4000 kb/s, `Start on launch`), Reconnect (250 ms / 2000 ms / 40 attempts, `Unlimited`), the undo note, and `CANCEL` / `SAVE`. |
@@ -463,7 +463,9 @@ The Scripts and LiveLAN captures are crops of the dialog, the Cues capture a
 crop of the popped-out window (`import -window`). The Colour `Copy to…`
 captures (Protocol 2.56) were already current and were not retaken.
 
-Review notes from these captures (problems seen, not fixed here):
+Review notes from these captures (problems seen; each is marked fixed
+where it has been, and the affected captures were retaken on 2026-10-19
+with the fixes, see Reproducing):
 
 - Edit › Scripts… grows taller on every frame it is drawn: within about a
   second of opening it fills the screen and keeps growing, with its title,
@@ -475,30 +477,51 @@ Review notes from these captures (problems seen, not fixed here):
   a second after opening the window (hence the empty band above the
   reference text), with the script of interest made script 1 so it was
   selected on opening (see Reproducing). This makes the window unusable in
-  practice and is the main finding of this round.
+  practice and is the main finding of this round. (Fixed: the divider is
+  painted to the height of the list and editor row instead of a separator
+  taking the available height, and a test draws the window for 120 frames
+  and checks that its rectangle stays the same.)
 - Scripts: while Camera rotation waits, `Delete script` still looks
   enabled although the window's own rules say a paused script cannot be
   deleted; `1 actions` is not pluralized correctly; and `1500 frames waited
   so far` is shown at the very start of the wait (it is the frames the
   run's waits add up to, not the frames already waited). The failed-run
   line names only `a refused action`, not why it was refused (the CLI shows
-  `the show has no input …`).
+  `the show has no input …`). (Fixed: `Delete script` is disabled with
+  `this script is running; stop its run first`; the counts use plural forms
+  in English and Spanish (`1 action`); the wait line reads `its waits total
+  1,500 frames so far, this one included`; a run refused on its first frame
+  adds the server's reason, `The server said: …`. A part that fails after a
+  wait is reported from the replicated fault, which carries only its kind,
+  line, and column, so its reason cannot be shown without a protocol
+  change; its hover now says so.)
 - LiveLAN: the `UNAVAILABLE` tooltip repeats the paragraph already shown
   under the chip and spills out of the dialog; `Viewer address No address
-  yet` runs the label into a monospace value with no separation.
+  yet` runs the label into a monospace value with no separation. (Fixed:
+  the chip's hover is the one-line state help, and the address has a gap
+  after its label.)
 - Mixer `MON` strip: the headphone device field is too narrow for an ALSA
   name and shows `hw:CARD=Hea` (full name only on hover); the PHONES state
   tooltip covers the level and mute keys below it. Maximising the mixer
-  leaves most of the panel empty (the strips keep their width).
+  leaves most of the panel empty (the strips keep their width). (Fixed:
+  the set device shows as a key ending in an ellipsis with the full name
+  on hover, and a click opens the field; the PHONES help opens beside the
+  state, growing upwards. Maximising is unchanged.)
 - Add input: the `+` tile still reads `colour · bars · stream · camera` and
   the dialog intro says "a live generator, network stream, or camera input",
   neither mentioning system audio; the sample says `Audio only` while the
-  bank tile says `audio only`.
+  bank tile says `audio only`. (Fixed: the tile reads `colour · bars ·
+  stream · camera · audio`, the intro names system audio, and the sample
+  says `audio only`.)
 - Recording & streams: each started destination's detail reads
-  `Requested · no trans…`, cut off before the useful part.
+  `Requested · no trans…`, cut off before the useful part. (Fixed: it reads
+  `Started · no stats`, and a detail cut short leads the row's hover.)
 - The Edit menu's `Undo` is disabled at launch although the show has a
   revision history from offline edits (only edits made in this session can
-  be undone; there is no hint saying so).
+  be undone; there is no hint saying so). (Fixed: the disabled reason reads
+  `there is no project edit to undo; only edits made since the server
+  opened the show can be undone`; the history is the server's, kept in
+  memory and empty when it opens a show.)
 
 Round 5: captures of 2026-10-16 at Protocol 2.52, schema 49 (commit
 a821e6d). Added: `studio-workspace-docked.png` (the full docked workspace),
@@ -1387,13 +1410,19 @@ mixer (`studio-mixer-phones.png`); click the `+` tile and `SYSTEM AUDIO`
 it to 900x760, click `GO` twice more (Host intro, Guest interview) and
 Guest interview's `2 +` action key (`studio-cues-script.png`).
 
-Because the Scripts window grows on every frame (see the review notes),
-each Scripts capture starts a fresh Studio with `--connect 127.0.0.1:7396
---project-id <id> --role admin` against the same daemon, opens Edit ›
+The first round 6 Scripts captures were taken while the window still grew
+on every frame: each started a fresh Studio with `--connect 127.0.0.1:7396
+--project-id <id> --role admin` against the same daemon, opened Edit ›
 `Scripts…` (moving the pointer onto the item before clicking; a jump and
-click in one step is not seen), and grabs the screen every 0.2 s, keeping
-the grab about half a second after opening. The script to show is made
-script 1, the one selected on opening, with `remote-script-set`:
+click in one step is not seen), and kept a grab about half a second after
+opening. The recaptures after the round 6 fixes (Xvfb `:97`, `--listen
+127.0.0.1:7397`, the same show) open the window once and keep it open
+through the three stages, waiting several seconds before each grab, and
+crop it (800 px wide). Their other captures repeat the steps above in one
+Studio, which was restarted with `--connect` before the mixer capture;
+the mixer capture clicks the headphone `M` and rests the pointer on
+`PHONES IDLE`. The script to show is made script 1, the one selected on
+opening, with `remote-script-set`:
 
 - failed run: `remote-script-set … 1 "Break bumper" bumper.fms` and `… 3
   "Camera rotation" rotate.fms`, `remote-script-run … 1`, wait for the
