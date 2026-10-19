@@ -14,5 +14,10 @@ fm-protocol = { path = "../../foundation/fm-protocol" }
 fm-types = { path = "../../foundation/fm-types" }
 fm-ui-model = { path = "../fm-ui-model" }
 
+[dev-dependencies]
+# Checks the cue preview's copies of the engine's arithmetic; Studio
+# itself links no server-side crate.
+fm-model = { path = "../../foundation/fm-model" }
+
 [lints]
 workspace = true

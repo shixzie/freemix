@@ -3423,11 +3423,44 @@ no device transport, and no MIDI device crate is in the dependency graph.
 `xtask deps check` only polices workspace layering, so a crate such as
 `midir` would pass it, but it needs ALSA development headers on Linux
 and is `RC-005`'s dependency decision to make.
+Cue preview (Studio-local; no protocol or schema change): under the GO
+key a "GO will:" box lists, step by step, what firing the standby cue
+does across its waits and delays and every cue it auto-follows into
+(`Cut to Camera 2 (now Camera 1)`, `Step Score Home by +1 to 3 (now
+2)`, `Wait 2.0 s, then:`, `Run script "Intro"`, `Then cue "Close"
+follows:`), and hovering any cue's state chip shows the same preview
+for that cue. The walk keeps a local copy of the show current, so a
+step reads what earlier steps leave (two steps of one title number add
+both; a take swaps Program and Preview). Each step is marked when the
+session lacks its permission (the classes the GO gate checks, including
+a script step's verbs), when it changes nothing (a take of the Program
+input, a strip that is already at its level, an input without an audio
+strip), and when the authority would refuse it as the show stands,
+using the engine's own rules and copies of `fm-model`'s arithmetic that
+tests hold to the originals (Studio links no server-side crate): a missing
+input, title field, script, stream destination, or Stinger slot; a
+media or title action on another kind of input; a number update on an
+image or colour field, on text that is not a whole number, or past the
+bound; a script that waits or does not parse; Preview set to the
+Program input; Program taken twice on one frame; and a switcher step
+while a transition the chain started, or the operator's T-bar, is
+running. A summary says whether the GO would be refused whole or the
+list would fault after a wait. Preview on PVW selects the shot the
+cue's first take puts on Program (or its first Preview step) on the
+Preview bus through the existing `select_preview`, gated like any
+Preview selection. English and Spanish, with unit tests of the
+resolution and an offscreen render (`docs/progress/studio-cue-preview*.png`).
 Remaining gaps: lists are not bound to an input button, and Studio has no
 direct MIDI, HID, or X-keys input (only OSC, through a bridge); the cue
 bindings are fixed, with no rebinding or learn UI, and act only on the
 list the Cues panel shows (no per-list or per-cue key or OSC address);
-nothing previews a cue's effect before GO; the data update writes literal values only: no external data
+the cue preview is worked out on the console, not by the authority:
+it does not run a script step (values a script may change are left out
+after it), cannot see a
+runtime transition the chain did not start, Stinger media fallbacks, or
+state that changes during a wait, and Preview on PVW selects the shot
+only (no look at overlays, titles, or audio on the Preview bus); the
+data update writes literal values only: no external data
 source (`GX-004`) or row binding feeds it, and it updates text and number
 fields, not colors or images; an armed GO takes a relative delay only
 (Studio, the CLI, and the web tally convert nothing from a wall-clock

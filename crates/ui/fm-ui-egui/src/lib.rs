@@ -38,6 +38,7 @@ mod capture_input_ui;
 mod chrome;
 pub mod color_panel;
 mod connection_overlay;
+mod cue_preview;
 mod cues;
 mod display_outputs;
 mod dock;
@@ -864,7 +865,10 @@ const fn manual_transition_in_flight(switcher: SwitcherState) -> bool {
     )
 }
 
-const fn preview_selection_available(gate: TransitionGate, can_select_preview: bool) -> bool {
+pub(crate) const fn preview_selection_available(
+    gate: TransitionGate,
+    can_select_preview: bool,
+) -> bool {
     gate.connection_status.controls_enabled()
         && gate.has_view
         && can_select_preview

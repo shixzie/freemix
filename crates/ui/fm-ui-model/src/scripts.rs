@@ -162,6 +162,14 @@ pub fn check_script_syntax(source: &str) -> Option<ScriptCheck> {
     fm_script::parse(source).err()
 }
 
+/// Whether `source` parses and holds a `wait` in any branch or loop, so
+/// no cue step may run it (schema 56); a source that does not parse never
+/// waits. The same test as `fm_model::script_waits`.
+#[must_use]
+pub fn script_waits(source: &str) -> bool {
+    fm_script::parse(source).is_ok_and(|program| program.waits())
+}
+
 /// Every action verb `source` holds, in any branch: what any run of it can
 /// ask for (a cue running it needs their permissions, Protocol 2.60).
 /// Empty for a source that does not parse.

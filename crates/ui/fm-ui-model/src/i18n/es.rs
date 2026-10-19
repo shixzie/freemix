@@ -6969,6 +6969,190 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "un cue que esto ejecuta cambia el texto o los números de un título, lo que requiere el permiso edit_project que esta sesión no tiene",
         ),
     ),
+    // What a cue does when fired (RC-017).
+    (Msg::CuePvGoTitle, t("GO hará:")),
+    (Msg::CuePvFireTitle, t("Disparar «{name}» hará:")),
+    (
+        Msg::CuePvHover,
+        t(
+            "Lo que hace el cue en espera al dispararse, calculado en esta consola con el programa tal como está. Los valores tras una espera o un script suponen que nada más cambia entretanto.",
+        ),
+    ),
+    (
+        Msg::CuePvChipHint,
+        t("Pasa el puntero por el indicador de estado de un cue para ver qué hace al dispararlo."),
+    ),
+    (Msg::CuePvEmpty, t("Nada: este cue no tiene acciones.")),
+    (
+        Msg::CuePvMore,
+        plural("…y {count} línea más", "…y {count} líneas más"),
+    ),
+    (
+        Msg::CuePvSummaryRefused,
+        t("Tal como está el programa, el servidor rechazaría este GO y no se ejecutaría nada."),
+    ),
+    (
+        Msg::CuePvSummaryFault,
+        t(
+            "Tal como está el programa, la lista se detendría con un fallo en el paso marcado tras una espera.",
+        ),
+    ),
+    (
+        Msg::CuePvSummaryDenied,
+        t(
+            "Esta sesión no puede ejecutar todos los pasos marcados, así que el servidor rechazaría este GO.",
+        ),
+    ),
+    (Msg::CuePvPvw, t("Ver en PVW")),
+    (
+        Msg::CuePvPvwHover,
+        t(
+            "Poner ahora en el bus de Preview la entrada que este cue lleva a Program, sin dispararlo, para revisar el plano antes",
+        ),
+    ),
+    (
+        Msg::CuePvReasonNoBus,
+        t("este cue no pone ninguna entrada conocida en Program ni en Preview"),
+    ),
+    (
+        Msg::CuePvReasonOnPreview,
+        t("la entrada del cue ya está en Preview"),
+    ),
+    (
+        Msg::CuePvReasonOnProgram,
+        t("la entrada del cue ya está en Program"),
+    ),
+    (Msg::CuePvNow, t("(ahora {value})")),
+    (Msg::CuePvQuoted, t("«{text}»")),
+    (Msg::CuePvPreviewInput, t("lo que haya en Preview")),
+    (Msg::CuePvCut, t("Corte a {input}")),
+    (
+        Msg::CuePvMix,
+        t("{effect} a {input} en {frames} fotogramas"),
+    ),
+    (Msg::CuePvPreview, t("Poner {input} en Preview")),
+    (Msg::CuePvOverlayOn, t("Overlay {channel}: mostrar {input}")),
+    (
+        Msg::CuePvOverlayOff,
+        t("Overlay {channel}: quitar del aire"),
+    ),
+    (Msg::CuePvOverlayEmpty, t("nada")),
+    (
+        Msg::CuePvTitleOn,
+        t("Overlay {channel}: sacar el título {title}"),
+    ),
+    (Msg::CuePvTitleOff, t("Quitar del aire el título {title}")),
+    (Msg::CuePvTitleSet, t("Poner {title} {field} a {value}")),
+    (
+        Msg::CuePvTitleStep,
+        t("Sumar {step} a {title} {field}, hasta {value}"),
+    ),
+    (Msg::CuePvTitleStepBy, t("Sumar {step} a {title} {field}")),
+    (Msg::CuePvFtbOn, t("Fundido a negro en {frames} fotogramas")),
+    (
+        Msg::CuePvFtbOff,
+        t("Salir del negro en {frames} fotogramas"),
+    ),
+    (
+        Msg::CuePvPlaylistStart,
+        t("Iniciar la lista de reproducción (toma Program)"),
+    ),
+    (
+        Msg::CuePvPlaylistStop,
+        t("Detener la lista de reproducción"),
+    ),
+    (Msg::CuePvGain, t("Poner el fader de {input} a {gain}")),
+    (Msg::CuePvMute, t("Silenciar {input}")),
+    (Msg::CuePvUnmute, t("Quitar el silencio de {input}")),
+    (Msg::CuePvRecordStart, t("Empezar a grabar en REC {slot}")),
+    (Msg::CuePvRecordStop, t("Dejar de grabar en REC {slot}")),
+    (Msg::CuePvStreamStart, t("Empezar a emitir a {target}")),
+    (Msg::CuePvStreamStop, t("Dejar de emitir a {target}")),
+    (Msg::CuePvPlay, t("Reproducir {input}")),
+    (Msg::CuePvPause, t("Pausar {input}")),
+    (Msg::CuePvSeek, t("Llevar {input} al fotograma {frame}")),
+    (
+        Msg::CuePvRestart,
+        t("Reiniciar {input} desde su primer fotograma"),
+    ),
+    (
+        Msg::CuePvWaitFrames,
+        plural(
+            "Esperar {count} fotograma ({time}) y después:",
+            "Esperar {count} fotogramas ({time}) y después:",
+        ),
+    ),
+    (Msg::CuePvWaitTime, t("Esperar {time} y después:")),
+    (Msg::CuePvScript, t("Ejecutar el script {name}")),
+    (Msg::CuePvFollow, t("Después sigue el cue {name}:")),
+    (
+        Msg::CuePvAlreadyProgram,
+        t("ya está en Program: esta toma no hace nada"),
+    ),
+    (
+        Msg::CuePvAlreadyPreview,
+        t("ya está en Preview: sin cambios"),
+    ),
+    (Msg::CuePvAlreadyState, t("sin cambios: ya está así")),
+    (
+        Msg::CuePvNoStrip,
+        t("esta entrada no tiene canal de audio: no pasa nada"),
+    ),
+    (Msg::CuePvDenied, t("Sin permiso: {reason}")),
+    (Msg::CuePvRefused, t("Se rechazaría: {reason}")),
+    (
+        Msg::CuePvRefMissingInput,
+        t("el programa no tiene esa entrada"),
+    ),
+    (Msg::CuePvRefNotMedia, t("no es una entrada multimedia")),
+    (Msg::CuePvRefNotTitle, t("no es un título")),
+    (
+        Msg::CuePvRefImageField,
+        t("ese campo contiene una imagen o un color, no un número"),
+    ),
+    (
+        Msg::CuePvRefNotWhole,
+        t("el campo no contiene un número entero"),
+    ),
+    (
+        Msg::CuePvRefBound,
+        t("el resultado pasaría de {max} en un sentido u otro"),
+    ),
+    (Msg::CuePvRefNoScript, t("el proyecto no tiene ese script")),
+    (
+        Msg::CuePvRefScriptWaits,
+        t("el script contiene una espera, que un paso de cue no puede ejecutar"),
+    ),
+    (
+        Msg::CuePvRefScriptSyntax,
+        t("el script tiene un error de sintaxis, así que su ejecución falla enseguida"),
+    ),
+    (
+        Msg::CuePvRefNoStream,
+        t("el programa no tiene ese destino de emisión"),
+    ),
+    (
+        Msg::CuePvRefNoStinger,
+        t("la ranura de Stinger {slot} no tiene ningún stinger"),
+    ),
+    (
+        Msg::CuePvRefPreviewIsProgram,
+        t("esa entrada está en Program, y Preview y Program deben ser distintos"),
+    ),
+    (
+        Msg::CuePvRefTwice,
+        t("Program se tomaría dos veces en un mismo fotograma"),
+    ),
+    (
+        Msg::CuePvRefInFlight,
+        t("la transición iniciada antes aún estaría en curso"),
+    ),
+    (
+        Msg::CuePvStingerNotReady,
+        t(
+            "la ranura de Stinger {slot} aún no está cargada, así que la toma puede usar su alternativa o ser rechazada",
+        ),
+    ),
     // Stream destinations (OR-006).
     (Msg::StreamStartAllKey, t("INICIAR TODO")),
     (Msg::StreamStopAllKey, t("DETENER TODO")),

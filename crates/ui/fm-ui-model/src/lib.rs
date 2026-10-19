@@ -37,7 +37,7 @@ pub use cue_lists::CueRunUpdate;
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
 pub use scripts::{
     ScriptCheck, ScriptCheckKind, ScriptRunReport, ScriptRunUpdate, ScriptVerb,
-    check_script_syntax, script_verbs,
+    check_script_syntax, script_verbs, script_waits,
 };
 pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 

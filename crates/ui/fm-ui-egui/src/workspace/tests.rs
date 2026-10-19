@@ -955,6 +955,86 @@ fn render_the_default_layout_for_review() {
     }
 }
 
+/// The Cues panel maximised on the audit show (RC-017): the standby cue's
+/// "GO will:" preview, and the same preview as the hover of a cue's state
+/// chip.
+#[test]
+#[ignore = "writes the Cues panel renders to $FM_CUE_RENDER_DIR for review"]
+fn render_the_cue_preview_for_review() {
+    let Ok(dir) = std::env::var("FM_CUE_RENDER_DIR") else {
+        return;
+    };
+    let state = crate::hover_audit::bank_fixture();
+    let size = vec2(760.0, 1_000.0);
+    let shell = || {
+        let mut shell = StudioShell::default();
+        shell.layout.dock.show(PanelId::Cues);
+        shell.cues.select(1, None);
+        shell.dock_ui.maximized = Some(PanelId::Cues);
+        shell
+    };
+    let (width, height, rgba) = render(&mut shell(), &state, size, &[]);
+    std::fs::write(
+        format!("{dir}/studio-cue-preview.png"),
+        crate::offscreen::encode_png(width, height, &rgba),
+    )
+    .unwrap();
+    // Hover the Opener's LIVE chip (the lowest painted "LIVE": the top
+    // bar has one too) until its tooltip shows.
+    let context = egui::Context::default();
+    let mut textures = Textures::default();
+    let mut shell = shell();
+    let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+    textures.apply(&output);
+    context.all_styles_mut(|style| {
+        style.interaction.tooltip_delay = 0.0;
+        style.interaction.show_tooltips_only_when_still = false;
+    });
+    let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+    textures.apply(&output);
+    let chip = chip_rect(&output, "LIVE").expect("the Opener's LIVE chip is painted");
+    let mut last = None;
+    for _ in 0..4 {
+        let hover = vec![Event::PointerMoved(chip.center())];
+        let (_, output) = frame_at(&context, &mut shell, &state, size, hover);
+        textures.apply(&output);
+        last = Some(output);
+    }
+    let full = last.unwrap();
+    let primitives = context.tessellate(full.shapes, full.pixels_per_point);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let mut canvas = Canvas::new(size.x as usize, size.y as usize, graphite_color());
+    canvas.paint(&primitives, &textures, full.pixels_per_point);
+    let (width, height, rgba) = canvas.crop_rgba8(Rect::from_min_size(Pos2::ZERO, size));
+    std::fs::write(
+        format!("{dir}/studio-cue-preview-hover.png"),
+        crate::offscreen::encode_png(width, height, &rgba),
+    )
+    .unwrap();
+}
+
+/// The lowest rectangle of the painted text `text`, if one is painted.
+fn chip_rect(output: &egui::FullOutput, text: &str) -> Option<Rect> {
+    fn find(shape: &egui::Shape, text: &str, out: &mut Vec<Rect>) {
+        match shape {
+            egui::Shape::Text(shape) if shape.galley.text() == text => {
+                out.push(shape.visual_bounding_rect());
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    find(shape, text, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &output.shapes {
+        find(&clipped.shape, text, &mut found);
+    }
+    found.into_iter().max_by(|a, b| a.min.y.total_cmp(&b.min.y))
+}
+
 #[test]
 fn tiny_windows_and_maximised_tiles_draw_without_panicking() {
     let context = egui::Context::default();

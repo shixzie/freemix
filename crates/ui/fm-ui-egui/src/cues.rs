@@ -17,6 +17,12 @@
 //! frame a cue record reported ([`ProjectState::cue_frame`]), so the
 //! countdown is approximate; the server's clock fires it on its frame.
 //!
+//! Under the GO key a "GO will:" box previews what firing the standby cue
+//! does, step by step with current values and the steps the session may
+//! not run or the server would refuse ([`crate::cue_preview`]); hovering a
+//! cue's state chip previews that cue. Preview on PVW selects the shot the
+//! standby cue takes to Program on the Preview bus ([`pvw_target`]).
+//!
 //! Editing (lists, cues, and actions, all inline) needs `edit_project`, an
 //! unlocked project, and no cue of the list waiting on its next actions,
 //! because the engine refuses to change a running cue. The tab edits a
@@ -41,6 +47,7 @@ use fm_protocol::{
 use fm_types::{FrameRate, InputId};
 use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
 
+use crate::cue_preview::{self, CuePreview, Show};
 use crate::edit_history::stinger_edit_lock_reason;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::keymap;
@@ -159,7 +166,7 @@ pub fn list_edit_block(state: &StudioUiState, list: &CueListStatus) -> Option<&'
 /// The permission an action needs beyond the `transition` every cue
 /// control needs: the permission of the equivalent direct command. A
 /// script step needs those of its script's verbs ([`verb_capability`]).
-const fn action_capability(action: &WireCueAction) -> Option<Capability> {
+pub(crate) const fn action_capability(action: &WireCueAction) -> Option<Capability> {
     match action {
         WireCueAction::Preview { .. } => Some(Capability::SelectPreview),
         WireCueAction::AudioGain { .. } | WireCueAction::AudioMute { .. } => {
@@ -173,7 +180,7 @@ const fn action_capability(action: &WireCueAction) -> Option<Capability> {
 }
 
 /// The permission a script action of `verb` needs beyond `transition`.
-const fn verb_capability(verb: ScriptVerb) -> Option<Capability> {
+pub(crate) const fn verb_capability(verb: ScriptVerb) -> Option<Capability> {
     match verb {
         ScriptVerb::Preview => Some(Capability::SelectPreview),
         ScriptVerb::Gain | ScriptVerb::Mute | ScriptVerb::Unmute => Some(Capability::Audio),
@@ -1086,6 +1093,10 @@ impl CuePanel {
             ui.label(RichText::new(note).size(legible(12.0)).strong());
             ui.ctx().request_repaint_after(Duration::from_millis(200));
         }
+        let show = Show::of(state);
+        if let (Some(show), Some(standby)) = (&show, list.state.standby) {
+            draw_standby_preview(ui, state, show, &list, standby, intents);
+        }
         if let Some(pending) = list.state.pending {
             let frame = pending.due_frame.to_string();
             ui.label(caption(
@@ -1129,6 +1140,7 @@ impl CuePanel {
             view,
             project,
             scripts_full: script_steps >= MAX_CUE_LIST_SCRIPT_STEPS,
+            show,
         };
         let mut edit_row = None;
         let conflicts = take_conflicts(&draft.spec.cues);
@@ -1200,6 +1212,79 @@ impl CuePanel {
     }
 }
 
+/// Why Preview on PVW cannot put the standby cue's shot on Preview, if
+/// it cannot: the Preview selection gates, then a cue with no known input
+/// ([`CuePreview::bus_input`]) or one already on a bus.
+///
+/// # Errors
+///
+/// Returns the English reason the key is disabled.
+pub(crate) fn pvw_target(
+    state: &StudioUiState,
+    show: &Show,
+    preview: &CuePreview,
+) -> Result<InputId, &'static str> {
+    if !crate::preview_selection_available(
+        crate::TransitionGate::from_state(state),
+        state.can_select_preview,
+    ) {
+        return Err(unavailable_reason(state, Capability::SelectPreview));
+    }
+    match preview.bus_input {
+        Some(input) if input == show.program => Err(Msg::CuePvReasonOnProgram.en()),
+        Some(input) if input == show.preview => Err(Msg::CuePvReasonOnPreview.en()),
+        Some(input) if show.inputs.contains(&input) => Ok(input),
+        _ => Err(Msg::CuePvReasonNoBus.en()),
+    }
+}
+
+/// The standby cue's preview under the GO key: what GO does, step by
+/// step, and the Preview on PVW key, which selects (only) the shot the
+/// cue takes to Program on the Preview bus.
+fn draw_standby_preview(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    show: &Show,
+    list: &CueListStatus,
+    standby: u64,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let Some(preview) = cue_preview::preview(l, show, &list.spec.cues, standby) else {
+        return;
+    };
+    Frame::new()
+        .fill(raised_color())
+        .stroke(Stroke::new(1.0, border_color()))
+        .corner_radius(4.0)
+        .inner_margin(6.0)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(l.text(Msg::CuePvGoTitle))
+                        .size(legible(11.0))
+                        .strong(),
+                )
+                .on_hover_text(l.text(Msg::CuePvHover));
+                ui.with_layout(l10n::trailing_layout(l), |ui| {
+                    let pvw = pvw_target(state, show, &preview);
+                    if ui
+                        .add_enabled(pvw.is_ok(), small_button(l.text(Msg::CuePvPvw)))
+                        .hint(l.text(Msg::CuePvPvwHover), pvw.err().unwrap_or(""))
+                        .clicked()
+                        && let Ok(input) = pvw
+                    {
+                        intents.push(StudioIntent::SelectPreview(input));
+                    }
+                });
+            });
+            cue_preview::draw_lines(ui, l, &preview, 12);
+            ui.label(caption(l.text(Msg::CuePvChipHint)));
+        });
+    ui.add_space(4.0);
+}
+
 /// Names in the console language.
 struct Names<'a> {
     l: Locale,
@@ -1207,6 +1292,8 @@ struct Names<'a> {
     project: &'a ProjectState,
     /// Whether the list already runs its maximum of scripts.
     scripts_full: bool,
+    /// The show the cue previews read, once synced.
+    show: Option<Show>,
 }
 
 impl Names<'_> {
@@ -1341,8 +1428,10 @@ fn draw_cue_row(
                 let mut removed = false;
                 ui.horizontal(|ui| {
                     let (msg, tone) = role.chip();
+                    // The chip's hover previews what firing the saved cue
+                    // does (the draft is not what GO runs).
                     status_chip(ui, l.text(msg), tone, CHIP_WIDTH)
-                        .on_hover_text(l.text(Msg::CueStateHover));
+                        .on_hover_ui(|ui| chip_hover(ui, names, list, id));
                     let name =
                         cue_name_field(ui, l, &mut cues[index].name, name_width.max(40.0), edit);
                     if name.lost_focus() {
@@ -1406,6 +1495,23 @@ fn draw_cue_row(
         });
     ui.add_space(2.0);
     result
+}
+
+/// A cue's state chip hover: the state help, then what firing the saved
+/// cue does.
+fn chip_hover(ui: &mut Ui, names: &Names<'_>, list: &CueListStatus, id: u64) {
+    let l = names.l;
+    ui.set_max_width(380.0);
+    ui.label(l.text(Msg::CueStateHover));
+    let saved = list.spec.cues.iter().find(|cue| cue.id == id);
+    if let (Some(show), Some(saved)) = (&names.show, saved)
+        && let Some(preview) = cue_preview::preview(l, show, &list.spec.cues, id)
+    {
+        ui.separator();
+        let title = l.format(Msg::CuePvFireTitle, &[("name", Arg::Str(&saved.name))]);
+        ui.label(RichText::new(title).size(legible(11.0)).strong());
+        cue_preview::draw_lines(ui, l, &preview, 24);
+    }
 }
 
 /// The action-count key, which opens and closes a cue's actions.
@@ -2767,6 +2873,47 @@ mod tests {
         let mut value = 0;
         settle_step(false, &mut value, false);
         assert_eq!(value, 0);
+    }
+
+    /// Preview on PVW selects the shot the standby cue takes to Program,
+    /// gated like any Preview selection, and only when it would change
+    /// the Preview bus.
+    #[test]
+    fn preview_on_pvw_selects_the_standby_cues_shot() {
+        let state = crate::hover_audit::bank_fixture();
+        let show = Show::of(&state).unwrap();
+        let project = state.project_state.as_ref().unwrap();
+        let list = &project.cue_lists()[0];
+        // Cue 20 "Guest" cuts to input 4.
+        let preview = cue_preview::preview(Locale::ENGLISH, &show, &list.spec.cues, 20).unwrap();
+        let guest = InputId::new(core::num::NonZeroU128::new(4).unwrap());
+        assert_eq!(preview.bus_input, Some(guest));
+        assert_ne!(show.program, guest);
+        assert_ne!(show.preview, guest);
+        assert_eq!(pvw_target(&state, &show, &preview), Ok(guest));
+
+        let mut viewer = state.clone();
+        viewer.can_select_preview = false;
+        assert_eq!(
+            pvw_target(&viewer, &show, &preview),
+            Err(Msg::ReasonNoSelectPreview.en())
+        );
+        let on = |input| CuePreview {
+            bus_input: input,
+            ..preview.clone()
+        };
+        assert_eq!(
+            pvw_target(&state, &show, &on(Some(show.program))),
+            Err(Msg::CuePvReasonOnProgram.en())
+        );
+        assert_eq!(
+            pvw_target(&state, &show, &on(Some(show.preview))),
+            Err(Msg::CuePvReasonOnPreview.en())
+        );
+        assert_eq!(
+            pvw_target(&state, &show, &on(None)),
+            Err(Msg::CuePvReasonNoBus.en())
+        );
     }
 
     #[test]
