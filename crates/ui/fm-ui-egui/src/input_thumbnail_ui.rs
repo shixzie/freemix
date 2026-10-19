@@ -5,10 +5,12 @@
 //! subscription when the bank is no longer shown. Each received thumbnail is
 //! uploaded once per decoded pixel buffer and painted on its tile with a
 //! `FEED` tag. A thumbnail goes stale when none has arrived for
-//! [`THUMBNAIL_STALE_AFTER`] or, for a live source (a network stream or a
+//! [`THUMBNAIL_LATE_AFTER`] or, for a live source (a network stream or a
 //! capture input), when the server reports that its picture has not changed
-//! for that long: the picture is then dimmed and tagged `STALE` with its
-//! age. A system audio input has no picture; its tile shows a meter-style
+//! for [`THUMBNAIL_STALE_AFTER`]: the picture is then dimmed and tagged
+//! `STALE` with its age. Delivery gets the longer allowance because the
+//! server shares a per-connection budget across every input, so a busy bank
+//! legitimately refreshes each tile only every few seconds. A system audio input has no picture; its tile shows a meter-style
 //! placeholder driven by the input's audio meters instead.
 
 use std::collections::BTreeMap;
@@ -23,9 +25,13 @@ use fm_protocol::{InputAudioMeters, InputThumbnailImage, MonitorFrameOrigin, Wir
 
 use crate::l10n::{Arg, Locale, Msg};
 
-/// A thumbnail older than this (or a live source whose picture has not
-/// changed for this long) is shown dimmed and tagged `STALE`.
+/// A live source whose picture the server reports unchanged for this long
+/// is shown dimmed and tagged `STALE`.
 pub(crate) const THUMBNAIL_STALE_AFTER: Duration = Duration::from_secs(3);
+
+/// A thumbnail with no newer one for this long is shown dimmed and tagged
+/// `STALE`, whatever its source: the server's keepalive is far shorter.
+pub(crate) const THUMBNAIL_LATE_AFTER: Duration = Duration::from_secs(10);
 
 /// Repaint cadence while the bank shows thumbnails, so staleness shows even
 /// when no new state arrives.
@@ -40,12 +46,28 @@ pub(crate) struct TileThumbnail {
     pub(crate) origin: MonitorFrameOrigin,
     /// How long the picture has been out of date (see [`staleness`]).
     pub(crate) staleness: Duration,
+    /// Whether the picture is shown dimmed and tagged `STALE` (see
+    /// [`is_stale`]).
+    pub(crate) stale: bool,
 }
 
 impl TileThumbnail {
     pub(crate) fn stale(self) -> bool {
-        self.staleness >= THUMBNAIL_STALE_AFTER
+        self.stale
     }
+}
+
+/// Whether a thumbnail is stale at `now`: none newer has arrived for
+/// [`THUMBNAIL_LATE_AFTER`], or a live source's picture had already gone
+/// unchanged for [`THUMBNAIL_STALE_AFTER`] when the server sent it.
+pub(crate) fn is_stale(
+    image: &InputThumbnailImage,
+    received_at: Instant,
+    now: Instant,
+    live_source: bool,
+) -> bool {
+    now.saturating_duration_since(received_at) >= THUMBNAIL_LATE_AFTER
+        || (live_source && Duration::from_millis(u64::from(image.age_ms)) >= THUMBNAIL_STALE_AFTER)
 }
 
 /// How out of date a thumbnail is at `now`: the time since it arrived, plus,
@@ -150,6 +172,7 @@ impl ThumbnailTextures {
             height: image.height,
             origin: image.origin,
             staleness: staleness(image, *received_at, now, live_source),
+            stale: is_stale(image, *received_at, now, live_source),
         })
     }
 
@@ -289,6 +312,42 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_but_moving_feed_is_not_stale() {
+        let received = Instant::now();
+        let moving = image(1, 0);
+        assert!(!is_stale(
+            &moving,
+            received,
+            received + Duration::from_secs(4),
+            true
+        ));
+        assert!(!is_stale(
+            &moving,
+            received,
+            received + Duration::from_secs(9),
+            false
+        ));
+        assert!(is_stale(
+            &moving,
+            received,
+            received + THUMBNAIL_LATE_AFTER,
+            true
+        ));
+        assert!(is_stale(
+            &moving,
+            received,
+            received + THUMBNAIL_LATE_AFTER,
+            false
+        ));
+        let frozen = image(1, 3_000);
+        assert!(is_stale(&frozen, received, received, true));
+        assert!(
+            !is_stale(&frozen, received, received, false),
+            "stills keep one picture"
+        );
+    }
+
+    #[test]
     fn textures_upload_once_per_buffer_and_free_absent_inputs() {
         let context = egui::Context::default();
         let mut textures = ThumbnailTextures::default();
@@ -322,11 +381,13 @@ mod tests {
             height: 90,
             origin: MonitorFrameOrigin::Simulated,
             staleness: Duration::from_millis(100),
+            stale: false,
         };
         assert_eq!(thumbnail_tag(l, tile), "FEED · SIM");
         tile.origin = MonitorFrameOrigin::Native;
         assert_eq!(thumbnail_tag(l, tile), "FEED");
         tile.staleness = Duration::from_millis(4_200);
+        tile.stale = true;
         assert_eq!(thumbnail_tag(l, tile), "STALE 4.2 s");
     }
 
