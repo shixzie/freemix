@@ -4034,7 +4034,10 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             };
         }
         DurableChange::ScriptChanged(script) => {
-            return if state.scripts_complete() {
+            // A new script must fit the project bound; a replaced one does.
+            let fits =
+                state.script(script.id).is_some() || state.scripts.len() < fm_protocol::MAX_SCRIPTS;
+            return if state.scripts_complete() && fits {
                 scripts::validate_script(script)
             } else {
                 Err(ModelError::InvalidScript(script.id))

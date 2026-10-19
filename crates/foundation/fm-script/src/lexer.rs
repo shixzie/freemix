@@ -4,7 +4,10 @@ use crate::{FailureKind, ScriptFailure, Span};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Tok {
-    Int(i64),
+    /// A literal's magnitude, at most `2^63`: only a leading `-` brings that
+    /// one into range (`-9223372036854775808`), and the parser refuses it
+    /// anywhere else.
+    Int(u64),
     Str(String),
     Ident(String),
     Comma,
@@ -88,8 +91,10 @@ pub(crate) fn tokenize(line: u32, text: &str) -> Result<Vec<Token>, ScriptFailur
             }
             let digits: String = chars[start..index].iter().collect();
             let value = digits
-                .parse::<i64>()
-                .map_err(|_| error(start, format!("{digits} is too large")))?;
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value <= i64::MIN.unsigned_abs())
+                .ok_or_else(|| error(start, format!("{digits} is too large")))?;
             tokens.push(Token {
                 tok: Tok::Int(value),
                 at,

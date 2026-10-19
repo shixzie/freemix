@@ -510,6 +510,9 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     assert!(page.contains("name === \"cue_run_changed\""));
     assert!(page.contains("name === \"cue_list_changed\""));
     assert!(page.contains("name === \"cue_list_removed\""));
+    // RC-011: a script run moves Program like a cue; its desired state is
+    // what the realized runtime event lights.
+    assert!(page.contains("name === \"script_ran\""));
     assert!(page.contains("[\"payload\", \"cue_go\"]"));
     // A GO names the revision it was pressed at, so a second press (or a
     // second tally) before the first GO is replicated cannot fire the next

@@ -303,7 +303,7 @@ fn syntax_errors_report_line_and_column() {
     // Source and nesting bounds are syntax errors too.
     let long = "#".repeat(MAX_SOURCE_BYTES + 1);
     assert!(parse(&long).unwrap_err().message.contains("longer than"));
-    let lines = "\n".repeat(fm_script::MAX_SOURCE_LINES);
+    let lines = "\n".repeat(fm_script::MAX_SOURCE_LINES + 1);
     assert!(parse(&lines).unwrap_err().message.contains("more than"));
     let deep = format!("{}{}", "if true\n".repeat(17), "end\n".repeat(17));
     assert!(parse(&deep).unwrap_err().message.contains("nest deeper"));
@@ -415,4 +415,137 @@ fn a_parsed_program_runs_again_unchanged() {
             },
         ]
     );
+}
+
+/// Regression: a file of exactly `MAX_SOURCE_LINES` lines ends with a
+/// newline; that newline does not start a refused extra line.
+#[test]
+fn a_final_newline_does_not_count_as_a_line() {
+    let max = fm_script::MAX_SOURCE_LINES;
+    parse(&"stop\n".repeat(max)).expect("256 lines with a final newline");
+    parse(&"stop\r\n".repeat(max)).expect("256 CRLF lines");
+    parse(&"stop\n".repeat(max - 1)).expect("255 lines");
+    let over = parse(&format!("{}stop", "stop\n".repeat(max))).unwrap_err();
+    assert_eq!(over.at, Span::new(257, 1));
+    assert!(over.message.contains("more than"), "{over}");
+    let blank = parse(&format!("{}\n", "stop\n".repeat(max))).unwrap_err();
+    assert_eq!(blank.at, Span::new(257, 1));
+}
+
+/// Regression: `-9223372036854775808` is the smallest number, as
+/// documented, while its magnitude alone is out of range; `i64::MIN / -1`
+/// and `i64::MIN % -1` overflow instead of panicking.
+#[test]
+fn the_smallest_number_is_a_literal_and_its_edge_arithmetic_is_checked() {
+    let mut host = host();
+    let report = run_source(
+        "title_text 1, 1, -9223372036854775808",
+        &mut host,
+        Limits::default(),
+    );
+    assert_eq!(report.failure, None);
+    assert_eq!(
+        host.actions,
+        vec![ScriptAction::TitleText {
+            input: InputRef::Number(1),
+            field: 1,
+            text: i64::MIN.to_string(),
+        }]
+    );
+    for (source, column) in [
+        ("let x = 9223372036854775808", 9),
+        ("let x = 1 - 9223372036854775808", 13),
+        ("let x = -99999999999999999999", 10),
+        ("let x = -9223372036854775809", 10),
+    ] {
+        let failure = parse(source).expect_err(source);
+        assert!(failure.message.contains("too large"), "{source}: {failure}");
+        assert_eq!(failure.at, Span::new(1, column), "{source}");
+    }
+    for source in [
+        "let x = -9223372036854775808 / -1",
+        "let x = -9223372036854775808 % -1",
+        "let x = -(-9223372036854775808)",
+        "let x = -9223372036854775808 - 1",
+        "let x = -9223372036854775808 * -1",
+    ] {
+        let (kind, _, message, _) = failure(source, Limits::default());
+        assert_eq!(kind, FailureKind::Runtime, "{source}");
+        assert!(message.contains("overflows"), "{source}: {message}");
+    }
+}
+
+/// Regression: parentheses reset the parser's nesting counter, so an
+/// operator chain whose first operand is a parenthesized chain (and so on)
+/// built a tree about 500 nodes deep within one line, and evaluating it
+/// overflowed a 1 MiB stack. The tree's height is now bounded instead.
+#[test]
+fn a_chain_of_parenthesized_chains_cannot_nest_past_the_bound() {
+    fn group(depth: usize) -> String {
+        let first = if depth == fm_script::MAX_EXPRESSION_DEPTH {
+            "1".to_owned()
+        } else {
+            format!("({})", group(depth + 1))
+        };
+        format!(
+            "{first}{}",
+            "+1".repeat(fm_script::MAX_EXPRESSION_DEPTH - depth)
+        )
+    }
+    let source = format!("let x = {}", group(1));
+    assert!(source.len() < MAX_SOURCE_BYTES);
+    let failure = parse(&source).unwrap_err();
+    assert_eq!(failure.kind, FailureKind::Syntax);
+    assert!(failure.message.contains("nests deeper"), "{failure}");
+
+    // The bound itself still parses and runs: 32 levels in one chain, or
+    // spread across parentheses.
+    let flat = format!(
+        "let x = 1{}",
+        "+1".repeat(fm_script::MAX_EXPRESSION_DEPTH - 2)
+    );
+    parse(&flat).expect("a chain at the bound");
+    let split = format!(
+        "let x = (1{})+1+1",
+        "+1".repeat(fm_script::MAX_EXPRESSION_DEPTH - 3)
+    );
+    parse(&split).expect("a split chain at the bound");
+    let over = format!(
+        "let x = (1{})+1+1",
+        "+1".repeat(fm_script::MAX_EXPRESSION_DEPTH - 2)
+    );
+    assert!(parse(&over).unwrap_err().message.contains("nests deeper"));
+}
+
+/// Regression: every `elif` nested the next one inside it, so a long chain
+/// (one `elif` per line, up to the line bound) recursed past the block
+/// bound in the parser and the interpreter. The chain is flat now.
+#[test]
+fn a_long_elif_chain_runs_flat() {
+    let source = format!(
+        "let x = false\nif x\n{}elif true\n  cut 2\nelse\n  cut 3\nend",
+        "elif x\n".repeat(fm_script::MAX_SOURCE_LINES - 7)
+    );
+    let report = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let mut host = host();
+            let report = run_source(&source, &mut host, Limits::default());
+            (report, host.actions)
+        })
+        .unwrap()
+        .join()
+        .expect("the run fits a small stack");
+    assert_eq!(report.0.failure, None);
+    assert_eq!(
+        report.1,
+        vec![ScriptAction::Take {
+            input: Some(InputRef::Number(2)),
+            effect: TakeEffect::Cut,
+            frames: 0,
+        }]
+    );
+    // The `let`, then each of the 251 conditions tried costs one for its
+    // `if` or `elif` and one for its value, then the `cut` and its input.
+    assert_eq!(report.0.instructions, 2 + 2 * 251 + 2);
 }

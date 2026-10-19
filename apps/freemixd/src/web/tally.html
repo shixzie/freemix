@@ -356,8 +356,9 @@
         link.revision = revision;
         const name = required(record, "event");
         if (name === "desired_switcher" || name === "stinger_slots_changed"
-            || name === "playlist_changed" || name === "cue_run_changed") {
-          // A playlist take or a cue's actions move Program too.
+            || name === "playlist_changed" || name === "cue_run_changed"
+            || name === "script_ran") {
+          // A playlist take, a cue's actions, or a script run move Program too.
           show.desired = { program: required(record, "program"), preview: required(record, "preview") };
           trackDesired(revision, show.desired.program, show.desired.preview);
           if (name === "cue_run_changed") {

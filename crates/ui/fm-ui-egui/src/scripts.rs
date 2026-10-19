@@ -119,21 +119,34 @@ impl ScriptsWindow {
             .iter()
             .find(|script| script.id == id)
             .map(|script| (script.spec.name.clone(), script.spec.source.clone()));
+        if self.loaded == replicated {
+            return;
+        }
         match (&self.loaded, replicated) {
             // The draft's script is gone: removed here or elsewhere.
             (Some(_), None) => {
                 let first = scripts.first().map(|script| script.id);
                 self.select(scripts, first);
             }
-            // An unchanged draft follows its script.
-            (Some(loaded), Some(replicated)) if *loaded != replicated && !self.dirty() => {
-                self.select(scripts, Some(id));
-            }
-            // A new draft lands once its echo arrives.
-            (None, Some(replicated)) if replicated == (self.name.clone(), self.source.clone()) => {
+            // A saved draft (new or edited) lands once its echo arrives.
+            (_, Some(replicated)) if replicated == (self.name.clone(), self.source.clone()) => {
                 self.loaded = Some(replicated);
+                self.forget_failure(id);
+            }
+            // An unchanged draft follows its script.
+            (Some(_), Some(_)) if !self.dirty() => {
+                self.select(scripts, Some(id));
+                self.forget_failure(id);
             }
             _ => {}
+        }
+    }
+
+    /// Drops where `script`'s last run stopped once its saved text changes,
+    /// so the editor never marks a line of a text that did not run.
+    fn forget_failure(&mut self, script: u64) {
+        if self.failure.is_some_and(|failure| failure.script == script) {
+            self.failure = None;
         }
     }
 
@@ -564,6 +577,54 @@ mod tests {
         scripts.push(script(5, "cut 1"));
         window.follow(&scripts);
         assert!(!window.dirty());
+    }
+
+    /// Regression: saving an edit to an existing script left the draft
+    /// dirty once its echo arrived (only new scripts adopted the echo), so
+    /// Run stayed blocked as unsaved and the old run's stop line came back
+    /// on the fixed text.
+    #[test]
+    fn a_saved_edit_lands_with_its_echo_and_forgets_the_old_stop() {
+        let mut window = ScriptsWindow::default();
+        let mut scripts = vec![script(1, "preview 2\ncut 9")];
+        window.follow(&scripts);
+        window.failure = Some(RunFailure {
+            script: 1,
+            failure: ScriptFailureKind::Refused,
+            line: 2,
+            column: 1,
+        });
+        window.source = "preview 2\ncut 2".into();
+        assert!(window.dirty());
+        // Saved: the echo replaces the script.
+        scripts[0].spec.source = "preview 2\ncut 2".into();
+        window.follow(&scripts);
+        assert!(!window.dirty());
+        assert_eq!(window.failure, None);
+        assert_eq!(marked_line(&window), None);
+
+        // Edited elsewhere while unchanged here: the stop line goes too.
+        window.failure = Some(RunFailure {
+            script: 1,
+            failure: ScriptFailureKind::Refused,
+            line: 2,
+            column: 1,
+        });
+        scripts[0].spec.source = "cut 3".into();
+        window.follow(&scripts);
+        assert_eq!(window.source, "cut 3");
+        assert_eq!(window.failure, None);
+
+        // An unrelated echo keeps the stop line.
+        window.failure = Some(RunFailure {
+            script: 1,
+            failure: ScriptFailureKind::Refused,
+            line: 1,
+            column: 1,
+        });
+        scripts.push(script(2, "cut 1"));
+        window.follow(&scripts);
+        assert!(window.failure.is_some());
     }
 
     #[test]

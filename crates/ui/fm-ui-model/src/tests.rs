@@ -3269,6 +3269,59 @@ fn scripts_replicate_from_snapshot_records_and_events() {
     );
 }
 
+/// Regression (RC-011): a `script_changed` adding a script past the project
+/// bound was accepted, so the replicated project could hold more scripts
+/// than any server allows; replacing one at the bound still applies.
+#[test]
+fn a_script_changed_past_the_bound_is_refused() {
+    use fm_protocol::{MAX_SCRIPTS, ScriptSpec, ScriptStatus};
+
+    let script = |id: u64| ScriptStatus {
+        id,
+        spec: ScriptSpec {
+            name: format!("Script {id}"),
+            source: "cut 2".into(),
+        },
+    };
+    let project_id = project(10);
+    let identity = engine("engine-a", 1, "log-a");
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 7)).unwrap();
+    let mut revision = 7;
+    for id in 1..=MAX_SCRIPTS as u64 {
+        revision += 1;
+        model
+            .apply_event(event(
+                project_id,
+                identity.clone(),
+                revision,
+                DurableChange::ScriptChanged(Box::new(script(id))),
+            ))
+            .unwrap();
+    }
+    assert_eq!(
+        model.apply_event(event(
+            project_id,
+            identity.clone(),
+            revision + 1,
+            DurableChange::ScriptChanged(Box::new(script(99))),
+        )),
+        Err(ModelError::InvalidScript(99))
+    );
+    assert_eq!(model.state().unwrap().scripts().len(), MAX_SCRIPTS);
+    let mut replaced = script(1);
+    replaced.spec.source = "cut 3".into();
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            revision + 1,
+            DurableChange::ScriptChanged(Box::new(replaced.clone())),
+        ))
+        .unwrap();
+    assert_eq!(model.state().unwrap().script(1), Some(&replaced));
+}
+
 #[test]
 fn script_syntax_is_checked_before_saving() {
     assert_eq!(check_script_syntax("preview 2\ncut\n"), None);

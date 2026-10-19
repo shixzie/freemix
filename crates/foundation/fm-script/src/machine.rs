@@ -91,17 +91,17 @@ impl Machine<'_> {
                 let value = self.eval(value)?;
                 self.assign(name, value, statement.at)?;
             }
-            StatementKind::If {
-                condition,
-                then,
-                otherwise,
-            } => {
-                let branch = if self.condition(condition)? {
-                    then
-                } else {
-                    otherwise
-                };
-                return self.block(branch);
+            StatementKind::If { arms, otherwise } => {
+                for (index, (at, condition, body)) in arms.iter().enumerate() {
+                    // Each `elif` tried costs one instruction, as a statement.
+                    if index > 0 {
+                        self.tick(*at)?;
+                    }
+                    if self.condition(condition)? {
+                        return self.block(body);
+                    }
+                }
+                return self.block(otherwise);
             }
             StatementKind::Repeat { count, body } => {
                 let turns = match self.eval(count)? {

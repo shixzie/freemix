@@ -50,6 +50,19 @@ pub(crate) enum ExprKind {
 pub(crate) struct Expr {
     pub(crate) kind: ExprKind,
     pub(crate) at: Span,
+    /// Nodes on the longest path from this node to a leaf, so evaluating
+    /// it recurses at most this deep.
+    pub(crate) height: usize,
+}
+
+impl Expr {
+    const fn leaf(kind: ExprKind, at: Span) -> Self {
+        Self {
+            kind,
+            at,
+            height: 1,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,9 +71,10 @@ pub(crate) enum StatementKind {
         name: String,
         value: Expr,
     },
+    /// `if` and its `elif`s as one flat list of `(where, condition, body)`
+    /// arms, so a long `elif` chain never nests.
     If {
-        condition: Expr,
-        then: Vec<Statement>,
+        arms: Vec<(Span, Expr, Vec<Statement>)>,
         otherwise: Vec<Statement>,
     },
     Repeat {
@@ -107,9 +121,12 @@ pub fn parse(source: &str) -> Result<Program, ScriptFailure> {
         ));
     }
     let mut lines = Vec::new();
+    let segments = source.split('\n').count();
     for (index, text) in source.split('\n').enumerate() {
         let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
-        if index >= MAX_SOURCE_LINES {
+        // A final newline ends the last line; it does not start another.
+        let final_newline = index > 0 && index + 1 == segments && text.is_empty();
+        if index >= MAX_SOURCE_LINES && !final_newline {
             return Err(syntax(
                 Span::new(number, 1),
                 format!("the script has more than {MAX_SOURCE_LINES} lines"),
@@ -123,7 +140,7 @@ pub fn parse(source: &str) -> Result<Program, ScriptFailure> {
     let mut parser = Parser {
         lines,
         next: 0,
-        end_line: u32::try_from(source.split('\n').count()).unwrap_or(u32::MAX),
+        end_line: u32::try_from(segments).unwrap_or(u32::MAX),
     };
     let (statements, terminator) = parser.block(0, &[])?;
     debug_assert!(terminator.is_none());
@@ -229,33 +246,33 @@ impl Parser {
                 format!("blocks nest deeper than {MAX_BLOCK_DEPTH}"),
             ));
         }
-        let condition = whole_expression(at, rest)?;
-        let (then, closed) = self.block(depth + 1, &["elif", "else", "end"])?;
-        let Some((word, closed_at, trailing)) = closed else {
-            return Err(self.missing_end("if", at));
-        };
-        let otherwise = match word {
-            "end" => {
-                no_trailing("end", &trailing)?;
-                Vec::new()
+        let mut arm = (at, whole_expression(at, rest)?);
+        let mut arms = Vec::new();
+        let otherwise = loop {
+            let (body, closed) = self.block(depth + 1, &["elif", "else", "end"])?;
+            let Some((word, closed_at, trailing)) = closed else {
+                return Err(self.missing_end("if", at));
+            };
+            arms.push((arm.0, arm.1, body));
+            match word {
+                "end" => {
+                    no_trailing("end", &trailing)?;
+                    break Vec::new();
+                }
+                "else" => {
+                    no_trailing("else", &trailing)?;
+                    let (otherwise, closed) = self.block(depth + 1, &["end"])?;
+                    let Some((_, _, trailing)) = closed else {
+                        return Err(self.missing_end("if", at));
+                    };
+                    no_trailing("end", &trailing)?;
+                    break otherwise;
+                }
+                _ => arm = (closed_at, whole_expression(closed_at, &trailing)?),
             }
-            "else" => {
-                no_trailing("else", &trailing)?;
-                let (otherwise, closed) = self.block(depth + 1, &["end"])?;
-                let Some((_, _, trailing)) = closed else {
-                    return Err(self.missing_end("if", at));
-                };
-                no_trailing("end", &trailing)?;
-                otherwise
-            }
-            _ => vec![self.if_statement(depth, closed_at, &trailing)?],
         };
         Ok(Statement {
-            kind: StatementKind::If {
-                condition,
-                then,
-                otherwise,
-            },
+            kind: StatementKind::If { arms, otherwise },
             at,
         })
     }
@@ -457,11 +474,35 @@ impl Cursor<'_> {
         result
     }
 
-    fn binary(op: BinaryOp, left: Expr, right: Expr, at: Span) -> Expr {
-        Expr {
+    /// The height of a node over `children`, refused past
+    /// [`MAX_EXPRESSION_DEPTH`]. The nesting counter alone does not bound
+    /// the tree: a chain of operators opened by a parenthesized operand puts
+    /// that operand's whole tree below the chain.
+    fn height(at: Span, children: &[&Expr]) -> Result<usize, ScriptFailure> {
+        let height = 1 + children.iter().map(|child| child.height).max().unwrap_or(0);
+        if height > MAX_EXPRESSION_DEPTH {
+            return Err(syntax(
+                at,
+                format!("the expression nests deeper than {MAX_EXPRESSION_DEPTH}"),
+            ));
+        }
+        Ok(height)
+    }
+
+    fn binary(op: BinaryOp, left: Expr, right: Expr, at: Span) -> Result<Expr, ScriptFailure> {
+        Ok(Expr {
+            height: Self::height(at, &[&left, &right])?,
             kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
             at,
-        }
+        })
+    }
+
+    fn unary_node(op: UnaryOp, operand: Expr, at: Span) -> Result<Expr, ScriptFailure> {
+        Ok(Expr {
+            height: Self::height(at, &[&operand])?,
+            kind: ExprKind::Unary(op, Box::new(operand)),
+            at,
+        })
     }
 
     fn or(&mut self) -> Result<Expr, ScriptFailure> {
@@ -471,7 +512,7 @@ impl Cursor<'_> {
             self.next += 1;
             self.enter(at)?;
             let right = self.and()?;
-            left = Self::binary(BinaryOp::Or, left, right, at);
+            left = Self::binary(BinaryOp::Or, left, right, at)?;
         }
         Ok(left)
     }
@@ -483,7 +524,7 @@ impl Cursor<'_> {
             self.next += 1;
             self.enter(at)?;
             let right = self.not()?;
-            left = Self::binary(BinaryOp::And, left, right, at);
+            left = Self::binary(BinaryOp::And, left, right, at)?;
         }
         Ok(left)
     }
@@ -494,10 +535,7 @@ impl Cursor<'_> {
             self.next += 1;
             self.enter(at)?;
             let operand = self.not()?;
-            return Ok(Expr {
-                kind: ExprKind::Unary(UnaryOp::Not, Box::new(operand)),
-                at,
-            });
+            return Self::unary_node(UnaryOp::Not, operand, at);
         }
         self.comparison()
     }
@@ -522,7 +560,7 @@ impl Cursor<'_> {
         let at = self.tokens[self.next].at;
         self.next += 1;
         let right = self.sum()?;
-        Ok(Self::binary(op, left, right, at))
+        Self::binary(op, left, right, at)
     }
 
     fn sum(&mut self) -> Result<Expr, ScriptFailure> {
@@ -537,7 +575,7 @@ impl Cursor<'_> {
             self.next += 1;
             self.enter(at)?;
             let right = self.term()?;
-            left = Self::binary(op, left, right, at);
+            left = Self::binary(op, left, right, at)?;
         }
     }
 
@@ -554,7 +592,7 @@ impl Cursor<'_> {
             self.next += 1;
             self.enter(at)?;
             let right = self.unary()?;
-            left = Self::binary(op, left, right, at);
+            left = Self::binary(op, left, right, at)?;
         }
     }
 
@@ -573,18 +611,14 @@ impl Cursor<'_> {
                 ..
             }) = self.peek()
             {
-                let value = *value;
+                let value = 0_i64.checked_sub_unsigned(*value).ok_or_else(|| {
+                    syntax(self.tokens[self.next].at, format!("-{value} is too large"))
+                })?;
                 self.next += 1;
-                return Ok(Expr {
-                    kind: ExprKind::Int(-value),
-                    at,
-                });
+                return Ok(Expr::leaf(ExprKind::Int(value), at));
             }
             let operand = self.unary()?;
-            return Ok(Expr {
-                kind: ExprKind::Unary(UnaryOp::Neg, Box::new(operand)),
-                at,
-            });
+            return Self::unary_node(UnaryOp::Neg, operand, at);
         }
         self.atom()
     }
@@ -595,7 +629,10 @@ impl Cursor<'_> {
         };
         self.next += 1;
         let kind = match token.tok {
-            Tok::Int(value) => ExprKind::Int(value),
+            Tok::Int(value) => ExprKind::Int(
+                i64::try_from(value)
+                    .map_err(|_| syntax(token.at, format!("{value} is too large")))?,
+            ),
             Tok::Str(value) => ExprKind::Str(value),
             Tok::Ident(word) => match word.as_str() {
                 "true" => ExprKind::Bool(true),
@@ -624,10 +661,7 @@ impl Cursor<'_> {
                     }
                     None => return Err(syntax(token.at, "this ( is never closed")),
                 }
-                return Ok(Expr {
-                    kind: inner.kind,
-                    at: inner.at,
-                });
+                return Ok(inner);
             }
             other => {
                 return Err(syntax(
@@ -636,6 +670,6 @@ impl Cursor<'_> {
                 ));
             }
         };
-        Ok(Expr { kind, at: token.at })
+        Ok(Expr::leaf(kind, token.at))
     }
 }
