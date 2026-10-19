@@ -1715,16 +1715,19 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::RemoteCueLists { address } => remote::cue_lists(address)?,
         Command::Scripts { path } => {
             let project = inspect_engine(&path)?;
-            remote::print_scripts(
-                project
-                    .engine
-                    .show()
-                    .scripts()
-                    .iter()
-                    .map(fm_control::wire_script)
-                    .collect::<Vec<_>>()
-                    .iter(),
-            );
+            let scripts = project
+                .engine
+                .show()
+                .scripts()
+                .iter()
+                .map(fm_control::wire_script)
+                .collect::<Vec<_>>();
+            remote::print_scripts(scripts.iter().map(|script| {
+                (
+                    script,
+                    fm_control::script_run_status(&project.engine, script.id),
+                )
+            }));
         }
         Command::RemoteScripts { address } => remote::scripts(address)?,
         Command::Script {
@@ -2521,12 +2524,18 @@ pub(crate) fn script_payload(
         } => CommandPayload::RunScript {
             script: resolve(&name)?,
         },
+        ScriptCommand::Stop => CommandPayload::StopScript,
     })
 }
 
-/// Edits or runs one script of a local project (RC-011). A run performs
-/// its actions on one frame, all or nothing, then plays any transition it
-/// started to its end; an accepted run prints `ScriptRan(...)`.
+/// Edits, runs, or stops one script of a local project (RC-011). A run
+/// performs its actions on one frame, all or nothing, then plays any
+/// transition it started to its end; an accepted run prints
+/// `ScriptRan(...)` and its `ScriptRun(...)` state. A script that waits
+/// (Protocol 2.62) runs to its end on the simulated clock, as a GO's cue
+/// waits do: each part is resumed on its due frame and prints its own
+/// `ScriptRan(...)`, and a part that fails leaves the run faulted with its
+/// typed reason, which `script-stop` clears.
 fn script(
     path: &Path,
     command: crate::args::ScriptCommand,
@@ -2553,17 +2562,26 @@ fn script(
         print_status(&project);
         return Ok(());
     }
+    let mut parts = Vec::new();
     if result.rejection.is_none() {
-        run_cue_clock(&mut project.engine)?;
+        parts = run_cue_clock(&mut project.engine)?;
     }
     save_engine(path, &project)?;
     if let Some(rejection) = result.rejection {
         return Err(rejection.into());
     }
-    if let (fm_protocol::CommandPayload::RunScript { script }, Some(ran)) =
-        (&payload, result.script_ran)
-    {
-        remote::print_script_ran(*script, ran.0, ran.1, ran.2);
+    if let fm_protocol::CommandPayload::RunScript { script } = &payload {
+        if let Some(ran) = result.script_ran {
+            remote::print_script_ran(ran.0, ran.1, ran.2, ran.3);
+        }
+        // The parts after each wait, resumed on their due frames.
+        for ran in parts {
+            ran.print();
+        }
+        remote::print_script_run(
+            *script,
+            &fm_control::script_run_status(&project.engine, *script),
+        );
     }
     print_status(&project);
     Ok(())
@@ -2588,6 +2606,17 @@ fn run_cue_clock(engine: &mut Engine) -> AppResult<Vec<CueScriptRan>> {
             return Err(rejection.into());
         }
         cue_scripts.extend(advance.cue_scripts);
+        // List 0 resumes the waiting script run (Protocol 2.62).
+        if let Some((script, frame, actions, instructions)) = advance.script_ran {
+            cue_scripts.push(CueScriptRan {
+                frame,
+                run: fm_engine::CueScriptRun {
+                    script,
+                    actions,
+                    instructions,
+                },
+            });
+        }
     }
     for _ in 0..=fm_model::MAX_CUE_TRANSITION_FRAMES {
         if engine.realized_switcher() == engine.show().desired_switcher() {
@@ -2619,11 +2648,12 @@ fn execute(
         .iter()
         .find_map(|event| match &event.payload {
             fm_engine::EngineEvent::ScriptRan {
+                script,
                 frame,
                 actions,
                 instructions,
                 ..
-            } => Some((*frame, *actions, *instructions)),
+            } => Some((*script, *frame, *actions, *instructions)),
             _ => None,
         });
     let cue_scripts = outcome
@@ -2823,6 +2853,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     project.set_transition_favorites(*snapshot.show().transition_favorites());
     project.set_cue_lists(snapshot.show().cue_lists().to_vec());
     project.set_scripts(snapshot.show().scripts().to_vec());
+    project.set_script_run(snapshot.show().script_run().clone());
     sync_title_fields(&mut project, snapshot.show())?;
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
@@ -4213,6 +4244,8 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
     // Scripts first: a cue may run one (schema 55).
     show.set_scripts(project.scripts().to_vec())?;
     show.set_cue_lists(project.cue_lists().to_vec())?;
+    // A run paused at a wait, or a failed part's report (schema 56).
+    show.set_script_run(project.script_run().clone(), project.settings().frame_rate)?;
     Ok(())
 }
 
@@ -5907,6 +5940,8 @@ Usage:
   freemix-cli remote-script-remove <127.0.0.1:port> <script> [--key <key>] [--expect <revision>]
   freemix-cli script-run <project.freemix> <script|name> [--key <key>] [--expect <revision>]
   freemix-cli remote-script-run <127.0.0.1:port> <script|name> [--key <key>] [--expect <revision>]
+  freemix-cli script-stop <project.freemix> [--key <key>] [--expect <revision>]
+  freemix-cli remote-script-stop <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-undo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-redo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-lock <127.0.0.1:port> <on|off> [--input <input>] [--key <key>] [--expect <revision>]
@@ -6283,8 +6318,8 @@ fn source_pattern(input: &Input) -> AppResult<SourcePattern> {
 struct ExecuteResult {
     replayed: bool,
     rejection: Option<AppFailure>,
-    /// An accepted script run's frame, actions, and instructions.
-    script_ran: Option<(u64, u32, u32)>,
+    /// An accepted script run's script, frame, actions, and instructions.
+    script_ran: Option<(u64, u64, u32, u32)>,
     /// Every script step an accepted cue operation or advance ran, in
     /// order, with its frame (Protocol 2.61).
     cue_scripts: Vec<CueScriptRan>,

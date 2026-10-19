@@ -260,3 +260,73 @@ fn a_cue_runs_a_script_and_holds_it() {
     );
     assert_eq!(succeed(&["status", &project]), before);
 }
+
+/// Protocol 2.62: a script that waits runs to its end on the simulated
+/// clock, each part on its due frame and reading the show as it is then;
+/// a part that fails leaves a typed fault that `scripts` reports and
+/// `script-stop` clears; a cue step cannot run a script that waits.
+#[test]
+fn a_script_that_waits_runs_in_parts_and_a_failed_part_is_reported() {
+    let root = Root::new("waits");
+    let project = root.project();
+    let source = root.source("parts.fms", "preview 2\nwait 3\ncut\nwait 2\ncut 7\n");
+    succeed(&["script-set", &project, "4", "Parts", &source]);
+    fail(&["script-stop", &project], "no script is running");
+
+    // The first part previews input 2; the second cuts it to Program three
+    // frames later; the third asks for input 7, which the project lacks, so
+    // nothing of that frame is applied and the run is faulted.
+    let ran = succeed(&["script-run", &project, "Parts"]);
+    let parts = ran
+        .lines()
+        .filter(|line| line.starts_with("ScriptRan(script=4, frame="))
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 2, "{ran}");
+    let frame = |line: &str| -> u64 {
+        let start = line.find("frame=").unwrap() + "frame=".len();
+        line[start..start + line[start..].find(',').unwrap()]
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(frame(parts[1]), frame(parts[0]) + 3, "{ran}");
+    assert!(
+        ran.contains(&format!(
+            "ScriptRun(script=4, state=faulted, frame={}, failure=refused, line=5, column=1)",
+            frame(parts[0]) + 5
+        )),
+        "{ran}"
+    );
+    assert!(ran.contains("Program(desired=2, realized=2)"), "{ran}");
+
+    // The fault is saved with the project and listed with the script; a
+    // cue cannot run a script that waits.
+    let listed = succeed(&["scripts", &project]);
+    assert!(
+        listed.contains("ScriptRun(script=4, state=faulted"),
+        "{listed}"
+    );
+    fail(
+        &[
+            "cue-list-set",
+            &project,
+            "7",
+            "Show",
+            "10:Open:0:run_script.4",
+        ],
+        "which waits; a cue's script step cannot wait",
+    );
+    succeed(&["script-stop", &project]);
+    let listed = succeed(&["scripts", &project]);
+    assert!(!listed.contains("ScriptRun("), "{listed}");
+    fail(&["script-stop", &project], "no script is running");
+
+    // A wait past ten minutes of frames is refused before anything runs.
+    let long = root.source("long.fms", "preview 1\nwait 40000\n");
+    succeed(&["script-set", &project, "5", "Long", &long]);
+    let before = succeed(&["status", &project]);
+    fail(
+        &["script-run", &project, "5"],
+        "script_failed:wait_frames:2:1",
+    );
+    assert_eq!(succeed(&["status", &project]), before);
+}

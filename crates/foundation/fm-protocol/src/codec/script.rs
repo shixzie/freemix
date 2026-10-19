@@ -5,7 +5,8 @@
 //! source's UTF-8 bytes, so newlines and separators never reach the record.
 
 use crate::{
-    CodecError, MAX_SCRIPTS, ScriptSpec, ScriptStatus, script_name_is_valid, script_source_is_valid,
+    CodecError, MAX_SCRIPTS, ScriptRunStatus, ScriptSpec, ScriptStatus, script_name_is_valid,
+    script_source_is_valid,
 };
 
 use super::cue::{hex, unhex};
@@ -93,4 +94,76 @@ pub(super) fn parse_state_count(value: &str) -> Result<u16, CodecError> {
 /// Whether `count` is a valid `script_states` count.
 pub(super) fn state_count_is_valid(count: u16) -> bool {
     usize::from(count) <= MAX_SCRIPTS
+}
+
+/// Encodes a run status (Protocol 2.62): `idle`,
+/// `waiting:<started>:<due>:<waits>:<wait frames>`, or
+/// `faulted:<frame>:<failure>:<line>:<column>`.
+pub(super) fn encode_run(run: ScriptRunStatus) -> Result<String, CodecError> {
+    Ok(match run {
+        ScriptRunStatus::Idle => "idle".to_owned(),
+        ScriptRunStatus::Waiting {
+            started_frame,
+            due_frame,
+            waits,
+            wait_frames,
+        } => {
+            if due_frame <= started_frame || waits == 0 || wait_frames == 0 {
+                return Err(invalid("run", format!("{run:?}")));
+            }
+            format!("waiting:{started_frame}:{due_frame}:{waits}:{wait_frames}")
+        }
+        ScriptRunStatus::Faulted {
+            frame,
+            failure,
+            line,
+            column,
+        } => {
+            if line == 0 || column == 0 {
+                return Err(invalid("run", format!("{run:?}")));
+            }
+            format!("faulted:{frame}:{}:{line}:{column}", failure.token())
+        }
+    })
+}
+
+/// Decodes a run status (see [`encode_run`]).
+pub(super) fn decode_run(value: &str) -> Result<ScriptRunStatus, CodecError> {
+    let number = |token: &str| parse_canonical_u64(token);
+    let small = |token: &str| {
+        parse_canonical_u64(token)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value != 0)
+    };
+    let parts: Vec<&str> = value.split(':').collect();
+    let run = match parts.as_slice() {
+        ["idle"] => Some(ScriptRunStatus::Idle),
+        ["waiting", started, due, waits, frames] => number(started)
+            .zip(number(due))
+            .zip(small(waits))
+            .zip(small(frames))
+            .filter(|(((started, due), _), _)| due > started)
+            .map(
+                |(((started_frame, due_frame), waits), wait_frames)| ScriptRunStatus::Waiting {
+                    started_frame,
+                    due_frame,
+                    waits,
+                    wait_frames,
+                },
+            ),
+        ["faulted", frame, failure, line, column] => number(frame)
+            .zip(fm_command::ScriptFailureKind::from_token(failure))
+            .zip(small(line))
+            .zip(small(column))
+            .map(
+                |(((frame, failure), line), column)| ScriptRunStatus::Faulted {
+                    frame,
+                    failure,
+                    line,
+                    column,
+                },
+            ),
+        _ => None,
+    };
+    run.ok_or_else(|| invalid("run", value))
 }

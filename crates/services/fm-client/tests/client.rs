@@ -3893,6 +3893,7 @@ mod scripts {
         WireMessage::ScriptState(ScriptStateMessage {
             revision,
             script: script(id),
+            run: fm_protocol::ScriptRunStatus::Idle,
         })
     }
 

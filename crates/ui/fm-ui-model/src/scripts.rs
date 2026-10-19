@@ -5,6 +5,12 @@
 //! `script_ran` carries an accepted run's counts together with every desired
 //! state its actions may have changed. A refused run publishes nothing: its
 //! typed reason arrives with the command result.
+//!
+//! A script that waits (Protocol 2.62) runs in parts: each part arrives as
+//! a `script_ran` whose `run` says whether the run waits again, and a stop,
+//! a cleared fault, or a part that failed on its frame as
+//! `script_run_changed`. At most one script's run waits or faulted at a
+//! time; [`ProjectState::script_run_status`] reports each script's.
 
 use fm_protocol::{ScriptRunChange, ScriptStatus};
 
@@ -24,6 +30,9 @@ pub struct ScriptRunUpdate {
     pub actions: u32,
     /// Instructions the run used.
     pub instructions: u32,
+    /// The run afterwards: waiting for its next part, or idle once it
+    /// ended (Protocol 2.62).
+    pub run: fm_protocol::ScriptRunStatus,
     /// The desired state after the run, in the shape of a cue run (its
     /// `list` is 0, its run state idle, and nothing fired).
     pub effects: CueRunUpdate,
@@ -36,6 +45,7 @@ impl ScriptRunUpdate {
             frame: change.frame,
             actions: change.actions,
             instructions: change.instructions,
+            run: change.run,
             effects: CueRunUpdate {
                 list: 0,
                 frame: change.frame,
@@ -107,7 +117,22 @@ pub(crate) fn apply_run(state: &mut ProjectState, update: ScriptRunUpdate) {
             cue_list: None,
         },
     );
+    set_run_status(state, update.script, update.run);
     crate::cue_lists::apply_effects(state, update.effects);
+}
+
+/// Records script `script`'s run state: the authority keeps one run slot,
+/// so a waiting or faulted run replaces any other script's, and an idle
+/// one empties the slot.
+pub(crate) fn set_run_status(
+    state: &mut ProjectState,
+    script: u64,
+    run: fm_protocol::ScriptRunStatus,
+) {
+    state.active_script_run = match run {
+        fm_protocol::ScriptRunStatus::Idle => None,
+        run => Some((script, run)),
+    };
 }
 
 /// Records `run` as its script's last run and the latest of all.

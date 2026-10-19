@@ -922,3 +922,134 @@ fn scripts_a_cue_runs_are_held_and_armed_edits_need_what_they_add() {
         "ControlAudio",
     );
 }
+
+/// A script that waits (Protocol 2.62) runs its later parts on a show
+/// nobody knows yet, so `script_run` needs the class of every verb its
+/// source holds, up front; the clock's list-0 advance then resumes it on
+/// that authority, reading the show as it is on the due frame, and the
+/// wire reports the run state throughout.
+#[test]
+fn a_waiting_script_needs_every_verb_up_front_and_resumes_on_the_clock() {
+    let mut control = granted(TRANSITION_ONLY);
+    submit(
+        &mut control,
+        &admin(),
+        "set",
+        set_script(
+            1,
+            "cut 2\nwait 5\nif program == 3\n  mute 3\nend\ncut preview",
+        ),
+    );
+    // Only the `cut` runs now, but the parts after the wait may mute.
+    let denied = submit(&mut control, &session(), "run", run_script());
+    assert_denied(&denied, "ControlAudio");
+    assert_eq!(program(&control), input(1));
+
+    let mut control = granted(TRANSITION_AND_AUDIO);
+    submit(
+        &mut control,
+        &admin(),
+        "set",
+        set_script(
+            1,
+            "cut 2\nwait 5\nif program == 3\n  mute 3\nend\ncut preview",
+        ),
+    );
+    let ran = submit(&mut control, &session(), "run", run_script());
+    let EventPayload::ScriptRan(change) = &ran.output.events[0].payload else {
+        panic!("expected script_ran: {:?}", ran.output.events);
+    };
+    let fm_protocol::ScriptRunStatus::Waiting {
+        started_frame,
+        due_frame,
+        waits: 1,
+        wait_frames: 5,
+    } = change.run
+    else {
+        panic!("expected a waiting run: {:?}", change.run);
+    };
+    assert_eq!(due_frame, started_frame + 5);
+    assert_eq!(control.cue_advance_frame(), Some((0, due_frame)));
+    assert_eq!(control.script_states()[0].run, change.run);
+    // Another run waits for this one.
+    let busy = submit(&mut control, &session(), "again", run_script());
+    let CommandResult::Rejected { reason, .. } = &busy.output.result else {
+        panic!("expected a refusal: {:?}", busy.output.result);
+    };
+    assert_eq!(
+        reason,
+        &Some(fm_protocol::RefusalReason::ScriptRunning { script: 1 })
+    );
+
+    // The operator takes input 3 while it waits; the rest runs on the
+    // clock and sees it.
+    submit(
+        &mut control,
+        &admin(),
+        "take-3",
+        CommandPayload::SelectPreview { input: wire(3) },
+    );
+    let cut = submit(&mut control, &session(), "cut-3", CommandPayload::Cut);
+    assert!(cut.is_accepted(), "{:?}", cut.output.result);
+    assert_eq!(program(&control), input(3));
+    let advanced = advance(&mut control, "advance");
+    let EventPayload::ScriptRan(change) = &advanced.output.events[0].payload else {
+        panic!("expected script_ran: {:?}", advanced.output.events);
+    };
+    assert_eq!((change.script, change.actions), (1, 3));
+    assert_eq!(change.run, fm_protocol::ScriptRunStatus::Idle);
+    assert!(strip(&control, 3).muted);
+    assert_eq!(program(&control), input(2));
+    assert_eq!(control.cue_advance_frame(), None);
+}
+
+/// `script_stop` ends a waiting run with `script_run_changed`; a part that
+/// fails on its frame is published as a typed fault.
+#[test]
+fn a_stop_and_a_fault_publish_the_run_state() {
+    let mut control = granted(TRANSITION_ONLY);
+    submit(
+        &mut control,
+        &admin(),
+        "set",
+        set_script(1, "wait 3\ncut 7"),
+    );
+    submit(&mut control, &session(), "run", run_script());
+    let stopped = submit(&mut control, &session(), "stop", CommandPayload::StopScript);
+    assert!(
+        matches!(
+            stopped.output.events[0].payload,
+            EventPayload::ScriptRunChanged {
+                script: 1,
+                run: fm_protocol::ScriptRunStatus::Idle,
+                ..
+            }
+        ),
+        "{:?}",
+        stopped.output.events
+    );
+    assert_eq!(control.cue_advance_frame(), None);
+
+    submit(&mut control, &session(), "run-again", run_script());
+    let advanced = advance(&mut control, "advance");
+    assert!(advanced.is_accepted(), "{:?}", advanced.output.result);
+    let EventPayload::ScriptRunChanged {
+        script: 1,
+        frame,
+        run,
+    } = advanced.output.events[0].payload
+    else {
+        panic!("expected script_run_changed: {:?}", advanced.output.events);
+    };
+    assert_eq!(
+        run,
+        fm_protocol::ScriptRunStatus::Faulted {
+            frame,
+            failure: fm_protocol::ScriptFailureKind::Refused,
+            line: 2,
+            column: 1,
+        }
+    );
+    assert_eq!(control.script_states()[0].run, run);
+    assert_eq!(program(&control), input(1));
+}

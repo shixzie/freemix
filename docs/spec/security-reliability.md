@@ -61,7 +61,11 @@ later frame whose show (and so the script's branches) is unknown when the
 chain is armed, so the GO needs the permission of every action verb the
 script holds in any branch; an edit of a script an armed chain runs needs
 whatever permission its new verbs add, and a script a cue runs cannot be
-removed. Scripts cannot fire cues or other scripts, so automation never
+removed. A script that waits (Protocol 2.62) runs its later parts on the
+authority's clock against a show unknown when it starts, so a direct run of
+it likewise needs the permission of every action verb its source holds, up
+front; a running script cannot be edited until its run ends or is stopped.
+Scripts cannot fire cues or other scripts, so automation never
 nests deeper than a cue running one script.
 
 ## 4. Guest and browser isolation

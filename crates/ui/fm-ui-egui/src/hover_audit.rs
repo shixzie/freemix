@@ -672,6 +672,7 @@ fn model(variant: Variant) -> ClientModel {
             .apply_script_state(fm_protocol::ScriptStateMessage {
                 revision: 10,
                 script,
+                run: fm_protocol::ScriptRunStatus::Idle,
             })
             .unwrap();
     }
@@ -2042,6 +2043,47 @@ fn scenes(language: Language) -> Vec<Scene> {
             },
             cue_ran_script_fixture(),
         ),
+        // Protocol 2.62: a run paused at a wait, and a part that failed.
+        (
+            "dialog/scripts-running",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+            },
+            script_run_fixture(true, paused_run()),
+        ),
+        (
+            "dialog/scripts-running-other",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(2));
+            },
+            script_run_fixture(true, paused_run()),
+        ),
+        (
+            "viewer/scripts-running",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+            },
+            script_run_fixture(false, paused_run()),
+        ),
+        (
+            "dialog/scripts-run-faulted",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+            },
+            script_run_fixture(
+                true,
+                fm_protocol::ScriptRunStatus::Faulted {
+                    frame: 160,
+                    failure: fm_protocol::ScriptFailureKind::Refused,
+                    line: 3,
+                    column: 1,
+                },
+            ),
+        ),
         (
             "dialog/scripts-new",
             &|shell| {
@@ -2176,6 +2218,42 @@ fn dock_scenes(locale: Locale) -> Vec<Scene> {
     animation.animation.sync(&egui::Context::default(), &state);
     scenes.push(Scene::console("dock/animation-window", animation, state));
     scenes
+}
+
+/// Script 1 paused at its second wait, resuming on frame 150.
+fn paused_run() -> fm_protocol::ScriptRunStatus {
+    fm_protocol::ScriptRunStatus::Waiting {
+        started_frame: 100,
+        due_frame: 150,
+        waits: 2,
+        wait_frames: 50,
+    }
+}
+
+/// The audit's show with script 1's run in state `run` (Protocol 2.62),
+/// for an operator or a viewer.
+pub(crate) fn script_run_fixture(
+    operator: bool,
+    run: fm_protocol::ScriptRunStatus,
+) -> StudioUiState {
+    let mut model = model(Variant::default());
+    let state = model.state().unwrap().clone();
+    let cursor = model.reconnect_cursor().unwrap().clone();
+    model
+        .apply_event(fm_ui_model::DurableProjectEvent {
+            cursor: fm_ui_model::ProjectCursor {
+                revision: cursor.revision.checked_next().unwrap(),
+                ..cursor
+            },
+            change: fm_ui_model::DurableChange::ScriptRunChanged {
+                script: 1,
+                frame: 130,
+                run,
+            },
+            edit_history: state.edit_history(),
+        })
+        .unwrap();
+    ready_over(&model, operator)
 }
 
 /// The audit's show once cue list 1 ("Show open") ran script 1 ("Opening")

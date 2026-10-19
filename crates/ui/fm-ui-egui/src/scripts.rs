@@ -16,10 +16,18 @@
 //! The draft follows the replicated script while it is unchanged, so an
 //! edit, undo, or redo from another console shows at once; an edited draft
 //! keeps the operator's text until it is saved or discarded.
+//!
+//! A script with `wait` runs in parts (Protocol 2.62). While its run is
+//! paused at a wait the window says so, with the frame its next part runs
+//! on, and offers Stop run (`script_stop`); the script cannot be saved or
+//! deleted and no other script can run until the run ends. A part that
+//! failed on its frame is reported with its typed reason and line (marked
+//! in the editor) until Clear failed run (`script_stop`) or another run.
 
 use egui::{Button, RichText, ScrollArea, TextEdit, Ui};
 use fm_protocol::{
-    MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, RefusalReason, ScriptFailureKind, ScriptStatus,
+    MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, RefusalReason, ScriptFailureKind, ScriptRunStatus,
+    ScriptStatus,
 };
 
 use fm_ui_model::ScriptRunReport;
@@ -49,6 +57,9 @@ pub enum ScriptIntent {
     /// Runs one saved script (`script_run`): an operator control, not
     /// undoable.
     Run { script: u64 },
+    /// Stops the paused script run, or clears a failed run's report
+    /// (`script_stop`, Protocol 2.62): an operator control, not undoable.
+    Stop,
 }
 
 /// Where a refused run stopped.
@@ -234,6 +245,27 @@ impl ScriptsWindow {
 }
 
 /// The replicated scripts, empty before a snapshot.
+/// Script `script`'s replicated run state (Protocol 2.62).
+#[must_use]
+pub fn run_status(state: &StudioUiState, script: u64) -> ScriptRunStatus {
+    state
+        .project_state
+        .as_ref()
+        .map_or(ScriptRunStatus::Idle, |project| {
+            project.script_run_status(script)
+        })
+}
+
+/// The script whose run is paused at a wait, if one is.
+fn paused_script(state: &StudioUiState) -> Option<u64> {
+    state
+        .project_state
+        .as_ref()
+        .and_then(fm_ui_model::ProjectState::active_script_run)
+        .filter(|(_, run)| matches!(run, ScriptRunStatus::Waiting { .. }))
+        .map(|(script, _)| script)
+}
+
 fn replicated(state: &StudioUiState) -> &[ScriptStatus] {
     state
         .project_state
@@ -266,7 +298,9 @@ pub fn save_block(
     dirty: bool,
 ) -> Option<&'static str> {
     crate::cues::edit_block(state).or_else(|| {
-        if !dirty {
+        if paused_script(state) == Some(script) {
+            Some(Msg::ScriptReasonThisRunning.en())
+        } else if !dirty {
             Some(Msg::ScriptReasonUnchanged.en())
         } else if !fm_protocol::script_name_is_valid(name) {
             Some(Msg::ScriptReasonName.en())
@@ -282,7 +316,7 @@ pub fn save_block(
 
 /// Why the selected script cannot run, if it cannot: the session's
 /// transition gate, then a script not in the project yet, unsaved edits,
-/// or a syntax error.
+/// a syntax error, or a script run already paused at a wait.
 #[must_use]
 pub fn run_block(
     state: &StudioUiState,
@@ -297,6 +331,8 @@ pub fn run_block(
             Some(Msg::ScriptReasonUnsaved.en())
         } else if fm_ui_model::check_script_syntax(source).is_some() {
             Some(Msg::ScriptReasonSyntax.en())
+        } else if paused_script(state).is_some() {
+            Some(Msg::ScriptReasonRunning.en())
         } else {
             None
         }
@@ -386,10 +422,19 @@ fn draw_list(
     if scripts.is_empty() {
         ui.label(RichText::new(l.text(Msg::ScriptsEmpty)).color(muted_color()));
     }
+    let paused = paused_script(state);
     for script in scripts {
         let selected = window.selected == Some(script.id);
+        let label = if paused == Some(script.id) {
+            l.format(
+                Msg::ScriptListRunning,
+                &[("name", Arg::Str(&script.spec.name))],
+            )
+        } else {
+            script.spec.name.clone()
+        };
         if ui
-            .selectable_label(selected, &script.spec.name)
+            .selectable_label(selected, label)
             .on_hover_text(l.format(
                 Msg::ScriptListHover,
                 &[("name", Arg::Str(&script.spec.name))],
@@ -413,15 +458,25 @@ fn draw_list(
 }
 
 /// The line to mark in the editor: the draft's first syntax error, else
-/// where this script's last run stopped while the draft is unchanged.
-fn marked_line(window: &ScriptsWindow) -> Option<u32> {
+/// where this script's last run stopped while the draft is unchanged: a
+/// run this console asked for, or a part that failed on its frame.
+fn marked_line(window: &ScriptsWindow, state: &StudioUiState) -> Option<u32> {
     if let Some(check) = fm_ui_model::check_script_syntax(&window.source) {
         return Some(check.at.line);
     }
+    if window.dirty() {
+        return None;
+    }
     window
         .failure
-        .filter(|failure| Some(failure.script) == window.selected && !window.dirty())
+        .filter(|failure| Some(failure.script) == window.selected)
         .map(|failure| failure.line)
+        .or_else(
+            || match window.selected.map(|script| run_status(state, script)) {
+                Some(ScriptRunStatus::Faulted { line, .. }) => Some(line),
+                _ => None,
+            },
+        )
 }
 
 #[allow(clippy::too_many_lines)] // one immediate-mode editor
@@ -450,7 +505,7 @@ fn draw_editor(
     });
     ui.add_space(4.0);
 
-    let marked = marked_line(window);
+    let marked = marked_line(window, state);
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let color = ui.visuals().widgets.inactive.text_color();
     let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -548,6 +603,8 @@ fn draw_editor(
         }
     });
 
+    draw_run_status(ui, state, script, intents);
+
     // The last run of this script: where it stopped, or what it did.
     match last_run(window, state, script) {
         Some(LastRun::Stopped(failure)) => {
@@ -597,11 +654,84 @@ fn draw_editor(
     }
 }
 
+/// The selected script's paused run (with Stop run) or failed run (with
+/// Clear failed run), Protocol 2.62.
+fn draw_run_status(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    script: u64,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let (text, hover, color, button, button_hover) = match run_status(state, script) {
+        ScriptRunStatus::Idle => return,
+        ScriptRunStatus::Waiting {
+            due_frame,
+            waits,
+            wait_frames,
+            ..
+        } => (
+            l.format(
+                Msg::ScriptRunWaiting,
+                &[
+                    ("frame", Arg::Plain(due_frame)),
+                    ("waits", Arg::Plain(u64::from(waits))),
+                    ("frames", Arg::Plain(u64::from(wait_frames))),
+                ],
+            ),
+            Msg::ScriptRunWaitingHover,
+            crate::theme::accent_color(),
+            Msg::ScriptStop,
+            Msg::ScriptStopHover,
+        ),
+        ScriptRunStatus::Faulted {
+            frame,
+            failure,
+            line,
+            column,
+        } => (
+            l.format(
+                Msg::ScriptRunFaulted,
+                &[
+                    ("frame", Arg::Plain(frame)),
+                    (
+                        "failure",
+                        Arg::Str(l.text(fm_ui_model::i18n::script_failure_msg(failure))),
+                    ),
+                    ("line", Arg::Plain(u64::from(line))),
+                    ("column", Arg::Plain(u64::from(column))),
+                ],
+            ),
+            Msg::ScriptRunFaultedHover,
+            ERROR,
+            Msg::ScriptClearFault,
+            Msg::ScriptClearFaultHover,
+        ),
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(text).color(color))
+            .on_hover_text(l.text(hover));
+        let block = crate::cues::control_block(state);
+        if ui
+            .add_enabled(block.is_none(), Button::new(l.text(button)))
+            .hint(l.text(button_hover), block.unwrap_or(""))
+            .clicked()
+        {
+            intents.push(StudioIntent::Script(ScriptIntent::Stop));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use fm_protocol::ScriptSpec;
 
     use super::*;
+
+    /// A console with no replicated project: every script is idle.
+    fn idle_state() -> StudioUiState {
+        StudioUiState::new(crate::StudioConnectionStatus::Backoff)
+    }
 
     fn script(id: u64, source: &str) -> ScriptStatus {
         ScriptStatus {
@@ -683,7 +813,7 @@ mod tests {
         window.follow(&scripts);
         assert!(!window.dirty());
         assert_eq!(window.failure, None);
-        assert_eq!(marked_line(&window), None);
+        assert_eq!(marked_line(&window, &idle_state()), None);
 
         // Edited elsewhere while unchanged here: the stop line goes too.
         window.failure = Some(RunFailure {
@@ -781,7 +911,7 @@ mod tests {
         let mut window = ScriptsWindow::default();
         let scripts = vec![script(1, "preview 2\ncut 9")];
         window.follow(&scripts);
-        assert_eq!(marked_line(&window), None);
+        assert_eq!(marked_line(&window, &idle_state()), None);
         window.failure = Some(RunFailure {
             script: 1,
             failure: ScriptFailureKind::Refused,
@@ -789,11 +919,11 @@ mod tests {
             column: 1,
             since: None,
         });
-        assert_eq!(marked_line(&window), Some(2));
+        assert_eq!(marked_line(&window, &idle_state()), Some(2));
         window.source = "preview 2\nif program = 1\nend".into();
-        assert_eq!(marked_line(&window), Some(2));
+        assert_eq!(marked_line(&window, &idle_state()), Some(2));
         window.source = "if\n".into();
-        assert_eq!(marked_line(&window), Some(1));
+        assert_eq!(marked_line(&window, &idle_state()), Some(1));
     }
 
     /// Regression (Protocol 2.60): a cue GO refused by its script step

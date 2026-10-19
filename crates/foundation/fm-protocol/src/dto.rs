@@ -1733,7 +1733,8 @@ pub enum CommandPayload {
     },
     /// The authority's cue clock: runs list `list`'s waiting actions due on
     /// `frame`. Accepted only for the frame they are due on (or the next
-    /// frame once that has passed).
+    /// frame once that has passed). List `0` resumes the waiting script run
+    /// (Protocol 2.62).
     CueAdvance {
         list: u64,
         frame: u64,
@@ -1753,6 +1754,9 @@ pub enum CommandPayload {
     RunScript {
         script: u64,
     },
+    /// Ends the waiting script run, or clears the last run's fault
+    /// (Protocol 2.62). Wire payload `script_stop`, no fields.
+    StopScript,
     /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
     /// Wire payloads `grade_input_set` and `grade_input_clear`.
     SetInputGrade {
@@ -2550,8 +2554,17 @@ pub enum EventPayload {
     ScriptRemoved {
         script: u64,
     },
-    /// A script run was accepted (Protocol 2.58).
+    /// A script run, or one part of a run that waited, was accepted
+    /// (Protocol 2.58).
     ScriptRan(Box<crate::ScriptRunChange>),
+    /// A script's run changed on `frame` without a part running: it was
+    /// stopped, its fault cleared, or the part due on `frame` failed
+    /// (Protocol 2.62). `run` is the run afterwards.
+    ScriptRunChanged {
+        script: u64,
+        frame: u64,
+        run: crate::ScriptRunStatus,
+    },
     /// A playlist command was accepted for `frame`: the complete playlist
     /// afterwards and the desired Program and Preview. When the command put
     /// an entry on air, its input reaches Program on exactly `frame`.

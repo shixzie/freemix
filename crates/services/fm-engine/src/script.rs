@@ -27,6 +27,44 @@
 //! any refused cue action, with the same [`RefusalReason::ScriptFailed`]. A
 //! script cannot run a cue or another script, so runs never nest deeper.
 //! Removing a script a cue runs is refused.
+//!
+//! # Waits (schema 56, Protocol 2.62)
+//!
+//! A script's `wait FRAMES` spans frames. The parts after a wait are
+//! evaluated on their due frame, not planned up front: a script reads
+//! Program and Preview, and a part planned at the start would act on a show
+//! that no longer exists by then. A run that reaches a wait therefore ends
+//! its part there: the part's actions apply on its frame as above (all or
+//! nothing), and the show's one run slot ([`fm_model::ScriptRunState`])
+//! saves the run with its interpreter state ([`fm_script::Suspended`]: the
+//! statement path to the wait, loop counters, variables, and budget use,
+//! all bounded by the run's limits) and the frame it resumes on.
+//!
+//! - The cue clock resumes it: [`crate::Engine::cue_advance_frame`] reports
+//!   the run's due frame as list `0` when it is the earliest automation
+//!   due, and a [`crate::EngineCommand::CueAdvance`] for list `0` runs the
+//!   next part on exactly that frame (or the next frame once it has
+//!   passed), journaled like a cue advance. A part that fails is accepted
+//!   with nothing of its frame applied: the run ends and the slot keeps a
+//!   typed [`fm_model::ScriptFault`] (the failure kind, line, and column),
+//!   so the clock never retries it.
+//! - The run is bounded: at most [`fm_model::MAX_SCRIPT_WAITS`] waits
+//!   adding up to [`fm_model::MAX_SCRIPT_WAIT_SECONDS`] of frames, and one
+//!   run's instruction, action, variable, and string budgets cover all of
+//!   its parts. Only one run waits at a time: another `script_run` is
+//!   refused with [`RefusalReason::ScriptRunning`], as is an edit or
+//!   removal of the running script (the saved state belongs to its
+//!   source). [`crate::EngineCommand::StopScript`] ends the run (or clears
+//!   the fault) on its target frame: a live operation without undo.
+//! - The slot is project state: it is saved with the project and journaled
+//!   with every command, so a restarted show resumes the run on its due
+//!   engine frame, exactly like a waiting cue (the time the show was down
+//!   does not count).
+//! - A cue's script step runs on its cue's frame, so the script it runs
+//!   must not wait: a cue list naming such a script, or an edit adding a
+//!   wait to a script a cue runs, is refused (field issue
+//!   `script_waits`), and a step that reached a wait anyway would fail
+//!   with the `waits` budget.
 
 use fm_automation::FiredCueAction;
 use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode, ScriptFailureKind};
@@ -62,13 +100,37 @@ pub(crate) fn unknown_script(script: u64) -> Rejection {
     })
 }
 
+/// The refusal of a run, edit, or removal while script `script` runs.
+pub(crate) fn running(script: u64) -> Rejection {
+    Rejection::new(
+        RejectionCode::Conflict,
+        format!("script {script} is running; stop it first"),
+    )
+    .with_reason(RefusalReason::ScriptRunning { script })
+}
+
+/// The refusal of a cue step running script `script`, which waits; `owner`
+/// names the cue or list.
+pub(crate) fn waits_in_cue(script: u64, owner: &str) -> Rejection {
+    Rejection::new(
+        RejectionCode::InvalidCommand,
+        format!("{owner} runs script {script}, which waits; a cue's script step cannot wait"),
+    )
+    .with_field(FieldIssue::new(
+        "script",
+        "script_waits",
+        "use cue waits instead of wait in a script a cue runs",
+    ))
+}
+
 /// Applies a [`crate::EngineCommand::SetScript`] to `state`.
 ///
 /// # Errors
 ///
 /// Refuses script id zero, an invalid name or source, a script past the
-/// project bound, removing an unknown script, and removing a script a cue
-/// runs.
+/// project bound, removing an unknown script, removing a script a cue
+/// runs, adding a wait to a script a cue runs, and changing or removing
+/// the running script.
 pub(crate) fn apply_set(
     state: &mut ShowState,
     script: u64,
@@ -78,6 +140,14 @@ pub(crate) fn apply_set(
         .scripts()
         .iter()
         .position(|candidate| candidate.id == script);
+    if state
+        .script_run()
+        .running
+        .as_ref()
+        .is_some_and(|run| run.script == script)
+    {
+        return Err(running(script));
+    }
     let Some(definition) = definition else {
         let index = existing.ok_or_else(|| unknown_script(script))?;
         if let Some(list) = state.cue_lists().iter().find(|list| {
@@ -97,6 +167,9 @@ pub(crate) fn apply_set(
             )));
         }
         state.scripts_mut().remove(index);
+        if state.script_run().script() == Some(script) {
+            state.script_run_mut().fault = None;
+        }
         return Ok(());
     };
     if script == 0 {
@@ -123,6 +196,16 @@ pub(crate) fn apply_set(
             }
         },
     )?;
+    if fm_model::script_waits(&definition.source)
+        && let Some(list) = state.cue_lists().iter().find(|list| {
+            list.cues
+                .iter()
+                .flat_map(|cue| &cue.actions)
+                .any(|action| action.script() == Some(script))
+        })
+    {
+        return Err(waits_in_cue(script, &format!("cue list {}", list.id)));
+    }
     let next = fm_model::Script {
         id: script,
         name: definition.name.clone(),
@@ -157,6 +240,13 @@ pub(crate) fn definition(state: &ShowState, script: u64) -> Option<EngineScriptD
     })
 }
 
+/// The typed refusal kind of a run failure (the wire form of a
+/// [`fm_model::ScriptFault`]).
+#[must_use]
+pub const fn script_failure_kind(kind: FailureKind) -> ScriptFailureKind {
+    failure_kind(kind)
+}
+
 const fn failure_kind(kind: FailureKind) -> ScriptFailureKind {
     match kind {
         FailureKind::Syntax => ScriptFailureKind::Syntax,
@@ -165,6 +255,8 @@ const fn failure_kind(kind: FailureKind) -> ScriptFailureKind {
         FailureKind::Budget(Budget::Actions) => ScriptFailureKind::ActionBudget,
         FailureKind::Budget(Budget::Variables) => ScriptFailureKind::VariableBudget,
         FailureKind::Budget(Budget::StringBytes) => ScriptFailureKind::StringBudget,
+        FailureKind::Budget(Budget::Waits) => ScriptFailureKind::WaitBudget,
+        FailureKind::Budget(Budget::WaitFrames) => ScriptFailureKind::WaitFramesBudget,
         FailureKind::Refused => ScriptFailureKind::Refused,
     }
 }
@@ -440,6 +532,17 @@ impl ScriptOutcome {
     }
 }
 
+/// Where a run of a script begins.
+#[derive(Clone, Copy)]
+pub(crate) enum Entry<'a> {
+    /// A new run of a cue step, which may not wait.
+    Step,
+    /// A new run on its own, which may wait.
+    Start,
+    /// The next part of a run that waited.
+    Resume(&'a fm_script::Suspended),
+}
+
 /// Runs script `script` in the sandbox on `show`, the show of the frame
 /// the run lands on as earlier actions of that frame left it, collecting
 /// what its actions realize into `frame`. A run that stops early leaves
@@ -452,6 +555,7 @@ impl ScriptOutcome {
 pub(crate) fn run_on(
     engine: &Engine,
     script: u64,
+    entry: Entry<'_>,
     target_frame: FrameNumber,
     show: &mut ShowState,
     frame: &mut CueFrame<'_>,
@@ -459,6 +563,13 @@ pub(crate) fn run_on(
     let found = show.script(script).ok_or_else(|| unknown_script(script))?;
     let program = fm_script::parse(&found.source)
         .map_err(|failure| failure_rejection(script, &failure, None))?;
+    let limits = match entry {
+        Entry::Step => Limits {
+            waits: 0,
+            ..Limits::default()
+        },
+        Entry::Start | Entry::Resume(_) => fm_model::script_limits(engine.frame_rate()),
+    };
     let mut host = Host {
         engine,
         script,
@@ -475,7 +586,10 @@ pub(crate) fn run_on(
         refused: None,
         requested: Vec::new(),
     };
-    let report = fm_script::run(&program, &mut host, Limits::default());
+    let report = match entry {
+        Entry::Step | Entry::Start => fm_script::run(&program, &mut host, limits),
+        Entry::Resume(state) => fm_script::resume(&program, state, &mut host, limits),
+    };
     frame.takes = host.frame.takes;
     Ok(ScriptOutcome {
         report,
@@ -484,10 +598,12 @@ pub(crate) fn run_on(
     })
 }
 
-/// Runs script `script` on a copy of the show for `target_frame`.
+/// Runs script `script` (or the next part of its waiting run) on a copy of
+/// the show for `target_frame`.
 fn run_alone(
     engine: &Engine,
     script: u64,
+    entry: Entry<'_>,
     target_frame: FrameNumber,
 ) -> Result<(ScriptOutcome, CuePlan), Rejection> {
     let mut show = engine.show().clone();
@@ -497,6 +613,7 @@ fn run_alone(
     let outcome = run_on(
         engine,
         script,
+        entry,
         target_frame,
         &mut show,
         &mut CueFrame {
@@ -507,6 +624,27 @@ fn run_alone(
             takes: 0,
         },
     )?;
+    // The part's actions applied; the slot now holds the run if it waits
+    // again, and nothing once it ends.
+    let started_frame = match (entry, &engine.show().script_run().running) {
+        (Entry::Resume(_), Some(run)) => run.started_frame,
+        _ => target_frame.get(),
+    };
+    *show.script_run_mut() = fm_model::ScriptRunState {
+        running: outcome
+            .report
+            .suspension
+            .as_ref()
+            .map(|suspension| fm_model::ScriptRun {
+                script,
+                started_frame,
+                due_frame: target_frame
+                    .get()
+                    .saturating_add(u64::from(suspension.frames)),
+                state: suspension.state.clone(),
+            }),
+        fault: None,
+    };
     let event = EngineEvent::ScriptRan {
         script,
         frame: target_frame.get(),
@@ -527,36 +665,140 @@ fn run_alone(
 }
 
 /// Plans a [`crate::EngineCommand::RunScript`] for `target_frame`: the show
-/// once every action ran, the event, and the runtime actions realizing it.
+/// once every action of the run's first part ran (holding the run if it
+/// waits), the event, and the runtime actions realizing it.
 ///
 /// # Errors
 ///
-/// Refuses an unknown script and a run that stops early.
+/// Refuses a run while a script runs, an unknown script, and a run whose
+/// first part stops early.
 pub(crate) fn plan(
     engine: &Engine,
     script: u64,
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
-    let (outcome, plan) = run_alone(engine, script, target_frame)?;
+    if let Some(run) = &engine.show().script_run().running {
+        return Err(running(run.script));
+    }
+    let (outcome, plan) = run_alone(engine, script, Entry::Start, target_frame)?;
     match outcome.failure(script) {
         Some(rejection) => Err(rejection),
         None => Ok(plan),
     }
 }
 
+/// Plans the cue clock's advance of the waiting run (list `0`, see the
+/// module documentation) for `target_frame`: the next part runs on the
+/// show as it is then. A part that stops early is planned as a fault:
+/// nothing of the frame applies and the run ends.
+///
+/// # Errors
+///
+/// Refuses an advance for any frame but the run's (see
+/// [`crate::Engine::cue_advance_frame`]).
+pub(crate) fn plan_resume(
+    engine: &Engine,
+    frame: u64,
+    target_frame: FrameNumber,
+) -> Result<CuePlan, Rejection> {
+    let due = engine.cue_advance_frame();
+    let run = engine.show().script_run().running.as_ref();
+    let (Some(run), Some((0, at))) = (run, due) else {
+        return Err(Rejection::new(
+            RejectionCode::Conflict,
+            format!("no script run waits for frame {frame}"),
+        ));
+    };
+    if at != frame {
+        return Err(Rejection::new(
+            RejectionCode::Conflict,
+            format!("the script run resumes at frame {at}, not frame {frame}"),
+        ));
+    }
+    let script = run.script;
+    let state = run.state.clone();
+    let outcome = run_alone(engine, script, Entry::Resume(&state), target_frame);
+    let failure = match outcome {
+        Ok((outcome, plan)) => match outcome.report.failure {
+            None => return Ok(plan),
+            Some(failure) => failure,
+        },
+        // The run's script is never removed or edited while it runs, so it
+        // parses; a show restored without it fails here like a bad part.
+        Err(_) => fm_script::ScriptFailure {
+            kind: FailureKind::Runtime,
+            at: fm_script::Span::new(1, 1),
+            message: format!("script {script} cannot resume"),
+        },
+    };
+    let mut show = engine.show().clone();
+    *show.script_run_mut() = fm_model::ScriptRunState {
+        running: None,
+        fault: Some(fm_model::ScriptFault {
+            script,
+            frame: target_frame.get(),
+            failure: failure.kind,
+            at: fm_script::Span::new(failure.at.line.max(1), failure.at.column.max(1)),
+        }),
+    };
+    Ok(CuePlan {
+        show: Box::new(show),
+        event: EngineEvent::ScriptRunChanged {
+            script,
+            frame: target_frame.get(),
+        },
+        runtime: Vec::new(),
+        transition: None,
+    })
+}
+
+/// Plans a [`crate::EngineCommand::StopScript`] for `target_frame`: the
+/// waiting run ends (nothing more of it runs) or the last fault clears.
+///
+/// # Errors
+///
+/// Refuses a stop with no run waiting and no fault to clear.
+pub(crate) fn plan_stop(engine: &Engine, target_frame: FrameNumber) -> Result<CuePlan, Rejection> {
+    let Some(script) = engine.show().script_run().script() else {
+        return Err(Rejection::new(
+            RejectionCode::Conflict,
+            "no script is running",
+        ));
+    };
+    let mut show = engine.show().clone();
+    *show.script_run_mut() = fm_model::ScriptRunState::default();
+    Ok(CuePlan {
+        show: Box::new(show),
+        event: EngineEvent::ScriptRunChanged {
+            script,
+            frame: target_frame.get(),
+        },
+        runtime: Vec::new(),
+        transition: None,
+    })
+}
+
 /// Every show action a [`crate::EngineCommand::RunScript`] planned for
 /// `target_frame` asks for, in order: the run happens on a copy of the show
 /// exactly as [`plan`] runs it, so the list follows the branches the script
-/// takes on the current show. A run that stops early lists the actions it
-/// asked for up to and including the refused one; an unknown script or a
-/// syntax error lists none.
+/// takes on the current show (up to its first wait). A run that stops
+/// early lists the actions it asked for up to and including the refused
+/// one; an unknown script or a syntax error lists none.
 pub(crate) fn requested_actions(
     engine: &Engine,
     script: u64,
     target_frame: FrameNumber,
 ) -> Vec<CueAction> {
-    run_alone(engine, script, target_frame)
+    run_alone(engine, script, Entry::Start, target_frame)
         .map_or_else(|_| Vec::new(), |(outcome, _)| outcome.requested)
+}
+
+/// Whether script `script`'s source holds a `wait` (see
+/// [`fm_script::Program::waits`]); `None` for an unknown script.
+pub(crate) fn waits(state: &ShowState, script: u64) -> Option<bool> {
+    state
+        .script(script)
+        .map(|found| fm_model::script_waits(&found.source))
 }
 
 /// Every action verb script `script` holds, in any branch (see

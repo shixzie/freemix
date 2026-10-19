@@ -3151,6 +3151,12 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             source: source.into(),
         },
     };
+    let waiting = fm_protocol::ScriptRunStatus::Waiting {
+        started_frame: 20,
+        due_frame: 30,
+        waits: 1,
+        wait_frames: 10,
+    };
     let project_id = project(10);
     let identity = engine("engine-a", 1, "log-a");
     let mut model = ClientModel::new(project_id);
@@ -3162,6 +3168,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         model.apply_script_state(ScriptStateMessage {
             revision: 6,
             script: script(1, "cut 2"),
+            run: fm_protocol::ScriptRunStatus::Idle,
         }),
         Err(ModelError::ScriptStateMismatch)
     );
@@ -3169,6 +3176,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         model.apply_script_state(ScriptStateMessage {
             revision: 7,
             script: script(0, "cut 2"),
+            run: fm_protocol::ScriptRunStatus::Idle,
         }),
         Err(ModelError::InvalidScript(0))
     );
@@ -3176,15 +3184,20 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         .apply_script_state(ScriptStateMessage {
             revision: 7,
             script: script(1, "cut 2"),
+            run: waiting,
         })
         .unwrap();
     let state = model.state().unwrap();
     assert!(state.scripts_complete());
+    // Protocol 2.62: the record carries the run paused at a wait.
+    assert_eq!(state.script_run_status(1), waiting);
+    assert_eq!(state.active_script_run(), Some((1, waiting)));
     assert_eq!(state.scripts(), [script(1, "cut 2")]);
     assert_eq!(
         model.apply_script_state(ScriptStateMessage {
             revision: 7,
             script: script(2, "cut 3"),
+            run: fm_protocol::ScriptRunStatus::Idle,
         }),
         Err(ModelError::ScriptStateMismatch)
     );
@@ -3202,6 +3215,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         frame: 40,
         actions: 2,
         instructions: 5,
+        run: waiting,
         effects: CueRunUpdate {
             list: 0,
             frame: 40,
@@ -3230,6 +3244,12 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         .unwrap();
     let state = model.state().unwrap();
     assert_eq!(state.switcher().desired.program, input(3));
+    // The one run slot moves to script 2.
+    assert_eq!(state.active_script_run(), Some((2, waiting)));
+    assert_eq!(
+        state.script_run_status(1),
+        fm_protocol::ScriptRunStatus::Idle
+    );
     assert_eq!(
         state.last_script_run(),
         Some(ScriptRunReport {
@@ -3248,14 +3268,48 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             .collect::<Vec<_>>(),
         [1, 2]
     );
+    // A part that failed on its frame faults the run.
+    let faulted = fm_protocol::ScriptRunStatus::Faulted {
+        frame: 30,
+        failure: fm_protocol::ScriptFailureKind::Refused,
+        line: 2,
+        column: 1,
+    };
     model
         .apply_event(event(
             project_id,
             identity.clone(),
             10,
+            DurableChange::ScriptRunChanged {
+                script: 2,
+                frame: 30,
+                run: faulted,
+            },
+        ))
+        .unwrap();
+    assert_eq!(model.state().unwrap().script_run_status(2), faulted);
+    assert_eq!(
+        model.apply_event(event(
+            project_id,
+            identity.clone(),
+            11,
+            DurableChange::ScriptRunChanged {
+                script: 9,
+                frame: 31,
+                run: fm_protocol::ScriptRunStatus::Idle,
+            },
+        )),
+        Err(ModelError::InvalidScript(9))
+    );
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            11,
             DurableChange::ScriptRemoved { script: 1 },
         ))
         .unwrap();
+    assert_eq!(model.state().unwrap().script_run_status(2), faulted);
     assert_eq!(
         model.state().unwrap().scripts(),
         [script(2, "preview 3\ncut")]
@@ -3263,12 +3317,22 @@ fn scripts_replicate_from_snapshot_records_and_events() {
     assert_eq!(
         model.apply_event(event(
             project_id,
-            identity,
-            11,
+            identity.clone(),
+            12,
             DurableChange::ScriptRemoved { script: 1 },
         )),
         Err(ModelError::InvalidScript(1))
     );
+    // Removing the faulted script forgets its run.
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            12,
+            DurableChange::ScriptRemoved { script: 2 },
+        ))
+        .unwrap();
+    assert_eq!(model.state().unwrap().active_script_run(), None);
 }
 
 /// Protocol 2.61: each script step a `cue_run_changed` reports becomes
@@ -3327,6 +3391,7 @@ fn a_cue_run_records_the_last_run_of_each_script_it_ran() {
     )
     .unwrap();
     let direct = ScriptRunUpdate {
+        run: fm_protocol::ScriptRunStatus::Idle,
         script: 3,
         frame: 30,
         actions: 1,

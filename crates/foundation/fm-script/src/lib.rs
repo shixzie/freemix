@@ -14,7 +14,15 @@
 //! always produce the same actions and report) and bounded by [`Limits`]:
 //! an instruction budget (every statement, loop turn, and expression node
 //! costs one, so a run's time is linear in its budget), an action budget,
-//! and a memory budget (variable count and string length). The parser
+//! a memory budget (variable count and string length), and a wait budget
+//! (how many `wait`s a run passes and how many frames they add up to). The
+//! budgets cover the whole run, across its waits.
+//!
+//! A run that reaches `wait` stops with a [`Suspension`]: the frames to wait
+//! and a [`Suspended`] state that is plain data (the statement path to the
+//! `wait`, loop counters, variables, and budget use), bounded by the same
+//! limits, so a host can save it and later [`resume`] the run right after
+//! the `wait`, reading Program and Preview as they are then. The parser
 //! bounds source size, line count, block nesting, and expression nesting,
 //! so neither the parser nor the interpreter can recurse without limit.
 //!
@@ -37,6 +45,8 @@
 //! - `repeat EXPR` … `end` runs its body a fixed number of times.
 //! - `while EXPR` … `end` runs while the condition holds.
 //! - `stop` ends the run successfully.
+//! - `wait EXPR` pauses the run for that many frames (1 or more): the run
+//!   suspends and the host resumes it on a later frame (see [`resume`]).
 //! - An action verb with comma-separated arguments (see [`Verb`]).
 //!
 //! Expressions use integers (64-bit, overflow is an error), `true` and
@@ -52,7 +62,7 @@ mod parser;
 
 use core::fmt;
 
-pub use machine::run;
+pub use machine::{resume, run};
 pub use parser::parse;
 
 /// Longest script source, in UTF-8 bytes.
@@ -71,6 +81,11 @@ pub const DEFAULT_ACTIONS: u32 = 64;
 pub const DEFAULT_VARIABLES: u32 = 32;
 /// Default longest string value, in UTF-8 bytes.
 pub const DEFAULT_STRING_BYTES: u32 = 256;
+/// Default count of `wait`s one run may pass.
+pub const DEFAULT_WAITS: u32 = 32;
+/// Default total frames one run's `wait`s may add up to: ten minutes at
+/// 25 frames per second (a host sets the bound for its own rate).
+pub const DEFAULT_WAIT_FRAMES: u32 = 15_000;
 
 /// The budgets of one run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +98,10 @@ pub struct Limits {
     pub variables: u32,
     /// Longest string value, in UTF-8 bytes.
     pub string_bytes: u32,
+    /// `wait`s one run may pass; zero refuses every `wait`.
+    pub waits: u32,
+    /// Total frames one run's `wait`s may add up to.
+    pub wait_frames: u32,
 }
 
 impl Default for Limits {
@@ -92,6 +111,8 @@ impl Default for Limits {
             actions: DEFAULT_ACTIONS,
             variables: DEFAULT_VARIABLES,
             string_bytes: DEFAULT_STRING_BYTES,
+            waits: DEFAULT_WAITS,
+            wait_frames: DEFAULT_WAIT_FRAMES,
         }
     }
 }
@@ -123,6 +144,10 @@ pub enum Budget {
     Actions,
     Variables,
     StringBytes,
+    /// More `wait`s than [`Limits::waits`].
+    Waits,
+    /// `wait`s adding up to more than [`Limits::wait_frames`].
+    WaitFrames,
 }
 
 impl Budget {
@@ -134,6 +159,8 @@ impl Budget {
             Self::Actions => "actions",
             Self::Variables => "variables",
             Self::StringBytes => "string_bytes",
+            Self::Waits => "waits",
+            Self::WaitFrames => "wait_frames",
         }
     }
 }
@@ -184,7 +211,8 @@ impl fmt::Display for ScriptFailure {
 
 impl std::error::Error for ScriptFailure {}
 
-/// What one run did.
+/// What one run (or one resumed part of a run) did. The counts cover the
+/// whole run so far, across its waits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptReport {
     /// Actions the host accepted, in order.
@@ -193,6 +221,53 @@ pub struct ScriptReport {
     pub instructions: u32,
     /// Why the run stopped early, if it did.
     pub failure: Option<ScriptFailure>,
+    /// The `wait` the run stopped at, if it did (never with a failure).
+    pub suspension: Option<Suspension>,
+}
+
+/// A run stopped at a `wait`: how long to wait and what to resume.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Suspension {
+    /// Frames to wait, at least one.
+    pub frames: u32,
+    pub state: Suspended,
+}
+
+/// A variable's value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScriptValue {
+    Int(i64),
+    Bool(bool),
+    Str(String),
+}
+
+/// One step of the path from the program's top level to a `wait`.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct ResumePoint {
+    /// The statement's 0-based index in its block.
+    pub statement: u32,
+    /// For an `if`, the 0-based arm taken (the arm count for `else`); for a
+    /// `repeat`, the turns left after the current one; otherwise zero.
+    pub branch: u64,
+}
+
+/// The saved state of a run stopped at a `wait`: plain, bounded data (the
+/// path has at most [`MAX_BLOCK_DEPTH`] + 1 points, the variables and their
+/// strings stay within the run's [`Limits`]), so a host can persist it and
+/// [`resume`] the run later. It is only meaningful for the source it was
+/// taken from.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Suspended {
+    /// From the top level to the `wait` itself, outermost first.
+    pub path: Vec<ResumePoint>,
+    /// Defined variables in definition order.
+    pub variables: Vec<(String, ScriptValue)>,
+    pub instructions: u32,
+    pub actions: u32,
+    /// `wait`s passed, including the one stopped at.
+    pub waits: u32,
+    /// Frames those `wait`s add up to.
+    pub wait_frames: u32,
 }
 
 /// An input an action names: its 1-based position in the project or its
@@ -496,9 +571,9 @@ impl Verb {
 }
 
 /// Words a variable may not be named.
-pub const KEYWORDS: [&str; 15] = [
-    "let", "if", "elif", "else", "end", "repeat", "while", "stop", "and", "or", "not", "true",
-    "false", "program", "preview",
+pub const KEYWORDS: [&str; 16] = [
+    "let", "if", "elif", "else", "end", "repeat", "while", "stop", "wait", "and", "or", "not",
+    "true", "false", "program", "preview",
 ];
 
 /// The host a script acts through: the only capabilities a script has.
@@ -545,7 +620,9 @@ impl Program {
                     }
                     parser::StatementKind::Repeat { body, .. }
                     | parser::StatementKind::While { body, .. } => blocks.push(body),
-                    parser::StatementKind::Let { .. } | parser::StatementKind::Stop => {}
+                    parser::StatementKind::Let { .. }
+                    | parser::StatementKind::Stop
+                    | parser::StatementKind::Wait { .. } => {}
                 }
             }
         }
@@ -554,6 +631,59 @@ impl Program {
             .zip(found)
             .filter_map(|(verb, used)| used.then_some(verb))
             .collect()
+    }
+
+    /// Whether the program holds a `wait`, in any branch or loop: whether a
+    /// run of it may span frames.
+    #[must_use]
+    pub fn waits(&self) -> bool {
+        let mut blocks: Vec<&[parser::Statement]> = vec![&self.statements];
+        while let Some(block) = blocks.pop() {
+            for statement in block {
+                match &statement.kind {
+                    parser::StatementKind::Wait { .. } => return true,
+                    parser::StatementKind::If { arms, otherwise } => {
+                        blocks.extend(arms.iter().map(|(_, _, body)| body.as_slice()));
+                        blocks.push(otherwise);
+                    }
+                    parser::StatementKind::Repeat { body, .. }
+                    | parser::StatementKind::While { body, .. } => blocks.push(body),
+                    parser::StatementKind::Let { .. }
+                    | parser::StatementKind::Stop
+                    | parser::StatementKind::Action { .. } => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether `suspended` is a state a run of this program under `limits`
+    /// can stop in: its path leads through this program's blocks to a
+    /// `wait`, and its variables and budget use are within `limits`. A host
+    /// restoring a saved state checks it with this before [`resume`].
+    #[must_use]
+    pub fn accepts(&self, suspended: &Suspended, limits: &Limits) -> bool {
+        machine::path_is_valid(&self.statements, &suspended.path)
+            && suspended.variables.len() <= limits.variables as usize
+            && suspended
+                .variables
+                .iter()
+                .enumerate()
+                .all(|(index, (name, value))| {
+                    lexer::is_identifier(name)
+                        && !parser::is_reserved(name)
+                        && suspended.variables[..index]
+                            .iter()
+                            .all(|(other, _)| other != name)
+                        && match value {
+                            ScriptValue::Str(text) => text.len() <= limits.string_bytes as usize,
+                            ScriptValue::Int(_) | ScriptValue::Bool(_) => true,
+                        }
+                })
+            && suspended.instructions <= limits.instructions
+            && suspended.actions <= limits.actions
+            && (1..=limits.waits).contains(&suspended.waits)
+            && (1..=limits.wait_frames).contains(&suspended.wait_frames)
     }
 }
 
@@ -566,6 +696,7 @@ pub fn run_source(source: &str, host: &mut dyn ScriptHost, limits: Limits) -> Sc
             actions: 0,
             instructions: 0,
             failure: Some(failure),
+            suspension: None,
         },
     }
 }

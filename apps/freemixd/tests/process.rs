@@ -6277,11 +6277,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.61.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 61));
+    // The previous protocol is refused; the current one is 2.62.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 62));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 60),
+        protocol: ProtocolVersion::new(2, 61),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6297,7 +6297,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 61)
+        ProtocolVersion::new(2, 62)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8264,6 +8264,152 @@ fn scripts_run_through_the_daemon_and_persist_with_the_project() {
             (1, "Take two", "preview 2\ncut\n"),
             (2, "Twice", "cut 1\ncut 2\n")
         ]
+    );
+}
+
+/// RC-011, Protocol 2.62, end to end through the daemon: a run that waits
+/// publishes its waiting state; the daemon clock resumes the next part on
+/// its due frame (reading the show as it is then); a late joiner reads the
+/// run from `script_state`; a restart resumes the waiting run with the
+/// same due frame; and `script_stop` ends it with `script_run_changed`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
+    use fm_protocol::{RefusalReason, ScriptRunStatus, ScriptSpec};
+
+    fn ran_event(client: &mut Client, revision: u64) -> fm_protocol::ScriptRunChange {
+        match durable_event_at(client, revision).payload {
+            EventPayload::ScriptRan(change) => *change,
+            other => panic!("expected script_ran at {revision}, got {other:?}"),
+        }
+    }
+
+    let directory = TestDirectory::new("script-waits");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    admin.send(&command(
+        "set",
+        "set-key",
+        CommandPayload::SetScript {
+            script: 1,
+            spec: Box::new(ScriptSpec {
+                name: "Parts".into(),
+                source: "cut 2\nwait 10\ncut 1\nwait 5000\ncut 2\n".into(),
+            }),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set"), 1);
+
+    let fired_at = Instant::now();
+    admin.send(&command(
+        "run",
+        "run-key",
+        CommandPayload::RunScript { script: 1 },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "run"), 2);
+    let first = ran_event(&mut admin, 2);
+    assert_eq!((first.actions, first.program), (1, input(2)));
+    let due = first.frame + 10;
+    assert_eq!(
+        first.run,
+        ScriptRunStatus::Waiting {
+            started_frame: first.frame,
+            due_frame: due,
+            waits: 1,
+            wait_frames: 10,
+        }
+    );
+    // One run at a time.
+    admin.send(&command(
+        "again",
+        "again-key",
+        CommandPayload::RunScript { script: 1 },
+    ));
+    match admin.next_result() {
+        CommandResult::Rejected { reason, .. } => {
+            assert_eq!(reason, Some(RefusalReason::ScriptRunning { script: 1 }));
+        }
+        other @ CommandResult::Accepted { .. } => panic!("expected a refusal, got {other:?}"),
+    }
+
+    // The clock runs the next part on exactly its due frame (25 fps).
+    let second = ran_event(&mut admin, 3);
+    assert!(
+        fired_at.elapsed() >= Duration::from_millis(300),
+        "the wait ended after {:?}",
+        fired_at.elapsed()
+    );
+    assert_eq!((second.frame, second.program), (due, input(1)));
+    let waiting = ScriptRunStatus::Waiting {
+        started_frame: first.frame,
+        due_frame: due + 5000,
+        waits: 2,
+        wait_frames: 5010,
+    };
+    assert_eq!(second.run, waiting);
+    let (late, scripts) = script_sync(&daemon);
+    assert_eq!(late.revision, 3);
+    assert_eq!(scripts[0].run, waiting);
+    drop(admin);
+    daemon.stop();
+
+    // The run is saved with the show: the restarted daemon still waits for
+    // the same frame, and `script_stop` ends the run.
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, scripts) = script_sync(&daemon);
+    assert_eq!(recovered.revision, 3);
+    assert_eq!(recovered.desired_program, input(1));
+    assert_eq!(scripts[0].run, waiting);
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    admin.send(&command("stop", "stop-key", CommandPayload::StopScript));
+    assert_eq!(accepted_revision(&mut admin, "stop"), 4);
+    match durable_event_at(&mut admin, 4).payload {
+        EventPayload::ScriptRunChanged { script, run, .. } => {
+            assert_eq!((script, run), (1, ScriptRunStatus::Idle));
+        }
+        other => panic!("expected script_run_changed, got {other:?}"),
+    }
+    admin.send(&command(
+        "stop-again",
+        "stop-again-key",
+        CommandPayload::StopScript,
+    ));
+    assert!(matches!(
+        admin.next_result(),
+        CommandResult::Rejected { code, current_revision: 4, .. } if code == "conflict"
+    ));
+    let (_, scripts) = script_sync(&daemon);
+    assert_eq!(scripts[0].run, ScriptRunStatus::Idle);
+    drop(admin);
+    daemon.stop();
+
+    // The stop is journaled; recovery checkpoints the idle run slot.
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, scripts) = script_sync(&daemon);
+    assert_eq!(recovered.revision, 4);
+    assert_eq!(scripts[0].run, ScriptRunStatus::Idle);
+    daemon.stop();
+    let stored = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(
+        stored.project().script_run(),
+        &fm_model::ScriptRunState::default()
     );
 }
 

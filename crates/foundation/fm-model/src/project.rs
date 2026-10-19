@@ -914,7 +914,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(55);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(56);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -952,6 +952,7 @@ pub struct Project {
     playlist: Playlist,
     cue_lists: Vec<crate::CueList>,
     scripts: Vec<crate::Script>,
+    script_run: crate::ScriptRunState,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
@@ -991,6 +992,7 @@ impl Project {
             playlist: Playlist::default(),
             cue_lists: Vec::new(),
             scripts: Vec::new(),
+            script_run: crate::ScriptRunState::default(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
@@ -1447,6 +1449,18 @@ impl Project {
     /// reports structural errors.
     pub fn set_scripts(&mut self, scripts: Vec<crate::Script>) {
         self.scripts = scripts;
+    }
+
+    /// The script run waiting, or the last run's fault (RC-011, schema 56).
+    #[must_use]
+    pub const fn script_run(&self) -> &crate::ScriptRunState {
+        &self.script_run
+    }
+
+    /// Replaces the run slot without checking it; [`Project::validate`]
+    /// reports one that does not fit the scripts.
+    pub fn set_script_run(&mut self, script_run: crate::ScriptRunState) {
+        self.script_run = script_run;
     }
 
     /// Every persisted grading value: the grade library, imported LUTs, and

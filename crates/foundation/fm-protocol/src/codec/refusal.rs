@@ -25,7 +25,9 @@
 //! * `stinger_realizing:<slot>`;
 //! * `playlist_take_scheduled:<frame>`;
 //! * `cue_scheduled:<frame>`, `no_cue_on_standby`, `cue_running:<cue>`
-//!   (Protocol 2.50).
+//!   (Protocol 2.50);
+//! * `script_failed:<failure>:<line>:<column>` (Protocol 2.58);
+//! * `script_running:<script>` (Protocol 2.62).
 
 use fm_command::{IdKind, InputUse, RefusalReason};
 
@@ -133,6 +135,12 @@ pub fn encode_refusal_reason(reason: &RefusalReason) -> Result<String, CodecErro
             Some(frame.to_string())
         }
         RefusalReason::CueRunning { cue } => Some(cue.to_string()),
+        RefusalReason::ScriptRunning { script } => {
+            if *script == 0 {
+                return Err(invalid());
+            }
+            Some(script.to_string())
+        }
         RefusalReason::ScriptFailed {
             failure,
             line,
@@ -230,6 +238,9 @@ pub fn decode_refusal_reason(value: &str) -> Result<RefusalReason, CodecError> {
             ["cue_running", cue] => {
                 parse_canonical_u64(cue).map(|cue| RefusalReason::CueRunning { cue })
             }
+            ["script_running", script] => parse_canonical_u64(script)
+                .filter(|script| *script != 0)
+                .map(|script| RefusalReason::ScriptRunning { script }),
             ["script_failed", failure, line, column] => {
                 let position = |value: &str| {
                     parse_canonical_u64(value)

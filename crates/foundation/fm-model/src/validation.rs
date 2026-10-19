@@ -318,8 +318,22 @@ fn validate_scripts(project: &Project, errors: &mut Vec<ValidationError>) {
                 crate::ScriptError::InvalidName => ValidationErrorKind::Empty,
                 crate::ScriptError::InvalidId
                 | crate::ScriptError::InvalidSource
-                | crate::ScriptError::TooManyScripts => ValidationErrorKind::OutOfRange,
+                | crate::ScriptError::TooManyScripts
+                | crate::ScriptError::InvalidRun => ValidationErrorKind::OutOfRange,
             },
+        });
+    }
+    if crate::validate_script_run(
+        project.script_run(),
+        project.scripts(),
+        project.settings().frame_rate,
+    )
+    .is_err()
+    {
+        errors.push(ValidationError {
+            entity: project.script_run().script().map(EntityRef::Script),
+            field: "script_run",
+            kind: ValidationErrorKind::OutOfRange,
         });
     }
 }
@@ -387,14 +401,24 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                 kind: ValidationErrorKind::MissingReference(EntityRef::StreamTarget(*target)),
             });
         }
-        if let Some(script) = action.script()
-            && !project.scripts().iter().any(|found| found.id == script)
-        {
-            errors.push(ValidationError {
-                entity: Some(EntityRef::Script(script)),
-                field: "cue_lists.cues.actions.script",
-                kind: ValidationErrorKind::MissingReference(EntityRef::Script(script)),
-            });
+        if let Some(script) = action.script() {
+            match project.scripts().iter().find(|found| found.id == script) {
+                None => errors.push(ValidationError {
+                    entity: Some(EntityRef::Script(script)),
+                    field: "cue_lists.cues.actions.script",
+                    kind: ValidationErrorKind::MissingReference(EntityRef::Script(script)),
+                }),
+                // A cue's script step runs on one frame: its script never
+                // waits (schema 56).
+                Some(found) if crate::script_waits(&found.source) => {
+                    errors.push(ValidationError {
+                        entity: Some(EntityRef::Script(script)),
+                        field: "cue_lists.cues.actions.script",
+                        kind: ValidationErrorKind::FormatMismatch,
+                    });
+                }
+                Some(_) => {}
+            }
         }
     }
 }

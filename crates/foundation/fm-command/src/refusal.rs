@@ -161,11 +161,16 @@ pub enum ScriptFailureKind {
     StringBudget,
     /// The show refused one of the script's actions.
     Refused,
+    /// The run passed more `wait`s than its budget (or a `wait` where
+    /// none may run, in a cue's script step) (Protocol 2.62).
+    WaitBudget,
+    /// The run's `wait`s add up to more frames than its budget.
+    WaitFramesBudget,
 }
 
 impl ScriptFailureKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Syntax,
         Self::Runtime,
         Self::InstructionBudget,
@@ -173,6 +178,8 @@ impl ScriptFailureKind {
         Self::VariableBudget,
         Self::StringBudget,
         Self::Refused,
+        Self::WaitBudget,
+        Self::WaitFramesBudget,
     ];
 
     /// The stable wire token.
@@ -186,6 +193,8 @@ impl ScriptFailureKind {
             Self::VariableBudget => "variables",
             Self::StringBudget => "string_bytes",
             Self::Refused => "refused",
+            Self::WaitBudget => "waits",
+            Self::WaitFramesBudget => "wait_frames",
         }
     }
 
@@ -203,6 +212,8 @@ impl ScriptFailureKind {
                 | Self::ActionBudget
                 | Self::VariableBudget
                 | Self::StringBudget
+                | Self::WaitBudget
+                | Self::WaitFramesBudget
         )
     }
 }
@@ -217,6 +228,8 @@ impl fmt::Display for ScriptFailureKind {
             Self::VariableBudget => "variable budget exceeded",
             Self::StringBudget => "string budget exceeded",
             Self::Refused => "action refused",
+            Self::WaitBudget => "wait budget exceeded",
+            Self::WaitFramesBudget => "wait frame budget exceeded",
         })
     }
 }
@@ -277,6 +290,10 @@ pub enum RefusalReason {
         line: u32,
         column: u32,
     },
+    /// Script `script` is running (waiting at a `wait`): another run, or
+    /// an edit or removal of it, waits until it ends or is stopped
+    /// (RC-011, Protocol 2.62).
+    ScriptRunning { script: u64 },
     /// The command could not be made durable.
     NotDurable,
     /// The session sent too much, too fast, or too large.
@@ -329,6 +346,7 @@ impl RefusalReason {
             Self::NoCueOnStandby => "no_cue_on_standby",
             Self::CueRunning { .. } => "cue_running",
             Self::ScriptFailed { .. } => "script_failed",
+            Self::ScriptRunning { .. } => "script_running",
             Self::NotDurable => "not_durable",
             Self::RateLimited => "rate_limited",
             Self::RuntimeUnsupported => "runtime_unsupported",
@@ -410,6 +428,7 @@ impl fmt::Display for RefusalReason {
                 formatter,
                 "the script stopped with a {failure} at line {line}, column {column}"
             ),
+            Self::ScriptRunning { script } => write!(formatter, "script {script} is running"),
             Self::NotDurable => formatter.write_str("the command could not be made durable"),
             Self::RateLimited => formatter.write_str("the session is rate limited"),
             Self::RuntimeUnsupported => {

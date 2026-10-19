@@ -11340,6 +11340,11 @@ fn restore_engine_with_titles(
     // may run one, schema 55).
     show.set_scripts(canonical.scripts().to_vec())?;
     show.set_cue_lists(canonical.cue_lists().to_vec())?;
+    // A run paused at a wait resumes on its due frame (schema 56).
+    show.set_script_run(
+        canonical.script_run().clone(),
+        canonical.settings().frame_rate,
+    )?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -13441,6 +13446,7 @@ fn command_base_ticks(
         | CommandPayload::SetScript { .. }
         | CommandPayload::RemoveScript { .. }
         | CommandPayload::RunScript { .. }
+        | CommandPayload::StopScript
         | CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
@@ -13597,6 +13603,7 @@ fn stored_project_with_receipts(
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_cue_lists(show.cue_lists().to_vec());
     project.set_scripts(show.scripts().to_vec());
+    project.set_script_run(show.script_run().clone());
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());

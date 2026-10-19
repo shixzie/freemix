@@ -1582,6 +1582,9 @@ pub enum ScriptCommand {
     Run {
         script: ScriptRef,
     },
+    /// Stops the run paused at a wait, or clears a failed run's report
+    /// (`script_stop`, Protocol 2.62).
+    Stop,
 }
 
 /// A script named on the command line: its id, or else its exact name.
@@ -2078,7 +2081,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "script-remove"
         | "remote-script-remove"
         | "script-run"
-        | "remote-script-run") => parse_script(script, arguments),
+        | "remote-script-run"
+        | "script-stop"
+        | "remote-script-stop") => parse_script(script, arguments),
         "remote-undo" => parse_remote_history(false, arguments),
         "remote-redo" => parse_remote_history(true, arguments),
         "remote-lock" => parse_remote_lock(arguments),
@@ -6142,7 +6147,9 @@ fn unescape(value: &str) -> String {
 ///   standard input);
 /// * `script-remove <script>`;
 /// * `script-run <script>`, where the script is its id or, when that is not
-///   a nonzero number, its exact name.
+///   a nonzero number, its exact name;
+/// * `script-stop`: stops the run paused at a wait, or clears a failed
+///   run's report (Protocol 2.62).
 fn parse_script(
     command: &str,
     arguments: impl Iterator<Item = String>,
@@ -6181,6 +6188,7 @@ fn parse_script(
         "script-run" => ScriptCommand::Run {
             script: ScriptRef::parse(required(&mut arguments, "script")?),
         },
+        "script-stop" => ScriptCommand::Stop,
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
     };
     let (key, expected_revision) = command_options(arguments)?;

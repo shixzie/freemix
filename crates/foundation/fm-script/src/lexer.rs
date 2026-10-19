@@ -58,6 +58,16 @@ pub(crate) struct Token {
     pub(crate) at: Span,
 }
 
+/// Whether `word` lexes as one name: an ASCII letter or `_`, then ASCII
+/// letters, digits, or `_`.
+pub(crate) fn is_identifier(word: &str) -> bool {
+    let mut characters = word.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 fn column(index: usize) -> u32 {
     u32::try_from(index + 1).unwrap_or(u32::MAX)
 }

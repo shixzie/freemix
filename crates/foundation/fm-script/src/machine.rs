@@ -2,16 +2,12 @@
 
 use crate::parser::{BinaryOp, Builtin, Expr, ExprKind, Statement, StatementKind, UnaryOp};
 use crate::{
-    Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, Program, ScriptAction,
-    ScriptFailure, ScriptHost, ScriptReport, Span, TakeEffect, Verb,
+    Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, Program, ResumePoint,
+    ScriptAction, ScriptFailure, ScriptHost, ScriptReport, Span, Suspended, Suspension, TakeEffect,
+    Verb,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Value {
-    Int(i64),
-    Bool(bool),
-    Str(String),
-}
+use crate::ScriptValue as Value;
 
 impl Value {
     const fn type_name(&self) -> &'static str {
@@ -23,9 +19,13 @@ impl Value {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Flow {
     Next,
     Stop,
+    /// A `wait` of this many frames suspended the run; every block on the
+    /// way out recorded where it stood in [`Machine::path`].
+    Wait(u32),
 }
 
 struct Machine<'h> {
@@ -34,28 +34,138 @@ struct Machine<'h> {
     variables: Vec<(String, Value)>,
     instructions: u32,
     actions: u32,
+    waits: u32,
+    wait_frames: u32,
+    /// The path to a `wait` being unwound, innermost first.
+    path: Vec<ResumePoint>,
+    /// The branch of the statement being unwound (see
+    /// [`ResumePoint::branch`]), set before it returns [`Flow::Wait`].
+    branch: u64,
 }
 
 fn runtime(at: Span, message: impl Into<String>) -> ScriptFailure {
     ScriptFailure::new(FailureKind::Runtime, at, message)
 }
 
-/// Runs `program`: every statement in order until the end, a `stop`, or
-/// the first failure. Actions the host accepted before a failure stay
-/// accepted; a host that must be all-or-nothing discards them itself.
+fn mismatch() -> ScriptFailure {
+    runtime(
+        Span::new(1, 1),
+        "the saved run does not match the script's source",
+    )
+}
+
+/// Runs `program`: every statement in order until the end, a `stop`, a
+/// `wait` (the report then holds the [`crate::Suspension`] to
+/// [`resume`]), or the first failure. Actions the host accepted before a
+/// failure stay accepted; a host that must be all-or-nothing discards them
+/// itself.
 pub fn run(program: &Program, host: &mut dyn ScriptHost, limits: Limits) -> ScriptReport {
-    let mut machine = Machine {
-        host,
-        limits,
-        variables: Vec::new(),
-        instructions: 0,
-        actions: 0,
+    let mut machine = Machine::new(host, limits);
+    let flow = machine.block(&program.statements, 0);
+    machine.report(flow)
+}
+
+/// Resumes a run of `program` suspended at a `wait` in `suspended` (see
+/// [`crate::Suspension`]): the run continues right after that `wait`, with
+/// its variables and budget use, reading the host as it is now. A state
+/// that does not fit `program` under `limits` fails with a runtime error at
+/// line 1 (check it first with [`Program::accepts`]).
+pub fn resume(
+    program: &Program,
+    suspended: &Suspended,
+    host: &mut dyn ScriptHost,
+    limits: Limits,
+) -> ScriptReport {
+    let mut machine = Machine::new(host, limits);
+    if !program.accepts(suspended, &limits) {
+        return machine.report(Err(mismatch()));
+    }
+    machine.variables.clone_from(&suspended.variables);
+    machine.instructions = suspended.instructions;
+    machine.actions = suspended.actions;
+    machine.waits = suspended.waits;
+    machine.wait_frames = suspended.wait_frames;
+    let flow = machine.resume_block(&program.statements, &suspended.path);
+    machine.report(flow)
+}
+
+/// Whether `path` leads through `statements` to a `wait`.
+pub(crate) fn path_is_valid(statements: &[Statement], path: &[ResumePoint]) -> bool {
+    let Some((point, rest)) = path.split_first() else {
+        return false;
     };
-    let failure = machine.block(&program.statements).err();
-    ScriptReport {
-        actions: machine.actions,
-        instructions: machine.instructions,
-        failure,
+    let Some(statement) = usize::try_from(point.statement)
+        .ok()
+        .and_then(|index| statements.get(index))
+    else {
+        return false;
+    };
+    match (&statement.kind, rest.is_empty()) {
+        (StatementKind::Wait { .. }, true) => point.branch == 0,
+        (StatementKind::If { arms, otherwise }, false) => {
+            let Ok(branch) = usize::try_from(point.branch) else {
+                return false;
+            };
+            match branch.cmp(&arms.len()) {
+                core::cmp::Ordering::Less => path_is_valid(&arms[branch].2, rest),
+                core::cmp::Ordering::Equal => path_is_valid(otherwise, rest),
+                core::cmp::Ordering::Greater => false,
+            }
+        }
+        (StatementKind::Repeat { body, .. }, false) => {
+            i64::try_from(point.branch).is_ok() && path_is_valid(body, rest)
+        }
+        (StatementKind::While { body, .. }, false) => {
+            point.branch == 0 && path_is_valid(body, rest)
+        }
+        _ => false,
+    }
+}
+
+impl<'h> Machine<'h> {
+    fn new(host: &'h mut dyn ScriptHost, limits: Limits) -> Self {
+        Self {
+            host,
+            limits,
+            variables: Vec::new(),
+            instructions: 0,
+            actions: 0,
+            waits: 0,
+            wait_frames: 0,
+            path: Vec::new(),
+            branch: 0,
+        }
+    }
+
+    fn report(self, flow: Result<Flow, ScriptFailure>) -> ScriptReport {
+        let (failure, suspension) = match flow {
+            Ok(Flow::Next | Flow::Stop) => (None, None),
+            Ok(Flow::Wait(frames)) => {
+                let mut path = self.path;
+                path.reverse();
+                (
+                    None,
+                    Some(Suspension {
+                        frames,
+                        state: Suspended {
+                            path,
+                            variables: self.variables,
+                            instructions: self.instructions,
+                            actions: self.actions,
+                            waits: self.waits,
+                            wait_frames: self.wait_frames,
+                        },
+                    }),
+                )
+            }
+            Err(failure) => (Some(failure), None),
+        };
+        ScriptReport {
+            actions: self.actions,
+            instructions: self.instructions,
+            failure,
+            suspension,
+        }
     }
 }
 
@@ -75,10 +185,127 @@ impl Machine<'_> {
         Ok(())
     }
 
-    fn block(&mut self, statements: &[Statement]) -> Result<Flow, ScriptFailure> {
-        for statement in statements {
-            if let Flow::Stop = self.statement(statement)? {
-                return Ok(Flow::Stop);
+    /// Runs `statements` from index `from`.
+    fn block(&mut self, statements: &[Statement], from: usize) -> Result<Flow, ScriptFailure> {
+        for (index, statement) in statements.iter().enumerate().skip(from) {
+            let flow = self.statement(statement)?;
+            if let Some(flow) = self.unwind(flow, index) {
+                return Ok(flow);
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    /// Passes a `stop` or `wait` out of a block, recording where statement
+    /// `index` stood for a `wait`; `None` to go on with the next statement.
+    fn unwind(&mut self, flow: Flow, index: usize) -> Option<Flow> {
+        match flow {
+            Flow::Next => None,
+            Flow::Stop => Some(Flow::Stop),
+            Flow::Wait(frames) => {
+                self.path.push(ResumePoint {
+                    statement: u32::try_from(index).expect("blocks hold at most 256 statements"),
+                    branch: self.branch,
+                });
+                Some(Flow::Wait(frames))
+            }
+        }
+    }
+
+    /// Resumes `statements` at `path` (see [`resume`]), then runs the rest
+    /// of the block.
+    fn resume_block(
+        &mut self,
+        statements: &[Statement],
+        path: &[ResumePoint],
+    ) -> Result<Flow, ScriptFailure> {
+        let (point, rest) = path.split_first().ok_or_else(mismatch)?;
+        let index = usize::try_from(point.statement).map_err(|_| mismatch())?;
+        let statement = statements.get(index).ok_or_else(mismatch)?;
+        let flow = if rest.is_empty() {
+            // The `wait` itself: it has ended.
+            Flow::Next
+        } else {
+            self.resume_statement(statement, point.branch, rest)?
+        };
+        if let Some(flow) = self.unwind(flow, index) {
+            return Ok(flow);
+        }
+        self.block(statements, index + 1)
+    }
+
+    fn resume_statement(
+        &mut self,
+        statement: &Statement,
+        branch: u64,
+        rest: &[ResumePoint],
+    ) -> Result<Flow, ScriptFailure> {
+        match &statement.kind {
+            StatementKind::If { arms, otherwise } => {
+                let index = usize::try_from(branch).map_err(|_| mismatch())?;
+                let body = match arms.get(index) {
+                    Some((_, _, body)) => body,
+                    None if index == arms.len() => otherwise,
+                    None => return Err(mismatch()),
+                };
+                let flow = self.resume_block(body, rest)?;
+                self.branch = branch;
+                Ok(flow)
+            }
+            StatementKind::Repeat { body, .. } => match self.resume_block(body, rest)? {
+                Flow::Next => self.repeat(statement.at, body, branch),
+                Flow::Stop => Ok(Flow::Stop),
+                Flow::Wait(frames) => {
+                    self.branch = branch;
+                    Ok(Flow::Wait(frames))
+                }
+            },
+            StatementKind::While { condition, body } => match self.resume_block(body, rest)? {
+                Flow::Next => self.repeat_while(statement.at, condition, body),
+                Flow::Stop => Ok(Flow::Stop),
+                Flow::Wait(frames) => {
+                    self.branch = 0;
+                    Ok(Flow::Wait(frames))
+                }
+            },
+            _ => Err(mismatch()),
+        }
+    }
+
+    /// Runs `body` `turns` more times.
+    fn repeat(&mut self, at: Span, body: &[Statement], turns: u64) -> Result<Flow, ScriptFailure> {
+        let mut left = turns;
+        while left > 0 {
+            left -= 1;
+            self.tick(at)?;
+            match self.block(body, 0)? {
+                Flow::Next => {}
+                Flow::Stop => return Ok(Flow::Stop),
+                Flow::Wait(frames) => {
+                    self.branch = left;
+                    return Ok(Flow::Wait(frames));
+                }
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    /// Runs `body` while `condition` holds.
+    fn repeat_while(
+        &mut self,
+        at: Span,
+        condition: &Expr,
+        body: &[Statement],
+    ) -> Result<Flow, ScriptFailure> {
+        while self.condition(condition)? {
+            self.tick(at)?;
+            match self.block(body, 0)? {
+                Flow::Next => {}
+                Flow::Stop => return Ok(Flow::Stop),
+                Flow::Wait(frames) => {
+                    self.branch = 0;
+                    return Ok(Flow::Wait(frames));
+                }
             }
         }
         Ok(Flow::Next)
@@ -98,14 +325,18 @@ impl Machine<'_> {
                         self.tick(*at)?;
                     }
                     if self.condition(condition)? {
-                        return self.block(body);
+                        let flow = self.block(body, 0)?;
+                        self.branch = index as u64;
+                        return Ok(flow);
                     }
                 }
-                return self.block(otherwise);
+                let flow = self.block(otherwise, 0)?;
+                self.branch = arms.len() as u64;
+                return Ok(flow);
             }
             StatementKind::Repeat { count, body } => {
                 let turns = match self.eval(count)? {
-                    Value::Int(turns) if turns >= 0 => turns,
+                    Value::Int(turns) if turns >= 0 => turns.unsigned_abs(),
                     Value::Int(turns) => {
                         return Err(runtime(
                             count.at,
@@ -119,22 +350,13 @@ impl Machine<'_> {
                         ));
                     }
                 };
-                for _ in 0..turns {
-                    self.tick(statement.at)?;
-                    if let Flow::Stop = self.block(body)? {
-                        return Ok(Flow::Stop);
-                    }
-                }
+                return self.repeat(statement.at, body, turns);
             }
             StatementKind::While { condition, body } => {
-                while self.condition(condition)? {
-                    self.tick(statement.at)?;
-                    if let Flow::Stop = self.block(body)? {
-                        return Ok(Flow::Stop);
-                    }
-                }
+                return self.repeat_while(statement.at, condition, body);
             }
             StatementKind::Stop => return Ok(Flow::Stop),
+            StatementKind::Wait { frames } => return self.wait(frames, statement.at),
             StatementKind::Action {
                 verb,
                 effect,
@@ -159,6 +381,51 @@ impl Machine<'_> {
             }
         }
         Ok(Flow::Next)
+    }
+
+    fn wait(&mut self, frames: &Expr, at: Span) -> Result<Flow, ScriptFailure> {
+        let frames = match self.eval(frames)? {
+            Value::Int(value) => u32::try_from(value)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    runtime(
+                        frames.at,
+                        format!("wait needs 1 or more frames, not {value}"),
+                    )
+                })?,
+            other => {
+                return Err(runtime(
+                    frames.at,
+                    format!("wait needs a number of frames, not {}", other.type_name()),
+                ));
+            }
+        };
+        if self.waits >= self.limits.waits {
+            return Err(ScriptFailure::new(
+                FailureKind::Budget(Budget::Waits),
+                at,
+                format!("the script waits more than {} times", self.limits.waits),
+            ));
+        }
+        let total = self
+            .wait_frames
+            .checked_add(frames)
+            .filter(|total| *total <= self.limits.wait_frames)
+            .ok_or_else(|| {
+                ScriptFailure::new(
+                    FailureKind::Budget(Budget::WaitFrames),
+                    at,
+                    format!(
+                        "the script waits more than {} frames in all",
+                        self.limits.wait_frames
+                    ),
+                )
+            })?;
+        self.waits += 1;
+        self.wait_frames = total;
+        self.branch = 0;
+        Ok(Flow::Wait(frames))
     }
 
     fn assign(&mut self, name: &str, value: Value, at: Span) -> Result<(), ScriptFailure> {

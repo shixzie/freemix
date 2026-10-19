@@ -81,6 +81,8 @@ pub const fn script_failure_msg(failure: ScriptFailureKind) -> Msg {
         ScriptFailureKind::VariableBudget => Msg::ScriptFailVariables,
         ScriptFailureKind::StringBudget => Msg::ScriptFailStringBytes,
         ScriptFailureKind::Refused => Msg::ScriptFailRefused,
+        ScriptFailureKind::WaitBudget => Msg::ScriptFailWaits,
+        ScriptFailureKind::WaitFramesBudget => Msg::ScriptFailWaitFrames,
     }
 }
 
@@ -226,6 +228,7 @@ pub fn refusal_reason_text(l: Locale, reason: &RefusalReason, names: InputNames<
         RefusalReason::CueScheduled { frame } => number(Msg::RsnCueScheduled, "frame", *frame),
         RefusalReason::NoCueOnStandby => plain(Msg::RsnNoCueOnStandby),
         RefusalReason::CueRunning { cue } => number(Msg::RsnCueRunning, "cue", *cue),
+        RefusalReason::ScriptRunning { script } => number(Msg::RsnScriptRunning, "script", *script),
         RefusalReason::NotDurable => plain(Msg::RsnNotDurable),
         RefusalReason::RateLimited => plain(Msg::RsnRateLimited),
         RefusalReason::RuntimeUnsupported => plain(Msg::RsnRuntimeUnsupported),

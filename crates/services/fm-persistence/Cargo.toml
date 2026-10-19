@@ -10,6 +10,7 @@ fm-clock = { path = "../../media/fm-clock" }
 fm-grade = { path = "../../foundation/fm-grade" }
 fm-preset-file = { path = "../../foundation/fm-preset-file" }
 fm-model = { path = "../../foundation/fm-model" }
+fm-script = { path = "../../foundation/fm-script" }
 fm-titles = { path = "../../features/fm-titles" }
 fm-types = { path = "../../foundation/fm-types" }
 turso = { version = "0.7.2", default-features = false }

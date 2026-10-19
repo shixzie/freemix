@@ -86,6 +86,10 @@ pub(crate) enum StatementKind {
         body: Vec<Statement>,
     },
     Stop,
+    /// `wait EXPR`: suspends the run for that many frames.
+    Wait {
+        frames: Expr,
+    },
     Action {
         verb: Verb,
         effect: Option<Effect>,
@@ -209,6 +213,12 @@ impl Parser {
                     statements.push(Statement { kind, at: head.at });
                 }
                 "let" => statements.push(let_statement(head.at, rest)?),
+                "wait" => statements.push(Statement {
+                    kind: StatementKind::Wait {
+                        frames: whole_expression(head.at, rest)?,
+                    },
+                    at: head.at,
+                }),
                 "stop" => {
                     no_trailing("stop", rest)?;
                     statements.push(Statement {
@@ -288,7 +298,7 @@ fn no_trailing(word: &str, rest: &[Token]) -> Result<(), ScriptFailure> {
     }
 }
 
-fn is_reserved(word: &str) -> bool {
+pub(crate) fn is_reserved(word: &str) -> bool {
     KEYWORDS.contains(&word) || Verb::from_word(word).is_some()
 }
 

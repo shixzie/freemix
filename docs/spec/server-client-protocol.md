@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.61 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.62 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2024,6 +2024,88 @@ Protocol 2.61 reports the scripts a cue ran (RC-011, RC-017).
   clock then runs, remotely only the GO's own frame.
 - No `script_ran` event is sent for a script a cue runs (as in 2.60).
 - 2.60 is refused.
+
+Protocol 2.62 lets a script wait (RC-011).
+
+- Language: `wait FRAMES` (a new reserved word) ends the run's current
+  part; the rest runs `FRAMES` engine frames later. `FRAMES` is an integer
+  expression of at least 1 (anything else is a `runtime` failure). One
+  run may wait at most 32 times (`waits` budget) for at most ten minutes
+  of frames in all (`wait_frames` budget: `ceil(600 × frame rate)`, 15000
+  at 25 fps, 35964 at 59.94 fps); the instruction, action, variable, and
+  string budgets cover the whole run, every part together. The new
+  `script_failed` kinds are `waits` and `wait_frames` (`resource_exhausted`).
+- Design: the parts after a wait are evaluated on their due frame, not
+  planned up front, because a script reads `program` and `preview` and a
+  part planned at the start would act on a show that no longer exists by
+  then. Each part is all or nothing on its own frame, exactly like a whole
+  run before 2.62. Between parts the authority saves the run's interpreter
+  state: the statement path to the wait (with the branch taken and the
+  turns left of each enclosing `repeat`), the variables, and the budget
+  used, all bounded by the run's limits. The show has one run slot: either
+  one run waiting for its next part or the fault the last one ended with,
+  never both.
+- Resumption: the authority's cue clock resumes the run. `cue_advance`
+  may now name list `0`, meaning the waiting script run (still only the
+  authority's clock may submit it; a client's is `unavailable`); it runs
+  the next part on exactly its due frame, or the next frame once that has
+  passed, journaled like any cue advance. When a cue list and the script
+  run are due on the same frame, the list advances first.
+- A part that fails on its frame (a runtime error, an exhausted budget, or
+  a refused action) is not a refusal: the advance is accepted, nothing of
+  that frame is applied, the run ends, and the slot keeps the fault (its
+  frame, failure kind, line, and column), published as
+  `script_run_changed`. The clock never retries it.
+- `payload=script_stop` (no fields) ends the waiting run, keeping what its
+  earlier parts did, or clears the fault. It is a journaled `transition`
+  command outside the undo history (like `script_run` and a cue Stop),
+  honours no padlock, and is a `conflict` (`no script is running`) when the
+  slot is empty. A new `script_run` clears an old fault.
+- While a run waits, another `script_run`, a `script_set` or
+  `script_remove` of the running script, and an undo or redo restoring
+  one, are refused `conflict` with `reason=script_running:<script>`.
+  Removing a faulted script clears its fault.
+- Authority: a direct `script_run` of a script whose source holds `wait`
+  needs, up front, the permission of every action verb the source holds in
+  any branch (as an armed cue chain's script step since 2.60), on top of
+  the exact check of its first part planned now; later parts then run on
+  the authority's clock without further checks.
+- Cues: a cue's `run_script` step runs on its cue's frame, so it may not
+  run a script that waits. A `cue_list_set` naming such a script, and a
+  `script_set` adding `wait` to a script any cue list runs, are refused
+  `invalid_command` with field issue `script:script_waits`; a step that
+  reached a wait anyway fails with the `waits` budget.
+- Wire: `script_state` records gain `run` after `source`; `script_ran`
+  gains `run` after `instructions` (the run after this part; counts cover
+  the whole run so far); `event=script_run_changed` carries `script`,
+  `frame`, and `run`, for a stop, a cleared fault, or a part that failed.
+  `run` is `idle`, `waiting:<started_frame>:<due_frame>:<waits>:<wait_frames>`
+  (`due_frame` after `started_frame`, `waits` and `wait_frames` nonzero),
+  or `faulted:<frame>:<failure>:<line>:<column>` (`failure` a
+  `script_failed` kind token). At most one script reports a non-idle
+  `run`.
+- Durability: the project gains required
+  `"script_run": {"running": null | {"script", "started_frame",
+  "due_frame", "path": [{"statement", "branch"}], "variables": [{"name",
+  "int" | "bool" | "string"}], "instructions", "actions", "waits",
+  "wait_frames"}, "fault": null | {"script", "frame", "failure", "line",
+  "column"}}` after `"scripts"` (schema 56). Validation refuses a run of a
+  script the project lacks, a state that does not resume that script's
+  source within its limits, and both a run and a fault. A restarted
+  authority restores the slot and resumes the run on its due engine
+  frame, exactly like a waiting cue (the time the show was down does not
+  count); journal replay reproduces every part.
+- Studio's Edit > Scripts window marks the running script "(running)" in
+  its list, shows "Running: the next part runs on frame N" with Stop run,
+  or the failed part's reason and line (marked in the editor) with Clear
+  failed run, each with English and Spanish hover help; Save, Delete, and
+  Run are disabled with a reason while a run waits. `freemix-cli
+  script-stop` and `remote-script-stop` submit `script_stop`; `scripts`
+  lists a non-idle run as
+  `ScriptRun(script=, state=waiting|faulted, ...)`, and `script-run`
+  prints the run's state after its `ScriptRan` line. A local run waits on
+  the simulated clock, printing each part's `ScriptRan`.
+- 2.61 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

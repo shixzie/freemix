@@ -88,6 +88,7 @@ struct ProjectDto {
     )>,
     live_lan: fm_types::live_lan::LiveLanConfig,
     scripts: Vec<fm_model::Script>,
+    script_run: fm_model::ScriptRunState,
 }
 
 struct EditLocks {
@@ -144,6 +145,7 @@ impl ProjectDto {
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
             live_lan: super::live_lan::parse_live_lan(&mut object)?,
             scripts: super::script::parse_scripts(&mut object)?,
+            script_run: super::script::parse_script_run(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -259,6 +261,9 @@ impl ProjectDto {
         // Script bounds and duplicate ids are reported by project
         // validation.
         project.set_scripts(self.scripts);
+        // A run that does not fit the scripts is reported by project
+        // validation.
+        project.set_script_run(self.script_run);
         project
     }
 }

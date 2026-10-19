@@ -175,15 +175,23 @@ pub fn scripts(address: SocketAddr) -> RemoteResult<()> {
         .model()
         .state()
         .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
-    print_scripts(state.scripts().iter());
+    print_scripts(
+        state
+            .scripts()
+            .iter()
+            .map(|script| (script, state.script_run_status(script.id))),
+    );
     Ok(())
 }
 
 /// Prints one `Script(...)` line per script followed by its source lines,
-/// each indented, or `Scripts=none`.
-pub(crate) fn print_scripts<'a>(scripts: impl IntoIterator<Item = &'a fm_protocol::ScriptStatus>) {
+/// each indented, or `Scripts=none`. A script whose run waits or failed
+/// also prints its `ScriptRun(...)` line (Protocol 2.62).
+pub(crate) fn print_scripts<'a>(
+    scripts: impl IntoIterator<Item = (&'a fm_protocol::ScriptStatus, fm_protocol::ScriptRunStatus)>,
+) {
     let mut any = false;
-    for script in scripts {
+    for (script, run) in scripts {
         any = true;
         let syntax = fm_script::parse(&script.spec.source)
             .err()
@@ -194,6 +202,9 @@ pub(crate) fn print_scripts<'a>(scripts: impl IntoIterator<Item = &'a fm_protoco
             script.spec.name,
             script.spec.source.len()
         );
+        if run != fm_protocol::ScriptRunStatus::Idle {
+            print_script_run(script.id, &run);
+        }
         for line in script.spec.source.lines() {
             println!("  | {line}");
         }
@@ -210,6 +221,33 @@ pub(crate) fn print_script_ran(script: u64, frame: u64, actions: u32, instructio
     );
 }
 
+/// Prints script `script`'s run state (Protocol 2.62):
+/// `ScriptRun(script=…, state=idle)`, `state=waiting` with the frame the
+/// next part runs on and the waits so far, or `state=faulted` with the
+/// failed part's frame, typed reason, and position.
+pub(crate) fn print_script_run(script: u64, run: &fm_protocol::ScriptRunStatus) {
+    match run {
+        fm_protocol::ScriptRunStatus::Idle => println!("ScriptRun(script={script}, state=idle)"),
+        fm_protocol::ScriptRunStatus::Waiting {
+            started_frame,
+            due_frame,
+            waits,
+            wait_frames,
+        } => println!(
+            "ScriptRun(script={script}, state=waiting, started_frame={started_frame}, due_frame={due_frame}, waits={waits}, wait_frames={wait_frames})"
+        ),
+        fm_protocol::ScriptRunStatus::Faulted {
+            frame,
+            failure,
+            line,
+            column,
+        } => println!(
+            "ScriptRun(script={script}, state=faulted, frame={frame}, failure={}, line={line}, column={column})",
+            failure.token()
+        ),
+    }
+}
+
 /// Edits or runs one script of the daemon at `address` (RC-011); a script
 /// named by name is resolved against the daemon's scripts. An accepted run
 /// prints `ScriptRan(...)`.
@@ -224,26 +262,30 @@ pub fn script(
     // which only the daemon knows once it plans the run on its show; a
     // title text needs project-edit authority on top of transition, which
     // only Admin holds.
-    let role = if matches!(payload, CommandPayload::RunScript { .. }) {
-        Role::Admin
-    } else {
-        Role::Graphics
+    let role = match payload {
+        CommandPayload::RunScript { .. } => Role::Admin,
+        // Stopping a run is a transition-class operator control.
+        CommandPayload::StopScript => Role::Operator,
+        _ => Role::Graphics,
     };
     let mut remote = Remote::connect(address, role)?;
     let key = match key {
         Some(key) => key,
         None => implicit_key(&payload)?,
     };
-    let run = matches!(payload, CommandPayload::RunScript { .. });
+    let run = match payload {
+        CommandPayload::RunScript { script } => Some(script),
+        _ => None,
+    };
     remote.execute(payload, key, expected_revision, completion)?;
-    if run
-        && let Some(ran) = remote
-            .client
-            .model()
-            .state()
-            .and_then(fm_ui_model::ProjectState::last_script_run)
-    {
-        print_script_ran(ran.script, ran.frame, ran.actions, ran.instructions);
+    let Some(state) = remote.client.model().state() else {
+        return Ok(());
+    };
+    if let Some(script) = run {
+        if let Some(ran) = state.last_script_run() {
+            print_script_ran(ran.script, ran.frame, ran.actions, ran.instructions);
+        }
+        print_script_run(script, &state.script_run_status(script));
     }
     Ok(())
 }
@@ -1210,9 +1252,10 @@ enum CommandCompletion {
     Cue {
         edit: bool,
     },
-    /// A script edit (`project`) or run (`switcher`): completes on
-    /// `script_changed`/`script_removed` or `script_ran` and that domain's
-    /// realization (Protocol 2.58).
+    /// A script edit (`project`) or run or stop (`switcher`): completes on
+    /// `script_changed`/`script_removed`, or `script_ran` or
+    /// `script_run_changed` (Protocol 2.62), and that domain's realization
+    /// (Protocol 2.58).
     Script {
         run: bool,
     },
@@ -1283,7 +1326,9 @@ impl CommandCompletion {
             CommandPayload::SetScript { .. } | CommandPayload::RemoveScript { .. } => {
                 Self::Script { run: false }
             }
-            CommandPayload::RunScript { .. } => Self::Script { run: true },
+            CommandPayload::RunScript { .. } | CommandPayload::StopScript => {
+                Self::Script { run: true }
+            }
             _ => Self::Switcher,
         }
     }
@@ -1581,7 +1626,7 @@ impl Remote {
                                     | CommandCompletion::History
                             )
                         }
-                        EventPayload::ScriptRan(_) => {
+                        EventPayload::ScriptRan(_) | EventPayload::ScriptRunChanged { .. } => {
                             completion == CommandCompletion::Script { run: true }
                         }
                         EventPayload::TransitionFavoriteChanged { .. } => matches!(

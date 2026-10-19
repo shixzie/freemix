@@ -216,7 +216,8 @@ impl EngineCommand {
             | Self::CueControl { .. }
             | Self::CueAdvance { .. }
             | Self::RealizeCueActions(_)
-            | Self::RunScript { .. } => EngineCommandKind::LiveOperation,
+            | Self::RunScript { .. }
+            | Self::StopScript => EngineCommandKind::LiveOperation,
         }
     }
 }

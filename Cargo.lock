@@ -1452,6 +1452,7 @@ dependencies = [
  "fm-grade",
  "fm-model",
  "fm-preset-file",
+ "fm-script",
  "fm-titles",
  "fm-types",
  "turso",

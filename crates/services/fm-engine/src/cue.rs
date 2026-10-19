@@ -211,10 +211,15 @@ pub(crate) fn check_action_references(
             }));
         }
     }
-    if let Some(script) = action.script()
-        && state.script(script).is_none()
-    {
-        return Err(crate::script::unknown_script(script));
+    if let Some(script) = action.script() {
+        match state.script(script) {
+            None => return Err(crate::script::unknown_script(script)),
+            // A script step runs on its cue's frame (schema 56).
+            Some(found) if fm_model::script_waits(&found.source) => {
+                return Err(crate::script::waits_in_cue(script, owner));
+            }
+            Some(_) => {}
+        }
     }
     if let CueAction::Stream { target, .. } = action {
         let target = StreamTargetId::from_non_zero(target.get());

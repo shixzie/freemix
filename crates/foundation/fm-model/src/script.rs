@@ -7,6 +7,11 @@
 //! the structural bounds are checked here: the script count, unique ids,
 //! the name, and the source size. What a script may do is decided by
 //! `fm-script` and the engine when it runs.
+//!
+//! A script with `wait` spans frames (schema 56): the project saves the
+//! one run waiting ([`ScriptRunState`]) with its interpreter state, so a
+//! saved or restarted show resumes it on its due frame, or the fault the
+//! last run ended with.
 
 use core::fmt;
 
@@ -39,6 +44,9 @@ pub enum ScriptError {
     InvalidSource,
     TooManyScripts,
     DuplicateId(u64),
+    /// The run slot does not fit the project's scripts (see
+    /// [`validate_script_run`]).
+    InvalidRun,
 }
 
 impl fmt::Display for ScriptError {
@@ -58,6 +66,7 @@ impl fmt::Display for ScriptError {
                 write!(formatter, "a project holds at most {MAX_SCRIPTS} scripts")
             }
             Self::DuplicateId(id) => write!(formatter, "script {id} is duplicated"),
+            Self::InvalidRun => formatter.write_str("the script run does not fit the scripts"),
         }
     }
 }
@@ -79,6 +88,14 @@ pub fn script_source_is_valid(source: &str) -> bool {
         && !source
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\t' | '\r'))
+}
+
+/// Whether `source` parses and holds a `wait` (in any branch or loop): a
+/// run of it may span frames, so no cue step may run it (schema 56). A
+/// source that does not parse never waits (its runs fail at once).
+#[must_use]
+pub fn script_waits(source: &str) -> bool {
+    fm_script::parse(source).is_ok_and(|program| program.waits())
 }
 
 /// Checks one script's name and source.
@@ -114,6 +131,109 @@ pub fn validate_scripts(scripts: &[Script]) -> Result<(), ScriptError> {
             return Err(ScriptError::DuplicateId(script.id));
         }
         validate_script_definition(&script.name, &script.source)?;
+    }
+    Ok(())
+}
+
+/// Longest one run's `wait`s may add up to, in seconds (schema 56).
+pub const MAX_SCRIPT_WAIT_SECONDS: u32 = 600;
+/// Most `wait`s one run may pass (schema 56).
+pub const MAX_SCRIPT_WAITS: u32 = fm_script::DEFAULT_WAITS;
+
+/// The frames [`MAX_SCRIPT_WAIT_SECONDS`] last at `rate`, rounded up.
+#[must_use]
+pub fn script_wait_frames(rate: fm_types::FrameRate) -> u32 {
+    let numerator = u128::from(MAX_SCRIPT_WAIT_SECONDS) * u128::from(rate.numerator());
+    u32::try_from(numerator.div_ceil(u128::from(rate.denominator()))).unwrap_or(u32::MAX)
+}
+
+/// The budgets of one run of a project script at `rate`: the `fm-script`
+/// defaults, with the `wait`s bounded to [`MAX_SCRIPT_WAITS`] adding up to
+/// at most [`MAX_SCRIPT_WAIT_SECONDS`] of frames.
+#[must_use]
+pub fn script_limits(rate: fm_types::FrameRate) -> fm_script::Limits {
+    fm_script::Limits {
+        waits: MAX_SCRIPT_WAITS,
+        wait_frames: script_wait_frames(rate),
+        ..fm_script::Limits::default()
+    }
+}
+
+/// A run waiting at a `wait` (schema 56): what it resumes and when.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptRun {
+    /// The script running.
+    pub script: u64,
+    /// The frame the run started on.
+    pub started_frame: u64,
+    /// The frame the run resumes on.
+    pub due_frame: u64,
+    /// The interpreter state to resume.
+    pub state: fm_script::Suspended,
+}
+
+/// Why the part of a run due on `frame` failed (schema 56): nothing of
+/// that frame was applied and the run ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScriptFault {
+    pub script: u64,
+    pub frame: u64,
+    pub failure: fm_script::FailureKind,
+    /// Where the run stopped (1-based).
+    pub at: fm_script::Span,
+}
+
+/// The show's one script run slot (schema 56): the run waiting, or the
+/// fault the last one ended with. Never both.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScriptRunState {
+    pub running: Option<ScriptRun>,
+    pub fault: Option<ScriptFault>,
+}
+
+impl ScriptRunState {
+    /// The script running or faulted, if any.
+    #[must_use]
+    pub fn script(&self) -> Option<u64> {
+        self.running
+            .as_ref()
+            .map(|run| run.script)
+            .or(self.fault.map(|fault| fault.script))
+    }
+}
+
+/// Checks the run slot against the project's `scripts` at `rate`: a run
+/// names a script whose source parses and accepts the saved state under
+/// [`script_limits`], and resumes no earlier than its waits allow; a fault
+/// names a script and a position. A run and a fault are never both set.
+///
+/// # Errors
+///
+/// Returns [`ScriptError::InvalidRun`].
+pub fn validate_script_run(
+    state: &ScriptRunState,
+    scripts: &[Script],
+    rate: fm_types::FrameRate,
+) -> Result<(), ScriptError> {
+    let known = |script: u64| scripts.iter().find(|found| found.id == script);
+    if let Some(run) = &state.running {
+        let valid = state.fault.is_none()
+            && known(run.script).is_some_and(|script| {
+                fm_script::parse(&script.source)
+                    .is_ok_and(|program| program.accepts(&run.state, &script_limits(rate)))
+            })
+            && run
+                .started_frame
+                .checked_add(u64::from(run.state.wait_frames))
+                .is_some_and(|earliest| run.due_frame >= earliest);
+        if !valid {
+            return Err(ScriptError::InvalidRun);
+        }
+    }
+    if let Some(fault) = &state.fault
+        && (known(fault.script).is_none() || fault.at.line == 0 || fault.at.column == 0)
+    {
+        return Err(ScriptError::InvalidRun);
     }
     Ok(())
 }

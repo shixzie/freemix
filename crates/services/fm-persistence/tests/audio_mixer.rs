@@ -192,13 +192,13 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 55"));
+    assert!(text.contains("\"schema_version\": 56"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2}"
     ), "{text}");
     assert!(text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null}"));
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": []\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_run\": {\"running\": null, \"fault\": null}\n  },"
     ), "{text}");
 
     for (from, to) in [

@@ -53,7 +53,7 @@ pub use scene_layer::{
     quarter_turns, wire_crop, wire_effects, wire_geometry, wire_key, wire_layer_outline,
     wire_layer_source, wire_layer_spec, wire_mask, wire_scene_layer_edit,
 };
-pub use script::{script_engine_command, wire_script};
+pub use script::{run_status as script_run_status, script_engine_command, wire_script};
 pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
 pub use transition::{
@@ -2472,7 +2472,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::PlaylistAdvance { .. }
         | CommandPayload::CueControl { .. }
         | CommandPayload::CueAdvance { .. }
-        | CommandPayload::RunScript { .. } => CommandClass::Transition,
+        | CommandPayload::RunScript { .. }
+        | CommandPayload::StopScript => CommandClass::Transition,
     }
 }
 
@@ -2654,7 +2655,8 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::CueAdvance { .. }) => cue::cue_engine_command(payload),
         payload @ (CommandPayload::SetScript { .. }
         | CommandPayload::RemoveScript { .. }
-        | CommandPayload::RunScript { .. }) => script::script_engine_command(payload),
+        | CommandPayload::RunScript { .. }
+        | CommandPayload::StopScript) => script::script_engine_command(payload),
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
@@ -3368,6 +3370,9 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         .iter()
         .find_map(|event| match &event.payload {
             EngineEvent::ScriptChanged { script } => Some(script::script_changed(engine, *script)),
+            EngineEvent::ScriptRunChanged { script, frame } => {
+                Some(script::script_run_changed(engine, *script, *frame))
+            }
             EngineEvent::ScriptRan {
                 script,
                 frame,

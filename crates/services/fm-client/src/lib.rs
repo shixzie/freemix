@@ -1676,6 +1676,7 @@ impl Client {
             | CommandPayload::SetScript { .. }
             | CommandPayload::RemoveScript { .. }
             | CommandPayload::RunScript { .. }
+            | CommandPayload::StopScript
             | CommandPayload::SetInputGrade { .. }
             | CommandPayload::SetLayerGrade { .. }
             | CommandPayload::SetProgramGrade { .. }

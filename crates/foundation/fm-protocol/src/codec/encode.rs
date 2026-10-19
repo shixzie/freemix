@@ -172,6 +172,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             super::script::encode_status(&message.script, &mut |name, value| {
                 record.field_string(name, value)
             })?;
+            record.field_string("run", super::script::encode_run(message.run)?)?;
         }
         WireMessage::MediaState(message) => {
             record.kind("media_state");
@@ -340,11 +341,13 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("script", script)?;
         }
         CommandPayload::CueAdvance { list, frame } => {
+            // List 0 is the waiting script run (Protocol 2.62).
             record.field("payload", "cue_advance")?;
-            super::cue::encode_operation(*list, crate::CueOperation::Back, &mut |name, value| {
-                record.field_string(name, value)
-            })?;
+            record.field("list", list)?;
             record.field("frame", frame)?;
+        }
+        CommandPayload::StopScript => {
+            record.field("payload", "script_stop")?;
         }
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
@@ -2229,6 +2232,7 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("frame", change.frame)?;
             record.field("actions", change.actions)?;
             record.field("instructions", change.instructions)?;
+            record.field_string("run", super::script::encode_run(change.run)?)?;
             record.field("program", change.program)?;
             record.field("preview", change.preview)?;
             encode_manual_status(
@@ -2251,6 +2255,13 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             )?;
             record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
             record.field_string("media", super::cue::encode_media(&change.media)?)?;
+        }
+        EventPayload::ScriptRunChanged { script, frame, run } => {
+            record.field("event", "script_run_changed")?;
+            super::script::validate_script_id(*script)?;
+            record.field("script", script)?;
+            record.field("frame", frame)?;
+            record.field_string("run", super::script::encode_run(*run)?)?;
         }
         EventPayload::GradeChanged(change) => {
             record.field("event", "grade_changed")?;

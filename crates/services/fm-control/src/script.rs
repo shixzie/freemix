@@ -1,11 +1,12 @@
 //! Wire mapping of the project script commands, events, and snapshot
-//! records (Protocol 2.58, RC-011).
+//! records (Protocol 2.58, RC-011), and of script waits (Protocol 2.62):
+//! each script's `run` state, `script_stop`, and `script_run_changed`.
 
 use fm_engine::{Engine, EngineCommand, EngineScriptDefinition};
 use fm_model::Script;
 use fm_protocol::{
-    CommandPayload, EventPayload, ScriptRunChange, ScriptSpec, ScriptStateMessage, ScriptStatus,
-    WireInputId,
+    CommandPayload, EventPayload, ScriptRunChange, ScriptRunStatus, ScriptSpec, ScriptStateMessage,
+    ScriptStatus, WireInputId,
 };
 use fm_titles::FieldId;
 use fm_types::InputId;
@@ -45,6 +46,7 @@ pub fn script_engine_command(payload: &CommandPayload) -> EngineCommand {
             definition: None,
         },
         CommandPayload::RunScript { script } => EngineCommand::RunScript { script: *script },
+        CommandPayload::StopScript => EngineCommand::StopScript,
         _ => unreachable!("only script commands are delegated"),
     }
 }
@@ -66,6 +68,40 @@ pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
     })
 }
 
+/// The run state of script `script` on `engine` (Protocol 2.62): waiting
+/// or faulted when the show's run slot names it, idle otherwise.
+#[must_use]
+pub fn run_status(engine: &Engine, script: u64) -> ScriptRunStatus {
+    let slot = engine.show().script_run();
+    if let Some(run) = slot.running.as_ref().filter(|run| run.script == script) {
+        return ScriptRunStatus::Waiting {
+            started_frame: run.started_frame,
+            due_frame: run.due_frame,
+            waits: run.state.waits,
+            wait_frames: run.state.wait_frames,
+        };
+    }
+    if let Some(fault) = slot.fault.filter(|fault| fault.script == script) {
+        return ScriptRunStatus::Faulted {
+            frame: fault.frame,
+            failure: fm_engine::script_failure_kind(fault.failure),
+            line: fault.at.line,
+            column: fault.at.column,
+        };
+    }
+    ScriptRunStatus::Idle
+}
+
+/// The event of a stop, a cleared fault, or a part that failed on its
+/// frame (Protocol 2.62).
+pub fn script_run_changed(engine: &Engine, script: u64, frame: u64) -> EventPayload {
+    EventPayload::ScriptRunChanged {
+        script,
+        frame,
+        run: run_status(engine, script),
+    }
+}
+
 /// How many `script_state` records follow a snapshot.
 pub fn script_state_count(engine: &Engine) -> u16 {
     u16::try_from(engine.show().scripts().len()).expect("scripts are bounded")
@@ -80,6 +116,7 @@ pub fn script_states(engine: &Engine) -> Vec<ScriptStateMessage> {
         .map(|script| ScriptStateMessage {
             revision: engine.revision().get(),
             script: wire_script(script),
+            run: run_status(engine, script.id),
         })
         .collect()
 }
@@ -112,6 +149,7 @@ pub fn script_ran(engine: &Engine, run: &ScriptRun<'_>) -> EventPayload {
         frame: run.frame,
         actions: run.actions,
         instructions: run.instructions,
+        run: run_status(engine, run.script),
         program: WireInputId::from_domain(switcher.program()),
         preview: WireInputId::from_domain(switcher.preview()),
         manual_transition: crate::protocol_manual_status(engine.desired_manual_transition()),

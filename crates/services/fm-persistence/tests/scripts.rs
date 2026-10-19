@@ -1,6 +1,7 @@
 //! RC-011 at schema 54: the project's scripts round-trip exactly and
 //! strictly in `project.json`; bounds and duplicate ids are project
-//! validation, and a script with a syntax error is stored as written.
+//! validation, and a script with a syntax error is stored as written. At
+//! schema 56 the show's script run slot (a waiting run or a fault) follows.
 
 use std::{
     fs,
@@ -102,13 +103,13 @@ fn scripts_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 55"));
+    assert!(text.contains("\"schema_version\": 56"));
     assert!(
         text.contains(
             ",\n    \"scripts\": [\n      {\"id\": 3, \"name\": \"Open \\\"show\\\"\", \"source\": \
              \"# open\\npreview 2\\r\\n\\ttransition fade, 25\\ntitle_text \\\"Lower\\\", 1, \
              \\\"a\\\\\\\\b\\\"\"},\n      {\"id\": 1, \"name\": \"Draft\", \"source\": \"if \
-             program ==\\n\"}\n    ]\n  },"
+             program ==\\n\"}\n    ],\n    \"script_run\": {\"running\": null, \"fault\": null}\n  },"
         ),
         "{text}"
     );
@@ -116,7 +117,7 @@ fn scripts_round_trip_exactly_and_strictly() {
     // An empty script list is written as an empty array.
     store.save(&stored(project()).unwrap()).unwrap();
     let empty = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(empty.contains(",\n    \"scripts\": []\n  },"), "{empty}");
+    assert!(empty.contains(",\n    \"scripts\": [],\n    \"script_run\": {\"running\": null, \"fault\": null}\n  },"), "{empty}");
 
     store.save(&stored(expected).unwrap()).unwrap();
     for (from, to) in [
@@ -190,4 +191,157 @@ fn script_bounds_are_validated() {
         source: "#".repeat(MAX_SCRIPT_SOURCE_BYTES),
     }]);
     assert!(stored(project).is_ok());
+}
+
+/// Schema 56: a script run waiting at a `wait` (its interpreter state) and
+/// a run's fault round-trip exactly and strictly; a run that does not fit
+/// its script is project validation.
+#[test]
+#[allow(clippy::too_many_lines)] // one round-trip walk
+fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
+    use fm_model::{ScriptFault, ScriptRun, ScriptRunState};
+    use fm_script::{FailureKind, Limits, ResumePoint, ScriptValue, Span, Suspended};
+
+    struct Quiet;
+    impl fm_script::ScriptHost for Quiet {
+        fn program(&self) -> u32 {
+            1
+        }
+        fn preview(&self) -> u32 {
+            2
+        }
+        fn act(&mut self, _: &fm_script::ScriptAction) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let source = "let n = 2\nlet label = \"Li\\\"ve\"\nlet on = true\nrepeat 3\n  wait 25\nend\n";
+    let program = fm_script::parse(source).unwrap();
+    let state = fm_script::run(&program, &mut Quiet, Limits::default())
+        .suspension
+        .unwrap()
+        .state;
+    assert_eq!(
+        state,
+        Suspended {
+            path: vec![
+                ResumePoint {
+                    statement: 3,
+                    branch: 2
+                },
+                ResumePoint {
+                    statement: 0,
+                    branch: 0
+                }
+            ],
+            variables: vec![
+                ("n".into(), ScriptValue::Int(2)),
+                ("label".into(), ScriptValue::Str("Li\"ve".into())),
+                ("on".into(), ScriptValue::Bool(true)),
+            ],
+            instructions: 11,
+            actions: 0,
+            waits: 1,
+            wait_frames: 25,
+        }
+    );
+    let directory = TestDirectory::new("script-run");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    expected.set_scripts(vec![Script {
+        id: 2,
+        name: "Count".into(),
+        source: source.into(),
+    }]);
+    expected.set_script_run(ScriptRunState {
+        running: Some(ScriptRun {
+            script: 2,
+            started_frame: 40,
+            due_frame: 65,
+            state,
+        }),
+        fault: None,
+    });
+    store.save(&stored(expected.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains(
+            ",\n    \"script_run\": {\"running\": {\"script\": 2, \"started_frame\": 40, \
+             \"due_frame\": 65, \"path\": [{\"statement\": 3, \"branch\": 2}, {\"statement\": 0, \
+             \"branch\": 0}], \"variables\": [{\"name\": \"n\", \"int\": 2}, {\"name\": \
+             \"label\", \"string\": \"Li\\\"ve\"}, {\"name\": \"on\", \"bool\": true}], \
+             \"instructions\": 11, \"actions\": 0, \"waits\": 1, \"wait_frames\": 25}, \
+             \"fault\": null}\n  },"
+        ),
+        "{text}"
+    );
+
+    for (from, to) in [
+        ("\"script_run\": {", "\"script_runs\": {"),
+        ("\"int\": 2}", "\"int\": 2, \"bool\": true}"),
+        ("{\"name\": \"n\", \"int\": 2}", "{\"name\": \"n\"}"),
+        ("\"wait_frames\": 25}", "\"wait_frames\": 25, \"extra\": 1}"),
+        ("\"branch\": 2}", "\"branch\": -2}"),
+        ("\"fault\": null}", "\"fault\": {\"script\": 2}}"),
+    ] {
+        let malformed = text.replacen(from, to, 1);
+        assert_ne!(malformed, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+    // A run that does not fit its script, or resumes before its waits
+    // end, is refused by project validation.
+    for (from, to) in [
+        ("\"script\": 2, \"started", "\"script\": 9, \"started"),
+        (
+            "{\"statement\": 3, \"branch\": 2}",
+            "{\"statement\": 2, \"branch\": 2}",
+        ),
+        ("\"due_frame\": 65", "\"due_frame\": 64"),
+        ("\"waits\": 1", "\"waits\": 33"),
+        (
+            "{\"name\": \"n\", \"int\": 2}",
+            "{\"name\": \"if\", \"int\": 2}",
+        ),
+    ] {
+        let invalid = text.replacen(from, to, 1);
+        assert_ne!(invalid, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::Validation(_))),
+            "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+
+    let mut faulted = expected;
+    faulted.set_script_run(ScriptRunState {
+        running: None,
+        fault: Some(ScriptFault {
+            script: 2,
+            frame: 90,
+            failure: FailureKind::Budget(fm_script::Budget::WaitFrames),
+            at: Span::new(5, 3),
+        }),
+    });
+    store.save(&stored(faulted.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &faulted);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains(
+            "\"script_run\": {\"running\": null, \"fault\": {\"script\": 2, \"frame\": 90, \
+             \"failure\": \"wait_frames\", \"line\": 5, \"column\": 3}}"
+        ),
+        "{text}"
+    );
+    let unknown = text.replacen("\"wait_frames\", \"line\"", "\"sleep\", \"line\"", 1);
+    fs::write(directory.path("show.freemix/project.json"), unknown).unwrap();
+    assert!(matches!(
+        store.load(),
+        Err(StoreError::MalformedManifest { .. })
+    ));
 }

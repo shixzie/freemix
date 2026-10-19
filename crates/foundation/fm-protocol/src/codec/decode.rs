@@ -193,6 +193,7 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "script_state" => WireMessage::ScriptState(crate::ScriptStateMessage {
             revision: fields.canonical_required("revision")?,
             script: super::script::decode_status(&mut fields)?,
+            run: super::script::decode_run(&fields.required("run")?)?,
         }),
         "media_state" => WireMessage::MediaState(MediaStateMessage {
             revision: fields.canonical_required("revision")?,
@@ -543,6 +544,7 @@ fn decode_command_payload(
         "script_run" => CommandPayload::RunScript {
             script: super::script::decode_script_id(fields)?,
         },
+        "script_stop" => CommandPayload::StopScript,
         "input_capture_set" => CommandPayload::SetCaptureSettings {
             input: fields.canonical_input("input")?,
             settings: Box::new(super::capture::decode_settings(fields)?),
@@ -701,8 +703,9 @@ fn decode_playlist_command(fields: &mut Fields, name: &str) -> Result<CommandPay
             });
         }
         "cue_advance" => {
+            // List 0 is the waiting script run (Protocol 2.62).
             return Ok(CommandPayload::CueAdvance {
-                list: super::cue::decode_list_id(fields)?,
+                list: fields.canonical_required("list")?,
                 frame: fields.canonical_required("frame")?,
             });
         }
@@ -2475,6 +2478,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             frame: fields.canonical_required("frame")?,
             actions: fields.canonical_u32("actions")?,
             instructions: fields.canonical_u32("instructions")?,
+            run: super::script::decode_run(&fields.required("run")?)?,
             program: fields.input("program")?,
             preview: fields.input("preview")?,
             manual_transition: decode_manual_status(fields, ManualStatusFields::Unqualified)?,
@@ -2487,6 +2491,11 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             titles: super::cue::decode_titles(&fields.required("titles")?)?,
             media: super::cue::decode_media(&fields.required("media")?)?,
         })),
+        "script_run_changed" => EventPayload::ScriptRunChanged {
+            script: super::script::decode_script_id(fields)?,
+            frame: fields.canonical_required("frame")?,
+            run: super::script::decode_run(&fields.required("run")?)?,
+        },
         "playlist_changed" => EventPayload::PlaylistChanged {
             frame: fields.canonical_required("frame")?,
             loop_mode: parse_playlist_loop(fields.required("loop")?)?,

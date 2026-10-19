@@ -11,7 +11,12 @@
 //! - `script_run` needs the class of every action the run asks for. The
 //!   run is planned on a copy of the show exactly as the command plans it,
 //!   so the classes follow the branches the script takes on the current
-//!   show.
+//!   show. A script that waits (Protocol 2.62) runs its later parts on
+//!   later frames, on a show not known now, so its run also needs the class
+//!   of every action verb its source holds ([`fm_script::Program::verbs`]),
+//!   up front: the clock's `cue_advance` of list 0 later resumes it on the
+//!   authority checked here, and its script cannot change while it runs.
+//!   `script_stop` performs nothing and needs only `transition`.
 //! - `cue_go` needs the class of every action of the cue it fires, waits
 //!   included, and of every cue its auto-follows reach: the whole chain the
 //!   GO arms. The daemon's clock later runs the waits' remaining actions and
@@ -211,7 +216,11 @@ fn armed_chain_runs(engine: &Engine, script: u64) -> bool {
 pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
     match payload {
         CommandPayload::RunScript { script } => {
-            classes(engine, &engine.script_run_actions(*script))
+            let mut set = classes(engine, &engine.script_run_actions(*script));
+            if engine.script_waits(*script) == Some(true) {
+                set.union(script_classes(engine, *script));
+            }
+            set
         }
         CommandPayload::CueControl {
             list,

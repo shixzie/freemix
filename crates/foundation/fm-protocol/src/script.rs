@@ -14,13 +14,32 @@
 //! | [`crate::CommandPayload::SetScript`] | `script_set` | `script` (nonzero), `name`, `source` (lowercase hex of its UTF-8 bytes) |
 //! | [`crate::CommandPayload::RemoveScript`] | `script_remove` | `script` |
 //! | [`crate::CommandPayload::RunScript`] | `script_run` | `script` |
+//! | [`crate::CommandPayload::StopScript`] | `script_stop` | none (Protocol 2.62) |
 //! | [`crate::EventPayload::ScriptChanged`] | `script_changed` | `script`, `name`, `source` |
 //! | [`crate::EventPayload::ScriptRemoved`] | `script_removed` | `script` |
-//! | [`crate::EventPayload::ScriptRan`] | `script_ran` | `script`, `frame`, `actions`, `instructions`, and the desired show state of `cue_run_changed` |
+//! | [`crate::EventPayload::ScriptRan`] | `script_ran` | `script`, `frame`, `actions`, `instructions`, `run` (Protocol 2.62), and the desired show state of `cue_run_changed` |
+//! | [`crate::EventPayload::ScriptRunChanged`] | `script_run_changed` | `script`, `frame`, `run` (Protocol 2.62) |
 //!
 //! A snapshot names how many `script_state` records follow it
 //! ([`crate::SnapshotMessage::script_states`]), one per script in project
-//! order, after its cue list states.
+//! order, after its cue list states; each carries the script's `run`
+//! (Protocol 2.62).
+//!
+//! # Waits (Protocol 2.62)
+//!
+//! A script's `wait FRAMES` spans frames: the run's parts after a wait run
+//! on their due frame, on the show as it is then. The authority keeps one
+//! waiting run at a time, saved with the project; its cue clock resumes it
+//! with `cue_advance` naming list `0`. `run` reports a script's run state
+//! ([`ScriptRunStatus`]): `idle`, `waiting:<started frame>:<due
+//! frame>:<waits passed>:<frames waited>`, or `faulted:<frame>:<failure>:
+//! <line>:<column>` when a part failed on its frame (nothing of that frame
+//! applied; `failure` a [`fm_command::ScriptFailureKind`] token).
+//! `script_ran` reports each part that ran (counts cover the whole run so
+//! far) and `script_run_changed` a stop, a cleared fault, or a fault.
+//! `script_stop` ends the waiting run or clears the fault; another
+//! `script_run`, or an edit or removal of the running script, is refused
+//! with `script_running:<script>` until then.
 
 use crate::{
     CueMediaTransport, CueTitleText, FadeToBlackState, InputAudioStripStatus,
@@ -50,6 +69,31 @@ pub struct ScriptStatus {
     pub spec: ScriptSpec,
 }
 
+/// A script's run (Protocol 2.62).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ScriptRunStatus {
+    /// Not running, and the last run did not fault.
+    #[default]
+    Idle,
+    /// Waiting at a `wait`: started on `started_frame`, resumes on
+    /// `due_frame`, having passed `waits` waits of `wait_frames` frames in
+    /// all.
+    Waiting {
+        started_frame: u64,
+        due_frame: u64,
+        waits: u32,
+        wait_frames: u32,
+    },
+    /// The part due on `frame` failed at `line`:`column` (1-based):
+    /// nothing of that frame applied and the run ended.
+    Faulted {
+        frame: u64,
+        failure: fm_command::ScriptFailureKind,
+        line: u32,
+        column: u32,
+    },
+}
+
 /// One script at a snapshot's revision. A session writes exactly
 /// [`crate::SnapshotMessage::script_states`] of these after the snapshot's
 /// cue list states, in project order.
@@ -57,10 +101,14 @@ pub struct ScriptStatus {
 pub struct ScriptStateMessage {
     pub revision: u64,
     pub script: ScriptStatus,
+    /// The script's run (Protocol 2.62).
+    pub run: ScriptRunStatus,
 }
 
-/// An accepted script run: what it did and every desired state its actions
-/// may have changed (the same projection as [`crate::CueRunChange`]).
+/// An accepted script run, or one part of a run that waited: what it did
+/// (counts cover the whole run so far) and every desired state its
+/// actions may have changed (the same projection as
+/// [`crate::CueRunChange`]).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptRunChange {
     pub script: u64,
@@ -70,6 +118,9 @@ pub struct ScriptRunChange {
     pub actions: u32,
     /// Instructions the run used.
     pub instructions: u32,
+    /// The run afterwards: waiting for its next part, or idle once it
+    /// ended (Protocol 2.62).
+    pub run: ScriptRunStatus,
     pub program: WireInputId,
     pub preview: WireInputId,
     pub manual_transition: ManualTransitionStatus,

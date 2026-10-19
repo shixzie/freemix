@@ -6330,6 +6330,60 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ScriptFailVariables, t("demasiadas variables")),
     (Msg::ScriptFailStringBytes, t("una cadena demasiado larga")),
     (Msg::ScriptFailRefused, t("una acción rechazada")),
+    (
+        Msg::RsnScriptRunning,
+        t("El guion {script} está en marcha; detenga primero su ejecución."),
+    ),
+    (Msg::ScriptFailWaits, t("demasiadas esperas")),
+    (
+        Msg::ScriptFailWaitFrames,
+        t("esperas que suman más de diez minutos"),
+    ),
+    (
+        Msg::ScriptRunWaiting,
+        t(
+            "En marcha: la siguiente parte se ejecuta en el fotograma {frame} (espera {waits} de esta ejecución, {frames} fotogramas esperados hasta ahora)",
+        ),
+    ),
+    (
+        Msg::ScriptRunWaitingHover,
+        t(
+            "La ejecución de este guion está en pausa en un wait. El servidor ejecuta el resto en ese fotograma, leyendo Program y Preview tal como estén entonces",
+        ),
+    ),
+    (
+        Msg::ScriptRunFaulted,
+        t(
+            "La ejecución falló en el fotograma {frame} con {failure} en la línea {line}, columna {column}; no se aplicó nada de ese fotograma.",
+        ),
+    ),
+    (
+        Msg::ScriptRunFaultedHover,
+        t(
+            "Una parte de la ejecución posterior a un wait falló al llegar su fotograma; la ejecución terminó ahí. Borre el informe o ejecute el guion de nuevo",
+        ),
+    ),
+    (Msg::ScriptStop, t("Detener ejecución")),
+    (
+        Msg::ScriptStopHover,
+        t(
+            "Detener ahora la ejecución en pausa de este guion: no se ejecuta nada más de ella y lo que ya hizo se mantiene",
+        ),
+    ),
+    (Msg::ScriptClearFault, t("Borrar ejecución fallida")),
+    (
+        Msg::ScriptClearFaultHover,
+        t("Descartar el informe de la ejecución fallida en todas las consolas"),
+    ),
+    (
+        Msg::ScriptReasonRunning,
+        t("otra ejecución de guion está en pausa en un wait; deténgala primero"),
+    ),
+    (
+        Msg::ScriptReasonThisRunning,
+        t("este guion está en marcha; detenga primero su ejecución"),
+    ),
+    (Msg::ScriptListRunning, t("{name} (en marcha)")),
     (Msg::MenuScripts, t("Guiones…")),
     (
         Msg::MenuScriptsHover,
@@ -6341,7 +6395,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ScriptsIntro,
         t(
-            "Un guion ejecuta acciones de show en el servidor, todas en un mismo fotograma o ninguna. Los guiones se guardan con el proyecto y no pueden acceder a archivos, a la red ni a otros programas.",
+            "Un guion ejecuta acciones de show en el servidor. Cada parte hasta un wait se aplica en un mismo fotograma o no se aplica; tras un wait, el resto se ejecuta en un fotograma posterior. Los guiones se guardan con el proyecto y no pueden acceder a archivos, a la red ni a otros programas.",
         ),
     ),
     (Msg::ScriptsEmpty, t("Este proyecto aún no tiene guiones")),
@@ -6378,7 +6432,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ScriptRunHover,
         t(
-            "Ejecuta ahora el guion guardado en el servidor; si falla algún paso, no se conserva nada de lo que hizo. La sesión necesita el permiso de cada acción que ejecuta (Preview, audio, texto de título)",
+            "Ejecuta ahora el guion guardado en el servidor; si falla un paso, no se conserva nada de su fotograma. La sesión necesita el permiso de cada acción que ejecuta (Preview, audio, texto de título); un guion con wait necesita el de todas las acciones que contiene",
         ),
     ),
     (Msg::ScriptRemove, t("Eliminar guion")),
@@ -6416,7 +6470,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ScriptReference,
         t(
-            "Instrucciones: let NOMBRE = VALOR · if … elif … else … end · repeat N … end · while … end · stop. Acciones: preview, cut, transition EFECTO, FOTOGRAMAS, stinger, overlay CANAL, ENTRADA, overlay_off, title_on, title_text, title_off, ftb, ftb_off, playlist_start, playlist_stop, gain, mute, unmute, record_start, record_stop, stream_start, stream_stop, play, pause, seek, restart. program y preview contienen los números de las entradas en el aire; una entrada es su número (1 es la primera) o su nombre entre comillas; # empieza un comentario.",
+            "Instrucciones: let NOMBRE = VALOR · if … elif … else … end · repeat N … end · while … end · stop · wait FOTOGRAMAS (hasta diez minutos en total). Acciones: preview, cut, transition EFECTO, FOTOGRAMAS, stinger, overlay CANAL, ENTRADA, overlay_off, title_on, title_text, title_off, ftb, ftb_off, playlist_start, playlist_stop, gain, mute, unmute, record_start, record_stop, stream_start, stream_stop, play, pause, seek, restart. program y preview contienen los números de las entradas en el aire; una entrada es su número (1 es la primera) o su nombre entre comillas; # empieza un comentario.",
         ),
     ),
     (Msg::ScriptReasonUnsaved, t("guarde el guion primero")),

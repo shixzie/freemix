@@ -3383,19 +3383,49 @@ refused run stopped at, Save, Discard, Run, Delete, and the last run's
 action and instruction counts) with English and Spanish hover help, and
 `freemix-cli` has local and `remote-` `scripts`, `script-set`,
 `script-remove`, and `script-run` (by id or name). Remaining gaps: no Wasm
-component runtime or declared capability manifest; scripts cannot wait,
-loop across frames, or read state beyond Program and Preview (a `wait`
-statement was not added: spanning frames would need a persisted per-run
-pending action list and its own clock and fault handling, so a script that
-must span frames is split into script steps of a cue separated by cue
-waits); the budget is counted in instructions, not wall-clock time; and a
+component runtime or declared capability manifest; scripts cannot read
+state beyond Program and Preview; the budget is counted in instructions,
+not wall-clock time; and a
 refused action's own typed reason is folded into `script_failed` (its code
 and message are kept). A cue can run a script as one step (Protocol 2.60,
 schema 55; see `RC-017` above for its frame, failure, recursion, removal,
 and authority semantics); its `cue_run_changed` names each script step it
 ran with that run's action and instruction counts (Protocol 2.61), which
 Studio's Edit > Scripts window and `freemix-cli go` report as the script's
-last run. `RC-011` remains planned.
+last run.
+
+Script waits (Protocol 2.62, schema 56): `wait FRAMES` lets one run span
+frames. Design choice: the parts after a wait are evaluated on their due
+frame, resuming saved interpreter state, rather than planned up front,
+because a script reads Program and Preview and an up-front plan would act
+on a show that no longer exists when the part lands (an operator may have
+taken another camera meanwhile). Each part is all or nothing on its own
+frame, as a whole run was before. The cost is that the interpreter state
+must be persisted, so it is small and bounded: the statement path to the
+wait (branch taken, `repeat` turns left), the variables, and the budget
+used. The show has one run slot (a run waiting or the fault its last part
+ended with), saved with the project and journaled, so a restarted daemon
+resumes the run on its due engine frame exactly like a waiting cue; the
+cue clock drives it (`cue_advance` for list `0`). Bounds: 32 waits and ten
+minutes of frames per run, and one run's instruction, action, variable,
+and string budgets cover all of its parts. A part that fails on its frame
+applies nothing of that frame and leaves a typed fault (kind, line,
+column) in the slot instead of a refusal, published with
+`script_run_changed`; `script_stop` (a journaled `transition` command
+without undo, like a cue Stop) ends a waiting run or clears a fault.
+While a run waits, another run and edits of the running script are refused
+`script_running`. A direct run of a script holding `wait` needs every
+action verb's permission up front, as an armed cue chain's script step
+does, since later parts run unattended. A cue's `run_script` step cannot
+run a script that waits (refused at edit time with `script_waits`), so a
+cue chain never waits on a script; cue waits remain the way to space a
+cue's script steps. Studio's Scripts window shows "(running)", the next
+part's frame with Stop run, or the failed part with Clear failed run;
+`freemix-cli` adds local and remote `script-stop` and prints run state in
+`scripts` and `script-run`. Remaining gaps for waits: one waiting run per
+show (a second is refused rather than queued); a waiting run's later parts
+are not previewed anywhere; and a local `freemix-cli script-run` runs every
+part on the simulated clock before it returns. `RC-011` remains planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

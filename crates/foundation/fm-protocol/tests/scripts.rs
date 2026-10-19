@@ -2,7 +2,9 @@
 //! `script_remove`, and `script_run` commands, the `script_changed`,
 //! `script_removed`, and `script_ran` events, the snapshot's
 //! `script_states` count, the `script_state` follow-on record, and the
-//! typed `script_failed` refusal — exactly, and strictly.
+//! typed `script_failed` refusal — exactly, and strictly. Protocol 2.62
+//! adds script waits: `script_stop`, the `run` state, `script_run_changed`,
+//! `cue_advance` of list 0, and the `script_running` refusal.
 
 use core::num::NonZeroU128;
 
@@ -11,12 +13,13 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload, CueTitleText,
     EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
     FadeToBlackPosition, FadeToBlackState, MAX_SCRIPT_SOURCE_BYTES, ManualTransitionStatus,
-    OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus, ScriptRunChange, ScriptSpec,
-    ScriptStateMessage, ScriptStatus, WireInputId, WireMessage, WireRecorderSlot, WireTitleFieldId,
-    decode_line, decode_refusal_reason, encode_line, encode_refusal_reason,
+    OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus, ScriptRunChange,
+    ScriptRunStatus, ScriptSpec, ScriptStateMessage, ScriptStatus, WireInputId, WireMessage,
+    WireRecorderSlot, WireTitleFieldId, decode_line, decode_refusal_reason, encode_line,
+    encode_refusal_reason,
 };
 
-const PREFIX: &str = "command\tprotocol=2.61\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.62\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -63,7 +66,7 @@ fn spec() -> ScriptSpec {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 61));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 62));
 }
 
 #[test]
@@ -178,6 +181,12 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
         frame: 1_000,
         actions: 3,
         instructions: 41,
+        run: ScriptRunStatus::Waiting {
+            started_frame: 990,
+            due_frame: 1_025,
+            waits: 2,
+            wait_frames: 35,
+        },
         program: input(3),
         preview: input(4),
         manual_transition: ManualTransitionStatus::Inactive,
@@ -219,7 +228,10 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
     };
     let line = round_trip(&event(EventPayload::ScriptRan(Box::new(change))));
     assert!(
-        line.contains("\tevent=script_ran\tscript=4\tframe=1000\tactions=3\tinstructions=41\t"),
+        line.contains(
+            "\tevent=script_ran\tscript=4\tframe=1000\tactions=3\tinstructions=41\t\
+             run=waiting%3A990%3A1025%3A2%3A35\t"
+        ),
         "{line}"
     );
     for (from, to) in [
@@ -235,12 +247,14 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
     round_trip(&WireMessage::ScriptState(ScriptStateMessage {
         revision: 12,
         script: status,
+        run: ScriptRunStatus::Idle,
     }));
-    assert!(decode_line("script_state\trevision=1\tscript=1\tname=A\tsource=\n").is_ok());
+    assert!(decode_line("script_state\trevision=1\tscript=1\tname=A\tsource=\trun=idle\n").is_ok());
     for bad in [
-        "script_state\trevision=1\tscript=0\tname=A\tsource=\n",
-        "script_state\trevision=1\tscript=1\tname=A\n",
-        "script_state\trevision=1\tscript=1\tname=A\tsource=zz\n",
+        "script_state\trevision=1\tscript=0\tname=A\tsource=\trun=idle\n",
+        "script_state\trevision=1\tscript=1\tname=A\trun=idle\n",
+        "script_state\trevision=1\tscript=1\tname=A\tsource=zz\trun=idle\n",
+        "script_state\trevision=1\tscript=1\tname=A\tsource=\n",
     ] {
         assert!(decode_line(bad).is_err(), "{bad}");
     }
@@ -266,4 +280,100 @@ fn script_failures_are_typed_refusals() {
         })
         .is_err()
     );
+}
+
+/// Protocol 2.62 script waits: the run state in every spelling, exactly
+/// and strictly; `script_stop`; `script_run_changed`; the clock's
+/// `cue_advance` of list 0; and the `script_running` refusal.
+#[test]
+fn script_waits_round_trip_exactly() {
+    let line = round_trip(&command(CommandPayload::StopScript));
+    assert_eq!(line, format!("{PREFIX}\tpayload=script_stop\n"));
+    let line = round_trip(&command(CommandPayload::CueAdvance { list: 0, frame: 40 }));
+    assert_eq!(
+        line,
+        format!("{PREFIX}\tpayload=cue_advance\tlist=0\tframe=40\n")
+    );
+
+    for (run, wire) in [
+        (ScriptRunStatus::Idle, "idle"),
+        (
+            ScriptRunStatus::Waiting {
+                started_frame: 0,
+                due_frame: 25,
+                waits: 1,
+                wait_frames: 25,
+            },
+            "waiting:0:25:1:25",
+        ),
+        (
+            ScriptRunStatus::Faulted {
+                frame: 30,
+                failure: ScriptFailureKind::Refused,
+                line: 4,
+                column: 1,
+            },
+            "faulted:30:refused:4:1",
+        ),
+        (
+            ScriptRunStatus::Faulted {
+                frame: 30,
+                failure: ScriptFailureKind::WaitFramesBudget,
+                line: 2,
+                column: 3,
+            },
+            "faulted:30:wait_frames:2:3",
+        ),
+    ] {
+        let line = round_trip(&event(EventPayload::ScriptRunChanged {
+            script: 2,
+            frame: 30,
+            run,
+        }));
+        assert!(
+            line.contains(&format!(
+                "\tevent=script_run_changed\tscript=2\tframe=30\trun={}\t",
+                wire.replace(':', "%3A")
+            )),
+            "{line}"
+        );
+    }
+    let valid = round_trip(&event(EventPayload::ScriptRunChanged {
+        script: 2,
+        frame: 30,
+        run: ScriptRunStatus::Idle,
+    }));
+    for bad in [
+        "waiting:25:25:1:25",
+        "waiting:0:25:0:25",
+        "waiting:0:25:1:0",
+        "waiting:0:25:1",
+        "faulted:30:refused:0:1",
+        "faulted:30:bogus:1:1",
+        "running",
+        "",
+    ] {
+        let broken = valid.replacen("run=idle", &format!("run={bad}"), 1);
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    assert!(
+        encode_line(&event(EventPayload::ScriptRunChanged {
+            script: 2,
+            frame: 30,
+            run: ScriptRunStatus::Waiting {
+                started_frame: 5,
+                due_frame: 5,
+                waits: 1,
+                wait_frames: 1,
+            },
+        }))
+        .is_err()
+    );
+
+    let reason = RefusalReason::ScriptRunning { script: 3 };
+    let wire = encode_refusal_reason(&reason).unwrap();
+    assert_eq!(wire, "script_running:3");
+    assert_eq!(decode_refusal_reason(&wire).unwrap(), reason);
+    assert!(decode_refusal_reason("script_running:0").is_err());
+    assert!(encode_refusal_reason(&RefusalReason::ScriptRunning { script: 0 }).is_err());
 }

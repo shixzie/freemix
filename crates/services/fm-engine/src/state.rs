@@ -188,6 +188,9 @@ pub struct ShowState {
     cue_lists: Vec<fm_model::CueList>,
     /// The project scripts in display order (RC-011).
     scripts: Vec<fm_model::Script>,
+    /// The script run waiting at a `wait`, or the last run's fault (RC-011,
+    /// schema 56).
+    script_run: fm_model::ScriptRunState,
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
     animation_presets: fm_model::AnimationPresetLibrary,
@@ -290,6 +293,7 @@ impl ShowState {
                 .expect("an empty playlist is valid"),
             cue_lists: Vec::new(),
             scripts: Vec::new(),
+            script_run: fm_model::ScriptRunState::default(),
             grading: ProjectGrading::default(),
             luts: BTreeMap::new(),
             animation_presets: fm_model::AnimationPresetLibrary::default(),
@@ -1283,6 +1287,35 @@ impl ShowState {
 
     pub(crate) fn scripts_mut(&mut self) -> &mut Vec<fm_model::Script> {
         &mut self.scripts
+    }
+
+    /// The script run waiting at a `wait`, or the last run's fault (RC-011,
+    /// schema 56).
+    #[must_use]
+    pub const fn script_run(&self) -> &fm_model::ScriptRunState {
+        &self.script_run
+    }
+
+    /// Installs a restored run slot, checked against the scripts (so
+    /// restore them first) at the show's frame `rate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidScripts`] when the run does not fit the
+    /// scripts (see [`fm_model::validate_script_run`]).
+    pub fn set_script_run(
+        &mut self,
+        script_run: fm_model::ScriptRunState,
+        rate: fm_types::FrameRate,
+    ) -> Result<(), ShowError> {
+        fm_model::validate_script_run(&script_run, &self.scripts, rate)
+            .map_err(|_| ShowError::InvalidScripts)?;
+        self.script_run = script_run;
+        Ok(())
+    }
+
+    pub(crate) fn script_run_mut(&mut self) -> &mut fm_model::ScriptRunState {
+        &mut self.script_run
     }
 
     /// Returns the project grading: the grade library, imported LUTs, and

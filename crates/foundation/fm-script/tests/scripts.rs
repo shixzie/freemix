@@ -581,3 +581,196 @@ fn verbs_cover_every_branch_whatever_a_run_takes() {
     assert_eq!(recorder.actions.len(), 1);
     assert_eq!(parse("let x = 1\n").expect("parses").verbs(), []);
 }
+
+/// Runs `program` to completion, resuming after every `wait`, and returns
+/// each part's `(frames waited before it, actions it performed)` and the
+/// final report. `between` changes the host while a part waits.
+fn run_parts(
+    program: &fm_script::Program,
+    host: &mut Recorder,
+    limits: Limits,
+    mut between: impl FnMut(&mut Recorder, u32),
+) -> (Vec<(u32, usize)>, fm_script::ScriptReport) {
+    let mut parts = Vec::new();
+    let mut before = host.actions.len();
+    let mut report = run(program, host, limits);
+    parts.push((0, host.actions.len() - before));
+    while let Some(suspension) = report.suspension.clone() {
+        assert!(program.accepts(&suspension.state, &limits));
+        between(host, suspension.frames);
+        before = host.actions.len();
+        report = fm_script::resume(program, &suspension.state, host, limits);
+        parts.push((suspension.frames, host.actions.len() - before));
+    }
+    (parts, report)
+}
+
+/// RC-011: `wait` suspends a run with plain, resumable state; the parts
+/// after it read Program and Preview as they are when they run, and loop
+/// counters, branches, and variables carry across.
+#[test]
+fn a_wait_suspends_the_run_and_resume_continues_it() {
+    let program = parse(
+        "let n = 0\n\
+         repeat 3\n  \
+           let n = n + 1\n  \
+           if n == 2\n    title_text 4, 1, \"two\"\n    wait 10\n  else\n    preview n\n    wait n\n  end\n\
+         end\n\
+         while program != 3\n  wait 5\nend\n\
+         cut 2\n",
+    )
+    .expect("parses");
+    assert!(program.waits());
+    assert_eq!(
+        program.verbs(),
+        vec![Verb::Preview, Verb::Cut, Verb::TitleText]
+    );
+    let mut recorder = host();
+    let mut polls = 0;
+    let (parts, report) = run_parts(
+        &program,
+        &mut recorder,
+        Limits::default(),
+        |host, frames| {
+            // Program becomes 3 during the second poll of the `while`.
+            if frames == 5 {
+                polls += 1;
+                if polls == 2 {
+                    host.program = 3;
+                }
+            }
+        },
+    );
+    assert_eq!(report.failure, None);
+    assert_eq!(report.suspension, None);
+    // preview 1, wait 1 | title, wait 10 | preview 3, wait 3 | poll,
+    // wait 5 | poll, wait 5 (Program becomes 3) | cut 2.
+    assert_eq!(parts, vec![(0, 1), (1, 1), (10, 1), (3, 0), (5, 0), (5, 1)]);
+    assert_eq!(report.actions, 4);
+    assert_eq!(
+        recorder.actions[2],
+        ScriptAction::Preview(InputRef::Number(3))
+    );
+    assert!(!parse("cut 1\n").expect("parses").waits());
+}
+
+#[test]
+fn waits_are_bounded_and_checked() {
+    for (source, needle) in [
+        ("wait 0", "1 or more frames"),
+        ("wait -2", "1 or more frames"),
+        ("wait \"x\"", "number of frames"),
+    ] {
+        let (kind, _, message, _) = failure(source, Limits::default());
+        assert_eq!(kind, FailureKind::Runtime, "{source}");
+        assert!(message.contains(needle), "{source}: {message}");
+    }
+    assert_eq!(parse("wait").unwrap_err().kind, FailureKind::Syntax);
+    assert_eq!(parse("let wait = 1").unwrap_err().kind, FailureKind::Syntax);
+
+    // A host that refuses every wait (a cue step) fails the run there.
+    let (kind, at, _, actions) = failure(
+        "cut 1\nwait 1\ncut 2",
+        Limits {
+            waits: 0,
+            ..Limits::default()
+        },
+    );
+    assert_eq!(kind, FailureKind::Budget(Budget::Waits));
+    assert_eq!((at.line, actions), (2, 1));
+
+    // The count and the total frames of the waits are budgets of the run.
+    let program = parse("repeat 10\n  wait 100\nend").expect("parses");
+    let (parts, report) = run_parts(
+        &program,
+        &mut host(),
+        Limits {
+            waits: 4,
+            ..Limits::default()
+        },
+        |_, _| {},
+    );
+    assert_eq!(parts.len(), 5);
+    assert_eq!(
+        report.failure.map(|failure| failure.kind),
+        Some(FailureKind::Budget(Budget::Waits))
+    );
+    let (parts, report) = run_parts(
+        &program,
+        &mut host(),
+        Limits {
+            wait_frames: 250,
+            ..Limits::default()
+        },
+        |_, _| {},
+    );
+    assert_eq!(parts.len(), 3);
+    assert_eq!(
+        report.failure.map(|failure| failure.kind),
+        Some(FailureKind::Budget(Budget::WaitFrames))
+    );
+
+    // The instruction budget covers the whole run, across its waits.
+    let program = parse("while true\n  wait 1\nend").expect("parses");
+    let (_, report) = run_parts(
+        &program,
+        &mut host(),
+        Limits {
+            instructions: 40,
+            ..Limits::default()
+        },
+        |_, _| {},
+    );
+    assert_eq!(
+        report.failure.map(|failure| failure.kind),
+        Some(FailureKind::Budget(Budget::Instructions))
+    );
+    assert_eq!(report.instructions, 40);
+}
+
+#[test]
+fn a_saved_state_that_does_not_fit_the_program_is_refused() {
+    let program = parse("if true\n  wait 2\nend\ncut 1").expect("parses");
+    let report = run(&program, &mut host(), Limits::default());
+    let state = report.suspension.expect("waits").state;
+    let point = fm_script::ResumePoint {
+        statement: 0,
+        branch: 0,
+    };
+    assert_eq!(state.path, vec![point, point]);
+    let limits = Limits::default();
+    assert!(program.accepts(&state, &limits));
+    let other = parse("cut 1\nwait 2").expect("parses");
+    assert!(!other.accepts(&state, &limits));
+    let report = fm_script::resume(&other, &state, &mut host(), limits);
+    assert_eq!(
+        report.failure.map(|failure| failure.kind),
+        Some(FailureKind::Runtime)
+    );
+    for broken in [
+        fm_script::Suspended {
+            path: vec![fm_script::ResumePoint {
+                statement: 0,
+                branch: 2,
+            }],
+            ..state.clone()
+        },
+        fm_script::Suspended {
+            waits: 0,
+            ..state.clone()
+        },
+        fm_script::Suspended {
+            variables: vec![("if".to_owned(), fm_script::ScriptValue::Int(1))],
+            ..state.clone()
+        },
+        fm_script::Suspended {
+            variables: vec![
+                ("a".to_owned(), fm_script::ScriptValue::Int(1)),
+                ("a".to_owned(), fm_script::ScriptValue::Int(2)),
+            ],
+            ..state.clone()
+        },
+    ] {
+        assert!(!program.accepts(&broken, &limits), "{broken:?}");
+    }
+}
