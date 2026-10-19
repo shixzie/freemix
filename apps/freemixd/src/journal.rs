@@ -23,7 +23,8 @@
 //! edits the manifest does not hold yet.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use fm_persistence::{JournalWriter, MutationBatch, ProjectPosition, ProjectStore, StoredProject};
 use fm_protocol::{
@@ -51,6 +52,10 @@ const MAX_MUTATIONS_PER_CHECKPOINT: u64 = 64;
 /// the most time before the next frame deadline, instead of in front of the
 /// frame of the command that reaches [`MAX_MUTATIONS_PER_CHECKPOINT`].
 const EARLY_CHECKPOINT_MUTATIONS: u64 = MAX_MUTATIONS_PER_CHECKPOINT * 3 / 4;
+
+/// Recent appends whose durations [`DurableStore::recent_append_peak`]
+/// reports the longest of.
+const RECENT_APPENDS: usize = 32;
 
 /// Bytes of protocol version that open a payload.
 const PROTOCOL_BYTES: usize = 4;
@@ -122,6 +127,15 @@ pub(crate) trait DurableStore {
         Ok(())
     }
 
+    /// The longest a recent [`Self::record`] took to make its command
+    /// durable (the append and its sync), or `None` before any. A native
+    /// daemon dispatches a command only with at least that much of the
+    /// frame interval left, so the sync ends before the frame that
+    /// realizes the command. Stores that do not sync report nothing.
+    fn recent_append_peak(&self) -> Option<Duration> {
+        None
+    }
+
     /// Copies the media file at host path `path` into the bundle's assets
     /// and returns its `asset://` URI and whether a new file was written
     /// (`false` when an identical asset was reused) (IN-026 batch import and
@@ -163,6 +177,9 @@ pub(crate) fn commit_staged_title_animations(
 pub(crate) struct DurableJournal<'store> {
     writer: JournalWriter<'store>,
     pending: Cell<u64>,
+    /// How long each of the last [`RECENT_APPENDS`] recorded mutations took
+    /// to become durable, oldest first.
+    appends: RefCell<VecDeque<Duration>>,
     /// Every template URI this run staged an animation for. Startup
     /// recovery committed (or discarded) every copy staged before the run,
     /// so these are the only templates a checkpoint can find staged —
@@ -175,6 +192,7 @@ impl<'store> DurableJournal<'store> {
         Self {
             writer,
             pending: Cell::new(0),
+            appends: RefCell::new(VecDeque::new()),
             staged: RefCell::new(BTreeSet::new()),
         }
     }
@@ -237,6 +255,7 @@ impl DurableStore for DurableJournal<'_> {
             }
             return Ok(());
         };
+        let started = Instant::now();
         // Checkpoint *before* the append, never after. Everything that can fail
         // then fails while the command is still refusable; a checkpoint after a
         // durable append would have to choose between reporting its failure and
@@ -278,7 +297,16 @@ impl DurableStore for DurableJournal<'_> {
             encode_mutation(command, now_millis, updated.position())?,
         ))?;
         self.pending.set(self.pending.get().saturating_add(1));
+        let mut appends = self.appends.borrow_mut();
+        if appends.len() == RECENT_APPENDS {
+            appends.pop_front();
+        }
+        appends.push_back(started.elapsed());
         Ok(())
+    }
+
+    fn recent_append_peak(&self) -> Option<Duration> {
+        self.appends.borrow().iter().copied().max()
     }
 
     fn checkpoint(&self, project: &StoredProject) -> AppResult<()> {

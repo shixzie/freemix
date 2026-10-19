@@ -121,6 +121,8 @@ mod native_streams;
 mod native_system_audio;
 #[cfg(feature = "native-media")]
 mod native_titles;
+#[cfg(feature = "native-media")]
+mod pacing_trace;
 // The inventory host and status records are wired into native daemons only;
 // the parser and validation compile (and are unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
@@ -610,7 +612,21 @@ fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
 struct NativeDaemon {
     pacer: FramePacer,
     pacer_start_offset: Duration,
+    /// When the runtime started: the clock stream reconnects and backoff
+    /// are scheduled on.
     origin: Instant,
+    /// When the pacer's first frame was due: the first time the frame loop
+    /// asked for a frame, not when the runtime started. Startup work between
+    /// the two (recorder and stream workers starting, listeners binding)
+    /// would otherwise leave the first frames late and realized back to back
+    /// to catch up. `None` until the frame loop first runs.
+    pacing_origin: Option<Instant>,
+    /// The frame a client command was first held back for (see
+    /// [`Self::command_window`]); it is dispatched once that frame was
+    /// realized.
+    command_deferred_at: Option<FrameNumber>,
+    /// Every realized frame's lateness, when `FREEMIXD_PACING_TRACE=1`.
+    pacing_trace: Option<pacing_trace::PacingTrace>,
     latest_output: Option<NativeTexture>,
     latest_project_outputs: Vec<NativeOutputFrame>,
     master: NativeMasterRuntime,
@@ -2174,38 +2190,6 @@ impl NativeProgramRecorder {
         )?)
     }
 
-    /// Opens a segment synchronously. Used only for configured startup
-    /// recording, which completes before readiness is advertised.
-    #[allow(clippy::too_many_arguments)]
-    fn start(
-        runtime: &NativeMediaRuntime,
-        stored: &StoredProject,
-        path: &Path,
-        names: &recording_session::SegmentNames,
-        wav: bool,
-        video_bitrate_kbps: Option<u32>,
-        audio_bitrate_kbps: Option<u32>,
-        slot: usize,
-    ) -> AppResult<Self> {
-        let format = Self::stored_format(stored)?;
-        let timecode = recording_start_timecode(format.first_sequence().get(), format.frame_rate());
-        let (mut recorder, config) = Self::prepare(
-            runtime,
-            format,
-            timecode,
-            path,
-            wav,
-            video_bitrate_kbps,
-            audio_bitrate_kbps,
-            slot,
-        )?;
-        let planned = recorder.plan_session(path, names)?;
-        let opened = start_session_recorder(planned, config).map_err(AppFailure)?;
-        recorder.sink = RecorderSink::Open(Box::new(opened.recorder));
-        recorder.session = Some(opened.session);
-        Ok(recorder)
-    }
-
     /// Plans this segment's crash-safe session on the daemon loop. The name
     /// is reserved until the session's manifest exists, so the next segment
     /// name derived while this one is still opening never collides with it.
@@ -2550,6 +2534,7 @@ impl NativeProgramRecorder {
         &mut self,
         runtime: &NativeMediaRuntime,
         program: &NativeTexture,
+        readbacks: &mut FrameReadbacks<'_>,
         audio: AudioBlock,
     ) {
         if !self.capture.active() {
@@ -2563,8 +2548,9 @@ impl NativeProgramRecorder {
         }
         let sequence = audio.timing().sequence();
         // This is the existing synchronous diagnostic readback path, not a
-        // nonblocking or zero-copy encoder bridge.
-        let readback = match runtime.readback_program_blocking(&mut self.readback, program) {
+        // nonblocking or zero-copy encoder bridge; a stream group that read
+        // the same picture this frame already paid for it.
+        let readback = match readbacks.take(runtime, &mut self.readback, program) {
             Ok(readback) => readback,
             Err(error) => {
                 self.fail(format!("readback:{error}"), true);
@@ -2589,17 +2575,36 @@ impl NativeProgramRecorder {
                 return;
             }
         };
-        if self.backlog.is_empty()
+        let pair = if self.backlog.is_empty()
             && let RecorderSink::Open(recorder) = &mut self.sink
         {
-            if let Err(error) = recorder.enqueue(pair) {
-                let app_capture_failure = !matches!(&error.reason, EnqueueRejection::Failed(_));
-                self.fail(format!("enqueue:{:?}", error.reason), app_capture_failure);
+            match recorder.enqueue(pair) {
+                Ok(()) => return,
+                // A segment still awaiting mux readiness has just been handed
+                // the frames realized while it opened, and its `FFmpeg` may
+                // still be starting its encoder: a full queue then waits in
+                // the backlog rather than failing the segment.
+                Err(error)
+                    if self.priming.is_some()
+                        && matches!(
+                            error.reason,
+                            EnqueueRejection::QueueFull | EnqueueRejection::RetainedByteLimit
+                        ) =>
+                {
+                    error.into_frame()
+                }
+                Err(error) => {
+                    let app_capture_failure = !matches!(&error.reason, EnqueueRejection::Failed(_));
+                    self.fail(format!("enqueue:{:?}", error.reason), app_capture_failure);
+                    return;
+                }
             }
-            return;
-        }
-        // The segment is still opening, or older pairs are still waiting:
-        // queue behind them so the segment stays in sequence order.
+        } else {
+            pair
+        };
+        // The segment is still opening, older pairs are still waiting, or a
+        // priming segment's queue is full: queue behind them so the segment
+        // stays in sequence order.
         let bytes = pair.retained_bytes();
         if self.backlog_bytes.saturating_add(bytes) > self.backlog_limit {
             self.fail("enqueue:open_backlog_full".to_owned(), true);
@@ -4347,24 +4352,87 @@ fn admit_rendition_outcomes(
     }
 }
 
+/// The Program readbacks of one frame, shared by every consumer that reads
+/// the same output texture at the same size: the stream rendition groups
+/// and then the recorder slots.
+///
+/// A readback is a GPU pass, a copy into a staging buffer, and a blocking
+/// wait for the device, all on the frame loop. A recorder and a stream
+/// group that both take Program at the project's size used to pay for it
+/// twice per frame; they now share one. Owners of the same size convert
+/// identically ([`NativeMediaRuntime::create_program_readback_blocking`]),
+/// so a shared readback holds exactly the bytes either owner would have
+/// read.
+#[cfg(feature = "native-media")]
+#[derive(Default)]
+struct FrameReadbacks<'frame> {
+    read: Vec<(&'frame NativeTexture, u32, u32, fm_gpu::DiagnosticReadback)>,
+}
+
+#[cfg(feature = "native-media")]
+impl<'frame> FrameReadbacks<'frame> {
+    fn position(&self, program: &NativeTexture, owner: &NativeProgramReadback) -> Option<usize> {
+        self.read.iter().position(|(texture, width, height, _)| {
+            std::ptr::eq(*texture, program) && *width == owner.width() && *height == owner.height()
+        })
+    }
+
+    /// `program` read back through `owner`, reading it only if no consumer
+    /// of this frame read it at this size yet.
+    fn read(
+        &mut self,
+        runtime: &NativeMediaRuntime,
+        owner: &mut NativeProgramReadback,
+        program: &'frame NativeTexture,
+    ) -> Result<&fm_gpu::DiagnosticReadback, freemixd::native_media::NativeMediaError> {
+        let index = if let Some(index) = self.position(program, owner) {
+            index
+        } else {
+            let readback = runtime.readback_program_blocking(owner, program)?;
+            self.read
+                .push((program, owner.width(), owner.height(), readback));
+            self.read.len() - 1
+        };
+        Ok(&self.read[index].3)
+    }
+
+    /// Like [`Self::read`], but hands the readback over: a consumer that
+    /// keeps the pixels takes a shared readback without copying it, and a
+    /// later consumer of the same picture reads it again.
+    fn take(
+        &mut self,
+        runtime: &NativeMediaRuntime,
+        owner: &mut NativeProgramReadback,
+        program: &NativeTexture,
+    ) -> Result<fm_gpu::DiagnosticReadback, freemixd::native_media::NativeMediaError> {
+        match self.position(program, owner) {
+            Some(index) => Ok(self.read.swap_remove(index).3),
+            None => runtime.readback_program_blocking(owner, program),
+        }
+    }
+}
+
 /// The production pack step for one group: ONE synchronous program readback
-/// through the shared owner, layout validation, and ONE raw pair packed under
+/// through the shared owner (or the one another consumer of the same
+/// picture already made this frame, see [`FrameReadbacks`]), layout validation, and ONE raw pair packed under
 /// the group's rendition identity. This is the existing synchronous
 /// diagnostic readback contract, not a nonblocking or zero-copy encoder
 /// bridge; the failure texts mirror the per-target path they replaced.
 #[cfg(feature = "native-media")]
-fn pack_group_pair(
+#[allow(clippy::too_many_arguments)]
+fn pack_group_pair<'frame>(
     runtime: &NativeMediaRuntime,
-    program: &NativeTexture,
+    program: &'frame NativeTexture,
     readback: &mut NativeProgramReadback,
+    readbacks: &mut FrameReadbacks<'frame>,
     format: &RecordFormat,
     rendition: RenditionId,
     sequence: SequenceNumber,
     audio: &AudioBlock,
 ) -> Result<OutputPacket, String> {
-    // This is the expensive synchronous step sharing removes duplicates of.
-    let frame = runtime
-        .readback_program_blocking(readback, program)
+    // The expensive synchronous step: one per picture and size per frame.
+    let frame = readbacks
+        .read(runtime, readback, program)
         .map_err(|error| format!("readback:{error}"))?;
     let Some(expected_stride) = frame.width.checked_mul(4) else {
         return Err("readback:stride_overflow".to_owned());
@@ -4903,6 +4971,9 @@ impl NativeDaemon {
             pacer,
             pacer_start_offset,
             origin,
+            pacing_origin: None,
+            command_deferred_at: None,
+            pacing_trace: pacing_trace::PacingTrace::from_environment(),
             latest_output: None,
             latest_project_outputs: Vec::new(),
             master,
@@ -5247,7 +5318,9 @@ impl NativeDaemon {
             .is_some_and(display_outputs::InventoryDisplayHost::presenting)
     }
 
-    /// Opens one slot's next segment for a configured output.
+    /// Begins opening one slot's next segment for a configured output: the
+    /// session and `FFmpeg` start on a worker, exactly as for a runtime
+    /// `RecordStart`, and [`Self::prime_recorder`] awaits the segment.
     ///
     /// The slot index is zero-based (`--record-program` is 0 and
     /// `--record-program-2` is 1); the recorder itself reports the matching
@@ -5260,7 +5333,7 @@ impl NativeDaemon {
     ) -> AppResult<()> {
         let names = self.segment_names.clone();
         let segment = next_record_segment_path(path, |candidate| names.taken(candidate))?;
-        self.recorders[slot] = ProgramRecording::Running(Box::new(NativeProgramRecorder::start(
+        self.recorders[slot] = ProgramRecording::Running(Box::new(NativeProgramRecorder::open(
             &self.runtime,
             stored,
             &segment,
@@ -5553,16 +5626,19 @@ impl NativeDaemon {
         }
     }
 
-    /// Waits for one recorder slot's first muxed pair within that slot's own
-    /// startup timeout.
+    /// Waits for one recorder slot's segment to open and then for its first
+    /// muxed pair within that slot's own startup timeout, realizing Program
+    /// frames on their deadlines meanwhile: the segment opens on its worker
+    /// and the frames realized while it opens queue in its backlog, so the
+    /// frame loop never waits on `FFmpeg`.
     ///
     /// Returns `Ok(true)` when the slot is ready or was never started,
     /// `Ok(false)` when a requested shutdown interrupted the barrier, and an
-    /// error when the slot failed or exhausted its deadline. Every failure
-    /// latches only the addressed slot. Only configured startup recording,
-    /// which is fail-closed and completes before readiness, blocks on this;
-    /// a runtime `RecordStart` is primed by [`Self::advance_recordings`]
-    /// without stalling the daemon loop.
+    /// error when the slot failed to open, failed, or exhausted its deadline.
+    /// Every failure latches only the addressed slot. Only configured startup
+    /// recording, which is fail-closed and completes before readiness, waits
+    /// on this; a runtime `RecordStart` is primed by
+    /// [`Self::advance_recordings`] without stalling the daemon loop.
     fn prime_recorder(
         &mut self,
         slot: usize,
@@ -5571,31 +5647,38 @@ impl NativeDaemon {
         shutdown: Option<&ProcessShutdown>,
         before_frame: &mut BeforeNativeFrame<'_>,
     ) -> AppResult<bool> {
-        let ProgramRecording::Running(recorder) = &self.recorders[slot] else {
+        if !self.recorders[slot].is_running() {
             return Ok(true);
-        };
-        let startup_timeout = recorder.startup_pair_timeout;
-        let deadline = Instant::now()
-            .checked_add(startup_timeout)
-            .ok_or_else(|| AppFailure("Program recorder startup deadline overflow".into()))?;
+        }
         loop {
             if requested_daemon_shutdown(Some(&*self), shutdown).is_some() {
                 return Ok(false);
             }
-            let decision = match &self.recorders[slot] {
-                ProgramRecording::Running(recorder) => recorder.startup_decision(),
-                ProgramRecording::Off => unreachable!("recorder presence was checked"),
-            }?;
-            match decision {
-                StartupPairDecision::Ready => return Ok(true),
+            let ProgramRecording::Running(recorder) = &mut self.recorders[slot] else {
+                unreachable!("recorder presence was checked");
+            };
+            // The open worker's own connect timeout bounds the open; the
+            // barrier budget starts once the recorder exists, as it did
+            // when the open blocked.
+            if let OpenPoll::Failed(failure) = recorder.poll_open() {
+                self.recorders[slot] = ProgramRecording::Off;
+                let error = failure.strip_prefix("start:").unwrap_or(&failure);
+                return Err(AppFailure(error.to_owned()).into());
+            }
+            recorder.pump_backlog();
+            match recorder.startup_decision()? {
+                StartupPairDecision::Ready => {
+                    recorder.priming = None;
+                    return Ok(true);
+                }
                 StartupPairDecision::Failed => unreachable!("failure is returned as an error"),
                 StartupPairDecision::Pending => {}
             }
-            if Instant::now() >= deadline {
-                return Err(match &mut self.recorders[slot] {
-                    ProgramRecording::Running(recorder) => recorder.fail_startup_timeout(),
-                    ProgramRecording::Off => unreachable!("recorder presence was checked"),
-                });
+            if recorder
+                .priming
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                return Err(recorder.fail_startup_timeout());
             }
             before_frame(self, control)?;
             self.tick_if_due(control, server)?;
@@ -5958,6 +6041,7 @@ impl NativeDaemon {
         runtime: &NativeMediaRuntime,
         project_outputs: &[NativeOutputFrame],
         unbound_output: Option<&NativeTexture>,
+        readbacks: &mut FrameReadbacks<'_>,
         audio: &CaptureAudio<'_>,
     ) {
         let mut resolved: [Option<&NativeTexture>; RECORDER_SLOTS] = [None, None];
@@ -5988,7 +6072,7 @@ impl NativeDaemon {
             let block = audio
                 .for_output(record_outputs[slot_index], project_outputs)
                 .clone();
-            recorder.capture(runtime, program, block);
+            recorder.capture(runtime, program, readbacks, block);
         }
     }
 
@@ -5998,20 +6082,23 @@ impl NativeDaemon {
     /// stays independently queued, counted, and flagged in the shared output
     /// set.
     ///
-    /// Sequential by design: the recorder captures first, each group performs
-    /// its one synchronous readback, and no path here blocks the render loop
-    /// beyond the existing diagnostic readback contract. A shared-step failure
+    /// Sequential by design: the groups capture before the recorders, each
+    /// group performs its one synchronous readback (shared through
+    /// `readbacks` with every other consumer of the same picture and size
+    /// this frame), and no path here blocks the render loop beyond the
+    /// existing diagnostic readback contract. A shared-step failure
     /// latches every active member of that group; a refused route degrades
     /// only its own target's counters. Takes the stream pieces separately so
     /// the caller can hold immutable borrows of other daemon fields.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    fn capture_streams(
+    fn capture_streams<'frame>(
         streams: &mut [NativeProgramStream],
         stream_groups: &mut [StreamRenditionGroup],
         output_set: &mut OutputSet,
         runtime: &NativeMediaRuntime,
-        project_outputs: &[NativeOutputFrame],
-        unbound_output: Option<&NativeTexture>,
+        project_outputs: &'frame [NativeOutputFrame],
+        unbound_output: Option<&'frame NativeTexture>,
+        readbacks: &mut FrameReadbacks<'frame>,
         capture_audio: &CaptureAudio<'_>,
     ) {
         let sequence = capture_audio.faded.timing().sequence();
@@ -6072,7 +6159,8 @@ impl NativeDaemon {
                     &active,
                     || {
                         pack_group_pair(
-                            runtime, program, readback, format, rendition, sequence, audio,
+                            runtime, program, readback, readbacks, format, rendition, sequence,
+                            audio,
                         )
                     },
                 )
@@ -6451,6 +6539,7 @@ impl NativeDaemon {
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
     ) -> AppResult<Option<Vec<RuntimeEventMessage>>> {
+        self.anchor_pacing();
         #[cfg(feature = "display-surface")]
         for display in &mut self.displays {
             display
@@ -6468,7 +6557,8 @@ impl NativeDaemon {
             return Ok(None);
         }
         self.telemetry.observe_host_lateness(host_deadline, now);
-        self.realize_one(control, server).map(Some)
+        self.realize_traced(control, server, host_deadline, now, false)
+            .map(Some)
     }
 
     fn wait_and_tick(
@@ -6477,6 +6567,7 @@ impl NativeDaemon {
         server: &ServerIdentity,
         process_shutdown: Option<&ProcessShutdown>,
     ) -> AppResult<Option<Vec<RuntimeEventMessage>>> {
+        self.anchor_pacing();
         let (host_deadline, observed) = loop {
             if requested_daemon_shutdown(Some(&*self), process_shutdown).is_some() {
                 return Ok(None);
@@ -6493,7 +6584,26 @@ impl NativeDaemon {
         };
         self.telemetry
             .observe_host_lateness(host_deadline, observed);
-        self.realize_one(control, server).map(Some)
+        self.realize_traced(control, server, host_deadline, observed, true)
+            .map(Some)
+    }
+
+    /// Realizes the frame due at `deadline`, started at `started`, and
+    /// traces it when the pacing trace is on; `command` says a command's
+    /// frame (after its journal append) rather than an idle one.
+    fn realize_traced(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+        deadline: Instant,
+        started: Instant,
+        command: bool,
+    ) -> AppResult<Vec<RuntimeEventMessage>> {
+        let events = self.realize_one(control, server)?;
+        if let Some(trace) = &mut self.pacing_trace {
+            trace.frame(deadline, started, Instant::now(), command);
+        }
+        Ok(events)
     }
 
     /// Hands the engine every media-file growth, completion, and fault the
@@ -6848,22 +6958,13 @@ impl NativeDaemon {
                     .clone()
                     .map(|audio| (source.output(), audio, live_audio.clone()))
             });
-        if let Some(audio) = audio {
+        // Streams read back first and recorders after, so a recorder taking
+        // the same picture as a stream group takes the group's readback
+        // instead of reading it again.
+        if let Some(audio) = &audio {
             self.rotate_due_recorders(audio.timing().sequence());
-            Self::capture_recorders(
-                &mut self.recorders,
-                &self.record_outputs,
-                &self.runtime,
-                &self.latest_project_outputs,
-                self.latest_output.as_ref(),
-                &CaptureAudio {
-                    faded: audio,
-                    live: live_audio,
-                    excluded: &fade_to_black_excluded,
-                    overrides: &override_audio,
-                },
-            );
         }
+        let mut readbacks = FrameReadbacks::default();
         if let Some((audio, live, overrides)) = stream_audio {
             Self::capture_streams(
                 &mut self.streams,
@@ -6872,11 +6973,28 @@ impl NativeDaemon {
                 &self.runtime,
                 &self.latest_project_outputs,
                 self.latest_output.as_ref(),
+                &mut readbacks,
                 &CaptureAudio {
                     faded: audio,
                     live,
                     excluded: &fade_to_black_excluded,
                     overrides: &overrides,
+                },
+            );
+        }
+        if let Some(audio) = audio {
+            Self::capture_recorders(
+                &mut self.recorders,
+                &self.record_outputs,
+                &self.runtime,
+                &self.latest_project_outputs,
+                self.latest_output.as_ref(),
+                &mut readbacks,
+                &CaptureAudio {
+                    faded: audio,
+                    live: live_audio,
+                    excluded: &fade_to_black_excluded,
+                    overrides: &override_audio,
                 },
             );
         }
@@ -7081,6 +7199,9 @@ impl NativeDaemon {
         #[cfg(not(feature = "display-surface"))]
         let presentation = None;
         self.telemetry.emit(presentation);
+        if let Some(trace) = &self.pacing_trace {
+            eprintln!("{}", trace.record());
+        }
         self.telemetry_emitted = true;
     }
 
@@ -7098,15 +7219,99 @@ impl NativeDaemon {
         }
     }
 
+    /// Starts the pacer's clock at the first frame the loop asks for (see
+    /// [`Self::pacing_origin`]); later calls keep it.
+    fn anchor_pacing(&mut self) {
+        self.pacing_origin.get_or_insert_with(Instant::now);
+    }
+
+    /// Whether a client command dispatched now leaves its frame on time.
+    ///
+    /// A native command is journaled and fsynced before the engine commits
+    /// it, and is realized on the next frame, so the fsync must end before
+    /// that frame's deadline. The window is open while more of the frame
+    /// interval is left before the next deadline than the longest of the
+    /// journal's recent appends took (`append_peak`, plus a margin for
+    /// staging the command; half an interval before any append was timed).
+    /// Otherwise the command waits for the frame to be realized (a whole
+    /// interval is then left), so it is realized one frame later instead of
+    /// making the frame late; the window reopens once that frame was
+    /// realized even if realizing it took most of the interval, so no
+    /// command waits longer than one frame. On a quick disk almost no
+    /// command waits; on a contended one, commands take the frame after
+    /// the next boundary. Daemon-issued commands (playlist and cue clocks,
+    /// end-of-media triggers) keep their scheduled frames and never ask.
+    ///
+    /// The journal contract is unchanged: the command is still prepared on
+    /// the state it is realized on, durable before it is committed, and
+    /// realized on the frame right after its append.
+    fn command_window(&mut self, append_peak: Option<Duration>) -> bool {
+        let Ok(deadline) = self.next_deadline() else {
+            return true;
+        };
+        let rate = self.pacer.frame_rate();
+        let interval = Duration::from_nanos(
+            1_000_000_000_u64.saturating_mul(u64::from(rate.denominator()))
+                / u64::from(rate.numerator()),
+        );
+        command_window_open(
+            deadline.saturating_duration_since(Instant::now()),
+            interval,
+            append_peak,
+            self.pacer.next_frame(),
+            &mut self.command_deferred_at,
+        )
+    }
+
+    /// When the pacer's next frame is due. Before the frame loop first runs
+    /// ([`Self::anchor_pacing`]) the next frame is due now.
     fn next_deadline(&self) -> AppResult<Instant> {
         let elapsed_offset = host_deadline_offset(&self.pacer)?
             .checked_sub(self.pacer_start_offset)
             .ok_or_else(|| {
                 AppFailure("native media pacer moved before its restored cursor".into())
             })?;
-        self.origin.checked_add(elapsed_offset).ok_or_else(|| {
+        let origin = self.pacing_origin.unwrap_or_else(Instant::now);
+        origin.checked_add(elapsed_offset).ok_or_else(|| {
             AppFailure("native media host deadline exceeds Instant range".into()).into()
         })
+    }
+}
+
+/// Time a command needs before its frame's deadline besides its journal
+/// append: preparing, staging, and committing it.
+#[cfg(feature = "native-media")]
+const COMMAND_STAGING_MARGIN: Duration = Duration::from_millis(2);
+
+/// The decision of [`NativeDaemon::command_window`]: open with `left` of a
+/// frame `interval` before the next frame (`next_frame`) is due and recent
+/// journal appends taking up to `append_peak`, given the frame a command
+/// was first held back for (`deferred`, updated).
+#[cfg(feature = "native-media")]
+fn command_window_open(
+    left: Duration,
+    interval: Duration,
+    append_peak: Option<Duration>,
+    next_frame: FrameNumber,
+    deferred: &mut Option<FrameNumber>,
+) -> bool {
+    let needed = append_peak.map_or(interval / 2, |peak| {
+        peak.saturating_add(COMMAND_STAGING_MARGIN).min(interval)
+    });
+    if left >= needed && left > Duration::ZERO {
+        *deferred = None;
+        return true;
+    }
+    match *deferred {
+        Some(held) if next_frame > held => {
+            *deferred = None;
+            true
+        }
+        Some(_) => false,
+        None => {
+            *deferred = Some(next_frame);
+            false
+        }
     }
 }
 
@@ -7741,6 +7946,11 @@ impl NativeDaemon {
     #[allow(clippy::unused_self)]
     fn recording_settling(&self, _slot: usize) -> bool {
         false
+    }
+
+    #[allow(clippy::unused_self)]
+    fn command_window(&mut self, _append_peak: Option<Duration>) -> bool {
+        true
     }
 
     #[allow(clippy::unused_self)]
@@ -18820,6 +19030,47 @@ mod tests {
         );
     }
 
+    /// The journal times every append it makes durable, so a native daemon
+    /// knows how much of a frame interval a command's sync needs; it
+    /// reports nothing before its first append.
+    #[test]
+    fn the_journal_reports_how_long_its_recent_appends_took() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        store.save(&test_project()).unwrap();
+        let mut durable = load_and_recover(&store, false).unwrap();
+        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        assert_eq!(journal.recent_append_peak(), None);
+        let mut control = test_control(&durable);
+        let server = test_server(&control);
+        let execution = execute_durable_command(
+            &mut control,
+            &journal,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command(
+                "wall",
+                "wall-key",
+                CommandPayload::SetDisplayOutput {
+                    slot: DisplayOutputSlot::new(1).unwrap(),
+                    config: Box::new("display=name:Wall".parse().unwrap()),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                execution.submission.output.result,
+                CommandResult::Accepted { .. }
+            ),
+            "{:?}",
+            execution.submission.output.result
+        );
+        assert!(journal.recent_append_peak().is_some());
+    }
+
     /// `--display-output` overrides reach the manifest before any command
     /// is journaled, so an edit accepted against the overridden slots
     /// replays after a crash instead of conflicting with the old slots.
@@ -19035,6 +19286,54 @@ mod tests {
         ] {
             assert!(parse_args(arguments).is_err());
         }
+    }
+
+    /// A command dispatches while more of the frame interval is left than
+    /// recent journal appends took (half an interval before any was timed);
+    /// with less it waits for that frame, and once the frame was realized it
+    /// dispatches however little of the next interval is left, so it waits
+    /// at most one frame.
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn a_command_waits_at_most_one_frame_for_room_before_its_deadline() {
+        let open =
+            |left: u64, peak: Option<u64>, frame: u64, deferred: &mut Option<FrameNumber>| {
+                super::command_window_open(
+                    Duration::from_millis(left),
+                    Duration::from_millis(40),
+                    peak.map(Duration::from_millis),
+                    FrameNumber::new(frame),
+                    deferred,
+                )
+            };
+        let mut deferred = None;
+        // Untimed journal: half an interval is needed.
+        assert!(open(20, None, 7, &mut deferred));
+        assert_eq!(deferred, None);
+        // Too little left: held back for frame 7, and again on a later pass
+        // before frame 7 was realized.
+        for left in [19, 3, 0] {
+            assert!(!open(left, None, 7, &mut deferred));
+            assert_eq!(deferred, Some(FrameNumber::new(7)));
+        }
+        // Frame 7 was realized: it goes now, even with little of frame 8's
+        // interval left (a slow realization), and the hold is cleared.
+        assert!(open(5, None, 8, &mut deferred));
+        assert_eq!(deferred, None);
+        // A quick journal needs only its peak and the staging margin.
+        assert!(open(4, Some(1), 9, &mut deferred));
+        assert!(!open(2, Some(1), 9, &mut deferred));
+        assert_eq!(deferred, Some(FrameNumber::new(9)));
+        // Room enough clears a stale hold too.
+        assert!(open(30, Some(1), 9, &mut deferred));
+        assert_eq!(deferred, None);
+        // An overdue frame is realized first, whatever the journal.
+        assert!(!open(0, Some(0), 10, &mut deferred));
+        // A journal slower than a frame interval: a command always takes a
+        // frame boundary, right after the frame it waited for.
+        deferred = None;
+        assert!(!open(39, Some(80), 11, &mut deferred));
+        assert!(open(1, Some(80), 12, &mut deferred));
     }
 
     #[cfg(not(feature = "native-media"))]

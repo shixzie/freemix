@@ -1,0 +1,778 @@
+//! Program frame pacing of a native daemon that records and streams while
+//! sessions cut: how late each Program frame starts against its pacer
+//! deadline, read from the daemon's opt-in `FREEMIXD_PACING_TRACE` record.
+//!
+//! Starting the recorder and the stream encoders must not make the first
+//! Program frames late: their workers start off the frame loop, and the
+//! pacer's first deadline is the first frame it realizes.
+//!
+//! The tests need a native GPU adapter and `FFmpeg`/`ffprobe`. Without an
+//! adapter they are skipped unless `FM_REQUIRE_NATIVE_MEDIA=1`; without the
+//! tools unless `FM_REQUIRE_FFMPEG=1`.
+
+#![cfg(all(feature = "native-media", unix))]
+
+use std::{
+    fs,
+    io::{BufRead, BufReader, ErrorKind, Read, Write},
+    net::{SocketAddr, TcpStream},
+    num::NonZeroU128,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
+
+use fm_model::{
+    Input, InputKind, Layer, LayerGeometry, MainMix, Output, Project, ProjectSettings,
+    RecorderSlot, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
+    SolidColor, SourceRef, StartupPolicy, StreamEndpoint, StreamProtocol, StreamTarget,
+    StreamTargetId,
+};
+use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
+use fm_protocol::{
+    CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
+    HandshakeOutcome, HandshakeRequest, HeartbeatMessage, Role, ServerIdentity, SnapshotMessage,
+    WireInputId, WireMessage, decode_line, encode_line,
+};
+use fm_types::{
+    AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
+    ProjectId, SampleFormat, SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
+};
+use freemixd::ReadinessRecord;
+
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+const RESULT_TIMEOUT: Duration = Duration::from_secs(15);
+const READ_POLL: Duration = Duration::from_millis(50);
+/// Well inside the daemon's 15 s session heartbeat timeout.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
+const FRAME_RATE: u32 = 25;
+const OUTPUT: u128 = 7_200;
+
+fn id(value: u128) -> NonZeroU128 {
+    NonZeroU128::new(value).unwrap()
+}
+
+fn input(value: u128) -> InputId {
+    InputId::new(id(value))
+}
+
+fn tools_available() -> bool {
+    let available = ["ffmpeg", "ffprobe"].iter().all(|tool| {
+        Command::new(tool)
+            .arg("-version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    });
+    assert!(
+        available || std::env::var("FM_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+        "FM_REQUIRE_FFMPEG=1 but ffmpeg or ffprobe is unavailable"
+    );
+    if !available {
+        eprintln!("native pacing test skipped: ffmpeg/ffprobe unavailable");
+    }
+    available
+}
+
+/// A 64x48 25 fps generator show that records recorder 1 and streams two
+/// local HLS destinations (`hls`) from startup.
+#[allow(clippy::too_many_lines)]
+fn save_project(path: &Path, hls: &[PathBuf]) {
+    let rate = FrameRate::new(FRAME_RATE, 1).unwrap();
+    let mut project = Project::new(
+        ProjectId::new(id(7_100)),
+        "Native pacing test",
+        ProjectSettings {
+            frame_rate: rate,
+            video: VideoFormat {
+                dimensions: VideoDimensions::new(64, 48).unwrap(),
+                frame_rate: rate,
+                pixel_format: PixelFormat::Rgba8,
+                scan: ScanMode::Progressive,
+                color: ColorMetadata::default(),
+            },
+            audio: AudioFormat {
+                sample_rate: SampleRate::new(48_000).unwrap(),
+                sample_format: SampleFormat::F32,
+                channels: ChannelLayout::stereo(),
+            },
+        },
+    );
+    for (input_id, video) in [
+        (input(1), SimulatedVideo::Bars),
+        (
+            input(2),
+            SimulatedVideo::Solid(SolidColor::new(24, 80, 160, 255)),
+        ),
+    ] {
+        project.add_input(Input {
+            id: input_id,
+            name: format!("Generator {input_id}"),
+            kind: InputKind::Simulated(SimulatedInput::new(video, SimulatedAudio::Silence)),
+            required_capabilities: Vec::new(),
+        });
+    }
+    project.set_main_mix(MainMix::new(input(1), input(2)));
+    let scene = SceneId::new(id(7_110));
+    project.add_scene(Scene {
+        id: scene,
+        name: "Program scene".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
+            name: "Source".into(),
+            source: SourceRef::Input(input(1)),
+            enabled: true,
+            geometry: LayerGeometry::new(0, 0, 64, 48, Rotation::Deg0),
+            crop: None,
+            mask: None,
+            key: None,
+            effects: Vec::new(),
+            opacity: u8::MAX,
+            z_order: 0,
+        }],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let bus = BusId::new(id(7_111));
+    project.add_audio_bus(fm_model::AudioBus {
+        id: bus,
+        name: "Program bus".into(),
+        sends: Vec::new(),
+    });
+    let output = OutputId::new(id(OUTPUT));
+    project.add_output(Output {
+        id: output,
+        name: "Program output".into(),
+        video_source: scene,
+        audio_source: bus,
+        startup: StartupPolicy::ReconcileDesiredState,
+        required_capabilities: Vec::new(),
+    });
+    for (index, directory) in hls.iter().enumerate() {
+        let target = u128::try_from(index + 1).unwrap();
+        project
+            .add_stream_target_checked(
+                StreamTarget::new(
+                    StreamTargetId::new(id(target)),
+                    format!("HLS {target}"),
+                    StreamProtocol::Hls,
+                    StreamEndpoint::parse_for(
+                        StreamProtocol::Hls,
+                        &directory.display().to_string(),
+                    )
+                    .unwrap(),
+                    None,
+                    output,
+                )
+                .unwrap()
+                .with_startup(StartupPolicy::ReconcileDesiredState)
+                .set_running(true),
+            )
+            .unwrap();
+    }
+    project.set_recording_desired(RecorderSlot::new(1).unwrap(), true);
+    let stored = StoredProject::from_project(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(input(1)),
+            realized_program_id: Some(input(1)),
+            desired_preview_id: Some(input(2)),
+            realized_preview_id: Some(input(2)),
+        },
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    ProjectStore::new(path).unwrap().save(&stored).unwrap();
+}
+
+struct TestDirectory(PathBuf);
+
+impl TestDirectory {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "freemixd-native-pacing-{}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The show of [`save_project`] in a fresh directory: the project, the
+/// recording path, and the two HLS directories.
+fn show(directory: &TestDirectory) -> (PathBuf, PathBuf) {
+    let project = directory.0.join("show.freemix");
+    let recording = directory.0.join("program.mp4");
+    let hls = ["hls-1", "hls-2"].map(|name| directory.0.join(name));
+    for path in &hls {
+        fs::create_dir_all(path).unwrap();
+    }
+    save_project(&project, &hls);
+    (project, recording)
+}
+
+struct DaemonProcess {
+    child: Child,
+    control: SocketAddr,
+    stderr: mpsc::Receiver<String>,
+}
+
+impl DaemonProcess {
+    /// Starts `freemixd serve --native-media [--record-program <output>]`
+    /// with the pacing trace on, or returns `None` when this host has no
+    /// native media runtime (unless `FM_REQUIRE_NATIVE_MEDIA=1`).
+    fn start(project: &Path, output: Option<&Path>) -> Option<Self> {
+        // A measurement may compare another build of the daemon.
+        let binary = std::env::var_os("FREEMIXD_PACING_BINARY").map_or_else(
+            || PathBuf::from(env!("CARGO_BIN_EXE_freemixd")),
+            PathBuf::from,
+        );
+        let mut command = Command::new(binary);
+        command.arg("serve").arg(project).arg("--native-media");
+        if let Some(output) = output {
+            command.arg("--record-program").arg(output);
+        }
+        let mut child = command
+            .env("FREEMIXD_PACING_TRACE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = drain(child.stderr.take().unwrap());
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let (ready_sender, ready) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            let _ = stdout.read_line(&mut line);
+            let _ = ready_sender.send(line);
+            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+        });
+        let line = ready.recv_timeout(PROCESS_TIMEOUT).unwrap_or_default();
+        if let Ok(readiness) = line.trim_end().parse::<ReadinessRecord>() {
+            return Some(Self {
+                child,
+                control: readiness.address,
+                stderr,
+            });
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let detail: String = stderr.try_iter().collect();
+        let message = format!("native daemon unavailable: {line:?}; stderr={detail}");
+        assert!(
+            std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+            "FM_REQUIRE_NATIVE_MEDIA=1: {message}"
+        );
+        eprintln!("native pacing test skipped: {message}");
+        None
+    }
+
+    /// Cooperative stop (SIGTERM); returns everything written to stderr.
+    fn stop(mut self) -> String {
+        let status = Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                let stderr: String = self.stderr.iter().collect();
+                assert!(status.success(), "daemon failed: {stderr}");
+                return stderr;
+            }
+            assert!(Instant::now() < deadline, "daemon did not stop");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl DaemonProcess {
+    /// Kills the daemon with SIGKILL, as a crash or power loss would stop it.
+    fn crash(mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+}
+
+impl Drop for DaemonProcess {
+    fn drop(&mut self) {
+        let failing = thread::panicking();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if failing {
+            while let Ok(chunk) = self.stderr.recv_timeout(Duration::from_secs(2)) {
+                eprint!("{chunk}");
+            }
+        }
+    }
+}
+
+fn drain(mut reader: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 4096];
+        while let Ok(read) = reader.read(&mut buffer) {
+            if read == 0
+                || sender
+                    .send(String::from_utf8_lossy(&buffer[..read]).into_owned())
+                    .is_err()
+            {
+                break;
+            }
+        }
+    });
+    receiver
+}
+
+/// One raw operator session that cuts and heartbeats.
+struct Session {
+    name: String,
+    reader: BufReader<TcpStream>,
+    writer: TcpStream,
+    server: Option<ServerIdentity>,
+    heartbeats: u64,
+    last_heartbeat: Instant,
+}
+
+/// The daemon closed the session (it stopped or was killed).
+#[derive(Debug)]
+struct Closed;
+
+impl Session {
+    /// An operator session and the snapshot it was served.
+    fn connect(name: &str, address: SocketAddr) -> (Self, SnapshotMessage) {
+        let stream = TcpStream::connect(address).unwrap();
+        stream.set_nodelay(true).unwrap();
+        stream.set_read_timeout(Some(READ_POLL)).unwrap();
+        let writer = stream.try_clone().unwrap();
+        let mut session = Self {
+            name: name.to_owned(),
+            reader: BufReader::new(stream),
+            writer,
+            server: None,
+            heartbeats: 0,
+            last_heartbeat: Instant::now(),
+        };
+        session
+            .send(&WireMessage::HandshakeRequest(HandshakeRequest {
+                protocol: CURRENT_PROTOCOL_VERSION,
+                build: "native-pacing-test".into(),
+                client_type: ClientType::Cli,
+                desired_role: Role::Operator,
+                resume_cursor: None,
+            }))
+            .unwrap();
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        loop {
+            assert!(Instant::now() < deadline, "{name}: no snapshot");
+            match session.read().unwrap() {
+                Some(WireMessage::HandshakeResponse(response)) => {
+                    assert!(
+                        matches!(response.outcome, HandshakeOutcome::Snapshot { .. }),
+                        "{name}: {response:?}"
+                    );
+                    session.server = Some(response.server);
+                }
+                Some(WireMessage::Snapshot(snapshot)) => return (session, snapshot),
+                _ => {}
+            }
+        }
+    }
+
+    fn send(&mut self, message: &WireMessage) -> Result<(), Closed> {
+        self.writer
+            .write_all(encode_line(message).unwrap().as_bytes())
+            .and_then(|()| self.writer.flush())
+            .map_err(|_| Closed)
+    }
+
+    fn read(&mut self) -> Result<Option<WireMessage>, Closed> {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Ok(0) => Err(Closed),
+            Ok(_) => Ok(Some(decode_line(&line).unwrap())),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                assert!(line.is_empty(), "{}: a partial line timed out", self.name);
+                Ok(None)
+            }
+            Err(_) => Err(Closed),
+        }
+    }
+
+    fn heartbeat_if_due(&mut self) -> Result<(), Closed> {
+        let Some(server) = self.server.clone() else {
+            return Ok(());
+        };
+        if self.last_heartbeat.elapsed() < HEARTBEAT_EVERY {
+            return Ok(());
+        }
+        self.heartbeats += 1;
+        let heartbeat = WireMessage::Heartbeat(HeartbeatMessage {
+            server,
+            sequence: self.heartbeats,
+            sent_at_ms: self.heartbeats,
+            last_applied: None,
+        });
+        self.last_heartbeat = Instant::now();
+        self.send(&heartbeat)
+    }
+
+    /// Cuts as command `id` and returns the revision it was accepted at.
+    fn cut(&mut self, id: &str) -> Result<u64, Closed> {
+        self.send(&WireMessage::Command(CommandMessage {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            id: id.into(),
+            idempotency_key: format!("{}-{id}", self.name),
+            expected_revision: None,
+            deadline_ms: None,
+            payload: CommandPayload::Cut,
+        }))?;
+        let deadline = Instant::now() + RESULT_TIMEOUT;
+        while Instant::now() < deadline {
+            self.heartbeat_if_due()?;
+            if let Some(WireMessage::CommandResult(result)) = self.read()? {
+                match &result {
+                    CommandResult::Accepted {
+                        id: found,
+                        revision,
+                        ..
+                    } if found == id => return Ok(*revision),
+                    CommandResult::Rejected { id: found, .. } if found == id => {
+                        panic!("{}: {id} was refused: {result:?}", self.name)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        panic!("{}: no result for {id}", self.name);
+    }
+
+    /// Reads and heartbeats for `duration`.
+    fn idle(&mut self, duration: Duration) -> Result<(), Closed> {
+        let until = Instant::now() + duration;
+        while Instant::now() < until {
+            self.heartbeat_if_due()?;
+            self.read()?;
+        }
+        Ok(())
+    }
+}
+
+/// Every traced frame's lateness in milliseconds, in frame order.
+fn traced_lateness(stderr: &str) -> Vec<f64> {
+    traced_frames(stderr)
+        .into_iter()
+        .map(|(lateness, _)| lateness)
+        .collect()
+}
+
+/// Every traced frame's lateness in milliseconds and whether a command was
+/// realized on it, in frame order.
+fn traced_frames(stderr: &str) -> Vec<(f64, bool)> {
+    let record = stderr
+        .lines()
+        .find(|line| line.starts_with("FREEMIXD_PACING_TRACE\t"))
+        .unwrap_or_else(|| panic!("no pacing trace: {stderr}"));
+    let samples = record
+        .split('\t')
+        .find_map(|field| field.strip_prefix("samples="))
+        .unwrap_or_else(|| panic!("no samples in {record}"));
+    samples
+        .split(',')
+        .filter(|sample| !sample.is_empty())
+        .map(|sample| {
+            let mut fields = sample.split(':');
+            let lateness = fields.next().unwrap().parse::<f64>().unwrap() / 1_000.0;
+            (lateness, fields.nth(1) == Some("c"))
+        })
+        .collect()
+}
+
+/// The `percent` percentile of `samples` (nearest rank).
+fn percentile(samples: &[f64], percent: usize) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = (percent * sorted.len()).div_ceil(100);
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+fn summary(label: &str, samples: &[f64]) -> String {
+    format!(
+        "{label}: frames={} p50={:.2}ms p95={:.2}ms p99={:.2}ms max={:.2}ms late>1frame={}",
+        samples.len(),
+        percentile(samples, 50),
+        percentile(samples, 95),
+        percentile(samples, 99),
+        samples.iter().copied().fold(0.0, f64::max),
+        samples
+            .iter()
+            .filter(|&&lateness| lateness > 1_000.0 / f64::from(FRAME_RATE))
+            .count()
+    )
+}
+
+/// Starting the recorder and two HLS stream encoders never makes the first
+/// Program frames late. The recorder's `FFmpeg` used to start on the frame
+/// loop after the pacer's clock had started, so the first frames were 50 to
+/// 100 ms late (over a second in one release run) and were realized back to
+/// back to catch up. The pacer's first deadline is now the first frame the
+/// loop asks for, and the segment opens on its worker while the frames
+/// realized meanwhile queue in its backlog: the first frames are on time and
+/// the recording still holds every realized frame.
+#[test]
+fn recorder_and_stream_startup_never_make_program_frames_late() {
+    /// The frames the startup stall used to make late.
+    const FIRST_FRAMES: usize = 5;
+
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("startup");
+    let (project, recording) = show(&directory);
+    let Some(daemon) = DaemonProcess::start(&project, Some(&recording)) else {
+        return;
+    };
+    let (mut session, _) = Session::connect("cli", daemon.control);
+    session.idle(Duration::from_millis(500)).unwrap();
+    assert_eq!(session.cut("cut-1").unwrap(), 1);
+    session.idle(Duration::from_secs(1)).unwrap();
+    drop(session);
+    let stderr = daemon.stop();
+    let lateness = traced_lateness(&stderr);
+    let startup = &lateness[..lateness.len().min(2 * FRAME_RATE as usize)];
+    eprintln!("{}", summary("startup", startup));
+    let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
+    assert!(
+        lateness.len() > FIRST_FRAMES,
+        "too few frames traced: {lateness:?}"
+    );
+    assert!(
+        lateness[0] < frame_ms / 2.0,
+        "the first Program frame started {} ms late",
+        lateness[0]
+    );
+    let late: Vec<(usize, f64)> = lateness[..FIRST_FRAMES]
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, lateness)| lateness >= frame_ms)
+        .collect();
+    assert!(
+        late.is_empty(),
+        "startup made Program frames a frame or more late (frame, ms): {late:?}"
+    );
+    // Every realized frame reached the segment, those realized while it
+    // was still opening included.
+    let report = stderr
+        .lines()
+        .find(|line| line.starts_with("FREEMIXD_RECORDER\t"))
+        .unwrap_or_else(|| panic!("the recorder never reported: {stderr}"));
+    assert!(report.contains("\toutcome=Clean\t"), "{report}");
+    assert!(
+        report.contains(&format!("\taccepted_pairs={}\t", lateness.len())),
+        "{} frames were realized: {report}",
+        lateness.len()
+    );
+}
+
+/// Measurement, not a gate: 25 s of a recording, two HLS streams, and about
+/// 7.5 cuts a second from two sessions, reporting Program frame lateness for
+/// the first two seconds and for the rest. Run with `--ignored --nocapture`.
+#[test]
+#[ignore = "measurement; run explicitly with --ignored --nocapture"]
+fn measure_program_pacing_while_recording_streaming_and_cutting() {
+    const RUN: Duration = Duration::from_secs(25);
+    /// Two sessions each cutting every 267 ms: about 7.5 cuts a second.
+    const CUT_EVERY: Duration = Duration::from_millis(267);
+
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("measure");
+    let (project, recording) = show(&directory);
+    let Some(daemon) = DaemonProcess::start(&project, Some(&recording)) else {
+        return;
+    };
+    let address = daemon.control;
+    let started = Instant::now();
+    let cutters: Vec<_> = (0..2)
+        .map(|index| {
+            thread::spawn(move || {
+                let (mut session, _) = Session::connect(&format!("cutter-{index}"), address);
+                // The second session cuts half a period after the first.
+                session.idle(CUT_EVERY / 2 * index).unwrap();
+                let mut cuts = 0_u32;
+                let mut latencies = Vec::new();
+                while started.elapsed() < RUN {
+                    let next = Instant::now() + CUT_EVERY;
+                    cuts += 1;
+                    let sent = Instant::now();
+                    session.cut(&format!("cut-{cuts}")).unwrap();
+                    latencies.push(sent.elapsed().as_secs_f64() * 1_000.0);
+                    session
+                        .idle(next.saturating_duration_since(Instant::now()))
+                        .unwrap();
+                }
+                latencies
+            })
+        })
+        .collect();
+    let mut latencies = Vec::new();
+    for cutter in cutters {
+        latencies.extend(cutter.join().unwrap());
+    }
+    let stderr = daemon.stop();
+    let frames = traced_frames(&stderr);
+    let lateness: Vec<f64> = frames.iter().map(|&(lateness, _)| lateness).collect();
+    let split = lateness.len().min(2 * FRAME_RATE as usize);
+    eprintln!("{}", summary("first 2 s", &lateness[..split]));
+    eprintln!("{}", summary("after 2 s", &lateness[split..]));
+    for (label, command) in [
+        ("after 2 s, command frames", true),
+        ("after 2 s, idle frames", false),
+    ] {
+        let selected: Vec<f64> = frames[split..]
+            .iter()
+            .filter(|&&(_, on_command)| on_command == command)
+            .map(|&(lateness, _)| lateness)
+            .collect();
+        eprintln!("{}", summary(label, &selected));
+    }
+    eprintln!(
+        "cut round trip: cuts={} p50={:.2}ms p95={:.2}ms p99={:.2}ms max={:.2}ms",
+        latencies.len(),
+        percentile(&latencies, 50),
+        percentile(&latencies, 95),
+        percentile(&latencies, 99),
+        latencies.iter().copied().fold(0.0, f64::max),
+    );
+    if let Some(telemetry) = stderr
+        .lines()
+        .find(|line| line.starts_with("FREEMIXD_TELEMETRY\t"))
+    {
+        let gpu = telemetry
+            .split('\t')
+            .filter(|field| field.starts_with("gpu_adapter=") || field.starts_with("gpu_backend="))
+            .collect::<Vec<_>>();
+        eprintln!("{gpu:?}");
+    }
+}
+
+/// The Program a show of cuts only leaves on air at `revision`: input 1 and
+/// input 2 swap on every cut.
+fn program_at(revision: u64) -> WireInputId {
+    WireInputId::from_domain(if revision.is_multiple_of(2) {
+        input(1)
+    } else {
+        input(2)
+    })
+}
+
+/// Crash consistency of the command path while frames are paced: two
+/// sessions cut as fast as they are answered while the daemon records and
+/// streams, and the daemon is killed with SIGKILL at an arbitrary moment,
+/// three times. After each restart the recovered show holds every cut a
+/// client was told was accepted (a command is durable before it is
+/// acknowledged, however it waited for its frame), holds no cut that was
+/// never sent, and its Program is the one its revision's cut left on air.
+#[test]
+fn acknowledged_cuts_survive_sigkill_at_any_moment() {
+    const KILLS: u64 = 3;
+
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("crash");
+    let (project, recording) = show(&directory);
+    // A different moment in each run, spread over two frame intervals.
+    let seed = u64::from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_micros(),
+    );
+    let mut acknowledged_total = 0_u64;
+    for kill in 0..KILLS {
+        let segment = recording.with_file_name(format!("program-{kill}.mp4"));
+        let Some(daemon) = DaemonProcess::start(&project, Some(&segment)) else {
+            return;
+        };
+        let address = daemon.control;
+        let (_, snapshot) = Session::connect("observer", address);
+        let base = snapshot.revision;
+        assert!(base >= acknowledged_total, "{base} < {acknowledged_total}");
+        let acknowledged = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(base));
+        let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cutters: Vec<_> = (0..2)
+            .map(|index| {
+                let acknowledged = std::sync::Arc::clone(&acknowledged);
+                let sent = std::sync::Arc::clone(&sent);
+                thread::spawn(move || {
+                    let (mut session, _) =
+                        Session::connect(&format!("crash-{kill}-{index}"), address);
+                    for cut in 1_u64.. {
+                        sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        match session.cut(&format!("cut-{cut}")) {
+                            Ok(revision) => {
+                                acknowledged
+                                    .fetch_max(revision, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            Err(Closed) => return,
+                        }
+                    }
+                })
+            })
+            .collect();
+        let delay = 700 + (seed.wrapping_mul(kill + 1) % 80);
+        thread::sleep(Duration::from_millis(delay));
+        daemon.crash();
+        for cutter in cutters {
+            cutter.join().unwrap();
+        }
+        let acknowledged = acknowledged.load(std::sync::atomic::Ordering::SeqCst);
+        let sent = sent.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            acknowledged > base,
+            "no cut was acknowledged before the kill"
+        );
+
+        let Some(daemon) = DaemonProcess::start(&project, None) else {
+            return;
+        };
+        let (_, recovered) = Session::connect("recovered", daemon.control);
+        assert!(
+            recovered.revision >= acknowledged,
+            "kill {kill} after {delay} ms: recovered revision {} lost acknowledged revision {acknowledged}",
+            recovered.revision
+        );
+        assert!(
+            recovered.revision <= base + sent,
+            "kill {kill}: recovered revision {} holds cuts never sent ({sent} after {base})",
+            recovered.revision
+        );
+        assert_eq!(
+            recovered.realized_program,
+            program_at(recovered.revision),
+            "kill {kill}: recovered Program"
+        );
+        acknowledged_total = recovered.revision;
+        daemon.stop();
+    }
+}

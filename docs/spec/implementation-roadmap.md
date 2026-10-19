@@ -3688,6 +3688,39 @@ commit the frame realizes and makes that frame late only when the sync
 straddles a deadline (usually a few milliseconds, at worst about 100 ms on a
 contended disk).
 
+Native Program pacing (no protocol or schema change): the frame pacer is now
+anchored at the first paced tick instead of at daemon start, and the startup
+recorder opens on its worker (`FFmpeg` spawn and readiness off the loop)
+while the loop keeps realizing frames into its bounded backlog, so readiness
+no longer waits in front of frame 0. A priming segment whose bounded encoder
+queue is full moves the pair into that backlog instead of failing. Streams,
+LiveLAN, and HLS already started on workers. Each realized Program frame is
+read back once and shared between stream packing and recorders, where each
+used to issue its own blocking GPU readback. The command turn now opens only
+when the time left before the next deadline covers the journal's recent
+append peak plus 2 ms (half a frame before any append is timed); otherwise
+the command waits behind at most one idle frame and then takes the next
+turn. A command therefore still lands on the journal (append and disk sync)
+before the engine commit its frame realizes. The journal and replay contract
+is unchanged, and a command waits at most one frame longer. A crash test
+SIGKILLs a recording, streaming, cutting daemon at varied moments and checks
+that recovery holds every acknowledged cut and the matching Program.
+Measured over 25 s with a recording, two HLS streams, and two sessions
+cutting 7.5 times a second (llvmpipe on a host shared with other builds, so
+spikes vary between runs): the first 2 s were p99 70–81 ms late, with two
+frames over a frame late, and are now p99 5–7 ms with none. Command frames
+after 2 s in release, over two runs, were p95 6–9 ms and p99 7–12 ms and are
+now p95 0.1–0.3 ms. In the quiet run, p99 was 0.1 ms. The cut round trip
+rose from p50 12–19 ms to about 37–40 ms (release). Group commit (accept a
+command, sync it on a journal thread, apply it at the first frame after the
+sync) was designed but not implemented: the journal record carries the frame
+it applies at, so it needs an engine API that prepares a command for a later
+frame while idle frames realize in between. Remaining gaps: the journal
+fold into the manifest and the progress marker still run on the loop; a disk
+sync longer than about a frame still makes its frame late; llvmpipe frame
+realization still stalls 50–200 ms under host load; each readback still
+allocates its staging buffer; displays were not measured.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)

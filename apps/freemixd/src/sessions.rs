@@ -776,12 +776,28 @@ pub(super) fn run(
         // The command turn goes to the first peer with a command ready after
         // the one that had the last turn, so peers with commands waiting
         // alternate strictly however many idle peers sit between them.
+        //
+        // A command is made durable (journal append and fsync) before the
+        // frame that realizes it, so one dispatched just before a frame
+        // deadline delays that frame by its fsync. A command that finds less
+        // of the frame interval left than recent appends took waits for the
+        // frame to be realized first and takes the next one, keeping its
+        // turn: its latency grows by at most a frame, and its fsync no longer
+        // makes the frame late (see `NativeDaemon::command_window`).
         let start = dispatch_cursor % peers.len().max(1);
-        let command_turn = native
+        let ready_turn = native
             .is_some()
             .then(|| command_turn(&peers, &close, start))
             .flatten();
-        dispatch_cursor = command_turn.unwrap_or(start).wrapping_add(1);
+        let command_turn = ready_turn.filter(|_| {
+            native
+                .as_deref_mut()
+                .is_some_and(|native| native.command_window(store.recent_append_peak()))
+        });
+        dispatch_cursor = match (ready_turn, command_turn) {
+            (Some(_), None) => start,
+            _ => command_turn.unwrap_or(start).wrapping_add(1),
+        };
         for offset in 0..peers.len() {
             let index = (start + offset) % peers.len();
             if close[index] || peers[index].held_result.is_some() {
