@@ -2568,7 +2568,7 @@ messages! {
     LiveLanTitle => t("LiveLAN viewers"),
     LiveLanIntro => t("Viewers on this network open the address below in a browser (Safari, or Chrome on Android) to watch. The settings are saved with the project; the server must run with --live-lan-listen."),
     LiveLanStatusHover => t("The LiveLAN stream's state as the server reports it"),
-    LiveLanUnavailableDetail => t("This server has no LiveLAN listener: start it with --native-media --live-lan-listen"),
+    LiveLanUnavailableDetail => t("This server has no LiveLAN listener, so nobody can watch yet. The server Studio starts on this computer runs without native media and cannot stream LiveLAN: connect Studio to a server started with freemixd serve <show.freemix> --native-media --live-lan-listen 0.0.0.0:8090"),
     LiveLanFailedDetail => t("The stream could not start; the server retries every few seconds"),
     LiveLanViewers => t("{count} of {max} watching"),
     LiveLanEgress => t("{kbps} kbps to viewers"),

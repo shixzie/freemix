@@ -45,6 +45,10 @@ const SEGMENT_SECONDS: u32 = 1;
 pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// How often the viewer count and bytes served are sampled.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the viewer address of a listener on `0.0.0.0` or `::` is
+/// looked up again, so a network change (or a network that came up after
+/// the daemon started) shows the address that works now.
+const URL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 enum Encoder {
     Idle,
@@ -79,6 +83,8 @@ pub(crate) struct NativeLiveLan {
     source: Option<LiveLanSource>,
     encoder: Encoder,
     url: String,
+    /// When `url` was last looked up.
+    url_resolved: Instant,
     viewers: u8,
     egress_kbps: u32,
     sampled: Option<(Instant, u64)>,
@@ -104,6 +110,7 @@ impl NativeLiveLan {
             source: None,
             encoder: Encoder::Idle,
             url,
+            url_resolved: Instant::now(),
             viewers: 0,
             egress_kbps: 0,
             sampled: None,
@@ -375,6 +382,14 @@ impl NativeLiveLan {
             self.sampled = Some((now, bytes));
             self.viewers = self.handle.viewers();
         }
+        let address = self.handle.address();
+        if enabled
+            && address.ip().is_unspecified()
+            && now.duration_since(self.url_resolved) >= URL_REFRESH_INTERVAL
+        {
+            self.url = viewer_url(address);
+            self.url_resolved = now;
+        }
         let state = match (&self.encoder, enabled) {
             (_, false) => LiveLanState::Off,
             (Encoder::Failed { .. }, true) => LiveLanState::Failed,
@@ -416,5 +431,50 @@ impl NativeLiveLan {
 impl Drop for NativeLiveLan {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fm_types::{
+        AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, SampleFormat,
+        SampleRate, ScanMode, VideoDimensions, VideoFormat,
+    };
+
+    use super::*;
+
+    fn settings() -> fm_model::ProjectSettings {
+        let frame_rate = FrameRate::new(25, 1).unwrap();
+        fm_model::ProjectSettings {
+            frame_rate,
+            video: VideoFormat {
+                dimensions: VideoDimensions::new(320, 180).unwrap(),
+                frame_rate,
+                pixel_format: PixelFormat::Rgba8,
+                scan: ScanMode::Progressive,
+                color: ColorMetadata::default(),
+            },
+            audio: AudioFormat {
+                sample_rate: SampleRate::new(48_000).unwrap(),
+                sample_format: SampleFormat::F32,
+                channels: ChannelLayout::stereo(),
+            },
+        }
+    }
+
+    /// A listener on an unspecified address advertises the address viewers
+    /// can open now, looked up again while `LiveLAN` is on, not only the one
+    /// known when the daemon started.
+    #[test]
+    fn the_viewer_address_of_an_unspecified_bind_is_looked_up_again() {
+        let server = crate::live_lan::LiveLanServer::start("0.0.0.0:0".parse().unwrap()).unwrap();
+        let mut live_lan = NativeLiveLan::new(server.handle(), settings());
+        // As at a start with no network, or on another network since.
+        live_lan.url = "http://192.0.2.200:1/".into();
+        assert_eq!(live_lan.status(true).url, "http://192.0.2.200:1/");
+        live_lan.url_resolved = Instant::now().checked_sub(URL_REFRESH_INTERVAL).unwrap();
+        assert_eq!(live_lan.status(true).url, viewer_url(server.address()));
+        drop(live_lan);
+        server.shutdown().unwrap();
     }
 }

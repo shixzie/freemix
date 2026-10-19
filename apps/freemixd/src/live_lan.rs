@@ -12,11 +12,13 @@
 //! returns an `HttpOnly` session cookie that the playlist and segment
 //! requests must carry. A viewer is a session that fetched media within the
 //! last [`VIEWER_WINDOW`]; a new session is refused while the configured
-//! maximum is watching. Wrong PINs are rate-limited per address. Disabling
+//! maximum is watching; a page joining again with its live session keeps
+//! it. Wrong PINs are rate-limited per IPv4 address or IPv6 `/64`. Disabling
 //! `LiveLAN` or changing its PIN or source ends every session at once.
 //!
 //! Every bound is fixed: at most [`MAX_CONNECTIONS`] connections are served
-//! at once (each on its own short-lived thread), a request head is at most
+//! at once (each on its own short-lived thread), a request must arrive
+//! within [`REQUEST_DEADLINE`], a request head is at most
 //! [`MAX_REQUEST_BYTES`], a body at most [`MAX_BODY_BYTES`], a served file
 //! at most [`MAX_FILE_BYTES`], and the session and failure tables are
 //! capped. The PIN is compared in constant time and never logged, echoed,
@@ -63,6 +65,9 @@ const MAX_FAILURE_ADDRESSES: usize = 1024;
 const SESSION_TOKEN_BYTES: usize = 16;
 const COOKIE_NAME: &str = "fmlive";
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// Time allowed to receive one request, head and body: a client trickling
+/// bytes cannot hold one of the [`MAX_CONNECTIONS`] for longer.
+pub const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Time allowed to send one response, head and body.
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
@@ -133,7 +138,21 @@ struct AccessState {
     media: Option<PathBuf>,
     /// Session token to when it last fetched media (or was created).
     sessions: HashMap<String, Session>,
+    /// Wrong PINs per [`throttle_key`].
     failures: HashMap<IpAddr, Failures>,
+}
+
+/// The bucket wrong PINs from `address` count against: an IPv4 address
+/// (an IPv4-mapped IPv6 peer of a dual-stack listener included), or the
+/// `/64` network of an IPv6 address, since one host may hold any number of
+/// addresses in its `/64` and would otherwise get a fresh allowance each.
+fn throttle_key(address: IpAddr) -> IpAddr {
+    match address.to_canonical() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from_bits(
+            v6.to_bits() & !u128::from(u64::MAX),
+        )),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -168,11 +187,12 @@ impl AccessState {
 
     fn rate_limited(&self, address: IpAddr) -> bool {
         self.failures
-            .get(&address)
+            .get(&throttle_key(address))
             .is_some_and(|failures| failures.count >= MAX_PIN_FAILURES)
     }
 
     fn record_failure(&mut self, address: IpAddr, now: Instant) {
+        let address = throttle_key(address);
         if let Some(failures) = self.failures.get_mut(&address) {
             failures.count = failures.count.saturating_add(1);
             return;
@@ -188,8 +208,17 @@ impl AccessState {
         }
     }
 
-    /// Opens a session for a correct `pin` from `address`.
-    fn open(&mut self, address: IpAddr, pin: &str, now: Instant) -> Result<String, Refusal> {
+    /// Opens a session for a correct `pin` from `address`. A request that
+    /// already carries a live session (`current`, a page joining again after
+    /// a playback error or a reload) keeps it, and so keeps its seat rather
+    /// than being refused by the viewer limit it counts toward itself.
+    fn open(
+        &mut self,
+        address: IpAddr,
+        pin: &str,
+        current: Option<&str>,
+        now: Instant,
+    ) -> Result<String, Refusal> {
         self.prune(now);
         let Some(access) = &self.access else {
             return Err(Refusal::Off);
@@ -198,7 +227,7 @@ impl AccessState {
         if self.rate_limited(address)
             || (access.pin.is_some()
                 && self.failures.len() >= MAX_FAILURE_ADDRESSES
-                && !self.failures.contains_key(&address))
+                && !self.failures.contains_key(&throttle_key(address)))
         {
             return Err(Refusal::RateLimited);
         }
@@ -208,15 +237,28 @@ impl AccessState {
             self.record_failure(address, now);
             return Err(Refusal::Unauthorized);
         }
+        if let Some(current) = current
+            && let Some(session) = self.sessions.get_mut(current)
+        {
+            session.last_seen = now;
+            return Ok(current.to_owned());
+        }
         if self.viewers(now) >= usize::from(access.max_viewers) {
             return Err(Refusal::Full);
         }
         if self.sessions.len() >= MAX_SESSIONS {
-            // Forget the longest-idle session to make room.
+            // Forget the longest-idle session that is not watching to make
+            // room: a flood of joins never ends a viewer's session. There is
+            // always one, since at most `MAX_LIVE_LAN_VIEWERS` are watching.
             if let Some(oldest) = self
                 .sessions
                 .iter()
-                .min_by_key(|(_, session)| session.last_seen)
+                .min_by_key(|(_, session)| {
+                    (
+                        session.watching && now.duration_since(session.last_seen) < VIEWER_WINDOW,
+                        session.last_seen,
+                    )
+                })
                 .map(|(token, _)| token.clone())
             {
                 self.sessions.remove(&oldest);
@@ -437,9 +479,8 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, cancel: &AtomicBool
 struct Request {
     method: String,
     path: String,
-    content_length: usize,
     cookie: Option<String>,
-    /// Body bytes read along with the head.
+    /// The whole body, at most [`MAX_BODY_BYTES`].
     body: Vec<u8>,
 }
 
@@ -450,9 +491,10 @@ fn serve_connection(mut stream: TcpStream, peer: IpAddr, shared: &Shared) {
     {
         return;
     }
+    let received = read_request(&mut stream, Instant::now() + REQUEST_DEADLINE);
     let deadline = Instant::now() + RESPONSE_DEADLINE;
-    match read_request(&mut stream) {
-        Ok(request) => route(&mut stream, peer, shared, request, deadline),
+    match received {
+        Ok(request) => route(&mut stream, peer, shared, &request, deadline),
         Err(status) => {
             let _ = write_simple(&mut stream, status, "", deadline);
         }
@@ -460,7 +502,36 @@ fn serve_connection(mut stream: TcpStream, peer: IpAddr, shared: &Shared) {
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> {
+/// Reads one bounded read before `deadline`: the request is refused with
+/// `408` once the deadline passes, however steadily the bytes trickle in.
+fn read_before(
+    stream: &mut TcpStream,
+    chunk: &mut [u8],
+    deadline: Instant,
+) -> Result<usize, (u16, &'static str)> {
+    const TIMED_OUT: (u16, &str) = (408, "Request Timeout");
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(TIMED_OUT)?;
+    stream
+        .set_read_timeout(Some(remaining.min(READ_TIMEOUT)))
+        .map_err(|_| (400, "Bad Request"))?;
+    match stream.read(chunk) {
+        Ok(0) => Err((400, "Bad Request")),
+        Ok(read) => Ok(read),
+        Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            Err(if Instant::now() >= deadline {
+                TIMED_OUT
+            } else {
+                (400, "Bad Request")
+            })
+        }
+        Err(_) => Err((400, "Bad Request")),
+    }
+}
+
+fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<Request, (u16, &'static str)> {
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     let head_end = loop {
@@ -470,10 +541,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> 
         if buffer.len() >= MAX_REQUEST_BYTES {
             return Err((431, "Request Header Fields Too Large"));
         }
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return Err((400, "Bad Request")),
-            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
-        }
+        let read = read_before(stream, &mut chunk, deadline)?;
+        buffer.extend_from_slice(&chunk[..read]);
     };
     let head = std::str::from_utf8(&buffer[..head_end]).map_err(|_| (400, "Bad Request"))?;
     let mut lines = head.split("\r\n");
@@ -489,7 +558,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> 
     if !version.starts_with("HTTP/1.") {
         return Err((400, "Bad Request"));
     }
-    let mut content_length = 0;
+    let mut content_length: usize = 0;
     let mut cookie = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -507,14 +576,19 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> 
     if content_length > MAX_BODY_BYTES {
         return Err((413, "Content Too Large"));
     }
+    let mut body = buffer[head_end + 4..].to_vec();
+    while body.len() < content_length {
+        let read = read_before(stream, &mut chunk[..MAX_BODY_BYTES], deadline)?;
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(content_length);
     // Strip any query: the routes take none.
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     Ok(Request {
         method: method.to_owned(),
         path: path.to_owned(),
-        content_length,
         cookie,
-        body: buffer[head_end + 4..].to_vec(),
+        body,
     })
 }
 
@@ -537,7 +611,7 @@ fn route(
     stream: &mut TcpStream,
     peer: IpAddr,
     shared: &Shared,
-    mut request: Request,
+    request: &Request,
     deadline: Instant,
 ) {
     match (request.method.as_str(), request.path.as_str()) {
@@ -555,22 +629,13 @@ fn route(
             }
         }
         ("POST", "/v1/live/session") => {
-            while request.body.len() < request.content_length {
-                let mut chunk = [0_u8; MAX_BODY_BYTES];
-                match stream.read(&mut chunk) {
-                    Ok(0) | Err(_) => {
-                        let _ = write_simple(stream, (400, "Bad Request"), "", deadline);
-                        return;
-                    }
-                    Ok(read) => request.body.extend_from_slice(&chunk[..read]),
-                }
-            }
-            request.body.truncate(request.content_length);
             let Some(pin) = form_pin(&request.body) else {
                 let _ = write_simple(stream, (400, "Bad Request"), "", deadline);
                 return;
             };
-            let opened = shared.lock().open(peer, pin, Instant::now());
+            let opened = shared
+                .lock()
+                .open(peer, pin, request.cookie.as_deref(), Instant::now());
             match opened {
                 Ok(token) => {
                     let cookie = format!(
@@ -951,6 +1016,140 @@ mod tests {
             )
             .starts_with("HTTP/1.1 411")
         );
+        server.shutdown().unwrap();
+    }
+
+    fn post_pin_with(address: SocketAddr, pin: &str, cookie: &str) -> String {
+        let body = format!("pin={pin}");
+        exchange(
+            address,
+            &format!(
+                "POST /v1/live/session HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        )
+    }
+
+    /// A client that trickles its request head a byte at a time, each well
+    /// inside the per-read timeout, is cut off at the request deadline
+    /// instead of holding a connection for hours.
+    #[test]
+    fn a_trickled_request_is_cut_off_at_the_request_deadline() {
+        let server = LiveLanServer::start("127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut stream = TcpStream::connect(server.address()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let started = Instant::now();
+        let mut response = Vec::new();
+        let mut trickle = "GET / HTTP/1.1\r\n".bytes().chain(std::iter::repeat(b'a'));
+        let limit = REQUEST_DEADLINE + READ_TIMEOUT + Duration::from_secs(3);
+        while started.elapsed() < limit {
+            if let Some(byte) = trickle.next() {
+                let _ = stream.write_all(&[byte]);
+            }
+            let mut chunk = [0_u8; 256];
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => response.extend_from_slice(&chunk[..read]),
+                Err(_) => thread::sleep(Duration::from_millis(250)),
+            }
+        }
+        let elapsed = started.elapsed();
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+        assert!(
+            elapsed < REQUEST_DEADLINE + READ_TIMEOUT,
+            "held for {elapsed:?}"
+        );
+        server.shutdown().unwrap();
+    }
+
+    /// Wrong PINs from one IPv6 `/64` share one allowance, however many
+    /// addresses the host uses; IPv4 peers of a dual-stack listener keep
+    /// their own.
+    #[test]
+    fn wrong_pins_are_throttled_per_ipv6_network_and_ipv4_address() {
+        let now = Instant::now();
+        let mut state = AccessState {
+            access: Some(LiveLanAccess::new(Some("4321"), 4)),
+            ..AccessState::default()
+        };
+        let ipv6 = |host: u16| IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, host]);
+        for host in 1..=u16::from(MAX_PIN_FAILURES) {
+            assert_eq!(
+                state.open(ipv6(host), "0000", None, now),
+                Err(Refusal::Unauthorized)
+            );
+        }
+        assert_eq!(
+            state.open(ipv6(1000), "4321", None, now),
+            Err(Refusal::RateLimited)
+        );
+        // Another /64 is unaffected.
+        let other = IpAddr::from([0x2001, 0xdb8, 0, 1, 0, 0, 0, 1]);
+        assert!(state.open(other, "4321", None, now).is_ok());
+
+        // IPv4-mapped peers count as their IPv4 address, not as one /64.
+        let mapped =
+            |host: u8| IpAddr::from(std::net::Ipv4Addr::new(192, 0, 2, host).to_ipv6_mapped());
+        for _ in 0..MAX_PIN_FAILURES {
+            let _ = state.open(mapped(1), "0000", None, now);
+        }
+        assert_eq!(
+            state.open(IpAddr::from([192, 0, 2, 1]), "4321", None, now),
+            Err(Refusal::RateLimited)
+        );
+        assert!(state.open(mapped(2), "4321", None, now).is_ok());
+    }
+
+    /// Opening sessions in a flood (no PIN needed) forgets idle sessions, not
+    /// the ones watching.
+    #[test]
+    fn a_flood_of_joins_never_evicts_a_watching_session() {
+        let now = Instant::now();
+        let mut state = AccessState {
+            access: Some(LiveLanAccess::new(None, 4)),
+            media: Some(PathBuf::from("media")),
+            ..AccessState::default()
+        };
+        let viewer = state
+            .open(IpAddr::from([192, 0, 2, 1]), "", None, now)
+            .unwrap();
+        assert!(state.admit(Some(&viewer), now).is_ok());
+        let later = now + Duration::from_secs(1);
+        for _ in 0..MAX_SESSIONS * 2 {
+            state
+                .open(IpAddr::from([192, 0, 2, 2]), "", None, later)
+                .unwrap();
+        }
+        assert_eq!(state.sessions.len(), MAX_SESSIONS);
+        assert!(state.admit(Some(&viewer), later).is_ok());
+    }
+
+    /// A page that joins again (after a playback error, or a reload) while
+    /// its own session is a viewer keeps its seat instead of being refused
+    /// as full.
+    #[test]
+    fn joining_again_with_a_live_session_keeps_its_seat() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index.m3u8"), "#EXTM3U\n").unwrap();
+        let server = LiveLanServer::start("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = server.address();
+        let handle = server.handle();
+        handle.set_access(Some(LiveLanAccess::new(Some("4321"), 1)));
+        handle.set_media(Some(directory.path().to_path_buf()));
+        let session = cookie(&post_pin(address, "4321"));
+        assert!(get(address, "/live/index.m3u8", Some(&session)).starts_with("HTTP/1.1 200"));
+        let again = post_pin_with(address, "4321", &session);
+        assert!(again.starts_with("HTTP/1.1 204"), "{again}");
+        assert_eq!(cookie(&again), session);
+        assert!(get(address, "/live/index.m3u8", Some(&session)).starts_with("HTTP/1.1 200"));
+        // The PIN is still checked, and another browser is still refused.
+        assert!(post_pin_with(address, "1111", &session).starts_with("HTTP/1.1 401"));
+        assert!(post_pin(address, "4321").starts_with("HTTP/1.1 503"));
+        assert_eq!(handle.viewers(), 1);
         server.shutdown().unwrap();
     }
 

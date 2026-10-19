@@ -6941,7 +6941,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::LiveLanUnavailableDetail,
-        t("Este servidor no tiene escucha LiveLAN: inícielo con --native-media --live-lan-listen"),
+        t(
+            "Este servidor no tiene escucha LiveLAN, así que nadie puede mirar todavía. El servidor que Studio inicia en este equipo funciona sin medios nativos y no puede emitir LiveLAN: conecte Studio a un servidor iniciado con freemixd serve <show.freemix> --native-media --live-lan-listen 0.0.0.0:8090",
+        ),
     ),
     (
         Msg::LiveLanFailedDetail,

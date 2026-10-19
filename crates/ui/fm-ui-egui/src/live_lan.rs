@@ -153,7 +153,9 @@ fn draw_contents(
         let (chip, tone, detail) = status_chip_of(l, &status);
         ui.horizontal(|ui| {
             ui.label(section_label(l.text(Msg::LiveLanTitle)));
-            status_chip(ui, chip, tone, 96.0).on_hover_text(l.text(Msg::LiveLanStatusHover));
+            // Unavailable or failed, the hover says why, not only what.
+            status_chip(ui, chip, tone, 96.0)
+                .on_hover_text(detail.unwrap_or_else(|| l.text(Msg::LiveLanStatusHover)));
             if status.state == LiveLanState::Live {
                 ui.label(l.format(
                     Msg::LiveLanViewers,
