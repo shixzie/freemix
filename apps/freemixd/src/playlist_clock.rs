@@ -24,6 +24,14 @@
 //!
 //! Either way the advance is journaled like any accepted command, so journal
 //! replay and restart reproduce the exact frames.
+//!
+//! An advance the show refuses for a reason its own frames can clear (a cue
+//! frame held for later, a realization still settling, a journal that could
+//! not record it) is retried on later frames without any other command, by
+//! the policy every daemon clock shares ([`crate::clock_retry`]): prepared
+//! and dropped while the refusal stands, so only the accepted retry is
+//! journaled, naming the (late) frame it ran on. A refusal that cannot clear
+//! by itself waits for another accepted command to change the show.
 
 use std::time::Instant;
 
@@ -37,6 +45,7 @@ use super::{
     AppResult, NativeDaemon, Policy, ProcessShutdown, SharedControl, development_principal,
     execute_authority_command, now_millis,
 };
+use crate::clock_retry::{Outcome, Retries, probe_refusal, retry_command};
 use crate::journal::DurableStore;
 
 /// How the clock learns which engine frame the show has reached.
@@ -62,24 +71,45 @@ pub(super) struct PlaylistClock {
     /// frames it rendered at once (its transition) are part of the show's
     /// wall time, not a head start on it.
     previous_cursor: Option<u64>,
-    /// The revision at which the last advance was refused; the clock retries
-    /// only after another accepted command changes the show.
-    refused_at: Option<u64>,
+    /// The refused advance, while the show still waits on it at the same
+    /// revision (see [`crate::clock_retry`]). Another accepted command (a
+    /// new revision) drops it, so the next advance is a first attempt again.
+    refused: Retries<()>,
+}
+
+/// One `playlist_advance` the clock submits: at `frame`, expecting
+/// `revision`. `retry` counts the refused attempts before this one;
+/// `reached` is the show frame it was due at, which paces the retries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Advance {
+    pub(super) frame: u64,
+    pub(super) revision: u64,
+    pub(super) retry: u32,
+    reached: u64,
+}
+
+impl Advance {
+    /// The command to execute; a retry carries its own idempotency key (see
+    /// [`retry_command`]).
+    pub(super) fn command(&self) -> CommandMessage {
+        retry_command(advance_command(self.frame, self.revision), self.retry)
+    }
 }
 
 impl PlaylistClock {
-    /// Returns the advance due now as `(frame, revision)`: the frame the
-    /// engine accepts a `playlist_advance` for, once the show has reached it,
-    /// and the revision the advance must expect.
+    /// Returns the advance due now: the first attempt once the show has
+    /// reached the frame the engine accepts a `playlist_advance` for, or the
+    /// next retry of a refused one once its backoff has passed.
     pub(super) fn due(
         &mut self,
         control: &ControlService<Policy>,
         pacing: Pacing,
-    ) -> Option<(u64, u64)> {
+    ) -> Option<Advance> {
         let cursor = control.frame_cursor();
         let previous = self.previous_cursor.replace(cursor);
         let Some(frame) = control.playlist_advance_frame() else {
             self.anchor = None;
+            self.refused.clear();
             return None;
         };
         let reached = match pacing {
@@ -93,23 +123,80 @@ impl PlaylistClock {
             Pacing::Engine => cursor,
         };
         let revision = control.diagnostics().current_revision;
-        (reached >= frame && self.refused_at != Some(revision)).then_some((frame, revision))
+        let retry = self.refused.attempt(&(), revision, reached)?;
+        (reached >= frame).then_some(Advance {
+            frame,
+            revision,
+            retry,
+            reached,
+        })
     }
 
-    /// Records the outcome of the advance submitted for `(frame, revision)`:
-    /// a refusal is logged once and not retried at the same revision.
-    pub(super) fn observe(&mut self, frame: u64, revision: u64, result: &CommandResult) {
-        if let CommandResult::Rejected { code, message, .. } = result {
-            self.refused_at = Some(revision);
-            eprintln!(
-                "FREEMIXD_PLAYLIST\tv=1\tframe={frame}\trevision={revision}\tcode={code}\terror={message}"
-            );
+    /// Returns the advance to execute now, if any (see [`Self::due`]).
+    ///
+    /// A retry waits for `retry_window` (no session command waiting this
+    /// pass and the journal idle), so retries never take a frame or a
+    /// journal turn from a client. It is then prepared and dropped first
+    /// ([`probe_refusal`]): a refusal the engine still gives is observed
+    /// without executing it, so such a retry records no receipt, journals
+    /// nothing and logs nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure to name the clock's principal.
+    pub(super) fn next(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        pacing: Pacing,
+        retry_window: bool,
+        now_millis: u64,
+    ) -> AppResult<Option<Advance>> {
+        let Some(advance) = self.due(control, pacing) else {
+            return Ok(None);
+        };
+        if advance.retry == 0 {
+            return Ok(Some(advance));
+        }
+        if !retry_window {
+            return Ok(None);
+        }
+        if let Some(result) = probe_refusal(control, advance.command(), now_millis)? {
+            self.observe(&advance, &result);
+            return Ok(None);
+        }
+        Ok(Some(advance))
+    }
+
+    /// Records the outcome of `advance` (see [`Retries::observe`]): a
+    /// refusal is logged once, with whether the clock retries it, and an
+    /// accepted retry logs how many refusals it took.
+    pub(super) fn observe(&mut self, advance: &Advance, result: &CommandResult) {
+        let Advance {
+            frame,
+            revision,
+            retry,
+            reached,
+        } = *advance;
+        match self.refused.observe((), revision, retry, reached, result) {
+            Outcome::Quiet => {}
+            Outcome::Refused {
+                code,
+                message,
+                retrying,
+            } => eprintln!(
+                "FREEMIXD_PLAYLIST\tv=1\tframe={frame}\trevision={revision}\tcode={code}\tretry={retrying}\terror={message}"
+            ),
+            Outcome::Advanced { refusals } => eprintln!(
+                "FREEMIXD_PLAYLIST\tv=1\tframe={frame}\trevision={revision}\tretried={refusals}\tadvanced=1"
+            ),
         }
     }
 
     /// Submits the pending playlist advance once the show reaches it: by
     /// wall time on the simulated daemon, by the native pacer's frame when
-    /// `native` is present (executing through the native realization path).
+    /// `native` is present (executing through the native realization path),
+    /// and retries a refused one (see [`Self::next`]); `retry_window` is
+    /// whether this pass leaves room for a retry.
     ///
     /// # Errors
     ///
@@ -125,6 +212,7 @@ impl PlaylistClock {
         native: Option<&mut NativeDaemon>,
         process_shutdown: Option<&ProcessShutdown>,
         now: Instant,
+        retry_window: bool,
     ) -> AppResult<()> {
         let pacing = if native.is_some() {
             Pacing::Engine
@@ -134,7 +222,13 @@ impl PlaylistClock {
                 rate: durable.project().settings().frame_rate,
             }
         };
-        let Some((frame, revision)) = self.due(&control.borrow(), pacing) else {
+        let Some(advance) = self.next(
+            &mut control.borrow_mut(),
+            pacing,
+            retry_window && !store.busy(),
+            now_millis()?,
+        )?
+        else {
             return Ok(());
         };
         let delivery = execute_authority_command(
@@ -143,12 +237,12 @@ impl PlaylistClock {
             durable,
             &development_principal()?,
             server,
-            &advance_command(frame, revision),
+            &advance.command(),
             now_millis()?,
             native,
             process_shutdown,
         )?;
-        self.observe(frame, revision, &delivery.result);
+        self.observe(&advance, &delivery.result);
         Ok(())
     }
 
@@ -197,7 +291,9 @@ impl PlaylistClock {
 }
 
 /// The clock's `playlist_advance` for `frame`, expecting `revision`. The
-/// idempotency key names both, so a retried advance replays its receipt.
+/// idempotency key names both, so a retried advance replays its receipt;
+/// the clock's own retries of a refused advance add their attempt (see
+/// [`Advance::command`]).
 pub(super) fn advance_command(frame: u64, revision: u64) -> CommandMessage {
     let key = format!("playlist-clock-{revision}-{frame}");
     CommandMessage {

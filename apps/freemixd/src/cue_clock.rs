@@ -14,12 +14,12 @@
 //! (list `0`). One the show refuses for a reason its own frames can clear (a
 //! held playlist take or cue frame, a realization still settling, a journal
 //! that could not record it) is retried on later frames without any other
-//! command: on every frame at first, then every [`SLOW_RETRY_FRAMES`]. A
-//! retry is prepared and dropped before it executes, so a refusal that still
-//! stands records and journals nothing; only the accepted retry is journaled,
-//! naming the (late) frame it ran on, so replay reproduces it as any late
-//! advance. A refusal that cannot clear by itself waits, as before, for
-//! another accepted command to change the show.
+//! command, by the policy every daemon clock shares ([`crate::clock_retry`]).
+//! A retry is prepared and dropped before it executes, so a refusal that
+//! still stands records and journals nothing; only the accepted retry is
+//! journaled, naming the (late) frame it ran on, so replay reproduces it as
+//! any late advance. A refusal that cannot clear by itself waits, as before,
+//! for another accepted command to change the show.
 //!
 //! A restarted daemon restores every list's standby pointer and pending
 //! wait from the project and journal, and the wait still ends on its due
@@ -32,7 +32,7 @@
 use std::time::Instant;
 
 use fm_command::RejectionCode;
-use fm_control::{ControlService, PrepareSubmitOutcome};
+use fm_control::ControlService;
 use fm_persistence::StoredProject;
 use fm_protocol::{CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, CommandResult};
 use fm_types::FrameRate;
@@ -41,15 +41,9 @@ use super::{
     AppResult, NativeDaemon, Policy, ProcessShutdown, SharedControl, development_principal,
     execute_authority_command, now_millis,
 };
+use crate::clock_retry::{Outcome, Retries, probe_refusal, retry_command};
 use crate::journal::DurableStore;
 use crate::playlist_clock::{Pacing, wall_frame};
-
-/// Refused attempts the clock retries on the very next show frame before it
-/// backs off to [`SLOW_RETRY_FRAMES`].
-pub(super) const FAST_RETRIES: u32 = 25;
-
-/// Show frames between retries once [`FAST_RETRIES`] are spent.
-pub(super) const SLOW_RETRY_FRAMES: u64 = 25;
 
 /// Paces waiting cues against the show's frame.
 #[derive(Debug, Default)]
@@ -59,22 +53,11 @@ pub(super) struct CueClock {
     anchor: Option<(u64, Instant)>,
     /// The engine cursor at the previous pass (see the playlist clock).
     previous_cursor: Option<u64>,
-    /// The refused advance, while the show still waits on it at the same
-    /// revision. Another accepted command (a new revision) or a different
-    /// due list drops it, so the next advance is a first attempt again.
-    refused: Option<Refusal>,
-}
-
-/// An advance the show refused at `revision` for `list`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Refusal {
-    list: u64,
-    revision: u64,
-    /// Refused attempts so far, the first included.
-    attempts: u32,
-    /// The show frame from which the next retry may run; `None` for a
-    /// refusal that cannot clear by itself, which waits for a new revision.
-    retry_at: Option<u64>,
+    /// The refused advance of a list, while the show still waits on it at
+    /// the same revision. Another accepted command (a new revision) or a
+    /// different due list drops it, so the next advance is a first attempt
+    /// again.
+    refused: Retries<u64>,
 }
 
 /// One `cue_advance` the clock submits: list `list` at `frame`, expecting
@@ -90,39 +73,13 @@ pub(super) struct Advance {
 }
 
 impl Advance {
-    /// The command to execute. A retry carries its own idempotency key: the
-    /// first attempt's refusal may hold a receipt under the first key, which
-    /// would otherwise answer every retry with the same refusal.
+    /// The command to execute; a retry carries its own idempotency key (see
+    /// [`retry_command`]).
     pub(super) fn command(&self) -> CommandMessage {
-        let mut command = advance_command(self.list, self.frame, self.revision);
-        if self.retry > 0 {
-            let key = format!("{}-retry-{}", command.idempotency_key, self.retry);
-            command.id.clone_from(&key);
-            command.idempotency_key = key;
-        }
-        command
-    }
-}
-
-/// Whether a refused advance may clear without another command, so the
-/// clock retries it: the refusal says so, or it is a conflict with runtime
-/// state (a held playlist take or cue frame, a realization still settling)
-/// or a full scheduler, which the show's own frames resolve. Anything else
-/// (a refusal the same show would only repeat, such as a result that cannot
-/// be persisted) waits for another accepted command to change the show.
-pub(super) fn retries(code: &str, retryable: bool) -> bool {
-    retryable
-        || code == RejectionCode::Conflict.as_str()
-        || code == RejectionCode::ResourceExhausted.as_str()
-}
-
-/// The show frames after `attempts` refusals until the next retry: every
-/// frame for the first [`FAST_RETRIES`], then every [`SLOW_RETRY_FRAMES`].
-pub(super) const fn retry_delay(attempts: u32) -> u64 {
-    if attempts <= FAST_RETRIES {
-        1
-    } else {
-        SLOW_RETRY_FRAMES
+        retry_command(
+            advance_command(self.list, self.frame, self.revision),
+            self.retry,
+        )
     }
 }
 
@@ -139,7 +96,7 @@ impl CueClock {
         let previous = self.previous_cursor.replace(cursor);
         let Some((list, frame)) = control.cue_advance_frame() else {
             self.anchor = None;
-            self.refused = None;
+            self.refused.clear();
             return None;
         };
         let reached = match pacing {
@@ -151,18 +108,7 @@ impl CueClock {
             Pacing::Engine => cursor,
         };
         let revision = control.diagnostics().current_revision;
-        let retry = match self.refused {
-            Some(refused) if refused.list == list && refused.revision == revision => {
-                match refused.retry_at {
-                    Some(at) if reached >= at => refused.attempts,
-                    _ => return None,
-                }
-            }
-            _ => {
-                self.refused = None;
-                0
-            }
-        };
+        let retry = self.refused.attempt(&list, revision, reached)?;
         (reached >= frame).then_some(Advance {
             list,
             frame,
@@ -176,9 +122,10 @@ impl CueClock {
     ///
     /// A retry waits for `retry_window` (no session command waiting this
     /// pass and the journal idle), so retries never take a frame or a
-    /// journal turn from a client. It is then prepared and dropped first: a
-    /// refusal the engine still gives is observed without executing it, so
-    /// such a retry records no receipt, journals nothing and logs nothing.
+    /// journal turn from a client. It is then prepared and dropped first
+    /// ([`probe_refusal`]): a refusal the engine still gives is observed
+    /// without executing it, so such a retry records no receipt, journals
+    /// nothing and logs nothing.
     ///
     /// # Errors
     ///
@@ -199,31 +146,16 @@ impl CueClock {
         if !retry_window {
             return Ok(None);
         }
-        let probed =
-            control.prepare_submit(&development_principal()?, advance.command(), now_millis);
-        let refused = match probed {
-            Ok(PrepareSubmitOutcome::Prepared(prepared)) => {
-                let result = &prepared.output().result;
-                matches!(result, CommandResult::Rejected { .. }).then(|| result.clone())
-            }
-            Ok(PrepareSubmitOutcome::Replayed(submission)) => {
-                let result = submission.output.result;
-                matches!(result, CommandResult::Rejected { .. }).then_some(result)
-            }
-            // An engine failure: the execution classifies it.
-            Err(_) => None,
-        };
-        if let Some(result) = refused {
+        if let Some(result) = probe_refusal(control, advance.command(), now_millis)? {
             self.observe(&advance, &result);
             return Ok(None);
         }
         Ok(Some(advance))
     }
 
-    /// Records the outcome of `advance`. A refusal is logged once (on the
-    /// first attempt, or when a retry meets one that cannot clear) and
-    /// retried after [`retry_delay`] when [`retries`] allows; an accepted
-    /// retry logs how many refusals it took.
+    /// Records the outcome of `advance` (see [`Retries::observe`]): a
+    /// refusal is logged once, with whether the clock retries it, and an
+    /// accepted retry logs how many refusals it took.
     pub(super) fn observe(&mut self, advance: &Advance, result: &CommandResult) {
         let Advance {
             list,
@@ -232,35 +164,18 @@ impl CueClock {
             retry,
             reached,
         } = *advance;
-        match result {
-            CommandResult::Rejected {
+        match self.refused.observe(list, revision, retry, reached, result) {
+            Outcome::Quiet => {}
+            Outcome::Refused {
                 code,
                 message,
-                retryable,
-                ..
-            } => {
-                let retrying = retries(code, *retryable);
-                let attempts = retry.saturating_add(1);
-                if retry == 0 || !retrying {
-                    eprintln!(
-                        "FREEMIXD_CUE\tv=1\tlist={list}\tframe={frame}\trevision={revision}\tcode={code}\tretry={retrying}\terror={message}"
-                    );
-                }
-                self.refused = Some(Refusal {
-                    list,
-                    revision,
-                    attempts,
-                    retry_at: retrying.then(|| reached.saturating_add(retry_delay(attempts))),
-                });
-            }
-            CommandResult::Accepted { .. } => {
-                if retry > 0 {
-                    eprintln!(
-                        "FREEMIXD_CUE\tv=1\tlist={list}\tframe={frame}\trevision={revision}\tretried={retry}\tadvanced=1"
-                    );
-                }
-                self.refused = None;
-            }
+                retrying,
+            } => eprintln!(
+                "FREEMIXD_CUE\tv=1\tlist={list}\tframe={frame}\trevision={revision}\tcode={code}\tretry={retrying}\terror={message}"
+            ),
+            Outcome::Advanced { refusals } => eprintln!(
+                "FREEMIXD_CUE\tv=1\tlist={list}\tframe={frame}\trevision={revision}\tretried={refusals}\tadvanced=1"
+            ),
         }
     }
 
@@ -405,46 +320,6 @@ pub(super) fn cue_command_refusal(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn retry_policy_retries_conflicts_and_retryable_refusals_only() {
-        for code in [RejectionCode::Conflict, RejectionCode::ResourceExhausted] {
-            assert!(retries(code.as_str(), false), "{code:?}");
-        }
-        // A journal that could not record the advance says it is retryable.
-        assert!(retries(RejectionCode::Unavailable.as_str(), true));
-        for code in [
-            RejectionCode::Unavailable,
-            RejectionCode::InvalidCommand,
-            RejectionCode::PermissionDenied,
-        ] {
-            assert!(!retries(code.as_str(), false), "{code:?}");
-        }
-    }
-
-    #[test]
-    fn retries_run_every_frame_then_back_off() {
-        for attempts in 1..=FAST_RETRIES {
-            assert_eq!(retry_delay(attempts), 1, "attempt {attempts}");
-        }
-        for attempts in [FAST_RETRIES + 1, FAST_RETRIES + 2, u32::MAX] {
-            assert_eq!(
-                retry_delay(attempts),
-                SLOW_RETRY_FRAMES,
-                "attempt {attempts}"
-            );
-        }
-        // Over the first second at 25 fps every frame is tried, and after
-        // that one retry a second: a refusal that lasts a minute costs
-        // 25 + 59 probes, not 1,500.
-        let mut frame = 0;
-        let mut probes = 0_u32;
-        while frame < 25 * 60 {
-            probes += 1;
-            frame += retry_delay(probes);
-        }
-        assert_eq!(probes, 25 + 59);
-    }
 
     #[test]
     fn a_retry_carries_its_own_idempotency_key() {

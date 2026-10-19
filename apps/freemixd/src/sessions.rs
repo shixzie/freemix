@@ -626,6 +626,7 @@ pub(super) fn run(
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
         media_clock: std::cell::RefCell::new(crate::media_clock::MediaClock::default()),
+        end_triggers: std::cell::RefCell::new(crate::media_clock::EndTriggerFeed::default()),
         grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
         thumbnail_refresh: std::cell::RefCell::new(false),
     };
@@ -863,7 +864,10 @@ pub(super) fn run(
             }
         }
         // The playlist clock runs before the native frame is realized, so a
-        // boundary that is the pacer's next frame is cut by its advance.
+        // boundary that is the pacer's next frame is cut by its advance. A
+        // refused advance of either clock is retried only on a pass no
+        // peer's command was ready for (the journal-idle check is the
+        // clock's), so retries never take a client's frame or command turn.
         if let Err(error) = runtime.playlist_clock.borrow_mut().poll(
             control,
             store,
@@ -872,13 +876,11 @@ pub(super) fn run(
             native.as_deref_mut(),
             Some(process_shutdown),
             Instant::now(),
+            ready_turn.is_none(),
         ) {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
-        // A refused cue advance is retried only on a pass no peer's command
-        // was ready for (the journal-idle check is the clock's), so retries
-        // never take a client's frame or command turn.
         if let Err(error) = runtime.cue_clock.borrow_mut().poll(
             control,
             store,
@@ -912,13 +914,15 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
-        if let Err(error) = crate::media_clock::feed_end_triggers(
+        if let Err(error) = runtime.end_triggers.borrow_mut().poll(
             control,
             store,
             durable,
             authority,
             native.as_deref_mut(),
             Some(process_shutdown),
+            Instant::now(),
+            ready_turn.is_none(),
         ) {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
@@ -1300,6 +1304,8 @@ struct Runtime<'a> {
     cue_clock: std::cell::RefCell<crate::cue_clock::CueClock>,
     /// Simulated runtime: plays media transports in wall time.
     media_clock: std::cell::RefCell<crate::media_clock::MediaClock>,
+    /// Feeds media end triggers to the playlist, retrying a refused one.
+    end_triggers: std::cell::RefCell<crate::media_clock::EndTriggerFeed>,
     /// Compiled grades per engine revision for exact scene previews.
     grade_cache: std::cell::RefCell<crate::grading::GradeCache>,
     /// A peer subscribed to input thumbnails since the last poll, so every

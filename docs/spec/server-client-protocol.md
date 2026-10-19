@@ -333,7 +333,15 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   advance under the same key when the boundary is the next frame the pacer
   realizes (or, when frames passed the boundary without a clock pass, on the
   next frame) and realizes that frame and the entry's transition through
-  the native renderer, so Program cuts on exactly the boundary frame. The
+  the native renderer, so Program cuts on exactly the boundary frame. An
+  advance refused for a reason the show's own frames clear (`conflict`,
+  `resource_exhausted`, or any retryable refusal, such as a held cue frame
+  or a journal that could not record it) is retried on later frames without
+  another command, every frame at first and then once every 25, under the
+  key `playlist-clock-<revision>-<frame>-retry-<n>`; a still-refused retry
+  is prepared and dropped, so only the accepted one is journaled. Any other
+  refusal waits for a new revision. The cue clock's `cue_advance` and a
+  media end trigger's `playlist_control next` are retried the same way. The
   native pacer also realizes idle frames between commands, so journal replay
   ticks the engine idle up to the frame each recorded command began at (its
   recorded end frame minus the frames it realizes) before re-executing it.

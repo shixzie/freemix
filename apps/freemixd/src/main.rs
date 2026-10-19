@@ -95,6 +95,7 @@ use freemixd::{ReadinessRecord, StatusReadinessRecord};
 
 // The free-space alert is constructed only by the native render loop; the
 // preflight and its constants are used in every build.
+mod clock_retry;
 mod cue_clock;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
@@ -10482,21 +10483,24 @@ fn serve_inner(
             let mut cues = cue_clock::CueClock::default();
             let mut before_frame =
                 |native: &mut NativeDaemon, control: &mut ControlService<Policy>| {
-                    if let Some((frame, revision)) =
-                        clock.due(control, playlist_clock::Pacing::Engine)
-                    {
+                    if let Some(advance) = clock.next(
+                        control,
+                        playlist_clock::Pacing::Engine,
+                        !journal.busy(),
+                        now_millis()?,
+                    )? {
                         let delivery = execute_native_authority_command(
                             control,
                             &journal,
                             &mut durable,
                             &principal,
                             &authority,
-                            &playlist_clock::advance_command(frame, revision),
+                            &advance.command(),
                             now_millis()?,
                             native,
                             Some(&process_shutdown),
                         )?;
-                        clock.observe(frame, revision, &delivery.result);
+                        clock.observe(&advance, &delivery.result);
                     }
                     if let Some(advance) = cues.next(
                         control,
@@ -22136,7 +22140,7 @@ mod tests {
             PlaylistTransitionKind,
         };
         use journal::DurableJournal;
-        use playlist_clock::{Pacing, PlaylistClock, advance_command};
+        use playlist_clock::{Pacing, PlaylistClock};
 
         let directory = tempfile::tempdir().unwrap();
         let store = ProjectStore::new(directory.path().join("native-playlist.freemix")).unwrap();
@@ -22223,17 +22227,18 @@ mod tests {
             // when its boundary is the next frame to realize, else the
             // pacer realizes an idle frame.
             while control.frame_cursor() < start_frame + 40 {
-                if let Some((frame, revision)) = clock.due(&control, Pacing::Engine) {
+                if let Some(advance) = clock.due(&control, Pacing::Engine) {
+                    let frame = advance.frame;
                     assert_eq!(frame, control.frame_cursor(), "never early, never late");
                     let result = native_paced_command(
                         &mut control,
                         &journal,
                         &mut durable,
                         &server,
-                        &advance_command(frame, revision),
+                        &advance.command(),
                         &mut realized,
                     );
-                    clock.observe(frame, revision, &result);
+                    clock.observe(&advance, &result);
                     assert!(
                         matches!(result, CommandResult::Accepted { .. }),
                         "{result:?}"
@@ -22355,7 +22360,8 @@ mod tests {
                 control.tick(&server).unwrap();
             }
             let mut clock = PlaylistClock::default();
-            let (frame, revision) = clock.due(&control, Pacing::Engine).unwrap();
+            let advance = clock.due(&control, Pacing::Engine).unwrap();
+            let (frame, revision) = (advance.frame, advance.revision);
             assert_eq!(frame, due + 7);
             late_frame = frame;
             let result = native_paced_command(
@@ -22609,11 +22615,12 @@ mod tests {
         );
     }
 
-    /// A refused playlist advance at `revision`.
+    /// A playlist advance refused at `revision` for a reason that cannot
+    /// clear by itself.
     fn refused_advance(revision: u64) -> CommandResult {
         CommandResult::Rejected {
             id: "advance".into(),
-            code: "conflict".into(),
+            code: "invalid_command".into(),
             message: "refused".into(),
             fields: Vec::new(),
             current_revision: revision,
@@ -22623,7 +22630,7 @@ mod tests {
     }
 
     #[test]
-    fn playlist_clock_does_not_retry_a_refused_advance_at_the_same_revision() {
+    fn playlist_clock_waits_for_a_new_revision_after_a_final_refusal() {
         use fm_protocol::{
             PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
             PlaylistTransitionKind,
@@ -22683,13 +22690,20 @@ mod tests {
             assert_eq!(clock.due(&control, Pacing::Engine), None, "not yet due");
             control.tick(&server).unwrap();
         }
-        let (frame, revision) = clock.due(&control, Pacing::Engine).unwrap();
+        let advance = clock.due(&control, Pacing::Engine).unwrap();
+        let (frame, revision) = (advance.frame, advance.revision);
         assert_eq!(frame, due_frame);
         assert_eq!(
             clock.observed_frame(control.frame_cursor(), rate, Instant::now()),
             control.frame_cursor()
         );
-        clock.observe(frame, revision, &refused_advance(revision));
+        clock.observe(&advance, &refused_advance(revision));
+        // A refusal that cannot clear by itself is not retried however long
+        // the show runs at this revision.
+        for _ in 0..3 * clock_retry::SLOW_RETRY_FRAMES {
+            control.tick(&server).unwrap();
+            assert_eq!(clock.due(&control, Pacing::Engine), None);
+        }
         assert_eq!(clock.due(&control, Pacing::Engine), None);
         // Another accepted command changes the revision, so the clock tries
         // again; Stop, Pause and Set are accepted on native daemons too.
@@ -22779,6 +22793,45 @@ mod tests {
         due
     }
 
+    /// A journal that fails every record while `available` is false, as a
+    /// failing or full show disk does, and keeps what it recorded.
+    struct FlakyJournal {
+        available: Cell<bool>,
+        attempts: Cell<u32>,
+        recorded: RefCell<Vec<CommandMessage>>,
+    }
+
+    impl FlakyJournal {
+        fn new() -> Self {
+            Self {
+                available: Cell::new(true),
+                attempts: Cell::new(0),
+                recorded: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl DurableStore for FlakyJournal {
+        fn record(
+            &self,
+            command: &CommandMessage,
+            _now_millis: u64,
+            _previous: &StoredProject,
+            _updated: &StoredProject,
+        ) -> AppResult<()> {
+            self.attempts.set(self.attempts.get() + 1);
+            if !self.available.get() {
+                return Err(AppFailure("injected journal unavailability".into()).into());
+            }
+            self.recorded.borrow_mut().push(command.clone());
+            Ok(())
+        }
+
+        fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
     /// The daemon's clock pass on the simulated runtime, through durable
     /// execution: a waiting cue's advance the journal could not record
     /// (refused, retryable, nothing committed) is retried on the next frame
@@ -22787,38 +22840,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn cue_clock_poll_retries_an_advance_the_journal_could_not_record() {
-        struct SwitchableJournal {
-            available: Cell<bool>,
-            attempts: Cell<u32>,
-            recorded: RefCell<Vec<CommandMessage>>,
-        }
-
-        impl DurableStore for SwitchableJournal {
-            fn record(
-                &self,
-                command: &CommandMessage,
-                _now_millis: u64,
-                _previous: &StoredProject,
-                _updated: &StoredProject,
-            ) -> AppResult<()> {
-                self.attempts.set(self.attempts.get() + 1);
-                if !self.available.get() {
-                    return Err(AppFailure("injected journal unavailability".into()).into());
-                }
-                self.recorded.borrow_mut().push(command.clone());
-                Ok(())
-            }
-
-            fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
-                Ok(())
-            }
-        }
-
-        let store = SwitchableJournal {
-            available: Cell::new(true),
-            attempts: Cell::new(0),
-            recorded: RefCell::new(Vec::new()),
-        };
+        let store = FlakyJournal::new();
         let mut durable = test_project();
         let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
         let server = test_server(&control.borrow());
@@ -22911,7 +22933,8 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn cue_clock_retries_an_advance_refused_by_a_held_playlist_take() {
-        use cue_clock::{CueClock, FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use clock_retry::{FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use cue_clock::CueClock;
         use fm_protocol::{
             PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
             PlaylistTransitionKind,
@@ -23092,7 +23115,8 @@ mod tests {
     /// makes the next advance a first attempt again.
     #[test]
     fn cue_clock_backs_off_retries_and_waits_for_a_new_revision_after_a_final_refusal() {
-        use cue_clock::{CueClock, FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use clock_retry::{FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use cue_clock::CueClock;
         use playlist_clock::Pacing;
 
         let refusal = |code: &str, retryable: bool| CommandResult::Rejected {
@@ -23156,6 +23180,534 @@ mod tests {
             gaps[fast..].iter().all(|gap| *gap == SLOW_RETRY_FRAMES),
             "{gaps:?}"
         );
+    }
+
+    /// The commands that set a two-entry playlist (input 2 for `frames`
+    /// frames, then input 1 for `frames`, cut) and start it `at`.
+    fn playlist_commands(frames: u64, at: fm_protocol::PlaylistStart) -> [CommandMessage; 2] {
+        use fm_protocol::{
+            PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistTransitionKind,
+        };
+        [
+            test_command(
+                "set-playlist",
+                "set-playlist-key",
+                CommandPayload::SetPlaylist {
+                    loop_mode: PlaylistLoopMode::Off,
+                    entries: [(1, 2), (2, 1)]
+                        .map(|(id, input)| PlaylistEntrySpec {
+                            id,
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(input)),
+                            duration_frames: frames,
+                            transition: PlaylistTransitionKind::Cut,
+                            transition_frames: 0,
+                            enabled: true,
+                        })
+                        .to_vec(),
+                },
+            ),
+            test_command(
+                "start",
+                "start-key",
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Start { at, from: None },
+                },
+            ),
+        ]
+    }
+
+    /// Executes `commands` through durable execution, each accepted.
+    fn execute_accepted(
+        control: &SharedControl,
+        store: &dyn DurableStore,
+        durable: &mut StoredProject,
+        server: &ServerIdentity,
+        commands: impl IntoIterator<Item = CommandMessage>,
+    ) {
+        for command in commands {
+            let delivery = execute_authority_command(
+                control,
+                store,
+                durable,
+                &operator(),
+                server,
+                &command,
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(
+                matches!(delivery.result, CommandResult::Accepted { .. }),
+                "{}: {:?}",
+                command.id,
+                delivery.result
+            );
+        }
+    }
+
+    /// The playlist clock's pass on the simulated runtime, through durable
+    /// execution: a boundary's advance the journal could not record
+    /// (refused, retryable, nothing committed) is retried on the next frame
+    /// with no other command, and takes the entry once the journal records
+    /// again. The accepted retry is the only advance journaled, for the
+    /// boundary's own frame.
+    #[test]
+    fn playlist_clock_poll_retries_an_advance_the_journal_could_not_record() {
+        let store = FlakyJournal::new();
+        let mut durable = test_project();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let server = test_server(&control.borrow());
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            playlist_commands(80, fm_protocol::PlaylistStart::AfterFrames(5)),
+        );
+        let revision = control.borrow().diagnostics().current_revision;
+        let due = control.borrow().playlist_advance_frame().unwrap();
+        let cursor = control.borrow().frame_cursor();
+        let frame = Duration::from_millis(40);
+        let mut clock = playlist_clock::PlaylistClock::default();
+        let mut poll = |clock: &mut playlist_clock::PlaylistClock, at: Instant, window: bool| {
+            clock
+                .poll(
+                    &control,
+                    &store,
+                    &mut durable,
+                    &server,
+                    None,
+                    None,
+                    at,
+                    window,
+                )
+                .unwrap();
+        };
+        let start = Instant::now();
+        poll(&mut clock, start, true);
+        assert_eq!(store.attempts.get(), 2, "not due yet");
+
+        store.available.set(false);
+        let reached = start + frame * u32::try_from(due - cursor).unwrap();
+        poll(&mut clock, reached, true);
+        assert_eq!(store.attempts.get(), 3, "the first attempt was refused");
+        assert_eq!(control.borrow().diagnostics().current_revision, revision);
+        poll(&mut clock, reached, true);
+        assert_eq!(store.attempts.get(), 3, "not again on the same frame");
+        poll(&mut clock, reached + frame, true);
+        assert_eq!(store.attempts.get(), 4, "retried on the next frame");
+
+        store.available.set(true);
+        poll(&mut clock, reached + frame * 2, false);
+        assert_eq!(store.attempts.get(), 4, "no retry without its window");
+        assert_eq!(control.borrow().playlist_advance_frame(), Some(due));
+        poll(&mut clock, reached + frame * 2, true);
+        drop(poll);
+        assert_eq!(
+            control.borrow().diagnostics().current_revision,
+            revision + 1
+        );
+        assert!(matches!(
+            control.borrow().playlist_state().unwrap().state,
+            fm_protocol::PlaylistRunState::Playing { entry: 1, .. }
+        ));
+        assert_eq!(durable.position().revision, revision + 1);
+        let recorded = store.recorded.borrow();
+        assert_eq!(recorded.len(), 3, "only the accepted retry is journaled");
+        let advance = recorded.last().unwrap();
+        assert_eq!(
+            advance.payload,
+            CommandPayload::PlaylistAdvance { frame: due }
+        );
+        assert_eq!(
+            advance.idempotency_key,
+            format!("playlist-clock-{revision}-{due}-retry-2")
+        );
+    }
+
+    /// The bug this guards: a playlist advance refused while a cue's frame
+    /// was held for later stalled the playlist on an idle show until some
+    /// other command changed the revision, although the hold clears by
+    /// itself. The clock now retries on the next frames: each retry is
+    /// prepared and dropped while the refusal stands (no receipt, no
+    /// revision), and the first one the show accepts takes the entry, late,
+    /// on the frame it names.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn playlist_clock_retries_an_advance_refused_by_a_held_cue_frame() {
+        use clock_retry::{FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use playlist_clock::{Pacing, PlaylistClock};
+
+        let mut control = test_control(&test_project());
+        let principal = operator();
+        let server = test_server(&control);
+        for command in playlist_commands(200, fm_protocol::PlaylistStart::AfterFrames(5)) {
+            let id = command.id.clone();
+            let submitted = control.submit(&principal, command, 0).unwrap();
+            assert!(
+                submitted.is_accepted(),
+                "{id}: {:?}",
+                submitted.output.result
+            );
+        }
+        let boundary = control
+            .playlist_advance_frame()
+            .expect("the start is armed");
+        let due = go_waiting_cue(&mut control, 80);
+        assert!(due > boundary + 40, "cue due {due}, boundary {boundary}");
+        // The cue's advance is accepted ahead, for its frame, so the show
+        // holds every other command until then.
+        let held = control
+            .submit(
+                &principal,
+                cue_clock::advance_command(7, due, control.diagnostics().current_revision),
+                0,
+            )
+            .unwrap();
+        assert!(held.is_accepted(), "{:?}", held.output.result);
+        let revision = control.diagnostics().current_revision;
+
+        let mut clock = PlaylistClock::default();
+        while control.frame_cursor() < boundary {
+            assert_eq!(
+                clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+                None
+            );
+            control.tick(&server).unwrap();
+        }
+        let advance = clock
+            .next(&mut control, Pacing::Engine, true, 0)
+            .unwrap()
+            .expect("the boundary is reached");
+        assert_eq!(
+            (advance.frame, advance.revision, advance.retry),
+            (boundary, revision, 0)
+        );
+        let refused = control.submit(&principal, advance.command(), 0).unwrap();
+        assert!(
+            matches!(
+                &refused.output.result,
+                CommandResult::Rejected {
+                    reason: Some(fm_protocol::RefusalReason::CueScheduled { frame }),
+                    ..
+                } if *frame == due
+            ),
+            "{:?}",
+            refused.output.result
+        );
+        clock.observe(&advance, &refused.output.result);
+        // Whether the show holds a receipt for the clock's attempt `retry`
+        // at `frame`: preparing the same key again replays it.
+        let has_receipt = |control: &mut ControlService<Policy>, frame: u64, retry: u32| {
+            let mut command = playlist_clock::advance_command(frame, revision);
+            if retry > 0 {
+                command.idempotency_key = format!("{}-retry-{retry}", command.idempotency_key);
+            }
+            matches!(
+                control.prepare_submit(&operator(), command, 0).unwrap(),
+                PrepareSubmitOutcome::Replayed(_)
+            )
+        };
+        assert!(has_receipt(&mut control, advance.frame, 0));
+        assert_eq!(
+            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            None,
+            "not again on the same frame"
+        );
+
+        // Every frame until the hold clears, the retry is prepared, still
+        // refused, and dropped: no receipt and no revision. A pass without a
+        // retry window does not try at all.
+        let mut probes = 0_u32;
+        let retried = loop {
+            assert!(
+                control.frame_cursor() <= due + SLOW_RETRY_FRAMES + 1,
+                "never retried"
+            );
+            control.tick(&server).unwrap();
+            assert_eq!(
+                clock.next(&mut control, Pacing::Engine, false, 0).unwrap(),
+                None,
+                "a retry ran without its window"
+            );
+            let attempting = clock.due(&control, Pacing::Engine).is_some();
+            if let Some(retried) = clock.next(&mut control, Pacing::Engine, true, 0).unwrap() {
+                break retried;
+            }
+            assert_eq!(control.diagnostics().current_revision, revision);
+            if attempting {
+                probes += 1;
+                let frame = control.playlist_advance_frame().unwrap();
+                assert!(!has_receipt(&mut control, frame, probes), "probe {probes}");
+            }
+        };
+        assert!(control.frame_cursor() >= due, "the hold cleared first");
+        assert!(probes > FAST_RETRIES, "{probes} probes");
+        assert!(
+            u64::from(probes) < due - boundary,
+            "{probes} probes over {} held frames",
+            due - boundary
+        );
+        assert_eq!(retried.revision, revision);
+        assert_eq!(retried.retry, probes + 1);
+        // Late: the retry names the next frame, exactly as replay finds it.
+        assert_eq!(control.playlist_advance_frame(), Some(retried.frame));
+        assert!(retried.frame > due);
+        let taken = control.submit(&principal, retried.command(), 0).unwrap();
+        assert!(taken.is_accepted(), "{:?}", taken.output.result);
+        clock.observe(&retried, &taken.output.result);
+        control.tick(&server).unwrap();
+        control.tick(&server).unwrap();
+        assert!(matches!(
+            control.playlist_state().unwrap().state,
+            fm_protocol::PlaylistRunState::Playing { entry: 1, .. }
+        ));
+        assert_eq!(
+            live_engine_snapshot(&mut control)
+                .realized_switcher()
+                .program(),
+            test_input_id(2),
+            "the entry's input is on Program, after the cue's cut"
+        );
+        assert_eq!(
+            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            None
+        );
+    }
+
+    /// A retryable refusal is retried on every frame at first and then
+    /// every `SLOW_RETRY_FRAMES`; the policy is the cue clock's.
+    #[test]
+    fn playlist_clock_backs_off_retries() {
+        use clock_retry::{FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use playlist_clock::{Pacing, PlaylistClock};
+
+        let refusal = CommandResult::Rejected {
+            id: "advance".into(),
+            code: "unavailable".into(),
+            message: "refused".into(),
+            fields: Vec::new(),
+            current_revision: 0,
+            retryable: true,
+            reason: None,
+        };
+        let mut control = test_control(&test_project());
+        let server = test_server(&control);
+        for command in playlist_commands(10, fm_protocol::PlaylistStart::AfterFrames(3)) {
+            assert!(
+                control
+                    .submit(&operator(), command, 0)
+                    .unwrap()
+                    .is_accepted()
+            );
+        }
+        let boundary = control.playlist_advance_frame().unwrap();
+        while control.frame_cursor() < boundary {
+            control.tick(&server).unwrap();
+        }
+        let mut clock = PlaylistClock::default();
+        let mut attempt = clock.due(&control, Pacing::Engine).expect("due");
+        assert_eq!(attempt.retry, 0);
+        let fast = usize::try_from(FAST_RETRIES).unwrap();
+        let mut gaps = Vec::new();
+        let mut last = control.frame_cursor();
+        while gaps.len() < fast + 3 {
+            clock.observe(&attempt, &refusal);
+            attempt = loop {
+                control.tick(&server).unwrap();
+                if let Some(next) = clock.due(&control, Pacing::Engine) {
+                    break next;
+                }
+            };
+            gaps.push(control.frame_cursor() - last);
+            last = control.frame_cursor();
+            assert_eq!(attempt.retry, u32::try_from(gaps.len()).unwrap());
+            // Late: each retry names the frame the show has reached.
+            assert_eq!(attempt.frame, control.frame_cursor());
+        }
+        assert!(gaps[..fast].iter().all(|gap| *gap == 1), "{gaps:?}");
+        assert!(
+            gaps[fast..].iter().all(|gap| *gap == SLOW_RETRY_FRAMES),
+            "{gaps:?}"
+        );
+    }
+
+    /// A media end trigger whose `playlist_control next` the journal could
+    /// not record is retried, on the simulated runtime by wall time, while
+    /// the airing it ends is still on, and only the accepted retry is
+    /// journaled. A trigger whose airing an operator ended first is dropped.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn an_end_trigger_the_journal_could_not_record_is_retried_while_its_airing_is_on() {
+        use fm_control::MediaEndTrigger;
+        use fm_protocol::{PlaylistOperation, PlaylistRunState};
+
+        let store = FlakyJournal::new();
+        let mut durable = test_project();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let server = test_server(&control.borrow());
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            playlist_commands(500, fm_protocol::PlaylistStart::Now),
+        );
+        control.borrow_mut().tick(&server).unwrap();
+        let airing = |control: &SharedControl| control.borrow().playlist_state().unwrap().state;
+        let PlaylistRunState::Playing { entry: 1, take, .. } = airing(&control) else {
+            panic!("entry 1 airs: {:?}", airing(&control));
+        };
+        let trigger = MediaEndTrigger {
+            input: test_input_id(2),
+            frame: control.borrow().frame_cursor(),
+        };
+        assert_eq!(
+            media_clock::airing_take(&control.borrow(), trigger),
+            Some(take)
+        );
+        let revision = control.borrow().diagnostics().current_revision;
+        let recorded_before = store.recorded.borrow().len();
+
+        store.available.set(false);
+        let first = execute_authority_command(
+            &control,
+            &store,
+            &mut durable,
+            &development_principal().unwrap(),
+            &server,
+            &media_clock::end_trigger_command(trigger, revision),
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                first.result,
+                CommandResult::Rejected {
+                    retryable: true,
+                    ..
+                }
+            ),
+            "{:?}",
+            first.result
+        );
+        let mut feed = media_clock::EndTriggerFeed::default();
+        let start = Instant::now();
+        let cursor = control.borrow().frame_cursor();
+        feed.observe_first(trigger, take, revision, cursor, &first.result, start);
+        let attempts = store.attempts.get();
+        let frame = Duration::from_millis(40);
+        let mut poll = |feed: &mut media_clock::EndTriggerFeed, at: Instant, window: bool| {
+            feed.poll(
+                &control,
+                &store,
+                &mut durable,
+                &server,
+                None,
+                None,
+                at,
+                window,
+            )
+            .unwrap();
+        };
+        poll(&mut feed, start, true);
+        assert_eq!(
+            store.attempts.get(),
+            attempts,
+            "not again on the same frame"
+        );
+        poll(&mut feed, start + frame, true);
+        assert_eq!(store.attempts.get(), attempts + 1, "retried a frame later");
+        store.available.set(true);
+        poll(&mut feed, start + frame * 2, false);
+        assert_eq!(
+            store.attempts.get(),
+            attempts + 1,
+            "no retry without its window"
+        );
+        poll(&mut feed, start + frame * 2, true);
+        assert_eq!(store.attempts.get(), attempts + 2);
+        poll(&mut feed, start + frame * 40, true);
+        assert_eq!(store.attempts.get(), attempts + 2, "fed once");
+        drop(poll);
+        assert!(
+            matches!(airing(&control), PlaylistRunState::Playing { entry: 2, .. }),
+            "{:?}",
+            airing(&control)
+        );
+        {
+            let recorded = store.recorded.borrow();
+            assert_eq!(recorded.len(), recorded_before + 1);
+            let next = recorded.last().unwrap();
+            assert_eq!(
+                next.payload,
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Next
+                }
+            );
+            assert_eq!(
+                next.idempotency_key,
+                format!(
+                    "media-end-{}-{}-r{revision}-retry-2",
+                    trigger.input, trigger.frame
+                )
+            );
+        }
+
+        // Entry 2's end trigger is refused too, but the operator stops the
+        // playlist before a retry: the trigger no longer applies.
+        let PlaylistRunState::Playing { take, .. } = airing(&control) else {
+            unreachable!()
+        };
+        let trigger = MediaEndTrigger {
+            input: test_input_id(1),
+            frame: control.borrow().frame_cursor(),
+        };
+        let revision = control.borrow().diagnostics().current_revision;
+        let refused = CommandResult::Rejected {
+            id: "next".into(),
+            code: "conflict".into(),
+            message: "held".into(),
+            fields: Vec::new(),
+            current_revision: revision,
+            retryable: false,
+            reason: None,
+        };
+        let later = start + frame * 50;
+        let cursor = control.borrow().frame_cursor();
+        feed.observe_first(trigger, take, revision, cursor, &refused, later);
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            [test_command(
+                "stop",
+                "stop-key",
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Stop,
+                },
+            )],
+        );
+        let attempts = store.attempts.get();
+        for passes in 1..=3 {
+            feed.poll(
+                &control,
+                &store,
+                &mut durable,
+                &server,
+                None,
+                None,
+                later + frame * passes,
+                true,
+            )
+            .unwrap();
+        }
+        assert_eq!(store.attempts.get(), attempts, "dropped with its airing");
+        assert!(matches!(airing(&control), PlaylistRunState::Stopped));
     }
 
     #[test]
