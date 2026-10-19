@@ -7,7 +7,9 @@
 //! edit not yet confirmed, or one the server refused) until the authority
 //! catches up with it or the operator reverts. [`GradeBinding::poll`] sends
 //! the draft: at most every [`DRAG_SEND_INTERVAL`] while a drag is in
-//! progress (latest wins), and immediately once it is released. Clients
+//! progress (latest wins), and immediately once it is released; every set
+//! of one drag carries the drag's gesture token (Protocol 2.56) so the
+//! server folds the drag into one undo step. Clients
 //! apply no optimistic grade change (Protocol 2.28), so the draft is the
 //! only optimistic picture and is never mistaken for authority state.
 
@@ -16,13 +18,18 @@ use core::time::Duration;
 
 use fm_grade::{Grade, LUT_URI_PREFIX};
 use fm_protocol::{
-    CommandPayload, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES, WireGradeSource, WireInputId,
-    WireSceneId, WireSceneLayerId,
+    CommandPayload, GradeGesture, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES,
+    WireGradeSource, WireInputId, WireSceneId, WireSceneLayerId,
 };
 use fm_types::{InputId, SceneId};
 
 use super::document::{GradeDocument, GradeEditorError};
 use crate::GradingStatus;
+
+fn fresh_token() -> core::num::NonZeroU64 {
+    core::num::NonZeroU64::new(crate::scene_designer::document::fresh_gesture())
+        .expect("gesture tokens are nonzero")
+}
 
 /// Shortest gap between two grade commands sent during one drag.
 pub const DRAG_SEND_INTERVAL: Duration = Duration::from_millis(120);
@@ -184,6 +191,9 @@ pub enum GradeCommand {
     Set {
         target: GradeTarget,
         source: Option<WireGradeSource>,
+        /// The drag the set belongs to (Protocol 2.56): the server folds a
+        /// whole drag into one undo step.
+        gesture: Option<GradeGesture>,
     },
     /// Saves `value` as a new library grade `grade`, appended.
     AddLibrary {
@@ -216,22 +226,27 @@ impl GradeCommand {
             Self::Set {
                 target: GradeTarget::Input(input),
                 source,
+                gesture,
             } => CommandPayload::SetInputGrade {
                 input: WireInputId::from_domain(input),
                 source,
+                gesture,
             },
             Self::Set {
                 target: GradeTarget::Layer { scene, layer },
                 source,
+                gesture,
             } => CommandPayload::SetLayerGrade {
                 scene: WireSceneId::from_domain(scene),
                 layer,
                 source,
+                gesture,
             },
             Self::Set {
                 target: GradeTarget::Program,
                 source,
-            } => CommandPayload::SetProgramGrade { source },
+                gesture,
+            } => CommandPayload::SetProgramGrade { source, gesture },
             Self::AddLibrary { grade, name, value } => CommandPayload::AddLibraryGrade {
                 grade,
                 name,
@@ -248,24 +263,32 @@ impl GradeCommand {
     #[must_use]
     pub fn from_payload(payload: &CommandPayload) -> Option<Self> {
         Some(match payload.clone() {
-            CommandPayload::SetInputGrade { input, source } => Self::Set {
+            CommandPayload::SetInputGrade {
+                input,
+                source,
+                gesture,
+            } => Self::Set {
                 target: GradeTarget::Input(input.to_domain()),
                 source,
+                gesture,
             },
             CommandPayload::SetLayerGrade {
                 scene,
                 layer,
                 source,
+                gesture,
             } => Self::Set {
                 target: GradeTarget::Layer {
                     scene: scene.to_domain(),
                     layer,
                 },
                 source,
+                gesture,
             },
-            CommandPayload::SetProgramGrade { source } => Self::Set {
+            CommandPayload::SetProgramGrade { source, gesture } => Self::Set {
                 target: GradeTarget::Program,
                 source,
+                gesture,
             },
             CommandPayload::AddLibraryGrade {
                 grade, name, value, ..
@@ -328,6 +351,9 @@ pub struct GradeBinding {
     /// A sent draft the authority has not reported yet.
     in_flight: bool,
     refused: bool,
+    /// The token of the drag whose sets were sent, while it lasts: its
+    /// later sets continue its server undo step.
+    drag: Option<core::num::NonZeroU64>,
 }
 
 impl GradeBinding {
@@ -347,6 +373,7 @@ impl GradeBinding {
             force_send: false,
             in_flight: false,
             refused: false,
+            drag: None,
         }
     }
 
@@ -491,7 +518,12 @@ impl GradeBinding {
     /// `None` without unsent changes, or when `can_send` is false (the
     /// changes then stay unsent).
     pub fn poll(&mut self, now: Duration, can_send: bool) -> Option<GradeCommand> {
+        let dragging = self.document.gesture_active();
         if !can_send || !self.unsent() {
+            if !dragging && !self.unsent() {
+                // The drag ended with everything sent.
+                self.drag = None;
+            }
             return None;
         }
         if self.document.gesture_active()
@@ -512,8 +544,24 @@ impl GradeBinding {
         }
         let force = self.force_send;
         self.settle();
+        // A drag's first set opens its server undo step; the rest, and the
+        // set on release, continue it. Other edits are standalone.
+        let gesture = if dragging || self.drag.is_some() {
+            let continues = self.drag.is_some();
+            let token = *self.drag.get_or_insert_with(fresh_token);
+            Some(GradeGesture { token, continues })
+        } else {
+            None
+        };
+        if !dragging {
+            self.drag = None;
+        }
         if draft == self.authority && !force {
             // Undone back to the grade on air: nothing to send.
+            if gesture.is_some_and(|gesture| !gesture.continues) && dragging {
+                // Nothing sent yet: the drag opens its step later.
+                self.drag = None;
+            }
             return None;
         }
         self.last_send = Some(now);
@@ -527,7 +575,55 @@ impl GradeBinding {
         Some(GradeCommand::Set {
             target: self.target,
             source,
+            gesture,
         })
+    }
+
+    /// The grade source the draft gives another target: the linked library
+    /// grade while the draft still equals it, otherwise its values inline
+    /// (`None`, a clear, when neutral).
+    #[must_use]
+    pub fn copy_source(&self) -> Option<WireGradeSource> {
+        let draft = self.document.grade();
+        match &self.library {
+            Some((grade, value)) if value == draft => Some(WireGradeSource::Library(*grade)),
+            _ if *draft == Grade::IDENTITY => None,
+            _ => Some(WireGradeSource::Inline(Box::new(draft.clone()))),
+        }
+    }
+
+    /// The commands that copy the draft to `targets`: one standalone set
+    /// (its own undo step) per target, in the order given, skipping this
+    /// binding's own target, repeats, and targets that already carry
+    /// exactly that source (`grading` is the replicated authority).
+    #[must_use]
+    pub fn copy_commands(
+        &self,
+        targets: &[GradeTarget],
+        grading: &GradingStatus,
+    ) -> Vec<GradeCommand> {
+        let source = self.copy_source();
+        let mut seen = Vec::with_capacity(targets.len());
+        targets
+            .iter()
+            .copied()
+            .filter(|target| {
+                let fresh = *target != self.target && !seen.contains(target);
+                seen.push(*target);
+                fresh && target_source(grading, *target) != source.as_ref()
+            })
+            .map(|target| GradeCommand::Set {
+                target,
+                source: source.clone(),
+                gesture: None,
+            })
+            .collect()
+    }
+
+    /// The token of the drag whose sets are being sent, while one lasts.
+    #[must_use]
+    pub const fn drag_token(&self) -> Option<core::num::NonZeroU64> {
+        self.drag
     }
 
     /// How the draft relates to the authority grade now.
@@ -652,11 +748,17 @@ mod tests {
         };
         set(&mut binding, 100);
         let first = binding.poll(MS(1_000), true).expect("the first step sends");
+        // The first set opens the drag's server undo step.
+        let token = binding.drag_token().expect("a drag is being sent");
         assert_eq!(
             first,
             GradeCommand::Set {
                 target,
                 source: Some(WireGradeSource::Inline(Box::new(graded(100)))),
+                gesture: Some(GradeGesture {
+                    token,
+                    continues: false,
+                }),
             }
         );
         // Within the interval later steps wait; the latest one wins.
@@ -675,15 +777,61 @@ mod tests {
             second.payload(),
             CommandPayload::SetProgramGrade {
                 source: Some(WireGradeSource::Inline(Box::new(graded(300)))),
+                gesture: Some(GradeGesture {
+                    token,
+                    continues: true,
+                }),
             }
         );
-        // Release commits immediately, without waiting for the interval.
+        // Release commits immediately, without waiting for the interval,
+        // and still continues the drag's step.
         set(&mut binding, 350);
         binding.document_mut().commit_gesture().unwrap();
         assert_eq!(binding.next_send_in(MS(1_130)), Some(Duration::ZERO));
-        assert!(binding.poll(MS(1_130), true).is_some());
+        let last = binding.poll(MS(1_130), true).expect("release sends");
+        assert_eq!(
+            last,
+            GradeCommand::Set {
+                target,
+                source: Some(WireGradeSource::Inline(Box::new(graded(350)))),
+                gesture: Some(GradeGesture {
+                    token,
+                    continues: true,
+                }),
+            }
+        );
+        assert_eq!(binding.drag_token(), None, "the drag is over");
         assert_eq!(binding.poll(MS(1_131), true), None);
         assert_eq!(binding.document().undo_depth(), 1, "one drag, one step");
+
+        // The next drag picks a fresh token; a click is standalone.
+        binding.document_mut().begin_gesture().unwrap();
+        set(&mut binding, 400);
+        let next = binding.poll(MS(2_000), true).unwrap();
+        let GradeCommand::Set {
+            gesture: Some(next_gesture),
+            ..
+        } = next
+        else {
+            panic!("a drag set carries its gesture: {next:?}");
+        };
+        assert_ne!(next_gesture.token, token);
+        assert!(!next_gesture.continues);
+        binding.document_mut().commit_gesture().unwrap();
+        assert_eq!(
+            binding.poll(MS(2_001), true),
+            None,
+            "nothing new on release"
+        );
+        assert_eq!(binding.drag_token(), None);
+        binding
+            .document_mut()
+            .set_param(GradeParam::Exposure, 0)
+            .unwrap();
+        assert!(matches!(
+            binding.poll(MS(2_002), true),
+            Some(GradeCommand::Set { gesture: None, .. })
+        ));
     }
 
     #[test]
@@ -703,6 +851,7 @@ mod tests {
             CommandPayload::SetInputGrade {
                 input: WireInputId::from_domain(input(3)),
                 source: None,
+                gesture: None,
             }
         );
         assert_eq!(
@@ -756,6 +905,7 @@ mod tests {
             Some(GradeCommand::Set {
                 target,
                 source: Some(WireGradeSource::Library(id(4))),
+                gesture: None,
             })
         );
         // An edit after applying sends inline values again.
@@ -769,7 +919,79 @@ mod tests {
             Some(GradeCommand::Set {
                 target,
                 source: None,
+                gesture: None,
             })
+        );
+    }
+
+    #[test]
+    fn copying_sends_the_draft_to_each_other_target_once() {
+        let own = GradeTarget::Input(input(1));
+        let layer = GradeTarget::Layer {
+            scene: SceneId::new(core::num::NonZeroU128::new(7).unwrap()),
+            layer: WireSceneLayerId::new(id(2)),
+        };
+        let mut grading = grading_with(GradeTarget::Input(input(3)), Some(graded(450)));
+        let mut binding = GradeBinding::new(own, &grading, 1);
+        binding
+            .document_mut()
+            .set_param(GradeParam::Exposure, 450)
+            .unwrap();
+        let inline = Some(WireGradeSource::Inline(Box::new(graded(450))));
+        let targets = [
+            own,
+            GradeTarget::Input(input(2)),
+            GradeTarget::Input(input(3)),
+            layer,
+            GradeTarget::Input(input(2)),
+            GradeTarget::Program,
+        ];
+        // Not its own target, not twice, and not where it already is.
+        let set = |target| GradeCommand::Set {
+            target,
+            source: inline.clone(),
+            gesture: None,
+        };
+        assert_eq!(
+            binding.copy_commands(&targets, &grading),
+            vec![
+                set(GradeTarget::Input(input(2))),
+                set(layer),
+                set(GradeTarget::Program)
+            ]
+        );
+
+        // A linked library grade is copied by reference.
+        grading.library.push(LibraryGradeStatus {
+            grade: id(4),
+            name: "Day".into(),
+            value: Box::new(graded(-200)),
+        });
+        binding.apply_library(id(4), &graded(-200)).unwrap();
+        assert_eq!(
+            binding.copy_commands(&[GradeTarget::Program], &grading),
+            vec![GradeCommand::Set {
+                target: GradeTarget::Program,
+                source: Some(WireGradeSource::Library(id(4))),
+                gesture: None,
+            }]
+        );
+        // A neutral draft clears the graded targets only.
+        binding
+            .document_mut()
+            .set_param(GradeParam::Exposure, 0)
+            .unwrap();
+        assert_eq!(binding.copy_source(), None);
+        assert_eq!(
+            binding.copy_commands(
+                &[GradeTarget::Input(input(2)), GradeTarget::Input(input(3))],
+                &grading
+            ),
+            vec![GradeCommand::Set {
+                target: GradeTarget::Input(input(3)),
+                source: None,
+                gesture: None,
+            }]
         );
     }
 

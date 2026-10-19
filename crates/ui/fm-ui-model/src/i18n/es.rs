@@ -4690,6 +4690,64 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ColorReasonGradingPending,
         t("las correcciones del proyecto aún se están sincronizando"),
     ),
+    (Msg::ColorCopyTo, t("Copiar a…")),
+    (
+        Msg::ColorCopyToHover,
+        t(
+            "Dar esta corrección a otras entradas, capas de escena o al Programa con un clic; cada destino tiene su propio paso de deshacer",
+        ),
+    ),
+    (Msg::ColorCopyHeader, t("Copiar esta corrección a")),
+    (
+        Msg::ColorCopyHeaderHover,
+        t(
+            "Marque los destinos que deben recibir este borrador. Una corrección vinculada de la biblioteca sigue vinculada en cada uno",
+        ),
+    ),
+    (Msg::ColorCopyEveryInput, t("Todas las entradas")),
+    (
+        Msg::ColorCopyEveryInputHover,
+        t("Marcar todas las entradas que puede corregir, salvo la que está editando"),
+    ),
+    (Msg::ColorCopyUntick, t("Desmarcar todo")),
+    (
+        Msg::ColorCopyUntickHover,
+        t("Desmarcar todos los destinos de esta lista"),
+    ),
+    (
+        Msg::ColorCopyPickHover,
+        t("Marcar para copiar aquí la corrección; reemplaza la corrección actual del destino"),
+    ),
+    (
+        Msg::ColorCopyApply,
+        plural("Copiar a {count} destino", "Copiar a {count} destinos"),
+    ),
+    (
+        Msg::ColorCopyApplyHover,
+        t(
+            "Enviar ahora esta corrección a cada destino marcado; los monitores la muestran a medida que se aplica",
+        ),
+    ),
+    (
+        Msg::ColorCopySent,
+        plural(
+            "Corrección copiada a {count} destino (un paso de deshacer cada uno)",
+            "Corrección copiada a {count} destinos (un paso de deshacer cada uno)",
+        ),
+    ),
+    (
+        Msg::ColorReasonCopyNone,
+        t("marque al menos un destino primero"),
+    ),
+    (
+        Msg::ColorReasonCopySame,
+        t("todos los destinos marcados ya tienen esta corrección"),
+    ),
+    (Msg::ColorReasonCopyNothingTicked, t("no hay nada marcado")),
+    (
+        Msg::ColorReasonCopyNoOther,
+        t("todas las entradas ya están marcadas o bloqueadas"),
+    ),
     (
         Msg::ColorClose,
         t("Cerrar la ventana Color; un cambio que aún se envía se envía igualmente"),

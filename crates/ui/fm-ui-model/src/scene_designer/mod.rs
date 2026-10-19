@@ -25,7 +25,7 @@
 //! draft while a gesture runs, paced by the window, and the server's undo
 //! takes back a whole gesture of one layer at once.
 
-mod document;
+pub(crate) mod document;
 mod edits;
 pub mod geometry;
 pub mod gesture;

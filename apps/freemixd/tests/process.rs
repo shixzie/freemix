@@ -4314,7 +4314,10 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
         permission_denied(
             &mut viewer,
             "viewer-grade",
-            CommandPayload::SetProgramGrade { source: None },
+            CommandPayload::SetProgramGrade {
+                source: None,
+                gesture: None,
+            },
         );
 
         for (id, payload) in [
@@ -4331,6 +4334,7 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
                 CommandPayload::SetInputGrade {
                     input: input(1),
                     source: Some(WireGradeSource::Inline(Box::new(inverted.clone()))),
+                    gesture: None,
                 },
             ),
             (
@@ -4338,6 +4342,7 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
                 CommandPayload::SetInputGrade {
                     input: input(2),
                     source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+                    gesture: None,
                 },
             ),
         ] {
@@ -4360,6 +4365,7 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
             "program-key",
             CommandPayload::SetProgramGrade {
                 source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+                gesture: None,
             },
         ));
         let program = monitor.image(MonitorTap::Program, "monochrome program", |image| {
@@ -4417,7 +4423,10 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
     monitor.client.send(&command(
         "clear",
         "clear-key",
-        CommandPayload::SetProgramGrade { source: None },
+        CommandPayload::SetProgramGrade {
+            source: None,
+            gesture: None,
+        },
     ));
     monitor.image(MonitorTap::Program, "ungraded program again", |image| {
         all_pixels(image, |[red, _, blue, _]| red > blue + 20)
@@ -4513,6 +4522,7 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
                 scene,
                 layer,
                 source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+                gesture: None,
             },
         ));
         // Monitor parts keep feeding their assemblers, so no group is torn.
@@ -4554,6 +4564,7 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
                 scene: spare,
                 layer,
                 source: Some(WireGradeSource::Inline(Box::new(warm.clone()))),
+                gesture: None,
             },
         ));
         let assemblers = &mut monitor.assemblers;
@@ -6138,11 +6149,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.55.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 55));
+    // The previous protocol is refused; the current one is 2.56.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 56));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 54),
+        protocol: ProtocolVersion::new(2, 55),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6158,7 +6169,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 55)
+        ProtocolVersion::new(2, 56)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

@@ -1538,6 +1538,18 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
 }
 
 /// Writes a grade source as `library=<id>` or `grade=<grade>`.
+/// Encodes the live drag of a grade set or clear (Protocol 2.56), if any.
+fn encode_grade_gesture(
+    record: &mut Record,
+    gesture: Option<crate::GradeGesture>,
+) -> Result<(), CodecError> {
+    let Some(gesture) = gesture else {
+        return Ok(());
+    };
+    record.field("gesture", gesture.token)?;
+    record.field("continues", gesture.continues)
+}
+
 fn encode_grade_source(record: &mut Record, source: &WireGradeSource) -> Result<(), CodecError> {
     match source {
         WireGradeSource::Library(grade) => record.field("library", grade),
@@ -1576,7 +1588,11 @@ fn encode_lut_metadata(
 /// Encodes the grade commands (Protocol 2.28).
 fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
     match payload {
-        CommandPayload::SetInputGrade { input, source } => {
+        CommandPayload::SetInputGrade {
+            input,
+            source,
+            gesture,
+        } => {
             record.field(
                 "payload",
                 if source.is_some() {
@@ -1588,12 +1604,14 @@ fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result
             record.field("input", input)?;
             source
                 .as_ref()
-                .map_or(Ok(()), |source| encode_grade_source(record, source))
+                .map_or(Ok(()), |source| encode_grade_source(record, source))?;
+            encode_grade_gesture(record, *gesture)
         }
         CommandPayload::SetLayerGrade {
             scene,
             layer,
             source,
+            gesture,
         } => {
             record.field(
                 "payload",
@@ -1607,9 +1625,10 @@ fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result
             record.field("layer", layer)?;
             source
                 .as_ref()
-                .map_or(Ok(()), |source| encode_grade_source(record, source))
+                .map_or(Ok(()), |source| encode_grade_source(record, source))?;
+            encode_grade_gesture(record, *gesture)
         }
-        CommandPayload::SetProgramGrade { source } => {
+        CommandPayload::SetProgramGrade { source, gesture } => {
             record.field(
                 "payload",
                 if source.is_some() {
@@ -1620,7 +1639,8 @@ fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result
             )?;
             source
                 .as_ref()
-                .map_or(Ok(()), |source| encode_grade_source(record, source))
+                .map_or(Ok(()), |source| encode_grade_source(record, source))?;
+            encode_grade_gesture(record, *gesture)
         }
         CommandPayload::AddLibraryGrade {
             grade,

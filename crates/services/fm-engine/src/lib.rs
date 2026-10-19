@@ -39,7 +39,7 @@ pub use error::{
 };
 pub use fm_playback;
 pub use grade::{CompiledProjectGrades, GradeCompileError, GradeTarget};
-pub use grade_edit::{EngineGradeEdit, EngineLut};
+pub use grade_edit::{EngineGradeEdit, EngineLut, GradeGesture};
 pub use history::{
     EditHistoryEntry, EditLockScope, EditRejection, EditRejectionKind, EngineCommandKind,
     MAX_EDIT_HISTORY,

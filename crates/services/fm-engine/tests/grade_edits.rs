@@ -127,8 +127,12 @@ fn grade_edits_are_project_edits() {
         EngineGradeEdit::SetInput {
             input: input(1),
             source: None,
+            gesture: None,
         },
-        EngineGradeEdit::SetProgram { source: None },
+        EngineGradeEdit::SetProgram {
+            source: None,
+            gesture: None,
+        },
         EngineGradeEdit::RemoveGrade { id: grade_id(1) },
         EngineGradeEdit::RemoveLut { id: lut_id(1) },
     ] {
@@ -146,6 +150,7 @@ fn input_and_program_grades_undo_and_redo_with_events() {
         grade(EngineGradeEdit::SetInput {
             input: input(2),
             source: Some(inline.clone()),
+            gesture: None,
         }),
     );
     accepted(&outcome);
@@ -154,6 +159,7 @@ fn input_and_program_grades_undo_and_redo_with_events() {
         EngineEvent::GradingChanged(EngineGradeEdit::SetInput {
             input: input(2),
             source: Some(inline.clone()),
+            gesture: None,
         })
     );
     assert_eq!(grading(&engine).inputs.get(&input(2)), Some(&inline));
@@ -166,6 +172,7 @@ fn input_and_program_grades_undo_and_redo_with_events() {
         "set-program",
         grade(EngineGradeEdit::SetProgram {
             source: Some(GradeSource::Inline(Box::new(cool()))),
+            gesture: None,
         }),
     ));
     assert!(engine.show().compiled_grades().unwrap().program().is_some());
@@ -175,7 +182,10 @@ fn input_and_program_grades_undo_and_redo_with_events() {
     accepted(&outcome);
     assert_eq!(
         outcome.events[0].payload,
-        EngineEvent::GradingChanged(EngineGradeEdit::SetProgram { source: None })
+        EngineEvent::GradingChanged(EngineGradeEdit::SetProgram {
+            source: None,
+            gesture: None,
+        })
     );
     assert_eq!(grading(&engine).program, None);
     let outcome = run(&mut engine, "undo-2", UNDO);
@@ -184,6 +194,7 @@ fn input_and_program_grades_undo_and_redo_with_events() {
         EngineEvent::GradingChanged(EngineGradeEdit::SetInput {
             input: input(2),
             source: None,
+            gesture: None,
         })
     );
     assert_eq!(grading(&engine).inputs.len(), 0);
@@ -203,6 +214,7 @@ fn input_and_program_grades_undo_and_redo_with_events() {
         grade(EngineGradeEdit::SetInput {
             input: input(2),
             source: Some(GradeSource::Inline(Box::new(cool()))),
+            gesture: None,
         }),
     ));
     accepted(&run(&mut engine, "undo-3", UNDO));
@@ -274,6 +286,7 @@ fn library_edits_undo_to_their_exact_previous_state() {
         grade(EngineGradeEdit::SetInput {
             input: input(1),
             source: Some(GradeSource::Library(grade_id(2))),
+            gesture: None,
         }),
     ));
     let outcome = run(
@@ -324,6 +337,7 @@ fn lut_import_is_validated_undoable_and_removal_forgets_history() {
         grade(EngineGradeEdit::SetInput {
             input: input(3),
             source: Some(GradeSource::Inline(Box::new(with_lut(1)))),
+            gesture: None,
         }),
     ));
     let compiled = engine.show().compiled_grades().unwrap();
@@ -340,6 +354,7 @@ fn lut_import_is_validated_undoable_and_removal_forgets_history() {
         grade(EngineGradeEdit::SetInput {
             input: input(3),
             source: None,
+            gesture: None,
         }),
     ));
 
@@ -381,6 +396,7 @@ fn padlocks_guard_grade_edits() {
         grade(EngineGradeEdit::SetInput {
             input: input(value),
             source: Some(GradeSource::Inline(Box::new(warm()))),
+            gesture: None,
         })
     };
     let outcome = run(&mut engine, "locked-input", set(2));
@@ -394,6 +410,7 @@ fn padlocks_guard_grade_edits() {
         "program",
         grade(EngineGradeEdit::SetProgram {
             source: Some(GradeSource::Inline(Box::new(cool()))),
+            gesture: None,
         }),
     ));
 
@@ -409,7 +426,10 @@ fn padlocks_guard_grade_edits() {
         ("p-input", set(3)),
         (
             "p-program",
-            grade(EngineGradeEdit::SetProgram { source: None }),
+            grade(EngineGradeEdit::SetProgram {
+                source: None,
+                gesture: None,
+            }),
         ),
         ("p-add", add(1, "A", warm())),
         ("p-import", import(1, "Invert", INVERT_CUBE)),
@@ -436,6 +456,7 @@ fn padlocks_guard_library_grades_a_locked_input_uses() {
         grade(EngineGradeEdit::SetInput {
             input: input(2),
             source: Some(GradeSource::Library(grade_id(1))),
+            gesture: None,
         }),
     ));
     accepted(&run(
@@ -486,6 +507,7 @@ fn unknown_inputs_and_removed_inputs_drop_grades() {
         grade(EngineGradeEdit::SetInput {
             input: input(9),
             source: Some(GradeSource::Inline(Box::new(warm()))),
+            gesture: None,
         }),
     );
     assert_eq!(rejection(&outcome).code, RejectionCode::NotFound);
@@ -496,6 +518,7 @@ fn unknown_inputs_and_removed_inputs_drop_grades() {
         grade(EngineGradeEdit::SetInput {
             input: input(3),
             source: Some(GradeSource::Inline(Box::new(warm()))),
+            gesture: None,
         }),
     ));
     accepted(&run(
@@ -534,6 +557,7 @@ fn undoing_an_input_add_never_drops_its_grade_after_a_lut_removal() {
         grade(EngineGradeEdit::SetInput {
             input: input(4),
             source: Some(GradeSource::Inline(Box::new(with_lut(1)))),
+            gesture: None,
         }),
     ));
     accepted(&run(
@@ -542,6 +566,7 @@ fn undoing_an_input_add_never_drops_its_grade_after_a_lut_removal() {
         grade(EngineGradeEdit::SetInput {
             input: input(4),
             source: Some(GradeSource::Inline(Box::new(cool()))),
+            gesture: None,
         }),
     ));
     accepted(&run(
@@ -571,6 +596,7 @@ fn undoing_an_input_add_never_drops_its_grade_after_a_lut_removal() {
         grade(EngineGradeEdit::SetInput {
             input: input(4),
             source: None,
+            gesture: None,
         }),
     ));
     accepted(&run(&mut engine, "undo-clear", UNDO));
@@ -645,6 +671,7 @@ fn set_layer(scene: u128, layer: u32, source: Option<GradeSource>) -> EngineComm
         scene: scene_id(scene),
         layer: fm_model::LayerId::new(layer).unwrap(),
         source,
+        gesture: None,
     })
 }
 
@@ -666,6 +693,7 @@ fn scene_layer_grades_undo_redo_and_compile() {
             scene: scene_id(7),
             layer: fm_model::LayerId::new(1).unwrap(),
             source: Some(library.clone()),
+            gesture: None,
         })
     );
     assert_eq!(
@@ -846,4 +874,167 @@ fn padlocks_of_every_scene_input_guard_its_layer_grades() {
         EditRejectionKind::of(rejection(&outcome)),
         Some(EditRejectionKind::ProjectLocked)
     );
+}
+
+#[allow(clippy::unnecessary_wraps)] // the field type
+fn drag(token: u64, continues: bool) -> Option<fm_engine::GradeGesture> {
+    Some(fm_engine::GradeGesture {
+        token: core::num::NonZeroU64::new(token).unwrap(),
+        continues,
+    })
+}
+
+fn set_input_in(
+    input_value: u128,
+    value: Grade,
+    gesture: Option<fm_engine::GradeGesture>,
+) -> EngineCommand {
+    grade(EngineGradeEdit::SetInput {
+        input: input(input_value),
+        source: Some(GradeSource::Inline(Box::new(value))),
+        gesture,
+    })
+}
+
+fn exposure(millistops: i16) -> Grade {
+    Grade {
+        exposure_millistops: millistops,
+        ..Grade::IDENTITY
+    }
+}
+
+/// Protocol 2.56: a drag's live grade sets fold into one undo step for
+/// their target, the recorded step carries no gesture, and a drag back to
+/// where it started leaves no step.
+#[test]
+fn a_grade_drag_folds_into_one_undo_step() {
+    let mut engine = engine();
+    accepted(&run(&mut engine, "a", set_input_in(1, warm(), None)));
+    assert_eq!(engine.undo_entries().len(), 1);
+
+    // One drag: three live sets and the release.
+    for (index, value) in [100, 200, 300, 350].into_iter().enumerate() {
+        let outcome = run(
+            &mut engine,
+            &format!("drag-{index}"),
+            set_input_in(1, exposure(value), drag(77, index > 0)),
+        );
+        accepted(&outcome);
+    }
+    assert_eq!(engine.undo_entries().len(), 2, "one drag, one step");
+    let step = engine.undo_entries().last().unwrap();
+    assert_eq!(
+        step.forward(),
+        &set_input_in(1, exposure(350), None),
+        "the step records the release without its gesture"
+    );
+    assert_eq!(step.inverse(), &set_input_in(1, warm(), None));
+    assert_eq!(
+        grading(&engine).inputs.get(&input(1)),
+        Some(&GradeSource::Inline(Box::new(exposure(350))))
+    );
+
+    // Undo reverts the whole drag; redo replays its end.
+    accepted(&run(&mut engine, "undo", UNDO));
+    assert_eq!(
+        grading(&engine).inputs.get(&input(1)),
+        Some(&GradeSource::Inline(Box::new(warm())))
+    );
+    accepted(&run(&mut engine, "redo", REDO));
+    assert_eq!(
+        grading(&engine).inputs.get(&input(1)),
+        Some(&GradeSource::Inline(Box::new(exposure(350))))
+    );
+
+    // A drag back to where it started leaves no step.
+    accepted(&run(
+        &mut engine,
+        "back-0",
+        set_input_in(1, exposure(500), drag(78, false)),
+    ));
+    assert_eq!(engine.undo_entries().len(), 3);
+    accepted(&run(
+        &mut engine,
+        "back-1",
+        set_input_in(1, exposure(350), drag(78, true)),
+    ));
+    assert_eq!(engine.undo_entries().len(), 2, "no change, no step");
+}
+
+#[test]
+fn grade_drags_fold_only_into_their_own_step_for_the_same_target() {
+    let mut engine = engine();
+    // A continuation whose drag opened no step opens one.
+    accepted(&run(
+        &mut engine,
+        "a",
+        set_input_in(1, exposure(100), drag(5, true)),
+    ));
+    assert_eq!(engine.undo_entries().len(), 1);
+    // Another drag's continuation does not fold into it.
+    accepted(&run(
+        &mut engine,
+        "b",
+        set_input_in(1, exposure(200), drag(6, true)),
+    ));
+    assert_eq!(engine.undo_entries().len(), 2);
+    // The same token on another target opens its own step.
+    accepted(&run(
+        &mut engine,
+        "c",
+        set_input_in(2, exposure(300), drag(6, true)),
+    ));
+    assert_eq!(engine.undo_entries().len(), 3);
+    // An edit between ends the fold: the drag continues in a new step.
+    accepted(&run(&mut engine, "d", set_input_in(3, exposure(10), None)));
+    accepted(&run(
+        &mut engine,
+        "e",
+        set_input_in(2, exposure(400), drag(6, true)),
+    ));
+    assert_eq!(engine.undo_entries().len(), 5);
+    // Program drags fold the same way.
+    for (index, value) in [1, 2, 3].into_iter().enumerate() {
+        accepted(&run(
+            &mut engine,
+            &format!("p-{index}"),
+            grade(EngineGradeEdit::SetProgram {
+                source: Some(GradeSource::Inline(Box::new(exposure(value)))),
+                gesture: drag(9, index > 0),
+            }),
+        ));
+    }
+    assert_eq!(engine.undo_entries().len(), 6);
+    // No fold across an undo: the drag's next set opens a new step.
+    accepted(&run(&mut engine, "undo", UNDO));
+    accepted(&run(
+        &mut engine,
+        "p-after",
+        grade(EngineGradeEdit::SetProgram {
+            source: None,
+            gesture: drag(9, true),
+        }),
+    ));
+    assert_eq!(engine.undo_entries().len(), 6);
+    assert_eq!(grading(&engine).program, None);
+}
+
+#[test]
+fn scene_layer_grade_drags_fold_per_layer() {
+    let mut engine = layer_engine();
+    let layer_drag = |layer: u32, value: i16, gesture| {
+        grade(EngineGradeEdit::SetLayer {
+            scene: scene_id(7),
+            layer: fm_model::LayerId::new(layer).unwrap(),
+            source: Some(GradeSource::Inline(Box::new(exposure(value)))),
+            gesture,
+        })
+    };
+    let before = engine.undo_entries().len();
+    accepted(&run(&mut engine, "l-0", layer_drag(1, 100, drag(3, false))));
+    accepted(&run(&mut engine, "l-1", layer_drag(1, 200, drag(3, true))));
+    assert_eq!(engine.undo_entries().len(), before + 1);
+    accepted(&run(&mut engine, "undo", UNDO));
+    assert_eq!(engine.undo_entries().len(), before);
+    assert_eq!(grading(&engine).layers.get(&layer_ref(7, 1)), None);
 }

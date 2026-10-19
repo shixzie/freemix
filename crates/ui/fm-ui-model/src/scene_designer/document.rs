@@ -459,7 +459,7 @@ fn live_operations(
 
 /// A random, nonzero gesture token: distinct per gesture and, with high
 /// probability, from every other session's.
-fn fresh_gesture() -> u64 {
+pub(crate) fn fresh_gesture() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     loop {
         let token = std::collections::hash_map::RandomState::new()

@@ -1667,6 +1667,35 @@ fn decode_grade_source(
     }
 }
 
+/// Decodes the optional live drag of a grade set or clear (Protocol 2.56):
+/// `gesture` (a canonical nonzero decimal) with `continues` (`true` or
+/// `false`), or neither.
+fn decode_grade_gesture(fields: &mut Fields) -> Result<Option<crate::GradeGesture>, CodecError> {
+    let Some(token) = fields.optional("gesture") else {
+        return match fields.optional("continues") {
+            Some(_) => Err(CodecError::MissingField("gesture")),
+            None => Ok(None),
+        };
+    };
+    let token = parse_canonical_u64(&token)
+        .and_then(core::num::NonZeroU64::new)
+        .ok_or(CodecError::InvalidField {
+            field: "gesture",
+            value: token,
+        })?;
+    let continues = match fields.required("continues")?.as_str() {
+        "true" => true,
+        "false" => false,
+        other => {
+            return Err(CodecError::InvalidField {
+                field: "continues",
+                value: other.to_owned(),
+            });
+        }
+    };
+    Ok(Some(crate::GradeGesture { token, continues }))
+}
+
 fn decode_required_grade_source(fields: &mut Fields) -> Result<WireGradeSource, CodecError> {
     decode_grade_source(fields, false)?.ok_or(CodecError::MissingField("grade"))
 }
@@ -1719,25 +1748,33 @@ fn decode_grade_command(fields: &mut Fields, name: &str) -> Result<CommandPayloa
         "grade_input_set" => CommandPayload::SetInputGrade {
             input: fields.canonical_input("input")?,
             source: Some(decode_required_grade_source(fields)?),
+            gesture: decode_grade_gesture(fields)?,
         },
         "grade_input_clear" => CommandPayload::SetInputGrade {
             input: fields.canonical_input("input")?,
             source: None,
+            gesture: decode_grade_gesture(fields)?,
         },
         "grade_layer_set" => CommandPayload::SetLayerGrade {
             scene: fields.canonical_scene("scene")?,
             layer: decode_grade_layer(fields)?,
             source: Some(decode_required_grade_source(fields)?),
+            gesture: decode_grade_gesture(fields)?,
         },
         "grade_layer_clear" => CommandPayload::SetLayerGrade {
             scene: fields.canonical_scene("scene")?,
             layer: decode_grade_layer(fields)?,
             source: None,
+            gesture: decode_grade_gesture(fields)?,
         },
         "grade_program_set" => CommandPayload::SetProgramGrade {
             source: Some(decode_required_grade_source(fields)?),
+            gesture: decode_grade_gesture(fields)?,
         },
-        "grade_program_clear" => CommandPayload::SetProgramGrade { source: None },
+        "grade_program_clear" => CommandPayload::SetProgramGrade {
+            source: None,
+            gesture: decode_grade_gesture(fields)?,
+        },
         "grade_library_add" => CommandPayload::AddLibraryGrade {
             grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
             name: decode_grade_name(fields)?,

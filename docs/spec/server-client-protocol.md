@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.55 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.56 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -392,6 +392,9 @@ Protocol 2.28 edits and replicates project colour grading (`SW-019`):
   - `grade_program_set` (exactly one of `library` or `grade`) and
     `grade_program_clear`. The program grade colours the composed Program
     picture after overlays and before Fade-to-Black.
+  - Every set and clear (input, scene layer, and program) may carry
+    `gesture` and `continues` (Protocol 2.56): a drag's live sets fold into
+    one undo step per target.
   - `grade_library_add` (`grade_id`, `name`, `grade`, optional
     `index` below 256, else appended), `grade_library_update` (`grade_id`,
     `name`, `grade`; every target referencing the grade follows), and
@@ -1736,6 +1739,28 @@ ALSA PCM.
 - Durability: an input kind `{"type": "system_audio", "backend", "device"}`
   (schema 52).
 - 2.54 is refused.
+
+Protocol 2.56 folds a grade drag into one undo step (SW-019).
+
+- `grade_input_set|clear`, `grade_layer_set|clear`, and
+  `grade_program_set|clear` gain an optional `gesture` (a canonical nonzero
+  decimal token the client picks once per drag, unique across sessions)
+  with a required `continues=true|false` beside it; neither appears outside
+  a drag, and `continues` without `gesture` is refused. The first set of a
+  drag sends `continues=false`; later sets and the set on release send
+  `continues=true`.
+- The server folds a continuing set into the newest undo step when that
+  step sets the same target (one input, one scene layer, or the program)
+  and was opened by the same token: the step keeps its inverse (the grade
+  before the drag) and records the latest set without its gesture, so Undo
+  reverts the whole drag. A drag that ends where it started leaves no step.
+  Any other newest step (another edit in between, an undo, or a drag whose
+  first set was refused or lost) makes the set open a new step.
+- Studio's Colour window sends a drag's sets at most every 120 ms with one
+  token, and its `Copy to…` sends the draft to several targets as one
+  standalone set each (one undo step per target).
+- No durability change: journals and history record sets without gestures.
+- 2.55 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

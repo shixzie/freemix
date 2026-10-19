@@ -2958,7 +2958,21 @@ the library (`Name (2)` on a clash). `freemix-cli grade-export` and
 `grade-import` work offline on any LUT size; Studio's Colour window exports
 the edited grade and imports a file by typed path through the protocol's
 `grade_lut_import` and `grade_library_add`, so it refuses LUTs over the
-32 KiB wire cap with a pointer to `grade-import`.
+32 KiB wire cap with a pointer to `grade-import`. Protocol 2.56 makes a
+grade drag one step of the shared undo history: the input, layer, and
+program grade sets and clears carry an optional `gesture` token with
+`continues`, the Colour window's binding picks a fresh token per drag
+(first set `continues=false`, later sets and the release `true`), and
+`fm-engine` folds a continuing set into the newest undo entry when that
+entry sets the same target and was opened by the same token (keeping the
+entry's inverse; a drag back to its start leaves no entry; an edit in
+between, an undo, or a drag whose first set was lost opens a new entry).
+Recorded entries and journals carry no gesture. The Colour window's
+`Copy to…` menu ticks other targets (Program, inputs, scene layers; locked
+ones disabled with the padlock reason; `Every input` and `Untick all`
+keys) and sends the draft to each as one standalone set (a linked library
+grade by reference, a neutral draft as a clear, targets that already
+carry it skipped), so each target is its own undo step.
 
 Current implementation boundary for the layer designer (`SW-006`):
 Protocol 2.39 edits every scene layer property live: `scene_layer_*`

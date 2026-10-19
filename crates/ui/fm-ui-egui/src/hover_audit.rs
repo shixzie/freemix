@@ -1723,6 +1723,8 @@ fn scenes(language: Language) -> Vec<Scene> {
             &|shell| {
                 shell.open_color(Some(GradeTarget::Program));
                 shell.color.panel.mode = PanelMode::Advanced;
+                // Copy to… with an input ticked.
+                shell.color.copy_ticked.insert(GradeTarget::Input(input(1)));
                 shell.color.library_pick = core::num::NonZeroU32::new(1);
                 shell.color.library_name = "Evening".into();
                 shell.color.lut_path = "/luts/warm.cube".into();

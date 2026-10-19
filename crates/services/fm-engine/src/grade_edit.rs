@@ -104,6 +104,23 @@ impl fmt::Debug for EngineLut {
     }
 }
 
+/// The live drag a grade set belongs to.
+///
+/// A drag sends its grade every few frames so the monitors follow it; each
+/// send is one accepted edit. An edit that [`Self::continues`] folds into
+/// the latest undo entry when that entry sets the same target and was
+/// opened by the same [`Self::token`], keeping the entry's inverse (the
+/// grade before the drag), so the whole drag undoes at once. A drag that
+/// ends where it started leaves no entry. Recorded entries carry no
+/// gesture.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GradeGesture {
+    /// Picked by the sender once per drag, unique across sessions.
+    pub token: core::num::NonZeroU64,
+    /// `false` for the first edit of the drag.
+    pub continues: bool,
+}
+
 /// One grading edit. Every variant is a project edit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineGradeEdit {
@@ -111,6 +128,7 @@ pub enum EngineGradeEdit {
     SetInput {
         input: InputId,
         source: Option<GradeSource>,
+        gesture: Option<GradeGesture>,
     },
     /// Sets (`Some`) or clears (`None`) the grade of layer `layer` of scene
     /// `scene`, whether or not a Scene input shows it.
@@ -118,9 +136,13 @@ pub enum EngineGradeEdit {
         scene: SceneId,
         layer: LayerId,
         source: Option<GradeSource>,
+        gesture: Option<GradeGesture>,
     },
     /// Sets (`Some`) or clears (`None`) the program output grade.
-    SetProgram { source: Option<GradeSource> },
+    SetProgram {
+        source: Option<GradeSource>,
+        gesture: Option<GradeGesture>,
+    },
     /// Inserts a library grade at `index` (the end when `None`).
     AddGrade {
         grade: Box<ProjectGrade>,
@@ -160,11 +182,65 @@ impl EngineGradeEdit {
         match self {
             Self::SetInput { source, .. }
             | Self::SetLayer { source, .. }
-            | Self::SetProgram { source } => source_names(source),
+            | Self::SetProgram { source, .. } => source_names(source),
             Self::AddGrade { grade, .. } => grade_names(&grade.grade),
             Self::UpdateGrade { grade, .. } => grade_names(grade),
             Self::RemoveGrade { .. } => false,
             Self::ImportLut { id, .. } | Self::RemoveLut { id } => *id == lut,
+        }
+    }
+
+    /// The live drag of a grade set, if any.
+    #[must_use]
+    pub const fn gesture(&self) -> Option<GradeGesture> {
+        match self {
+            Self::SetInput { gesture, .. }
+            | Self::SetLayer { gesture, .. }
+            | Self::SetProgram { gesture, .. } => *gesture,
+            _ => None,
+        }
+    }
+
+    /// The edit as recorded in the history: in no gesture.
+    #[must_use]
+    pub fn recorded(mut self) -> Self {
+        if let Self::SetInput { gesture, .. }
+        | Self::SetLayer { gesture, .. }
+        | Self::SetProgram { gesture, .. } = &mut self
+        {
+            *gesture = None;
+        }
+        self
+    }
+
+    /// Whether both edits are grade sets of the same target (one input,
+    /// one scene layer, or the program).
+    #[must_use]
+    pub fn sets_same_target(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::SetInput { input, .. }, Self::SetInput { input: other, .. }) => input == other,
+            (
+                Self::SetLayer { scene, layer, .. },
+                Self::SetLayer {
+                    scene: other_scene,
+                    layer: other_layer,
+                    ..
+                },
+            ) => scene == other_scene && layer == other_layer,
+            (Self::SetProgram { .. }, Self::SetProgram { .. }) => true,
+            _ => false,
+        }
+    }
+
+    /// The grade a grade set leaves on its target (`None` clears it); `None`
+    /// for other edits.
+    #[must_use]
+    pub const fn set_source(&self) -> Option<&Option<GradeSource>> {
+        match self {
+            Self::SetInput { source, .. }
+            | Self::SetLayer { source, .. }
+            | Self::SetProgram { source, .. } => Some(source),
+            _ => None,
         }
     }
 
@@ -203,6 +279,7 @@ pub(crate) fn apply_show_grade_edit(
         scene,
         layer,
         source,
+        ..
     } = edit
     {
         let target = layer_target(state, *scene, *layer)?;
@@ -267,7 +344,7 @@ pub(crate) fn apply_grade_edit(
     edit: &EngineGradeEdit,
 ) -> Result<(), Rejection> {
     match edit {
-        EngineGradeEdit::SetInput { input, source } => {
+        EngineGradeEdit::SetInput { input, source, .. } => {
             if !inputs.contains(input) {
                 return Err(grade_rejection(&GradeEditError::UnknownInput(*input)));
             }
@@ -278,7 +355,7 @@ pub(crate) fn apply_grade_edit(
         EngineGradeEdit::SetLayer { .. } => {
             unreachable!("layer grade edits are applied by apply_show_grade_edit")
         }
-        EngineGradeEdit::SetProgram { source } => grading
+        EngineGradeEdit::SetProgram { source, .. } => grading
             .set_program(source.clone())
             .map_err(|error| grade_rejection(&error)),
         EngineGradeEdit::AddGrade { grade, index } => grading

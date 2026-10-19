@@ -24115,6 +24115,7 @@ mod tests {
                                 ..fm_grade::Grade::IDENTITY
                             },
                         ))),
+                        gesture: None,
                     },
                 ),
                 0,

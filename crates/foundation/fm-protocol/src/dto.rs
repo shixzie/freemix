@@ -1743,6 +1743,8 @@ pub enum CommandPayload {
     SetInputGrade {
         input: WireInputId,
         source: Option<WireGradeSource>,
+        /// The live drag this edit belongs to, if any (Protocol 2.56).
+        gesture: Option<GradeGesture>,
     },
     /// Sets (`Some`) or clears (`None`) the grade of layer `layer` of scene
     /// `scene` (Protocol 2.33; addressed by scene since 2.35), whether or
@@ -1753,11 +1755,15 @@ pub enum CommandPayload {
         scene: WireSceneId,
         layer: WireSceneLayerId,
         source: Option<WireGradeSource>,
+        /// The live drag this edit belongs to, if any (Protocol 2.56).
+        gesture: Option<GradeGesture>,
     },
     /// Sets (`Some`) or clears (`None`) the program output grade. Wire
     /// payloads `grade_program_set` and `grade_program_clear`.
     SetProgramGrade {
         source: Option<WireGradeSource>,
+        /// The live drag this edit belongs to, if any (Protocol 2.56).
+        gesture: Option<GradeGesture>,
     },
     /// Adds a named grade to the library at `index` (the end when absent).
     AddLibraryGrade {
@@ -2007,6 +2013,23 @@ pub const MAX_GRADE_LAYERS: u16 = 256;
 /// grade, input grade, scene layer grade, and the program grade of a
 /// maximal project.
 pub const MAX_GRADE_STATES: u16 = 64 + 256 + 256 + MAX_GRADE_LAYERS + 1;
+
+/// The live drag a grade set or clear belongs to (Protocol 2.56): wire
+/// fields `gesture` (a canonical nonzero decimal token the client picks once
+/// per drag, unique across sessions) and `continues` (`true` or `false`),
+/// both absent outside a drag.
+///
+/// The server folds a continuing edit into the latest undo step when that
+/// step grades the same target and was opened by the same token, keeping
+/// the step's inverse (the grade before the drag), so a whole drag undoes
+/// at once; a drag that ends where it started leaves no step. The first
+/// edit of a drag sends `continues=false`, and a continuation whose drag
+/// opened no step (its first edit was refused or lost) opens one.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GradeGesture {
+    pub token: core::num::NonZeroU64,
+    pub continues: bool,
+}
 
 /// The grade one input or the program carries on the wire.
 #[derive(Clone, Debug, Eq, PartialEq)]

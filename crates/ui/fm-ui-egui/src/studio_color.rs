@@ -26,7 +26,7 @@
 
 use core::num::NonZeroU32;
 use core::time::Duration;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -125,6 +125,8 @@ pub(crate) struct ColorWindow {
     held: BTreeMap<GradeTarget, RgbaImage>,
     /// The last grade refusal handled.
     refusal: Option<String>,
+    /// The targets ticked in `Copy to…`.
+    pub(crate) copy_ticked: BTreeSet<GradeTarget>,
 }
 
 impl Default for ColorWindow {
@@ -147,6 +149,7 @@ impl Default for ColorWindow {
             source_at: None,
             held: BTreeMap::new(),
             refusal: None,
+            copy_ticked: BTreeSet::new(),
         }
     }
 }
@@ -811,7 +814,7 @@ impl StudioShell {
                 .selected_text(crate::theme::ellipsize(&label(target), 30))
                 .width(230.0)
                 .show_ui(ui, |ui| {
-                    for candidate in targets {
+                    for candidate in targets.iter().copied() {
                         let hover = match candidate {
                             GradeTarget::Program => l.text(Msg::ColorTargetProgramHover),
                             GradeTarget::Input(_) => l.text(Msg::ColorTargetInputHover),
@@ -844,6 +847,7 @@ impl StudioShell {
                     binding.revert();
                 }
             }
+            self.draw_copy_menu(ui, state, intents, &targets, &label);
             // In the row, not right-aligned: an auto-sized window would grow
             // to the whole screen to push a trailing key to its edge.
             ui.separator();
@@ -893,6 +897,178 @@ impl StudioShell {
                 lock.unwrap_or(Msg::ColorReasonGradingPending.en()),
             )));
         }
+    }
+
+    /// `Copy to…`: ticks other targets and gives each the draft, one
+    /// standalone grade set (and undo step) per target.
+    #[allow(clippy::too_many_lines)] // one menu: header keys, targets, Copy
+    fn draw_copy_menu(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+        targets: &[GradeTarget],
+        label: &dyn Fn(GradeTarget) -> String,
+    ) {
+        let l = self.locale;
+        let own = self.color.target;
+        let others: Vec<(GradeTarget, Option<&'static str>)> = targets
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate != own)
+            .map(|candidate| (candidate, grade_lock_reason(state, candidate)))
+            .collect();
+        // Ticks of gone, locked, or edited targets do not count.
+        self.color.copy_ticked.retain(|ticked| {
+            others
+                .iter()
+                .any(|(candidate, lock)| candidate == ticked && lock.is_none())
+        });
+        let menu_reason = project_lock_reason(state).or_else(|| {
+            self.color
+                .binding
+                .is_none()
+                .then_some(Msg::ColorReasonGradingPending.en())
+        });
+        let mut send = false;
+        ui.add_enabled_ui(menu_reason.is_none(), |ui| {
+            // Ticking keeps the menu open; Copy or a click outside closes it.
+            let (button, _) = egui::containers::menu::MenuButton::from_button(small_button(
+                l.text(Msg::ColorCopyTo),
+            ))
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                ui.set_min_width(260.0);
+                ui.label(section_label(l.text(Msg::ColorCopyHeader)))
+                    .on_hover_text(l.text(Msg::ColorCopyHeaderHover));
+                let free_inputs: Vec<GradeTarget> = others
+                    .iter()
+                    .filter(|(candidate, lock)| {
+                        matches!(candidate, GradeTarget::Input(_)) && lock.is_none()
+                    })
+                    .map(|(candidate, _)| *candidate)
+                    .collect();
+                ui.horizontal(|ui| {
+                    let every_reason = free_inputs
+                        .iter()
+                        .all(|candidate| self.color.copy_ticked.contains(candidate))
+                        .then_some(Msg::ColorReasonCopyNoOther.en());
+                    if ui
+                        .add_enabled(
+                            every_reason.is_none(),
+                            small_button(l.text(Msg::ColorCopyEveryInput)),
+                        )
+                        .hint(
+                            l.text(Msg::ColorCopyEveryInputHover),
+                            every_reason.unwrap_or(""),
+                        )
+                        .clicked()
+                    {
+                        self.color.copy_ticked.extend(free_inputs.iter().copied());
+                    }
+                    let untick_reason = self
+                        .color
+                        .copy_ticked
+                        .is_empty()
+                        .then_some(Msg::ColorReasonCopyNothingTicked.en());
+                    if ui
+                        .add_enabled(
+                            untick_reason.is_none(),
+                            small_button(l.text(Msg::ColorCopyUntick)),
+                        )
+                        .hint(
+                            l.text(Msg::ColorCopyUntickHover),
+                            untick_reason.unwrap_or(""),
+                        )
+                        .clicked()
+                    {
+                        self.color.copy_ticked.clear();
+                    }
+                });
+                ui.separator();
+                ScrollArea::vertical()
+                    .id_salt("studio-color-copy-targets")
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        for (candidate, lock) in &others {
+                            let mut ticked = self.color.copy_ticked.contains(candidate);
+                            let changed = ui
+                                .add_enabled(
+                                    lock.is_none(),
+                                    egui::Checkbox::new(&mut ticked, label(*candidate)),
+                                )
+                                .hint(l.text(Msg::ColorCopyPickHover), lock.unwrap_or(""))
+                                .changed();
+                            if changed {
+                                if ticked {
+                                    self.color.copy_ticked.insert(*candidate);
+                                } else {
+                                    self.color.copy_ticked.remove(candidate);
+                                }
+                            }
+                        }
+                    });
+                ui.separator();
+                let ticked: Vec<GradeTarget> = others
+                    .iter()
+                    .map(|(candidate, _)| *candidate)
+                    .filter(|candidate| self.color.copy_ticked.contains(candidate))
+                    .collect();
+                let pending = match (&self.color.binding, grading(state)) {
+                    (Some(binding), Some(grading)) => binding.copy_commands(&ticked, grading).len(),
+                    _ => 0,
+                };
+                let apply_reason = if ticked.is_empty() {
+                    Some(Msg::ColorReasonCopyNone.en())
+                } else if pending == 0 {
+                    Some(Msg::ColorReasonCopySame.en())
+                } else {
+                    None
+                };
+                let count = u64::try_from(ticked.len()).unwrap_or(u64::MAX);
+                if ui
+                    .add_enabled(
+                        apply_reason.is_none(),
+                        small_button(
+                            l.format(Msg::ColorCopyApply, &[("count", Arg::Count(count))]),
+                        ),
+                    )
+                    .hint(l.text(Msg::ColorCopyApplyHover), apply_reason.unwrap_or(""))
+                    .clicked()
+                {
+                    send = true;
+                    ui.close();
+                }
+            });
+            let _ = button.hint(l.text(Msg::ColorCopyToHover), menu_reason.unwrap_or(""));
+        });
+        if send {
+            self.send_grade_copies(state, intents);
+        }
+    }
+
+    /// Sends the draft to every ticked target (one standalone grade set
+    /// each) and unticks them.
+    fn send_grade_copies(&mut self, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+        let (Some(binding), Some(grading)) = (&self.color.binding, grading(state)) else {
+            return;
+        };
+        let ticked: Vec<GradeTarget> = self.color.copy_ticked.iter().copied().collect();
+        let commands = binding.copy_commands(&ticked, grading);
+        self.color.copy_ticked.clear();
+        if commands.is_empty() {
+            return;
+        }
+        let count = u64::try_from(commands.len()).unwrap_or(u64::MAX);
+        intents.extend(commands.into_iter().map(StudioIntent::Grade));
+        let l = self.locale;
+        self.toasts.push(
+            ToastKind::Notice,
+            l.format(Msg::ColorCopySent, &[("count", Arg::Count(count))]),
+        );
     }
 
     /// The library and LUT import rows.
@@ -1605,6 +1781,7 @@ mod tests {
             vec![StudioIntent::Grade(GradeCommand::Set {
                 target: GradeTarget::Input(input(2)),
                 source: Some(WireGradeSource::Inline(Box::new(expected))),
+                gesture: None,
             })]
         );
 
@@ -1630,6 +1807,47 @@ mod tests {
     }
 
     #[test]
+    fn copy_to_sends_the_draft_to_each_ticked_unlocked_target() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let state = ready(&[2], false, true);
+        shell.open_color_window(GradeTarget::Input(input(2)));
+        let _ = draw(&context, &mut shell, &state);
+        shell.color.copy_ticked.extend([
+            GradeTarget::Input(input(1)),
+            GradeTarget::Input(input(2)),
+            GradeTarget::Program,
+        ]);
+        // Drawing drops the tick of the target being edited.
+        assert_eq!(draw(&context, &mut shell, &state), Vec::new());
+        assert_eq!(
+            shell.color.copy_ticked.iter().copied().collect::<Vec<_>>(),
+            vec![GradeTarget::Input(input(1)), GradeTarget::Program]
+        );
+        let mut intents = Vec::new();
+        shell.send_grade_copies(&state, &mut intents);
+        let set = |target| {
+            StudioIntent::Grade(GradeCommand::Set {
+                target,
+                source: Some(WireGradeSource::Inline(Box::new(warm()))),
+                gesture: None,
+            })
+        };
+        assert_eq!(
+            intents,
+            vec![set(GradeTarget::Input(input(1))), set(GradeTarget::Program)]
+        );
+        assert!(shell.color.copy_ticked.is_empty(), "sent ticks clear");
+
+        // The project padlock drops every tick.
+        let locked = ready(&[2], true, true);
+        shell.color.copy_ticked.insert(GradeTarget::Input(input(1)));
+        let _ = draw(&context, &mut shell, &locked);
+        assert!(shell.color.copy_ticked.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // every layer target addressing case
     fn scene_layers_are_grade_targets_addressed_by_their_scene() {
         let context = egui::Context::default();
         let mut state = ready_with(&[], false, true, Some((true, false)));
@@ -1703,6 +1921,7 @@ mod tests {
             vec![StudioIntent::Grade(GradeCommand::Set {
                 target: host,
                 source: Some(WireGradeSource::Inline(Box::new(expected.clone()))),
+                gesture: None,
             })]
         );
         let StudioIntent::Grade(command) = &intents[0] else {
@@ -1714,6 +1933,7 @@ mod tests {
                 scene: wire_scene(SHOWN),
                 layer: layer(1),
                 source: Some(WireGradeSource::Inline(Box::new(expected))),
+                gesture: None,
             }
         );
         // A layer of an unshown scene is graded by its scene id.
@@ -1721,12 +1941,14 @@ mod tests {
             GradeCommand::Set {
                 target: wall,
                 source: None,
+                gesture: None,
             }
             .payload(),
             fm_protocol::CommandPayload::SetLayerGrade {
                 scene: wire_scene(SPARE),
                 layer: layer(5),
                 source: None,
+                gesture: None,
             }
         );
 

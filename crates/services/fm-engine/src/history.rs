@@ -567,6 +567,21 @@ impl EditHistory {
         None
     }
 
+    /// The position of the undo entry a continuing grade set folds into:
+    /// the newest entry, when its own drag opened it setting the same
+    /// target. Any other newest entry opens a new one, so a drag whose
+    /// first send was refused or lost never folds into an earlier step.
+    fn grade_gesture_entry(&self, edit: &EngineGradeEdit) -> Option<usize> {
+        let gesture = edit.gesture().filter(|gesture| gesture.continues)?;
+        let position = self.undo.len().checked_sub(1)?;
+        let entry = &self.undo[position];
+        let EngineCommand::Grade(previous) = &entry.forward else {
+            return None;
+        };
+        (entry.gesture == gesture.token.get() && previous.sets_same_target(edit))
+            .then_some(position)
+    }
+
     /// Applies the history change for one accepted, newly committed command.
     pub(crate) fn commit(
         &mut self,
@@ -608,6 +623,25 @@ impl EditHistory {
                         }
                         gesture = edit.gesture;
                         EngineCommand::SceneLayer(edit.recorded())
+                    }
+                    // A drag's continuing grade set folds into the entry its
+                    // drag opened for the same target, the same way.
+                    EngineCommand::Grade(edit) => {
+                        if foldable && let Some(position) = self.grade_gesture_entry(&edit) {
+                            let forward = edit.recorded();
+                            let inverse = &self.undo[position].inverse;
+                            if matches!(inverse, EngineCommand::Grade(inverse)
+                                if inverse.sets_same_target(&forward)
+                                    && inverse.set_source() == forward.set_source())
+                            {
+                                self.undo.remove(position);
+                            } else {
+                                self.undo[position].forward = EngineCommand::Grade(forward);
+                            }
+                            return;
+                        }
+                        gesture = edit.gesture().map_or(0, |gesture| gesture.token.get());
+                        EngineCommand::Grade(edit.recorded())
                     }
                     command => command,
                 };
@@ -940,6 +974,7 @@ fn grade_inverse(state: &ShowState, edit: &EngineGradeEdit) -> Option<EngineGrad
                 .then(|| EngineGradeEdit::SetInput {
                     input: *input,
                     source: grading.inputs.get(input).cloned(),
+                    gesture: None,
                 })
         }
         EngineGradeEdit::SetLayer { scene, layer, .. } => {
@@ -949,10 +984,12 @@ fn grade_inverse(state: &ShowState, edit: &EngineGradeEdit) -> Option<EngineGrad
                     scene: *scene,
                     layer: *layer,
                     source: grading.layers.get(&target).cloned(),
+                    gesture: None,
                 })
         }
         EngineGradeEdit::SetProgram { .. } => Some(EngineGradeEdit::SetProgram {
             source: grading.program.clone(),
+            gesture: None,
         }),
         EngineGradeEdit::AddGrade { grade, .. } => grading
             .grade(grade.id)

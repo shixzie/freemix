@@ -4770,6 +4770,7 @@ mod tests {
                         CommandPayload::SetInputGrade {
                             input,
                             source: Some(source.clone()),
+                            gesture: None,
                         }
                     );
                     assert_eq!(command.expected_revision, Some(4));
@@ -4795,7 +4796,10 @@ mod tests {
                 WireMessage::Command(command) => {
                     assert_eq!(
                         command.payload,
-                        CommandPayload::SetProgramGrade { source: None }
+                        CommandPayload::SetProgramGrade {
+                            source: None,
+                            gesture: None,
+                        }
                     );
                     answered += 1;
                     peer.send(&WireMessage::CommandResult(CommandResult::Rejected {
@@ -4869,6 +4873,7 @@ mod tests {
                 GradeCommand::Set {
                     target: GradeTarget::Program,
                     source: None,
+                    gesture: None,
                 },
             )))
             .unwrap();
@@ -5144,6 +5149,7 @@ mod tests {
             StudioIntent::Grade(GradeCommand::Set {
                 target,
                 source: Some(warm_source(temperature)),
+                gesture: None,
             })
         };
         let mut pending = PendingIntents::new();

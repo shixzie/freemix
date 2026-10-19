@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.55\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.56\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -95,7 +95,7 @@ fn base64url(bytes: &[u8]) -> String {
 
 #[test]
 fn protocol_version_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 55));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 56));
 }
 
 #[test]
@@ -110,6 +110,7 @@ fn identity_grade_and_simple_commands_have_an_exact_wire_form() {
             CommandPayload::SetInputGrade {
                 input: input(4),
                 source: Some(WireGradeSource::Inline(Box::new(Grade::IDENTITY))),
+                gesture: None,
             },
             format!("\tpayload=grade_input_set\tinput=4\tgrade={escaped}\n"),
         ),
@@ -117,6 +118,7 @@ fn identity_grade_and_simple_commands_have_an_exact_wire_form() {
             CommandPayload::SetInputGrade {
                 input: input(4),
                 source: Some(WireGradeSource::Library(id(3))),
+                gesture: None,
             },
             "\tpayload=grade_input_set\tinput=4\tlibrary=3\n".to_owned(),
         ),
@@ -124,17 +126,22 @@ fn identity_grade_and_simple_commands_have_an_exact_wire_form() {
             CommandPayload::SetInputGrade {
                 input: input(4),
                 source: None,
+                gesture: None,
             },
             "\tpayload=grade_input_clear\tinput=4\n".to_owned(),
         ),
         (
             CommandPayload::SetProgramGrade {
                 source: Some(WireGradeSource::Library(id(9))),
+                gesture: None,
             },
             "\tpayload=grade_program_set\tlibrary=9\n".to_owned(),
         ),
         (
-            CommandPayload::SetProgramGrade { source: None },
+            CommandPayload::SetProgramGrade {
+                source: None,
+                gesture: None,
+            },
             "\tpayload=grade_program_clear\n".to_owned(),
         ),
         (
@@ -170,9 +177,11 @@ fn every_grade_command_state_and_change_round_trips() {
         command(CommandPayload::SetInputGrade {
             input: input(u128::MAX),
             source: Some(WireGradeSource::Inline(Box::new(rich()))),
+            gesture: None,
         }),
         command(CommandPayload::SetProgramGrade {
             source: Some(WireGradeSource::Inline(Box::new(rich()))),
+            gesture: None,
         }),
         command(CommandPayload::AddLibraryGrade {
             grade: id(u32::MAX),
@@ -285,6 +294,7 @@ fn lut_import_is_capped_and_strictly_base64url() {
 fn grade_sources_need_exactly_one_form() {
     let identity = encode_line(&command(CommandPayload::SetProgramGrade {
         source: Some(WireGradeSource::Inline(Box::new(Grade::IDENTITY))),
+        gesture: None,
     }))
     .unwrap();
     let grade = identity
@@ -353,6 +363,7 @@ fn grade_values_are_strictly_bounded_and_canonical() {
     assert!(
         encode_line(&command(CommandPayload::SetProgramGrade {
             source: Some(WireGradeSource::Inline(Box::new(invalid))),
+            gesture: None,
         }))
         .is_err()
     );
@@ -364,6 +375,7 @@ fn grade_values_are_strictly_bounded_and_canonical() {
     assert!(
         encode_line(&command(CommandPayload::SetProgramGrade {
             source: Some(WireGradeSource::Inline(Box::new(foreign))),
+            gesture: None,
         }))
         .is_err()
     );
@@ -544,6 +556,7 @@ fn scene_layer_grades_have_an_exact_wire_form() {
                 scene: scene(4),
                 layer: layer(2),
                 source: Some(WireGradeSource::Library(id(3))),
+                gesture: None,
             }),
             format!("{PREFIX}\tpayload=grade_layer_set\tscene=4\tlayer=2\tlibrary=3\n"),
         ),
@@ -552,6 +565,7 @@ fn scene_layer_grades_have_an_exact_wire_form() {
                 scene: scene(4),
                 layer: layer(2),
                 source: None,
+                gesture: None,
             }),
             format!("{PREFIX}\tpayload=grade_layer_clear\tscene=4\tlayer=2\n"),
         ),
@@ -582,6 +596,7 @@ fn scene_layer_grades_have_an_exact_wire_form() {
             scene: scene(u128::MAX),
             layer: layer(u32::MAX),
             source: Some(WireGradeSource::Inline(Box::new(rich()))),
+            gesture: None,
         }),
         state(GradeEntry::Layer {
             scene: scene(1),
@@ -623,5 +638,89 @@ fn scene_layer_grades_have_an_exact_wire_form() {
         let bad = state_line.replacen(from, to, 1);
         assert_ne!(bad, state_line);
         assert!(decode_line(&bad).is_err(), "{bad}");
+    }
+}
+
+/// Protocol 2.56: grade sets and clears carry the drag they belong to as
+/// `gesture` (canonical nonzero) and `continues` (`true`/`false`), both or
+/// neither.
+#[test]
+fn grade_drags_carry_their_gesture_exactly() {
+    let gesture = |token: u64, continues| {
+        Some(fm_protocol::GradeGesture {
+            token: core::num::NonZeroU64::new(token).unwrap(),
+            continues,
+        })
+    };
+    let cases = [
+        (
+            CommandPayload::SetInputGrade {
+                input: input(4),
+                source: Some(WireGradeSource::Library(id(3))),
+                gesture: gesture(18_446_744_073_709_551_615, false),
+            },
+            "\tpayload=grade_input_set\tinput=4\tlibrary=3\tgesture=18446744073709551615\tcontinues=false\n",
+        ),
+        (
+            CommandPayload::SetInputGrade {
+                input: input(4),
+                source: None,
+                gesture: gesture(7, true),
+            },
+            "\tpayload=grade_input_clear\tinput=4\tgesture=7\tcontinues=true\n",
+        ),
+        (
+            CommandPayload::SetLayerGrade {
+                scene: scene(9),
+                layer: layer(2),
+                source: Some(WireGradeSource::Library(id(1))),
+                gesture: gesture(8, true),
+            },
+            "\tpayload=grade_layer_set\tscene=9\tlayer=2\tlibrary=1\tgesture=8\tcontinues=true\n",
+        ),
+        (
+            CommandPayload::SetLayerGrade {
+                scene: scene(9),
+                layer: layer(2),
+                source: None,
+                gesture: gesture(8, false),
+            },
+            "\tpayload=grade_layer_clear\tscene=9\tlayer=2\tgesture=8\tcontinues=false\n",
+        ),
+        (
+            CommandPayload::SetProgramGrade {
+                source: Some(WireGradeSource::Library(id(9))),
+                gesture: gesture(1, true),
+            },
+            "\tpayload=grade_program_set\tlibrary=9\tgesture=1\tcontinues=true\n",
+        ),
+        (
+            CommandPayload::SetProgramGrade {
+                source: None,
+                gesture: gesture(2, false),
+            },
+            "\tpayload=grade_program_clear\tgesture=2\tcontinues=false\n",
+        ),
+    ];
+    for (payload, tail) in cases {
+        let line = round_trip(&command(payload));
+        assert_eq!(line, format!("{PREFIX}{tail}"));
+    }
+    for tail in [
+        // A zero, non-canonical, or out-of-range token.
+        "\tpayload=grade_program_clear\tgesture=0\tcontinues=false\n",
+        "\tpayload=grade_program_clear\tgesture=07\tcontinues=false\n",
+        "\tpayload=grade_program_clear\tgesture=18446744073709551616\tcontinues=false\n",
+        // One without the other.
+        "\tpayload=grade_program_clear\tgesture=7\n",
+        "\tpayload=grade_program_clear\tcontinues=true\n",
+        "\tpayload=grade_input_set\tinput=4\tlibrary=3\tcontinues=false\n",
+        // Not a boolean.
+        "\tpayload=grade_layer_clear\tscene=9\tlayer=2\tgesture=7\tcontinues=1\n",
+        // Library edits take no gesture.
+        "\tpayload=grade_library_remove\tgrade_id=2\tgesture=7\tcontinues=true\n",
+    ] {
+        let line = format!("{PREFIX}{tail}");
+        assert!(decode_line(&line).is_err(), "{line}");
     }
 }

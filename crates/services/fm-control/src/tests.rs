@@ -3959,6 +3959,7 @@ fn grade_commands_are_project_edits_with_state_records_and_undo() {
     let set = CommandPayload::SetInputGrade {
         input: WireInputId::from_domain(input(2)),
         source: Some(WireGradeSource::Library(grade_id)),
+        gesture: None,
     };
     for payload in [&add, &set] {
         assert_eq!(
@@ -4970,6 +4971,7 @@ fn scene_layer_grades_are_addressed_and_replicated_by_scene() {
         scene: shared,
         layer,
         source: Some(WireGradeSource::Inline(warm.clone())),
+        gesture: None,
     };
     assert_eq!(
         control.required_classes(&set).primary(),
@@ -5025,6 +5027,7 @@ fn scene_layer_grades_are_addressed_and_replicated_by_scene() {
                     scene: shared,
                     layer: WireSceneLayerId::new(core::num::NonZeroU32::new(2).unwrap()),
                     source: None,
+                    gesture: None,
                 },
             ),
             0,
@@ -5044,6 +5047,7 @@ fn scene_layer_grades_are_addressed_and_replicated_by_scene() {
                     scene: spare,
                     layer: nested,
                     source: Some(WireGradeSource::Inline(warm.clone())),
+                    gesture: None,
                 },
             ),
             0,

@@ -43,24 +43,46 @@ fn wire_source(source: &GradeSource) -> WireGradeSource {
     }
 }
 
+const fn domain_gesture(gesture: fm_protocol::GradeGesture) -> fm_engine::GradeGesture {
+    fm_engine::GradeGesture {
+        token: gesture.token,
+        continues: gesture.continues,
+    }
+}
+
+const fn wire_gesture(gesture: fm_engine::GradeGesture) -> fm_protocol::GradeGesture {
+    fm_protocol::GradeGesture {
+        token: gesture.token,
+        continues: gesture.continues,
+    }
+}
+
 /// Maps the grade commands.
 pub fn grade_engine_command(payload: &CommandPayload) -> EngineCommand {
     EngineCommand::Grade(match payload {
-        CommandPayload::SetInputGrade { input, source } => EngineGradeEdit::SetInput {
+        CommandPayload::SetInputGrade {
+            input,
+            source,
+            gesture,
+        } => EngineGradeEdit::SetInput {
             input: input.to_domain(),
             source: source.as_ref().map(domain_source),
+            gesture: gesture.map(domain_gesture),
         },
         CommandPayload::SetLayerGrade {
             scene,
             layer,
             source,
+            gesture,
         } => EngineGradeEdit::SetLayer {
             scene: scene.to_domain(),
             layer: LayerId::from_non_zero(layer.get()),
             source: source.as_ref().map(domain_source),
+            gesture: gesture.map(domain_gesture),
         },
-        CommandPayload::SetProgramGrade { source } => EngineGradeEdit::SetProgram {
+        CommandPayload::SetProgramGrade { source, gesture } => EngineGradeEdit::SetProgram {
             source: source.as_ref().map(domain_source),
+            gesture: gesture.map(domain_gesture),
         },
         CommandPayload::AddLibraryGrade {
             grade,
@@ -98,21 +120,29 @@ pub fn grade_engine_command(payload: &CommandPayload) -> EngineCommand {
 /// Maps an undoable grade edit back to its exact wire payload.
 pub fn wire_grade_payload(edit: &EngineGradeEdit) -> CommandPayload {
     match edit {
-        EngineGradeEdit::SetInput { input, source } => CommandPayload::SetInputGrade {
+        EngineGradeEdit::SetInput {
+            input,
+            source,
+            gesture,
+        } => CommandPayload::SetInputGrade {
             input: WireInputId::from_domain(*input),
             source: source.as_ref().map(wire_source),
+            gesture: gesture.map(wire_gesture),
         },
         EngineGradeEdit::SetLayer {
             scene,
             layer,
             source,
+            gesture,
         } => CommandPayload::SetLayerGrade {
             scene: WireSceneId::from_domain(*scene),
             layer: WireSceneLayerId::new(layer.non_zero()),
             source: source.as_ref().map(wire_source),
+            gesture: gesture.map(wire_gesture),
         },
-        EngineGradeEdit::SetProgram { source } => CommandPayload::SetProgramGrade {
+        EngineGradeEdit::SetProgram { source, gesture } => CommandPayload::SetProgramGrade {
             source: source.as_ref().map(wire_source),
+            gesture: gesture.map(wire_gesture),
         },
         EngineGradeEdit::AddGrade { grade, index } => CommandPayload::AddLibraryGrade {
             grade: grade.id.get(),
