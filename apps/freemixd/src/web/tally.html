@@ -52,31 +52,32 @@
 </head>
 <body>
 <header id="toolbar">
-  <button type="button" id="inputs" aria-label="Choose input">Inputs</button>
+  <button type="button" id="inputs" data-i18n="inputs" data-i18n-label="inputsLabel" aria-label="Choose input">Inputs</button>
+  <button type="button" id="language" lang="es" data-i18n="otherLanguage" data-i18n-label="otherLanguageLabel" aria-label="Ver en español">ES</button>
   <span class="spacer"></span>
-  <button type="button" id="preview" hidden aria-label="Put this input on Preview (P)">Preview</button>
-  <button type="button" id="cut" hidden aria-label="Cut Preview to Program (C)">Cut</button>
-  <button type="button" id="standby" hidden aria-label="Put the next cue on standby (S)">Standby</button>
-  <button type="button" id="go" hidden aria-label="GO: fire the cue on standby (G)">GO</button>
-  <button type="button" id="fullscreen" aria-label="Toggle full-screen tally (F)">Full screen</button>
+  <button type="button" id="preview" hidden data-i18n="preview" data-i18n-label="previewLabel" aria-label="Put this input on Preview (P)">Preview</button>
+  <button type="button" id="cut" hidden data-i18n="cut" data-i18n-label="cutLabel" aria-label="Cut Preview to Program (C)">Cut</button>
+  <button type="button" id="standby" hidden data-i18n="standby" data-i18n-label="standbyLabel" aria-label="Put the next cue on standby (S)">Standby</button>
+  <button type="button" id="go" hidden data-i18n="go" data-i18n-label="goLabel" aria-label="GO: fire the cue on standby (G)">GO</button>
+  <button type="button" id="fullscreen" data-i18n="fullscreen" data-i18n-label="fullscreenLabel" aria-label="Toggle full-screen tally (F)">Full screen</button>
 </header>
 <main id="tally" data-light="offline">
   <div id="label" aria-live="polite">FreeMix Tally</div>
   <div id="state" role="status" aria-live="polite">OFFLINE</div>
   <div id="lock" hidden><span id="lock-text"></span></div>
   <div id="cue" hidden aria-live="polite"></div>
-  <div id="board" role="list" aria-label="Inputs" hidden></div>
+  <div id="board" role="list" data-i18n-label="inputs" aria-label="Inputs" hidden></div>
   <form id="setup" hidden autocomplete="off">
-    <label>Access token
+    <label><span data-i18n="token">Access token</span>
       <input id="token" type="password" required minlength="32" maxlength="256" autocomplete="off">
     </label>
-    <label>Role
+    <label><span data-i18n="role">Role</span>
       <select id="role">
-        <option value="viewer">Viewer (tally only)</option>
-        <option value="operator">Operator (tally and shortcuts)</option>
+        <option value="viewer" data-i18n="roleViewerChoice">Viewer (tally only)</option>
+        <option value="operator" data-i18n="roleOperatorChoice">Operator (tally and shortcuts)</option>
       </select>
     </label>
-    <button type="submit">Connect</button>
+    <button type="submit" data-i18n="connect">Connect</button>
   </form>
 </main>
 <div id="status" role="log" aria-live="polite">Not connected</div>
@@ -97,13 +98,120 @@
   const MAX_BACKOFF_MS = 10000;
   const MAX_TRACKED_REVISIONS = 64;
 
+  // ---- Every user-visible string, one entry per line per language. ----
+  // Spanish follows Studio's catalog (fm-ui-model i18n/es.rs): Programa,
+  // Previo, Corte, GO, En espera; `{name}` is a placeholder.
+  const STRINGS = {
+    en: {
+      title: "FreeMix Tally",
+      notConnected: "Not connected",
+      inputs: "Inputs",
+      inputsLabel: "Choose input",
+      preview: "Preview",
+      previewLabel: "Put this input on Preview (P)",
+      cut: "Cut",
+      cutLabel: "Cut Preview to Program (C)",
+      standby: "Standby",
+      standbyLabel: "Put the next cue on standby (S)",
+      go: "GO",
+      goLabel: "GO: fire the cue on standby (G)",
+      fullscreen: "Full screen",
+      fullscreenLabel: "Toggle full-screen tally (F)",
+      otherLanguage: "ES",
+      otherLanguageLabel: "Ver en español",
+      token: "Access token",
+      role: "Role",
+      roleViewerChoice: "Viewer (tally only)",
+      roleOperatorChoice: "Operator (tally and shortcuts)",
+      connect: "Connect",
+      roleViewer: "viewer",
+      roleOperator: "operator",
+      stateProgram: "ON AIR",
+      statePreview: "PREVIEW",
+      stateIdle: "IDLE",
+      stateOffline: "OFFLINE",
+      chooseInput: "Choose an input",
+      tallyLabel: "Tally: {state}",
+      lockProject: "Project locked",
+      lockInput: "Input locked",
+      editsLocked: "Edits locked: {lock}",
+      inputLocked: "{input}, input locked",
+      cueStandby: "{list} — Standby: {cue}",
+      cueNothing: "{list} — Nothing on standby",
+      statusIdle: "Enter the daemon's web access token to connect",
+      statusConnecting: "Connecting",
+      statusReconnecting: "Reconnecting (attempt {attempt})",
+      statusLive: "Live as {role}",
+      statusLiveShow: "Live — {show} as {role}",
+      statusWaiting: "Connection lost; retry {attempt} in {seconds} s",
+      statusWaitingHint: "Connection lost; retry {attempt} in {seconds} s (check the token; every web client slot may also be taken)",
+      statusStopped: "Stopped",
+      rejected: "Rejected by server: {code}",
+      incompatible: "Server protocol is incompatible",
+      shortcutRejected: "Shortcut rejected: {code}",
+      goStale: "GO not sent: the show changed; press GO again",
+      goStandbyChanged: "GO not sent: the cue on standby changed",
+    },
+    es: {
+      title: "Tally de FreeMix",
+      notConnected: "Sin conexión",
+      inputs: "Entradas",
+      inputsLabel: "Elegir entrada",
+      preview: "Previo",
+      previewLabel: "Poner esta entrada en Previo (P)",
+      cut: "Corte",
+      cutLabel: "Cortar Previo a Programa (C)",
+      standby: "En espera",
+      standbyLabel: "Poner el siguiente cue en espera (S)",
+      go: "GO",
+      goLabel: "GO: disparar el cue en espera (G)",
+      fullscreen: "Pantalla completa",
+      fullscreenLabel: "Alternar el tally a pantalla completa (F)",
+      otherLanguage: "EN",
+      otherLanguageLabel: "View in English",
+      token: "Token de acceso",
+      role: "Rol",
+      roleViewerChoice: "Observador (solo tally)",
+      roleOperatorChoice: "Operador (tally y atajos)",
+      connect: "Conectar",
+      roleViewer: "observador",
+      roleOperator: "operador",
+      stateProgram: "AL AIRE",
+      statePreview: "PREVIO",
+      stateIdle: "INACTIVA",
+      stateOffline: "DESCONECTADO",
+      chooseInput: "Elija una entrada",
+      tallyLabel: "Tally: {state}",
+      lockProject: "Proyecto bloqueado",
+      lockInput: "Entrada bloqueada",
+      editsLocked: "Edición bloqueada: {lock}",
+      inputLocked: "{input}, entrada bloqueada",
+      cueStandby: "{list} — En espera: {cue}",
+      cueNothing: "{list} — Nada en espera",
+      statusIdle: "Introduzca el token de acceso web del daemon para conectar",
+      statusConnecting: "Conectando",
+      statusReconnecting: "Reconectando (intento {attempt})",
+      statusLive: "En vivo como {role}",
+      statusLiveShow: "En vivo — {show} como {role}",
+      statusWaiting: "Conexión perdida; reintento {attempt} en {seconds} s",
+      statusWaitingHint: "Conexión perdida; reintento {attempt} en {seconds} s (compruebe el token; también pueden estar ocupadas todas las plazas de clientes web)",
+      statusStopped: "Detenido",
+      rejected: "Rechazado por el servidor: {code}",
+      incompatible: "El protocolo del servidor es incompatible",
+      shortcutRejected: "Atajo rechazado: {code}",
+      goStale: "GO no enviado: el show cambió; pulse GO otra vez",
+      goStandbyChanged: "GO no enviado: cambió el cue en espera",
+    },
+  };
+  const LANGUAGE_KEY = "freemix.web.language";
+
   const $ = (id) => document.getElementById(id);
   const ui = {
     tally: $("tally"), label: $("label"), state: $("state"), status: $("status"),
     board: $("board"), setup: $("setup"), token: $("token"), role: $("role"),
     inputs: $("inputs"), preview: $("preview"), cut: $("cut"), fullscreen: $("fullscreen"),
     lock: $("lock"), lockText: $("lock-text"),
-    go: $("go"), standby: $("standby"), cue: $("cue"),
+    go: $("go"), standby: $("standby"), cue: $("cue"), language: $("language"),
   };
 
   const store = window.sessionStorage;
@@ -117,11 +225,57 @@
   // Never leave the token in the address bar or history.
   history.replaceState(null, "", location.pathname + location.search);
 
+  // ---- Language: `#lang=`, else a saved choice (shared with /operator),
+  // else the browser's preferred languages, else English. ----
+  function savedLanguage() {
+    try { return window.localStorage.getItem(LANGUAGE_KEY); } catch (error) { return null; }
+  }
+  function saveLanguage(choice) {
+    try { window.localStorage.setItem(LANGUAGE_KEY, choice); } catch (error) { /* this page only */ }
+  }
+  function pickLanguage() {
+    const asked = params.get("lang") || savedLanguage();
+    if (asked && Object.hasOwn(STRINGS, asked)) return asked;
+    for (const tag of navigator.languages || [navigator.language || ""]) {
+      const base = String(tag).toLowerCase().split("-")[0];
+      if (Object.hasOwn(STRINGS, base)) return base;
+    }
+    return "en";
+  }
+  let language = pickLanguage();
+  function tr(key, values) {
+    const table = STRINGS[language];
+    const text = Object.hasOwn(table, key) ? table[key] : STRINGS.en[key];
+    return values ? text.replace(/\{(\w+)\}/g, (match, name) =>
+      Object.hasOwn(values, name) ? String(values[name]) : match) : text;
+  }
+  function seconds(ms) {
+    return (ms / 1000).toLocaleString(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+  function applyLanguage() {
+    document.documentElement.lang = language;
+    document.title = tr("title");
+    for (const element of document.querySelectorAll("[data-i18n]")) element.textContent = tr(element.dataset.i18n);
+    for (const element of document.querySelectorAll("[data-i18n-label]")) {
+      element.setAttribute("aria-label", tr(element.dataset.i18nLabel));
+    }
+    ui.language.lang = language === "es" ? "en" : "es";
+  }
+  function toggleLanguage() {
+    language = language === "es" ? "en" : "es";
+    saveLanguage(language);
+    applyLanguage();
+    render();
+  }
+
   const link = {
     phase: "idle", // idle | connecting | open | live | waiting | stopped
-    socket: null, attempt: 0, everLive: false, retryAt: 0, stopReason: "",
+    socket: null, attempt: 0, everLive: false, retryAt: 0,
     syncDeadline: 0, nextHeartbeat: 0, heartbeatDeadline: 0, heartbeatSequence: 1,
     pendingHeartbeat: 0, server: null, permissions: [], revision: 0,
+    // Why the link stopped, as a string key and its values, so it follows
+    // the language toggle.
+    stopReason: null,
   };
   const show = {
     name: "", inputs: [], desired: { program: "", preview: "" },
@@ -271,9 +425,9 @@
     render();
   }
 
-  function stop(reason) {
+  function stop(key, values) {
     link.phase = "stopped";
-    link.stopReason = reason;
+    link.stopReason = key ? { key, values } : null;
     const socket = link.socket;
     link.socket = null;
     if (socket) try { socket.close(); } catch (error) { /* closed */ }
@@ -301,10 +455,10 @@
         if (outcome === "rejected") {
           const code = required(record, "code");
           if (required(record, "retryable") === "1") closeSocket();
-          else stop("Rejected by server: " + code);
+          else stop("rejected", { code });
           return;
         }
-        if (required(record, "protocol") !== PROTOCOL) { stop("Server protocol is incompatible"); return; }
+        if (required(record, "protocol") !== PROTOCOL) { stop("incompatible"); return; }
         if (outcome !== "snapshot") throw new Error("unexpected resume");
         link.server = {
           engine_id: required(record, "engine_id"), project_id: required(record, "project_id"),
@@ -434,7 +588,7 @@
             settleGoRetry();
             return;
           }
-          ui.status.textContent = "Shortcut rejected: " + code;
+          ui.status.textContent = tr("shortcutRejected", { code });
         }
         return;
       }
@@ -465,7 +619,7 @@
     }
     if (goRetry && now >= goRetry.deadline) {
       goRetry = null;
-      ui.status.textContent = "GO not sent: the show changed; press GO again";
+      ui.status.textContent = tr("goStale");
     }
     if (link.phase === "waiting") render();
   }
@@ -478,7 +632,7 @@
     if (realized.preview === id) return "preview";
     return "idle";
   }
-  const STATE_TEXT = { program: "ON AIR", preview: "PREVIEW", idle: "IDLE", offline: "OFFLINE" };
+  const STATE_KEY = { program: "stateProgram", preview: "statePreview", idle: "stateIdle", offline: "stateOffline" };
 
   // Edit padlock of an input: "project" when the whole project is locked,
   // "input" for its own lock, otherwise "". Unknown while not live.
@@ -487,7 +641,7 @@
     if (show.locks.project) return "project";
     return show.locks.inputs.has(id) ? "input" : "";
   }
-  const LOCK_TEXT = { project: "Project locked", input: "Input locked" };
+  const LOCK_KEY = { project: "lockProject", input: "lockInput" };
   const SVG = "http://www.w3.org/2000/svg";
   function padlock() {
     const svg = document.createElementNS(SVG, "svg");
@@ -515,16 +669,20 @@
 
   function statusText() {
     switch (link.phase) {
-      case "idle": return "Enter the daemon's web access token to connect";
+      case "idle": return tr("statusIdle");
       case "connecting": case "open":
-        return link.attempt ? "Reconnecting (attempt " + link.attempt + ")" : "Connecting";
-      case "live": return "Live" + (show.name ? " — " + show.name : "") + " as " + role();
-      case "waiting": {
-        const seconds = Math.max(0, link.retryAt - Date.now()) / 1000;
-        const hint = link.everLive ? "" : " (check the token, or another web client may be connected)";
-        return "Connection lost; retry " + link.attempt + " in " + seconds.toFixed(1) + " s" + hint;
+        return link.attempt ? tr("statusReconnecting", { attempt: link.attempt }) : tr("statusConnecting");
+      case "live": {
+        const as = tr(role() === "operator" ? "roleOperator" : "roleViewer");
+        return show.name ? tr("statusLiveShow", { show: show.name, role: as }) : tr("statusLive", { role: as });
       }
-      case "stopped": return link.stopReason || "Stopped";
+      case "waiting":
+        // A page that never got in may hold a wrong token, or every web
+        // client slot on the gateway may be taken (it refuses with 503).
+        return tr(link.everLive ? "statusWaiting" : "statusWaitingHint", {
+          attempt: link.attempt, seconds: seconds(Math.max(0, link.retryAt - Date.now())),
+        });
+      case "stopped": return link.stopReason ? tr(link.stopReason.key, link.stopReason.values) : tr("statusStopped");
       default: return "";
     }
   }
@@ -533,16 +691,16 @@
     const input = show.inputs.find((candidate) => candidate.id === selected);
     const light = input ? lightOf(input.id) : "offline";
     ui.tally.dataset.light = choosing ? "offline" : light;
-    ui.label.textContent = choosing || !input ? "FreeMix Tally" : input.label;
-    ui.state.textContent = choosing ? (link.phase === "live" ? "Choose an input" : STATE_TEXT.offline)
-      : STATE_TEXT[light];
-    ui.state.setAttribute("aria-label", choosing ? ui.state.textContent : "Tally: " + STATE_TEXT[light]);
+    ui.label.textContent = choosing || !input ? tr("title") : input.label;
+    ui.state.textContent = choosing ? tr(link.phase === "live" ? "chooseInput" : STATE_KEY.offline)
+      : tr(STATE_KEY[light]);
+    ui.state.setAttribute("aria-label", choosing ? ui.state.textContent : tr("tallyLabel", { state: tr(STATE_KEY[light]) }));
     // The selected input's padlock; on the input board only the project lock.
     const lock = choosing ? (link.phase === "live" && show.locks.project ? "project" : "")
       : input ? lockOf(input.id) : "";
     ui.lock.hidden = !lock;
-    ui.lockText.textContent = lock ? LOCK_TEXT[lock] : "";
-    ui.lock.setAttribute("aria-label", lock ? "Edits locked: " + LOCK_TEXT[lock] : "");
+    ui.lockText.textContent = lock ? tr(LOCK_KEY[lock]) : "";
+    ui.lock.setAttribute("aria-label", lock ? tr("editsLocked", { lock: tr(LOCK_KEY[lock]) }) : "");
     ui.status.textContent = statusText();
     ui.setup.hidden = link.phase !== "idle" && link.phase !== "stopped";
     ui.board.hidden = !choosing || link.phase !== "live";
@@ -550,7 +708,8 @@
     const cues = link.phase === "live" ? goList() : null;
     const standby = cues && cues.cues.find((cue) => cue.id === cues.standby);
     ui.cue.hidden = !cues;
-    ui.cue.textContent = cues ? cues.name + " — " + (standby ? "Standby: " + standby.name : "Nothing on standby") : "";
+    ui.cue.textContent = !cues ? "" : standby ? tr("cueStandby", { list: cues.name, cue: standby.name })
+      : tr("cueNothing", { list: cues.name });
     for (const [button, state] of [
       [ui.preview, shortcutState("select_preview", input && show.desired.preview !== input.id)],
       [ui.cut, shortcutState("transition", true)],
@@ -572,7 +731,7 @@
       if (lockOf(input.id) === "input") {
         button.dataset.lock = "input";
         button.prepend(padlock());
-        button.setAttribute("aria-label", input.label + ", input locked");
+        button.setAttribute("aria-label", tr("inputLocked", { input: input.label }));
       }
       button.addEventListener("click", () => {
         selected = input.id;
@@ -628,7 +787,7 @@
       const id = sendCommand([["payload", "cue_go"], ["list", retry.list], ["cue", retry.cue], ["expected_revision", String(link.revision)]]);
       goSent = { id, list: retry.list, cue: retry.cue, retried: true };
     } else {
-      ui.status.textContent = "GO not sent: the cue on standby changed";
+      ui.status.textContent = tr("goStandbyChanged");
     }
   }
   function standbyNext() {
@@ -663,6 +822,7 @@
   ui.go.addEventListener("click", go);
   ui.standby.addEventListener("click", standbyNext);
   ui.fullscreen.addEventListener("click", toggleFullScreen);
+  ui.language.addEventListener("click", toggleLanguage);
   ui.tally.addEventListener("dblclick", (event) => {
     if (event.target === ui.tally || event.target === ui.label || event.target === ui.state) toggleFullScreen();
   });
@@ -697,6 +857,8 @@
   });
 
   ui.role.value = role();
+  applyLanguage();
+  ui.status.textContent = tr("notConnected");
   setInterval(tick, 250);
   connect();
 })();

@@ -109,7 +109,8 @@ transport remain planned. It is not HTTP/WebSocket/service/media readiness or
 RC-008 completion. Expired raw TCP sessions are reclaimed. Phase 1 also
 contains an optional loopback-only WebSocket control listener at `/v1/control`,
 gated by `FREEMIXD_WEB_TOKEN`; it relays exact-current wire records through the
-same bounded scheduler and admits at most one Web peer. This is transport
+same bounded scheduler and admits at most 16 Web peers at once, each its own
+control session (see the item 10 web tally boundary). This is transport
 groundwork only: Web peers do not receive audio meters, and RC-008 remains
 planned until process and browser acceptance evidence exists.
 Native Studio command, event, and reconnect flows can now use the same bounded
@@ -3520,8 +3521,8 @@ frame-denial headers. Because browsers cannot set `Authorization`, the page
 presents the same `FREEMIXD_WEB_TOKEN` as a `freemix.bearer.<base64url>`
 WebSocket subprotocol, accepted only from the serving origin, compared in
 constant time, and never echoed; roles still come from the handshake.
-Remaining gaps: the gateway is loopback-only, simulated-mode-only, without TLS,
-pairing, or per-device tokens, and admits one Web peer; Web peers receive no
+Remaining gaps: the gateway is loopback-only, simulated-mode-only, and without
+TLS, pairing, or per-device tokens; Web peers receive no
 monitor frames, so there is no low-latency web preview; the page's JavaScript
 duplicates the Rust model and is only manually browser-verified; and FTB, audio
 tally, and Cut confirmation are not modelled on the tally page.
@@ -3548,13 +3549,51 @@ key shortcuts (`C`, `A`, `B`, `1`-`9`). `freemix-web`'s `OperatorSurface`
 is the transport-free model of the gating, disabled reasons, commands, and
 badges that the page mirrors. The tally page now reads only the label of an
 input's `id~name~lifecycle` entry (it showed the lifecycle suffix).
-Remaining operator gaps: one Web peer at a time (tally or operator), no
-monitor video, meters, or recorder realized state for Web peers (streams
-show the snapshot's realized state), no T-bar, stinger, overlay, or title
-keys, no Cut confirmation, English only, and the page is verified by
-page-source and wire tests plus headless-Chromium screenshots
-(`docs/progress/web-operator-*.png`), not by an automated browser test.
-`RC-014` remains planned.
+Remaining operator gaps: no monitor video, meters, or recorder realized
+state for Web peers (streams show the snapshot's realized state), no T-bar,
+stinger, overlay, or title keys, no Cut confirmation, and the pages are
+verified by page-source and wire tests plus headless-Chromium screenshots
+(`docs/progress/web-operator-*.png`, `docs/progress/web-tally-*.png`), not by
+an automated browser test. `RC-014` remains planned.
+
+Several Web clients at once (no protocol or schema change): the gateway
+admits up to 16 Web clients together, so tally tablets and operator pages
+share one show. Each client is its own control session, not a multiplex of
+one: its own principal session id, the role it asked for in its handshake
+(so a Viewer tally, an Audio page, and an Operator page hold different
+permissions side by side), its own heartbeat and handshake deadlines, live
+subscription, inbound and outbound rate limits, and outbound queue. That keeps
+the authority model unchanged: every command is authorized against the
+session that sent it, exactly as for a raw TCP peer, and nothing one client
+sends is ever attributed to another. The non-native scheduler already served
+raw and Web peers as separate sessions; it now admits up to 16 Web sessions
+next to its two raw peers. The native daemon still serves one control session
+at a time and still refuses `--web-listen`. Idempotency keys stay engine-wide
+(a reconnected session must be able to replay the result its previous session
+lost), so each page draws its command ids and keys from a random per-load
+nonce; authorization runs before any receipt replay, so a lower role never
+obtains another session's accepted result. Every connection runs on its own
+gateway thread: an accepted socket serving a page or completing an upgrade
+(at most 8 at once, each bounded by the 500 ms handshake deadline; more are
+closed unanswered) and then the client's relay. A relay write that blocks
+for 250 ms on a peer that stopped reading drops that peer only; the scheduler
+never blocks on a Web peer (one record in flight, handed over by `try_send`),
+and a peer whose live subscription overflows is dropped as a slow client. An
+authorized upgrade beyond 16 clients is refused with `503 Service
+Unavailable` (credentials are checked first, so a wrong token learns nothing
+about capacity) and the page retries with its usual backoff; a client's slot
+is held until the scheduler drops its session.
+
+Both pages are in English and Spanish: every user-visible string lives in one
+`STRINGS` table per page with the same keys per language, and Spanish uses
+Studio's catalog terms (`Programa`, `Previo`, `Corte`/`CORTE`, `Fundido a
+negro`, `Cortina`, `Grabador`, `Transmisión`, `Silenciar`, `En espera`, `AL
+AIRE`). The language follows a `#lang=en|es` fragment, then a manual
+`Español`/`English` toggle saved in the browser for both pages, then the
+browser's preferred languages. The operator page's recorders now say
+`REQUESTED: REC` / `REQUESTED: OFF` (`PEDIDO: REC` / `PEDIDO: APAGADO`) with a
+note that the daemon does not tell web pages whether a file is being written,
+because Web peers only receive the desired recorder state.
 
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.

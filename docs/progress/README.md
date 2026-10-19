@@ -415,7 +415,11 @@ the counts and lock chips.
 | `studio-stream-add-dialog.png` | After the removal, `ADD…`: the Add destination dialog filled in as Facebook Live, RTMPS, `live-api-s.facebook.com:443/rtmp`, with a typed (fake) stream key masked as dots and the eye toggle's hover help `Show what is typed here; secrets are masked by default`; the suggested name was "Destination 5", the bitrate defaults to 6000 kb/s, and `ADD` is enabled. |
 | `studio-add-input-solid.png` | 1920x1080 `--role admin`, the `+` tile (which now reads `colour · bars · stream · camera`): the sectioned Add input dialog with the four kinds, `SOLID COLOUR` chosen, the suggested name "Solid Colour 1", the `SAMPLE` swatch tagged `INPUT 8` / `SILENT` beside the colour presets, `input 8 · position 8`, and `CANCEL` / `ADD INPUT`. |
 | `studio-add-input-network.png` | The same dialog with `NETWORK STREAM`: name "Stage Left Camera" (`Name is free`), the Stream source section with the URL `rtsp://operator:••••••••@10.0.0.42:554/stream1` (the password in the URL is masked as typed, with an eye toggle), `RTSP stream`, the Connection section with the RTSP transport keys, Recovery (`HOLD LAST FRAME` / `BLACK`, give up after attempts), each section with its `▸ ADVANCED` disclosure, and the `CONNECTING` sample. |
-| `web-operator-phone.png` | Browser operator page (`/operator` on the `freemixd --web-listen` gateway, RC-014), headless Chromium at 390x844 as Operator, after tapping Camera 2 Close on Preview, picking `Wipe` and `1.5 s`, `AUTO`, tapping Remote Guest, starting recorder 1 and the YouTube destination, and muting Slides: the realized Program tile in red, the desired Preview in green (pressed), CUT/AUTO, the transition and duration pickers, Fade to Black `LIVE`, `REC`, `Stopped (start requested)` (the simulated daemon never realizes an RTMP push), `MUTED`, and the status line `Mute Slides accepted`. |
+| `web-operator-phone.png` | Browser operator page (`/operator` on the `freemixd --web-listen` gateway, RC-014), headless Chromium at 390x844 as Operator with an English browser, refreshed as the fourth simultaneous Web client of the session below: the realized Program tile (Camera 2 Close) in red, the desired Preview (Remote Guest) in green, CUT/AUTO, the transition and duration pickers, Fade to Black `LIVE`, the `Español` toggle in the header, recorder 1 `REQUESTED: REC` and recorder 2 `REQUESTED: OFF` with the note that the daemon does not tell web pages whether a file is being written, YouTube `Stopped (start requested)` (the simulated daemon never realizes an RTMP push), and Slides `MUTED` (muted from the Audio page). |
+| `web-operator-phone-es.png` | The same page at 390x844 as Operator in a Spanish (`es-ES`) browser, which it follows: `EN VIVO`, `Cambiar token`, `English`, `PROGRAMA`, `PREVIO`, `TRANSICIÓN` with `CORTE`/`AUTO`, `Fundido`, `Fundido alfa`, `Deslizar`, `Zoom`, `Cortina` (picked) and `0,5 s`...`3 s` (`1,5 s` picked), `Fundido a negro VIVO`, `GRABACIÓN Y TRANSMISIÓN` with `Grabador 1` `PEDIDO: REC` / `Detener`, `Grabador 2` `PEDIDO: APAGADO` / `Grabar`, the requested-state note, YouTube `Detenido (inicio pedido)`, Facebook `Detenido` / `Iniciar`, `AUDIO` with `Silenciar` keys and Slides `SILENCIADA`, and the status `En vivo — Evening News como operador · Iniciar YouTube: aceptado`. |
+| `web-operator-audio-tablet.png` | A third simultaneous client: the operator page at 1180x820 with the Audio role (English browser), its own session beside the Operator page and the tally: Preview, CUT/AUTO, FTB, recorders, and streams disabled with `This session lacks the select_preview permission` / `This session lacks the transition permission`, the live mute keys (Slides `MUTED`, pressed here), and `Live — Evening News as audio · Mute Slides accepted`. |
+| `web-tally-on-air.png` | The tally page (`/tally`, Viewer) at 390x844 connected at the same time as both operator pages, following Camera 2 Close: red `ON AIR` after the Spanish page's AUTO, with the `ES` language toggle beside `Inputs`. |
+| `web-tally-es.png` | The same tally after tapping `ES`: `Entradas`, `EN`, `Pantalla completa`, `AL AIRE`, and `En vivo — Evening News como observador`; the choice is saved for both pages. |
 | `web-operator-tablet-ftb.png` | The same page at 1180x820 (tablet landscape) after `FTB`: the badge reads `BLACK` once the realized position reaches black, and the key turns into `FROM BLACK`; Record and stream and Audio sit beside Transition. |
 | `web-operator-audio-role.png` | 390x844 with the Audio role: Preview, CUT/AUTO, FTB, recorders and streams are disabled, each section naming why (`This session lacks the select_preview permission`, `This session lacks the transition permission`), while the mute keys stay live. |
 | `web-operator-reconnecting.png` | 390x844 after the daemon is killed: the `RECONNECTING` pill, `Reconnect now`, empty buses (never stale Program), every control disabled with `Not connected to the show`, Fade to Black `UNKNOWN`, and the backoff countdown. |
@@ -424,7 +428,18 @@ Web operator captures (2026-10-19, Protocol 2.59): Playwright Chromium
 (headless, device scale 2) against a simulated `freemixd serve --web-listen`
 show with five simulated inputs, a scene input, one output, and two stopped
 RTMP destinations (fake keys). The page was driven by clicks; only one Web
-peer is admitted at a time, so each capture is its own session.
+peer was admitted at a time then, so each capture is its own session.
+`web-operator-tablet-ftb.png`, `web-operator-audio-role.png`, and
+`web-operator-reconnecting.png` predate the language toggle and the
+`REQUESTED:` recorder wording.
+
+Several Web clients and Spanish (2026-10-19, Protocol 2.60, no protocol
+change): `web-operator-phone.png` (refreshed), `web-operator-phone-es.png`,
+`web-operator-audio-tablet.png`, `web-tally-on-air.png`, and
+`web-tally-es.png` come from one Playwright Chromium run (headless, device
+scale 2) against the same simulated show, with the Viewer tally, the
+Spanish Operator page, the Audio tablet page, and finally the English
+Operator page all connected at once, each its own session and role.
 
 Round 5: captures of 2026-10-16 at Protocol 2.52, schema 49 (commit
 a821e6d). Added: `studio-workspace-docked.png` (the full docked workspace),

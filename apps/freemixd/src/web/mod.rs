@@ -3,7 +3,7 @@ use std::{
     net::{SocketAddr, TcpListener},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread::{self, JoinHandle},
@@ -28,13 +28,24 @@ const WEBSOCKET_MESSAGE_LIMIT: usize = MAX_LINE_BYTES;
 const INBOUND_CAPACITY: usize = 8;
 const OUTBOUND_CAPACITY: usize = 32;
 
+/// The most Web clients (tally and operator pages, native WebSocket
+/// clients) connected at once. Each is its own control session with its own
+/// role, heartbeat, subscription, and outbound queue, relayed by its own
+/// gateway thread, so one slow browser never stalls another or the daemon.
+/// An authorized upgrade beyond the bound is refused with
+/// `503 Service Unavailable` and the page retries with backoff.
+pub(super) const MAX_WEB_CLIENTS: usize = 16;
+/// Connections still serving a page or completing an upgrade, on top of the
+/// connected clients. Each is bounded by [`SOCKET_HANDSHAKE_TIMEOUT`]; a
+/// connection beyond this bound is closed unanswered.
+const MAX_PENDING_CONNECTIONS: usize = 8;
+
 pub(super) struct WebGateway {
     address: SocketAddr,
     events: Receiver<WebEvent>,
     cancel: Arc<AtomicBool>,
     accepting: Arc<AtomicBool>,
-    listener_thread: Option<JoinHandle<()>>,
-    worker_thread: Option<JoinHandle<()>>,
+    listener_thread: Option<JoinHandle<bool>>,
 }
 
 pub(super) enum WebEvent {
@@ -46,6 +57,9 @@ pub(super) struct WebConnection {
     pub(super) outbound: SyncSender<Vec<u8>>,
     pub(super) acknowledgements: Receiver<()>,
     pub(super) cancel: Arc<AtomicBool>,
+    /// The client's gateway slot, held until the scheduler drops the session,
+    /// so the gateway never admits more clients than the scheduler serves.
+    pub(super) slot: ClientSlot,
 }
 
 /// Subprotocol a browser offers, and the gateway selects, for control.
@@ -143,37 +157,20 @@ impl WebGateway {
     pub(super) fn bind(listener: TcpListener) -> AppResult<Self> {
         let address = listener.local_addr()?;
         let token = Arc::new(WebToken::from_environment()?);
-        let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
-        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        let (events_tx, events_rx) = mpsc::sync_channel(MAX_WEB_CLIENTS);
         let cancel = Arc::new(AtomicBool::new(false));
         let accepting = Arc::new(AtomicBool::new(false));
 
-        let listener_cancel = Arc::clone(&cancel);
+        let gateway = Gateway {
+            events: events_tx,
+            cancel: Arc::clone(&cancel),
+            token,
+            clients: Arc::new(AtomicUsize::new(0)),
+        };
         let listener_accepting = Arc::clone(&accepting);
         let listener_thread = thread::Builder::new()
             .name("freemixd-web-listener".into())
-            .spawn(move || {
-                listener_loop(
-                    &listener,
-                    &accepted_tx,
-                    &listener_cancel,
-                    &listener_accepting,
-                );
-            })?;
-
-        let worker_cancel = Arc::clone(&cancel);
-        let worker_token = Arc::clone(&token);
-        let worker_thread = match thread::Builder::new()
-            .name("freemixd-web-worker".into())
-            .spawn(move || worker_loop(&accepted_rx, &events_tx, &worker_cancel, &worker_token))
-        {
-            Ok(handle) => handle,
-            Err(error) => {
-                cancel.store(true, Ordering::Release);
-                let _ = listener_thread.join();
-                return Err(error.into());
-            }
-        };
+            .spawn(move || listener_loop(&listener, &gateway, &listener_accepting))?;
 
         Ok(Self {
             address,
@@ -181,7 +178,6 @@ impl WebGateway {
             cancel,
             accepting,
             listener_thread: Some(listener_thread),
-            worker_thread: Some(worker_thread),
         })
     }
 
@@ -201,17 +197,20 @@ impl WebGateway {
         }
     }
 
+    /// Stops accepting, then joins the listener, which joins every
+    /// connection thread (each ends within its handshake timeout or relay
+    /// poll).
     pub(super) fn shutdown(mut self) -> AppResult<()> {
         self.cancel.store(true, Ordering::Release);
-        let mut panic = None;
-        for handle in [&mut self.listener_thread, &mut self.worker_thread] {
-            if let Some(handle) = handle.take()
-                && handle.join().is_err()
-            {
-                panic = Some("freemixd WebSocket gateway thread panicked");
-            }
+        let clean = self
+            .listener_thread
+            .take()
+            .is_none_or(|handle| handle.join().unwrap_or(false));
+        if clean {
+            Ok(())
+        } else {
+            Err("freemixd WebSocket gateway thread panicked".into())
         }
-        panic.map_or(Ok(()), |message| Err(message.into()))
     }
 }
 
@@ -221,15 +220,46 @@ impl Drop for WebGateway {
         if let Some(handle) = self.listener_thread.take() {
             let _ = handle.join();
         }
-        if let Some(handle) = self.worker_thread.take() {
-            let _ = handle.join();
+    }
+}
+
+/// What every connection thread shares.
+#[derive(Clone)]
+struct Gateway {
+    events: SyncSender<WebEvent>,
+    cancel: Arc<AtomicBool>,
+    token: Arc<WebToken>,
+    /// Upgrades holding a client slot: connected, or authorized and
+    /// completing their handshake.
+    clients: Arc<AtomicUsize>,
+}
+
+/// One of the [`MAX_WEB_CLIENTS`] slots, released when dropped.
+pub(super) struct ClientSlot(Arc<AtomicUsize>);
+
+impl ClientSlot {
+    fn acquire(clients: &Arc<AtomicUsize>) -> Option<Self> {
+        let mut held = clients.load(Ordering::Acquire);
+        while held < MAX_WEB_CLIENTS {
+            match clients.compare_exchange_weak(held, held + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Some(Self(Arc::clone(clients))),
+                Err(current) => held = current,
+            }
         }
+        None
+    }
+}
+
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
 mod page;
 mod worker;
-use worker::{listener_loop, worker_loop};
+use worker::listener_loop;
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -21,8 +21,9 @@ use tungstenite::{
 };
 
 use super::{
-    BEARER_SUBPROTOCOL_PREFIX, CONTROL_SUBPROTOCOL, INBOUND_CAPACITY, OUTBOUND_CAPACITY, PATH,
-    RELAY_POLL, SOCKET_HANDSHAKE_TIMEOUT, WEBSOCKET_MAX_WRITE_BUFFER, WEBSOCKET_MESSAGE_LIMIT,
+    BEARER_SUBPROTOCOL_PREFIX, CONTROL_SUBPROTOCOL, ClientSlot, Gateway, INBOUND_CAPACITY,
+    MAX_PENDING_CONNECTIONS, MAX_WEB_CLIENTS, OUTBOUND_CAPACITY, PATH, RELAY_POLL,
+    SOCKET_HANDSHAKE_TIMEOUT, WEBSOCKET_MAX_WRITE_BUFFER, WEBSOCKET_MESSAGE_LIMIT,
     WEBSOCKET_READ_BUFFER, WEBSOCKET_WRITE_BUFFER, WebConnection, WebEvent, WebToken, WireMessage,
     decode_line,
     page::{self, PageOutcome},
@@ -30,22 +31,44 @@ use super::{
 
 /// Poll interval while an upgrade handshake waits for more request bytes.
 const HANDSHAKE_POLL: Duration = Duration::from_millis(2);
+/// How long one relay write may block on a peer that stopped reading
+/// before that peer (only) is dropped.
+const RELAY_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// Accepts gateway connections and serves each on its own thread.
+///
+/// At most [`MAX_WEB_CLIENTS`] connected clients plus
+/// [`MAX_PENDING_CONNECTIONS`] connections still serving a page or
+/// completing an upgrade hold a thread; a connection beyond that is closed
+/// unanswered. Returns `false` when a connection thread panicked, after
+/// joining every one of them once the gateway is cancelled.
 pub(super) fn listener_loop(
     listener: &TcpListener,
-    accepted: &SyncSender<TcpStream>,
-    cancel: &Arc<AtomicBool>,
+    gateway: &Gateway,
     accepting: &Arc<AtomicBool>,
-) {
-    while !cancel.load(Ordering::Acquire) {
+) -> bool {
+    let mut connections: Vec<JoinHandle<()>> = Vec::new();
+    let mut clean = true;
+    while !gateway.cancel.load(Ordering::Acquire) {
+        clean &= reap_finished(&mut connections);
         if !accepting.load(Ordering::Acquire) {
             thread::sleep(RELAY_POLL);
             continue;
         }
         match listener.accept() {
             Ok((stream, _)) => {
-                if accepted.try_send(stream).is_err() {
-                    // One active WebSocket is the transport bound. Drop excess peers.
+                if connections.len() >= MAX_WEB_CLIENTS + MAX_PENDING_CONNECTIONS {
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                let connection = gateway.clone();
+                match thread::Builder::new()
+                    .name("freemixd-web-connection".into())
+                    .spawn(move || serve_connection(stream, &connection))
+                {
+                    Ok(handle) => connections.push(handle),
+                    // The stream moved into the closure and is dropped (closed).
+                    Err(_) => thread::sleep(RELAY_POLL),
                 }
             }
             Err(error)
@@ -59,117 +82,133 @@ pub(super) fn listener_loop(
             Err(_) => break,
         }
     }
+    gateway.cancel.store(true, Ordering::Release);
+    for handle in connections {
+        clean &= handle.join().is_ok();
+    }
+    clean
 }
 
+/// Joins every finished connection thread; `false` if one panicked.
+fn reap_finished(connections: &mut Vec<JoinHandle<()>>) -> bool {
+    let mut clean = true;
+    let mut index = 0;
+    while index < connections.len() {
+        if connections[index].is_finished() {
+            clean &= connections.swap_remove(index).join().is_ok();
+        } else {
+            index += 1;
+        }
+    }
+    clean
+}
+
+/// Serves one accepted connection: a page request, or an authorized
+/// WebSocket upgrade that holds a client slot and is relayed to the
+/// scheduler until either side closes.
 #[allow(clippy::result_large_err)] // tungstenite handshake error response is externally sized
-pub(super) fn worker_loop(
-    accepted: &Receiver<TcpStream>,
-    events: &SyncSender<WebEvent>,
-    cancel: &Arc<AtomicBool>,
-    token: &Arc<WebToken>,
-) {
-    while !cancel.load(Ordering::Acquire) {
-        let stream = match accepted.recv_timeout(RELAY_POLL) {
-            Ok(stream) => stream,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        // BSD-derived `accept` (macOS included) hands the accepted socket the
-        // non-blocking listener's `O_NONBLOCK`; the handshake and relay rely on
-        // blocking reads bounded by timeouts, so restore blocking mode first.
-        if stream.set_nonblocking(false).is_err() {
-            let _ = stream.shutdown(Shutdown::Both);
-            continue;
-        }
-        if let Err(error) = stream.set_read_timeout(Some(SOCKET_HANDSHAKE_TIMEOUT)) {
-            let _ = stream.shutdown(Shutdown::Both);
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            continue;
-        }
-        if stream
+pub(super) fn serve_connection(stream: TcpStream, gateway: &Gateway) {
+    // BSD-derived `accept` (macOS included) hands the accepted socket the
+    // non-blocking listener's `O_NONBLOCK`; the handshake and relay rely on
+    // blocking reads bounded by timeouts, so restore blocking mode first.
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_read_timeout(Some(SOCKET_HANDSHAKE_TIMEOUT))
+            .is_err()
+        || stream
             .set_write_timeout(Some(SOCKET_HANDSHAKE_TIMEOUT))
             .is_err()
-        {
-            let _ = stream.shutdown(Shutdown::Both);
-            continue;
-        }
-        let mut stream = stream;
-        if page::serve(&mut stream, SOCKET_HANDSHAKE_TIMEOUT) == PageOutcome::Handled {
-            continue;
-        }
-        let config = WebSocketConfig::default()
-            .read_buffer_size(WEBSOCKET_READ_BUFFER)
-            .write_buffer_size(WEBSOCKET_WRITE_BUFFER)
-            .max_write_buffer_size(WEBSOCKET_MAX_WRITE_BUFFER)
-            .max_message_size(Some(WEBSOCKET_MESSAGE_LIMIT))
-            .max_frame_size(Some(WEBSOCKET_MESSAGE_LIMIT))
-            .accept_unmasked_frames(false);
-        let callback_token = Arc::clone(token);
-        let websocket = accept_within(
-            stream,
-            move |request: &Request, response: Response| {
-                if request
-                    .uri()
-                    .path_and_query()
-                    .map(tungstenite::http::uri::PathAndQuery::as_str)
-                    != Some(PATH)
-                {
-                    return Err(http_error(StatusCode::NOT_FOUND));
-                }
-                authorize_upgrade(request.headers(), &callback_token, response)
-            },
-            config,
-            SOCKET_HANDSHAKE_TIMEOUT,
-            cancel,
-        );
-        let Some(mut websocket) = websocket else {
-            continue;
-        };
-        if websocket.get_ref().set_nonblocking(false).is_err()
-            || websocket
-                .get_ref()
-                .set_read_timeout(Some(RELAY_POLL))
-                .is_err()
-            || websocket
-                .get_ref()
-                .set_write_timeout(Some(Duration::from_millis(250)))
-                .is_err()
-        {
-            let _ = websocket.close(None);
-            continue;
-        }
-
-        let (inbound_tx, inbound_rx) = mpsc::sync_channel(INBOUND_CAPACITY);
-        let (outbound_tx, outbound_rx) = mpsc::sync_channel(OUTBOUND_CAPACITY);
-        let (acknowledgements_tx, acknowledgements_rx) = mpsc::sync_channel(OUTBOUND_CAPACITY);
-        let peer_cancel = Arc::new(AtomicBool::new(false));
-        let connection = WebConnection {
-            inbound: inbound_rx,
-            outbound: outbound_tx,
-            acknowledgements: acknowledgements_rx,
-            cancel: Arc::clone(&peer_cancel),
-        };
-        if events.try_send(WebEvent::Connected(connection)).is_err() {
-            let _ = websocket.close(None);
-            continue;
-        }
-        relay(
-            &mut websocket,
-            &inbound_tx,
-            &outbound_rx,
-            &acknowledgements_tx,
-            &peer_cancel,
-            cancel,
-        );
+    {
+        let _ = stream.shutdown(Shutdown::Both);
+        return;
     }
+    let mut stream = stream;
+    if page::serve(&mut stream, SOCKET_HANDSHAKE_TIMEOUT) == PageOutcome::Handled {
+        return;
+    }
+    let config = WebSocketConfig::default()
+        .read_buffer_size(WEBSOCKET_READ_BUFFER)
+        .write_buffer_size(WEBSOCKET_WRITE_BUFFER)
+        .max_write_buffer_size(WEBSOCKET_MAX_WRITE_BUFFER)
+        .max_message_size(Some(WEBSOCKET_MESSAGE_LIMIT))
+        .max_frame_size(Some(WEBSOCKET_MESSAGE_LIMIT))
+        .accept_unmasked_frames(false);
+    // The slot is taken only by an authorized upgrade, so an unauthorized
+    // peer learns nothing about capacity and never holds one.
+    let mut slot = None;
+    let websocket = accept_within(
+        stream,
+        |request: &Request, response: Response| {
+            if request
+                .uri()
+                .path_and_query()
+                .map(tungstenite::http::uri::PathAndQuery::as_str)
+                != Some(PATH)
+            {
+                return Err(http_error(StatusCode::NOT_FOUND));
+            }
+            let response = authorize_upgrade(request.headers(), &gateway.token, response)?;
+            slot = Some(
+                ClientSlot::acquire(&gateway.clients)
+                    .ok_or_else(|| http_error(StatusCode::SERVICE_UNAVAILABLE))?,
+            );
+            Ok(response)
+        },
+        config,
+        SOCKET_HANDSHAKE_TIMEOUT,
+        &gateway.cancel,
+    );
+    let (Some(mut websocket), Some(slot)) = (websocket, slot) else {
+        return;
+    };
+    if websocket.get_ref().set_nonblocking(false).is_err()
+        || websocket
+            .get_ref()
+            .set_read_timeout(Some(RELAY_POLL))
+            .is_err()
+        || websocket
+            .get_ref()
+            .set_write_timeout(Some(RELAY_WRITE_TIMEOUT))
+            .is_err()
+        || websocket.get_ref().set_nodelay(true).is_err()
+    {
+        let _ = websocket.close(None);
+        return;
+    }
+
+    let (inbound_tx, inbound_rx) = mpsc::sync_channel(INBOUND_CAPACITY);
+    let (outbound_tx, outbound_rx) = mpsc::sync_channel(OUTBOUND_CAPACITY);
+    let (acknowledgements_tx, acknowledgements_rx) = mpsc::sync_channel(OUTBOUND_CAPACITY);
+    let peer_cancel = Arc::new(AtomicBool::new(false));
+    let connection = WebConnection {
+        inbound: inbound_rx,
+        outbound: outbound_tx,
+        acknowledgements: acknowledgements_rx,
+        cancel: Arc::clone(&peer_cancel),
+        slot,
+    };
+    if gateway
+        .events
+        .try_send(WebEvent::Connected(connection))
+        .is_err()
+    {
+        let _ = websocket.close(None);
+        return;
+    }
+    relay(
+        &mut websocket,
+        &inbound_tx,
+        &outbound_rx,
+        &acknowledgements_tx,
+        &peer_cancel,
+        &gateway.cancel,
+    );
 }
 
 /// Runs the upgrade handshake under one overall deadline.
 ///
-/// The gateway serves a single peer at a time, so a peer that trickles its
-/// upgrade head must not hold the worker for longer than `timeout`. A
+/// A peer that trickles its upgrade head must not hold a connection thread
+/// (one of the bounded pending connections) for longer than `timeout`. A
 /// blocking socket's read timeout only bounds each individual read, and
 /// tungstenite keeps reading while bytes keep arriving, so the handshake is
 /// driven on a non-blocking socket and abandoned once the deadline passes.
@@ -347,19 +386,24 @@ fn http_error(status: StatusCode) -> ErrorResponse {
 mod tests {
     use std::{
         io::{self, Read, Write},
-        net::{TcpListener, TcpStream},
-        sync::{Arc, atomic::AtomicBool, mpsc},
-        thread,
+        net::{SocketAddr, TcpListener, TcpStream},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc,
+        },
+        thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
 
     use tungstenite::{
+        HandshakeError,
         handshake::server::Response,
         http::{HeaderMap, HeaderValue, StatusCode, header::SEC_WEBSOCKET_PROTOCOL},
     };
 
-    use super::super::{WebEvent, WebToken, base64url};
-    use super::{authorize_upgrade, worker_loop};
+    use super::super::{Gateway, MAX_WEB_CLIENTS, WebConnection, WebEvent, WebToken, base64url};
+    use super::{authorize_upgrade, serve_connection};
 
     const TOKEN: &[u8] = b"worker-test-token-0123456789abcdef";
 
@@ -367,33 +411,21 @@ mod tests {
         WebToken::from_bytes(TOKEN).unwrap()
     }
 
-    /// An accepted socket that arrives non-blocking, as every socket accepted
-    /// from the non-blocking listener does on BSD-derived systems, must still
-    /// complete a handshake whose request arrives after the worker picks it up.
-    #[test]
-    fn handshake_waits_for_a_late_request_on_a_nonblocking_accepted_socket() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let client = TcpStream::connect(address).unwrap();
-        let (accepted, _) = listener.accept().unwrap();
-        accepted.set_nonblocking(true).unwrap();
+    fn gateway() -> (Gateway, mpsc::Receiver<WebEvent>) {
+        let (events, events_rx) = mpsc::sync_channel(MAX_WEB_CLIENTS);
+        (
+            Gateway {
+                events,
+                cancel: Arc::new(AtomicBool::new(false)),
+                token: Arc::new(token()),
+                clients: Arc::new(AtomicUsize::new(0)),
+            },
+            events_rx,
+        )
+    }
 
-        let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
-        let (events_tx, events_rx) = mpsc::sync_channel(1);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let worker_token = Arc::new(token());
-        accepted_tx.send(accepted).unwrap();
-        let worker = thread::spawn(move || {
-            worker_loop(&accepted_rx, &events_tx, &worker_cancel, &worker_token);
-        });
-        // Let the worker reach the handshake before any request byte exists.
-        thread::sleep(Duration::from_millis(100));
-
-        client
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let request = tungstenite::http::Request::builder()
+    fn upgrade_request(address: SocketAddr) -> tungstenite::http::Request<()> {
+        tungstenite::http::Request::builder()
             .uri(format!("ws://{address}/v1/control"))
             .header("Host", address.to_string())
             .header("Connection", "Upgrade")
@@ -408,36 +440,62 @@ mod tests {
                 format!("Bearer {}", std::str::from_utf8(TOKEN).unwrap()),
             )
             .body(())
+            .unwrap()
+    }
+
+    type Client = tungstenite::WebSocket<TcpStream>;
+
+    /// Accepts one connection on `listener` and serves it on a thread.
+    fn accept(listener: &TcpListener, gateway: &Gateway) -> (TcpStream, JoinHandle<()>) {
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let handshake = tungstenite::client::client(request, client);
+        let (accepted, _) = listener.accept().unwrap();
+        let gateway = gateway.clone();
+        (
+            client,
+            thread::spawn(move || serve_connection(accepted, &gateway)),
+        )
+    }
+
+    /// An accepted socket that arrives non-blocking, as every socket accepted
+    /// from the non-blocking listener does on BSD-derived systems, must still
+    /// complete a handshake whose request arrives after the worker picks it up.
+    #[test]
+    fn handshake_waits_for_a_late_request_on_a_nonblocking_accepted_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+
+        let (gateway, events_rx) = gateway();
+        let cancel = Arc::clone(&gateway.cancel);
+        let worker = thread::spawn(move || serve_connection(accepted, &gateway));
+        // Let the worker reach the handshake before any request byte exists.
+        thread::sleep(Duration::from_millis(100));
+
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let handshake = tungstenite::client::client(upgrade_request(address), client);
         let connected = events_rx.recv_timeout(Duration::from_secs(2));
 
-        cancel.store(true, std::sync::atomic::Ordering::Release);
-        drop(accepted_tx);
+        cancel.store(true, Ordering::Release);
         worker.join().unwrap();
         assert!(handshake.is_ok(), "the WebSocket handshake must complete");
         assert!(matches!(connected, Ok(WebEvent::Connected(_))));
     }
 
-    /// A peer that trickles its upgrade head one byte at a time must lose the
-    /// single gateway slot at the handshake deadline instead of holding it for
-    /// as long as each read keeps arriving inside the per-read timeout.
+    /// A peer that trickles its upgrade head one byte at a time must lose its
+    /// pending-connection thread at the handshake deadline instead of holding
+    /// it for as long as each read keeps arriving inside the per-read timeout.
     #[test]
     fn trickled_upgrade_head_is_dropped_at_the_handshake_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let mut client = TcpStream::connect(address).unwrap();
-        let (accepted, _) = listener.accept().unwrap();
-
-        let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
-        let (events_tx, events_rx) = mpsc::sync_channel(1);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let worker_token = Arc::new(token());
-        accepted_tx.send(accepted).unwrap();
-        let worker = thread::spawn(move || {
-            worker_loop(&accepted_rx, &events_tx, &worker_cancel, &worker_token);
-        });
+        let (gateway, events_rx) = gateway();
+        let (mut client, worker) = accept(&listener, &gateway);
 
         client
             .set_read_timeout(Some(Duration::from_millis(20)))
@@ -466,18 +524,141 @@ mod tests {
             thread::sleep(Duration::from_millis(80));
         }
 
-        cancel.store(true, std::sync::atomic::Ordering::Release);
-        drop(accepted_tx);
+        gateway.cancel.store(true, Ordering::Release);
         worker.join().unwrap();
         assert!(
             events_rx.try_recv().is_err(),
             "no connection may be admitted"
         );
+        assert_eq!(gateway.clients.load(Ordering::Acquire), 0);
         let closed_after = closed_after.expect("a trickling peer must be dropped");
         assert!(
             closed_after < Duration::from_secs(2),
-            "the handshake deadline must bound the slot, held for {closed_after:?}"
+            "the handshake deadline must bound the connection, held for {closed_after:?}"
         );
+    }
+
+    /// Every connected client holds one slot until the scheduler drops its
+    /// session; an authorized upgrade beyond the bound is refused with 503,
+    /// and a released slot admits the next client.
+    #[test]
+    fn upgrades_beyond_the_client_bound_are_refused_until_a_slot_frees() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (gateway, events_rx) = gateway();
+        let mut sessions = Vec::new();
+        let mut workers = Vec::new();
+        for _ in 0..MAX_WEB_CLIENTS {
+            let (client, worker) = accept(&listener, &gateway);
+            let (socket, _) = tungstenite::client::client(upgrade_request(address), client)
+                .expect("a client within the bound is admitted");
+            let Ok(WebEvent::Connected(connection)) =
+                events_rx.recv_timeout(Duration::from_secs(2))
+            else {
+                panic!("an admitted client reaches the scheduler");
+            };
+            sessions.push((socket, connection));
+            workers.push(worker);
+        }
+        assert_eq!(gateway.clients.load(Ordering::Acquire), MAX_WEB_CLIENTS);
+
+        let (client, worker) = accept(&listener, &gateway);
+        match tungstenite::client::client(upgrade_request(address), client) {
+            Err(HandshakeError::Failure(tungstenite::Error::Http(response))) => {
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            }
+            other => panic!("expected 503, got {other:?}"),
+        }
+        worker.join().unwrap();
+        assert!(events_rx.try_recv().is_err());
+
+        // The scheduler drops one session: its slot admits the next client.
+        let (_socket, connection) = sessions.pop().unwrap();
+        connection.cancel.store(true, Ordering::Release);
+        drop(connection);
+        let (client, worker) = accept(&listener, &gateway);
+        assert!(
+            tungstenite::client::client(upgrade_request(address), client).is_ok(),
+            "a freed slot admits the next client"
+        );
+        workers.push(worker);
+        let admitted = events_rx.recv_timeout(Duration::from_secs(2));
+        assert!(matches!(admitted, Ok(WebEvent::Connected(_))));
+
+        gateway.cancel.store(true, Ordering::Release);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        drop(sessions);
+        drop(admitted);
+        assert_eq!(gateway.clients.load(Ordering::Acquire), 0);
+    }
+
+    /// A client that stops reading is dropped by its own relay without
+    /// delaying another client's relay.
+    #[test]
+    fn a_client_that_stops_reading_never_delays_another() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (gateway, events_rx) = gateway();
+        let open = || -> (Client, WebConnection, JoinHandle<()>) {
+            let (client, worker) = accept(&listener, &gateway);
+            let (socket, _) =
+                tungstenite::client::client(upgrade_request(address), client).unwrap();
+            let Ok(WebEvent::Connected(connection)) =
+                events_rx.recv_timeout(Duration::from_secs(2))
+            else {
+                panic!("an admitted client reaches the scheduler");
+            };
+            (socket, connection, worker)
+        };
+        let (_stalled_socket, stalled, stalled_worker) = open();
+        let (mut prompt_socket, prompt, prompt_worker) = open();
+
+        // Flood the client that never reads far past every socket buffer, as
+        // fast as its relay takes records, while the prompt client is served.
+        let flood = thread::spawn(move || {
+            let record = vec![b'x'; 256 * 1024];
+            let mut sent = 0_usize;
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(10) {
+                if stalled.outbound.try_send(record.clone()).is_ok() {
+                    sent += 1;
+                }
+                if let Err(mpsc::TryRecvError::Disconnected) = stalled.acknowledgements.try_recv() {
+                    return (sent, started.elapsed());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            panic!("a client that never reads was never dropped ({sent} records queued)");
+        });
+        for index in 0..20 {
+            let line = format!("line-{index}");
+            let sent = Instant::now();
+            prompt.outbound.send(line.clone().into_bytes()).unwrap();
+            let tungstenite::Message::Text(text) = prompt_socket.read().unwrap() else {
+                panic!("expected a text record");
+            };
+            assert_eq!(text.as_str(), line);
+            assert!(
+                sent.elapsed() < Duration::from_millis(500),
+                "a stalled client delayed another by {:?}",
+                sent.elapsed()
+            );
+            prompt
+                .acknowledgements
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            thread::sleep(Duration::from_millis(20));
+        }
+        let (records, dropped_after) = flood.join().unwrap();
+        assert!(records > 1, "the stalled client took {records} records");
+        assert!(dropped_after < Duration::from_secs(10));
+        stalled_worker.join().unwrap();
+
+        gateway.cancel.store(true, Ordering::Release);
+        drop(prompt);
+        prompt_worker.join().unwrap();
     }
 
     fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {

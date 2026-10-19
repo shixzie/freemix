@@ -85,72 +85,74 @@
   <h1 id="title">FreeMix Operator</h1>
   <span id="link" role="status" data-phase="idle">OFFLINE</span>
   <span class="spacer"></span>
-  <button type="button" id="reconnect" hidden>Reconnect now</button>
-  <button type="button" id="signout">Change token</button>
+  <button type="button" id="reconnect" hidden data-i18n="reconnectNow">Reconnect now</button>
+  <button type="button" id="signout" data-i18n="changeToken">Change token</button>
+  <button type="button" id="language" lang="es" data-i18n="otherLanguage" data-i18n-label="otherLanguageLabel" aria-label="Ver en español">Español</button>
   <a href="/tally">Tally</a>
 </header>
 <main id="surface" aria-labelledby="title">
   <section id="setup-panel" class="wide" hidden aria-labelledby="setup-heading">
-    <h2 id="setup-heading">Connect</h2>
+    <h2 id="setup-heading" data-i18n="connect">Connect</h2>
     <form id="setup" autocomplete="off">
-      <label class="field">Access token
+      <label class="field"><span data-i18n="token">Access token</span>
         <input id="token" type="password" required minlength="32" maxlength="256" autocomplete="off">
       </label>
-      <label class="field">Role
+      <label class="field"><span data-i18n="role">Role</span>
         <select id="role">
-          <option value="operator">Operator (switch, record, stream, audio)</option>
-          <option value="audio">Audio (mute only)</option>
-          <option value="viewer">Viewer (watch only)</option>
+          <option value="operator" data-i18n="roleOperatorChoice">Operator (switch, record, stream, audio)</option>
+          <option value="audio" data-i18n="roleAudioChoice">Audio (mute only)</option>
+          <option value="viewer" data-i18n="roleViewerChoice">Viewer (watch only)</option>
         </select>
       </label>
-      <button type="submit">Connect</button>
+      <button type="submit" data-i18n="connect">Connect</button>
     </form>
   </section>
 
   <section class="wide" aria-labelledby="program-heading">
-    <h2 id="program-heading">Program</h2>
-    <div id="program-bus" class="bus" role="list" aria-label="Program bus"></div>
+    <h2 id="program-heading" data-i18n="program">Program</h2>
+    <div id="program-bus" class="bus" role="list" data-i18n-label="programBus" aria-label="Program bus"></div>
     <p id="why-program" class="why" aria-live="polite"></p>
   </section>
 
   <section class="wide" aria-labelledby="preview-heading">
-    <h2 id="preview-heading">Preview <span class="sr-only">(tap an input to put it on Preview)</span></h2>
-    <div id="preview-bus" class="bus" role="group" aria-label="Preview bus"></div>
+    <h2 id="preview-heading"><span data-i18n="preview">Preview</span> <span class="sr-only" data-i18n="previewHint">(tap an input to put it on Preview)</span></h2>
+    <div id="preview-bus" class="bus" role="group" data-i18n-label="previewBus" aria-label="Preview bus"></div>
     <p id="why-preview" class="why" aria-live="polite"></p>
   </section>
 
   <section aria-labelledby="transition-heading">
-    <h2 id="transition-heading">Transition</h2>
+    <h2 id="transition-heading" data-i18n="transition">Transition</h2>
     <div class="take">
       <button type="button" id="cut" aria-describedby="why-transition" aria-keyshortcuts="C">CUT</button>
       <button type="button" id="auto" aria-describedby="why-transition auto-kind" aria-keyshortcuts="A">AUTO</button>
     </div>
     <span id="auto-kind" class="sr-only"></span>
     <fieldset id="kinds">
-      <legend>Transition for AUTO</legend>
+      <legend data-i18n="transitionForAuto">Transition for AUTO</legend>
       <div class="choices" id="kind-choices"></div>
     </fieldset>
     <fieldset id="durations">
-      <legend>Duration for AUTO and Fade to Black</legend>
+      <legend data-i18n="durationLegend">Duration for AUTO and Fade to Black</legend>
       <div class="choices" id="duration-choices"></div>
     </fieldset>
     <div class="row" style="margin-top:.6rem">
-      <span class="name">Fade to Black <span id="ftb-state" class="badge" role="status">LIVE</span></span>
+      <span class="name"><span data-i18n="fadeToBlack">Fade to Black</span> <span id="ftb-state" class="badge" role="status">LIVE</span></span>
       <button type="button" id="ftb" aria-describedby="why-transition" aria-pressed="false" aria-keyshortcuts="B">FTB</button>
     </div>
     <p id="why-transition" class="why" aria-live="polite"></p>
   </section>
 
   <section aria-labelledby="outputs-heading">
-    <h2 id="outputs-heading">Record and stream</h2>
+    <h2 id="outputs-heading" data-i18n="outputs">Record and stream</h2>
     <div id="recorders"></div>
+    <p id="recorder-note" class="why" hidden style="color:var(--muted)" data-i18n="recorderNote">Recorders show the requested state: the daemon does not tell web pages whether a file is being written.</p>
     <div id="streams"></div>
-    <p id="no-streams" class="why" hidden style="color:var(--muted)">No stream destinations are configured.</p>
+    <p id="no-streams" class="why" hidden style="color:var(--muted)" data-i18n="noStreams">No stream destinations are configured.</p>
     <p id="why-outputs" class="why" aria-live="polite"></p>
   </section>
 
   <section aria-labelledby="audio-heading">
-    <h2 id="audio-heading">Audio</h2>
+    <h2 id="audio-heading" data-i18n="audio">Audio</h2>
     <div id="strips"></div>
     <p id="why-audio" class="why" aria-live="polite"></p>
   </section>
@@ -173,24 +175,253 @@
   // it is dropped instead of retried.
   const MUTE_RETRY_TIMEOUT_MS = 2000;
   const FTB_BLACK = 65535;
-  // Mirrors freemix-web's OperatorTransition.
+  // Mirrors freemix-web's OperatorTransition: wire kind and label key.
   const TRANSITIONS = [
-    ["fade", "Fade"], ["alpha_fade", "Alpha fade"], ["slide", "Slide"], ["zoom", "Zoom"], ["wipe", "Wipe"],
+    ["fade", "transitionFade"], ["alpha_fade", "transitionAlphaFade"], ["slide", "transitionSlide"],
+    ["zoom", "transitionZoom"], ["wipe", "transitionWipe"],
   ];
   const DURATIONS_MS = [500, 1000, 1500, 2000, 3000];
-  // Mirrors freemix-web's stream_state_label.
-  const STREAM_TEXT = {
-    stopped: "Stopped", starting: "Starting", live: "LIVE", waiting_to_reconnect: "Reconnecting",
-    congested: "Congested", failed: "Failed", unavailable: "Unavailable",
+  // Mirrors freemix-web's stream_state_label: realized state and label key.
+  const STREAM_KEY = {
+    stopped: "streamStopped", starting: "streamStarting", live: "streamLive",
+    waiting_to_reconnect: "streamReconnecting", congested: "streamCongested", failed: "streamFailed",
+    unavailable: "streamUnavailable",
   };
-  // Mirrors freemix-web's OperatorBlock::reason.
-  const REASON = {
-    notLive: "Not connected to the show",
-    permission: (name) => "This session lacks the " + name + " permission",
-    alreadyOnPreview: "Already on Preview",
-    notInShow: "No longer in the show",
-    noAudioStrip: "Waiting for this input's audio state",
+
+  // ---- Every user-visible string, one entry per line per language. ----
+  // English reasons mirror freemix-web's OperatorBlock::reason; Spanish
+  // follows Studio's catalog (fm-ui-model i18n/es.rs): Programa, Previo,
+  // CORTE, Fundido a negro, grabador, transmisión, silenciar. `{name}` is a
+  // placeholder.
+  const STRINGS = {
+    en: {
+      title: "FreeMix Operator",
+      notConnected: "Not connected",
+      reconnectNow: "Reconnect now",
+      changeToken: "Change token",
+      otherLanguage: "Español",
+      otherLanguageLabel: "Ver en español",
+      connect: "Connect",
+      token: "Access token",
+      role: "Role",
+      roleOperatorChoice: "Operator (switch, record, stream, audio)",
+      roleAudioChoice: "Audio (mute only)",
+      roleViewerChoice: "Viewer (watch only)",
+      roleOperator: "operator",
+      roleAudio: "audio",
+      roleViewer: "viewer",
+      program: "Program",
+      programBus: "Program bus",
+      preview: "Preview",
+      previewHint: "(tap an input to put it on Preview)",
+      previewBus: "Preview bus",
+      onAir: "{input}, on air",
+      offline: "{input}, offline",
+      transition: "Transition",
+      cut: "CUT",
+      transitionForAuto: "Transition for AUTO",
+      durationLegend: "Duration for AUTO and Fade to Black",
+      transitionFade: "Fade",
+      transitionAlphaFade: "Alpha fade",
+      transitionSlide: "Slide",
+      transitionZoom: "Zoom",
+      transitionWipe: "Wipe",
+      seconds: "{seconds} s",
+      autoKind: "{kind}, {seconds} seconds",
+      autoLabel: "AUTO: {kind} Preview to Program over {seconds} s",
+      fadeToBlack: "Fade to Black",
+      ftbLive: "LIVE",
+      ftbBlack: "BLACK",
+      ftbFading: "FADING TO BLACK",
+      ftbFadingUp: "FADING UP",
+      ftbUnknown: "UNKNOWN",
+      ftbKey: "FTB",
+      ftbFromBlackKey: "FROM BLACK",
+      ftbToBlackLabel: "Fade Program to black",
+      ftbFromBlackLabel: "Fade Program from black",
+      outputs: "Record and stream",
+      recorder: "Recorder {slot}",
+      recorderRequestedOn: "REQUESTED: REC",
+      recorderRequestedOff: "REQUESTED: OFF",
+      recorderStateOn: "Recorder {slot}: recording requested",
+      recorderStateOff: "Recorder {slot}: stop requested",
+      recorderNote: "Recorders show the requested state: the daemon does not tell web pages whether a file is being written.",
+      record: "Record",
+      stop: "Stop",
+      startRecorder: "Start recorder {slot}",
+      stopRecorder: "Stop recorder {slot}",
+      streamStopped: "Stopped",
+      streamStarting: "Starting",
+      streamLive: "LIVE",
+      streamReconnecting: "Reconnecting",
+      streamCongested: "Congested",
+      streamFailed: "Failed",
+      streamUnavailable: "Unavailable",
+      streamStartRequested: "{state} (start requested)",
+      streamStopRequested: "{state} (stop requested)",
+      streamDetail: "{state} — {detail}",
+      goLive: "Go live",
+      startStream: "Start stream {name}",
+      stopStream: "Stop stream {name}",
+      noStreams: "No stream destinations are configured.",
+      audio: "Audio",
+      mute: "Mute",
+      muted: "MUTED",
+      muteLabel: "Mute {input}",
+      linkOffline: "OFFLINE",
+      linkConnecting: "CONNECTING",
+      linkLive: "LIVE",
+      linkReconnecting: "RECONNECTING",
+      linkStopped: "STOPPED",
+      notLive: "Not connected to the show",
+      permission: "This session lacks the {name} permission",
+      alreadyOnPreview: "Already on Preview",
+      notInShow: "No longer in the show",
+      noAudioStrip: "Waiting for this input's audio state",
+      statusIdle: "Enter the daemon's web access token to connect",
+      statusConnecting: "Connecting",
+      statusReconnecting: "Reconnecting (attempt {attempt})",
+      statusLive: "Live as {role}",
+      statusLiveShow: "Live — {show} as {role}",
+      statusWaiting: "Connection lost; retry {attempt} in {seconds} s",
+      statusWaitingHint: "Connection lost; retry {attempt} in {seconds} s (check the token; every web client slot may also be taken)",
+      statusStopped: "Stopped",
+      rejected: "Rejected by server: {code}",
+      incompatible: "Server protocol is incompatible",
+      commandPreview: "Preview {input}",
+      commandCut: "Cut",
+      commandAuto: "AUTO {kind}",
+      commandFadeToBlack: "Fade to black",
+      commandFadeFromBlack: "Fade from black",
+      commandStartStream: "Start {name}",
+      commandStopStream: "Stop {name}",
+      commandMute: "Mute {input}",
+      commandUnmute: "Unmute {input}",
+      noteSent: "{label} sent",
+      noteAccepted: "{label} accepted",
+      noteStale: "{label} not applied: the show changed first; check it and press again",
+      noteRefused: "{label} refused ({code})",
+      noteRefusedMessage: "{label} refused ({code}): {message}",
+      noteLost: "Connection lost before {count} command(s) resolved; check the show",
+      noteMuteChanged: "Mute not applied: {input}'s audio changed first",
+      noteMuteChangedInput: "Mute not applied: the input's audio changed first",
+      noteMuteGaveUp: "Mute not sent: the show kept changing; press it again",
+    },
+    es: {
+      title: "Operador de FreeMix",
+      notConnected: "Sin conexión",
+      reconnectNow: "Reconectar ahora",
+      changeToken: "Cambiar token",
+      otherLanguage: "English",
+      otherLanguageLabel: "View in English",
+      connect: "Conectar",
+      token: "Token de acceso",
+      role: "Rol",
+      roleOperatorChoice: "Operador (conmutar, grabar, transmitir, audio)",
+      roleAudioChoice: "Audio (solo silenciar)",
+      roleViewerChoice: "Observador (solo mirar)",
+      roleOperator: "operador",
+      roleAudio: "audio",
+      roleViewer: "observador",
+      program: "Programa",
+      programBus: "Bus de Programa",
+      preview: "Previo",
+      previewHint: "(toque una entrada para ponerla en Previo)",
+      previewBus: "Bus de Previo",
+      onAir: "{input}, al aire",
+      offline: "{input}, desconectada",
+      transition: "Transición",
+      cut: "CORTE",
+      transitionForAuto: "Transición para AUTO",
+      durationLegend: "Duración de AUTO y del fundido a negro",
+      transitionFade: "Fundido",
+      transitionAlphaFade: "Fundido alfa",
+      transitionSlide: "Deslizar",
+      transitionZoom: "Zoom",
+      transitionWipe: "Cortina",
+      seconds: "{seconds} s",
+      autoKind: "{kind}, {seconds} segundos",
+      autoLabel: "AUTO: {kind} de Previo a Programa en {seconds} s",
+      fadeToBlack: "Fundido a negro",
+      ftbLive: "VIVO",
+      ftbBlack: "NEGRO",
+      ftbFading: "FUNDIENDO A NEGRO",
+      ftbFadingUp: "RESTAURANDO",
+      ftbUnknown: "DESCONOCIDO",
+      ftbKey: "FTB",
+      ftbFromBlackKey: "DESDE NEGRO",
+      ftbToBlackLabel: "Fundir Programa a negro",
+      ftbFromBlackLabel: "Restaurar Programa desde negro",
+      outputs: "Grabación y transmisión",
+      recorder: "Grabador {slot}",
+      recorderRequestedOn: "PEDIDO: REC",
+      recorderRequestedOff: "PEDIDO: APAGADO",
+      recorderStateOn: "Grabador {slot}: grabación pedida",
+      recorderStateOff: "Grabador {slot}: parada pedida",
+      recorderNote: "Los grabadores muestran el estado pedido: el daemon no informa a las páginas web de si se está escribiendo un archivo.",
+      record: "Grabar",
+      stop: "Detener",
+      startRecorder: "Iniciar grabador {slot}",
+      stopRecorder: "Detener grabador {slot}",
+      streamStopped: "Detenido",
+      streamStarting: "Iniciando",
+      streamLive: "VIVO",
+      streamReconnecting: "Reconectando",
+      streamCongested: "Congestionado",
+      streamFailed: "Fallido",
+      streamUnavailable: "No disponible",
+      streamStartRequested: "{state} (inicio pedido)",
+      streamStopRequested: "{state} (parada pedida)",
+      streamDetail: "{state} — {detail}",
+      goLive: "Iniciar",
+      startStream: "Iniciar la transmisión {name}",
+      stopStream: "Detener la transmisión {name}",
+      noStreams: "No hay destinos de transmisión configurados.",
+      audio: "Audio",
+      mute: "Silenciar",
+      muted: "SILENCIADA",
+      muteLabel: "Silenciar {input}",
+      linkOffline: "DESCONECTADO",
+      linkConnecting: "CONECTANDO",
+      linkLive: "EN VIVO",
+      linkReconnecting: "RECONECTANDO",
+      linkStopped: "DETENIDO",
+      notLive: "Sin conexión con el show",
+      permission: "Esta sesión no tiene el permiso {name}",
+      alreadyOnPreview: "Ya está en Previo",
+      notInShow: "Ya no está en el show",
+      noAudioStrip: "Esperando el estado de audio de esta entrada",
+      statusIdle: "Introduzca el token de acceso web del daemon para conectar",
+      statusConnecting: "Conectando",
+      statusReconnecting: "Reconectando (intento {attempt})",
+      statusLive: "En vivo como {role}",
+      statusLiveShow: "En vivo — {show} como {role}",
+      statusWaiting: "Conexión perdida; reintento {attempt} en {seconds} s",
+      statusWaitingHint: "Conexión perdida; reintento {attempt} en {seconds} s (compruebe el token; también pueden estar ocupadas todas las plazas de clientes web)",
+      statusStopped: "Detenido",
+      rejected: "Rechazado por el servidor: {code}",
+      incompatible: "El protocolo del servidor es incompatible",
+      commandPreview: "Previo {input}",
+      commandCut: "Corte",
+      commandAuto: "AUTO {kind}",
+      commandFadeToBlack: "Fundido a negro",
+      commandFadeFromBlack: "Salir de negro",
+      commandStartStream: "Iniciar {name}",
+      commandStopStream: "Detener {name}",
+      commandMute: "Silenciar {input}",
+      commandUnmute: "Reactivar {input}",
+      noteSent: "{label}: enviado",
+      noteAccepted: "{label}: aceptado",
+      noteStale: "{label} no aplicado: el show cambió antes; revíselo y pulse otra vez",
+      noteRefused: "{label} rechazado ({code})",
+      noteRefusedMessage: "{label} rechazado ({code}): {message}",
+      noteLost: "Se perdió la conexión antes de resolver {count} comando(s); revise el show",
+      noteMuteChanged: "Silencio no aplicado: el audio de {input} cambió antes",
+      noteMuteChangedInput: "Silencio no aplicado: el audio de la entrada cambió antes",
+      noteMuteGaveUp: "Silencio no enviado: el show siguió cambiando; púlselo otra vez",
+    },
   };
+  const LANGUAGE_KEY = "freemix.web.language";
 
   const $ = (id) => document.getElementById(id);
   const ui = {
@@ -201,7 +432,7 @@
     kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
     recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
     whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
-    whyAudio: $("why-audio"),
+    whyAudio: $("why-audio"), recorderNote: $("recorder-note"), language: $("language"),
   };
 
   const store = window.sessionStorage;
@@ -211,11 +442,57 @@
   // Never leave the token in the address bar or history.
   history.replaceState(null, "", location.pathname + location.search);
 
+  // ---- Language: `#lang=`, else a saved choice (shared with /tally),
+  // else the browser's preferred languages, else English. ----
+  function savedLanguage() {
+    try { return window.localStorage.getItem(LANGUAGE_KEY); } catch (error) { return null; }
+  }
+  function saveLanguage(choice) {
+    try { window.localStorage.setItem(LANGUAGE_KEY, choice); } catch (error) { /* this page only */ }
+  }
+  function pickLanguage() {
+    const asked = params.get("lang") || savedLanguage();
+    if (asked && Object.hasOwn(STRINGS, asked)) return asked;
+    for (const tag of navigator.languages || [navigator.language || ""]) {
+      const base = String(tag).toLowerCase().split("-")[0];
+      if (Object.hasOwn(STRINGS, base)) return base;
+    }
+    return "en";
+  }
+  let language = pickLanguage();
+  function tr(key, values) {
+    const table = STRINGS[language];
+    const text = Object.hasOwn(table, key) ? table[key] : STRINGS.en[key];
+    return values ? text.replace(/\{(\w+)\}/g, (match, name) =>
+      Object.hasOwn(values, name) ? String(values[name]) : match) : text;
+  }
+  function seconds(ms, digits) {
+    return (ms / 1000).toLocaleString(language, { minimumFractionDigits: digits, maximumFractionDigits: 1 });
+  }
+  function applyLanguage() {
+    document.documentElement.lang = language;
+    document.title = tr("title");
+    for (const element of document.querySelectorAll("[data-i18n]")) element.textContent = tr(element.dataset.i18n);
+    for (const element of document.querySelectorAll("[data-i18n-label]")) {
+      element.setAttribute("aria-label", tr(element.dataset.i18nLabel));
+    }
+    ui.language.lang = language === "es" ? "en" : "es";
+  }
+  function toggleLanguage() {
+    language = language === "es" ? "en" : "es";
+    saveLanguage(language);
+    applyLanguage();
+    render();
+  }
+
   const link = {
     phase: "idle", // idle | connecting | open | live | waiting | stopped
-    socket: null, attempt: 0, everLive: false, retryAt: 0, stopReason: "",
+    socket: null, attempt: 0, everLive: false, retryAt: 0,
     syncDeadline: 0, nextHeartbeat: 0, heartbeatDeadline: 0, heartbeatSequence: 1,
     pendingHeartbeat: 0, server: null, permissions: [], revision: 0, role: "",
+    // Why the link stopped, as a string key and its values, so it follows
+    // the language toggle.
+    stopReason: null,
   };
   const show = {
     name: "", inputs: [], frameRate: [30, 1],
@@ -389,7 +666,7 @@
     link.server = null;
     link.permissions = [];
     // Unresolved commands may or may not have applied; the next snapshot tells.
-    if (pending.size) note("Connection lost before " + pending.size + " command(s) resolved; check the show");
+    if (pending.size) note(tr("noteLost", { count: pending.size }));
     pending.clear();
     mutesSent.clear();
     muteRetries = [];
@@ -401,9 +678,9 @@
     render();
   }
 
-  function stop(reason) {
+  function stop(key, values) {
     link.phase = "stopped";
-    link.stopReason = reason;
+    link.stopReason = key ? { key, values } : null;
     const socket = link.socket;
     link.socket = null;
     if (socket) try { socket.close(); } catch (error) { /* closed */ }
@@ -434,10 +711,10 @@
         if (outcome === "rejected") {
           const code = required(record, "code");
           if (required(record, "retryable") === "1") closeSocket();
-          else stop("Rejected by server: " + code);
+          else stop("rejected", { code });
           return;
         }
-        if (required(record, "protocol") !== PROTOCOL) { stop("Server protocol is incompatible"); return; }
+        if (required(record, "protocol") !== PROTOCOL) { stop("incompatible"); return; }
         if (outcome !== "snapshot") throw new Error("unexpected resume");
         link.server = {
           engine_id: required(record, "engine_id"), project_id: required(record, "project_id"),
@@ -527,11 +804,10 @@
             return;
           }
           const message = record.fields.get("message") || "";
-          note(code === "revision_conflict"
-            ? label + " not applied: the show changed first; check it and press again"
-            : label + " refused (" + code + ")" + (message ? ": " + message : ""));
+          note(code === "revision_conflict" ? tr("noteStale", { label })
+            : tr(message ? "noteRefusedMessage" : "noteRefused", { label, code, message }));
         } else {
-          note(label + " accepted");
+          note(tr("noteAccepted", { label }));
         }
         return;
       }
@@ -592,7 +868,7 @@
       if (link.revision < retry.revision) { waiting.push(retry); continue; }
       const input = show.inputs.find((candidate) => candidate.id === retry.input);
       if (input && sameStrip(show.strips.get(retry.input), retry.strip)) sendMute(retry.input, true);
-      else note("Mute not applied: " + (input ? input.label : "the input") + "'s audio changed first");
+      else note(input ? tr("noteMuteChanged", { input: input.label }) : tr("noteMuteChangedInput"));
     }
     muteRetries = waiting;
   }
@@ -601,7 +877,7 @@
     const now = Date.now();
     if (muteRetries.some((retry) => now >= retry.deadline)) {
       muteRetries = muteRetries.filter((retry) => now < retry.deadline);
-      note("Mute not sent: the show kept changing; press it again");
+      note(tr("noteMuteGaveUp"));
     }
     if (link.phase === "waiting" && now >= link.retryAt) connect();
     else if (link.phase === "open" && link.syncDeadline && now >= link.syncDeadline) closeSocket();
@@ -624,20 +900,20 @@
   const PERMISSION = { preview: "select_preview", transition: "transition", audio: "control_audio" };
   // "" when enabled, otherwise the disabled reason shown beside the control.
   function gate(kind, subject) {
-    if (link.phase !== "live") return REASON.notLive;
-    if (!link.permissions.includes(PERMISSION[kind])) return REASON.permission(PERMISSION[kind]);
+    if (link.phase !== "live") return tr("notLive");
+    if (!link.permissions.includes(PERMISSION[kind])) return tr("permission", { name: PERMISSION[kind] });
     if (kind === "preview") {
-      if (!show.inputs.some((input) => input.id === subject)) return REASON.notInShow;
-      if (show.desired.preview === subject) return REASON.alreadyOnPreview;
+      if (!show.inputs.some((input) => input.id === subject)) return tr("notInShow");
+      if (show.desired.preview === subject) return tr("alreadyOnPreview");
     } else if (kind === "audio" && subject !== undefined) {
-      if (!show.inputs.some((input) => input.id === subject)) return REASON.notInShow;
-      if (!show.strips.has(subject)) return REASON.noAudioStrip;
+      if (!show.inputs.some((input) => input.id === subject)) return tr("notInShow");
+      if (!show.strips.has(subject)) return tr("noAudioStrip");
     }
     return "";
   }
   function sectionReason(kind) {
-    return link.phase !== "live" ? REASON.notLive
-      : link.permissions.includes(PERMISSION[kind]) ? "" : REASON.permission(PERMISSION[kind]);
+    return link.phase !== "live" ? tr("notLive")
+      : link.permissions.includes(PERMISSION[kind]) ? "" : tr("permission", { name: PERMISSION[kind] });
   }
 
   // Mirrors freemix-web's duration_frames.
@@ -658,8 +934,8 @@
   // Mirrors freemix-web's FadeToBlackPhase.
   function ftbPhase() {
     const position = show.realizedFtb.position;
-    if (show.ftb.target) return position === FTB_BLACK ? ["black", "BLACK"] : ["fading", "FADING TO BLACK"];
-    return position === 0 ? ["live", "LIVE"] : ["fading", "FADING UP"];
+    if (show.ftb.target) return position === FTB_BLACK ? ["black", "ftbBlack"] : ["fading", "ftbFading"];
+    return position === 0 ? ["live", "ftbLive"] : ["fading", "ftbFadingUp"];
   }
 
   // Reuses keyed children so focus survives re-renders.
@@ -676,28 +952,39 @@
       if (container.children[index] !== child) container.insertBefore(child, container.children[index] || null);
     });
   }
+  function busLabel(input, light) {
+    let label = light === "program" ? tr("onAir", { input: input.label }) : input.label;
+    if (input.offline) label = tr("offline", { input: label });
+    return label;
+  }
   function setDisabled(button, reason) {
     button.disabled = Boolean(reason);
     if (reason) button.title = reason; else button.removeAttribute("title");
   }
 
+  const ROLE_KEY = { operator: "roleOperator", audio: "roleAudio", viewer: "roleViewer" };
   function statusText() {
     switch (link.phase) {
-      case "idle": return "Enter the daemon's web access token to connect";
+      case "idle": return tr("statusIdle");
       case "connecting": case "open":
-        return link.attempt ? "Reconnecting (attempt " + link.attempt + ")" : "Connecting";
-      case "live": return "Live" + (show.name ? " — " + show.name : "") + " as " + (link.role || role());
-      case "waiting": {
-        const seconds = Math.max(0, link.retryAt - Date.now()) / 1000;
-        const hint = link.everLive ? "" : " (check the token, or another web client may be connected)";
-        return "Connection lost; retry " + link.attempt + " in " + seconds.toFixed(1) + " s" + hint;
+        return link.attempt ? tr("statusReconnecting", { attempt: link.attempt }) : tr("statusConnecting");
+      case "live": {
+        const granted = link.role || role();
+        const as = ROLE_KEY[granted] ? tr(ROLE_KEY[granted]) : granted;
+        return show.name ? tr("statusLiveShow", { show: show.name, role: as }) : tr("statusLive", { role: as });
       }
-      case "stopped": return link.stopReason || "Stopped";
+      case "waiting":
+        // A page that never got in may hold a wrong token, or every web
+        // client slot on the gateway may be taken (it refuses with 503).
+        return tr(link.everLive ? "statusWaiting" : "statusWaitingHint", {
+          attempt: link.attempt, seconds: seconds(Math.max(0, link.retryAt - Date.now()), 1),
+        });
+      case "stopped": return link.stopReason ? tr(link.stopReason.key, link.stopReason.values) : tr("statusStopped");
       default: return "";
     }
   }
-  const LINK_TEXT = { idle: "OFFLINE", connecting: "CONNECTING", open: "CONNECTING", live: "LIVE",
-    waiting: "RECONNECTING", stopped: "STOPPED" };
+  const LINK_KEY = { idle: "linkOffline", connecting: "linkConnecting", open: "linkConnecting", live: "linkLive",
+    waiting: "linkReconnecting", stopped: "linkStopped" };
 
   let lastNote = "";
   let lastNoteAt = 0;
@@ -706,8 +993,8 @@
   function render() {
     const live = link.phase === "live";
     ui.link.dataset.phase = link.phase;
-    ui.link.textContent = LINK_TEXT[link.phase] || "OFFLINE";
-    ui.title.textContent = live && show.name ? show.name : "FreeMix Operator";
+    ui.link.textContent = tr(LINK_KEY[link.phase] || "linkOffline");
+    ui.title.textContent = live && show.name ? show.name : tr("title");
     ui.reconnect.hidden = link.phase !== "waiting";
     ui.setupPanel.hidden = link.phase !== "idle" && link.phase !== "stopped";
     ui.status.textContent = statusText() + (lastNote && Date.now() - lastNoteAt < 8000 ? " · " + lastNote : "");
@@ -727,8 +1014,7 @@
       tile.dataset.offline = input.offline ? "1" : "0";
       // Desired Program that has not reached air yet.
       tile.dataset.pending = show.desired.program === id && light !== "program" ? "1" : "0";
-      tile.setAttribute("aria-label", input.label + (light === "program" ? ", on air" : "")
-        + (input.offline ? ", offline" : ""));
+      tile.setAttribute("aria-label", busLabel(input, light));
     });
     syncChildren(ui.previewBus, ids, (id) => {
       const button = document.createElement("button");
@@ -745,34 +1031,36 @@
       button.dataset.offline = input.offline ? "1" : "0";
       button.dataset.pending = show.desired.preview === id && light !== "preview" ? "1" : "0";
       button.setAttribute("aria-pressed", String(show.desired.preview === id));
-      button.setAttribute("aria-label", input.label + (light === "program" ? ", on air" : "")
-        + (input.offline ? ", offline" : ""));
+      button.setAttribute("aria-label", busLabel(input, light));
       setDisabled(button, reason);
     });
     // Program is status only; while not live it is unknown, never stale.
-    ui.whyProgram.textContent = live ? "" : REASON.notLive;
+    ui.whyProgram.textContent = live ? "" : tr("notLive");
     ui.whyPreview.textContent = sectionReason("preview");
 
     const transitionReason = gate("transition");
     setDisabled(ui.cut, transitionReason);
     setDisabled(ui.auto, transitionReason);
-    const kindLabel = (TRANSITIONS.find(([token]) => token === choice.kind) || TRANSITIONS[0])[1];
+    const kindLabel = tr((TRANSITIONS.find(([token]) => token === choice.kind) || TRANSITIONS[0])[1]);
+    const duration = seconds(choice.durationMs, 0);
+    ui.cut.textContent = tr("cut");
     ui.auto.textContent = "AUTO";
-    ui.autoKind.textContent = kindLabel + ", " + (choice.durationMs / 1000) + " seconds";
-    ui.auto.setAttribute("aria-label", "AUTO: " + kindLabel + " Preview to Program over "
-      + (choice.durationMs / 1000) + " s");
+    ui.autoKind.textContent = tr("autoKind", { kind: kindLabel, seconds: duration });
+    ui.auto.setAttribute("aria-label", tr("autoLabel", { kind: kindLabel, seconds: duration }));
     for (const radio of ui.kindChoices.querySelectorAll("input")) {
       radio.checked = radio.value === choice.kind;
+      radio.nextElementSibling.textContent = tr(TRANSITIONS.find(([token]) => token === radio.value)[1]);
     }
     for (const radio of ui.durationChoices.querySelectorAll("input")) {
       radio.checked = Number(radio.value) === choice.durationMs;
+      radio.nextElementSibling.textContent = tr("seconds", { seconds: seconds(Number(radio.value), 0) });
     }
-    const [phase, phaseText] = live ? ftbPhase() : ["live", "UNKNOWN"];
-    ui.ftbState.textContent = phaseText;
+    const [phase, phaseKey] = live ? ftbPhase() : ["live", "ftbUnknown"];
+    ui.ftbState.textContent = tr(phaseKey);
     ui.ftb.dataset.phase = phase;
     ui.ftb.setAttribute("aria-pressed", String(live && show.ftb.target));
-    ui.ftb.textContent = live && show.ftb.target ? "FROM BLACK" : "FTB";
-    ui.ftb.setAttribute("aria-label", live && show.ftb.target ? "Fade Program from black" : "Fade Program to black");
+    ui.ftb.textContent = tr(live && show.ftb.target ? "ftbFromBlackKey" : "ftbKey");
+    ui.ftb.setAttribute("aria-label", tr(live && show.ftb.target ? "ftbFromBlackLabel" : "ftbToBlackLabel"));
     setDisabled(ui.ftb, transitionReason);
     ui.whyTransition.textContent = transitionReason;
 
@@ -780,19 +1068,24 @@
       const row = document.createElement("div");
       row.className = "row";
       row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
-      row.querySelector(".name").textContent = "Recorder " + slot;
       row.querySelector("button").addEventListener("click", () => toggleRecorder(Number(slot)));
       return row;
     }, (row, slot) => {
+      // Web peers see only the requested (desired) recorder state: the
+      // daemon's realized recorder progress is not on their wire, so the
+      // badge says "requested" and never claims a file is being written.
       const on = show.recordings[Number(slot) - 1];
+      row.querySelector(".name").textContent = tr("recorder", { slot });
       const state = row.querySelector(".state");
-      state.textContent = on ? "REC" : "STOPPED";
+      state.textContent = tr(on ? "recorderRequestedOn" : "recorderRequestedOff");
+      state.setAttribute("aria-label", tr(on ? "recorderStateOn" : "recorderStateOff", { slot }));
       state.dataset.on = on ? "1" : "0";
       const button = row.querySelector("button");
-      button.textContent = on ? "Stop" : "Record";
-      button.setAttribute("aria-label", (on ? "Stop recorder " : "Start recorder ") + slot);
+      button.textContent = tr(on ? "stop" : "record");
+      button.setAttribute("aria-label", tr(on ? "stopRecorder" : "startRecorder", { slot }));
       setDisabled(button, transitionReason);
     });
+    ui.recorderNote.hidden = !live;
     const streamIds = live ? show.streams.map((stream) => stream.id) : [];
     syncChildren(ui.streams, streamIds, (id) => {
       const row = document.createElement("div");
@@ -804,15 +1097,15 @@
       const stream = show.streams.find((candidate) => candidate.id === id);
       row.querySelector(".name").textContent = stream.name;
       const state = row.querySelector(".state");
-      const realized = STREAM_TEXT[stream.realized] || stream.realized;
+      let text = STREAM_KEY[stream.realized] ? tr(STREAM_KEY[stream.realized]) : stream.realized;
       // Desired and realized differ until the destination catches up.
-      const requested = stream.desired && stream.realized === "stopped" ? " (start requested)"
-        : !stream.desired && stream.realized !== "stopped" ? " (stop requested)" : "";
-      state.textContent = realized + requested + (stream.detail ? " — " + stream.detail : "");
+      if (stream.desired && stream.realized === "stopped") text = tr("streamStartRequested", { state: text });
+      else if (!stream.desired && stream.realized !== "stopped") text = tr("streamStopRequested", { state: text });
+      state.textContent = stream.detail ? tr("streamDetail", { state: text, detail: stream.detail }) : text;
       state.dataset.on = stream.realized === "live" ? "1" : "0";
       const button = row.querySelector("button");
-      button.textContent = stream.desired ? "Stop" : "Go live";
-      button.setAttribute("aria-label", (stream.desired ? "Stop stream " : "Start stream ") + stream.name);
+      button.textContent = tr(stream.desired ? "stop" : "goLive");
+      button.setAttribute("aria-label", tr(stream.desired ? "stopStream" : "startStream", { name: stream.name }));
       setDisabled(button, transitionReason);
     });
     ui.noStreams.hidden = !live || show.streams.length > 0;
@@ -830,9 +1123,9 @@
       row.querySelector(".name").textContent = input.label;
       const button = row.querySelector("button");
       const muted = Boolean(strip && strip.muted);
-      button.textContent = muted ? "MUTED" : "Mute";
+      button.textContent = tr(muted ? "muted" : "mute");
       button.setAttribute("aria-pressed", String(muted));
-      button.setAttribute("aria-label", "Mute " + input.label);
+      button.setAttribute("aria-label", tr("muteLabel", { input: input.label }));
       setDisabled(button, gate("audio", id));
     });
     ui.whyAudio.textContent = sectionReason("audio");
@@ -846,39 +1139,40 @@
     if (expectedRevision !== undefined) fields.push(["expected_revision", String(expectedRevision)]);
     send(encodeRecord("command", [...fields, ...payload]));
     pending.set(id, label);
-    note(label + " sent");
+    note(tr("noteSent", { label }));
     render();
     return id;
   }
   function previewInput(id) {
     if (gate("preview", id)) return;
     const input = show.inputs.find((candidate) => candidate.id === id);
-    sendCommand("Preview " + input.label, [["payload", "select_preview"], ["input", id]]);
+    sendCommand(tr("commandPreview", { input: input.label }), [["payload", "select_preview"], ["input", id]]);
   }
   function cut() {
     if (gate("transition")) return;
-    sendCommand("Cut", [["payload", "cut"]]);
+    sendCommand(tr("commandCut"), [["payload", "cut"]]);
   }
   function auto() {
     if (gate("transition")) return;
-    sendCommand("Auto " + choice.kind, [["payload", choice.kind], ["duration_frames", String(durationFrames())]]);
+    const kind = tr((TRANSITIONS.find(([token]) => token === choice.kind) || TRANSITIONS[0])[1]);
+    sendCommand(tr("commandAuto", { kind }), [["payload", choice.kind], ["duration_frames", String(durationFrames())]]);
   }
   function fadeToBlack() {
     if (gate("transition")) return;
     const active = !show.ftb.target;
-    sendCommand(active ? "Fade to black" : "Fade from black",
+    sendCommand(tr(active ? "commandFadeToBlack" : "commandFadeFromBlack"),
       [["payload", "fade_to_black"], ["active", active ? "1" : "0"], ["duration_frames", String(durationFrames())]]);
   }
   function toggleRecorder(slot) {
     if (gate("transition")) return;
     const on = show.recordings[slot - 1];
-    sendCommand((on ? "Stop" : "Start") + " recorder " + slot,
+    sendCommand(tr(on ? "stopRecorder" : "startRecorder", { slot }),
       [["payload", on ? "record_stop" : "record_start"], ["recorder", String(slot)]]);
   }
   function toggleStream(id) {
     const stream = show.streams.find((candidate) => candidate.id === id);
     if (gate("transition") || !stream) return;
-    sendCommand((stream.desired ? "Stop " : "Start ") + stream.name,
+    sendCommand(tr(stream.desired ? "commandStopStream" : "commandStartStream", { name: stream.name }),
       [["payload", stream.desired ? "stream_stop" : "stream_start"], ["target", id]]);
   }
   // A mute rewrites the whole strip, so it names the revision its values
@@ -893,7 +1187,7 @@
   function sendMute(id, retried) {
     const strip = show.strips.get(id);
     const input = show.inputs.find((candidate) => candidate.id === id);
-    const commandId = sendCommand((strip.muted ? "Unmute " : "Mute ") + input.label, [
+    const commandId = sendCommand(tr(strip.muted ? "commandUnmute" : "commandMute", { input: input.label }), [
       ["payload", "input_audio_strip"], ["input", id], ["gain_millidb", strip.gain],
       ["balance_basis_points", strip.balance], ["pan_basis_points", strip.pan],
       ["muted", strip.muted ? "0" : "1"], ["soloed", strip.soloed ? "1" : "0"],
@@ -929,7 +1223,8 @@
     choice.kind = value;
     store.setItem("freemix.operator.kind", value);
   });
-  choiceGroup(ui.durationChoices, "duration", DURATIONS_MS.map((ms) => [String(ms), (ms / 1000) + " s"]), (value) => {
+  // Labels are filled (and re-filled on a language change) by render.
+  choiceGroup(ui.durationChoices, "duration", DURATIONS_MS.map((ms) => [String(ms), ""]), (value) => {
     choice.durationMs = Number(value);
     store.setItem("freemix.operator.duration", value);
   });
@@ -937,10 +1232,11 @@
   ui.cut.addEventListener("click", cut);
   ui.auto.addEventListener("click", auto);
   ui.ftb.addEventListener("click", fadeToBlack);
+  ui.language.addEventListener("click", toggleLanguage);
   ui.reconnect.addEventListener("click", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
   ui.signout.addEventListener("click", () => {
     store.removeItem("freemix.operator.token");
-    stop("");
+    stop();
     link.phase = "idle";
     render();
     ui.token.focus();
@@ -972,6 +1268,8 @@
   });
 
   ui.role.value = role();
+  applyLanguage();
+  ui.status.textContent = tr("notConnected");
   setInterval(tick, 250);
   render();
   connect();

@@ -35,7 +35,7 @@ use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
 use crate::title_render::TitleAssets;
-use crate::web::{WebEvent, WebGateway};
+use crate::web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
 
 const MAX_PEERS: usize = 2;
 const INBOUND_CAPACITY: usize = 8;
@@ -89,6 +89,9 @@ struct WebTransport {
     outbound: SyncSender<Vec<u8>>,
     acknowledgements: Receiver<()>,
     cancel: Arc<AtomicBool>,
+    /// The gateway client slot this session holds (absent in unit tests);
+    /// released when the session is dropped.
+    _slot: Option<ClientSlot>,
 }
 
 impl Drop for WebTransport {
@@ -568,7 +571,7 @@ pub(super) fn run(
     let handshake_timeout =
         Duration::from_millis(server.config().session_limits.heartbeat_timeout_ms);
     let peer_limit = if native.is_some() { 1 } else { MAX_PEERS };
-    let mut peers = Vec::with_capacity(peer_limit);
+    let mut peers = Vec::with_capacity(peer_limit + web.map_or(0, |_| MAX_WEB_CLIENTS));
     let mut next_peer_id = 0_u64;
     let mut once_peer = None;
     // Exact title previews render off this loop, as simulated monitor
@@ -619,9 +622,12 @@ pub(super) fn run(
                     break;
                 };
                 match event {
-                    WebEvent::Connected(connection)
-                        if !peers.iter().any(|peer| peer.transport.is_web()) =>
-                    {
+                    // Every Web client is its own session: its own principal
+                    // session id, granted role, heartbeat, subscription, and
+                    // outbound queue. The gateway's slots already bound them
+                    // to MAX_WEB_CLIENTS; this check only keeps that bound
+                    // local to the scheduler too.
+                    WebEvent::Connected(connection) if web_peer_count(&peers) < MAX_WEB_CLIENTS => {
                         let web_principal = Principal::authenticated(
                             fm_auth::UserId::new("web-token").expect("stable web user is valid"),
                             fm_auth::SessionId::new(format!("web-{next_peer_id}"))
@@ -633,6 +639,7 @@ pub(super) fn run(
                             outbound: connection.outbound,
                             acknowledgements: connection.acknowledgements,
                             cancel: connection.cancel,
+                            _slot: Some(connection.slot),
                         });
                         let Some(peer) = Peer::new(
                             next_peer_id,
@@ -1069,6 +1076,10 @@ fn finish_after_read_close(peer: &mut Peer) -> bool {
 fn dropping(peer: u64, reason: &str) -> bool {
     eprintln!("FREEMIXD_SESSION\tv=1\tpeer={peer}\tclosed={reason}");
     true
+}
+
+fn web_peer_count(peers: &[Peer]) -> usize {
+    peers.iter().filter(|peer| peer.transport.is_web()).count()
 }
 
 fn raw_peer_count(peers: &[Peer]) -> usize {
@@ -2112,6 +2123,7 @@ mod tests {
                 outbound: outbound_sender,
                 acknowledgements,
                 cancel: Arc::new(AtomicBool::new(false)),
+                _slot: None,
             }),
             Principal::authenticated(
                 UserId::new("user").unwrap(),
@@ -2652,6 +2664,7 @@ mod tests {
                 outbound: outbound_sender,
                 acknowledgements,
                 cancel: Arc::new(AtomicBool::new(false)),
+                _slot: None,
             }),
             Principal::authenticated(
                 UserId::new("user").unwrap(),

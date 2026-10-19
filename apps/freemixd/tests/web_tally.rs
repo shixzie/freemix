@@ -1,7 +1,8 @@
 //! Phone tally and operator pages over the loopback web gateway: the served
 //! pages, browser-style subprotocol authentication, a viewer tally that
 //! follows an operator's cut, server-side role limits, edit padlocks,
-//! heartbeats, reconnect, and the operator page's exact wire commands.
+//! heartbeats, reconnect, the operator page's exact wire commands, several
+//! Web clients at once, and the pages' English and Spanish string tables.
 
 use std::{
     fs,
@@ -407,14 +408,14 @@ fn hello(role: Role) -> WireMessage {
     })
 }
 
-/// Connects and handshakes as a Viewer tally, retrying while the gateway's
-/// single Web slot is still releasing a previous session.
+/// Connects and handshakes as a Viewer tally, retrying while every gateway
+/// client slot is still taken.
 fn viewer_session(address: SocketAddr) -> (Browser, ServerIdentity, Vec<String>, SnapshotMessage) {
     web_session(address, Role::Viewer)
 }
 
-/// Connects and handshakes as a `role` tally, retrying while the gateway's
-/// single Web slot is still releasing a previous session.
+/// Connects and handshakes as a `role` tally, retrying while every gateway
+/// client slot is still taken.
 fn web_session(
     address: SocketAddr,
     role: Role,
@@ -428,7 +429,7 @@ fn web_session(
         };
         send(&mut socket, &hello(role));
         let Ok(Message::Text(text)) = socket.read() else {
-            // The scheduler refused the duplicate Web peer; back off and retry.
+            // The session closed before it was answered; back off and retry.
             std::thread::sleep(Duration::from_millis(50));
             continue;
         };
@@ -989,13 +990,25 @@ fn operator_page_is_served_with_the_tally_security_model() {
     // Disabled reasons (freemix-web's OperatorBlock::reason).
     for reason in [
         "notLive: \"Not connected to the show\"",
-        "\"This session lacks the \" + name + \" permission\"",
+        "permission: \"This session lacks the {name} permission\"",
         "alreadyOnPreview: \"Already on Preview\"",
         "notInShow: \"No longer in the show\"",
         "noAudioStrip: \"Waiting for this input's audio state\"",
     ] {
         assert!(page.contains(reason), "{reason}");
     }
+    // Web peers see only the requested recorder state (realized recorder
+    // progress is not on their wire), so the badge says so instead of
+    // claiming a file is being written.
+    for wording in [
+        "recorderRequestedOn: \"REQUESTED: REC\"",
+        "recorderRequestedOff: \"REQUESTED: OFF\"",
+        "recorderNote: \"Recorders show the requested state: the daemon does not tell web pages whether a file is being written.\"",
+        "tr(on ? \"recorderRequestedOn\" : \"recorderRequestedOff\")",
+    ] {
+        assert!(page.contains(wording), "{wording}");
+    }
+    assert!(!page.contains("\"REC\" : \"STOPPED\""));
     // State the page follows, including cue and script runs.
     for event in [
         "\"desired_switcher\", \"stinger_slots_changed\", \"cue_run_changed\", \"script_ran\"",
@@ -1278,5 +1291,320 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
     ] {
         page_command(&mut page, id, None, &payload)
             .unwrap_or_else(|refusal| panic!("{id} refused: {refusal:?}"));
+    }
+}
+
+/// Waits on `socket` for the realization of `revision`, skipping the
+/// durable events and results around it.
+fn realized(socket: &mut Browser, revision: u64) {
+    loop {
+        if let WireMessage::RuntimeEvent(runtime) = receive(socket)
+            && runtime.revision == revision
+            && matches!(
+                runtime.event,
+                RuntimeLifecycleEvent::Realized { ref domain, .. } if domain == "switcher"
+            )
+        {
+            return;
+        }
+    }
+}
+
+/// The most Web clients the gateway admits at once (`MAX_WEB_CLIENTS`).
+const WEB_CLIENTS: usize = 16;
+
+/// Several Web clients at once: a Viewer tally, an Operator page, and an
+/// Audio page each hold their own session with the role they asked for; a
+/// client that stops reading and a page request that never completes delay
+/// none of them nor the raw control session; and the gateway refuses the
+/// client beyond its bound with 503 until a slot frees.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn several_web_clients_hold_their_own_sessions_at_once() {
+    let directory = TestDirectory::new("several");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start(&project);
+
+    let (mut tally, server, permissions, _) = web_session(daemon.web, Role::Viewer);
+    assert_eq!(permissions, ["view_status"]);
+    let (mut operator, operator_server, permissions, _) = web_session(daemon.web, Role::Operator);
+    assert_eq!(operator_server, server);
+    for permission in ["select_preview", "transition", "control_audio"] {
+        assert!(permissions.iter().any(|granted| granted == permission));
+    }
+    let (mut audio, _, permissions, snapshot) = web_session(daemon.web, Role::Audio);
+    assert_eq!(permissions, ["view_status", "control_audio"]);
+    assert_eq!(snapshot.revision, 0);
+
+    // Each session's role is its own: the Audio page and the tally cannot
+    // cut while the Operator page can.
+    assert_eq!(
+        page_command(&mut audio, "audio-cut", None, "payload=cut")
+            .unwrap_err()
+            .0,
+        "permission_denied"
+    );
+    send(&mut tally, &command("tally-cut", CommandPayload::Cut));
+    assert!(matches!(
+        receive(&mut tally),
+        WireMessage::CommandResult(CommandResult::Rejected { id, .. }) if id == "tally-cut"
+    ));
+    let (revision, _) = page_command(&mut operator, "op-cut-1", None, "payload=cut").unwrap();
+    assert_eq!(revision, 1);
+    realized(&mut tally, 1);
+    realized(&mut audio, 1);
+
+    // A client that handshakes and then never reads again, and a page
+    // request whose head never completes.
+    let (_stalled_client, _, _, _) = web_session(daemon.web, Role::Viewer);
+    let mut stalled_page = TcpStream::connect_timeout(&daemon.web, TIMEOUT).unwrap();
+    stalled_page
+        .write_all(b"GET /tally HTTP/1.1\r\nHost: web\r\n")
+        .unwrap();
+    let mut raw = RawOperator::connect(daemon.control);
+
+    // Every cut reaches the other pages promptly while those two stall.
+    let mut slowest = Duration::ZERO;
+    for cut in 0..12_u64 {
+        let started = Instant::now();
+        let revision = if cut % 3 == 2 {
+            // The raw control session keeps its own pace too.
+            let id = format!("raw-cut-{cut}");
+            raw.send(&command(&id, CommandPayload::Cut));
+            raw.accepted(&id)
+        } else {
+            page_command(
+                &mut operator,
+                &format!("op-cut-{cut}-x"),
+                None,
+                "payload=cut",
+            )
+            .unwrap()
+            .0
+        };
+        assert_eq!(revision, cut + 2);
+        realized(&mut tally, revision);
+        realized(&mut audio, revision);
+        slowest = slowest.max(started.elapsed());
+    }
+    assert!(
+        slowest < Duration::from_secs(1),
+        "a stalled client delayed the others by {slowest:?}"
+    );
+    drop(stalled_page);
+
+    // The Audio page mutes; the Operator page sees the strip change.
+    let mute = format!(
+        "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted=1\tsoloed=0\tfollow_video=1\tdelay_samples=0",
+        input(1)
+    );
+    let (revision, _) = page_command(&mut audio, "audio-mute", Some(13), &mute).unwrap();
+    assert_eq!(revision, 14);
+    let event = loop {
+        let event = next_event(&mut operator);
+        if event.cursor.revision == 14 {
+            break event;
+        }
+    };
+    let EventPayload::DesiredSwitcher {
+        input_audio_strips, ..
+    } = event.payload
+    else {
+        panic!("a mute replicates the whole switcher state");
+    };
+    assert!(strip(&input_audio_strips, 1));
+
+    // Fill every client slot: the next authorized browser is refused with
+    // 503 (and the page retries with backoff) until one closes.
+    let mut viewers = Vec::new();
+    while viewers.len() < WEB_CLIENTS - 4 {
+        viewers.push(web_session(daemon.web, Role::Viewer).0);
+    }
+    let origin = format!("http://{}", daemon.web);
+    assert_eq!(
+        upgrade_status(daemon.web, &origin, TOKEN),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // Credentials are still checked first: a wrong token is never told
+    // about capacity.
+    assert_eq!(
+        upgrade_status(daemon.web, &origin, "wrong-token-0123456789abcdefghijkl"),
+        StatusCode::UNAUTHORIZED
+    );
+    // Pages are still served while every client slot is taken.
+    let (status, _, _) = http(
+        daemon.web,
+        &format!("GET /operator HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    let mut closed = viewers.pop().unwrap();
+    closed.close(None).unwrap();
+    drop(closed);
+    let (mut late, _, permissions, snapshot) = web_session(daemon.web, Role::Viewer);
+    assert_eq!(permissions, ["view_status"]);
+    assert_eq!(snapshot.revision, 14);
+
+    // Every admitted session is still served.
+    let (revision, _) = page_command(&mut operator, "op-cut-last", None, "payload=cut").unwrap();
+    for socket in std::iter::once(&mut late)
+        .chain(std::iter::once(&mut tally))
+        .chain(&mut viewers)
+    {
+        realized(socket, revision);
+    }
+}
+
+/// The `STRINGS` table of a page: each language's keys and texts.
+fn strings_table(page: &str, language: &str) -> Vec<(String, String)> {
+    let header = format!("\n    {language}: {{\n");
+    let start = page
+        .find(&header)
+        .unwrap_or_else(|| panic!("no {language} table"));
+    let body = &page[start + header.len()..];
+    let end = body.find("\n    },").expect("table end");
+    body[..end]
+        .lines()
+        .map(|line| {
+            let (key, text) = line.trim().split_once(": ").expect("key: text");
+            (key.to_owned(), text.trim_end_matches(',').to_owned())
+        })
+        .collect()
+}
+
+/// Both pages keep every user-visible string in one table per language:
+/// English and Spanish define the same keys, every key the page uses is in
+/// the table, the language follows the browser with a saved manual toggle,
+/// and the Spanish words are Studio's.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pages_carry_complete_english_and_spanish_string_tables() {
+    let directory = TestDirectory::new("i18n");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start(&project);
+    let studio = include_str!("../../../crates/ui/fm-ui-model/src/i18n/es.rs");
+
+    // (page text, the Studio catalog text it follows)
+    let tally: &[(&str, &str)] = &[
+        ("preview: \"Previo\"", "\"Previo\""),
+        ("cut: \"Corte\"", "t(\"Corte\")"),
+        ("standby: \"En espera\"", "\"En espera: {name}\""),
+        (
+            "cueNothing: \"{list} — Nada en espera\"",
+            "t(\"Nada en espera\")",
+        ),
+        ("stateProgram: \"AL AIRE\"", "\"AL AIRE\""),
+        ("statePreview: \"PREVIO\"", "t(\"PREVIO\")"),
+        ("stateOffline: \"DESCONECTADO\"", "t(\"DESCONECTADO\")"),
+        (
+            "cutLabel: \"Cortar Previo a Programa (C)\"",
+            "t(\"Cortar Previo a Programa\")",
+        ),
+        (
+            "statusReconnecting: \"Reconectando (intento {attempt})\"",
+            "t(\"Reconectando\")",
+        ),
+    ];
+    let operator: &[(&str, &str)] = &[
+        ("program: \"Programa\"", "t(\"Programa\")"),
+        ("preview: \"Previo\"", "\"Previo\""),
+        ("cut: \"CORTE\"", "t(\"CORTE\")"),
+        ("fadeToBlack: \"Fundido a negro\"", "t(\"Fundido a negro\")"),
+        ("transitionFade: \"Fundido\"", "t(\"Fundido\")"),
+        ("transitionWipe: \"Cortina\"", "t(\"Cortina\")"),
+        (
+            "transitionAlphaFade: \"Fundido alfa\"",
+            "t(\"Fundido alfa\")",
+        ),
+        ("transitionSlide: \"Deslizar\"", "t(\"Deslizar\")"),
+        (
+            "ftbFading: \"FUNDIENDO A NEGRO\"",
+            "\"FUNDIENDO A NEGRO {percent}\"",
+        ),
+        (
+            "startRecorder: \"Iniciar grabador {slot}\"",
+            "t(\"Iniciar grabador {slot}\")",
+        ),
+        (
+            "stopRecorder: \"Detener grabador {slot}\"",
+            "t(\"Detener grabador {slot}\")",
+        ),
+        (
+            "streamReconnecting: \"Reconectando\"",
+            "t(\"RECONECTANDO\")",
+        ),
+        (
+            "muteLabel: \"Silenciar {input}\"",
+            "t(\"Silenciar esta entrada\")",
+        ),
+        (
+            "permission: \"Esta sesión no tiene el permiso {name}\"",
+            "esta sesión no tiene el permiso transition",
+        ),
+        (
+            "noStreams: \"No hay destinos de transmisión configurados.\"",
+            "t(\"Sin destinos de transmisión\")",
+        ),
+        ("recorderRequestedOn: \"PEDIDO: REC\"", "PEDIDO"),
+    ];
+    for (path, spanish) in [("/tally", tally), ("/operator", operator)] {
+        let (_, _, body) = http(
+            daemon.web,
+            &format!("GET {path} HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+        );
+        let page = String::from_utf8(body).unwrap();
+        let english = strings_table(&page, "en");
+        let spanish_table = strings_table(&page, "es");
+        let keys = |table: &[(String, String)]| {
+            table.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(&english),
+            keys(&spanish_table),
+            "{path}: English and Spanish define the same keys in the same order"
+        );
+        // Every placeholder of an English string appears in its Spanish one.
+        for ((key, en), (_, es)) in english.iter().zip(&spanish_table) {
+            for (placeholder, _) in en
+                .split('{')
+                .skip(1)
+                .filter_map(|part| part.split_once('}'))
+            {
+                assert!(
+                    es.contains(&format!("{{{placeholder}}}")),
+                    "{path}: {key} lacks {{{placeholder}}} in Spanish"
+                );
+            }
+        }
+        // Every key the markup or the script names is in the table.
+        let known = keys(&english);
+        for marker in ["data-i18n=\"", "data-i18n-label=\"", "tr(\""] {
+            for used in page.split(marker).skip(1) {
+                let key = &used[..used.find('"').unwrap()];
+                assert!(
+                    known.iter().any(|known| known == key),
+                    "{path}: {marker}{key}"
+                );
+            }
+        }
+        // The language follows a `#lang=`, the saved toggle, then the browser.
+        for source in [
+            "params.get(\"lang\") || savedLanguage()",
+            "navigator.languages",
+            "const LANGUAGE_KEY = \"freemix.web.language\";",
+            "document.documentElement.lang = language;",
+            "id=\"language\" lang=\"es\"",
+            "addEventListener(\"click\", toggleLanguage)",
+        ] {
+            assert!(page.contains(source), "{path}: {source}");
+        }
+        for (text, catalog) in spanish {
+            assert!(page.contains(text), "{path}: {text}");
+            assert!(
+                studio.contains(catalog),
+                "Studio's es catalog lacks {catalog}"
+            );
+        }
     }
 }

@@ -958,9 +958,9 @@ fn status_listener_answers_probes_while_silent_connections_flood_it() {
 /// Left alone, the daemon drains in a few milliseconds, which probe threads
 /// starved by a loaded machine can miss entirely. So the test holds the
 /// window open itself: a tally-page request whose head never completes keeps
-/// the WebSocket gateway's worker reading until its bounded handshake timeout,
-/// and the gateway's shutdown (which runs while the status listener still
-/// answers) joins that worker.
+/// that connection's WebSocket gateway thread reading until its bounded handshake
+/// timeout, and the gateway's shutdown (which runs while the status listener
+/// still answers) joins that thread.
 #[cfg(unix)]
 #[test]
 fn readiness_reports_draining_after_a_cooperative_stop_request() {
@@ -1003,9 +1003,9 @@ fn readiness_reports_draining_after_a_cooperative_stop_request() {
         })
         .collect();
 
-    // The gateway's listener hands an accepted socket to its worker within a
+    // The gateway's listener starts a thread for an accepted socket within a
     // poll interval (25 ms); the head start keeps the stop from racing that
-    // handoff, and the worker then reads for up to its handshake timeout.
+    // handoff, and that thread then reads for up to its handshake timeout.
     let mut stalled_head =
         TcpStream::connect_timeout(&web_address, Duration::from_secs(1)).unwrap();
     stalled_head
