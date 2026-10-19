@@ -146,6 +146,8 @@ mod recorder_status;
 mod recording_session;
 mod scene_preview;
 mod scene_render;
+#[cfg(feature = "native-media")]
+mod source_wait;
 mod status_listener;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;

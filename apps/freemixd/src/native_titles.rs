@@ -39,10 +39,10 @@
 //! holds the frame until every title the engine tracks on an overlay has
 //! ingested the pose of exactly that frame, so the first In frame, each
 //! phase frame, and the last Out frame go to air as projected. A frame is
-//! held at most [`MAX_TITLE_POSE_WAIT`] past its host deadline and then
-//! shows the latest pose ingested; such frames are counted. The bound is
-//! from the deadline, so a renderer slower than the frame rate costs the
-//! output clock at most that bound in total, not on every phase frame.
+//! held at most [`MAX_TITLE_POSE_WAIT`] past its host deadline or, when the
+//! loop runs late, past the moment it first waited ([`SourceWait`]), and
+//! then shows the latest pose ingested; such frames are counted. A late
+//! loop therefore still airs each phase pose instead of skipping them.
 //!
 //! Production clock elements read their template's clocks in the daemon's
 //! clock domain (see [`title_render::TitleTime`]): the monotonic clock is the
@@ -75,6 +75,7 @@ use fm_titles::AnimSample;
 use fm_types::{FrameRate, InputId};
 use fm_video::ImageFrame;
 
+use crate::source_wait::SourceWait;
 use crate::title_render::{self, TitleAssets};
 
 /// The pose the engine projects for each title it tracks on `projected`.
@@ -206,12 +207,8 @@ struct WorkerState {
     poses: BTreeMap<InputId, (AnimSample, u64)>,
     /// The pose of the frame each title last ingested.
     ingested: BTreeMap<InputId, AnimSample>,
-    /// The last projected frame counted in `late_poses`.
-    late_frame: Option<u64>,
     renders: u64,
     failed_renders: u64,
-    /// Frames realized before an animating title's pose was ingested.
-    late_poses: u64,
     shutdown: bool,
 }
 
@@ -229,6 +226,8 @@ pub(crate) struct NativeTitleSources {
     worker: Option<JoinHandle<()>>,
     /// The state last handed to the worker, compared on the loop.
     submitted: BTreeMap<InputId, TitleInput>,
+    /// How long the projected frame has waited for its poses.
+    wait: SourceWait,
 }
 
 impl NativeTitleSources {
@@ -311,6 +310,7 @@ impl NativeTitleSources {
                 assets,
                 worker,
                 submitted,
+                wait: SourceWait::new(MAX_TITLE_POSE_WAIT),
             },
             seeds,
         ))
@@ -420,19 +420,28 @@ impl NativeTitleSources {
 
     /// Whether `projected`, due at host instant `deadline`, may be realized:
     /// every title the engine tracks on an overlay has ingested the pose of
-    /// exactly this frame, or the frame is [`MAX_TITLE_POSE_WAIT`] past its
-    /// deadline. The bound is measured from the deadline, not from when the
-    /// frame started waiting, so a renderer that cannot keep up delays the
-    /// output by at most the bound in total rather than on every frame.
-    pub(crate) fn covered(&self, projected: &FrameResult, deadline: Instant) -> bool {
-        self.covered_at(projected.frame.get(), &projected_poses(projected), deadline)
+    /// exactly this frame, or the frame waited for it long enough
+    /// ([`SourceWait::waited_out`]).
+    pub(crate) fn covered(&mut self, projected: &FrameResult, deadline: Instant) -> bool {
+        self.covered_at(
+            projected.frame.get(),
+            &projected_poses(projected),
+            deadline,
+            Instant::now(),
+        )
     }
 
-    fn covered_at(&self, frame: u64, poses: &[(InputId, AnimSample)], deadline: Instant) -> bool {
+    fn covered_at(
+        &mut self,
+        frame: u64,
+        poses: &[(InputId, AnimSample)],
+        deadline: Instant,
+        now: Instant,
+    ) -> bool {
         if self.worker.is_none() {
             return true;
         }
-        let mut state = self.shared.lock();
+        let state = self.shared.lock();
         let pending = poses.iter().any(|(input, pose)| {
             self.submitted.contains_key(input)
                 && state
@@ -441,18 +450,8 @@ impl NativeTitleSources {
                     .map_or(AnimSample::Hold, |ingested| *ingested)
                     != *pose
         });
-        if !pending {
-            return true;
-        }
-        if Instant::now() < deadline + MAX_TITLE_POSE_WAIT {
-            return false;
-        }
-        // Count each frame realized with a stale pose once.
-        if state.late_frame != Some(frame) {
-            state.late_frame = Some(frame);
-            state.late_poses = state.late_poses.saturating_add(1);
-        }
-        true
+        drop(state);
+        !pending || self.wait.waited_out(frame, deadline, now)
     }
 
     fn observe_on_air(&self, frame: u64, on_air: impl Iterator<Item = InputId>) {
@@ -488,8 +487,8 @@ impl NativeTitleSources {
 
     /// Frames realized before an animating title's pose was ingested.
     #[cfg(test)]
-    pub(crate) fn late_poses(&self) -> u64 {
-        self.shared.lock().late_poses
+    pub(crate) const fn late_poses(&self) -> u64 {
+        self.wait.late_frames()
     }
 
     /// The pose of the frame `input` last ingested.
@@ -944,24 +943,23 @@ mod tests {
         use fm_titles::fm_animation::{ClipPosition, ClipState};
 
         let project = project(&[(20, title(FADE_URI, 0, [200, 100, 50, 255]))]);
-        let (sources, seeds) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
+        let (mut sources, seeds) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
         // Off air the title is seeded in its Hold pose: fully faded in.
         assert_eq!(bar_alpha(&seeds[0].1), 255);
         let first = [(input_id(20), ClipState::In(ClipPosition::frame(0)))];
-        // The take frame is held, even past its deadline, until its pose is
-        // ingested.
+        // The take frame is held until its pose is ingested.
         let due = Instant::now();
-        assert!(!sources.covered_at(5, &first, due));
+        assert!(!sources.covered_at(5, &first, due, Instant::now()));
         sources.observe_poses(5, &first);
         let rendered = wait_for_frame(&sources);
         assert_eq!(bar_alpha(&rendered[0].1), 0);
-        assert!(sources.covered_at(5, &first, due));
+        assert!(sources.covered_at(5, &first, due, Instant::now()));
 
         // Half way through the In phase.
         let half = [(input_id(20), ClipState::In(ClipPosition::frame(5)))];
         sources.observe_poses(10, &half);
         assert_eq!(bar_alpha(&wait_for_frame(&sources)[0].1), 127);
-        assert!(sources.covered_at(10, &half, Instant::now()));
+        assert!(sources.covered_at(10, &half, Instant::now(), Instant::now()));
 
         // Settled: the Hold pose renders once, then nothing while it holds.
         sources.observe_poses(15, &[(input_id(20), ClipState::Hold)]);
@@ -976,39 +974,42 @@ mod tests {
         // bound past its deadline, and is counted late once.
         let stalled = [(input_id(20), ClipState::In(ClipPosition::frame(9)))];
         let due = Instant::now();
-        assert!(!sources.covered_at(20, &stalled, due));
-        thread::sleep(MAX_TITLE_POSE_WAIT);
-        assert!(sources.covered_at(20, &stalled, due));
-        assert!(sources.covered_at(20, &stalled, due));
+        assert!(!sources.covered_at(20, &stalled, due, due));
+        let past = due + MAX_TITLE_POSE_WAIT;
+        assert!(sources.covered_at(20, &stalled, due, past));
+        assert!(sources.covered_at(20, &stalled, due, past));
         assert_eq!(sources.late_poses(), 1);
     }
 
+    /// A loop running seconds behind (an overloaded host) still gives each
+    /// animating title's pose time to be rendered and ingested, so the In
+    /// and Out phases air every pose instead of skipping them; a pose that
+    /// never comes still releases its frame, counted once.
     #[test]
-    fn a_renderer_that_cannot_keep_up_delays_the_output_by_the_bound_once() {
+    fn a_late_frame_still_waits_for_its_pose() {
         use fm_titles::fm_animation::{ClipPosition, ClipState};
 
         let project = project(&[(20, title(FADE_URI, 0, [200, 100, 50, 255]))]);
-        let (sources, _) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
-        // Frames 0..5 of an In phase at 50 fps whose poses are never
-        // ingested (the renderer is slower than the frame rate). The first
-        // frame waits out the bound past its deadline; the output is then
-        // already that late, so the following frames, whose deadlines have
-        // all passed by the bound, do not each wait it again.
-        let origin = Instant::now();
-        let period = Duration::from_millis(20);
-        let deadline = |frame: u32| origin + period * frame;
+        let (mut sources, _) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
         let pose = |frame: u32| [(input_id(20), ClipState::In(ClipPosition::frame(frame)))];
-        assert!(!sources.covered_at(0, &pose(0), deadline(0)));
-        thread::sleep(MAX_TITLE_POSE_WAIT + period * 5);
-        let started = Instant::now();
-        for frame in 0..5 {
-            assert!(
-                sources.covered_at(u64::from(frame), &pose(frame), deadline(frame)),
-                "frame {frame} waits afresh"
-            );
-        }
-        assert!(started.elapsed() < MAX_TITLE_POSE_WAIT);
-        assert_eq!(sources.late_poses(), 5);
+        let deadline = Instant::now();
+        let now = deadline + Duration::from_secs(8);
+        assert!(
+            !sources.covered_at(0, &pose(0), deadline, now),
+            "waits on its first check"
+        );
+        // The pose arrives within the bound and the frame airs it.
+        sources.observe_poses(0, &pose(0));
+        wait_for_frame(&sources);
+        assert!(sources.covered_at(0, &pose(0), deadline, now + Duration::from_millis(50)));
+        assert_eq!(sources.late_poses(), 0);
+        // A pose never rendered holds the next late frame for the bound.
+        let later = now + MAX_TITLE_POSE_WAIT;
+        assert!(!sources.covered_at(1, &pose(1), deadline, later));
+        assert!(!sources.covered_at(1, &pose(1), deadline, later + Duration::from_millis(99)));
+        assert!(sources.covered_at(1, &pose(1), deadline, later + MAX_TITLE_POSE_WAIT));
+        assert!(sources.covered_at(1, &pose(1), deadline, later + MAX_TITLE_POSE_WAIT * 2));
+        assert_eq!(sources.late_poses(), 1);
     }
 
     #[test]
@@ -1437,7 +1438,7 @@ mod daemon_tests {
         let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
         write_template_animated(&store, fading_animation());
         let stored = stored_project([0, 0, 255, 255]);
-        let (sources, titles) = resolve(&store, &stored);
+        let (sources, mut titles) = resolve(&store, &stored);
         let mut playback = runtime
             .preflight_resolved_source_playback_mixed_blocking(
                 None,
