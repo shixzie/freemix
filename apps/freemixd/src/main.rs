@@ -245,6 +245,9 @@ type AppResult<T> = Result<T, Box<dyn Error>>;
 type SharedControl = Rc<RefCell<ControlService<Policy>>>;
 
 const NATIVE_IO_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// How often a due frame that still waits for a source checks again.
+#[cfg(feature = "native-media")]
+const NATIVE_SOURCE_WAIT_POLL: Duration = Duration::from_millis(1);
 const CLIENT_READ_POLL_INTERVAL: Duration = NATIVE_IO_POLL_INTERVAL;
 #[cfg(all(feature = "native-media", target_os = "macos"))]
 const CAMERA_INITIAL_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
@@ -6651,7 +6654,12 @@ impl NativeDaemon {
             if covered && now >= host_deadline {
                 break (host_deadline, now);
             }
-            let host_wait = host_deadline.saturating_duration_since(now);
+            // A due frame still waiting for its sources polls briefly
+            // instead of spinning, leaving the host to the workers it
+            // waits for.
+            let host_wait = host_deadline
+                .saturating_duration_since(now)
+                .max(NATIVE_SOURCE_WAIT_POLL);
             thread::sleep(host_wait.min(NATIVE_IO_POLL_INTERVAL));
         };
         self.telemetry

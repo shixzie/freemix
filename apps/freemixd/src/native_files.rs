@@ -22,8 +22,9 @@
 //!
 //! [`NativeMediaFiles::covered`] holds a frame until every media input's
 //! projected tick has been presented, at most [`MAX_MEDIA_FRAME_WAIT`] past
-//! its host deadline; a frame realized without it shows the input's previous
-//! picture and silence, and is counted. A planned frame a growing source
+//! its host deadline or, when the loop runs late, past the moment it first
+//! waited; a frame realized without it shows the input's previous picture
+//! and silence, and is counted. A planned frame a growing source
 //! cannot produce yet repeats the previous picture (`video_late`).
 //!
 //! A growing source is refreshed on every tick that waits at its live edge
@@ -182,6 +183,9 @@ pub(crate) struct NativeMediaFiles {
     dimensions: (u32, u32),
     late_frame: Option<u64>,
     late_frames: u64,
+    /// The engine frame [`Self::covered`] last found waiting for a tick,
+    /// and when it first did.
+    asked: Option<(u64, Instant)>,
     /// The codec adapter workers open their files through; `None` until a
     /// daemon without media files at startup adds one.
     adapter: Option<Adapter>,
@@ -500,6 +504,7 @@ impl NativeMediaFiles {
                 dimensions,
                 late_frame: None,
                 late_frames: 0,
+                asked: None,
                 adapter: Some(adapter.clone()),
             },
             seeds,
@@ -523,6 +528,7 @@ impl NativeMediaFiles {
                 dimensions,
                 late_frame: None,
                 late_frames: 0,
+                asked: None,
                 adapter: None,
             },
             Vec::new(),
@@ -704,7 +710,7 @@ impl NativeMediaFiles {
 
     /// Whether `projected`, due at host instant `deadline`, may be realized:
     /// every media input's projected tick has been presented and collected,
-    /// or the frame is [`MAX_MEDIA_FRAME_WAIT`] past its deadline.
+    /// or the frame waited for it long enough ([`Self::waited_out`]).
     pub(crate) fn covered(&mut self, projected: &FrameResult, deadline: Instant) -> bool {
         let frame = projected.frame.get();
         let pending = projected.media.iter().any(|media| {
@@ -718,10 +724,32 @@ impl NativeMediaFiles {
                     })
             })
         });
-        if !pending {
-            return true;
-        }
-        if Instant::now() < deadline + MAX_MEDIA_FRAME_WAIT {
+        !pending || self.waited_out(frame, deadline, Instant::now())
+    }
+
+    /// Whether engine frame `frame`, due at `deadline` and still waiting
+    /// for a media tick at `now`, has waited long enough: until
+    /// [`MAX_MEDIA_FRAME_WAIT`] past the later of its deadline and the
+    /// first time it was found waiting. A frame realized without its tick
+    /// is counted once.
+    ///
+    /// Measuring from the first wait as well as the deadline matters once
+    /// the loop runs late (an overloaded host, a slow GPU): every deadline
+    /// is then long past when its frame is projected, so a wait bounded by
+    /// the deadline alone gave the worker no time at all. Every frame was
+    /// realized before its tick was presented, the tick's audio arrived
+    /// after its frame was mixed and was dropped, and Program stayed silent
+    /// (and repeated each picture one frame late) for as long as the loop
+    /// stayed behind.
+    fn waited_out(&mut self, frame: u64, deadline: Instant, now: Instant) -> bool {
+        let asked = match self.asked {
+            Some((waiting, since)) if waiting == frame => since,
+            _ => {
+                self.asked = Some((frame, now));
+                now
+            }
+        };
+        if now < deadline.max(asked) + MAX_MEDIA_FRAME_WAIT {
             return false;
         }
         if self.late_frame != Some(frame) {
@@ -1146,6 +1174,43 @@ mod tests {
         files.set_closed(input(), false);
         files.present_blanks(10);
         assert!(files.take_completed().is_empty());
+    }
+
+    /// A frame on time waits for its tick until [`MAX_MEDIA_FRAME_WAIT`]
+    /// past its deadline, as before.
+    #[test]
+    fn an_on_time_frame_waits_for_its_tick_until_past_its_deadline() {
+        let mut files = files();
+        let early = Instant::now();
+        let deadline = early + Duration::from_millis(30);
+        assert!(!files.waited_out(9, deadline, early));
+        assert!(!files.waited_out(9, deadline, deadline + Duration::from_millis(99)));
+        assert!(files.waited_out(9, deadline, deadline + MAX_MEDIA_FRAME_WAIT));
+        assert_eq!(files.late_frames(), 1);
+    }
+
+    /// A loop running seconds behind (an overloaded host) still gives each
+    /// frame's media tick time to be presented, so its audio is mixed
+    /// instead of arriving after the frame and being dropped; a tick that
+    /// never comes still releases the frame, counted once.
+    #[test]
+    fn a_late_frame_still_waits_for_its_tick() {
+        let mut files = files();
+        let deadline = Instant::now();
+        let now = deadline + Duration::from_secs(8);
+        assert!(
+            !files.waited_out(9, deadline, now),
+            "waits on its first check"
+        );
+        assert!(!files.waited_out(9, deadline, now + Duration::from_millis(50)));
+        assert!(files.waited_out(9, deadline, now + MAX_MEDIA_FRAME_WAIT));
+        assert!(files.waited_out(9, deadline, now + MAX_MEDIA_FRAME_WAIT * 2));
+        assert_eq!(files.late_frames(), 1);
+        // The next late frame gets its own wait.
+        let later = now + MAX_MEDIA_FRAME_WAIT * 2;
+        assert!(!files.waited_out(10, deadline, later));
+        assert!(files.waited_out(10, deadline, later + MAX_MEDIA_FRAME_WAIT));
+        assert_eq!(files.late_frames(), 2);
     }
 
     #[test]
