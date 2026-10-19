@@ -409,6 +409,10 @@ fn schema_50_monitor_output_is_a_validated_device_with_its_own_level() {
         "my headset".into(),
         "auriculares\u{e1}".into(),
         "tab\there".into(),
+        // The device is FFmpeg's last argument: a leading `-` would be read
+        // as an option (`-report` writes a log file into the daemon's cwd).
+        "-report".into(),
+        "-y".into(),
     ] {
         assert_eq!(
             validate_audio_monitor_device(&bad),

@@ -1016,6 +1016,76 @@ fn stream_target_changed_events_add_replace_and_remove_destinations() {
     assert_eq!(model.sync_status(), &SyncStatus::Current);
 }
 
+/// Protocol 2.54: undoing a removal brings a destination back at its old
+/// place; the mirrored list follows the event's roster order, exactly like a
+/// fresh snapshot, instead of appending the returning entry.
+#[test]
+fn a_returning_destination_takes_its_roster_place() {
+    let project_id = project(10);
+    let mut initial = snapshot(project_id, 4);
+    initial.streams = vec![stream(1, "A", false), stream(3, "C", false)];
+    initial.stream_targets = vec![
+        stream_target_entry(1, "A", true),
+        stream_target_entry(3, "C", true),
+    ];
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(initial).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let ids = |model: &ClientModel| -> Vec<u128> {
+        model
+            .state()
+            .unwrap()
+            .stream_targets()
+            .iter()
+            .map(|entry| entry.target.get().get())
+            .collect()
+    };
+    // B returns between A and C (the undo of its removal).
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            5,
+            DurableChange::StreamTargetChanged {
+                target: NonZeroU128::new(2).unwrap(),
+                entry: Some(Box::new(stream_target_entry(2, "B", true))),
+                streams: vec![
+                    stream(1, "A", false),
+                    stream(2, "B", false),
+                    stream(3, "C", false),
+                ],
+            },
+        ))
+        .unwrap();
+    assert_eq!(ids(&model), [1, 2, 3]);
+    let view: Vec<u128> = model
+        .view()
+        .unwrap()
+        .stream_targets
+        .iter()
+        .map(|entry| entry.target.get().get())
+        .collect();
+    assert_eq!(view, [1, 2, 3]);
+    // An existing destination moved to the front follows the roster too.
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            6,
+            DurableChange::StreamTargetChanged {
+                target: NonZeroU128::new(3).unwrap(),
+                entry: Some(Box::new(stream_target_entry(3, "C", true))),
+                streams: vec![
+                    stream(3, "C", false),
+                    stream(1, "A", false),
+                    stream(2, "B", false),
+                ],
+            },
+        ))
+        .unwrap();
+    assert_eq!(ids(&model), [3, 1, 2]);
+}
+
 #[test]
 fn snapshot_recordings_project_per_slot_into_state_and_view() {
     let project_id = project(10);

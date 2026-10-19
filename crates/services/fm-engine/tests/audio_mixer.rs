@@ -798,6 +798,7 @@ fn the_monitor_device_is_an_undoable_padlocked_edit_and_its_level_is_live() {
     for (key, command, field) in [
         ("spaces", device(Some("my headset")), "device"),
         ("empty", device(Some("")), "device"),
+        ("option", device(Some("-report")), "device"),
         ("loud", level(24_001, false), "gain_millidb"),
         ("quiet", level(-96_001, false), "gain_millidb"),
     ] {

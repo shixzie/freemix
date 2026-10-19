@@ -360,6 +360,7 @@ fn mixer_commands_are_strict() {
         "\tpayload=audio_monitor_device",
         "\tpayload=audio_monitor_device\tdevice=my%20headset",
         "\tpayload=audio_monitor_device\tdevice=caf%C3%A9",
+        "\tpayload=audio_monitor_device\tdevice=-report",
         "\tpayload=audio_monitor_level\tgain_millidb=24001\tmuted=0",
         "\tpayload=audio_monitor_level\tgain_millidb=0\tmuted=yes",
         "\tpayload=audio_monitor_level\tmuted=0",
@@ -827,4 +828,7 @@ fn snapshot_carries_the_monitor_output() {
     ));
     assert!(!fm_protocol::audio_monitor_device_is_valid(""));
     assert!(!fm_protocol::audio_monitor_device_is_valid("two words"));
+    // A leading `-` would reach the daemon's FFmpeg child as an option.
+    assert!(!fm_protocol::audio_monitor_device_is_valid("-report"));
+    assert!(fm_protocol::audio_monitor_device_is_valid("hw:0-1"));
 }

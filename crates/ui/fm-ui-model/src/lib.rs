@@ -4256,6 +4256,19 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                     .stream_targets
                     .retain(|existing| existing.target.get() != target),
             }
+            // The roster carries the authored order: an undone removal (or a
+            // positioned edit) puts its destination back at its place, not
+            // at the end where a new entry is appended.
+            let place = |target: NonZeroU128| {
+                state
+                    .streams
+                    .iter()
+                    .position(|stream| stream.target == target)
+                    .unwrap_or(usize::MAX)
+            };
+            state
+                .stream_targets
+                .sort_by_key(|entry| place(entry.target.get()));
         }
 
         DurableChange::RecordingChanged { recorder, active } => {

@@ -1645,10 +1645,10 @@ Protocol 2.53 adds the headphone output (AU-001): the monitor bus plays on a
 local audio output device at its own level and mute, independent of Program.
 
 - `payload=audio_monitor_device` (`device`: an ALSA output name of 1 to 64
-  bytes of printable ASCII without spaces, or empty for none) chooses the
-  device. It is an undoable, padlock-guarded project edit authorized as an
-  audio operation; choosing a device again, even the current one, reopens
-  it, so a failed device is retried.
+  bytes of printable ASCII without spaces, not starting with `-`, or empty
+  for none) chooses the device. It is an undoable, padlock-guarded project
+  edit authorized as an audio operation; choosing a device again, even the
+  current one, reopens it, so a failed device is retried.
 - `payload=audio_monitor_level` (`gain_millidb` -96000..=24000, `muted`
   `0|1`) moves the headphone feed's level. It is a live audio operation:
   never recorded, never undone, never padlock-guarded. It changes neither

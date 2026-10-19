@@ -291,8 +291,8 @@ impl Default for AudioMonitorOutput {
 /// Why a monitor output device name is refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioMonitorDeviceError {
-    /// The name is empty, longer than [`MAX_AUDIO_MONITOR_DEVICE_BYTES`], or
-    /// not printable ASCII without spaces.
+    /// The name is empty, longer than [`MAX_AUDIO_MONITOR_DEVICE_BYTES`],
+    /// not printable ASCII without spaces, or starts with `-`.
     Invalid,
 }
 
@@ -302,7 +302,7 @@ impl fmt::Display for AudioMonitorDeviceError {
             Self::Invalid => write!(
                 formatter,
                 "monitor output device must be 1 to {MAX_AUDIO_MONITOR_DEVICE_BYTES} bytes of \
-                 printable ASCII without spaces"
+                 printable ASCII without spaces, not starting with -"
             ),
         }
     }
@@ -312,7 +312,9 @@ impl std::error::Error for AudioMonitorDeviceError {}
 
 /// Checks a monitor output device name: 1 to
 /// [`MAX_AUDIO_MONITOR_DEVICE_BYTES`] bytes of printable ASCII without
-/// spaces, the same rule as a capture input's ALSA device.
+/// spaces, the same rule as a capture input's ALSA device, and not starting
+/// with `-`: the name is the last argument of the daemon's `FFmpeg` child,
+/// which would read `-report` or `-y` as an option instead of a device.
 ///
 /// # Errors
 ///
@@ -320,6 +322,7 @@ impl std::error::Error for AudioMonitorDeviceError {}
 pub fn validate_audio_monitor_device(device: &str) -> Result<(), AudioMonitorDeviceError> {
     if device.is_empty()
         || device.len() > MAX_AUDIO_MONITOR_DEVICE_BYTES
+        || device.starts_with('-')
         || !device.bytes().all(|byte| byte.is_ascii_graphic())
     {
         Err(AudioMonitorDeviceError::Invalid)

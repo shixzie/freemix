@@ -70,11 +70,13 @@ pub const MAX_AUDIO_MONITOR_DEVICE_BYTES: usize = 64;
 
 /// Whether `device` is a usable monitor output device name: 1 to
 /// [`MAX_AUDIO_MONITOR_DEVICE_BYTES`] bytes of printable ASCII without
-/// spaces (2.53).
+/// spaces, not starting with `-` (2.53). The name is the last argument of
+/// the daemon's `FFmpeg` child, which would read a leading `-` as an option.
 #[must_use]
 pub fn audio_monitor_device_is_valid(device: &str) -> bool {
     !device.is_empty()
         && device.len() <= MAX_AUDIO_MONITOR_DEVICE_BYTES
+        && !device.starts_with('-')
         && device.bytes().all(|byte| byte.is_ascii_graphic())
 }
 

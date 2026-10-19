@@ -187,7 +187,11 @@ impl MonitorOutput {
 
     /// Whether the device is still being written.
     pub fn health(&mut self) -> MonitorOutputHealth {
-        if !self.failed.load(Ordering::Acquire) && matches!(self.child.try_wait(), Ok(Some(_))) {
+        // Always poll the child, even once a failed write already marked the
+        // output failed: an exited child is reaped here rather than left a
+        // zombie until the device is chosen again. `try_wait` keeps the
+        // status once reaped, so polling again is harmless.
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
             self.failed.store(true, Ordering::Release);
         }
         if self.failed.load(Ordering::Acquire) {
@@ -351,6 +355,42 @@ mod tests {
                 "hw:CARD=Headset,DEV=0"
             ]
         );
+    }
+
+    /// The child's process state letter from `/proc/<pid>/stat` (`Z` for a
+    /// zombie), or `None` once it is gone.
+    #[cfg(target_os = "linux")]
+    fn process_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(") ")?.1.chars().next()
+    }
+
+    /// A device child that exits is reaped by the health poll even when a
+    /// failed write noticed the exit first, so no zombie outlives it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_exited_device_child_is_reaped_after_a_failed_write() {
+        let mut output = MonitorOutput::start(&OsString::from("true"), &[], 2, 1.0).unwrap();
+        let pid = output.child.id();
+        let planes = vec![vec![0.25; 4_096]; 2];
+        let started = std::time::Instant::now();
+        // Only the writer observes the exit: the health poll is not called
+        // until a write has failed.
+        while !output.failed.load(Ordering::Acquire) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "no write failed"
+            );
+            output.push(&planes, 4_096, 1.0);
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(output.health(), MonitorOutputHealth::Failed);
+        assert_ne!(
+            process_state(pid),
+            Some('Z'),
+            "the exited device child was left a zombie"
+        );
+        assert_eq!(output.health(), MonitorOutputHealth::Failed);
     }
 
     #[test]
