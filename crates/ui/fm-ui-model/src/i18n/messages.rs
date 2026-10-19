@@ -469,6 +469,15 @@ messages! {
     ShortcutGroupConsole => t("Console"),
     ShortcutHelp => t("Show or hide this keyboard reference"),
     ShortcutCloseDialog => t("Close the open menu, dialog, or reference"),
+    ShortcutGroupWindows => t("Windows"),
+    ShortcutGroupOutput => t("Recording and streaming"),
+    ShortcutScripts => t("Open or close the Scripts window"),
+    ShortcutLiveLan => t("Open or close the LiveLAN viewers window"),
+    ShortcutRecord => t("Start or stop recorder REC 1"),
+    ShortcutStartStreams => t("Start every stopped stream destination"),
+    ShortcutStopStreams => t("Stop every running stream destination"),
+    MenuStartAllStreams => t("Start all streams"),
+    MenuStopAllStreams => t("Stop all streams"),
     KeyHelp => t("? · F1"),
 
     // Output rows.

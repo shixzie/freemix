@@ -813,22 +813,27 @@ pub(crate) fn draw_group_keys(
     let l = l10n::locale(ui.ctx());
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
-        for (action, label, hover) in [
+        for (action, label, hover, keys) in [
             (
                 StreamGroupAction::StartAll,
                 Msg::StreamStartAllKey,
                 Msg::StreamStartAllHover,
+                crate::keymap::START_STREAMS_SHORTCUT,
             ),
             (
                 StreamGroupAction::StopAll,
                 Msg::StreamStopAllKey,
                 Msg::StreamStopAllHover,
+                crate::keymap::STOP_STREAMS_SHORTCUT,
             ),
         ] {
             let reason = group_unavailable_reason(state, action);
             if ui
                 .add_enabled(reason.is_none(), small_button(l.text(label)))
-                .hint(l.text(hover), reason.unwrap_or(""))
+                .hint(
+                    &crate::l10n::with_key(l, l.text(hover), keys),
+                    reason.unwrap_or(""),
+                )
                 .clicked()
                 && let Some(action) = stream_group_action(state, action)
             {

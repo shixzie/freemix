@@ -443,6 +443,11 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
             },
             &slot_arg,
         );
+        let action = if slot == 1 {
+            crate::l10n::with_key(l, &action, crate::keymap::RECORD_SHORTCUT)
+        } else {
+            action
+        };
         let tooltip = l.format(
             Msg::RecorderRowHover,
             &[slot_arg[0], ("status", Arg::Str(l.tr(row.status)))],

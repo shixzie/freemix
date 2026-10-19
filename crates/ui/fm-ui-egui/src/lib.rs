@@ -51,6 +51,7 @@ mod input_bank;
 mod input_catalogue;
 mod input_lifecycle;
 mod input_thumbnail_ui;
+mod keymap;
 mod l10n;
 mod live_lan;
 mod media_transport;
@@ -958,17 +959,21 @@ pub(crate) enum ShortcutGroup {
     Editing,
     InputBank,
     Cues,
+    Output,
+    Windows,
     Console,
 }
 
 impl ShortcutGroup {
     /// Every group in reference order.
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Switching,
         Self::Transitions,
         Self::Editing,
         Self::InputBank,
         Self::Cues,
+        Self::Output,
+        Self::Windows,
         Self::Console,
     ];
 
@@ -980,6 +985,8 @@ impl ShortcutGroup {
             Self::Editing => Msg::ShortcutGroupEditing.en(),
             Self::InputBank => Msg::ShortcutGroupInputBank.en(),
             Self::Cues => Msg::ShortcutGroupCues.en(),
+            Self::Output => Msg::ShortcutGroupOutput.en(),
+            Self::Windows => Msg::ShortcutGroupWindows.en(),
         }
     }
 }
@@ -996,7 +1003,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 24] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 29] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -1093,6 +1100,59 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 24] = [
         action: Msg::ShortcutCueGo.en(),
         key: Some(Key::G),
     },
+    // Handled by [`keymap::output_chord_intents`].
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: keymap::RECORD_SHORTCUT,
+        action: Msg::ShortcutRecord.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: keymap::START_STREAMS_SHORTCUT,
+        action: Msg::ShortcutStartStreams.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: keymap::STOP_STREAMS_SHORTCUT,
+        action: Msg::ShortcutStopStreams.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_color_on_key`].
+    ShortcutEntry {
+        group: ShortcutGroup::Windows,
+        keys: studio_color::COLOR_SHORTCUT,
+        action: Msg::ShortcutColor.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_animation_on_key`].
+    ShortcutEntry {
+        group: ShortcutGroup::Windows,
+        keys: studio_animation::ANIMATION_SHORTCUT,
+        action: Msg::ShortcutAnimation.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_designer_on_key`].
+    ShortcutEntry {
+        group: ShortcutGroup::Windows,
+        keys: scene_designer::SCENE_DESIGNER_SHORTCUT,
+        action: Msg::ShortcutSceneDesigner.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_chord_windows`].
+    ShortcutEntry {
+        group: ShortcutGroup::Windows,
+        keys: keymap::SCRIPTS_SHORTCUT,
+        action: Msg::ShortcutScripts.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Windows,
+        keys: keymap::LIVE_LAN_SHORTCUT,
+        action: Msg::ShortcutLiveLan.en(),
+        key: None,
+    },
     // Handled by [`help_key`], which works whatever the connection state.
     ShortcutEntry {
         group: ShortcutGroup::Console,
@@ -1111,27 +1171,6 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 24] = [
         group: ShortcutGroup::Console,
         keys: preferences::PREFERENCES_SHORTCUT,
         action: Msg::ShortcutPreferences.en(),
-        key: None,
-    },
-    // Handled by [`StudioShell::toggle_color_on_key`].
-    ShortcutEntry {
-        group: ShortcutGroup::Console,
-        keys: studio_color::COLOR_SHORTCUT,
-        action: Msg::ShortcutColor.en(),
-        key: None,
-    },
-    // Handled by [`StudioShell::toggle_animation_on_key`].
-    ShortcutEntry {
-        group: ShortcutGroup::Console,
-        keys: studio_animation::ANIMATION_SHORTCUT,
-        action: Msg::ShortcutAnimation.en(),
-        key: None,
-    },
-    // Handled by [`StudioShell::toggle_designer_on_key`].
-    ShortcutEntry {
-        group: ShortcutGroup::Console,
-        keys: scene_designer::SCENE_DESIGNER_SHORTCUT,
-        action: Msg::ShortcutSceneDesigner.en(),
         key: None,
     },
     ShortcutEntry {
@@ -1620,6 +1659,7 @@ impl StudioShell {
             ui,
             edit_history_availability(state),
         ));
+        intents.extend(keymap::output_chord_intents(ui, state));
         intents
     }
 
@@ -1659,13 +1699,14 @@ impl StudioShell {
         }
     }
 
-    /// The keys that open and close the keyboard reference and the
-    /// Colour window.
-    fn toggle_windows_on_keys(&mut self, ui: &mut Ui) {
+    /// The keys that open and close the keyboard reference and the tool
+    /// windows.
+    fn toggle_windows_on_keys(&mut self, ui: &mut Ui, state: &StudioUiState) {
         self.toggle_help_on_key(ui);
         self.toggle_color_on_key(ui);
         self.toggle_animation_on_key(ui);
         self.toggle_designer_on_key(ui);
+        self.toggle_chord_windows(ui, state);
     }
 
     /// Whether a dialog, menu, or popup owns the keyboard. Dialogs are modal
@@ -1756,7 +1797,7 @@ impl StudioShell {
                 )
             }),
         );
-        self.toggle_windows_on_keys(ui);
+        self.toggle_windows_on_keys(ui, state);
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
         self.restore_tiles_on_escape(ui);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
@@ -2552,7 +2593,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.group == ShortcutGroup::Console)
             .collect();
-        assert_eq!(console.len(), 8);
+        assert_eq!(console.len(), 5);
         assert_eq!(console[0].keys, Msg::KeyHelp.en());
         assert!(console.iter().all(|entry| entry.key.is_none()));
         // Every group has entries, and every entry's group is drawn.

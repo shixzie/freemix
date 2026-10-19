@@ -74,8 +74,10 @@ a new target); the input bank as tally-bordered tiles with a tally strip
 along the top edge, sized to fill the card (up to 320 px wide; the bank
 scrolls only when even minimum-width tiles do not fit) (click = Preview, double-click or `CUT` = Preview then Cut,
 `···` or right-click = Preview/Cut/Rename/Move menu); the audio mixer with vertical
-channel strips whose meters and faders grow with the window, and a pinned
-Master meter strip. Each strip has a fixed-height name plate (the input's key
+channel strips that share the panel (wider, up to 150 px, and taller, up
+to 1000 px of meter and fader, with finer scale marks from 360 px), the
+Monitor and Master strips pinned at the right, and horizontal scrolling only
+when compact 82 px strips do not fit. Each strip has a fixed-height name plate (the input's key
 cap, tally-tinted, and up to two lines of name ending in an ellipsis; full
 name on hover), a peak-hold readout, a broadcast-style segmented meter, a
 console fader, the gain/balance/delay entries, and LED keys for M (red), S (amber), and AFV
@@ -321,7 +323,7 @@ every six seconds) are visible in the round 7 captures.
 
 Window sizes: (before the docking layout) the side panel took at most a
 quarter of the window (320-560 px). At 2560x1440 the monitors, the input bank tiles (four columns of about
-290 px), and the mixer faders (up to 620 px of travel) grow to use the space.
+290 px), and the mixer faders (up to 1000 px of travel) grow to use the space.
 At 1280x720 the switcher row keeps its full height and the console scrolls to
 reach the lower row; the lower row is at least 370 px tall so the bank and
 mixer cards stay level, and narrow card headers drop the gesture hint before
@@ -350,8 +352,8 @@ the counts and lock chips.
 | `studio-console-mixer.png` | Mixer crop at 1920x1080 (admin) after opening the header's `▾ GAIN · BAL · DLY` disclosure, with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf, on the synthetic meter feed. Each strip now has its `PAN` knob above the keys and, in the disclosure, the label field (placeholder: the input name) and the group picker (`No group`); Main Scene scrolls under the pinned Master strip. The synthetic levels ignore strip gain and mute. |
 | `studio-console-2560.png` | 2560x1440: larger monitors, input tiles in four columns, mixer faders with the full travel; the side panel stops at 560 px. |
 | `studio-console-portrait.png` | 1920x1080 with the demo project's video settings changed to 1080x1920 (Main Scene layers refitted): both wells grow to half the console height and pillarbox the 202x360 portrait frames; the tiles borrowing the frames pillarbox them too. |
-| `studio-console-shortcuts.png` | The keyboard reference opened with `?`: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, including `F5 - F8` (take favourite transition 1 through 4), the tile right-click menu's full list (Preview, Cut, Duplicate, Replace source, Category, Colour, Pause, Close, Rename, Move, Remove), and the Console group (`? · F1`, `Esc`, `Ctrl+,`, `Ctrl+G`, `Ctrl+Shift+A`, `Ctrl+Shift+L` for the layer designer, the scale keys). |
-| `studio-console-spanish-shortcuts.png` | The same reference in Spanish, opened with F1 during a 1920x1080 `--lang es` session (REC 2 recording, O1 on air): `Atajos de teclado`, `Teclas activas`, `Lanzar la transición favorita 1 a 4`, the `Consola` group, and key names in Spanish (`Ctrl+Mayús+Z`, `Tab · Intro`, `Ctrl+Mayús+L`). |
+| `studio-console-shortcuts.png` | The keyboard reference opened with `?` (1920x1080, `--role admin`; recaptured with the complete key map): the green `Keys active` lamp and two columns of groups generated from the table the key handlers are tested against: Switching, Transitions, Editing, and Input bank (the long tile-menu action wraps in its column) on the left; Cue list (`G`), Recording and streaming (`Ctrl+Shift+R` REC 1, `Ctrl+Shift+O` start all streams, `Ctrl+Shift+K` stop all streams), Windows (`Ctrl+G` Colour, `Ctrl+Shift+A` Animation, `Ctrl+Shift+L` layer designer, `Ctrl+Shift+S` Scripts, `Ctrl+Shift+N` LiveLAN viewers), and Console (`? · F1`, `Esc`, `Ctrl+,`, the scale keys) on the right. Windows narrower than about 1070 px keep one scrolling column. |
+| `studio-console-spanish-shortcuts.png` | The same reference in Spanish, opened with F1 (`--lang es`): `Atajos de teclado`, `Teclas activas`, `Grabación y emisión` (`Iniciar o detener la grabadora REC 1`), `Ventanas` (`Abrir o cerrar la ventana Guiones`, `… Espectadores LiveLAN`), `Consola`, and key names in Spanish (`Ctrl+Mayús+R`, `Ctrl+Mayús+S`, `Fin`, `Tab · Intro`). |
 | `studio-console-health-strip.png` | 1920x1080 demo show hovering the `TX —` lamp: the status bar's health strip (`PGM FEED` and `METERS` green, `TX —` amber because the HLS ladder is desired but not live and the simulated daemon sends no transport samples) and its tooltip `Streams: 0 of 2 live · no recent transport samples to measure the rate · 0 A/V pairs dropped`. |
 | `studio-console-layout-restored.png` | Studio restarted on a `studio.conf` saved after dragging the side panel edge to 480 px and hiding the mixer from View: the restored layout (input bank across the full width, 480 px side panel) with View open (`Colour grade…  Ctrl+G`, `Animate title…  Ctrl+Shift+A`, `Design scene layout…  Ctrl+Shift+L`, the Panels checkboxes, the Advanced controls toggles, the five-way Side panel tab choice including `Media`, Language, 12-hour clock), and the enabled `Reset layout` item with its tooltip. |
 | `studio-default-layout.png` | 1920x1080, the Default layout as a fresh `studio.conf` opens it on the demo show (recaptured at Protocol 2.48, schema 45): Preview, Transitions, and Program along the top with Recording & streams beside them, the input bank, audio mixer, and the Overlays/Stingers/Titles/Playlist/Media tab group along the bottom. Both rows' tab bars line up across the console and each starts with its drag grip; Preview and Program are the same width with their 16:9 wells letterboxed in the middle of their tiles; the transition column fits its tile with `MORE`, the `FAVOURITES` row, the collapsed `▸ DETAILS` manual block, and the Fade to Black duration and `Outputs 1/1` keys; the mixer's input strips start at the left beside the pinned `MON` strip (`= MASTER`, `SIP` lit, `METER ONLY`) and Master. |
@@ -414,6 +416,9 @@ the counts and lock chips.
 | `studio-scripts-waiting.png` | Round 6: Camera rotation (`let`, `repeat 4`, `if program == 1` … `else` … `end`, `wait 1500`) run from the CLI and paused at its first wait: the list reads `Camera rotation (running)`, the blue status `Running: the next part runs on frame 1636 (wait 1 of this run; its waits total 1,500 frames so far, this one included)`, `Stop run`, and `Last run: 1 action in 18 instructions, on frame 136`; `Save script`, `Run script`, and `Delete script` are disabled. Recaptured after the round 6 fixes. |
 | `studio-livelan-unavailable.png` | Round 6: Output › LiveLAN viewers… (OR-017, Protocol 2.57), cropped, on the simulated daemon with LiveLAN enabled in the project (`Share on the local network` ticked, `Viewers see` Program, `Viewer limit` 8, no PIN): the amber `UNAVAILABLE` chip hovered: its tooltip is the one-line `The LiveLAN stream's state as the server reports it`, while the paragraph under the chip explains that the server has no LiveLAN listener and how to start one (`freemixd serve <show.freemix> --native-media --live-lan-listen 0.0.0.0:8090`); `Viewer address` and `No address yet` are spaced apart. Recaptured after the round 6 fixes. |
 | `studio-mixer-phones.png` | Round 6: the docked audio mixer (580x475 crop, AU-001 headphone output, Protocol 2.53) with the `MON` strip's headphone controls: device `hw:CARD=Headset,DEV=0` (set offline) shown as a key reading `hw:CARD=H…` (click to edit; full name on hover), `PHONES IDLE` (the simulated daemon renders no audio) hovered, its tooltip beside the state to the left instead of over the level and mute keys, headphone level `-6.0 dB`, and the headphone mute `M` lit red. Synthetic meter feed, so `MON` reads `--`. Recaptured after the round 6 fixes. |
+| `studio-mixer-maximised-before.png` | Before (a build of 341da97a): the audio mixer maximised (double-click its tab) at 1920x1080 on the demo show with the synthetic meter feed: seven 82 px strips on the left, faders stopped at 620 px, the pinned `MON` and `MASTER` strips at the far right, and most of the panel empty between them and below the strips. |
+| `studio-mixer-maximised.png` | After: the same maximised mixer. The strips share the panel up to 150 px wide, so names fit on one line, the meters have wider bars and the faders a larger cap; meters and faders take the panel height (806 px here) and switch to the fine scales (fader `+20 +10 +5 0 5 10 15 20 30 40 50 60`, Master `0 -3 -6 -9 -12 -15 -18 -21 -24 -30 -36 -48 -60`); `MON` and `MASTER` stay aligned at the right and nothing scrolls. Docked, the same mixer keeps compact 82 px strips and scrolls them horizontally. |
+| `studio-output-menu-shortcuts.png` | Output menu (900x820 crop) hovering the new `Start all streams` item: its hover help ends `[Ctrl+Shift+O]`; `Stop all streams` (`Ctrl+Shift+K`, disabled: none running) and `LiveLAN viewers…` (`Ctrl+Shift+N`) show their keys in the shortcut column, as Edit › `Scripts…` shows `Ctrl+Shift+S`. |
 | `studio-add-input-system-audio.png` | Round 6: the `+` tile's Add input dialog (AU-011) (Protocol 2.55) with `SYSTEM AUDIO` chosen: suggested name "System Audio 1", Audio system `PulseAudio / PipeWire` (or `ALSA`), Source device `@DEFAULT_MONITOR@` with its hint, and the `audio only` / `SILENT` sample tagged `INPUT 8`; the intro now names system audio. Behind the dialog, Desktop Audio (input 6, a PulseAudio system audio input) shows its `audio only` meter placeholder tile and the `+` tile reads `colour · bars · stream · camera · audio`. Recaptured after the round 6 fixes. |
 | `studio-streams-five.png` | The Recording & streams panel popped out (820x610 window capture, OR-006) with five destinations, each one compact row with its `RETRY` / `EDIT…` / remove (`✕`) keys inside the row left of `START`/`STOP`: YouTube Main (RTMPS with backup), Twitch Backup (RTMP), and Venue SRT Feed (SRT) started and amber `NOT LIVE` with amber-outlined `STOP` keys and enabled `RETRY`; Facebook Live (RTMPS) and Local HLS Archive `OFF` with `START`, `EDIT…`, and remove enabled. `EDIT…` and remove are disabled on running destinations (remove also while a cue names the destination); `ADD…` is disabled at five destinations. In a narrow dock the three keys fold into one `···` menu key (`RETRY`, `EDIT…`, `Remove destination…`). Recaptured after the layout fixes (no cue lists in that show). |
 | `studio-stream-status-hover.png` | The same window hovering YouTube Main's status chip: the status tooltip with `Desired on · realized not live`, `State: NOT LIVE`, the destination and backup URLs, `Output: Program Output · target 6,000 kb/s`, `Stream key: stored (never shown)`, and `No transport sample yet` (the simulated daemon sends no stream samples, so the bitrate / dropped / reconnects / uptime line is absent). |
@@ -506,7 +511,8 @@ with the fixes, see Reproducing):
   leaves most of the panel empty (the strips keep their width). (Fixed:
   the set device shows as a key ending in an ellipsis with the full name
   on hover, and a click opens the field; the PHONES help opens beside the
-  state, growing upwards. Maximising is unchanged.)
+  state, growing upwards. Maximising now widens and lengthens every strip:
+  `studio-mixer-maximised-before.png` / `studio-mixer-maximised.png`.)
 - Add input: the `+` tile still reads `colour · bars · stream · camera` and
   the dialog intro says "a live generator, network stream, or camera input",
   neither mentioning system audio; the sample says `Audio only` while the
@@ -952,6 +958,16 @@ dragged the side panel's left edge (`xdotool mousemove 1550
 View › Audio mixer, restarts Studio with the same `FREEMIX_STUDIO_PREFS`
 file, opens View, and hovers `Reset layout`. The health-strip capture hovers
 the `TX` lamp at the right end of the status bar.
+
+The maximised-mixer and shortcut captures (2026-10-19, Protocol 2.63, no
+protocol change) run Studio with `--role admin` and the synthetic meter
+feed on DISPLAY :191 (before, a build of the previous head) and :192
+(after) with a fresh `FREEMIX_STUDIO_PREFS` file. The mixer is maximised by
+double-clicking its `AUDIO MIXER` tab (`xdotool mousemove 945 583`, `click
+--repeat 2 --delay 40 1`). The reference is opened with `xdotool key
+question` after `Esc` restores the tile (Spanish: `--lang es` and `key
+F1`); the menu capture clicks `Output` (234,12) and hovers `Start all
+streams` (262,577).
 
 The edit-menu, locked, and mixer captures run Studio with `--role admin`
 (the default operator role lacks `edit_project`), then drive the daemon with

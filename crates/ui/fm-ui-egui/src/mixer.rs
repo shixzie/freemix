@@ -48,13 +48,24 @@ use crate::{
     tally_state,
 };
 
-/// Width of one channel strip.
+/// Width of the narrowest (compact) channel strip.
 pub(crate) const STRIP_WIDTH: f32 = 82.0;
-/// Content width inside a strip frame.
-const STRIP_INNER_WIDTH: f32 = STRIP_WIDTH - 10.0;
+/// Width of the widest channel strip: wider strips would only add empty
+/// space between the meter and the fader.
+const MAX_STRIP_WIDTH: f32 = 150.0;
+/// Horizontal inner margins of a strip frame.
+const STRIP_FRAME_WIDTH: f32 = 10.0;
 const STRIP_GAP: f32 = 6.0;
 const MIN_FADER_HEIGHT: f32 = 120.0;
-const MAX_FADER_HEIGHT: f32 = 620.0;
+const MAX_FADER_HEIGHT: f32 = 1_000.0;
+/// From this meter and fader height up, the scales carry the fine marks.
+const FINE_SCALE_HEIGHT: f32 = 360.0;
+/// Room kept free beside the strips for the rule before the pinned
+/// Monitor and Master strips and for rounding.
+const MIXER_SIDE_RESERVE: f32 = 8.0;
+/// Room kept free under the strips, so a panel that fits them never
+/// scrolls.
+const MIXER_BOTTOM_RESERVE: f32 = 16.0;
 /// Vertical space a strip needs besides its fader and meters.
 const STRIP_CHROME_HEIGHT: f32 = 302.0;
 /// Height of the label, group, gain, balance, and delay entry rows inside
@@ -82,6 +93,10 @@ const METER_SEGMENT_PITCH: f32 = 4.0;
 const CLIP_LAMP_HEIGHT: f32 = 5.0;
 /// Meter scale marks in dBFS.
 pub(crate) const METER_TICKS_DB: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
+/// The finer meter scale of a tall meter: every 3 dB near full scale.
+pub(crate) const FINE_METER_TICKS_DB: [f32; 13] = [
+    0.0, -3.0, -6.0, -9.0, -12.0, -15.0, -18.0, -21.0, -24.0, -30.0, -36.0, -48.0, -60.0,
+];
 /// The meter scale: (dBFS, travel 0..=1) breakpoints, piecewise linear in
 /// dB between them. Like a broadcast programme meter the scale expands
 /// toward full scale, so the working range from -24 to 0 dBFS takes most of
@@ -121,9 +136,26 @@ pub(crate) const FADER_TICKS: [(i32, &str); 7] = [
     (-60_000, "60"),
     (-96_000, "∞"),
 ];
+/// The finer fader scale of a tall fader.
+pub(crate) const FINE_FADER_TICKS: [(i32, &str); 13] = [
+    (20_000, "+20"),
+    (10_000, "+10"),
+    (5_000, "+5"),
+    (0, "0"),
+    (-5_000, "5"),
+    (-10_000, "10"),
+    (-15_000, "15"),
+    (-20_000, "20"),
+    (-30_000, "30"),
+    (-40_000, "40"),
+    (-50_000, "50"),
+    (-60_000, "60"),
+    (-96_000, "∞"),
+];
 /// Gain step of the fader and its keyboard nudges, in milli-dB.
 const FADER_STEP_MDB: i32 = 100;
 const FADER_KEY_STEP_MDB: i32 = 500;
+/// The fader cap of a compact strip; wider strips get a larger cap.
 const FADER_CAP: Vec2 = Vec2::new(26.0, 14.0);
 
 /// The groups that have member strips, directly or through a nested
@@ -177,36 +209,137 @@ pub(crate) fn bounded_label(text: &str) -> &str {
 /// Total width the mixer wants for `strips` input strips plus Master.
 #[allow(clippy::cast_precision_loss)] // strip counts are tiny
 pub(crate) fn mixer_width(strips: usize) -> f32 {
-    (strips as f32 + 1.0) * STRIP_PITCH + 34.0
+    (strips as f32 + 1.0) * strip_pitch(STRIP_WIDTH) + 34.0
 }
 
-/// Distance from one strip's left edge to the next one's.
-const STRIP_PITCH: f32 = STRIP_WIDTH + 2.0 + STRIP_GAP;
+/// Distance from one strip's left edge to the next one's, for strips
+/// `width` wide (the frame's stroke adds 2 points).
+const fn strip_pitch(width: f32) -> f32 {
+    width + 2.0 + STRIP_GAP
+}
 /// Width of the fade where the strip area's edge cuts through a strip.
 const SCROLL_FADE_WIDTH: f32 = 28.0;
 
-/// Width of the scrolling strip area inside `room` for `strips` strips:
-/// all the room when every strip fits, else only as many whole strips as
-/// fit, so the pinned Monitor and Master strips never sit beside a sliver.
+/// The size of every strip in a mixer panel: the strips share the panel's
+/// width (wider up to [`MAX_STRIP_WIDTH`], never narrower than the compact
+/// [`STRIP_WIDTH`]) and their meters and faders take its height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StripLayout {
+    /// Outer width of each input, group, Monitor, and Master strip.
+    pub(crate) width: f32,
+    /// Height of each strip's meter and fader.
+    pub(crate) fader_height: f32,
+}
+
+impl StripLayout {
+    /// Content width inside a strip frame.
+    pub(crate) const fn inner_width(self) -> f32 {
+        self.width - STRIP_FRAME_WIDTH
+    }
+
+    /// Distance from one strip's left edge to the next one's.
+    pub(crate) const fn pitch(self) -> f32 {
+        strip_pitch(self.width)
+    }
+
+    /// How far the strip has grown from compact (0) to the widest (1).
+    fn growth(self) -> f32 {
+        ((self.width - STRIP_WIDTH) / (MAX_STRIP_WIDTH - STRIP_WIDTH)).clamp(0.0, 1.0)
+    }
+
+    /// Width of one meter bar: 5 points on a compact strip, up to 10 on
+    /// the widest.
+    pub(crate) fn bar_width(self) -> f32 {
+        5.0f32.mul_add(self.growth(), 5.0).round()
+    }
+
+    /// The fader cap: 26x14 on a compact strip, up to 40x18 on the widest.
+    pub(crate) fn fader_cap(self) -> Vec2 {
+        let growth = self.growth();
+        Vec2::new(
+            14.0f32.mul_add(growth, FADER_CAP.x).round(),
+            4.0f32.mul_add(growth, FADER_CAP.y).round(),
+        )
+    }
+
+    /// Whether the meter and fader are tall enough for the fine scales.
+    pub(crate) fn fine_scale(self) -> bool {
+        self.fader_height >= FINE_SCALE_HEIGHT
+    }
+
+    /// The meter's scale marks.
+    pub(crate) fn meter_ticks(self) -> &'static [f32] {
+        if self.fine_scale() {
+            &FINE_METER_TICKS_DB
+        } else {
+            &METER_TICKS_DB
+        }
+    }
+
+    /// The fader's scale marks.
+    pub(crate) fn fader_ticks(self) -> &'static [(i32, &'static str)] {
+        if self.fine_scale() {
+            &FINE_FADER_TICKS
+        } else {
+            &FADER_TICKS
+        }
+    }
+}
+
+/// Lays out `strips` input and group strips plus the pinned Monitor and
+/// Master strips in a `panel` (the mixer's whole area, header included).
+/// `details`: the typed entries show and take height from the faders.
 #[allow(clippy::cast_precision_loss)] // strip counts are tiny
-pub(crate) fn whole_strips_width(room: f32, strips: usize) -> f32 {
-    let content = strips as f32 * STRIP_PITCH - STRIP_GAP;
+pub(crate) fn strip_layout(panel: Vec2, strips: usize, details: bool) -> StripLayout {
+    let chrome = if details {
+        STRIP_CHROME_HEIGHT
+    } else {
+        STRIP_CHROME_HEIGHT - ENTRY_ROWS_HEIGHT
+    };
+    let fader_height = (panel.y - chrome - MIXER_BOTTOM_RESERVE)
+        .clamp(MIN_FADER_HEIGHT, MAX_FADER_HEIGHT)
+        .floor();
+    // `n` strips at pitch `p` take `n * p - gap`; with the two pinned
+    // strips beside the rule that is `(strips + 2) * p`.
+    let count = strips as f32 + 2.0;
+    let pitch = (panel.x - MIXER_SIDE_RESERVE) / count;
+    let width = (pitch - 2.0 - STRIP_GAP)
+        .floor()
+        .clamp(STRIP_WIDTH, MAX_STRIP_WIDTH);
+    StripLayout {
+        width,
+        fader_height,
+    }
+}
+
+/// Width of the scrolling strip area inside `room` for `strips` strips at
+/// `pitch`: all the room when every strip fits, else only as many whole
+/// strips as fit, so the pinned Monitor and Master strips never sit beside
+/// a sliver.
+#[allow(clippy::cast_precision_loss)] // strip counts are tiny
+pub(crate) fn whole_strips_width(room: f32, strips: usize, pitch: f32) -> f32 {
+    let content = strips as f32 * pitch - STRIP_GAP;
     if content <= room {
         return room;
     }
-    let whole = ((room + STRIP_GAP) / STRIP_PITCH).floor().max(1.0);
-    (whole * STRIP_PITCH - STRIP_GAP).min(room)
+    let whole = ((room + STRIP_GAP) / pitch).floor().max(1.0);
+    (whole * pitch - STRIP_GAP).min(room)
 }
 
 /// Fades the strip area's left or right edge into the panel where it cuts
 /// through a strip, so a partly scrolled strip reads as "more this way"
 /// instead of a clipped sliver.
-fn paint_scroll_edges(painter: &egui::Painter, viewport: Rect, offset: f32, content: f32) {
-    // A strip spans the first `STRIP_PITCH - STRIP_GAP` points of each
-    // pitch; an edge at content position `x` cuts one when it falls inside.
+fn paint_scroll_edges(
+    painter: &egui::Painter,
+    viewport: Rect,
+    (offset, content): (f32, f32),
+    pitch: f32,
+) {
+    // A strip spans the first `pitch - STRIP_GAP` points of each pitch; an
+    // edge at content position `x` cuts one when it falls inside.
     let cuts = |x: f32| {
-        let into = x.rem_euclid(STRIP_PITCH);
-        into > 1.0 && into < STRIP_PITCH - STRIP_GAP - 1.0
+        let into = x.rem_euclid(pitch);
+        into > 1.0 && into < pitch - STRIP_GAP - 1.0
     };
     let fill = crate::theme::panel_color();
     let width = SCROLL_FADE_WIDTH.min(viewport.width() / 4.0);
@@ -465,13 +598,9 @@ pub(crate) fn draw_mixer(
     (dt_ms, details): (u32, &mut bool),
     intents: &mut Vec<StudioIntent>,
 ) {
-    // Hidden entries give their height to the faders.
-    let chrome = if *details {
-        STRIP_CHROME_HEIGHT
-    } else {
-        STRIP_CHROME_HEIGHT - ENTRY_ROWS_HEIGHT
-    };
-    let fader_height = (ui.available_height() - chrome).clamp(MIN_FADER_HEIGHT, MAX_FADER_HEIGHT);
+    // The strips share the whole panel; hidden entries give their height
+    // to the faders.
+    let panel = ui.available_size();
     let enabled = state.connection_status.controls_enabled()
         && state.can_control_audio
         && state.view.is_some();
@@ -570,10 +699,11 @@ pub(crate) fn draw_mixer(
     let audio_reason = unavailable_reason(state, Capability::Audio);
     // Monitor and Master stay pinned at the right edge; input strips scroll
     // when the mixer is narrower than all strips.
-    let master_width = 2.0 * (STRIP_WIDTH + 2.0 + STRIP_GAP);
-    let inputs_width = (ui.available_width() - master_width).max(STRIP_WIDTH);
     let strip_count = view.input_audio_strips.len() + active_groups(view).len();
-    let viewport_width = whole_strips_width(inputs_width, strip_count);
+    let layout = strip_layout(panel, strip_count, *details);
+    let master_width = 2.0 * layout.pitch();
+    let inputs_width = (ui.available_width() - master_width).max(layout.width);
+    let viewport_width = whole_strips_width(inputs_width, strip_count, layout.pitch());
     let mut clear = Vec::new();
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = STRIP_GAP;
@@ -612,7 +742,7 @@ pub(crate) fn draw_mixer(
                                         reason: audio_reason,
                                         details: *details,
                                     },
-                                    fader_height,
+                                    layout,
                                     intents,
                                 ) {
                                     clear.push(key);
@@ -640,7 +770,7 @@ pub(crate) fn draw_mixer(
                                         reason: audio_reason,
                                         details: *details,
                                     },
-                                    fader_height,
+                                    layout,
                                     intents,
                                 ) {
                                     clear.push(key);
@@ -651,8 +781,8 @@ pub(crate) fn draw_mixer(
                 paint_scroll_edges(
                     ui.painter(),
                     scrolled.inner_rect,
-                    scrolled.state.offset.x,
-                    scrolled.content_size.x,
+                    (scrolled.state.offset.x, scrolled.content_size.x),
+                    layout.pitch(),
                 );
             },
         );
@@ -689,7 +819,7 @@ pub(crate) fn draw_mixer(
                 reason: audio_reason,
                 details: *details,
             },
-            fader_height,
+            layout,
             intents,
         ) {
             clear.push(MeterKey::Monitor);
@@ -706,7 +836,7 @@ pub(crate) fn draw_mixer(
                 holds: &holds,
                 stale: meters_stale,
             },
-            fader_height,
+            layout,
         ) {
             clear.push(MeterKey::Master);
         }
@@ -754,14 +884,14 @@ struct StripGate {
     details: bool,
 }
 
-fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui)) {
+fn strip_frame(ui: &mut Ui, accent: Color32, width: f32, add_contents: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(raised_color())
         .stroke(Stroke::new(crate::theme::line_width(), border_color()))
         .corner_radius(CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(5, 6))
         .show(ui, |ui| {
-            ui.set_width(STRIP_INNER_WIDTH);
+            ui.set_width(width - STRIP_FRAME_WIDTH);
             // Compact numerics so every entry fits the fixed strip width.
             ui.style_mut().text_styles.insert(
                 egui::TextStyle::Monospace,
@@ -770,7 +900,7 @@ fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui))
             ui.spacing_mut().button_padding.x = 4.0;
             let top = ui.max_rect().min;
             ui.painter().rect_filled(
-                Rect::from_min_size(top - Vec2::new(5.0, 6.0), Vec2::new(STRIP_WIDTH, 2.0)),
+                Rect::from_min_size(top - Vec2::new(5.0, 6.0), Vec2::new(width, 2.0)),
                 CornerRadius {
                     nw: 4,
                     ne: 4,
@@ -791,7 +921,7 @@ fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui))
 /// strip in full.
 fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, hover: &str, tally: TallyState) {
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(STRIP_INNER_WIDTH, NAME_PLATE_HEIGHT),
+        Vec2::new(ui.available_width(), NAME_PLATE_HEIGHT),
         Sense::hover(),
     );
     if ui.is_rect_visible(rect) {
@@ -984,7 +1114,7 @@ fn group_choice(
     ui.add_enabled_ui(enabled, |ui| {
         egui::ComboBox::from_id_salt(("strip-group", status.input.get()))
             .selected_text(selected)
-            .width(STRIP_INNER_WIDTH)
+            .width(ui.available_width())
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut chosen, None, l.text(Msg::StripGroupNone))
                     .on_hover_text(l.text(Msg::StripGroupNoneHover));
@@ -1037,7 +1167,7 @@ fn draw_group_strip(
     (group, members): (u8, usize),
     feed: MeterFeed<'_>,
     gate: StripGate,
-    fader_height: f32,
+    layout: StripLayout,
     intents: &mut Vec<StudioIntent>,
 ) -> bool {
     let l = l10n::locale(ui.ctx());
@@ -1055,7 +1185,7 @@ fn draw_group_strip(
     let mut level_changed = false;
     let mut solo_changed = false;
     let mut clear_clip = false;
-    strip_frame(ui, accent_color(), |ui| {
+    strip_frame(ui, accent_color(), layout.width, |ui| {
         #[allow(clippy::cast_possible_truncation)] // at most 256 strips
         let plate_hover = l.format(
             Msg::GroupStripPlateHover,
@@ -1068,21 +1198,14 @@ fn draw_group_strip(
         clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            clear_clip |= draw_meter(ui, feed, fader_height);
+            clear_clip |= draw_meter(ui, feed, layout);
             let fader_width = ui.available_width();
-            level_changed |= fader(
-                ui,
-                &mut gain_millidb,
-                enabled,
-                muted,
-                fader_width,
-                fader_height,
-            )
-            .hint(l.text(Msg::GroupFaderHover), reason)
-            .changed();
+            level_changed |= fader(ui, &mut gain_millidb, (enabled, muted), fader_width, layout)
+                .hint(l.text(Msg::GroupFaderHover), reason)
+                .changed();
         });
         let (_, _) = ui.allocate_exact_size(
-            Vec2::new(STRIP_INNER_WIDTH, PAN_ROW_HEIGHT - 4.0),
+            Vec2::new(layout.inner_width(), PAN_ROW_HEIGHT - 4.0),
             Sense::hover(),
         );
         if details {
@@ -1107,7 +1230,7 @@ fn draw_group_strip(
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            let half = (STRIP_INNER_WIDTH - 3.0) / 2.0;
+            let half = (layout.inner_width() - 3.0) / 2.0;
             level_changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, half)
                 .hint(
                     l.text(if muted {
@@ -1175,7 +1298,7 @@ fn group_parent_choice(
     ui.add_enabled_ui(enabled, |ui| {
         egui::ComboBox::from_id_salt(("group-parent", group))
             .selected_text(selected)
-            .width(STRIP_INNER_WIDTH)
+            .width(ui.available_width())
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut chosen, None, l.text(Msg::GroupParentNone))
                     .on_hover_text(l.text(Msg::GroupParentNoneHover));
@@ -1207,7 +1330,7 @@ fn draw_monitor_strip(
         Option<fm_protocol::AudioMonitorOutputState>,
     ),
     gate: StripGate,
-    fader_height: f32,
+    layout: StripLayout,
     intents: &mut Vec<StudioIntent>,
 ) -> bool {
     let l = l10n::locale(ui.ctx());
@@ -1216,9 +1339,10 @@ fn draw_monitor_strip(
     } = gate;
     let mut clear_clip = false;
     let mode = view.audio_mixer.solo_mode;
-    strip_frame(ui, if solo { AMBER } else { accent_color() }, |ui| {
+    let accent = if solo { AMBER } else { accent_color() };
+    strip_frame(ui, accent, layout.width, |ui| {
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(STRIP_INNER_WIDTH, NAME_PLATE_HEIGHT),
+            Vec2::new(layout.inner_width(), NAME_PLATE_HEIGHT),
             Sense::hover(),
         );
         ui.painter().text(
@@ -1244,7 +1368,7 @@ fn draw_monitor_strip(
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             // The mode keys take the rest of the meter's height.
-            clear_clip |= draw_meter(ui, feed, fader_height);
+            clear_clip |= draw_meter(ui, feed, layout);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 let width = ui.available_width();
@@ -1379,7 +1503,8 @@ fn draw_monitor_output(
             .hint(l.text(Msg::MonitorLevelHover), reason)
             .changed();
     });
-    changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, STRIP_INNER_WIDTH)
+    let width = ui.available_width();
+    changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, width)
         .hint(
             l.text(if muted {
                 Msg::MonitorMuteOnHover
@@ -1484,7 +1609,7 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
         Sense::hover()
     };
     let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(STRIP_INNER_WIDTH, READOUT_HEIGHT), sense);
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), READOUT_HEIGHT), sense);
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let hovered = clipped && response.hovered();
@@ -1565,7 +1690,7 @@ fn draw_input_strip(
     status: &InputAudioStripStatus,
     feed: MeterFeed<'_>,
     gate: StripGate,
-    fader_height: f32,
+    layout: StripLayout,
     intents: &mut Vec<StudioIntent>,
 ) -> bool {
     let l = l10n::locale(ui.ctx());
@@ -1616,32 +1741,25 @@ fn draw_input_strip(
     let mut follow_changed = false;
     let mut delay_changed = false;
     let mut clear_clip = false;
-    strip_frame(ui, accent, |ui| {
+    strip_frame(ui, accent, layout.width, |ui| {
         name_plate(ui, ordinal, &name, &plate_hover, tally);
         clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            clear_clip |= draw_meter(ui, feed, fader_height);
+            clear_clip |= draw_meter(ui, feed, layout);
             let fader_width = ui.available_width();
-            gain_changed |= fader(
-                ui,
-                &mut gain_millidb,
-                enabled,
-                muted,
-                fader_width,
-                fader_height,
-            )
-            .hint(
-                &with_key(
-                    l,
-                    l.text(Msg::FaderHover),
-                    &format!("{} ±{} dB", l.text(Msg::KeyArrows), l.decimal(0.5, 1)),
-                ),
-                reason,
-            )
-            .changed();
+            gain_changed |= fader(ui, &mut gain_millidb, (enabled, muted), fader_width, layout)
+                .hint(
+                    &with_key(
+                        l,
+                        l.text(Msg::FaderHover),
+                        &format!("{} ±{} dB", l.text(Msg::KeyArrows), l.decimal(0.5, 1)),
+                    ),
+                    reason,
+                )
+                .changed();
         });
-        pan_changed = pan_knob(ui, &mut pan_basis_points, enabled, STRIP_INNER_WIDTH)
+        pan_changed = pan_knob(ui, &mut pan_basis_points, enabled, layout.inner_width())
             .hint(l.text(Msg::PanHover), reason)
             .changed();
         if details {
@@ -1706,7 +1824,7 @@ fn draw_input_strip(
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            let half = (STRIP_INNER_WIDTH - 3.0) / 2.0;
+            let half = (layout.inner_width() - 3.0) / 2.0;
             mute_changed = led_key(ui, enabled, &mut muted, "M", PROGRAM, half)
                 .hint(
                     l.text(if muted {
@@ -1734,7 +1852,7 @@ fn draw_input_strip(
             &mut follow_video,
             "AFV",
             accent_color(),
-            STRIP_INNER_WIDTH,
+            layout.inner_width(),
         )
         .hint(l.text(Msg::AfvHover), reason)
         .changed();
@@ -1851,20 +1969,21 @@ fn led_key(
 fn fader(
     ui: &mut Ui,
     gain_mdb: &mut i32,
-    enabled: bool,
-    muted: bool,
+    (enabled, muted): (bool, bool),
     width: f32,
-    height: f32,
+    layout: StripLayout,
 ) -> egui::Response {
+    let height = layout.fader_height;
+    let cap_size = layout.fader_cap();
     let sense = if enabled {
         Sense::click_and_drag()
     } else {
         Sense::hover()
     };
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
-    let track_x = rect.max.x - FADER_CAP.x / 2.0 - 1.0;
-    let top = rect.min.y + FADER_CAP.y / 2.0 + 1.0;
-    let bottom = rect.max.y - FADER_CAP.y / 2.0 - 1.0;
+    let track_x = rect.max.x - cap_size.x / 2.0 - 1.0;
+    let top = rect.min.y + cap_size.y / 2.0 + 1.0;
+    let bottom = rect.max.y - cap_size.y / 2.0 - 1.0;
     let travel = (bottom - top).max(1.0);
     let original = *gain_mdb;
     if enabled {
@@ -1912,7 +2031,9 @@ fn fader(
     let y_for = |mdb: i32| bottom - fader_position(mdb) * travel;
     // Scale marks on both sides of the slot, labels on the left.
     let mut last_label_y = f32::INFINITY;
-    for (mdb, label) in FADER_TICKS {
+    // Labels clear the cap, so the unity mark reads beside a cap at 0 dB.
+    let label_x = track_x - (cap_size.x / 2.0 + 1.0).max(13.0);
+    for &(mdb, label) in layout.fader_ticks() {
         let y = y_for(mdb);
         let unity = mdb == 0;
         let (reach, color) = if unity {
@@ -1929,9 +2050,9 @@ fn fader(
                 Stroke::new(1.0, color.gamma_multiply(dim)),
             );
         }
-        if (last_label_y - y).abs() >= 10.0 && track_x - 13.0 > rect.min.x + 6.0 {
+        if (last_label_y - y).abs() >= 10.0 && label_x > rect.min.x + 6.0 {
             painter.text(
-                pos2(track_x - 13.0, y),
+                pos2(label_x, y),
                 Align2::RIGHT_CENTER,
                 label,
                 FontId::new(8.5, FontFamily::Monospace),
@@ -1964,7 +2085,7 @@ fn fader(
         StrokeKind::Outside,
     );
     // The cap: shadow, two-tone body, ridges, and a bright index line.
-    let cap = Rect::from_center_size(pos2(track_x, cap_y), FADER_CAP);
+    let cap = Rect::from_center_size(pos2(track_x, cap_y), cap_size);
     painter.rect_filled(
         cap.translate(Vec2::new(0.0, 2.0)),
         CornerRadius::same(3),
@@ -2021,7 +2142,7 @@ fn fader(
     if response.dragged() {
         // Live readout beside the cap while dragging.
         painter.text(
-            pos2(cap.min.x - 3.0, cap_y - FADER_CAP.y),
+            pos2(cap.min.x - 3.0, cap_y - cap_size.y),
             Align2::RIGHT_CENTER,
             format_gain(l10n::locale(painter.ctx()), *gain_mdb),
             FontId::new(9.5, FontFamily::Monospace),
@@ -2032,12 +2153,12 @@ fn fader(
 }
 
 /// Draws the Master strip; returns `true` when the operator cleared its clip.
-fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> bool {
+fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, layout: StripLayout) -> bool {
     let l = l10n::locale(ui.ctx());
     let mut clear_clip = false;
-    strip_frame(ui, accent_color(), |ui| {
+    strip_frame(ui, accent_color(), layout.width, |ui| {
         let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(STRIP_INNER_WIDTH, NAME_PLATE_HEIGHT),
+            Vec2::new(layout.inner_width(), NAME_PLATE_HEIGHT),
             Sense::hover(),
         );
         ui.painter().text(
@@ -2057,8 +2178,8 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
         clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            clear_clip |= draw_meter(ui, feed, fader_height);
-            draw_meter_scale(ui, fader_height);
+            clear_clip |= draw_meter(ui, feed, layout);
+            draw_meter_scale(ui, layout);
         });
         ui.vertical_centered(|ui| {
             // One line: the tap label shrinks to the strip instead of
@@ -2093,10 +2214,11 @@ fn fitted_font_size(ui: &Ui, text: &str, size: f32, width: f32) -> f32 {
     }
 }
 
-/// Width of a meter well for `bars` channel bars, including its tick gutter.
+/// Width of a meter well for `bars` channel bars `bar` points wide,
+/// including its tick gutter.
 #[allow(clippy::cast_precision_loss)] // one or two bars
-fn meter_width(bars: usize) -> f32 {
-    bars as f32 * 7.0 + 4.0 + METER_TICK_GUTTER
+pub(crate) fn meter_width(bars: usize, bar: f32) -> f32 {
+    bars as f32 * (bar + 2.0) + 4.0 + METER_TICK_GUTTER
 }
 
 /// Draws one segmented meter well with a bar per channel: RMS as the lit
@@ -2105,7 +2227,7 @@ fn meter_width(bars: usize) -> f32 {
 /// channels the well stays unlit. Returns `true` when a latched clip lamp was
 /// clicked (clear request).
 #[allow(clippy::too_many_lines)] // one painter pass per meter region
-fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
+fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, layout: StripLayout) -> bool {
     let l = l10n::locale(ui.ctx());
     let MeterFeed {
         channels,
@@ -2119,7 +2241,11 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
     } else {
         Sense::hover()
     };
-    let (outer, response) = ui.allocate_exact_size(Vec2::new(meter_width(bars), height), sense);
+    let bar_width = layout.bar_width();
+    let (outer, response) = ui.allocate_exact_size(
+        Vec2::new(meter_width(bars, bar_width), layout.fader_height),
+        sense,
+    );
     if !ui.is_rect_visible(outer) {
         // Scrolled out of view: nothing to paint, but a clickable meter
         // still explains itself.
@@ -2142,7 +2268,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
         well.max,
     );
     // Scale ticks in the gutter, aligned with the segment scale.
-    for db in METER_TICKS_DB {
+    for &db in layout.meter_ticks() {
         let y = inner.max.y - meter_fraction(db) * inner.height();
         let y = y.clamp(inner.min.y + 0.5, inner.max.y - 0.5);
         painter.line_segment(
@@ -2162,7 +2288,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
     let segment_height = inner.height() / segments as f32;
     for bar in 0..bars {
         #[allow(clippy::cast_precision_loss)]
-        let x = inner.min.x + bar as f32 * 7.0;
+        let x = inner.min.x + bar as f32 * (bar_width + 2.0);
         let channel = channels.and_then(|channels| channels.get(bar));
         let rms = channel.map_or(0.0, |channel| {
             meter_fraction(meter_db(channel.rms_millionths))
@@ -2178,7 +2304,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
             let y_bottom = inner.max.y - segment as f32 * segment_height;
             let segment_rect = Rect::from_min_max(
                 pos2(x, y_bottom - segment_height + 1.0),
-                pos2(x + 5.0, y_bottom),
+                pos2(x + bar_width, y_bottom),
             );
             let light = if channel.is_some() {
                 segment_light(low, rms, peak)
@@ -2199,7 +2325,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
         if channel.is_some() && peak > 0.0 {
             let y = inner.max.y - peak * inner.height();
             painter.line_segment(
-                [pos2(x, y), pos2(x + 5.0, y)],
+                [pos2(x, y), pos2(x + bar_width, y)],
                 Stroke::new(
                     1.0,
                     stale_dim(
@@ -2217,7 +2343,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
             if fraction > 0.0 {
                 let y = inner.max.y - fraction * inner.height();
                 painter.line_segment(
-                    [pos2(x - 0.5, y), pos2(x + 5.5, y)],
+                    [pos2(x - 0.5, y), pos2(x + bar_width + 0.5, y)],
                     Stroke::new(
                         2.0,
                         stale_dim(meter_segment_color(held_db).gamma_multiply(1.15), stale),
@@ -2226,7 +2352,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
             }
         }
         // Clip lamp: dark when idle, lit red (with a glow) while latched.
-        let lamp = Rect::from_min_size(pos2(x, well.min.y), Vec2::new(5.0, CLIP_LAMP_HEIGHT));
+        let lamp = Rect::from_min_size(pos2(x, well.min.y), Vec2::new(bar_width, CLIP_LAMP_HEIGHT));
         let clipping = hold.is_some_and(ChannelBallistics::clipping);
         if clipping {
             painter.rect_filled(
@@ -2317,11 +2443,16 @@ const METER_LABEL_SPACING: f32 = 10.0;
 /// their y positions: full scale and the floor always, and each other tick
 /// only when it keeps `spacing` from the labels around it, so a short
 /// compact-window meter drops crowded labels instead of overprinting them.
-pub(crate) fn labelled_meter_ticks(top: f32, bottom: f32, spacing: f32) -> Vec<(f32, f32)> {
+pub(crate) fn labelled_meter_ticks(
+    ticks: &[f32],
+    top: f32,
+    bottom: f32,
+    spacing: f32,
+) -> Vec<(f32, f32)> {
     let y_of = |db: f32| bottom - meter_fraction(db) * (bottom - top);
     let floor_y = y_of(METER_FLOOR_DB);
     let mut labels: Vec<(f32, f32)> = Vec::new();
-    for db in METER_TICKS_DB {
+    for &db in ticks {
         let y = y_of(db);
         let is_end = db >= 0.0 || db <= METER_FLOOR_DB;
         let clear =
@@ -2334,12 +2465,12 @@ pub(crate) fn labelled_meter_ticks(top: f32, bottom: f32, spacing: f32) -> Vec<(
 }
 
 /// The Master meter's dB scale: a label beside each tick in the gutter.
-fn draw_meter_scale(ui: &mut Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(24.0, height), Sense::hover());
+fn draw_meter_scale(ui: &mut Ui, layout: StripLayout) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(24.0, layout.fader_height), Sense::hover());
     let painter = ui.painter_at(rect.expand2(Vec2::new(0.0, 6.0)));
     let top = rect.min.y + 2.0 + CLIP_LAMP_HEIGHT + 2.0;
     let bottom = rect.max.y - 2.0;
-    for (db, y) in labelled_meter_ticks(top, bottom, METER_LABEL_SPACING) {
+    for (db, y) in labelled_meter_ticks(layout.meter_ticks(), top, bottom, METER_LABEL_SPACING) {
         painter.text(
             pos2(rect.min.x + 1.0, y),
             egui::Align2::LEFT_CENTER,
@@ -2472,7 +2603,7 @@ mod tests {
     #[test]
     fn crowded_scale_labels_are_dropped_but_the_ends_stay() {
         let all = |height: f32| -> Vec<f32> {
-            labelled_meter_ticks(0.0, height, METER_LABEL_SPACING)
+            labelled_meter_ticks(&METER_TICKS_DB, 0.0, height, METER_LABEL_SPACING)
                 .into_iter()
                 .map(|(db, _)| db)
                 .collect()
@@ -2482,7 +2613,7 @@ mod tests {
         assert_eq!(short.first(), Some(&0.0));
         assert_eq!(short.last(), Some(&-60.0));
         assert!(short.len() < METER_TICKS_DB.len());
-        let ys: Vec<f32> = labelled_meter_ticks(0.0, 110.0, METER_LABEL_SPACING)
+        let ys: Vec<f32> = labelled_meter_ticks(&METER_TICKS_DB, 0.0, 110.0, METER_LABEL_SPACING)
             .into_iter()
             .map(|(_, y)| y)
             .collect();
@@ -2648,5 +2779,92 @@ mod tests {
         assert_eq!(parse_gain(spanish, "-inf dB"), Some(f64::NEG_INFINITY));
         // English never reads a comma as a decimal mark.
         assert_eq!(parse_gain(Locale::ENGLISH, "-6,5 dB"), None);
+    }
+
+    #[test]
+    fn strips_share_the_panel_width_up_to_the_widest_strip() {
+        // A maximised mixer: six strips grow to the widest strip, with tall
+        // faders, fine scales, and wide meter bars.
+        let big = strip_layout(Vec2::new(1_900.0, 1_000.0), 6, false);
+        assert!((big.width - MAX_STRIP_WIDTH).abs() < f32::EPSILON);
+        assert!((big.fader_height - 806.0).abs() < f32::EPSILON);
+        assert!(big.fine_scale());
+        assert!((big.bar_width() - 10.0).abs() < f32::EPSILON);
+        assert_eq!(big.fader_cap(), Vec2::new(40.0, 18.0));
+        assert_eq!(big.meter_ticks(), &FINE_METER_TICKS_DB);
+        assert_eq!(big.fader_ticks(), &FINE_FADER_TICKS);
+        // A mid-sized dock: the strips widen to fill it exactly.
+        let mid = strip_layout(Vec2::new(1_100.0, 600.0), 6, false);
+        assert!((mid.width - 128.0).abs() < f32::EPSILON);
+        assert!((mid.inner_width() - 118.0).abs() < f32::EPSILON);
+        assert!((mid.fader_height - 406.0).abs() < f32::EPSILON);
+        // A narrow dock: compact strips with the coarse scales.
+        let compact = strip_layout(Vec2::new(600.0, 250.0), 6, false);
+        assert!((compact.width - STRIP_WIDTH).abs() < f32::EPSILON);
+        assert!((compact.fader_height - MIN_FADER_HEIGHT).abs() < f32::EPSILON);
+        assert!(!compact.fine_scale());
+        assert!((compact.bar_width() - 5.0).abs() < f32::EPSILON);
+        assert_eq!(compact.fader_cap(), FADER_CAP);
+        assert_eq!(compact.meter_ticks(), &METER_TICKS_DB);
+        assert_eq!(compact.fader_ticks(), &FADER_TICKS);
+        // The typed entries take their rows from the faders; a very tall
+        // panel stops the faders at the longest travel.
+        let details = strip_layout(Vec2::new(1_100.0, 600.0), 6, true);
+        assert!((mid.fader_height - details.fader_height - ENTRY_ROWS_HEIGHT).abs() < 1.0);
+        assert!((details.width - mid.width).abs() < f32::EPSILON);
+        let tall = strip_layout(Vec2::new(1_100.0, 3_000.0), 6, false);
+        assert!((tall.fader_height - MAX_FADER_HEIGHT).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn strips_scroll_only_when_compact_strips_do_not_fit() {
+        for panel_width in [400.0_f32, 700.0, 1_000.0, 1_366.0, 1_920.0, 2_560.0] {
+            for strips in 0..=24 {
+                let layout = strip_layout(Vec2::new(panel_width, 700.0), strips, false);
+                assert!(layout.width >= STRIP_WIDTH && layout.width <= MAX_STRIP_WIDTH);
+                // The pinned Monitor and Master strips sit at the right.
+                let room = (panel_width - 2.0 * layout.pitch()).max(layout.width);
+                let viewport = whole_strips_width(room, strips, layout.pitch());
+                #[allow(clippy::cast_precision_loss)] // tiny counts
+                let content = strips as f32 * layout.pitch() - STRIP_GAP;
+                let scrolls = content > viewport;
+                // Strips wider than compact always fit without scrolling.
+                if layout.width > STRIP_WIDTH {
+                    assert!(!scrolls, "{panel_width} px, {strips} strips");
+                }
+                // Scrolling shows only whole strips.
+                if scrolls {
+                    let whole = (viewport + STRIP_GAP) / layout.pitch();
+                    assert!((whole - whole.round()).abs() < 1e-3, "{whole}");
+                }
+            }
+        }
+        // Twenty strips in a 1100 px dock: compact strips, eleven visible.
+        let layout = strip_layout(Vec2::new(1_100.0, 600.0), 20, false);
+        assert!((layout.width - STRIP_WIDTH).abs() < f32::EPSILON);
+        let room = 1_100.0 - 2.0 * layout.pitch();
+        assert!((whole_strips_width(room, 20, layout.pitch()) - (10.0 * 90.0 - 6.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn fine_scales_keep_the_coarse_marks_in_order() {
+        let positions: Vec<f32> = FINE_FADER_TICKS
+            .iter()
+            .map(|(mdb, _)| fader_position(*mdb))
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] > pair[1]));
+        assert!(FINE_METER_TICKS_DB.windows(2).all(|pair| pair[0] > pair[1]));
+        for tick in FADER_TICKS {
+            assert!(FINE_FADER_TICKS.contains(&tick), "{tick:?}");
+        }
+        for db in METER_TICKS_DB {
+            assert!(FINE_METER_TICKS_DB.contains(&db), "{db}");
+        }
+        // A tall meter labels every fine mark; a short one keeps the ends.
+        let tall = labelled_meter_ticks(&FINE_METER_TICKS_DB, 0.0, 800.0, METER_LABEL_SPACING);
+        assert_eq!(tall.len(), FINE_METER_TICKS_DB.len());
+        // The meter well grows with its bars.
+        assert!(meter_width(2, 10.0) > meter_width(2, 5.0));
+        assert!((meter_width(2, 5.0) - 22.0).abs() < f32::EPSILON);
     }
 }

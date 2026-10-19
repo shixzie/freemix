@@ -3196,6 +3196,18 @@ pub fn check(language: Language) {
             let _ = writeln!(failures, "no tooltip names the {hint} shortcut");
         }
     }
+    // So is each window and output chord, in the audited language's names.
+    let locale = Locale::new(language);
+    for chord in crate::keymap::Chord::ALL {
+        let hint = format!("[{}]", locale.keys(chord.keys()));
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|text| text.contains(&hint))
+        {
+            let _ = writeln!(failures, "no tooltip names the {hint} shortcut");
+        }
+    }
     assert!(failures.is_empty(), "{failures}");
 }
 

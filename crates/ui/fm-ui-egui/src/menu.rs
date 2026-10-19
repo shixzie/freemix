@@ -17,12 +17,18 @@ use crate::dock::{
 };
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_bank::{neighbour_move_lock_reason, project_editing_available};
+use crate::keymap::{
+    LIVE_LAN_SHORTCUT, RECORD_SHORTCUT, SCRIPTS_SHORTCUT, START_STREAMS_SHORTCUT,
+    STOP_STREAMS_SHORTCUT,
+};
 use crate::l10n::{self, Arg, Msg};
 use crate::outputs::{recorder_row, stream_row};
 use crate::panels::{
     latest_stream_sample, stinger_slot_presentation, stinger_slot_state, stinger_slot_tone,
 };
-use crate::stream_control::{stream_action_text, stream_unavailable_reason};
+use crate::stream_control::{
+    StreamGroupAction, group_unavailable_reason, stream_action_text, stream_unavailable_reason,
+};
 use crate::theme::{
     Tone, accent_color, ellipsize, mono, muted_color, paint_lamp, section_label, text_color,
     text_dim_color,
@@ -561,11 +567,14 @@ impl StudioShell {
         ui.separator();
         self.preview_input_menu_items(ui, state, intents);
         ui.separator();
-        if ui
-            .button(self.locale.text(Msg::MenuScripts))
-            .on_hover_text(self.locale.text(Msg::MenuScriptsHover))
-            .clicked()
-        {
+        if item(
+            ui,
+            true,
+            self.locale.text(Msg::MenuScripts),
+            Some(SCRIPTS_SHORTCUT),
+            self.locale.text(Msg::MenuScriptsHover),
+            "",
+        ) {
             self.open_scripts(state);
             ui.close();
         }
@@ -1250,15 +1259,19 @@ impl StudioShell {
                 Msg::ReasonStateDisallows.en()
             };
             let row = recorder_row(l, state.view.is_some(), desired, pending);
+            let mut hover = l.format(
+                Msg::RecorderHover,
+                &[("label", Arg::Str(&label)), ("slot", Arg::from(index + 1))],
+            );
+            if index == 0 {
+                hover = l10n::with_key(l, &hover, RECORD_SHORTCUT);
+            }
             if status_item(
                 ui,
                 allowed.is_some(),
                 &label,
                 (row.status, row.tone),
-                &l.format(
-                    Msg::RecorderHover,
-                    &[("label", Arg::Str(&label)), ("slot", Arg::from(index + 1))],
-                ),
+                &hover,
                 slot_reason,
             ) && let Some(action) = allowed
             {
@@ -1307,6 +1320,34 @@ impl StudioShell {
                 intents.push(StudioIntent::Stream(action));
             }
         }
+        if !state.streams.is_empty() {
+            for (action, label, hover, keys) in [
+                (
+                    StreamGroupAction::StartAll,
+                    Msg::MenuStartAllStreams,
+                    Msg::StreamStartAllHover,
+                    START_STREAMS_SHORTCUT,
+                ),
+                (
+                    StreamGroupAction::StopAll,
+                    Msg::MenuStopAllStreams,
+                    Msg::StreamStopAllHover,
+                    STOP_STREAMS_SHORTCUT,
+                ),
+            ] {
+                let reason = group_unavailable_reason(state, action);
+                if item(
+                    ui,
+                    reason.is_none(),
+                    l.text(label),
+                    Some(keys),
+                    l.text(hover),
+                    reason.unwrap_or(""),
+                ) {
+                    intents.push(StudioIntent::StreamGroup(action));
+                }
+            }
+        }
         ui.separator();
         heading(ui, l.text(Msg::TabStingers));
         self.stinger_menu(ui, state, intents);
@@ -1319,11 +1360,14 @@ impl StudioShell {
             self.open_display_outputs(intents);
             ui.close();
         }
-        if ui
-            .button(l.text(Msg::MenuLiveLan))
-            .on_hover_text(l.text(Msg::MenuLiveLanHover))
-            .clicked()
-        {
+        if item(
+            ui,
+            true,
+            l.text(Msg::MenuLiveLan),
+            Some(LIVE_LAN_SHORTCUT),
+            l.text(Msg::MenuLiveLanHover),
+            "",
+        ) {
             self.live_lan.open = true;
             ui.close();
         }
@@ -1439,11 +1483,12 @@ impl StudioShell {
         let l = self.locale;
         if self.show_shortcuts {
             let (status, tone) = shortcut_status(l, state);
+            let columns = shortcut_columns(context.viewport_rect().width());
             let response = help_modal(
                 context,
                 "studio-shortcuts-window",
                 l.text(Msg::KeyboardShortcuts),
-                500.0,
+                shortcuts_width(columns),
                 |ui| {
                     ui.horizontal(|ui| {
                         let (lamp, _) =
@@ -1475,27 +1520,26 @@ impl StudioShell {
                             // the action column lines up across groups
                             // and does not move when the language changes.
                             let column = key_cap_column(ui);
-                            for group in ShortcutGroup::ALL {
-                                ui.add_space(10.0);
-                                ui.label(section_label(l.tr(group.title())));
-                                ui.add_space(2.0);
-                                egui::Grid::new(("studio-shortcuts", group.title()))
-                                    .num_columns(2)
-                                    .spacing(Vec2::new(16.0, 6.0))
-                                    .show(ui, |ui| {
-                                        for entry in STUDIO_SHORTCUTS
-                                            .iter()
-                                            .filter(|entry| entry.group == group)
-                                        {
-                                            key_cap(ui, &l.keys(entry.keys), column);
-                                            ui.label(
-                                                RichText::new(l.tr(entry.action))
-                                                    .color(text_color()),
-                                            );
-                                            ui.end_row();
+                            let split = if columns == 1 {
+                                ShortcutGroup::ALL.len()
+                            } else {
+                                SHORTCUT_COLUMN_SPLIT
+                            };
+                            let (first, second) = ShortcutGroup::ALL.split_at(split);
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = SHORTCUT_COLUMN_GAP;
+                                for groups in [first, second] {
+                                    if groups.is_empty() {
+                                        continue;
+                                    }
+                                    ui.vertical(|ui| {
+                                        ui.set_width(SHORTCUT_COLUMN_WIDTH);
+                                        for group in groups {
+                                            shortcut_group(ui, l, *group, column);
                                         }
                                     });
-                            }
+                                }
+                            });
                         });
                     ui.add_space(10.0);
                     ui.separator();
@@ -1619,6 +1663,54 @@ pub(crate) fn help_modal(
 
 /// Minimum width of the key column, so the action column aligns.
 const KEY_CAP_COLUMN: f32 = 104.0;
+/// Width of one column of the keyboard reference.
+const SHORTCUT_COLUMN_WIDTH: f32 = 480.0;
+/// Space between the reference's two columns.
+const SHORTCUT_COLUMN_GAP: f32 = 28.0;
+/// The groups in the reference's first column when it has two.
+const SHORTCUT_COLUMN_SPLIT: usize = 4;
+
+/// How many columns the keyboard reference takes in a window `width`
+/// wide: two once both fit beside the dialog's margins, else one.
+pub(crate) fn shortcut_columns(width: f32) -> usize {
+    if width >= shortcuts_width(2) + 80.0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// The keyboard reference's content width for `columns` columns.
+#[allow(clippy::cast_precision_loss)] // one or two columns
+pub(crate) fn shortcuts_width(columns: usize) -> f32 {
+    let columns = columns.max(1) as f32;
+    columns.mul_add(SHORTCUT_COLUMN_WIDTH, (columns - 1.0) * SHORTCUT_COLUMN_GAP)
+}
+
+/// One group of the keyboard reference: its title and a key cap beside
+/// each action, the action wrapping within the column.
+fn shortcut_group(ui: &mut Ui, l: Locale, group: ShortcutGroup, column: f32) {
+    ui.add_space(10.0);
+    ui.label(section_label(l.tr(group.title())));
+    ui.add_space(2.0);
+    let action_width = (SHORTCUT_COLUMN_WIDTH - column - 16.0).max(120.0);
+    egui::Grid::new(("studio-shortcuts", group.title()))
+        .num_columns(2)
+        .spacing(Vec2::new(16.0, 6.0))
+        .show(ui, |ui| {
+            for entry in STUDIO_SHORTCUTS.iter().filter(|entry| entry.group == group) {
+                key_cap(ui, &l.keys(entry.keys), column);
+                ui.scope(|ui| {
+                    ui.set_max_width(action_width);
+                    ui.add(
+                        egui::Label::new(RichText::new(l.tr(entry.action)).color(text_color()))
+                            .wrap(),
+                    );
+                });
+                ui.end_row();
+            }
+        });
+}
 
 /// The width of a key cap for `keys`: the text plus padding, at least
 /// 28 px. A long combination widens its cap (and so the grid's key column)
@@ -1797,6 +1889,23 @@ fn history_menu_items(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<Stud
 mod tests {
     use super::*;
     use crate::StudioConnectionStatus;
+
+    #[test]
+    fn shortcut_reference_takes_two_columns_where_they_fit() {
+        assert_eq!(shortcut_columns(1_920.0), 2);
+        assert_eq!(shortcut_columns(1_280.0), 2);
+        assert_eq!(shortcut_columns(1_000.0), 1);
+        assert!((shortcuts_width(1) - SHORTCUT_COLUMN_WIDTH).abs() < f32::EPSILON);
+        assert!(
+            (shortcuts_width(2) - 2.0f32.mul_add(SHORTCUT_COLUMN_WIDTH, SHORTCUT_COLUMN_GAP)).abs()
+                < f32::EPSILON
+        );
+        // The second column starts with the cue list's key.
+        assert_eq!(
+            ShortcutGroup::ALL[SHORTCUT_COLUMN_SPLIT],
+            ShortcutGroup::Cues
+        );
+    }
 
     #[test]
     fn shortcut_status_reports_why_keys_are_inactive() {

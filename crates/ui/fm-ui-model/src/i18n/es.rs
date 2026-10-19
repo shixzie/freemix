@@ -954,6 +954,27 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ShortcutCloseDialog,
         t("Cerrar el menú, diálogo o referencia abiertos"),
     ),
+    (Msg::ShortcutGroupWindows, t("Ventanas")),
+    (Msg::ShortcutGroupOutput, t("Grabación y emisión")),
+    (Msg::ShortcutScripts, t("Abrir o cerrar la ventana Guiones")),
+    (
+        Msg::ShortcutLiveLan,
+        t("Abrir o cerrar la ventana Espectadores LiveLAN"),
+    ),
+    (
+        Msg::ShortcutRecord,
+        t("Iniciar o detener la grabadora REC 1"),
+    ),
+    (
+        Msg::ShortcutStartStreams,
+        t("Iniciar todos los destinos de emisión detenidos"),
+    ),
+    (
+        Msg::ShortcutStopStreams,
+        t("Detener todos los destinos de emisión en marcha"),
+    ),
+    (Msg::MenuStartAllStreams, t("Iniciar todas las emisiones")),
+    (Msg::MenuStopAllStreams, t("Detener todas las emisiones")),
     (Msg::KeyHelp, t("? · F1")),
     // Output rows.
     (Msg::StatusNoState, t("SIN ESTADO")),
