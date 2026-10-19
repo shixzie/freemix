@@ -10498,21 +10498,24 @@ fn serve_inner(
                         )?;
                         clock.observe(frame, revision, &delivery.result);
                     }
-                    if let Some((list, frame, revision)) =
-                        cues.due(control, playlist_clock::Pacing::Engine)
-                    {
+                    if let Some(advance) = cues.next(
+                        control,
+                        playlist_clock::Pacing::Engine,
+                        !journal.busy(),
+                        now_millis()?,
+                    )? {
                         let delivery = execute_native_authority_command(
                             control,
                             &journal,
                             &mut durable,
                             &principal,
                             &authority,
-                            &cue_clock::advance_command(list, frame, revision),
+                            &advance.command(),
                             now_millis()?,
                             native,
                             Some(&process_shutdown),
                         )?;
-                        cues.observe(list, frame, revision, &delivery.result);
+                        cues.observe(&advance, &delivery.result);
                     }
                     Ok(())
                 };
@@ -22714,6 +22717,444 @@ mod tests {
             )
             .is_some(),
             "only the clock advances the playlist"
+        );
+    }
+
+    /// The commands that set cue list `7`, whose one cue waits `wait`
+    /// frames and then cuts input 1 to Program, and GO it.
+    fn waiting_cue_commands(wait: u32) -> [CommandMessage; 2] {
+        use fm_protocol::{
+            CueListSpec, CueOperation, TransitionFavoriteEffect, WireCue, WireCueAction,
+        };
+        let spec = CueListSpec {
+            name: "Show".into(),
+            cues: vec![WireCue {
+                id: 10,
+                name: "Open".into(),
+                auto_follow: false,
+                actions: vec![
+                    WireCueAction::Wait { frames: wait },
+                    WireCueAction::Take {
+                        input: Some(fm_protocol::WireInputId::from_domain(test_input_id(1))),
+                        effect: TransitionFavoriteEffect::Cut,
+                        duration_frames: 0,
+                    },
+                ],
+            }],
+        };
+        [
+            test_command(
+                "set-cues",
+                "set-cues-key",
+                CommandPayload::SetCueList {
+                    list: 7,
+                    spec: Box::new(spec),
+                },
+            ),
+            test_command(
+                "go",
+                "go-key",
+                CommandPayload::CueControl {
+                    list: 7,
+                    operation: CueOperation::Go { cue: None },
+                },
+            ),
+        ]
+    }
+
+    /// Submits [`waiting_cue_commands`] on `control`: returns the frame the
+    /// wait ends on.
+    fn go_waiting_cue(control: &mut ControlService<Policy>, wait: u32) -> u64 {
+        for command in waiting_cue_commands(wait) {
+            let id = command.id.clone();
+            let submitted = control.submit(&operator(), command, 0).unwrap();
+            assert!(
+                submitted.is_accepted(),
+                "{id}: {:?}",
+                submitted.output.result
+            );
+        }
+        let (list, due) = control.cue_advance_frame().expect("the cue waits");
+        assert_eq!(list, 7);
+        due
+    }
+
+    /// The daemon's clock pass on the simulated runtime, through durable
+    /// execution: a waiting cue's advance the journal could not record
+    /// (refused, retryable, nothing committed) is retried on the next frame
+    /// with no other command, and fires once the journal records again. The
+    /// accepted retry is the only advance journaled, for the cue's own frame.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cue_clock_poll_retries_an_advance_the_journal_could_not_record() {
+        struct SwitchableJournal {
+            available: Cell<bool>,
+            attempts: Cell<u32>,
+            recorded: RefCell<Vec<CommandMessage>>,
+        }
+
+        impl DurableStore for SwitchableJournal {
+            fn record(
+                &self,
+                command: &CommandMessage,
+                _now_millis: u64,
+                _previous: &StoredProject,
+                _updated: &StoredProject,
+            ) -> AppResult<()> {
+                self.attempts.set(self.attempts.get() + 1);
+                if !self.available.get() {
+                    return Err(AppFailure("injected journal unavailability".into()).into());
+                }
+                self.recorded.borrow_mut().push(command.clone());
+                Ok(())
+            }
+
+            fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
+                Ok(())
+            }
+        }
+
+        let store = SwitchableJournal {
+            available: Cell::new(true),
+            attempts: Cell::new(0),
+            recorded: RefCell::new(Vec::new()),
+        };
+        let mut durable = test_project();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let server = test_server(&control.borrow());
+        for command in waiting_cue_commands(5) {
+            let delivery = execute_authority_command(
+                &control,
+                &store,
+                &mut durable,
+                &operator(),
+                &server,
+                &command,
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(
+                matches!(delivery.result, CommandResult::Accepted { .. }),
+                "{:?}",
+                delivery.result
+            );
+        }
+        let revision = control.borrow().diagnostics().current_revision;
+        let (_, due) = control.borrow().cue_advance_frame().unwrap();
+        let cursor = control.borrow().frame_cursor();
+        let frame = Duration::from_millis(40);
+        let mut clock = cue_clock::CueClock::default();
+        let mut poll = |clock: &mut cue_clock::CueClock, at: Instant, window: bool| {
+            clock
+                .poll(
+                    &control,
+                    &store,
+                    &mut durable,
+                    &server,
+                    None,
+                    None,
+                    at,
+                    window,
+                )
+                .unwrap();
+        };
+        let start = Instant::now();
+        poll(&mut clock, start, true);
+        assert_eq!(store.attempts.get(), 2, "not due yet");
+
+        store.available.set(false);
+        let reached = start + frame * u32::try_from(due - cursor).unwrap();
+        poll(&mut clock, reached, true);
+        assert_eq!(store.attempts.get(), 3, "the first attempt was refused");
+        assert_eq!(control.borrow().diagnostics().current_revision, revision);
+        poll(&mut clock, reached, true);
+        assert_eq!(store.attempts.get(), 3, "not again on the same frame");
+        poll(&mut clock, reached + frame, true);
+        assert_eq!(store.attempts.get(), 4, "retried on the next frame");
+
+        store.available.set(true);
+        poll(&mut clock, reached + frame * 2, false);
+        assert_eq!(store.attempts.get(), 4, "no retry without its window");
+        assert_eq!(control.borrow().cue_advance_frame(), Some((7, due)));
+        poll(&mut clock, reached + frame * 2, true);
+        drop(poll);
+        assert_eq!(
+            control.borrow().diagnostics().current_revision,
+            revision + 1
+        );
+        assert_eq!(control.borrow().cue_advance_frame(), None, "the cue ran");
+        assert_eq!(durable.position().revision, revision + 1);
+        let recorded = store.recorded.borrow();
+        assert_eq!(recorded.len(), 3, "only the accepted retry is journaled");
+        let advance = recorded.last().unwrap();
+        assert_eq!(
+            advance.payload,
+            CommandPayload::CueAdvance {
+                list: 7,
+                frame: due
+            }
+        );
+        assert_eq!(
+            advance.idempotency_key,
+            format!("cue-clock-{revision}-7-{due}-retry-2")
+        );
+    }
+
+    /// The bug this guards: a cue advance refused while a playlist take was
+    /// held for a later frame stalled the waiting cue until some other
+    /// command changed the revision, although the hold clears by itself.
+    /// The clock now retries on the next frames: each retry is prepared and
+    /// dropped while the refusal stands (no receipt, no revision), and the
+    /// first one the show accepts fires the cue, late, on the frame it names.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cue_clock_retries_an_advance_refused_by_a_held_playlist_take() {
+        use cue_clock::{CueClock, FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use fm_protocol::{
+            PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
+            PlaylistTransitionKind,
+        };
+        use playlist_clock::Pacing;
+
+        let mut control = test_control(&test_project());
+        let principal = operator();
+        let server = test_server(&control);
+        for (id, payload) in [
+            (
+                "set-playlist",
+                CommandPayload::SetPlaylist {
+                    loop_mode: PlaylistLoopMode::Off,
+                    entries: [(1, 2), (2, 1)]
+                        .map(|(id, input)| PlaylistEntrySpec {
+                            id,
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(input)),
+                            duration_frames: 80,
+                            transition: PlaylistTransitionKind::Cut,
+                            transition_frames: 0,
+                            enabled: true,
+                        })
+                        .to_vec(),
+                },
+            ),
+            (
+                "start",
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Start {
+                        at: PlaylistStart::Now,
+                        from: None,
+                    },
+                },
+            ),
+        ] {
+            let submitted = control
+                .submit(
+                    &principal,
+                    test_command(id, &format!("{id}-key"), payload),
+                    0,
+                )
+                .unwrap();
+            assert!(
+                submitted.is_accepted(),
+                "{id}: {:?}",
+                submitted.output.result
+            );
+        }
+        control.tick(&server).unwrap();
+        let due = go_waiting_cue(&mut control, 5);
+        let boundary = control
+            .playlist_advance_frame()
+            .expect("a boundary is pending");
+        assert!(boundary > due + 40, "boundary {boundary}, cue due {due}");
+
+        let mut clock = CueClock::default();
+        while control.frame_cursor() < due {
+            assert_eq!(
+                clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+                None
+            );
+            control.tick(&server).unwrap();
+        }
+        // The playlist's take is accepted ahead, for its boundary, so the
+        // show holds every other command until then.
+        let take = control
+            .submit(
+                &principal,
+                playlist_clock::advance_command(boundary, control.diagnostics().current_revision),
+                0,
+            )
+            .unwrap();
+        assert!(take.is_accepted(), "{:?}", take.output.result);
+        let revision = control.diagnostics().current_revision;
+        let advance = clock
+            .next(&mut control, Pacing::Engine, true, 0)
+            .unwrap()
+            .expect("the wait ended");
+        assert_eq!(
+            (advance.list, advance.revision, advance.retry),
+            (7, revision, 0)
+        );
+        let refused = control.submit(&principal, advance.command(), 0).unwrap();
+        assert!(
+            matches!(
+                &refused.output.result,
+                CommandResult::Rejected {
+                    reason: Some(fm_protocol::RefusalReason::PlaylistTakeScheduled { frame }),
+                    ..
+                } if *frame == boundary
+            ),
+            "{:?}",
+            refused.output.result
+        );
+        clock.observe(&advance, &refused.output.result);
+        // Whether the show holds a receipt for the clock's attempt `retry`
+        // at `frame`: preparing the same key again replays it.
+        let has_receipt = |control: &mut ControlService<Policy>, frame: u64, retry: u32| {
+            let mut command = cue_clock::advance_command(7, frame, revision);
+            if retry > 0 {
+                command.idempotency_key = format!("{}-retry-{retry}", command.idempotency_key);
+            }
+            matches!(
+                control.prepare_submit(&operator(), command, 0).unwrap(),
+                PrepareSubmitOutcome::Replayed(_)
+            )
+        };
+        assert!(has_receipt(&mut control, advance.frame, 0));
+        // Not again on the same frame.
+        assert_eq!(
+            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            None
+        );
+
+        // Every frame until the hold clears, the retry is prepared, still
+        // refused, and dropped: no receipt and no revision. A pass without a
+        // retry window (a session command waiting) does not try at all.
+        let mut probes = 0_u32;
+        let retried = loop {
+            assert!(
+                control.frame_cursor() <= boundary + SLOW_RETRY_FRAMES + 1,
+                "never retried"
+            );
+            control.tick(&server).unwrap();
+            assert_eq!(
+                clock.next(&mut control, Pacing::Engine, false, 0).unwrap(),
+                None,
+                "a retry ran without its window"
+            );
+            let attempting = clock.due(&control, Pacing::Engine).is_some();
+            if let Some(retried) = clock.next(&mut control, Pacing::Engine, true, 0).unwrap() {
+                break retried;
+            }
+            assert_eq!(control.diagnostics().current_revision, revision);
+            if attempting {
+                probes += 1;
+                let (_, frame) = control.cue_advance_frame().unwrap();
+                assert!(!has_receipt(&mut control, frame, probes), "probe {probes}");
+            }
+        };
+        assert!(control.frame_cursor() >= boundary, "the hold cleared first");
+        // The fast retries ran out while the take was held, so the clock
+        // backed off: far fewer probes than held frames.
+        assert!(probes > FAST_RETRIES, "{probes} probes");
+        assert!(
+            u64::from(probes) < boundary - due,
+            "{probes} probes over {} held frames",
+            boundary - due
+        );
+        assert_eq!((retried.list, retried.revision), (7, revision));
+        assert_eq!(retried.retry, probes + 1);
+        // Late: the retry names the next frame, exactly as replay finds it.
+        assert_eq!(control.cue_advance_frame(), Some((7, retried.frame)));
+        assert!(retried.frame > boundary);
+        let fired = control.submit(&principal, retried.command(), 0).unwrap();
+        assert!(fired.is_accepted(), "{:?}", fired.output.result);
+        clock.observe(&retried, &fired.output.result);
+        control.tick(&server).unwrap();
+        control.tick(&server).unwrap();
+        assert_eq!(control.cue_advance_frame(), None, "the cue ran");
+        assert_eq!(
+            live_engine_snapshot(&mut control)
+                .realized_switcher()
+                .program(),
+            test_input_id(1),
+            "its cut is on Program"
+        );
+        assert_eq!(
+            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            None
+        );
+    }
+
+    /// A refusal that cannot clear by itself is not retried at the same
+    /// revision; a retryable one is retried on every frame at first and then
+    /// every `SLOW_RETRY_FRAMES`; another accepted command (a new revision)
+    /// makes the next advance a first attempt again.
+    #[test]
+    fn cue_clock_backs_off_retries_and_waits_for_a_new_revision_after_a_final_refusal() {
+        use cue_clock::{CueClock, FAST_RETRIES, SLOW_RETRY_FRAMES};
+        use playlist_clock::Pacing;
+
+        let refusal = |code: &str, retryable: bool| CommandResult::Rejected {
+            id: "advance".into(),
+            code: code.into(),
+            message: "refused".into(),
+            fields: Vec::new(),
+            current_revision: 0,
+            retryable,
+            reason: None,
+        };
+        let mut control = test_control(&test_project());
+        let server = test_server(&control);
+        let due = go_waiting_cue(&mut control, 3);
+        while control.frame_cursor() < due {
+            control.tick(&server).unwrap();
+        }
+        let mut clock = CueClock::default();
+
+        // Final: nothing until the revision changes.
+        let first = clock
+            .next(&mut control, Pacing::Engine, true, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.retry, 0);
+        clock.observe(&first, &refusal("invalid_command", false));
+        for _ in 0..3 * SLOW_RETRY_FRAMES {
+            control.tick(&server).unwrap();
+            assert_eq!(clock.due(&control, Pacing::Engine), None);
+        }
+        let cut = control
+            .submit(
+                &operator(),
+                test_command("cut", "cut-key", CommandPayload::Cut),
+                0,
+            )
+            .unwrap();
+        assert!(cut.is_accepted());
+        let fresh = clock.due(&control, Pacing::Engine).expect("a new revision");
+        assert_eq!((fresh.retry, fresh.revision), (0, first.revision + 1));
+
+        // Retryable: every frame for the fast retries, then backed off.
+        let fast = usize::try_from(FAST_RETRIES).unwrap();
+        let mut attempt = fresh;
+        let mut gaps = Vec::new();
+        let mut last = control.frame_cursor();
+        while gaps.len() < fast + 3 {
+            clock.observe(&attempt, &refusal("unavailable", true));
+            attempt = loop {
+                control.tick(&server).unwrap();
+                if let Some(next) = clock.due(&control, Pacing::Engine) {
+                    break next;
+                }
+            };
+            gaps.push(control.frame_cursor() - last);
+            last = control.frame_cursor();
+            assert_eq!(attempt.retry, u32::try_from(gaps.len()).unwrap());
+        }
+        assert!(gaps[..fast].iter().all(|gap| *gap == 1), "{gaps:?}");
+        assert!(
+            gaps[fast..].iter().all(|gap| *gap == SLOW_RETRY_FRAMES),
+            "{gaps:?}"
         );
     }
 

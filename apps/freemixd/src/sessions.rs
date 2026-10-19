@@ -876,6 +876,9 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
+        // A refused cue advance is retried only on a pass no peer's command
+        // was ready for (the journal-idle check is the clock's), so retries
+        // never take a client's frame or command turn.
         if let Err(error) = runtime.cue_clock.borrow_mut().poll(
             control,
             store,
@@ -884,6 +887,7 @@ pub(super) fn run(
             native.as_deref_mut(),
             Some(process_shutdown),
             Instant::now(),
+            ready_turn.is_none(),
         ) {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);

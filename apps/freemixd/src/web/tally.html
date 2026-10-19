@@ -335,7 +335,7 @@
     return new TextDecoder().decode(bytes);
   }
   // A cue list record's `cues` (`id~name hex~follow~actions`, comma
-  // separated) and `state` (`standby:live:pending:played:fault`).
+  // separated) and `state` (`standby:live:pending:played:fault:armed`).
   function cueList(record) {
     const cues = required(record, "cues");
     return {
