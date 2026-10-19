@@ -11,7 +11,9 @@
 //! environment the child was given, and replaces the `pulse`/`alsa` device
 //! with a 1 kHz `lavfi` tone paced in real time, so the level on Master is
 //! known; every other invocation runs the real `FFmpeg`, so a sound card
-//! that does not exist keeps reopening with the real error.
+//! that does not exist keeps reopening with the real error. A fake `pactl`
+//! on the same `PATH` lists two `PulseAudio` sources, so the daemon's
+//! answer to `system_audio_devices_request` (Protocol 2.68) is known.
 //!
 //! The test needs `FFmpeg` and a native GPU adapter (a software Vulkan
 //! driver such as lavapipe suffices). Without them it is skipped, unless
@@ -88,6 +90,27 @@ fn real_ffmpeg() -> PathBuf {
         .map(|directory| directory.join("ffmpeg"))
         .find(|candidate| candidate.is_file())
         .expect("ffmpeg is on PATH")
+}
+
+/// Writes a fake `pactl` into `bin` that lists a sink's monitor and a
+/// microphone (the default source), and records the environment it was
+/// given in `capture`.
+fn write_pactl(bin: &Path, capture: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    let script = format!(
+        "#!/bin/sh\n\
+         printf 'LC_ALL=%s\\nPULSE_SERVER=%s\\nFREEMIX_LEAK=%s\\n' \"$LC_ALL\" \"$PULSE_SERVER\" \"$FREEMIX_LEAK\" > '{capture}'/pactl.env\n\
+         if [ \"$1\" = info ]; then\n\
+         printf 'Default Sink: freemix_sink\\nDefault Source: freemix_mic\\n'\n\
+         exit 0\n\
+         fi\n\
+         printf 'Source #1\\n\\tName: freemix_sink.monitor\\n\\tDescription: Monitor of Freemix Sink\\n\\tSample Specification: s16le 2ch 48000Hz\\n\\tMonitor of Sink: freemix_sink\\n'\n\
+         printf 'Source #2\\n\\tName: freemix_mic\\n\\tDescription: Freemix Microphone\\n\\tSample Specification: s16le 1ch 48000Hz\\n\\tMonitor of Sink: n/a\\n'\n",
+        capture = capture.display(),
+    );
+    let path = bin.join("pactl");
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// Writes the `ffmpeg` wrapper into `bin`: the `freemix_tone` device's
@@ -443,6 +466,7 @@ fn native_daemon_captures_system_audio_and_reports_its_state() {
     std::fs::create_dir_all(&capture).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     write_wrapper(&bin, &capture);
+    write_pactl(&bin, &capture);
     let project_path = directory.path().join("native-system-audio.freemix");
     save_project(&project_path);
     let daemon = match start_native(&project_path, &bin, &home) {
@@ -564,6 +588,52 @@ fn native_daemon_captures_system_audio_and_reports_its_state() {
         snapshot.inputs
     );
     assert_eq!(snapshot.system_audio_inputs[0].input, wire(3));
+
+    // The server lists its PulseAudio sources off its frame loop, the
+    // default marked, running `pactl` with the C locale and only the
+    // audio-server environment (Protocol 2.68).
+    client.send(&WireMessage::SystemAudioDevicesRequest(
+        fm_protocol::SystemAudioDevicesRequest {
+            request_id: "devices-1".into(),
+        },
+    ));
+    let listed = client.wait_for("the system audio devices", |_, message| match message {
+        WireMessage::SystemAudioDevices(answer) => Some(answer),
+        _ => None,
+    });
+    assert_eq!(listed.request_id, "devices-1");
+    assert!(listed.inventory.supported);
+    assert_eq!(listed.inventory.error_of(SystemAudioBackend::Pulse), None);
+    let pulse: Vec<_> = listed
+        .inventory
+        .devices_of(SystemAudioBackend::Pulse)
+        .map(|device| {
+            (
+                device.device.as_str(),
+                device.description.as_str(),
+                device.channels,
+                device.default,
+                device.monitor,
+            )
+        })
+        .collect();
+    assert_eq!(
+        pulse,
+        [
+            ("freemix_mic", "Freemix Microphone", Some(1), true, false),
+            (
+                "freemix_sink.monitor",
+                "Monitor of Freemix Sink",
+                Some(2),
+                false,
+                true
+            ),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(capture.join("pactl.env")).unwrap(),
+        format!("LC_ALL=C\nPULSE_SERVER={PULSE_SERVER}\nFREEMIX_LEAK=\n")
+    );
 
     // Cutting away from the tone silences Master: its audio follows its
     // picture like any input.

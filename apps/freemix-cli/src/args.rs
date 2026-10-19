@@ -1204,6 +1204,11 @@ pub enum Command {
     RemoteCaptureDevices {
         address: SocketAddr,
     },
+    /// Lists the system audio capture devices of a running daemon's host
+    /// (AU-011, Protocol 2.68).
+    RemoteSystemAudioDevices {
+        address: SocketAddr,
+    },
     /// Adds a system audio input to a project (AU-011).
     SystemAudioInputAdd {
         path: PathBuf,
@@ -2051,7 +2056,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         system_audio @ ("input-add-system-audio"
         | "remote-input-add-system-audio"
         | "input-system-audio-status"
-        | "remote-input-system-audio-status") => parse_system_audio(system_audio, arguments),
+        | "remote-input-system-audio-status"
+        | "remote-system-audio-devices") => parse_system_audio(system_audio, arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -5839,7 +5845,8 @@ fn parse_capture(
 /// `remote-input-add-system-audio <address> <input> <name> <pulse|alsa>
 /// <device> [--key <key>] [--expect <revision>]`, and
 /// `input-system-audio-status <project>` /
-/// `remote-input-system-audio-status <address>`.
+/// `remote-input-system-audio-status <address>`, and
+/// `remote-system-audio-devices <address>`.
 fn parse_system_audio(
     command: &str,
     mut arguments: impl Iterator<Item = String>,
@@ -5854,6 +5861,11 @@ fn parse_system_audio(
         (Some(required_path(&mut arguments, "project path")?), None)
     };
     let action = command.strip_prefix("remote-").unwrap_or(command);
+    if action == "system-audio-devices" {
+        reject_extra(&mut arguments)?;
+        let address = address.expect("only the remote form lists devices");
+        return Ok(Command::RemoteSystemAudioDevices { address });
+    }
     if action == "input-system-audio-status" {
         reject_extra(&mut arguments)?;
         return Ok(match (path, address) {

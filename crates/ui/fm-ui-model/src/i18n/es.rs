@@ -7536,7 +7536,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::SaDeviceHover,
         t(
-            "El nombre del dispositivo tal como lo conoce el sistema de audio del servidor; el servidor no lista aquí sus dispositivos, así que escriba el nombre (de 1 a 128 caracteres imprimibles)",
+            "El nombre del dispositivo tal como lo conoce el sistema de audio del servidor; elegirlo en la lista de arriba lo rellena, y puede escribir un nombre que la lista no muestre (de 1 a 128 caracteres imprimibles)",
         ),
     ),
     (
@@ -7566,6 +7566,64 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::SaDetailReopens,
         plural("reabierto {count} vez", "reabierto {count} veces"),
+    ),
+    // Lista de dispositivos de audio del sistema (AU-011, Protocolo 2.68).
+    (Msg::SaRefresh, t("Actualizar lista")),
+    (
+        Msg::SaRefreshHover,
+        t(
+            "Pide al servidor que vuelva a listar sus dispositivos de captura de audio, por ejemplo tras conectar un micrófono USB o cargar una tarjeta loopback",
+        ),
+    ),
+    (
+        Msg::SaPickerHover,
+        t(
+            "Elija uno de los dispositivos de captura de audio que lista el servidor; el campo de nombre de abajo sigue su elección",
+        ),
+    ),
+    (Msg::SaPickDefault, t("Dispositivo predeterminado")),
+    (
+        Msg::SaPickDefaultPulseHover,
+        t(
+            "Captura lo que reproduce la salida predeterminada del servidor ({device}), siguiendo la predeterminada cuando cambia",
+        ),
+    ),
+    (
+        Msg::SaPickDefaultAlsaHover,
+        t("Captura el PCM predeterminado de ALSA en el servidor ({device})"),
+    ),
+    (Msg::SaPickTyped, t("Nombre escrito: {device}")),
+    (
+        Msg::SaDeviceOptionHover,
+        t("Captura el dispositivo que el servidor llama {device}"),
+    ),
+    (
+        Msg::SaTagChannels,
+        plural("{count} canal", "{count} canales"),
+    ),
+    (Msg::SaTagMonitor, t("monitor de salida")),
+    (Msg::SaTagDefault, t("predeterminado del sistema")),
+    (
+        Msg::SaListUnknown,
+        t("Pidiendo al servidor sus dispositivos de captura de audio…"),
+    ),
+    (
+        Msg::SaListUnsupported,
+        t("Este servidor no captura audio del sistema, así que no lista dispositivos"),
+    ),
+    (Msg::SaListError, t("No se pudo listar {backend}: {error}")),
+    (
+        Msg::SaListEmpty,
+        t(
+            "El servidor no lista dispositivos de captura de {backend}; escriba el nombre del dispositivo",
+        ),
+    ),
+    (
+        Msg::SaListCount,
+        plural(
+            "El servidor lista {count} dispositivo de captura de {backend}",
+            "El servidor lista {count} dispositivos de captura de {backend}",
+        ),
     ),
     (Msg::MenuLiveLan, t("Espectadores LiveLAN…")),
     (

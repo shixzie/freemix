@@ -227,6 +227,10 @@ pub enum StudioIntent {
     /// Asks the server for its capture devices (IN-001, Protocol 2.47);
     /// the reply updates [`fm_ui_model::ClientView::capture_inventory`].
     RequestCaptureDevices,
+    /// Asks the server for its system audio capture devices (AU-011,
+    /// Protocol 2.68); the reply updates
+    /// [`fm_ui_model::ClientView::system_audio_inventory`].
+    RequestSystemAudioDevices,
     /// Turns the live input thumbnail feed on while the input bank is
     /// shown and off when it is not (Protocol 2.59); the thumbnails arrive
     /// in [`StudioUiState::input_thumbnails`].
@@ -3007,6 +3011,7 @@ mod tests {
             system_audio_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             capture_inventory: None,
+            system_audio_inventory: None,
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {

@@ -972,6 +972,70 @@ pub fn capture_devices(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Lists the system audio capture devices of the daemon's host (AU-011,
+/// Protocol 2.68).
+pub fn system_audio_devices(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-system-audio-{}", unique_client_id()?);
+    remote.write(&WireMessage::SystemAudioDevicesRequest(
+        fm_protocol::SystemAudioDevicesRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    let reply = loop {
+        match remote.read_until(deadline)? {
+            WireMessage::SystemAudioDevices(reply) if reply.request_id == request_id => {
+                break reply;
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(
+                    RemoteFailure("expected system_audio_devices from daemon".into()).into(),
+                );
+            }
+        }
+    };
+    print_system_audio_devices(&reply.inventory);
+    Ok(())
+}
+
+/// Prints a `SystemAudioDevices(...)` header, an `Unlisted(...)` line per
+/// audio system that could not be listed, and a `Device(...)` line per
+/// device.
+fn print_system_audio_devices(inventory: &fm_protocol::SystemAudioInventory) {
+    println!(
+        "SystemAudioDevices(supported={}, devices={})",
+        if inventory.supported { "on" } else { "off" },
+        inventory.devices.len()
+    );
+    for error in &inventory.errors {
+        println!(
+            "Unlisted(backend={}, error={:?})",
+            error.backend.token(),
+            error.error
+        );
+    }
+    let flag = |on: bool| if on { "on" } else { "off" };
+    for device in &inventory.devices {
+        println!(
+            "Device(backend={}, device={:?}, description={:?}, channels={}, default={}, \
+             monitor={})",
+            device.backend.token(),
+            device.device,
+            device.description,
+            device
+                .channels
+                .map_or_else(|| "unknown".to_owned(), |channels| channels.to_string()),
+            flag(device.default),
+            flag(device.monitor),
+        );
+    }
+}
+
 /// Prints a `CaptureDevices(...)` header, then per device a `Device(...)`
 /// line followed by an aligned table of its formats.
 fn print_capture_devices(inventory: &fm_protocol::CaptureInventory) {

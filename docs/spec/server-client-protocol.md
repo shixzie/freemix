@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.67 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.68 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1783,6 +1783,8 @@ ALSA PCM.
   add with `runtime_unsupported`; the native daemon captures on Linux only,
   and reports a stored input elsewhere as `failed` with the error
   `system audio capture is not supported on this platform`.
+- Protocol 2.68 adds the device list a client picks a device from (see
+  below).
 - Durability: an input kind `{"type": "system_audio", "backend", "device"}`
   (schema 52).
 - 2.54 is refused.
@@ -2357,6 +2359,43 @@ Protocol 2.67 makes stream destination and recorder failures machine-readable
   reads `FAILED` with its reason. The operator page disables Record on such a
   slot and names the daemon option that configures it.
 - 2.66 is refused.
+
+Protocol 2.68 lists the server's system audio capture devices (AU-011), so an
+operator picks a device instead of typing its name.
+
+- A client sends `system_audio_devices_request` with `request_id` and receives
+  `system_audio_devices` with the same `request_id`, `supported` (`0|1`:
+  whether the server captures system audio at all), `errors`, and `devices`.
+  `supported=0` carries empty lists.
+- `errors` is a comma-separated list, strictly ascending by audio system, of
+  `<backend>~<length>:<text>`: an audio system that could not be listed and
+  why (1 to 160 bytes, no control characters).
+- `devices` is a comma-separated list, strictly ascending by audio system
+  (`pulse` before `alsa`) and then device name, of
+  `<backend>~<default>~<monitor>~<channels>~<device length>~<description
+  length>:<device><description>`: `default` and `monitor` are `0|1` (the
+  audio system's default source; a sink's monitor), `channels` is `-` or 1 to
+  64, the device is a valid system audio device name and the description
+  0 to 96 bytes of one trimmed line. At most one default per audio system and
+  48 devices. The texts are written raw after their canonical byte lengths,
+  so the line encoding escapes them exactly once; anything else refuses the
+  record.
+- Native `freemixd` on Linux lists `PulseAudio`/`PipeWire` sources with
+  `pactl list sources` and `pactl info` (C locale, the capture child's
+  audio-server environment, killed after 2 s) and ALSA capture PCMs from
+  `/proc/asound/cards` and `/proc/asound/pcm` as `plughw:<card id>,<device>`.
+  It lists on a worker thread, never on the session loop that realizes
+  frames; a listing younger than 2 s answers later requests, and a peer's
+  newer request replaces its request not yet started, so a peer may be
+  answered only for its newest. Every other daemon (simulated, or another
+  platform) answers `supported=0`.
+- Studio's system audio form (Add input, and Replace source on a system audio
+  input) asks when it opens and on Refresh list, and offers Default device
+  (`@DEFAULT_MONITOR@`, or ALSA's `default`) and the listed devices of the
+  chosen audio system with their channels, monitor, and default marks; the
+  name field stays editable for a device the list does not show. The CLI
+  prints the list with `remote-system-audio-devices`.
+- 2.67 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

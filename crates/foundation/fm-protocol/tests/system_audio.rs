@@ -1,19 +1,23 @@
-//! Protocol 2.55 system audio inputs (AU-011): `input_add` with
-//! `kind=system_audio`, the `input_added` durable event, the
-//! `system_audio_status` runtime event, the snapshot's
-//! `system_audio_inputs`, and the `system_audio:` replacement source —
+//! Protocol 2.55 system audio inputs (AU-011) and the Protocol 2.68 device
+//! list: `input_add` with `kind=system_audio`, the `input_added` durable
+//! event, the `system_audio_status` runtime event, the snapshot's
+//! `system_audio_inputs`, the `system_audio:` replacement source, and the
+//! `system_audio_devices_request` / `system_audio_devices` exchange —
 //! exactly, and strictly.
 
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, InputLifecycleOperation, LiveInputSource,
-    MAX_SYSTEM_AUDIO_ERROR_BYTES, MAX_SYSTEM_AUDIO_INPUTS, ProtocolVersion, RuntimeEventMessage,
-    RuntimeLifecycleEvent, ServerIdentity, SystemAudioBackend, SystemAudioConfig, SystemAudioEntry,
-    SystemAudioState, SystemAudioStatus, WireInputId, WireInputSource, WireMessage, decode_line,
-    encode_line,
+    MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES, MAX_SYSTEM_AUDIO_DEVICE_BYTES,
+    MAX_SYSTEM_AUDIO_DEVICE_CHANNELS, MAX_SYSTEM_AUDIO_DEVICES, MAX_SYSTEM_AUDIO_ERROR_BYTES,
+    MAX_SYSTEM_AUDIO_INPUTS, ProtocolVersion, RuntimeEventMessage, RuntimeLifecycleEvent,
+    ServerIdentity, SystemAudioBackend, SystemAudioBackendError, SystemAudioConfig,
+    SystemAudioDevice, SystemAudioDevicesMessage, SystemAudioDevicesRequest, SystemAudioEntry,
+    SystemAudioInventory, SystemAudioState, SystemAudioStatus, WireInputId, WireInputSource,
+    WireMessage, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.67\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.68\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -75,8 +79,8 @@ fn monitor() -> SystemAudioConfig {
 }
 
 #[test]
-fn the_current_protocol_is_2_55() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 67));
+fn the_current_protocol_is_2_68() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 68));
 }
 
 #[test]
@@ -368,4 +372,224 @@ fn snapshot(system_audio_inputs: Vec<SystemAudioEntry>) -> WireMessage {
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
     })
+}
+
+fn listed(
+    backend: SystemAudioBackend,
+    device: &str,
+    description: &str,
+    channels: Option<u8>,
+) -> SystemAudioDevice {
+    SystemAudioDevice {
+        backend,
+        device: device.into(),
+        description: description.into(),
+        channels,
+        default: false,
+        monitor: false,
+    }
+}
+
+fn inventory() -> SystemAudioInventory {
+    let mut monitor = listed(
+        SystemAudioBackend::Pulse,
+        "alsa_output.pci.analog-stereo.monitor",
+        "Monitor of Built-in Audio",
+        Some(2),
+    );
+    monitor.monitor = true;
+    let mut mic = listed(
+        SystemAudioBackend::Pulse,
+        "alsa_input.usb~mic,1",
+        "Desk mic, front",
+        Some(1),
+    );
+    mic.default = true;
+    SystemAudioInventory {
+        supported: true,
+        devices: vec![
+            mic,
+            monitor,
+            listed(
+                SystemAudioBackend::Alsa,
+                "plughw:Loopback,1",
+                "Loopback: Loopback PCM",
+                None,
+            ),
+        ],
+        errors: Vec::new(),
+    }
+}
+
+fn devices(request_id: &str, inventory: SystemAudioInventory) -> WireMessage {
+    WireMessage::SystemAudioDevices(SystemAudioDevicesMessage {
+        request_id: request_id.into(),
+        inventory,
+    })
+}
+
+/// Protocol 2.68: the device list request and its answer have one exact
+/// form; texts travel raw after their byte lengths, so names holding the
+/// list separators survive.
+#[test]
+fn the_device_list_exchange_is_exact() {
+    let request = WireMessage::SystemAudioDevicesRequest(SystemAudioDevicesRequest {
+        request_id: "sa-1".into(),
+    });
+    assert_eq!(
+        round_trip(&request),
+        "system_audio_devices_request\trequest_id=sa-1\n"
+    );
+    let reply = devices("sa-1", inventory());
+    assert_eq!(
+        round_trip(&reply),
+        "system_audio_devices\trequest_id=sa-1\tsupported=1\terrors=\tdevices=\
+         pulse~1~0~1~20~15:alsa_input.usb~mic%2C1Desk%20mic%2C%20front\
+         %2Cpulse~0~1~2~37~25:alsa_output.pci.analog-stereo.monitorMonitor%20of%20Built-in%20Audio\
+         %2Calsa~0~0~-~17~22:plughw%3ALoopback%2C1Loopback%3A%20Loopback%20PCM\n"
+            .replace('~', "%7E")
+            .replace(':', "%3A")
+    );
+    let mut failed = inventory();
+    failed.devices.clear();
+    failed.errors = vec![
+        SystemAudioBackendError {
+            backend: SystemAudioBackend::Pulse,
+            error: "pactl: connection refused, 2".into(),
+        },
+        SystemAudioBackendError {
+            backend: SystemAudioBackend::Alsa,
+            error: "no sound cards".into(),
+        },
+    ];
+    let line = round_trip(&devices("r", failed));
+    assert!(line.contains("\tsupported=1\terrors=pulse"), "{line}");
+    assert_eq!(
+        round_trip(&devices("r", SystemAudioInventory::unsupported())),
+        "system_audio_devices\trequest_id=r\tsupported=0\terrors=\tdevices=\n"
+    );
+    // A description may be empty and a name may be the longest allowed.
+    let mut edge = inventory();
+    edge.devices[2].description.clear();
+    edge.devices[2].device = "p".repeat(MAX_SYSTEM_AUDIO_DEVICE_BYTES);
+    edge.devices[0].description = "é".repeat(MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES / 2);
+    round_trip(&devices("r", edge));
+    let mut full = inventory();
+    full.devices = (0..MAX_SYSTEM_AUDIO_DEVICES)
+        .map(|index| {
+            listed(
+                SystemAudioBackend::Alsa,
+                &format!("plughw:{index:03},{}", "x".repeat(110)),
+                &"é".repeat(MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES / 2),
+                Some(MAX_SYSTEM_AUDIO_DEVICE_CHANNELS),
+            )
+        })
+        .collect();
+    full.errors = vec![SystemAudioBackendError {
+        backend: SystemAudioBackend::Pulse,
+        error: "é".repeat(MAX_SYSTEM_AUDIO_ERROR_BYTES / 2),
+    }];
+    assert_eq!(full.fitted(), full, "the longest list is already fitted");
+    round_trip(&devices("r".repeat(128).as_str(), full));
+}
+
+#[test]
+fn device_lists_that_break_the_contract_are_refused() {
+    let encodes = |inventory: SystemAudioInventory| encode_line(&devices("r", inventory)).is_ok();
+    let mut descending = inventory();
+    descending.devices.swap(0, 1);
+    assert!(!encodes(descending));
+    let mut duplicate = inventory();
+    duplicate.devices[1] = duplicate.devices[0].clone();
+    assert!(!encodes(duplicate));
+    let mut two_defaults = inventory();
+    two_defaults.devices[1].default = true;
+    assert!(!encodes(two_defaults));
+    let mut defaults_per_backend = inventory();
+    defaults_per_backend.devices[2].default = true;
+    assert!(
+        encodes(defaults_per_backend),
+        "one default per audio system"
+    );
+    let mut bad_name = inventory();
+    bad_name.devices[2].device = "-f lavfi".into();
+    assert!(!encodes(bad_name));
+    let mut padded = inventory();
+    padded.devices[2].description = " padded".into();
+    assert!(!encodes(padded));
+    let mut long_description = inventory();
+    long_description.devices[2].description = "d".repeat(MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES + 1);
+    assert!(!encodes(long_description));
+    let mut silent = inventory();
+    silent.devices[2].channels = Some(0);
+    assert!(!encodes(silent));
+    let mut wide = inventory();
+    wide.devices[2].channels = Some(MAX_SYSTEM_AUDIO_DEVICE_CHANNELS + 1);
+    assert!(!encodes(wide));
+    let mut too_many = inventory();
+    too_many.devices = (0..=MAX_SYSTEM_AUDIO_DEVICES)
+        .map(|index| {
+            listed(
+                SystemAudioBackend::Alsa,
+                &format!("hw:{index:03}"),
+                "",
+                None,
+            )
+        })
+        .collect();
+    assert!(!encodes(too_many));
+    let mut unsupported_lists = inventory();
+    unsupported_lists.supported = false;
+    assert!(!encodes(unsupported_lists));
+    let error = |backend, error: &str| SystemAudioBackendError {
+        backend,
+        error: error.into(),
+    };
+    let mut errors_descending = inventory();
+    errors_descending.errors = vec![
+        error(SystemAudioBackend::Alsa, "a"),
+        error(SystemAudioBackend::Pulse, "b"),
+    ];
+    assert!(!encodes(errors_descending));
+    for text in ["", "line\nbreak"] {
+        let mut bad_error = inventory();
+        bad_error.errors = vec![error(SystemAudioBackend::Pulse, text)];
+        assert!(!encodes(bad_error), "{text:?}");
+    }
+    let mut long_error = inventory();
+    long_error.errors = vec![error(
+        SystemAudioBackend::Pulse,
+        &"e".repeat(MAX_SYSTEM_AUDIO_ERROR_BYTES + 1),
+    )];
+    assert!(!encodes(long_error));
+
+    let line = encode_line(&devices("r", inventory())).unwrap();
+    for (from, to) in [
+        ("supported=1", "supported=2"),
+        ("supported=1", "supported=01"),
+        ("\terrors=", "\terrors=jack%7E1%3Ax"),
+        ("\terrors=", "\terrors=pulse%7E2%3Ax"),
+        ("\terrors=", "\terrors=pulse%7E01%3Ax"),
+        ("pulse%7E0%7E1%7E2", "jack%7E0%7E1%7E2"),
+        ("pulse%7E0%7E1%7E2", "pulse%7E2%7E1%7E2"),
+        ("pulse%7E0%7E1%7E2", "pulse%7E0%7E1%7E02"),
+        ("pulse%7E0%7E1%7E2", "pulse%7E0%7E1%7E0"),
+        ("pulse%7E0%7E1%7E2%7E37", "pulse%7E0%7E1%7E2%7E38"),
+        ("pulse%7E0%7E1%7E2%7E37", "pulse%7E0%7E1%7E2%7E200"),
+        ("%7E-%7E17%7E22", "%7E-%7E17%7E23"),
+        ("request_id=r", "request_id="),
+        ("\tdevices=", "\tdevices=%2C"),
+    ] {
+        assert!(line.contains(from), "{from} not in {line}");
+        refused(&line.replacen(from, to, 1));
+    }
+    refused(&format!(
+        "{}\n",
+        line.trim_end().replace("\terrors=", "\terror=")
+    ));
+    refused(&line.replacen("\tsupported=1", "", 1));
+    refused(&format!("{}\textra=1\n", line.trim_end()));
+    refused(&format!("{},\n", line.trim_end()));
+    refused("system_audio_devices_request\trequest_id=\n");
+    refused("system_audio_devices_request\trequest_id=a\tsupported=1\n");
 }

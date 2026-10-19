@@ -3775,6 +3775,41 @@ fn capture_inputs_status_and_inventory_replicate() {
         Intake::CaptureDevicesApplied
     );
     assert_eq!(client.model().capture_inventory(), Some(&empty));
+    // The system audio device list (Protocol 2.68) replicates the same way.
+    let devices = fm_protocol::SystemAudioInventory {
+        supported: true,
+        devices: vec![fm_protocol::SystemAudioDevice {
+            backend: fm_protocol::SystemAudioBackend::Pulse,
+            device: "sink.monitor".into(),
+            description: "Monitor of Sink".into(),
+            channels: Some(2),
+            default: true,
+            monitor: true,
+        }],
+        errors: Vec::new(),
+    };
+    assert_eq!(client.model().system_audio_inventory(), None);
+    assert_eq!(
+        client
+            .intake(WireMessage::SystemAudioDevices(
+                fm_protocol::SystemAudioDevicesMessage {
+                    request_id: "sa-1".into(),
+                    inventory: devices.clone(),
+                }
+            ))
+            .unwrap(),
+        Intake::SystemAudioDevicesApplied
+    );
+    assert_eq!(client.model().system_audio_inventory(), Some(&devices));
+    assert_eq!(
+        client
+            .model()
+            .view()
+            .unwrap()
+            .system_audio_inventory
+            .as_ref(),
+        Some(&devices)
+    );
 
     // Removing the input removes its entry.
     client

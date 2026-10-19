@@ -1539,6 +1539,7 @@ pub fn run(command: Command) -> AppResult<()> {
             ));
         }
         Command::RemoteSystemAudioStatus { address } => remote::system_audio_inputs(address)?,
+        Command::RemoteSystemAudioDevices { address } => remote::system_audio_devices(address)?,
         Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
         Command::RemoteAudioStrip {
             address,
@@ -5933,6 +5934,7 @@ Usage:
   freemix-cli remote-capture-devices <127.0.0.1:port>
   freemix-cli remote-input-add-system-audio <127.0.0.1:port> <input> <name> <pulse|alsa> <device> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-system-audio-status <127.0.0.1:port>
+  freemix-cli remote-system-audio-devices <127.0.0.1:port>
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>|system-audio:<pulse|alsa>:<device>> [--key <key>] [--expect <revision>]

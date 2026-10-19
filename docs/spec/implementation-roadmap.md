@@ -1732,8 +1732,33 @@ process test plays a paced tone through a wrapped `FFmpeg` onto Master, checks
 the arguments and the environment the child keeps, and adds a missing card
 live, which keeps reopening with the real error.
 
+Protocol 2.68 (no schema change) lists the server's capture devices so the
+operator picks one. `system_audio_devices_request` is answered by
+`system_audio_devices`: whether the server captures system audio, why an
+audio system could not be listed, and each device's audio system, name,
+description, channel count, default mark, and monitor mark, exactly and
+strictly bounded (48 devices). On a native Linux daemon
+`fm_io_linux::system_audio` runs `pactl list sources` and `pactl info` (C
+locale, the capture child's environment, killed after 2 s) and reads
+`/proc/asound/cards` and `/proc/asound/pcm` (capture PCMs as
+`plughw:<card id>,<device>`); the daemon lists on a worker thread off the
+frame loop, reuses a listing for 2 s, and keeps one pending request per peer.
+Simulated daemons and other platforms answer that they do not capture system
+audio. Studio's system audio form, in Add input and now in Replace source (a
+system audio input opens there at its device), asks when it opens and on
+Refresh list, and offers Default device (`@DEFAULT_MONITOR@`, or ALSA's
+`default`) and the listed devices of the chosen audio system, with the name
+field kept for a device the list does not show; the help is in English and
+Spanish and the form is in the hover audit. The CLI adds
+`remote-system-audio-devices`. Tests cover the wire form and its refusals,
+the `pactl` and procfs parsers and a fake `pactl` that answers, fails, and
+hangs, the daemon's listing worker with a fake enumerator (off the loop,
+reuse, deferral), the picker state, and the CLI output.
+
 Remaining gaps:
-- the server's audio devices are not listed, so the device is typed;
+- devices are listed only when asked; nothing reports a device appearing
+  or going away, and no real `PulseAudio`/`PipeWire` server listing has been
+  exercised;
 - there is no edit command beyond replacing the source;
 - capture is stereo only, with no channel selection or per-input delay;
 - there is no Windows (WASAPI loopback) or macOS capture, and no

@@ -181,8 +181,12 @@ pub use stream_target::{
     StreamTargetProtocol, srt_passphrase_is_valid, stream_key_is_valid,
 };
 pub use system_audio::{
-    MAX_SYSTEM_AUDIO_DEVICE_BYTES, MAX_SYSTEM_AUDIO_ERROR_BYTES, MAX_SYSTEM_AUDIO_INPUTS,
-    SystemAudioBackend, SystemAudioConfig, SystemAudioEntry, SystemAudioError, SystemAudioState,
-    SystemAudioStatus, bound_system_audio_error, validate_system_audio_device,
+    MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES, MAX_SYSTEM_AUDIO_DEVICE_BYTES,
+    MAX_SYSTEM_AUDIO_DEVICE_CHANNELS, MAX_SYSTEM_AUDIO_DEVICES, MAX_SYSTEM_AUDIO_ERROR_BYTES,
+    MAX_SYSTEM_AUDIO_INPUTS, SystemAudioBackend, SystemAudioBackendError, SystemAudioConfig,
+    SystemAudioDevice, SystemAudioDevicesMessage, SystemAudioDevicesRequest, SystemAudioEntry,
+    SystemAudioError, SystemAudioInventory, SystemAudioState, SystemAudioStatus,
+    bound_system_audio_description, bound_system_audio_error, default_system_audio_device,
+    validate_system_audio_device,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};

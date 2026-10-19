@@ -1634,6 +1634,10 @@ pub struct ClientView {
     /// Every system audio input, ascending, with its device and latest
     /// status (Protocol 2.55).
     pub system_audio_inputs: Vec<fm_protocol::SystemAudioEntry>,
+    /// The server's system audio capture devices as it last listed them
+    /// (Protocol 2.68); `None` until a `system_audio_devices` reply
+    /// arrives.
+    pub system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -2314,6 +2318,9 @@ pub struct ClientModel {
     /// The capture devices as last reported (Protocol 2.47). Runtime state
     /// that survives resynchronization.
     capture_inventory: Option<fm_protocol::CaptureInventory>,
+    /// The system audio capture devices as last listed (Protocol 2.68).
+    /// Runtime state that survives resynchronization.
+    system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
 }
 
 impl ClientModel {
@@ -2333,7 +2340,21 @@ impl ClientModel {
             known_revision: None,
             display_inventory: None,
             capture_inventory: None,
+            system_audio_inventory: None,
         }
+    }
+
+    /// Records the system audio capture devices from a
+    /// `system_audio_devices` reply (Protocol 2.68).
+    pub fn apply_system_audio_inventory(&mut self, inventory: fm_protocol::SystemAudioInventory) {
+        self.system_audio_inventory = Some(inventory);
+    }
+
+    /// Returns the system audio capture devices as last listed (Protocol
+    /// 2.68).
+    #[must_use]
+    pub const fn system_audio_inventory(&self) -> Option<&fm_protocol::SystemAudioInventory> {
+        self.system_audio_inventory.as_ref()
     }
 
     /// Records the capture devices from a `capture_devices` runtime event
@@ -2530,6 +2551,7 @@ impl ClientModel {
                 .cloned()
                 .collect(),
             capture_inventory: self.capture_inventory.clone(),
+            system_audio_inventory: self.system_audio_inventory.clone(),
             system_audio_inputs: state
                 .system_audio_inputs
                 .values()

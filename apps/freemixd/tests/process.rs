@@ -2100,6 +2100,37 @@ fn fade_to_black_timing_and_a_more_kind_t_bar_round_trip_through_the_daemon() {
     );
 }
 
+/// AU-011, Protocol 2.68: a simulated daemon does not capture system audio,
+/// so it answers each device list request, by its own request id, that it
+/// lists nothing, and the session stays usable.
+#[test]
+fn a_simulated_daemon_lists_no_system_audio_devices() {
+    let directory = TestDirectory::new("system-audio-devices");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Viewer, None);
+    client.receive_snapshot();
+    for request_id in ["devices-1", "devices-2"] {
+        client.send(&WireMessage::SystemAudioDevicesRequest(
+            fm_protocol::SystemAudioDevicesRequest {
+                request_id: request_id.into(),
+            },
+        ));
+        let answer = loop {
+            if let WireMessage::SystemAudioDevices(answer) = client.receive() {
+                break answer;
+            }
+        };
+        assert_eq!(answer.request_id, request_id);
+        assert_eq!(
+            answer.inventory,
+            fm_protocol::SystemAudioInventory::unsupported()
+        );
+    }
+}
+
 /// OR-011, Protocol 2.42: a daemon without a display presenter keeps
 /// display-output slots as replicated, validated project configuration;
 /// every configured slot waits with `no-presenter`, the inventory says
@@ -6391,11 +6422,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.67.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 67));
+    // The previous protocol is refused; the current one is 2.68.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 68));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 66),
+        protocol: ProtocolVersion::new(2, 67),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6411,7 +6442,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 67)
+        ProtocolVersion::new(2, 68)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

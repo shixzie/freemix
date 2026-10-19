@@ -94,6 +94,18 @@ impl From<TcpSessionError> for StudioError {
     }
 }
 
+/// The server lists the UI has asked for: once it has (or a list is
+/// known), every (re)connect asks for that list again.
+#[derive(Clone, Copy, Debug, Default)]
+struct WantedLists {
+    /// The display inventory (Protocol 2.42).
+    display_inventory: bool,
+    /// The capture devices (IN-001, Protocol 2.47).
+    capture_devices: bool,
+    /// The system audio devices (AU-011, Protocol 2.68).
+    system_audio_devices: bool,
+}
+
 /// A synchronous Studio control runtime. All clocks and waits are caller-owned.
 #[derive(Debug)]
 pub struct StudioRuntime {
@@ -108,12 +120,8 @@ pub struct StudioRuntime {
     preview_failed: Option<String>,
     /// The latest refused title animation save, carried the same way.
     animation_refusal: Option<TitleAnimationRefusal>,
-    /// Whether the UI has asked for the display inventory; once it has (or
-    /// the inventory is known), every (re)connect asks for it again.
-    display_inventory_wanted: bool,
-    /// Whether the UI has asked for the capture devices (IN-001); once it
-    /// has (or they are known), every (re)connect asks for them again.
-    capture_devices_wanted: bool,
+    /// The server lists the UI has asked for.
+    wanted: WantedLists,
     /// Whether the UI shows the input bank and so wants the live input
     /// thumbnail feed (Protocol 2.59); every (re)connect subscribes again
     /// while it does.
@@ -174,8 +182,7 @@ impl StudioRuntime {
             titles: TitleRelay::default(),
             preview_failed: None,
             animation_refusal: None,
-            display_inventory_wanted: false,
-            capture_devices_wanted: false,
+            wanted: WantedLists::default(),
             input_thumbnails_wanted: false,
             display_output_answers: [const { None }; fm_protocol::MAX_DISPLAY_OUTPUTS],
         })
@@ -225,7 +232,7 @@ impl StudioRuntime {
     /// Records that the UI wants the display inventory without asking now
     /// (the session is recovering); the next (re)connect asks for it.
     pub(crate) const fn want_display_inventory(&mut self) {
-        self.display_inventory_wanted = true;
+        self.wanted.display_inventory = true;
     }
 
     /// Asks the server for its connected displays (Protocol 2.42); the
@@ -234,7 +241,7 @@ impl StudioRuntime {
     /// (re)connect asks again.
     pub(crate) fn request_display_inventory(&mut self) -> bool {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        self.display_inventory_wanted = true;
+        self.wanted.display_inventory = true;
         let request_id = format!(
             "studio-displays-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -250,7 +257,7 @@ impl StudioRuntime {
     /// Records that the UI wants the capture devices without asking now
     /// (the session is recovering); the next (re)connect asks for them.
     pub(crate) const fn want_capture_devices(&mut self) {
-        self.capture_devices_wanted = true;
+        self.wanted.capture_devices = true;
     }
 
     /// Asks the server for its capture devices (IN-001, Protocol 2.47);
@@ -259,7 +266,7 @@ impl StudioRuntime {
     /// next (re)connect asks again.
     pub(crate) fn request_capture_devices(&mut self) -> bool {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        self.capture_devices_wanted = true;
+        self.wanted.capture_devices = true;
         let request_id = format!(
             "studio-capture-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -269,6 +276,33 @@ impl StudioRuntime {
             && self
                 .session
                 .send_capture_devices_request(fm_protocol::CaptureDevicesRequest { request_id })
+                .is_ok()
+    }
+
+    /// Records that the UI wants the system audio devices without asking
+    /// now (the session is recovering); the next (re)connect asks for them.
+    pub(crate) const fn want_system_audio_devices(&mut self) {
+        self.wanted.system_audio_devices = true;
+    }
+
+    /// Asks the server for its system audio capture devices (AU-011,
+    /// Protocol 2.68); the reply updates the replicated device list.
+    /// Returns whether the request went out; one that cannot be sent is
+    /// dropped, and the next (re)connect asks again.
+    pub(crate) fn request_system_audio_devices(&mut self) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.wanted.system_audio_devices = true;
+        let request_id = format!(
+            "studio-system-audio-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_system_audio_devices_request(fm_protocol::SystemAudioDevicesRequest {
+                    request_id,
+                })
                 .is_ok()
     }
 
@@ -454,6 +488,7 @@ impl StudioRuntime {
         };
         self.requery_display_inventory();
         self.requery_capture_devices();
+        self.requery_system_audio_devices();
         self.resubscribe_input_thumbnails();
         Ok(event)
     }
@@ -463,7 +498,7 @@ impl StudioRuntime {
     /// resumed nor a re-snapshotted session carries, and displays may have
     /// changed while disconnected.
     fn requery_display_inventory(&mut self) {
-        if self.display_inventory_wanted
+        if self.wanted.display_inventory
             || self.session.client().model().display_inventory().is_some()
         {
             self.request_display_inventory();
@@ -475,10 +510,26 @@ impl StudioRuntime {
     /// runtime state no resumed or re-snapshotted session carries, and
     /// cameras may have been plugged in or out while disconnected.
     fn requery_capture_devices(&mut self) {
-        if self.capture_devices_wanted
+        if self.wanted.capture_devices
             || self.session.client().model().capture_inventory().is_some()
         {
             self.request_capture_devices();
+        }
+    }
+
+    /// Asks for the system audio devices again after a (re)connect when the
+    /// UI wanted them or they were known: devices may have come or gone
+    /// while disconnected.
+    fn requery_system_audio_devices(&mut self) {
+        if self.wanted.system_audio_devices
+            || self
+                .session
+                .client()
+                .model()
+                .system_audio_inventory()
+                .is_some()
+        {
+            self.request_system_audio_devices();
         }
     }
 

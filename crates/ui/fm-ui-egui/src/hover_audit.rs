@@ -68,8 +68,15 @@
 //! and a LIVE badge on two tiles. [`check_capture`] audits those scenes
 //! alone and requires each capture control's help to have been shown.
 //!
+//! The system audio form (AU-011) is audited the same way with the
+//! server's device list (the default, a listed, and a typed device), a
+//! failed listing, none yet, a server without system audio, and Replace
+//! source editing a system audio input; [`check_system_audio`] audits those
+//! scenes alone and requires each control's help to have been shown.
+//!
 //! The audits are hidden public entry points ([`check`],
-//! [`check_timeline`], [`check_color_panel`], [`check_capture`]) so the
+//! [`check_timeline`], [`check_color_panel`], [`check_capture`],
+//! [`check_system_audio`]) so the
 //! integration target
 //! `tests/hover_audit.rs` runs them in every shipped language. They rely on
 //! the widget info egui records only in debug builds.
@@ -1205,6 +1212,137 @@ fn capture_scenes(locale: Locale) -> Vec<Scene> {
     ]
 }
 
+/// The server's system audio devices of the fixture (Protocol 2.68): the
+/// default output's monitor, a USB microphone, and an ALSA loopback.
+pub(crate) fn system_audio_inventory() -> fm_protocol::SystemAudioInventory {
+    use fm_protocol::{SystemAudioBackend, SystemAudioDevice};
+    let device = |backend, device: &str, description: &str, channels| SystemAudioDevice {
+        backend,
+        device: device.into(),
+        description: description.into(),
+        channels,
+        default: false,
+        monitor: false,
+    };
+    let mut monitor = device(
+        SystemAudioBackend::Pulse,
+        "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
+        "Monitor of Built-in Audio Analog Stereo",
+        Some(2),
+    );
+    monitor.monitor = true;
+    let mut microphone = device(
+        SystemAudioBackend::Pulse,
+        "alsa_input.usb-Blue_Yeti-00.mono-fallback",
+        "Yeti Stereo Microphone Mono",
+        Some(1),
+    );
+    microphone.default = true;
+    fm_protocol::SystemAudioInventory {
+        supported: true,
+        devices: vec![
+            microphone,
+            monitor,
+            device(
+                SystemAudioBackend::Alsa,
+                "plughw:Loopback,1",
+                "Loopback: Loopback PCM",
+                None,
+            ),
+        ],
+        errors: Vec::new(),
+    }
+}
+
+/// `state` with `inventory` as the server's system audio devices.
+fn with_system_audio_inventory(
+    mut state: StudioUiState,
+    inventory: Option<fm_protocol::SystemAudioInventory>,
+) -> StudioUiState {
+    if let Some(view) = state.view.as_mut() {
+        view.system_audio_inventory = inventory;
+    }
+    state
+}
+
+/// The system audio form (AU-011) with the server's device list: the
+/// default device, a listed device, and a typed name; a listing that failed,
+/// one not yet known, and a server without system audio; and Replace source
+/// editing a system audio input's device.
+fn system_audio_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::input_catalogue::{AddInputDraft, NewInputKind};
+    use fm_protocol::{SystemAudioBackend, SystemAudioBackendError, SystemAudioConfig};
+    let operator = ready(true, Variant::default());
+    let inventory = system_audio_inventory();
+    let shell = |configure: &dyn Fn(&mut AddInputDraft)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_add_input(&operator);
+        if let Some(draft) = shell.add_input.as_mut() {
+            draft.kind = NewInputKind::SystemAudio;
+            configure(draft);
+        }
+        shell
+    };
+    let listed = || with_system_audio_inventory(operator.clone(), Some(inventory.clone()));
+    let mut failed = inventory.clone();
+    failed
+        .devices
+        .retain(|device| device.backend == SystemAudioBackend::Alsa);
+    failed.errors = vec![SystemAudioBackendError {
+        backend: SystemAudioBackend::Pulse,
+        error: "pactl failed: Connection refused".into(),
+    }];
+    let microphone = inventory.devices[0].clone();
+    let mut replace = StudioShell::default();
+    replace.set_locale(locale);
+    replace.edit_system_audio_source(
+        input(2),
+        "Camera 2",
+        &SystemAudioConfig::new(SystemAudioBackend::Alsa, "plughw:Loopback,1"),
+    );
+    vec![
+        Scene::console(
+            "dialog/add-input-system-audio-default",
+            shell(&|_| {}),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-system-audio-listed",
+            shell(&|draft| draft.system_audio.choose(&microphone)),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-system-audio-typed",
+            shell(&|draft| {
+                draft.system_audio.set_backend(SystemAudioBackend::Alsa);
+                draft.system_audio.device = "hw:CARD=Other,DEV=0".into();
+                draft.system_audio.device_edited = true;
+            }),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-system-audio-failed",
+            shell(&|_| {}),
+            with_system_audio_inventory(operator.clone(), Some(failed)),
+        ),
+        Scene::console(
+            "dialog/add-input-system-audio-unknown",
+            shell(&|_| {}),
+            with_system_audio_inventory(operator.clone(), None),
+        ),
+        Scene::console(
+            "dialog/add-input-system-audio-unsupported",
+            shell(&|_| {}),
+            with_system_audio_inventory(
+                operator.clone(),
+                Some(fm_protocol::SystemAudioInventory::unsupported()),
+            ),
+        ),
+        Scene::console("dialog/replace-source-system-audio", replace, listed()),
+    ]
+}
+
 /// `state` with the daemon's display inventory: two displays, or a daemon
 /// without a presenter.
 fn with_display_inventory(mut state: StudioUiState, presenter: bool) -> StudioUiState {
@@ -2145,6 +2283,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(transition_menu_scenes(locale));
     scenes.extend(dock_scenes(locale));
     scenes.extend(capture_scenes(locale));
+    scenes.extend(system_audio_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
@@ -3276,6 +3415,57 @@ pub fn check_capture(language: Language) {
             .any(|tooltip| tooltip.contains(&text))
         {
             let _ = writeln!(failures, "no capture tooltip shows {text:?}");
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+/// Audits the system audio form of the Add input and Replace source
+/// dialogs (AU-011, Protocol 2.68) in `language` under the console rules,
+/// and requires the help of its audio system keys, Refresh list, the device
+/// picker with its Default device and a listed device, and the name field
+/// to have been shown.
+pub fn check_system_audio(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, system_audio_scenes(locale));
+    dump("hover-system-audio", language, &controls);
+    println!("{}", report(language, &findings));
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    let mut required: Vec<String> = [
+        Msg::KindSystemAudioHover,
+        Msg::SaBackendPulseHover,
+        Msg::SaBackendAlsaHover,
+        Msg::SaRefreshHover,
+        Msg::SaPickerHover,
+        Msg::SaDeviceHover,
+    ]
+    .into_iter()
+    .map(|msg| locale.text(msg).to_owned())
+    .collect();
+    required.push(locale.format(
+        Msg::SaPickDefaultPulseHover,
+        &[("device", Arg::Str("@DEFAULT_MONITOR@"))],
+    ));
+    required.push(locale.format(
+        Msg::SaPickDefaultAlsaHover,
+        &[("device", Arg::Str("default"))],
+    ));
+    for device in system_audio_inventory().devices {
+        required.push(locale.format(
+            Msg::SaDeviceOptionHover,
+            &[("device", Arg::Str(&device.device))],
+        ));
+    }
+    for text in required {
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|tooltip| tooltip.contains(&text))
+        {
+            let _ = writeln!(failures, "no system audio tooltip shows {text:?}");
         }
     }
     assert!(failures.is_empty(), "{failures}");

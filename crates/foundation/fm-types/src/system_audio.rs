@@ -4,7 +4,8 @@
 //! `PulseAudio` (or `PipeWire` `pipewire-pulse`) source such as a sink's
 //! `.monitor` (what applications play) or `@DEFAULT_MONITOR@`, or an ALSA
 //! capture device such as a `snd-aloop` loopback (`hw:Loopback,1`). The
-//! operator names the device; nothing enumerates it. The input is
+//! operator names the device, or picks it from the [`SystemAudioInventory`]
+//! the server lists (Protocol 2.68). The input is
 //! audio-only: it has no picture and its Master strip carries what the
 //! device hears.
 //!
@@ -212,6 +213,193 @@ pub fn bound_system_audio_error(text: &str) -> String {
     bounded
 }
 
+/// Most devices one system audio device list carries (Protocol 2.68).
+pub const MAX_SYSTEM_AUDIO_DEVICES: usize = 48;
+/// The longest listed device description, in bytes.
+pub const MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES: usize = 96;
+/// The most channels a listed device reports.
+pub const MAX_SYSTEM_AUDIO_DEVICE_CHANNELS: u8 = 64;
+
+/// The device name each audio system calls its default: `PulseAudio`'s
+/// monitor of the default output (what the server plays), and ALSA's
+/// `default` PCM.
+#[must_use]
+pub const fn default_system_audio_device(backend: SystemAudioBackend) -> &'static str {
+    match backend {
+        SystemAudioBackend::Pulse => "@DEFAULT_MONITOR@",
+        SystemAudioBackend::Alsa => "default",
+    }
+}
+
+/// `text` as a listed device description: one trimmed line of at most
+/// [`MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES`], control characters replaced by
+/// spaces.
+#[must_use]
+pub fn bound_system_audio_description(text: &str) -> String {
+    let mut bounded: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if bounded.len() > MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES {
+        let mut end = MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES;
+        while !bounded.is_char_boundary(end) {
+            end -= 1;
+        }
+        bounded.truncate(end);
+        bounded.truncate(bounded.trim_end().len());
+    }
+    bounded
+}
+
+/// One capture device the server's audio system offers (Protocol 2.68).
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub struct SystemAudioDevice {
+    pub backend: SystemAudioBackend,
+    /// The name a system audio input opens it by (see
+    /// [`validate_system_audio_device`]).
+    pub device: String,
+    /// What the audio system calls it, for people (may be empty).
+    pub description: String,
+    /// Its channel count, when the audio system reports one.
+    pub channels: Option<u8>,
+    /// The audio system's default capture device.
+    pub default: bool,
+    /// It hears an output (a `PulseAudio` sink's monitor) rather than an
+    /// input.
+    pub monitor: bool,
+}
+
+impl SystemAudioDevice {
+    /// Whether the device can travel as listed: a valid name, a bounded
+    /// description, and a channel count from 1 to
+    /// [`MAX_SYSTEM_AUDIO_DEVICE_CHANNELS`] when there is one.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        validate_system_audio_device(&self.device).is_ok()
+            && bound_system_audio_description(&self.description) == self.description
+            && self
+                .channels
+                .is_none_or(|channels| (1..=MAX_SYSTEM_AUDIO_DEVICE_CHANNELS).contains(&channels))
+    }
+}
+
+/// Why one audio system could not be listed.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SystemAudioBackendError {
+    pub backend: SystemAudioBackend,
+    /// One line of 1 to [`MAX_SYSTEM_AUDIO_ERROR_BYTES`].
+    pub error: String,
+}
+
+/// The capture devices a server's audio systems offer (Protocol 2.68).
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub struct SystemAudioInventory {
+    /// The server captures system audio at all; when false nothing is
+    /// listed.
+    pub supported: bool,
+    /// The devices, ascending by audio system and then name, each named
+    /// once; at most one default per audio system.
+    pub devices: Vec<SystemAudioDevice>,
+    /// The audio systems that could not be listed, ascending, each once.
+    pub errors: Vec<SystemAudioBackendError>,
+}
+
+impl SystemAudioInventory {
+    /// The inventory of a server that does not capture system audio.
+    #[must_use]
+    pub const fn unsupported() -> Self {
+        Self {
+            supported: false,
+            devices: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// The inventory bounded to what one record carries: descriptions and
+    /// errors bounded, unusable devices dropped, devices sorted with the
+    /// first of equal names kept, at most one default per audio system (the
+    /// first), at most [`MAX_SYSTEM_AUDIO_DEVICES`] devices, and one error
+    /// per audio system. An unsupported inventory lists nothing.
+    #[must_use]
+    pub fn fitted(&self) -> Self {
+        if !self.supported {
+            return Self::unsupported();
+        }
+        let mut devices: Vec<SystemAudioDevice> = self
+            .devices
+            .iter()
+            .map(|device| SystemAudioDevice {
+                description: bound_system_audio_description(&device.description),
+                channels: device
+                    .channels
+                    .filter(|channels| (1..=MAX_SYSTEM_AUDIO_DEVICE_CHANNELS).contains(channels)),
+                ..device.clone()
+            })
+            .filter(SystemAudioDevice::is_valid)
+            .collect();
+        devices.sort_by(|left, right| {
+            (left.backend, &left.device).cmp(&(right.backend, &right.device))
+        });
+        devices.dedup_by(|later, earlier| {
+            later.backend == earlier.backend && later.device == earlier.device
+        });
+        devices.truncate(MAX_SYSTEM_AUDIO_DEVICES);
+        let mut defaults = Vec::new();
+        for device in &mut devices {
+            if device.default {
+                if defaults.contains(&device.backend) {
+                    device.default = false;
+                } else {
+                    defaults.push(device.backend);
+                }
+            }
+        }
+        let mut errors: Vec<SystemAudioBackendError> = self
+            .errors
+            .iter()
+            .map(|error| SystemAudioBackendError {
+                backend: error.backend,
+                error: bound_system_audio_error(&error.error),
+            })
+            .filter(|error| !error.error.is_empty())
+            .collect();
+        errors.sort_by_key(|error| error.backend);
+        errors.dedup_by_key(|error| error.backend);
+        Self {
+            supported: true,
+            devices,
+            errors,
+        }
+    }
+
+    /// The listed devices of one audio system.
+    pub fn devices_of(
+        &self,
+        backend: SystemAudioBackend,
+    ) -> impl Iterator<Item = &SystemAudioDevice> {
+        self.devices
+            .iter()
+            .filter(move |device| device.backend == backend)
+    }
+
+    /// Why one audio system could not be listed, if it could not.
+    #[must_use]
+    pub fn error_of(&self, backend: SystemAudioBackend) -> Option<&str> {
+        self.errors
+            .iter()
+            .find(|error| error.backend == backend)
+            .map(|error| error.error.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +456,81 @@ mod tests {
         let bounded = bound_system_audio_error(&long);
         assert!(bounded.len() <= MAX_SYSTEM_AUDIO_ERROR_BYTES);
         assert!(bounded.len() >= MAX_SYSTEM_AUDIO_ERROR_BYTES - 1);
+    }
+
+    fn listed(backend: SystemAudioBackend, device: &str, default: bool) -> SystemAudioDevice {
+        SystemAudioDevice {
+            backend,
+            device: device.into(),
+            description: format!(" {device}\n"),
+            channels: Some(2),
+            default,
+            monitor: false,
+        }
+    }
+
+    #[test]
+    fn a_fitted_inventory_is_sorted_bounded_and_has_one_default_per_backend() {
+        let mut inventory = SystemAudioInventory {
+            supported: true,
+            devices: vec![
+                listed(SystemAudioBackend::Alsa, "plughw:B,0", true),
+                listed(SystemAudioBackend::Pulse, "z.monitor", false),
+                listed(SystemAudioBackend::Alsa, "plughw:A,0", true),
+                listed(SystemAudioBackend::Pulse, "a", true),
+                listed(SystemAudioBackend::Pulse, "a", false),
+                listed(SystemAudioBackend::Pulse, "-bad", false),
+            ],
+            errors: vec![
+                SystemAudioBackendError {
+                    backend: SystemAudioBackend::Pulse,
+                    error: "pactl\nfailed".into(),
+                },
+                SystemAudioBackendError {
+                    backend: SystemAudioBackend::Pulse,
+                    error: "again".into(),
+                },
+                SystemAudioBackendError {
+                    backend: SystemAudioBackend::Alsa,
+                    error: " ".into(),
+                },
+            ],
+        };
+        inventory.devices[0].channels = Some(0);
+        inventory.devices[1].description = "é".repeat(MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES);
+        let fitted = inventory.fitted();
+        let names: Vec<(SystemAudioBackend, &str, bool)> = fitted
+            .devices
+            .iter()
+            .map(|device| (device.backend, device.device.as_str(), device.default))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (SystemAudioBackend::Pulse, "a", true),
+                (SystemAudioBackend::Pulse, "z.monitor", false),
+                (SystemAudioBackend::Alsa, "plughw:A,0", true),
+                (SystemAudioBackend::Alsa, "plughw:B,0", false),
+            ]
+        );
+        assert!(fitted.devices.iter().all(SystemAudioDevice::is_valid));
+        assert_eq!(fitted.devices[0].description, "a");
+        assert_eq!(fitted.devices[3].channels, None);
+        assert!(fitted.devices[1].description.len() <= MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES);
+        assert_eq!(
+            fitted.error_of(SystemAudioBackend::Pulse),
+            Some("pactl failed")
+        );
+        assert_eq!(fitted.error_of(SystemAudioBackend::Alsa), None);
+        assert_eq!(fitted.devices_of(SystemAudioBackend::Alsa).count(), 2);
+        assert_eq!(fitted.fitted(), fitted);
+        assert_eq!(
+            SystemAudioInventory {
+                supported: false,
+                ..inventory
+            }
+            .fitted(),
+            SystemAudioInventory::unsupported()
+        );
     }
 }

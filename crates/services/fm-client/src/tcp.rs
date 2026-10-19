@@ -393,6 +393,11 @@ pub enum SessionEvent {
     CaptureDevices {
         message: fm_protocol::CaptureDevicesMessage,
     },
+    /// The daemon answered a system audio devices request (Protocol 2.68).
+    /// The list is also in the replicated model.
+    SystemAudioDevices {
+        message: fm_protocol::SystemAudioDevicesMessage,
+    },
     /// One valid input thumbnail arrived for `input` (Protocol 2.59); the
     /// decoded image is available from
     /// [`TcpSession::latest_input_thumbnails`].
@@ -813,6 +818,26 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::CaptureDevicesRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for the daemon's system audio capture devices (Protocol 2.68).
+    /// The answer arrives later as [`SessionEvent::SystemAudioDevices`]
+    /// naming the same `request_id`; the daemon may answer only the newest
+    /// of several requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_system_audio_devices_request(
+        &mut self,
+        request: fm_protocol::SystemAudioDevicesRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::SystemAudioDevicesRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1406,6 +1431,10 @@ impl TcpSession {
                 self.intake(WireMessage::CaptureDevices(message.clone()))?;
                 Ok(SessionEvent::CaptureDevices { message })
             }
+            WireMessage::SystemAudioDevices(message) => {
+                self.intake(WireMessage::SystemAudioDevices(message.clone()))?;
+                Ok(SessionEvent::SystemAudioDevices { message })
+            }
             // Title, playlist, grade, title animation, title layout, scene
             // animation, scene layout, and animation preset states complete a
             // snapshot while
@@ -1439,7 +1468,8 @@ impl TcpSession {
             | WireMessage::DiagnosticsRequest(_)
             | WireMessage::DiagnosticsResponse(_)
             | WireMessage::DisplayInventoryRequest(_)
-            | WireMessage::CaptureDevicesRequest(_) => {
+            | WireMessage::CaptureDevicesRequest(_)
+            | WireMessage::SystemAudioDevicesRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

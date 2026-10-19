@@ -348,15 +348,19 @@ pub(crate) enum SourceKind {
     Media,
     Device,
     Network,
+    /// A system audio capture device (AU-011), picked from the server's
+    /// list or typed.
+    SystemAudio,
 }
 
 impl SourceKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Solid,
         Self::Bars,
         Self::Media,
         Self::Device,
         Self::Network,
+        Self::SystemAudio,
     ];
 
     const fn key(self) -> Msg {
@@ -366,6 +370,7 @@ impl SourceKind {
             Self::Media => Msg::LcSourceMedia,
             Self::Device => Msg::LcSourceDevice,
             Self::Network => Msg::LcSourceNetwork,
+            Self::SystemAudio => Msg::KindSystemAudioKey,
         }
     }
 
@@ -376,13 +381,14 @@ impl SourceKind {
             Self::Media => Msg::LcSourceMediaHover,
             Self::Device => Msg::LcSourceDeviceHover,
             Self::Network => Msg::LcSourceNetworkHover,
+            Self::SystemAudio => Msg::KindSystemAudioHover,
         }
     }
 
     /// The hover of the kind's text field, for kinds that have one.
     const fn field_hover(self) -> Option<Msg> {
         match self {
-            Self::Solid | Self::Bars => None,
+            Self::Solid | Self::Bars | Self::SystemAudio => None,
             Self::Media => Some(Msg::LcSourceMediaFieldHover),
             Self::Device => Some(Msg::LcSourceDeviceFieldHover),
             Self::Network => Some(Msg::LcSourceNetworkFieldHover),
@@ -399,6 +405,8 @@ pub(crate) struct ReplaceDraft {
     pub(crate) color: Color32,
     /// The media path, device key, or network endpoint.
     pub(crate) text: String,
+    /// The system audio device form.
+    pub(crate) system_audio: crate::system_audio_ui::SystemAudioDraft,
 }
 
 impl ReplaceDraft {
@@ -409,6 +417,7 @@ impl ReplaceDraft {
             kind: SourceKind::Solid,
             color: COLOUR_PRESETS[5].1,
             text: String::new(),
+            system_audio: crate::system_audio_ui::SystemAudioDraft::default(),
         }
     }
 
@@ -442,6 +451,7 @@ impl ReplaceDraft {
             SourceKind::Network => WireInputSource::Network {
                 endpoint: checked()?,
             },
+            SourceKind::SystemAudio => WireInputSource::SystemAudio(self.system_audio.config()?),
         })
     }
 }
@@ -559,6 +569,20 @@ impl StudioShell {
 
     pub(crate) fn open_replace_source(&mut self, input: InputId, name: &str) {
         self.lifecycle.replace = Some(ReplaceDraft::new(input, name));
+    }
+
+    /// Opens Replace source on a system audio input at its device, so the
+    /// operator edits the device (AU-011).
+    pub(crate) fn edit_system_audio_source(
+        &mut self,
+        input: InputId,
+        name: &str,
+        config: &fm_protocol::SystemAudioConfig,
+    ) {
+        let mut draft = ReplaceDraft::new(input, name);
+        draft.kind = SourceKind::SystemAudio;
+        draft.system_audio = crate::system_audio_ui::SystemAudioDraft::of(config);
+        self.lifecycle.replace = Some(draft);
     }
 
     pub(crate) fn open_categories(&mut self, state: &StudioUiState) {
@@ -742,7 +766,14 @@ impl StudioShell {
             l.text(Msg::LcReplaceHover),
             edit_reason,
         ) {
-            self.open_replace_source(input, name);
+            // A system audio input opens at its device, with the server's
+            // devices listed.
+            if let Some(entry) = view.system_audio_input(input) {
+                self.edit_system_audio_source(input, name, &entry.config);
+                intents.push(StudioIntent::RequestSystemAudioDevices);
+            } else {
+                self.open_replace_source(input, name);
+            }
         }
         let categories = view.input_categories.clone();
         let mut manage = false;
@@ -965,6 +996,9 @@ impl StudioShell {
                             .on_hover_text(l.text(kind.hover()))
                             .clicked()
                         {
+                            if kind == SourceKind::SystemAudio && draft.kind != kind {
+                                intents.push(StudioIntent::RequestSystemAudioDevices);
+                            }
                             draft.kind = kind;
                         }
                     }
@@ -1004,6 +1038,18 @@ impl StudioShell {
                             )
                             .on_hover_text(l.text(Msg::ColourPickHover));
                         });
+                    }
+                    None if draft.kind == SourceKind::SystemAudio => {
+                        let rescan = crate::system_audio_ui::draw_system_audio_form(
+                            ui,
+                            l,
+                            state,
+                            "studio-replace-source",
+                            &mut draft.system_audio,
+                        );
+                        if rescan {
+                            intents.push(StudioIntent::RequestSystemAudioDevices);
+                        }
                     }
                     None => {}
                 }

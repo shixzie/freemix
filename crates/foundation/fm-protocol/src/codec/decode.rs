@@ -182,6 +182,19 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 inventory: super::capture::decode_inventory(&mut fields)?,
             })
         }
+        "system_audio_devices_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::SystemAudioDevicesRequest(crate::SystemAudioDevicesRequest { request_id })
+        }
+        "system_audio_devices" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::SystemAudioDevices(crate::SystemAudioDevicesMessage {
+                request_id,
+                inventory: super::system_audio::decode_inventory(&mut fields)?,
+            })
+        }
         "display_inventory" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;

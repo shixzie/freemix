@@ -660,6 +660,11 @@ pub(super) fn run(
     // Exact title previews render off this loop, as simulated monitor
     // frames do.
     let title_previews = crate::title_preview::spawn_preview_worker(Arc::clone(titles))?;
+    // System audio devices are listed off this loop too (Protocol 2.68).
+    let system_audio_devices = crate::system_audio_devices::SystemAudioDevices::spawn(
+        crate::system_audio_devices::enumerator(native.is_some()),
+        crate::system_audio_devices::REUSE_FOR,
+    )?;
     let runtime = Runtime {
         server,
         authority,
@@ -667,6 +672,7 @@ pub(super) fn run(
         store,
         titles,
         title_previews: &title_previews,
+        system_audio_devices: &system_audio_devices,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
@@ -950,6 +956,29 @@ pub(super) fn run(
                 {
                     close[index] = true;
                 }
+            }
+        }
+        // A listed device answer waits while its peer resynchronizes or
+        // cannot take it yet; a peer that left drops it.
+        for (id, answer) in system_audio_devices.take_finished() {
+            let Some(index) = peers.iter().position(|peer| peer.id == id) else {
+                continue;
+            };
+            let peer = &mut peers[index];
+            if close[index] {
+                continue;
+            }
+            if peer.phase != Phase::Active || peer.held_result.is_some() {
+                system_audio_devices.defer(id, answer);
+                continue;
+            }
+            match peer.queue(
+                &WireMessage::SystemAudioDevices(answer.clone()),
+                Accounting::Session,
+            ) {
+                Ok(()) => {}
+                Err(refusal) if refusal.transient() => system_audio_devices.defer(id, answer),
+                Err(_) => close[index] = true,
             }
         }
         // The playlist clock runs before the native frame is realized, so a
@@ -1389,6 +1418,8 @@ struct Runtime<'a> {
     titles: &'a Arc<TitleAssets>,
     /// Renders exact title previews off this loop.
     title_previews: &'a crate::title_preview::TitlePreviewWorker,
+    /// Lists system audio devices off this loop (Protocol 2.68).
+    system_audio_devices: &'a crate::system_audio_devices::SystemAudioDevices,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
@@ -1684,6 +1715,13 @@ impl Runtime<'_> {
                         inventory,
                     },
                 ))?;
+                Ok(())
+            }
+            // The server's system audio devices (AU-011, Protocol 2.68) are
+            // listed off this loop and sent on a later pass.
+            WireMessage::SystemAudioDevicesRequest(request) => {
+                self.system_audio_devices
+                    .submit(peer.id, request.request_id);
                 Ok(())
             }
             _ => {

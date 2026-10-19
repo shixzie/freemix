@@ -3137,4 +3137,8 @@ pub enum WireMessage {
     InputThumbnailSubscription(crate::InputThumbnailSubscription),
     /// One lossy live input bank thumbnail (Protocol 2.59).
     InputThumbnail(crate::InputThumbnailMessage),
+    /// Asks for the server's system audio capture devices (Protocol 2.68).
+    SystemAudioDevicesRequest(crate::SystemAudioDevicesRequest),
+    /// Answers a [`crate::SystemAudioDevicesRequest`] (Protocol 2.68).
+    SystemAudioDevices(crate::SystemAudioDevicesMessage),
 }

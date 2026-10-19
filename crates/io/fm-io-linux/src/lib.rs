@@ -14,6 +14,8 @@
 //!   recovery under the same input ID).
 //! - [`ffmpeg`]: acquisition through a supervised `ffmpeg -f v4l2` child.
 //! - [`fake`]: a deterministic fake backend for tests and diagnostics.
+//! - [`system_audio`]: the `PulseAudio` and ALSA capture devices a system
+//!   audio input can open (AU-011).
 //!
 //! Everything but [`v4l2`] is portable, so the state machines are tested
 //! without hardware on every platform.
@@ -27,6 +29,7 @@ pub mod monitor;
 pub mod probe;
 pub mod supervisor;
 pub mod sysfs;
+pub mod system_audio;
 #[cfg(target_os = "linux")]
 pub mod v4l2;
 

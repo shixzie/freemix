@@ -156,6 +156,19 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::SystemAudioDevicesRequest(message) => {
+            record.kind("system_audio_devices_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+        }
+        WireMessage::SystemAudioDevices(message) => {
+            record.kind("system_audio_devices");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::system_audio::encode_inventory(&message.inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::DisplayInventory(message) => {
             record.kind("display_inventory");
             validate_request_id(&message.request_id)?;

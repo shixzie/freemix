@@ -8,12 +8,16 @@
 //!   ascending list of `<input>~<backend>~<state>~<attempt>~<next_in_ms>~
 //!   <reopens>~<length>:<device>`: the device is written raw after its
 //!   canonical byte length, so the line encoding escapes it exactly once.
+//! * Protocol 2.68 device lists (`supported`, `errors`, `devices`) write
+//!   their texts the same way; see [`crate::SystemAudioDevicesMessage`].
 
 use core::fmt::Write as _;
 
 use fm_types::system_audio::{
-    MAX_SYSTEM_AUDIO_DEVICE_BYTES, MAX_SYSTEM_AUDIO_ERROR_BYTES, MAX_SYSTEM_AUDIO_INPUTS,
-    SystemAudioBackend, SystemAudioConfig, SystemAudioState, SystemAudioStatus,
+    MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES, MAX_SYSTEM_AUDIO_DEVICE_BYTES, MAX_SYSTEM_AUDIO_DEVICES,
+    MAX_SYSTEM_AUDIO_ERROR_BYTES, MAX_SYSTEM_AUDIO_INPUTS, SystemAudioBackend,
+    SystemAudioBackendError, SystemAudioConfig, SystemAudioDevice, SystemAudioInventory,
+    SystemAudioState, SystemAudioStatus,
 };
 
 use crate::{CodecError, SystemAudioEntry, WireInputId};
@@ -267,4 +271,202 @@ fn split_entry(text: &str) -> Option<([&str; 6], &str, &str)> {
         .filter(|length| *length <= MAX_SYSTEM_AUDIO_DEVICE_BYTES)?;
     let device = after.get(..length)?;
     Some((parts, device, &after[length..]))
+}
+
+const DEVICES: &str = "devices";
+const ERRORS: &str = "errors";
+
+/// Checks a device inventory against the exact contract (see
+/// [`crate::SystemAudioDevicesMessage`]).
+fn check_inventory(inventory: &SystemAudioInventory) -> Result<(), CodecError> {
+    if !inventory.supported && (!inventory.devices.is_empty() || !inventory.errors.is_empty()) {
+        return Err(invalid("supported", "0"));
+    }
+    if inventory.devices.len() > MAX_SYSTEM_AUDIO_DEVICES {
+        return Err(CodecError::TooManyItems(DEVICES));
+    }
+    let mut defaults = Vec::new();
+    for (index, device) in inventory.devices.iter().enumerate() {
+        if !device.is_valid() {
+            return Err(invalid(DEVICES, device.device.clone()));
+        }
+        if index > 0 {
+            let previous = &inventory.devices[index - 1];
+            if (previous.backend, &previous.device) >= (device.backend, &device.device) {
+                return Err(invalid(DEVICES, device.device.clone()));
+            }
+        }
+        if device.default {
+            if defaults.contains(&device.backend) {
+                return Err(invalid(DEVICES, "two defaults"));
+            }
+            defaults.push(device.backend);
+        }
+    }
+    for (index, error) in inventory.errors.iter().enumerate() {
+        if index > 0 && inventory.errors[index - 1].backend >= error.backend {
+            return Err(invalid(ERRORS, error.backend.token()));
+        }
+        if error.error.is_empty()
+            || error.error.len() > MAX_SYSTEM_AUDIO_ERROR_BYTES
+            || error.error.chars().any(char::is_control)
+        {
+            return Err(invalid(ERRORS, error.error.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Encodes a device inventory as `supported`, `errors`, and `devices`.
+pub(super) fn encode_inventory(
+    inventory: &SystemAudioInventory,
+    push: &mut Push<'_>,
+) -> Result<(), CodecError> {
+    check_inventory(inventory)?;
+    push("supported", u8::from(inventory.supported).to_string())?;
+    let mut errors = String::new();
+    for error in &inventory.errors {
+        if !errors.is_empty() {
+            errors.push(',');
+        }
+        write!(
+            errors,
+            "{}~{}:{}",
+            error.backend.token(),
+            error.error.len(),
+            error.error
+        )
+        .expect("writing to a string cannot fail");
+    }
+    push(ERRORS, errors)?;
+    let mut devices = String::new();
+    for device in &inventory.devices {
+        if !devices.is_empty() {
+            devices.push(',');
+        }
+        write!(
+            devices,
+            "{}~{}~{}~{}~{}~{}:{}{}",
+            device.backend.token(),
+            u8::from(device.default),
+            u8::from(device.monitor),
+            device
+                .channels
+                .map_or_else(|| "-".to_owned(), |channels| channels.to_string()),
+            device.device.len(),
+            device.description.len(),
+            device.device,
+            device.description,
+        )
+        .expect("writing to a string cannot fail");
+    }
+    push(DEVICES, devices)
+}
+
+fn flag(field: &'static str, value: &str) -> Result<bool, CodecError> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(invalid(field, value)),
+    }
+}
+
+fn text_length(text: &str, max: usize) -> Option<usize> {
+    parse_canonical_u64(text)
+        .and_then(|length| usize::try_from(length).ok())
+        .filter(|length| *length <= max)
+}
+
+/// Decodes a device inventory, the exact inverse of [`encode_inventory`].
+pub(super) fn decode_inventory(
+    fields: &mut dyn FieldSource,
+) -> Result<SystemAudioInventory, CodecError> {
+    let supported = flag("supported", &fields.required("supported")?)?;
+    let errors_text = fields.required(ERRORS)?;
+    let mut errors = Vec::new();
+    let mut rest = errors_text.as_str();
+    while !rest.is_empty() {
+        if !errors.is_empty() {
+            rest = rest
+                .strip_prefix(',')
+                .ok_or_else(|| invalid(ERRORS, errors_text.clone()))?;
+        }
+        if errors.len() == SystemAudioBackend::ALL.len() {
+            return Err(CodecError::TooManyItems(ERRORS));
+        }
+        let (error, after) =
+            split_error(rest).ok_or_else(|| invalid(ERRORS, errors_text.clone()))?;
+        errors.push(error);
+        rest = after;
+    }
+    let devices_text = fields.required(DEVICES)?;
+    let mut devices = Vec::new();
+    let mut rest = devices_text.as_str();
+    while !rest.is_empty() {
+        if !devices.is_empty() {
+            rest = rest
+                .strip_prefix(',')
+                .ok_or_else(|| invalid(DEVICES, devices_text.clone()))?;
+        }
+        if devices.len() == MAX_SYSTEM_AUDIO_DEVICES {
+            return Err(CodecError::TooManyItems(DEVICES));
+        }
+        let (device, after) = split_device(rest)?;
+        devices.push(device);
+        rest = after;
+    }
+    let inventory = SystemAudioInventory {
+        supported,
+        devices,
+        errors,
+    };
+    check_inventory(&inventory)?;
+    Ok(inventory)
+}
+
+/// Splits one `<backend>~<length>:<text>` error off the front of `text`.
+fn split_error(text: &str) -> Option<(SystemAudioBackendError, &str)> {
+    let (backend, after) = text.split_once('~')?;
+    let backend = SystemAudioBackend::from_token(backend)?;
+    let (size, after) = after.split_once(':')?;
+    let size = text_length(size, MAX_SYSTEM_AUDIO_ERROR_BYTES)?;
+    let error = after.get(..size)?.to_owned();
+    Some((SystemAudioBackendError { backend, error }, &after[size..]))
+}
+
+/// Splits one device off the front of `text`.
+fn split_device(text: &str) -> Result<(SystemAudioDevice, &str), CodecError> {
+    let bad = || invalid(DEVICES, text);
+    let mut parts = [""; 5];
+    let mut after = text;
+    for part in &mut parts {
+        let (value, tail) = after.split_once('~').ok_or_else(bad)?;
+        *part = value;
+        after = tail;
+    }
+    let [backend_token, default, monitor, channels, device_length] = parts;
+    let (description_length, after) = after.split_once(':').ok_or_else(bad)?;
+    let device_length =
+        text_length(device_length, MAX_SYSTEM_AUDIO_DEVICE_BYTES).ok_or_else(bad)?;
+    let description_length =
+        text_length(description_length, MAX_SYSTEM_AUDIO_DESCRIPTION_BYTES).ok_or_else(bad)?;
+    let device = after.get(..device_length).ok_or_else(bad)?;
+    let after = &after[device_length..];
+    let description = after.get(..description_length).ok_or_else(bad)?;
+    let channels = if channels == "-" {
+        None
+    } else {
+        Some(canonical::<u8>(DEVICES, channels)?)
+    };
+    Ok((
+        SystemAudioDevice {
+            backend: backend(DEVICES, backend_token)?,
+            device: device.to_owned(),
+            description: description.to_owned(),
+            channels,
+            default: flag(DEVICES, default)?,
+            monitor: flag(DEVICES, monitor)?,
+        },
+        &after[description_length..],
+    ))
 }

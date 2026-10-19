@@ -171,10 +171,13 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             *current = incoming;
             true
         }
-        // One queued display inventory (or capture devices) request answers
-        // every later one.
+        // One queued display inventory (or capture or system audio devices)
+        // request answers every later one.
         (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)
-        | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices) => true,
+        | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices)
+        | (StudioIntent::RequestSystemAudioDevices, StudioIntent::RequestSystemAudioDevices) => {
+            true
+        }
         // The thumbnail feed is latest-wins: the newer on/off replaces one
         // still queued.
         (
@@ -1193,6 +1196,7 @@ fn run_worker(
                 | StudioIntent::ScenePreview(_)
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
+                | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1222,7 +1226,8 @@ fn run_worker(
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::RecorderStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
-                    | SessionEvent::CaptureDevices { .. },
+                    | SessionEvent::CaptureDevices { .. }
+                    | SessionEvent::SystemAudioDevices { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1279,6 +1284,7 @@ fn run_worker(
                 | StudioIntent::ScenePreview(_)
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
+                | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1359,6 +1365,15 @@ fn handle_preview_request(
         }
         return true;
     }
+    // So are the system audio devices (AU-011, Protocol 2.68).
+    if matches!(request, StudioIntent::RequestSystemAudioDevices) {
+        if recovery.active() {
+            runtime.want_system_audio_devices();
+        } else {
+            runtime.request_system_audio_devices();
+        }
+        return true;
+    }
     let request_id = match &request {
         StudioIntent::TitlePreview(request) => request.request_id.clone(),
         StudioIntent::ScenePreview(request) => request.request_id.clone(),
@@ -1393,6 +1408,7 @@ fn handle_worker_intent(
         | StudioIntent::ScenePreview(_)
         | StudioIntent::RequestDisplayInventory
         | StudioIntent::RequestCaptureDevices
+        | StudioIntent::RequestSystemAudioDevices
         | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
@@ -1695,7 +1711,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
                         | SessionEvent::DisplayInventory { .. }
-                        | SessionEvent::CaptureDevices { .. } => Some(true),
+                        | SessionEvent::CaptureDevices { .. }
+                        | SessionEvent::SystemAudioDevices { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -2242,6 +2259,7 @@ fn receive_command_event(
                 | SessionEvent::RecorderStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
+                | SessionEvent::SystemAudioDevices { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2724,6 +2742,9 @@ fn intent_payload(
         }
         StudioIntent::RequestCaptureDevices => {
             return Err("A capture devices request is not a command".to_owned());
+        }
+        StudioIntent::RequestSystemAudioDevices => {
+            return Err("A system audio devices request is not a command".to_owned());
         }
         StudioIntent::InputThumbnails { .. } => {
             return Err("An input thumbnail subscription is not a command".to_owned());
@@ -6232,6 +6253,16 @@ mod tests {
         );
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
         assert!(intent_payload(StudioIntent::RequestCaptureDevices, None).is_err());
+        assert!(intent_payload(StudioIntent::RequestSystemAudioDevices, None).is_err());
+        let mut system_audio = StudioIntent::RequestSystemAudioDevices;
+        assert!(coalesce_adjacent_intent(
+            &mut system_audio,
+            StudioIntent::RequestSystemAudioDevices
+        ));
+        assert!(!coalesce_adjacent_intent(
+            &mut system_audio,
+            StudioIntent::RequestCaptureDevices
+        ));
         let mut capture = StudioIntent::RequestCaptureDevices;
         assert!(coalesce_adjacent_intent(
             &mut capture,

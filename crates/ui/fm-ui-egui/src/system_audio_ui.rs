@@ -3,24 +3,32 @@
 //! tile.
 //!
 //! The form picks the audio system (`PulseAudio` / `PipeWire`, or ALSA) and
-//! takes the device name as the operator types it, checked with the same
-//! rule the daemon applies. Nothing on the server is enumerated, so each
-//! audio system suggests a device: `@DEFAULT_MONITOR@` hears what the
-//! server's default output plays, and `hw:Loopback,1` is the capture side
-//! of an `snd-aloop` loopback. The tile badge reads the input's latest
+//! the device: from a picker of the devices the server lists (Protocol
+//! 2.68, asked for when the form opens and on Refresh list), headed by the
+//! audio system's Default device (`@DEFAULT_MONITOR@`, what the server's
+//! default output plays, or ALSA's `default`), or typed into the name field
+//! under it, which follows the picker and keeps any name the list does not
+//! show. Either way the name is checked with the same rule the daemon
+//! applies. The Replace source dialog uses the same form. The tile badge
+//! reads the input's latest
 //! `system_audio_status` (OPENING, LIVE, REOPENING n, FAILED); the tile's
 //! tooltip carries the device, its audio system, the reopen count, and the
 //! last error.
 
-use egui::{Color32, Ui};
+use egui::{Color32, ComboBox, RichText, Ui};
 use fm_protocol::{
-    MAX_SYSTEM_AUDIO_DEVICE_BYTES, SystemAudioBackend, SystemAudioConfig, SystemAudioEntry,
-    SystemAudioState, SystemAudioStatus,
+    MAX_SYSTEM_AUDIO_DEVICE_BYTES, SystemAudioBackend, SystemAudioConfig, SystemAudioDevice,
+    SystemAudioEntry, SystemAudioInventory, SystemAudioState, SystemAudioStatus,
+    default_system_audio_device,
 };
 
+use crate::StudioUiState;
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_catalogue::kind_key;
 use crate::l10n::{Arg, Locale, Msg};
-use crate::network_stream_ui::{FieldProblem, field_error, hint_slot, mark_invalid};
+use crate::network_stream_ui::{
+    FieldProblem, field_error, hint_slot, mark_invalid, section_heading_with,
+};
 use crate::theme::{AMBER, ERROR, muted_color, section_label};
 
 /// The system audio form of the Add input dialog.
@@ -38,7 +46,7 @@ impl Default for SystemAudioDraft {
         let backend = SystemAudioBackend::Pulse;
         Self {
             backend,
-            device: suggested_device(backend).to_owned(),
+            device: default_system_audio_device(backend).to_owned(),
             device_edited: false,
         }
     }
@@ -58,22 +66,64 @@ impl SystemAudioField {
     }
 }
 
-/// The device each audio system suggests.
-const fn suggested_device(backend: SystemAudioBackend) -> &'static str {
-    match backend {
-        SystemAudioBackend::Pulse => "@DEFAULT_MONITOR@",
-        SystemAudioBackend::Alsa => "hw:Loopback,1",
-    }
+/// What the device picker shows chosen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DeviceChoice<'a> {
+    /// The audio system's default device.
+    Default,
+    /// A device the server listed.
+    Listed(&'a SystemAudioDevice),
+    /// A typed name the server did not list.
+    Typed,
 }
 
 impl SystemAudioDraft {
-    /// Switches the audio system, suggesting its device unless the
-    /// operator typed one.
+    /// A draft capturing `config`, for editing an input's device.
+    pub(crate) fn of(config: &SystemAudioConfig) -> Self {
+        Self {
+            backend: config.backend,
+            device: config.device.clone(),
+            device_edited: config.device != default_system_audio_device(config.backend),
+        }
+    }
+
+    /// Switches the audio system, choosing its default device unless the
+    /// operator typed or picked another.
     pub(crate) fn set_backend(&mut self, backend: SystemAudioBackend) {
         self.backend = backend;
         if !self.device_edited {
-            suggested_device(backend).clone_into(&mut self.device);
+            default_system_audio_device(backend).clone_into(&mut self.device);
         }
+    }
+
+    /// What the picker shows chosen, given the server's listed devices.
+    pub(crate) fn choice<'a>(
+        &self,
+        inventory: Option<&'a SystemAudioInventory>,
+    ) -> DeviceChoice<'a> {
+        if self.device == default_system_audio_device(self.backend) {
+            return DeviceChoice::Default;
+        }
+        inventory
+            .and_then(|inventory| {
+                inventory
+                    .devices_of(self.backend)
+                    .find(|device| device.device == self.device)
+            })
+            .map_or(DeviceChoice::Typed, DeviceChoice::Listed)
+    }
+
+    /// Picks the audio system's default device.
+    pub(crate) fn choose_default(&mut self) {
+        default_system_audio_device(self.backend).clone_into(&mut self.device);
+        self.device_edited = false;
+    }
+
+    /// Picks a listed device (and its audio system).
+    pub(crate) fn choose(&mut self, device: &SystemAudioDevice) {
+        self.backend = device.backend;
+        device.device.clone_into(&mut self.device);
+        self.device_edited = true;
     }
 
     /// The configuration the daemon would accept, or why not (an English
@@ -98,8 +148,151 @@ impl SystemAudioDraft {
     }
 }
 
-/// Draws the audio system keys and the device field.
-pub(crate) fn draw_system_audio_form(ui: &mut Ui, l: Locale, draft: &mut SystemAudioDraft) {
+const fn backend_text(backend: SystemAudioBackend) -> Msg {
+    match backend {
+        SystemAudioBackend::Pulse => Msg::SaBackendPulse,
+        SystemAudioBackend::Alsa => Msg::SaBackendAlsa,
+    }
+}
+
+/// A listed device as the picker names it: its description (or its name),
+/// then its channels and whether it is an output monitor or the default.
+pub(crate) fn device_label(l: Locale, device: &SystemAudioDevice) -> String {
+    let mut parts = vec![if device.description.is_empty() {
+        device.device.clone()
+    } else {
+        device.description.clone()
+    }];
+    if let Some(channels) = device.channels {
+        parts.push(l.format(
+            Msg::SaTagChannels,
+            &[("count", Arg::from(u64::from(channels)))],
+        ));
+    }
+    if device.monitor {
+        parts.push(l.text(Msg::SaTagMonitor).to_owned());
+    }
+    if device.default {
+        parts.push(l.text(Msg::SaTagDefault).to_owned());
+    }
+    parts.join(" · ")
+}
+
+/// The line over the picker: the listing state for `backend`, and whether
+/// it reads as a problem (amber).
+pub(crate) fn list_line(
+    l: Locale,
+    backend: SystemAudioBackend,
+    inventory: Option<&SystemAudioInventory>,
+) -> (String, bool) {
+    let Some(inventory) = inventory else {
+        return (l.text(Msg::SaListUnknown).to_owned(), false);
+    };
+    if !inventory.supported {
+        return (l.text(Msg::SaListUnsupported).to_owned(), true);
+    }
+    let name = l.text(backend_text(backend));
+    if let Some(error) = inventory.error_of(backend) {
+        return (
+            l.format(
+                Msg::SaListError,
+                &[("backend", Arg::Str(name)), ("error", Arg::Str(error))],
+            ),
+            true,
+        );
+    }
+    let count = inventory.devices_of(backend).count();
+    if count == 0 {
+        return (
+            l.format(Msg::SaListEmpty, &[("backend", Arg::Str(name))]),
+            true,
+        );
+    }
+    (
+        l.format(
+            Msg::SaListCount,
+            &[
+                ("count", Arg::from(count as u64)),
+                ("backend", Arg::Str(name)),
+            ],
+        ),
+        false,
+    )
+}
+
+/// The device picker: Default device, then the listed devices of the
+/// draft's audio system; a choice fills the device name.
+fn draw_device_picker(
+    ui: &mut Ui,
+    l: Locale,
+    inventory: Option<&SystemAudioInventory>,
+    id: &str,
+    draft: &mut SystemAudioDraft,
+) {
+    let choice = draft.choice(inventory);
+    let default_name = default_system_audio_device(draft.backend);
+    let default_hover = l.format(
+        match draft.backend {
+            SystemAudioBackend::Pulse => Msg::SaPickDefaultPulseHover,
+            SystemAudioBackend::Alsa => Msg::SaPickDefaultAlsaHover,
+        },
+        &[("device", Arg::Str(default_name))],
+    );
+    let selected = match choice {
+        DeviceChoice::Default => l.text(Msg::SaPickDefault).to_owned(),
+        DeviceChoice::Listed(device) => device_label(l, device),
+        DeviceChoice::Typed => l.format(Msg::SaPickTyped, &[("device", Arg::Str(&draft.device))]),
+    };
+    let mut picked: Option<Option<SystemAudioDevice>> = None;
+    ComboBox::from_id_salt(format!("{id}-system-audio-picker"))
+        .width(ui.available_width())
+        .truncate()
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(choice == DeviceChoice::Default, l.text(Msg::SaPickDefault))
+                .on_hover_text(&default_hover)
+                .clicked()
+            {
+                picked = Some(None);
+            }
+            for device in inventory
+                .into_iter()
+                .flat_map(|inventory| inventory.devices_of(draft.backend))
+            {
+                let chosen = choice == DeviceChoice::Listed(device);
+                if ui
+                    .selectable_label(chosen, device_label(l, device))
+                    .on_hover_text(l.format(
+                        Msg::SaDeviceOptionHover,
+                        &[("device", Arg::Str(&device.device))],
+                    ))
+                    .clicked()
+                {
+                    picked = Some(Some(device.clone()));
+                }
+            }
+        })
+        .response
+        .on_hover_text(l.text(Msg::SaPickerHover));
+    match picked {
+        Some(None) => draft.choose_default(),
+        Some(Some(device)) => draft.choose(&device),
+        None => {}
+    }
+}
+
+/// Draws the audio system keys, the device picker with Refresh list, and
+/// the device name field; `id` keeps the dialog's widgets apart. Returns
+/// whether the operator asked for the device list again.
+pub(crate) fn draw_system_audio_form(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    id: &str,
+    draft: &mut SystemAudioDraft,
+) -> bool {
+    let mut rescan = false;
     ui.label(section_label(l.text(Msg::SaBackend)));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -126,12 +319,39 @@ pub(crate) fn draw_system_audio_form(ui: &mut Ui, l: Locale, draft: &mut SystemA
             }
         }
     });
+    let inventory = state
+        .view
+        .as_ref()
+        .and_then(|view| view.system_audio_inventory.as_ref());
+    section_heading_with(ui, l, Msg::SaDevice, |ui| {
+        if ui
+            .add_enabled(
+                state.connection_status.controls_enabled(),
+                egui::Button::new(
+                    RichText::new(l.text(Msg::SaRefresh)).size(crate::theme::legible(11.0)),
+                ),
+            )
+            .hint(
+                l.text(Msg::SaRefreshHover),
+                unavailable_reason(state, Capability::EditProject),
+            )
+            .clicked()
+        {
+            rescan = true;
+        }
+    });
+    let (line, problem) = list_line(l, draft.backend, inventory);
+    ui.label(
+        RichText::new(line)
+            .size(crate::theme::legible(10.5))
+            .color(if problem { AMBER } else { muted_color() }),
+    );
+    draw_device_picker(ui, l, inventory, id, draft);
     ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::SaDevice)));
     let edit = ui
         .add(
             egui::TextEdit::singleline(&mut draft.device)
-                .id(egui::Id::new("studio-add-input-system-audio-device"))
+                .id(egui::Id::new(format!("{id}-system-audio-device")))
                 .char_limit(MAX_SYSTEM_AUDIO_DEVICE_BYTES)
                 .desired_width(ui.available_width()),
         )
@@ -153,6 +373,7 @@ pub(crate) fn draw_system_audio_form(ui: &mut Ui, l: Locale, draft: &mut SystemA
             })),
         }),
     );
+    rescan
 }
 
 /// The tile badge for a system audio status: its text and colour, or
@@ -194,10 +415,7 @@ pub(crate) fn system_audio_details(l: Locale, entry: &SystemAudioEntry) -> Strin
     let status = &entry.status;
     let state = system_audio_badge(l, status)
         .map_or_else(|| l.text(Msg::NsBadgeIdle).to_owned(), |(text, _)| text);
-    let backend = l.text(match entry.config.backend {
-        SystemAudioBackend::Pulse => Msg::SaBackendPulse,
-        SystemAudioBackend::Alsa => Msg::SaBackendAlsa,
-    });
+    let backend = l.text(backend_text(entry.config.backend));
     let mut lines = vec![l.format(
         Msg::SaDetail,
         &[
@@ -241,7 +459,7 @@ mod tests {
             ))
         );
         draft.set_backend(SystemAudioBackend::Alsa);
-        assert_eq!(draft.device, "hw:Loopback,1");
+        assert_eq!(draft.device, "default");
         draft.device = "plughw:1,0".into();
         draft.device_edited = true;
         draft.set_backend(SystemAudioBackend::Pulse);
@@ -254,6 +472,130 @@ mod tests {
         let problem = draft.checked().unwrap_err();
         assert!(!problem.prompt);
         assert_eq!(problem.reason, Msg::SaReasonDeviceInvalid.en());
+    }
+
+    fn listed(backend: SystemAudioBackend, device: &str) -> SystemAudioDevice {
+        SystemAudioDevice {
+            backend,
+            device: device.into(),
+            description: format!("{device} description"),
+            channels: Some(2),
+            default: false,
+            monitor: false,
+        }
+    }
+
+    fn inventory() -> SystemAudioInventory {
+        let mut monitor = listed(SystemAudioBackend::Pulse, "sink.monitor");
+        monitor.monitor = true;
+        monitor.default = true;
+        SystemAudioInventory {
+            supported: true,
+            devices: vec![
+                monitor,
+                listed(SystemAudioBackend::Alsa, "plughw:Loopback,1"),
+            ],
+            errors: Vec::new(),
+        }
+    }
+
+    /// The picker shows the default, a listed device, or a typed name, and
+    /// choosing from it fills the name field; a typed name stays possible.
+    #[test]
+    fn the_picker_follows_the_listed_devices_and_typed_names() {
+        let inventory = inventory();
+        let mut draft = SystemAudioDraft::default();
+        assert_eq!(draft.choice(Some(&inventory)), DeviceChoice::Default);
+        assert_eq!(draft.choice(None), DeviceChoice::Default);
+        draft.choose(&inventory.devices[0]);
+        assert_eq!(draft.device, "sink.monitor");
+        assert!(draft.device_edited);
+        assert_eq!(
+            draft.choice(Some(&inventory)),
+            DeviceChoice::Listed(&inventory.devices[0])
+        );
+        assert_eq!(draft.choice(None), DeviceChoice::Typed, "not listed yet");
+        // A listed device of the other audio system switches to it.
+        draft.choose(&inventory.devices[1]);
+        assert_eq!(draft.backend, SystemAudioBackend::Alsa);
+        assert_eq!(
+            draft.config(),
+            Ok(SystemAudioConfig::new(
+                SystemAudioBackend::Alsa,
+                "plughw:Loopback,1"
+            ))
+        );
+        // Typing a name the server does not list keeps it.
+        draft.device = "hw:CARD=Other,DEV=0".into();
+        assert_eq!(draft.choice(Some(&inventory)), DeviceChoice::Typed);
+        assert!(draft.config().is_ok());
+        draft.choose_default();
+        assert_eq!(draft.device, "default");
+        assert!(!draft.device_edited);
+        draft.set_backend(SystemAudioBackend::Pulse);
+        assert_eq!(draft.device, "@DEFAULT_MONITOR@");
+        // Editing an existing input starts from its device.
+        let edited = SystemAudioDraft::of(&SystemAudioConfig::new(
+            SystemAudioBackend::Pulse,
+            "sink.monitor",
+        ));
+        assert_eq!(
+            edited.choice(Some(&inventory)),
+            DeviceChoice::Listed(&inventory.devices[0])
+        );
+        assert!(edited.device_edited);
+    }
+
+    #[test]
+    fn the_list_line_and_labels_read_the_server_listing() {
+        let l = Locale::new(Language::English);
+        let inventory = inventory();
+        assert_eq!(
+            device_label(l, &inventory.devices[0]),
+            "sink.monitor description · 2 channels · output monitor · system default"
+        );
+        let mut bare = inventory.devices[1].clone();
+        bare.description.clear();
+        bare.channels = Some(1);
+        assert_eq!(device_label(l, &bare), "plughw:Loopback,1 · 1 channel");
+        let pulse = SystemAudioBackend::Pulse;
+        assert_eq!(
+            list_line(l, pulse, None),
+            (l.text(Msg::SaListUnknown).to_owned(), false)
+        );
+        assert_eq!(
+            list_line(l, pulse, Some(&inventory)),
+            (
+                "The server lists 1 PulseAudio / PipeWire capture device".to_owned(),
+                false
+            )
+        );
+        let mut failed = inventory.clone();
+        failed.devices.clear();
+        failed.errors = vec![fm_protocol::SystemAudioBackendError {
+            backend: pulse,
+            error: "pactl is not installed".into(),
+        }];
+        assert_eq!(
+            list_line(l, pulse, Some(&failed)),
+            (
+                "PulseAudio / PipeWire could not be listed: pactl is not installed".to_owned(),
+                true
+            )
+        );
+        assert!(
+            list_line(l, SystemAudioBackend::Alsa, Some(&failed)).1,
+            "none listed"
+        );
+        assert_eq!(
+            list_line(l, pulse, Some(&SystemAudioInventory::unsupported())),
+            (l.text(Msg::SaListUnsupported).to_owned(), true)
+        );
+        let es = Locale::new(Language::Spanish);
+        assert_ne!(
+            device_label(es, &inventory.devices[0]),
+            device_label(l, &inventory.devices[0])
+        );
     }
 
     #[test]

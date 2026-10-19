@@ -2,7 +2,9 @@
 //! timeline, and colour panel widget explains itself on hover, says why it is
 //! disabled, names its shortcut, and is translated, in every shipped language.
 
-use fm_ui_egui::hover_audit::{check, check_capture, check_color_panel, check_timeline};
+use fm_ui_egui::hover_audit::{
+    check, check_capture, check_color_panel, check_system_audio, check_timeline,
+};
 use fm_ui_model::i18n::Language;
 
 #[test]
@@ -49,4 +51,14 @@ fn every_capture_form_widget_and_signal_lost_tile_explains_itself_in_english() {
 #[test]
 fn every_capture_form_widget_and_signal_lost_tile_explains_itself_in_spanish() {
     check_capture(Language::Spanish);
+}
+
+#[test]
+fn every_system_audio_form_widget_explains_itself_in_english() {
+    check_system_audio(Language::English);
+}
+
+#[test]
+fn every_system_audio_form_widget_explains_itself_in_spanish() {
+    check_system_audio(Language::Spanish);
 }

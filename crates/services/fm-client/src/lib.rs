@@ -201,6 +201,9 @@ pub enum Intake {
     /// A `capture_devices` reply updated the replicated capture device
     /// inventory (Protocol 2.47).
     CaptureDevicesApplied,
+    /// A `system_audio_devices` reply updated the replicated system audio
+    /// device list (Protocol 2.68).
+    SystemAudioDevicesApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -560,6 +563,7 @@ impl Client {
     /// # Errors
     ///
     /// Rejects messages invalid for the current state or replicated model.
+    #[allow(clippy::too_many_lines)] // one dispatch over every message type
     pub fn intake(&mut self, message: WireMessage) -> Result<Intake, ClientError> {
         match message {
             WireMessage::HandshakeResponse(response) => {
@@ -639,8 +643,13 @@ impl Client {
                 self.model.apply_capture_inventory(message.inventory);
                 Ok(Intake::CaptureDevicesApplied)
             }
+            WireMessage::SystemAudioDevices(message) => {
+                self.model.apply_system_audio_inventory(message.inventory);
+                Ok(Intake::SystemAudioDevicesApplied)
+            }
             WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
+            | WireMessage::SystemAudioDevicesRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)

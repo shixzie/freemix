@@ -13445,6 +13445,66 @@ fn remote_capture_commands_send_exact_payloads() {
         );
     });
     let output = invoke(&["remote-capture-devices", &server.address()]);
+    let capture_output = output;
+    // AU-011, Protocol 2.68: the system audio devices of the daemon's host.
+    let system_audio = FakeRemoteServer::start_test_peer(move |stream| {
+        let engine = EngineIdentity {
+            engine_id: "system-audio-engine".into(),
+            state_epoch: 1,
+            log_id: "system-audio-log".into(),
+        };
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        let WireMessage::SystemAudioDevicesRequest(request) = read_message(&mut reader) else {
+            panic!("expected a system audio devices request");
+        };
+        assert!(request.request_id.starts_with("cli-system-audio-"));
+        write_message(
+            &mut writer,
+            &WireMessage::SystemAudioDevices(fm_protocol::SystemAudioDevicesMessage {
+                request_id: request.request_id,
+                inventory: fm_protocol::SystemAudioInventory {
+                    supported: true,
+                    devices: vec![fm_protocol::SystemAudioDevice {
+                        backend: fm_protocol::SystemAudioBackend::Pulse,
+                        device: "sink.monitor".into(),
+                        description: "Monitor of Built-in Audio".into(),
+                        channels: Some(2),
+                        default: false,
+                        monitor: true,
+                    }],
+                    errors: vec![fm_protocol::SystemAudioBackendError {
+                        backend: fm_protocol::SystemAudioBackend::Alsa,
+                        error: "no ALSA driver is loaded (no /proc/asound)".into(),
+                    }],
+                },
+            }),
+        );
+    });
+    let output = invoke(&["remote-system-audio-devices", &system_audio.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    for line in [
+        "SystemAudioDevices(supported=on, devices=1)",
+        "Unlisted(backend=alsa, error=\"no ALSA driver is loaded (no /proc/asound)\")",
+        "Device(backend=pulse, device=\"sink.monitor\", description=\"Monitor of Built-in \
+         Audio\", channels=2, default=off, monitor=on)",
+    ] {
+        assert!(
+            text.lines().any(|candidate| candidate == line),
+            "{line}\n{text}"
+        );
+    }
+    system_audio.finish();
+    assert_failure_contains(
+        &invoke_bounded(&["remote-system-audio-devices", "127.0.0.1:9", "extra"]),
+        "extra",
+    );
+    let output = capture_output;
     assert_success(&output);
     let text = stdout(&output);
     for line in [

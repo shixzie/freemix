@@ -1096,9 +1096,13 @@ impl StudioShell {
                                     let taken: Vec<&str> =
                                         taken.iter().map(String::as_str).collect();
                                     draft.set_kind(kind, &taken);
-                                    // The capture form lists the server's devices.
+                                    // The capture and system audio forms list
+                                    // the server's devices.
                                     if kind == NewInputKind::Capture {
                                         intents.push(StudioIntent::RequestCaptureDevices);
+                                    }
+                                    if kind == NewInputKind::SystemAudio {
+                                        intents.push(StudioIntent::RequestSystemAudioDevices);
                                     }
                                 }
                             }
@@ -1146,11 +1150,15 @@ impl StudioShell {
                         }
                         if draft.kind == NewInputKind::SystemAudio {
                             ui.add_space(6.0);
-                            crate::system_audio_ui::draw_system_audio_form(
+                            if crate::system_audio_ui::draw_system_audio_form(
                                 ui,
                                 l,
+                                state,
+                                "studio-add-input",
                                 &mut draft.system_audio,
-                            );
+                            ) {
+                                intents.push(StudioIntent::RequestSystemAudioDevices);
+                            }
                         }
                         if draft.kind == NewInputKind::Capture {
                             ui.add_space(6.0);
