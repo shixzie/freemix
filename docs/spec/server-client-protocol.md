@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.62 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.63 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2118,6 +2118,48 @@ Protocol 2.62 lets a script wait (RC-011).
   prints the run's state after its `ScriptRan` line. A local run waits on
   the simulated clock, printing each part's `ScriptRan`.
 - 2.61 is refused.
+
+Protocol 2.63 says why a deferred part failed (RC-011, RC-017).
+
+- A script part after a `wait` and a cue's actions after a wait run on a
+  later frame with no command to refuse, so before 2.63 their faults said
+  only where they stopped. Each fault now keeps what a refused command
+  would have said: the refused action's typed refusal reason (when it had
+  one) and its English message. A script part that fails without a
+  refused action (a runtime error or an exhausted budget) keeps the
+  failure's own message and no reason. A cue's script step that fails
+  keeps the step's `script_failed:<failure>:<line>:<column>` reason and the
+  script's message, which names the refused action.
+- The message is one line of 1 to 256 UTF-8 bytes
+  (`fm_command::MAX_FAULT_MESSAGE_BYTES`) without control characters or
+  surrounding whitespace: the authority replaces control characters with
+  spaces, trims, and cuts a longer text at a character boundary; a message
+  that bounds to nothing falls back to the reason's English text.
+- Wire: a faulted script `run` (on `script_state` and
+  `script_run_changed`) is
+  `faulted:<frame>:<failure>:<line>:<column>:<reason>:<message>`, and a
+  cue list `state`'s fault (on `cue_list_state`, `cue_list_changed`, and
+  `cue_run_changed`) is `<cue>.<action>.<reason>.<message>`. `reason` is
+  the lowercase hex of the refusal's `reason` token (exactly as a rejected
+  `command_result` carries it) or `-` for none; `message` is the lowercase
+  hex of the message's UTF-8 bytes, so no separator can occur inside
+  either. A decoder refuses a missing or extra token, uppercase or odd
+  hex, an unknown or malformed reason, and a message out of its bounds; an
+  encoder refuses to write one.
+- Durability: a script run fault and a cue list fault gain
+  `"reason": null | "<reason token>"` and `"message": "<text>"` (schema
+  57). A reason no token names is a malformed manifest; a message out of
+  its bounds fails project validation. An edit that keeps a faulted cue
+  action keeps its fault and detail.
+- Studio's Edit > Scripts window adds "The server said: …" to a failed
+  part's status, as it already did for a run refused on its first frame;
+  the Cues window adds it to a list's fault note. A typed reason is worded
+  in the console language (English and Spanish); a `script_failed` reason,
+  or none, shows the server's message. Stop run and Clear failed run keep
+  a row of their own below the status. `freemix-cli` prints
+  `reason=<token or ->, message="…"` after a faulted `ScriptRun(...)` and
+  a `CueList(...)` fault.
+- 2.62 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -1432,6 +1432,7 @@ name = "fm-model"
 version = "0.1.0"
 dependencies = [
  "fm-animation",
+ "fm-command",
  "fm-grade",
  "fm-script",
  "fm-types",
@@ -1449,6 +1450,7 @@ name = "fm-persistence"
 version = "0.1.0"
 dependencies = [
  "fm-clock",
+ "fm-command",
  "fm-grade",
  "fm-model",
  "fm-preset-file",

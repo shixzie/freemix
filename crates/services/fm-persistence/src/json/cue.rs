@@ -13,6 +13,10 @@
 //! ]
 //! ```
 //!
+//! A fault is `{"cue", "action", "reason", "message"}`: the action refused
+//! when its wait ended, and (schema 57) what it was refused with, as a
+//! script run's fault says it (see [`super::script`]).
+//!
 //! Action types: `preview` (`input`), `take` (`input` or `null` for the
 //! current Preview, `effect` a [`fm_model::TransitionEffect`] token or
 //! `"stinger"` with a `slot`, `duration_frames`), `overlay_on` (`channel`,
@@ -232,14 +236,18 @@ fn write_state(output: &mut String, state: &CueRunState) {
         write!(output, "{cue}").expect("writing to a string cannot fail");
     }
     output.push_str("], \"fault\": ");
-    match state.fault {
+    match &state.fault {
         None => output.push_str("null"),
-        Some(fault) => write!(
-            output,
-            "{{\"cue\": {}, \"action\": {}}}",
-            fault.cue, fault.action
-        )
-        .expect("writing to a string cannot fail"),
+        Some(fault) => {
+            write!(
+                output,
+                "{{\"cue\": {}, \"action\": {}",
+                fault.cue, fault.action
+            )
+            .expect("writing to a string cannot fail");
+            super::script::write_fault_detail(output, &fault.detail);
+            output.push('}');
+        }
     }
     output.push('}');
 }
@@ -426,6 +434,7 @@ fn parse_state(value: Value) -> Result<CueRunState, DecodeError> {
             cue: fault.u64("cue")?,
             action: usize::try_from(fault.u32("action")?)
                 .map_err(|_| syntax("cue fault action exceeds usize"))?,
+            detail: super::script::parse_fault_detail(&mut fault)?,
         };
         fault.finish()?;
         Ok(parsed)

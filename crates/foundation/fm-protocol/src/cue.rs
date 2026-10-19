@@ -176,8 +176,18 @@ pub struct CueRunStatus {
     pub pending: Option<CuePendingStatus>,
     /// Every cue fired since the list was created or reset, ascending.
     pub played: Vec<u64>,
-    /// The `(cue, action)` that was refused when its wait ended.
-    pub fault: Option<(u64, u16)>,
+    /// The action that was refused when its wait ended.
+    pub fault: Option<CueFaultStatus>,
+}
+
+/// Action `action` of cue `cue` was refused when its wait ended; the cue
+/// stopped there.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CueFaultStatus {
+    pub cue: u64,
+    pub action: u16,
+    /// What the action was refused with (Protocol 2.63).
+    pub detail: fm_command::FaultDetail,
 }
 
 /// One whole list.

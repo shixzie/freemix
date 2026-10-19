@@ -1535,6 +1535,7 @@ impl Engine {
                 takes: 0,
             },
         );
+        let mut fault = None;
         let (state, fired) = match applied {
             Ok(()) => (firing.state, firing.fired),
             Err((cue, step, rejection)) if !matches!(command, EngineCommand::CueAdvance { .. }) => {
@@ -1544,7 +1545,7 @@ impl Engine {
                     ..rejection
                 });
             }
-            Err((cue, step, _)) => {
+            Err((cue, step, rejection)) => {
                 // A refused deferred action stops its cue: the clock must not
                 // retry it, so the advance is accepted with the fault set.
                 show = self.show().clone();
@@ -1557,6 +1558,7 @@ impl Engine {
                     .cue_list(list_id)
                     .expect("the planned list exists");
                 let state = crate::cue::stack_state(&list.state);
+                fault = Some(crate::cue::fault(cue, step, &rejection));
                 (
                     crate::cue::stack(list, self.frame_rate).fail(&state, cue, step),
                     Vec::new(),
@@ -1568,7 +1570,12 @@ impl Engine {
             .iter()
             .position(|candidate| candidate.id == list_id)
             .expect("the planned list exists");
-        show.cue_lists_mut()[index].state = crate::cue::run_state(state);
+        let previous = &self.show().cue_lists()[index].state;
+        let mut state = crate::cue::run_state(state, previous);
+        if fault.is_some() {
+            state.fault = fault;
+        }
+        show.cue_lists_mut()[index].state = state;
         Ok(CuePlan {
             show: Box::new(show),
             event: EngineEvent::CueListChanged {

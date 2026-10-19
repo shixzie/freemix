@@ -21,13 +21,18 @@
 //!  "fault": null}
 //! ```
 //!
-//! A fault is `{"script", "frame", "failure", "line", "column"}`, `failure`
-//! one of `syntax`, `runtime`, `refused`, `instructions`, `actions`,
-//! `variables`, `string_bytes`, `waits`, and `wait_frames`. Whether a run
-//! fits its script is reported by project validation.
+//! A fault is `{"script", "frame", "failure", "line", "column", "reason",
+//! "message"}`, `failure` one of `syntax`, `runtime`, `refused`,
+//! `instructions`, `actions`, `variables`, `string_bytes`, `waits`, and
+//! `wait_frames`. `reason` and `message` (schema 57) say what the run was
+//! refused with ([`fm_command::FaultDetail`]): the refused action's typed
+//! reason as its stable token (`null` for none), and the English message.
+//! A reason no token names is refused here; whether a run fits its script,
+//! and a fault's message its bounds, is reported by project validation.
 
 use core::fmt::Write as _;
 
+use fm_command::FaultDetail;
 use fm_model::{Script, ScriptFault, ScriptRun, ScriptRunState};
 use fm_script::{Budget, FailureKind, ResumePoint, ScriptValue, Span, Suspended};
 
@@ -100,18 +105,58 @@ pub(crate) fn write_script_run(output: &mut String, state: &ScriptRunState) {
     output.push_str(", \"fault\": ");
     match &state.fault {
         None => output.push_str("null"),
-        Some(fault) => write!(
-            output,
-            "{{\"script\": {}, \"frame\": {}, \"failure\": \"{}\", \"line\": {}, \"column\": {}}}",
-            fault.script,
-            fault.frame,
-            failure_token(fault.failure),
-            fault.at.line,
-            fault.at.column
-        )
-        .expect("writing to a string cannot fail"),
+        Some(fault) => {
+            write!(
+                output,
+                "{{\"script\": {}, \"frame\": {}, \"failure\": \"{}\", \"line\": {}, \"column\": {}",
+                fault.script,
+                fault.frame,
+                failure_token(fault.failure),
+                fault.at.line,
+                fault.at.column
+            )
+            .expect("writing to a string cannot fail");
+            write_fault_detail(output, &fault.detail);
+            output.push('}');
+        }
     }
     output.push('}');
+}
+
+/// Writes `, "reason": <token or null>, "message": "<text>"` (schema 57).
+pub(crate) fn write_fault_detail(output: &mut String, detail: &FaultDetail) {
+    output.push_str(", \"reason\": ");
+    match detail
+        .reason
+        .as_ref()
+        .and_then(fm_command::RefusalReason::token)
+    {
+        None => output.push_str("null"),
+        Some(token) => {
+            output.push('"');
+            escape_string(output, &token);
+            output.push('"');
+        }
+    }
+    output.push_str(", \"message\": \"");
+    escape_string(output, &detail.message);
+    output.push('"');
+}
+
+/// Parses `"reason"` and `"message"` from a fault object (schema 57),
+/// refusing a reason no token names.
+pub(crate) fn parse_fault_detail(object: &mut Object) -> Result<FaultDetail, DecodeError> {
+    let reason = parse_optional(object.take("reason")?, |value| {
+        let Value::String(token) = value else {
+            return Err(syntax("fault reason must be a string or null"));
+        };
+        fm_command::RefusalReason::from_token(&token)
+            .ok_or_else(|| super::unknown_enum("fault reason", &token))
+    })?;
+    Ok(FaultDetail {
+        reason,
+        message: object.string("message")?,
+    })
 }
 
 fn write_run(output: &mut String, run: &ScriptRun) {
@@ -172,6 +217,7 @@ pub(crate) fn parse_script_run(object: &mut Object) -> Result<ScriptRunState, De
             frame: fault.u64("frame")?,
             failure: parse_failure(&fault.string("failure")?)?,
             at: Span::new(fault.u32("line")?, fault.u32("column")?),
+            detail: parse_fault_detail(&mut fault)?,
         };
         fault.finish()?;
         Ok(parsed)

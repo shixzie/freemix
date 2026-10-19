@@ -1,7 +1,8 @@
 //! RC-011 at schema 54: the project's scripts round-trip exactly and
 //! strictly in `project.json`; bounds and duplicate ids are project
 //! validation, and a script with a syntax error is stored as written. At
-//! schema 56 the show's script run slot (a waiting run or a fault) follows.
+//! schema 56 the show's script run slot (a waiting run or a fault) follows;
+//! since schema 57 a fault keeps what the run was refused with.
 
 use std::{
     fs,
@@ -103,7 +104,7 @@ fn scripts_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 56"));
+    assert!(text.contains("\"schema_version\": 57"));
     assert!(
         text.contains(
             ",\n    \"scripts\": [\n      {\"id\": 3, \"name\": \"Open \\\"show\\\"\", \"source\": \
@@ -326,6 +327,10 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
             frame: 90,
             failure: FailureKind::Budget(fm_script::Budget::WaitFrames),
             at: Span::new(5, 3),
+            detail: fm_command::FaultDetail {
+                reason: None,
+                message: "wait frame budget exceeded".to_owned(),
+            },
         }),
     });
     store.save(&stored(faulted.clone()).unwrap()).unwrap();
@@ -334,7 +339,8 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     assert!(
         text.contains(
             "\"script_run\": {\"running\": null, \"fault\": {\"script\": 2, \"frame\": 90, \
-             \"failure\": \"wait_frames\", \"line\": 5, \"column\": 3}}"
+             \"failure\": \"wait_frames\", \"line\": 5, \"column\": 3, \"reason\": null, \
+             \"message\": \"wait frame budget exceeded\"}}"
         ),
         "{text}"
     );
@@ -344,4 +350,69 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
         store.load(),
         Err(StoreError::MalformedManifest { .. })
     ));
+
+    // Schema 57: a refused action's typed reason and its message round-trip
+    // exactly; a reason no token names, a missing field, or a message out
+    // of bounds is refused.
+    faulted.set_script_run(ScriptRunState {
+        running: None,
+        fault: Some(ScriptFault {
+            script: 2,
+            frame: 90,
+            failure: FailureKind::Refused,
+            at: Span::new(2, 1),
+            detail: fm_command::FaultDetail {
+                reason: Some(fm_command::RefusalReason::InputInUse {
+                    input: 4,
+                    usage: fm_command::InputUse::Overlay { channel: 2 },
+                }),
+                message: "input 4 is the \"source\" of overlay 2".to_owned(),
+            },
+        }),
+    });
+    store.save(&stored(faulted.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &faulted);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains(
+            "\"failure\": \"refused\", \"line\": 2, \"column\": 1, \
+             \"reason\": \"input_in_use:4:overlay:2\", \
+             \"message\": \"input 4 is the \\\"source\\\" of overlay 2\"}}"
+        ),
+        "{text}"
+    );
+    for (from, to) in [
+        (
+            "\"input_in_use:4:overlay:2\"",
+            "\"input_in_use:4:overlay:0\"",
+        ),
+        ("\"input_in_use:4:overlay:2\"", "\"bogus\""),
+        ("\"input_in_use:4:overlay:2\"", "7"),
+        ("\"reason\": \"input_in_use:4:overlay:2\", ", ""),
+        (", \"message\": \"input 4", ", \"text\": \"input 4"),
+    ] {
+        let malformed = text.replacen(from, to, 1);
+        assert_ne!(malformed, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+    let long = "x".repeat(fm_command::MAX_FAULT_MESSAGE_BYTES + 1);
+    for message in ["", " padded", "two\\nlines", long.as_str()] {
+        let invalid = text.replacen(
+            "\"input 4 is the \\\"source\\\" of overlay 2\"",
+            &format!("\"{message}\""),
+            1,
+        );
+        assert_ne!(invalid, text, "{message}");
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::Validation(_))),
+            "{message}: {:?}",
+            store.load()
+        );
+    }
 }

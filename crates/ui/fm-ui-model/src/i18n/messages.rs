@@ -2365,7 +2365,7 @@ messages! {
     ),
     ScriptRunWaitingHover => t("This script's run is paused at a wait. The server runs the rest on that frame, reading Program and Preview as they are then"),
     ScriptRunFaulted => t("The run failed on frame {frame} with {failure} at line {line}, column {column}; nothing of that frame was applied."),
-    ScriptRunFaultedHover => t("A part of the run after a wait failed when its frame came; the run ended there. The server reports where it failed, not why an action was refused. Clear the report or run the script again"),
+    ScriptRunFaultedHover => t("A part of the run after a wait failed when its frame came; the run ended there. The server reports where it failed and why. Clear the report or run the script again"),
     ScriptStop => t("Stop run"),
     ScriptStopHover => t("Stop this script's paused run now: nothing more of it runs, and what it already did stays"),
     ScriptClearFault => t("Clear failed run"),

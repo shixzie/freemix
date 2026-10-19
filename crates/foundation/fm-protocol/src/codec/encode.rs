@@ -172,7 +172,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             super::script::encode_status(&message.script, &mut |name, value| {
                 record.field_string(name, value)
             })?;
-            record.field_string("run", super::script::encode_run(message.run)?)?;
+            record.field_string("run", super::script::encode_run(&message.run)?)?;
         }
         WireMessage::MediaState(message) => {
             record.kind("media_state");
@@ -2188,7 +2188,7 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                 &mut |name, value| record.field_string(name, value),
             )?;
             record.field("frame", change.frame)?;
-            record.field_string("state", super::cue::encode_state(&change.state))?;
+            record.field_string("state", super::cue::encode_state(&change.state)?)?;
             record.field_string("fired", super::cue::encode_fired(&change.fired))?;
             record.field("program", change.program)?;
             record.field("preview", change.preview)?;
@@ -2232,7 +2232,7 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("frame", change.frame)?;
             record.field("actions", change.actions)?;
             record.field("instructions", change.instructions)?;
-            record.field_string("run", super::script::encode_run(change.run)?)?;
+            record.field_string("run", super::script::encode_run(&change.run)?)?;
             record.field("program", change.program)?;
             record.field("preview", change.preview)?;
             encode_manual_status(
@@ -2261,7 +2261,7 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             super::script::validate_script_id(*script)?;
             record.field("script", script)?;
             record.field("frame", frame)?;
-            record.field_string("run", super::script::encode_run(*run)?)?;
+            record.field_string("run", super::script::encode_run(run)?)?;
         }
         EventPayload::GradeChanged(change) => {
             record.field("event", "grade_changed")?;

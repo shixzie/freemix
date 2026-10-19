@@ -535,6 +535,11 @@ fn a_part_that_fails_on_its_frame_faults_the_run_and_applies_nothing() {
             frame: start + 3,
             failure: fm_script::FailureKind::Refused,
             at: fm_script::Span::new(3, 1),
+            // The refusal had no typed reason; its message is kept.
+            detail: fm_command::FaultDetail {
+                reason: None,
+                message: "the show has no input number 9".to_owned(),
+            },
         })
     );
     // The clock never retries a fault; a new run or a stop clears it.
@@ -543,6 +548,73 @@ fn a_part_that_fails_on_its_frame_faults_the_run_and_applies_nothing() {
     assert_eq!(
         *engine.show().script_run(),
         fm_model::ScriptRunState::default()
+    );
+}
+
+/// Protocol 2.63: a deferred part refused by the show keeps the refused
+/// action's typed reason and its message, exactly what a refused first
+/// part says; a part that fails without a refused action keeps the
+/// failure's own message.
+#[test]
+fn a_deferred_fault_carries_the_refused_actions_reason() {
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set", set(1, "wait 3\ntitle_off 2\n")));
+    // The same action refused on the first frame, for comparison.
+    accepted(&submit(&mut engine, "set-2", set(2, "title_off 2\n")));
+    let (_, reason, message) = refusal(&submit(&mut engine, "run-2", run(2)));
+    assert_eq!(
+        reason,
+        Some(RefusalReason::ScriptFailed {
+            failure: fm_command::ScriptFailureKind::Refused,
+            line: 1,
+            column: 1,
+        })
+    );
+    assert!(
+        message.ends_with("the script names input 12, which is not a title"),
+        "{message}"
+    );
+
+    accepted(&submit(&mut engine, "run", run(1)));
+    drive(&mut engine, 5);
+    let fault = engine
+        .show()
+        .script_run()
+        .fault
+        .clone()
+        .expect("the run faulted");
+    assert_eq!(
+        (fault.failure, fault.at),
+        (fm_script::FailureKind::Refused, fm_script::Span::new(2, 1))
+    );
+    assert_eq!(
+        fault.detail,
+        fm_command::FaultDetail {
+            reason: Some(RefusalReason::UnknownId {
+                kind: fm_command::IdKind::Title,
+                id: 12,
+            }),
+            message: "the script names input 12, which is not a title".to_owned(),
+        }
+    );
+
+    // A runtime error refuses no action: the failure's message is kept.
+    accepted(&submit(&mut engine, "stop", EngineCommand::StopScript));
+    accepted(&submit(&mut engine, "set-3", set(1, "wait 3\ncut 1 / 0\n")));
+    accepted(&submit(&mut engine, "run-3", run(1)));
+    drive(&mut engine, 5);
+    let fault = engine
+        .show()
+        .script_run()
+        .fault
+        .clone()
+        .expect("the run faulted");
+    assert_eq!(fault.failure, fm_script::FailureKind::Runtime);
+    assert_eq!(fault.detail.reason, None);
+    assert!(
+        fm_command::FaultDetail::message_is_valid(&fault.detail.message),
+        "{:?}",
+        fault.detail
     );
 }
 
@@ -556,7 +628,12 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
     accepted(&submit(&mut engine, "set-2", set(2, "cut 2")));
     accepted(&submit(&mut engine, "run", run(1)));
     drive(&mut engine, 5);
-    let fault = engine.show().script_run().fault.expect("the run faulted");
+    let fault = engine
+        .show()
+        .script_run()
+        .fault
+        .clone()
+        .expect("the run faulted");
     assert_eq!(fault.script, 1);
 
     accepted(&submit(&mut engine, "edit-other", set(2, "cut 3")));

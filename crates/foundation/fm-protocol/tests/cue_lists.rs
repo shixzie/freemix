@@ -3,24 +3,34 @@
 //! since 2.61): the list edit, GO, standby,
 //! and clock commands, the `cue_list_changed`, `cue_list_removed`, and
 //! `cue_run_changed` events, the snapshot's `cue_list_states` count, and the
-//! `cue_list_state` follow-on record — exactly, and strictly.
+//! `cue_list_state` follow-on record — exactly, and strictly. Since 2.63
+//! a fault carries what its action was refused with.
 
 use core::num::NonZeroU128;
 
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload,
-    CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport, CueOperation,
-    CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText, EditHistoryStatus,
-    EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
-    InputAudioStripStatus, MAX_CUE_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUES,
-    ManualTransitionStatus, MediaTime, MediaTransportState, OverlayStatus, PlaylistRunState,
-    ProtocolVersion, RecordingStatus, StreamRealizedState, StreamStatus, TransitionFavoriteEffect,
-    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireMessage, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line,
-    encode_line,
+    CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport,
+    CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText,
+    EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
+    FadeToBlackPosition, FadeToBlackState, InputAudioStripStatus, MAX_CUE_ACTIONS,
+    MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUES, ManualTransitionStatus, MediaTime, MediaTransportState,
+    OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus, StreamRealizedState,
+    StreamStatus, TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation,
+    WireInputId, WireMessage, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireStreamTargetId, WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.62\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.63\tid=a\tidempotency_key=k";
+
+/// Lowercase hex of `text`'s UTF-8 bytes.
+fn hex(text: &str) -> String {
+    use core::fmt::Write as _;
+    text.bytes().fold(String::new(), |mut out, byte| {
+        write!(out, "{byte:02x}").unwrap();
+        out
+    })
+}
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -183,7 +193,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 62));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 63));
 }
 
 #[test]
@@ -417,7 +427,17 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
         list: 3,
         frame: 1_000,
         state: CueRunStatus {
-            fault: Some((1, 2)),
+            fault: Some(CueFaultStatus {
+                cue: 1,
+                action: 2,
+                detail: fm_command::FaultDetail {
+                    reason: Some(fm_command::RefusalReason::InputInUse {
+                        input: 4,
+                        usage: fm_command::InputUse::Program,
+                    }),
+                    message: "input 4 is on Program".to_owned(),
+                },
+            }),
             pending: None,
             ..state()
         },
@@ -480,6 +500,55 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
         change.clone(),
     ))));
     assert!(line.contains("\tfired=1.7\t"), "{line}");
+    // Protocol 2.63: `<cue>.<action>.<reason hex>.<message hex>`.
+    let fault = format!(
+        "1.2.{}.{}",
+        hex("input_in_use:4:program"),
+        hex("input 4 is on Program")
+    );
+    assert!(line.contains(&format!("%3A1%3A{fault}\t")), "{line}");
+    let no_reason = line.replacen(
+        &format!("1.2.{}.", hex("input_in_use:4:program")),
+        "1.2.-.",
+        1,
+    );
+    let EventPayload::CueRunChanged(decoded) = (match decode_line(&no_reason).unwrap() {
+        WireMessage::Event(event) => event.payload,
+        other => panic!("{other:?}"),
+    }) else {
+        panic!("not a cue run change");
+    };
+    assert_eq!(
+        decoded.state.fault.unwrap().detail,
+        fm_command::FaultDetail {
+            reason: None,
+            message: "input 4 is on Program".to_owned(),
+        }
+    );
+    for bad in [
+        "1.2".to_owned(),
+        "1.2.-".to_owned(),
+        "1.2.-.".to_owned(),
+        format!("1.2.-.{}", hex(" padded")),
+        format!("1.2.-.{}", hex("a\tb")),
+        format!(
+            "1.2.-.{}",
+            hex(&"x".repeat(fm_command::MAX_FAULT_MESSAGE_BYTES + 1))
+        ),
+        format!("1.2.{}.78", hex("input_in_use:4")),
+        "1.2.zz.78".to_owned(),
+        "1.2.-.7".to_owned(),
+        "1.2.-.78.0".to_owned(),
+    ] {
+        let broken = line.replacen(&fault, &bad, 1);
+        assert_ne!(broken, line);
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    let mut invalid = change.clone();
+    if let Some(fault) = &mut invalid.state.fault {
+        fault.detail.message = "two\nlines".to_owned();
+    }
+    assert!(encode_line(&event(EventPayload::CueRunChanged(Box::new(invalid)))).is_err());
     assert!(line.contains("\ttitles=5.4.2.5365c3b16f72"), "{line}");
     assert!(line.contains("\tmedia=6.playing.0.0.1"), "{line}");
     for bad in [

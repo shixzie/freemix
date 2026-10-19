@@ -7,9 +7,9 @@ use fm_model::{
     TitleFieldId,
 };
 use fm_protocol::{
-    CommandPayload, CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport,
-    CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText, EventPayload,
-    RecordingStatus, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
+    CommandPayload, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
+    CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText,
+    EventPayload, RecordingStatus, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
     WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
 };
 use fm_titles::FieldId;
@@ -246,9 +246,11 @@ pub fn wire_state(state: &CueRunState) -> CueRunStatus {
             due_frame: pending.due_frame,
         }),
         played: state.played.clone(),
-        fault: state
-            .fault
-            .map(|fault| (fault.cue, action_index(fault.action))),
+        fault: state.fault.as_ref().map(|fault| CueFaultStatus {
+            cue: fault.cue,
+            action: action_index(fault.action),
+            detail: fault.detail.clone(),
+        }),
     }
 }
 

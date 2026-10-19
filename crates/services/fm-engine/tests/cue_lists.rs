@@ -755,7 +755,7 @@ fn a_script_step_runs_on_its_frame_against_the_show_then() {
     // The script saw the GO's cut to 2 on its own frame, so it keyed 4.
     assert_eq!(overlay_on(&engine, 1), Some(input(4)));
     let state = &engine.show().cue_list(1).unwrap().state;
-    assert_eq!((state.pending, state.fault), (None, None));
+    assert_eq!((state.pending, state.fault.clone()), (None, None));
 }
 
 /// A text field-only lower third, for the frame title-text bound.
@@ -911,6 +911,48 @@ fn direct_run(engine: &mut Engine, key: &str, script: u64) -> CueScriptRun {
     }
 }
 
+/// The fault of cue 2's failed script step keeps the step's typed reason
+/// and message (Protocol 2.63), what a refused GO of the step would have
+/// said; an edit that keeps the faulted action keeps the fault and its
+/// detail, and a reset clears it.
+fn assert_step_fault_keeps_its_reason(cues: &mut Engine) {
+    let fault = cues
+        .show()
+        .cue_list(1)
+        .unwrap()
+        .state
+        .fault
+        .clone()
+        .expect("the deferred step faulted");
+    assert_eq!((fault.cue, fault.action), (2, 1));
+    assert_eq!(
+        fault.detail.reason,
+        Some(fm_command::RefusalReason::ScriptFailed {
+            failure: fm_command::ScriptFailureKind::Refused,
+            line: 1,
+            column: 1,
+        })
+    );
+    assert!(
+        fault.detail.message.starts_with("script 6 stopped at")
+            && fault
+                .detail
+                .message
+                .ends_with("the show has no input number 9"),
+        "{:?}",
+        fault.detail
+    );
+    let definition = cues.show().cue_list(1).unwrap().cues.clone();
+    accepted(&submit(cues, "edit", set(1, definition)));
+    assert_eq!(cues.show().cue_list(1).unwrap().state.fault, Some(fault));
+    accepted(&submit(
+        cues,
+        "reset",
+        control(1, EngineCueOperation::Reset),
+    ));
+    assert_eq!(cues.show().cue_list(1).unwrap().state.fault, None);
+}
+
 /// Protocol 2.61: a cue event reports every script step its frame ran, in
 /// order, with the counts a direct `script_run` of the same script on the
 /// same show reports: a GO's steps see the earlier steps' actions, and a
@@ -1004,10 +1046,7 @@ fn a_cue_run_reports_each_script_step_as_a_direct_run_would() {
     );
     accepted(&failed);
     assert_eq!(cue_scripts(&failed), Vec::new());
-    assert_eq!(
-        cues.show().cue_list(1).unwrap().state.fault,
-        Some(fm_model::CueFault { cue: 2, action: 1 })
-    );
+    assert_step_fault_keeps_its_reason(&mut cues);
 }
 
 /// A saved waiting cue was scheduled on a frame before the frame cursor,

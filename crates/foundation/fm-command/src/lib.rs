@@ -6,9 +6,11 @@
 
 mod counters;
 mod envelope;
+mod fault;
 mod lifecycle;
 mod machine;
 mod refusal;
+mod refusal_token;
 mod transaction;
 
 pub use counters::{
@@ -18,6 +20,7 @@ pub use envelope::{
     AcceptedReceipt, CommandEnvelope, CommandId, CommandReceipt, Deadline, FieldIssue,
     IdempotencyKey, RejectedReceipt, Rejection, RejectionCode,
 };
+pub use fault::{FaultDetail, MAX_FAULT_MESSAGE_BYTES, bound_fault_message};
 pub use lifecycle::{
     FailureDisposition, Lifecycle, LifecycleError, LifecycleEvent, LifecyclePhase, LifecycleRecord,
     ScheduledDomain,

@@ -17,7 +17,11 @@
 //! * `state` is `<standby>:<live>:<pending>:<played>:<fault>`, each of
 //!   `standby` and `live` a cue id or `-`, `pending`
 //!   `<cue>.<action>.<due frame>` or `-`, `played` `.`-separated ascending
-//!   cue ids (empty for none), and `fault` `<cue>.<action>` or `-`.
+//!   cue ids (empty for none), and `fault` `<cue>.<action>.<reason>.<message>`
+//!   or `-`: since Protocol 2.63 a fault says what its action was refused
+//!   with, `reason` the lowercase hex of the refusal's `reason` token (`-`
+//!   for none) and `message` the lowercase hex of its English text (see
+//!   [`fm_command::FaultDetail`]).
 //! * `fired` is `.`-separated cue ids; `titles` is a `/`-separated list of
 //!   `<input>.<field revision>.<field>.<text hex>`; `media` (Protocol
 //!   2.51) is a `/`-separated list of
@@ -31,8 +35,8 @@
 use core::num::NonZeroU128;
 
 use crate::{
-    CodecError, CueListSpec, CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus,
-    CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS,
+    CodecError, CueFaultStatus, CueListSpec, CueListStatus, CueMediaTransport, CueOperation,
+    CuePendingStatus, CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS,
     MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS,
     MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
     MAX_CUES, MediaTime, MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction,
@@ -418,9 +422,21 @@ fn decode_ids(field: &'static str, value: &str) -> Result<Vec<u64>, CodecError> 
 }
 
 /// Encodes a run state.
-#[must_use]
-pub(super) fn encode_state(state: &CueRunStatus) -> String {
-    format!(
+///
+/// # Errors
+///
+/// Refuses a fault whose detail is invalid.
+pub(super) fn encode_state(state: &CueRunStatus) -> Result<String, CodecError> {
+    let fault = match &state.fault {
+        None => "-".to_owned(),
+        Some(fault) => format!(
+            "{}.{}.{}",
+            fault.cue,
+            fault.action,
+            super::refusal::encode_fault_detail("state", &fault.detail, '.')?
+        ),
+    };
+    Ok(format!(
         "{}:{}:{}:{}:{}",
         optional_id(state.standby),
         optional_id(state.live),
@@ -429,10 +445,8 @@ pub(super) fn encode_state(state: &CueRunStatus) -> String {
             |pending| format!("{}.{}.{}", pending.cue, pending.action, pending.due_frame)
         ),
         encode_ids(&state.played),
-        state
-            .fault
-            .map_or_else(|| "-".to_owned(), |(cue, action)| format!("{cue}.{action}")),
-    )
+        fault,
+    ))
 }
 
 /// Decodes a run state.
@@ -466,10 +480,11 @@ pub(super) fn decode_state(value: &str) -> Result<CueRunStatus, CodecError> {
         fault: match *fault {
             "-" => None,
             fault => match fault.split('.').collect::<Vec<_>>().as_slice() {
-                [cue, step] => Some((
-                    parse_canonical_u64(cue).ok_or_else(bad)?,
-                    action(step).ok_or_else(bad)?,
-                )),
+                [cue, step, reason, message] => Some(CueFaultStatus {
+                    cue: parse_canonical_u64(cue).ok_or_else(bad)?,
+                    action: action(step).ok_or_else(bad)?,
+                    detail: super::refusal::decode_fault_detail("state", reason, message)?,
+                }),
                 _ => return Err(bad()),
             },
         },
@@ -519,7 +534,7 @@ pub(super) fn decode_spec(fields: &mut dyn FieldSource) -> Result<CueListSpec, C
 /// Encodes a whole list (`list`, `name`, `cues`, `state`).
 pub(super) fn encode_list(status: &CueListStatus, push: &mut Push<'_>) -> Result<(), CodecError> {
     encode_spec(status.id, &status.spec, push)?;
-    push("state", encode_state(&status.state))
+    push("state", encode_state(&status.state)?)
 }
 
 /// Decodes a whole list.

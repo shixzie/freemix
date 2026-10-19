@@ -816,7 +816,14 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                 live: Some(10),
                 pending: None,
                 played: vec![10],
-                fault: Some((30, 0)),
+                fault: Some(fm_protocol::CueFaultStatus {
+                    cue: 30,
+                    action: 0,
+                    detail: fm_protocol::FaultDetail {
+                        reason: Some(fm_protocol::RefusalReason::StingerRealizing { slot: 2 }),
+                        message: "Stinger slot 2 has not finished realizing".to_owned(),
+                    },
+                }),
             },
         },
         CueListStatus {
@@ -2082,6 +2089,10 @@ fn scenes(language: Language) -> Vec<Scene> {
                     failure: fm_protocol::ScriptFailureKind::Refused,
                     line: 3,
                     column: 1,
+                    detail: fm_protocol::FaultDetail {
+                        reason: None,
+                        message: "the show has no input named \"Sponsor Loop\"".to_owned(),
+                    },
                 },
             ),
         ),

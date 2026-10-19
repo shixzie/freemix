@@ -21,10 +21,12 @@
 //! the desired show in order, and realized together by one runtime action on
 //! the command's target frame. One refused action refuses a GO whole; an
 //! advance whose action is refused is accepted with the list's fault set and
-//! its remaining actions dropped, so the clock never retries it.
+//! its remaining actions dropped, so the clock never retries it. The fault
+//! keeps the refusal's typed reason and bounded message (schema 57,
+//! Protocol 2.63), what a refused GO of the action would have said.
 
 use fm_automation::{CueStack, CueStackError, CueStackState, CueStep, StackCue};
-use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
+use fm_command::{FaultDetail, FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
 use fm_model::{
     Cue, CueAction, CueFault, CueList, CueMediaOperation, CuePending, CueRunState, TransitionEffect,
 };
@@ -134,11 +136,15 @@ pub(crate) fn stack_state(state: &CueRunState) -> CueStackState {
             due_frame: pending.due_frame,
         }),
         played: state.played.clone(),
-        fault: state.fault.map(|fault| (fault.cue, fault.action)),
+        fault: state.fault.as_ref().map(|fault| (fault.cue, fault.action)),
     }
 }
 
-pub(crate) fn run_state(state: CueStackState) -> CueRunState {
+/// The run state of `state`, a fault the stack kept from `previous`
+/// keeping its detail (schema 57). A fault the stack did not keep is new:
+/// only a refused deferred action sets one, and the caller gives it the
+/// refusal's detail (see [`fault`]).
+pub(crate) fn run_state(state: CueStackState, previous: &CueRunState) -> CueRunState {
     CueRunState {
         standby: state.standby,
         live: state.live,
@@ -148,7 +154,29 @@ pub(crate) fn run_state(state: CueStackState) -> CueRunState {
             due_frame: pending.due_frame,
         }),
         played: state.played,
-        fault: state.fault.map(|(cue, action)| CueFault { cue, action }),
+        fault: state.fault.map(|(cue, action)| {
+            previous
+                .fault
+                .as_ref()
+                .filter(|fault| fault.cue == cue && fault.action == action)
+                .cloned()
+                .unwrap_or_else(|| CueFault {
+                    cue,
+                    action,
+                    detail: FaultDetail::new(None, ""),
+                })
+        }),
+    }
+}
+
+/// The fault of action `action` of cue `cue`, refused with `rejection`
+/// when its wait ended (schema 57): the refusal's typed reason and
+/// message, exactly as a refused GO of the action would have said.
+pub(crate) fn fault(cue: u64, action: usize, rejection: &Rejection) -> CueFault {
+    CueFault {
+        cue,
+        action,
+        detail: FaultDetail::of(rejection),
     }
 }
 
@@ -355,7 +383,8 @@ fn replace(
     if let Some(index) = existing {
         let current = &state.cue_lists()[index];
         let previous: Vec<u64> = current.cues.iter().map(|cue| cue.id).collect();
-        next.state = run_state(new_stack.reconcile(&previous, &stack_state(&current.state)));
+        let reconciled = new_stack.reconcile(&previous, &stack_state(&current.state));
+        next.state = run_state(reconciled, &current.state);
         state.cue_lists_mut()[index] = next;
     } else {
         {
@@ -370,7 +399,7 @@ fn replace(
                     ),
                 );
             }
-            next.state = run_state(new_stack.initial_state());
+            next.state = run_state(new_stack.initial_state(), &CueRunState::default());
             state.cue_lists_mut().push(next);
         }
     }

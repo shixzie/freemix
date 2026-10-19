@@ -277,7 +277,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 56"));
+    assert!(text.contains("\"schema_version\": 57"));
     assert!(text.contains("\"cue_lists\": ["), "{text}");
     assert!(
         text.contains("{\"type\": \"wait\", \"frames\": 30}"),
@@ -416,5 +416,75 @@ fn a_project_whose_cue_names_a_missing_input_is_refused() {
             Vec::new(),
         )
         .is_err()
+    );
+}
+
+/// Schema 57: a cue fault keeps what its deferred action was refused with,
+/// its typed reason (a stable token or `null`) and its message, exactly
+/// and strictly.
+#[test]
+fn a_cue_fault_round_trips_its_refusal_reason_and_message() {
+    let directory = TestDirectory::new("fault");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    let mut faulted = lists();
+    faulted[0].state.pending = None;
+    faulted[0].state.fault = Some(fm_model::CueFault {
+        cue: 1,
+        action: 7,
+        detail: fm_command::FaultDetail {
+            reason: Some(fm_command::RefusalReason::StingerRealizing { slot: 3 }),
+            message: "Stinger slot 3 has not finished realizing".to_owned(),
+        },
+    });
+    expected.set_cue_lists(faulted.clone());
+    store.save(&stored(expected.clone())).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    let fault = "\"fault\": {\"cue\": 1, \"action\": 7, \"reason\": \"stinger_realizing:3\", \
+                 \"message\": \"Stinger slot 3 has not finished realizing\"}";
+    assert!(text.contains(fault), "{text}");
+
+    for (from, to) in [
+        ("\"stinger_realizing:3\"", "\"stinger_realizing:0\""),
+        ("\"stinger_realizing:3\"", "\"stinger_ready:3\""),
+        ("\"reason\": \"stinger_realizing:3\", ", ""),
+        (", \"message\": \"Stinger", ", \"detail\": \"Stinger"),
+    ] {
+        let malformed = text.replacen(from, to, 1);
+        assert_ne!(malformed, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+    let long = "x".repeat(fm_command::MAX_FAULT_MESSAGE_BYTES + 1);
+    for message in ["", "a\\tb", long.as_str()] {
+        let invalid = text.replacen(
+            "\"Stinger slot 3 has not finished realizing\"",
+            &format!("\"{message}\""),
+            1,
+        );
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::Validation(_))),
+            "{message}: {:?}",
+            store.load()
+        );
+    }
+
+    // A fault without a typed reason keeps its message alone.
+    if let Some(fault) = &mut faulted[0].state.fault {
+        fault.detail.reason = None;
+    }
+    expected.set_cue_lists(faulted);
+    store.save(&stored(expected.clone())).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains("\"action\": 7, \"reason\": null, \"message\": \"Stinger"),
+        "{text}"
     );
 }

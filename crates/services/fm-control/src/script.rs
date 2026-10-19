@@ -81,12 +81,13 @@ pub fn run_status(engine: &Engine, script: u64) -> ScriptRunStatus {
             wait_frames: run.state.wait_frames,
         };
     }
-    if let Some(fault) = slot.fault.filter(|fault| fault.script == script) {
+    if let Some(fault) = slot.fault.as_ref().filter(|fault| fault.script == script) {
         return ScriptRunStatus::Faulted {
             frame: fault.frame,
             failure: fm_engine::script_failure_kind(fault.failure),
             line: fault.at.line,
             column: fault.at.column,
+            detail: fault.detail.clone(),
         };
     }
     ScriptRunStatus::Idle

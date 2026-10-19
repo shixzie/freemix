@@ -174,6 +174,21 @@ fn run_states_name_only_held_cues_and_resume_after_a_wait() {
         fault: None,
     };
     assert_eq!(validate_cue_list(&list(1, cues(), waiting.clone())), Ok(()));
+    // A fault keeps the refusal that stopped its cue (schema 57).
+    let refused = |message: &str| fm_command::FaultDetail {
+        reason: Some(fm_command::RefusalReason::ProjectLocked),
+        message: message.to_owned(),
+    };
+    let faulted = CueRunState {
+        pending: None,
+        fault: Some(CueFault {
+            cue: 1,
+            action: 2,
+            detail: refused("the project padlock is engaged"),
+        }),
+        ..waiting.clone()
+    };
+    assert_eq!(validate_cue_list(&list(1, cues(), faulted)), Ok(()));
     for state in [
         CueRunState {
             standby: Some(9),
@@ -192,7 +207,35 @@ fn run_states_name_only_held_cues_and_resume_after_a_wait() {
             ..waiting.clone()
         },
         CueRunState {
-            fault: Some(CueFault { cue: 2, action: 1 }),
+            fault: Some(CueFault {
+                cue: 2,
+                action: 1,
+                detail: refused("refused"),
+            }),
+            ..waiting.clone()
+        },
+        CueRunState {
+            fault: Some(CueFault {
+                cue: 1,
+                action: 2,
+                detail: refused(""),
+            }),
+            ..waiting.clone()
+        },
+        CueRunState {
+            fault: Some(CueFault {
+                cue: 1,
+                action: 2,
+                detail: refused(&"x".repeat(fm_command::MAX_FAULT_MESSAGE_BYTES + 1)),
+            }),
+            ..waiting.clone()
+        },
+        CueRunState {
+            fault: Some(CueFault {
+                cue: 1,
+                action: 2,
+                detail: refused("two\nlines"),
+            }),
             ..waiting
         },
     ] {

@@ -291,7 +291,8 @@ fn a_script_that_waits_runs_in_parts_and_a_failed_part_is_reported() {
     assert_eq!(frame(parts[1]), frame(parts[0]) + 3, "{ran}");
     assert!(
         ran.contains(&format!(
-            "ScriptRun(script=4, state=faulted, frame={}, failure=refused, line=5, column=1)",
+            "ScriptRun(script=4, state=faulted, frame={}, failure=refused, line=5, column=1, \
+             reason=-, message=\"the show has no input number 7\")",
             frame(parts[0]) + 5
         )),
         "{ran}"
@@ -302,7 +303,8 @@ fn a_script_that_waits_runs_in_parts_and_a_failed_part_is_reported() {
     // cue cannot run a script that waits.
     let listed = succeed(&["scripts", &project]);
     assert!(
-        listed.contains("ScriptRun(script=4, state=faulted"),
+        listed.contains("ScriptRun(script=4, state=faulted")
+            && listed.contains("message=\"the show has no input number 7\")"),
         "{listed}"
     );
     fail(

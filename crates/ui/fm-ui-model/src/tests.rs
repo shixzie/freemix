@@ -3184,14 +3184,14 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         .apply_script_state(ScriptStateMessage {
             revision: 7,
             script: script(1, "cut 2"),
-            run: waiting,
+            run: waiting.clone(),
         })
         .unwrap();
     let state = model.state().unwrap();
     assert!(state.scripts_complete());
     // Protocol 2.62: the record carries the run paused at a wait.
     assert_eq!(state.script_run_status(1), waiting);
-    assert_eq!(state.active_script_run(), Some((1, waiting)));
+    assert_eq!(state.active_script_run(), Some((1, waiting.clone())));
     assert_eq!(state.scripts(), [script(1, "cut 2")]);
     assert_eq!(
         model.apply_script_state(ScriptStateMessage {
@@ -3215,7 +3215,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         frame: 40,
         actions: 2,
         instructions: 5,
-        run: waiting,
+        run: waiting.clone(),
         effects: CueRunUpdate {
             list: 0,
             frame: 40,
@@ -3274,6 +3274,10 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         failure: fm_protocol::ScriptFailureKind::Refused,
         line: 2,
         column: 1,
+        detail: fm_protocol::FaultDetail {
+            reason: Some(fm_protocol::RefusalReason::ProjectLocked),
+            message: "the project padlock is engaged".to_owned(),
+        },
     };
     model
         .apply_event(event(
@@ -3283,7 +3287,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             DurableChange::ScriptRunChanged {
                 script: 2,
                 frame: 30,
-                run: faulted,
+                run: faulted.clone(),
             },
         ))
         .unwrap();
@@ -3354,6 +3358,10 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
         failure: fm_protocol::ScriptFailureKind::Refused,
         line: 2,
         column: 1,
+        detail: fm_protocol::FaultDetail {
+            reason: Some(fm_protocol::RefusalReason::ProjectLocked),
+            message: "the project padlock is engaged".to_owned(),
+        },
     };
     let project_id = project(10);
     let identity = engine("engine-a", 1, "log-a");
@@ -3361,7 +3369,10 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
     let mut installed = snapshot(project_id, 7);
     installed.script_states = 2;
     model.install_snapshot(installed).unwrap();
-    for (id, run) in [(1, faulted), (2, fm_protocol::ScriptRunStatus::Idle)] {
+    for (id, run) in [
+        (1, faulted.clone()),
+        (2, fm_protocol::ScriptRunStatus::Idle),
+    ] {
         model
             .apply_script_state(ScriptStateMessage {
                 revision: 7,
@@ -3372,7 +3383,7 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
     }
     assert_eq!(
         model.state().unwrap().active_script_run(),
-        Some((1, faulted))
+        Some((1, faulted.clone()))
     );
 
     model

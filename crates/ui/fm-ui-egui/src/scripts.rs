@@ -22,7 +22,9 @@
 //! on, and offers Stop run (`script_stop`); the script cannot be saved or
 //! deleted and no other script can run until the run ends. A part that
 //! failed on its frame is reported with its typed reason and line (marked
-//! in the editor) until Clear failed run (`script_stop`) or another run.
+//! in the editor) until Clear failed run (`script_stop`) or another run;
+//! since Protocol 2.63 the report also says what the server refused the
+//! part with ("The server said: …"), as a first-frame refusal does.
 
 use egui::{Button, RichText, ScrollArea, TextEdit, Ui};
 use fm_protocol::{
@@ -746,8 +748,9 @@ fn draw_run_status(
             failure,
             line,
             column,
-        } => (
-            l.format(
+            detail,
+        } => {
+            let mut text = l.format(
                 Msg::ScriptRunFaulted,
                 &[
                     ("frame", Arg::Plain(frame)),
@@ -758,25 +761,57 @@ fn draw_run_status(
                     ("line", Arg::Plain(u64::from(line))),
                     ("column", Arg::Plain(u64::from(column))),
                 ],
-            ),
-            Msg::ScriptRunFaultedHover,
-            ERROR,
-            Msg::ScriptClearFault,
-            Msg::ScriptClearFaultHover,
-        ),
-    };
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(text).color(color))
-            .on_hover_text(l.text(hover));
-        let block = crate::cues::control_block(state);
-        if ui
-            .add_enabled(block.is_none(), Button::new(l.text(button)))
-            .hint(l.text(button_hover), block.unwrap_or(""))
-            .clicked()
-        {
-            intents.push(StudioIntent::Script(ScriptIntent::Stop));
+            );
+            text.push(' ');
+            text.push_str(&fault_detail_text(l, state, &detail));
+            (
+                text,
+                Msg::ScriptRunFaultedHover,
+                ERROR,
+                Msg::ScriptClearFault,
+                Msg::ScriptClearFaultHover,
+            )
         }
-    });
+    };
+    // The status wraps on its own lines; the button keeps a row of its own
+    // below it, never wrapped into the sentence.
+    ui.label(RichText::new(text).color(color))
+        .on_hover_text(l.text(hover));
+    let block = crate::cues::control_block(state);
+    if ui
+        .add_enabled(block.is_none(), Button::new(l.text(button)))
+        .hint(l.text(button_hover), block.unwrap_or(""))
+        .clicked()
+    {
+        intents.push(StudioIntent::Script(ScriptIntent::Stop));
+    }
+}
+
+/// "The server said: …" for the refusal that ended a deferred script part
+/// or cue action (Protocol 2.63): a typed reason worded in the console
+/// language, else the server's English message. A `script_failed` reason
+/// (a cue's script step) says less than its message, which names the
+/// script's refused action, so the message is shown for it.
+pub(crate) fn fault_detail_text(
+    l: l10n::Locale,
+    state: &StudioUiState,
+    detail: &fm_protocol::FaultDetail,
+) -> String {
+    let text = match &detail.reason {
+        Some(reason) if !matches!(reason, RefusalReason::ScriptFailed { .. }) => {
+            let names = |input: u128| {
+                let input = fm_types::InputId::new(core::num::NonZeroU128::new(input)?);
+                let view = state.view.as_ref()?;
+                view.inputs
+                    .iter()
+                    .position(|candidate| *candidate == input)
+                    .and_then(|index| view.input_names.get(index).cloned())
+            };
+            fm_ui_model::i18n::refusal_reason_text(l, reason, &names)
+        }
+        _ => detail.message.clone(),
+    };
+    l.format(Msg::ScriptFailureDetail, &[("detail", Arg::Str(&text))])
 }
 
 #[cfg(test)]
@@ -859,6 +894,136 @@ mod tests {
                 "the window does not fit the screen: {settled:?}"
             );
         }
+    }
+
+    /// Every text the whole console paints on `state` after a few frames,
+    /// with the Scripts window open on its first script: each text and its
+    /// screen rectangle.
+    fn painted_texts(state: &StudioUiState) -> Vec<(String, egui::Rect)> {
+        fn collect(shape: &egui::Shape, texts: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push((
+                    text.galley.text().to_owned(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        shell.open_scripts(state);
+        let mut texts = Vec::new();
+        for pass in 0..6 {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1920.0, 1080.0),
+                )),
+                time: Some(f64::from(pass) / 60.0),
+                ..egui::RawInput::default()
+            });
+            let mut ui = egui::Ui::new(
+                context.clone(),
+                egui::Id::new("scripts-window-texts"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let _intents = shell.draw(&mut ui, state);
+            drop(ui);
+            let output = context.end_pass();
+            texts.clear();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, &mut texts);
+            }
+        }
+        texts
+    }
+
+    /// The painted text containing `needle`, and its rectangle.
+    fn painted<'a>(texts: &'a [(String, egui::Rect)], needle: &str) -> &'a (String, egui::Rect) {
+        texts
+            .iter()
+            .find(|(text, _)| text.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} is not painted: {texts:?}"))
+    }
+
+    /// Round 7: Stop run (and Clear failed run) wrapped onto the end of the
+    /// run's status sentence; it now keeps a row of its own below it.
+    /// Protocol 2.63: a part that failed after a wait says what the server
+    /// refused it with, as a refused first part does.
+    #[test]
+    fn the_run_status_button_has_its_own_row_and_a_fault_says_why() {
+        let english = l10n::Locale::ENGLISH;
+        let waiting = ScriptRunStatus::Waiting {
+            started_frame: 196,
+            due_frame: 1696,
+            waits: 1,
+            wait_frames: 1500,
+        };
+        let faulted = ScriptRunStatus::Faulted {
+            frame: 160,
+            failure: ScriptFailureKind::Refused,
+            line: 3,
+            column: 1,
+            detail: fm_protocol::FaultDetail {
+                reason: None,
+                message: "the show has no input named \"Sponsor Loop\"".into(),
+            },
+        };
+        for (run, status, button) in [
+            (waiting, "frame 1696", Msg::ScriptStop),
+            (
+                faulted,
+                "The server said: the show has no input named \"Sponsor Loop\"",
+                Msg::ScriptClearFault,
+            ),
+        ] {
+            let state = crate::hover_audit::script_run_fixture(true, run);
+            let texts = painted_texts(&state);
+            let (_, status_rect) = painted(&texts, status);
+            let (_, button_rect) = painted(&texts, english.text(button));
+            assert!(
+                button_rect.top() >= status_rect.bottom(),
+                "{:?} shares the status row: {status_rect:?} {button_rect:?}",
+                english.text(button)
+            );
+        }
+    }
+
+    /// Protocol 2.63: a typed reason is worded in the console language.
+    #[test]
+    fn a_deferred_faults_typed_reason_is_worded_in_the_console_language() {
+        let state = crate::hover_audit::script_run_fixture(true, ScriptRunStatus::Idle);
+        let detail = fm_protocol::FaultDetail {
+            reason: Some(RefusalReason::StingerRealizing { slot: 3 }),
+            message: "Stinger slot 3 has not finished realizing".into(),
+        };
+        assert_eq!(
+            fault_detail_text(l10n::Locale::ENGLISH, &state, &detail),
+            "The server said: Stinger 3 is still being prepared; try again in a moment."
+        );
+        let spanish = l10n::Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let text = fault_detail_text(spanish, &state, &detail);
+        assert!(text.contains("El Stinger 3"), "{text}");
+        // A script failure's message names the refused action; it is shown.
+        let detail = fm_protocol::FaultDetail {
+            reason: Some(RefusalReason::ScriptFailed {
+                failure: ScriptFailureKind::Refused,
+                line: 1,
+                column: 1,
+            }),
+            message: "script 6 stopped at line 1:1: action refused: no input 9".into(),
+        };
+        assert_eq!(
+            fault_detail_text(l10n::Locale::ENGLISH, &state, &detail),
+            "The server said: script 6 stopped at line 1:1: action refused: no input 9"
+        );
     }
 
     /// Round 6: Delete script looked enabled while the script's run was
@@ -1135,8 +1300,12 @@ mod tests {
             failure: ScriptFailureKind::Refused,
             line: 3,
             column: 1,
+            detail: fm_protocol::FaultDetail {
+                reason: None,
+                message: "the show has no input number 9".into(),
+            },
         };
-        let state = crate::hover_audit::script_run_fixture(true, faulted);
+        let state = crate::hover_audit::script_run_fixture(true, faulted.clone());
         let mut window = ScriptsWindow::default();
         window.follow(replicated(&state));
         assert_eq!(window.selected, Some(1));

@@ -46,8 +46,10 @@
 //!   next part on exactly that frame (or the next frame once it has
 //!   passed), journaled like a cue advance. A part that fails is accepted
 //!   with nothing of its frame applied: the run ends and the slot keeps a
-//!   typed [`fm_model::ScriptFault`] (the failure kind, line, and column),
-//!   so the clock never retries it.
+//!   typed [`fm_model::ScriptFault`] (the failure kind, line, and column,
+//!   and, since schema 57, the refusal's [`FaultDetail`]: a refused
+//!   action's typed reason and bounded message, else the failure's own
+//!   message), so the clock never retries it.
 //! - The run is bounded: at most [`fm_model::MAX_SCRIPT_WAITS`] waits
 //!   adding up to [`fm_model::MAX_SCRIPT_WAIT_SECONDS`] of frames, and one
 //!   run's instruction, action, variable, and string budgets cover all of
@@ -69,7 +71,9 @@
 //!   with the `waits` budget.
 
 use fm_automation::FiredCueAction;
-use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode, ScriptFailureKind};
+use fm_command::{
+    FaultDetail, FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode, ScriptFailureKind,
+};
 use fm_model::{
     CueAction, CueMediaOperation, RecorderSlot, StingerSlotNumber, StreamTargetId, TitleFieldId,
     TransitionEffect,
@@ -726,19 +730,27 @@ pub(crate) fn plan_resume(
     let script = run.script;
     let state = run.state.clone();
     let outcome = run_alone(engine, script, Entry::Resume(&state), target_frame);
-    let failure = match outcome {
+    let (failure, refused) = match outcome {
         Ok((outcome, plan)) => match outcome.report.failure {
             None => return Ok(plan),
-            Some(failure) => failure,
+            Some(failure) => (failure, outcome.refused),
         },
         // The run's script is never removed or edited while it runs, so it
         // parses; a show restored without it fails here like a bad part.
-        Err(_) => fm_script::ScriptFailure {
-            kind: FailureKind::Runtime,
-            at: fm_script::Span::new(1, 1),
-            message: format!("script {script} cannot resume"),
-        },
+        Err(_) => (
+            fm_script::ScriptFailure {
+                kind: FailureKind::Runtime,
+                at: fm_script::Span::new(1, 1),
+                message: format!("script {script} cannot resume"),
+            },
+            None,
+        ),
     };
+    // What a refused command would have said (Protocol 2.63): the refused
+    // action's own reason and message, else the failure's message.
+    let detail = refused
+        .as_ref()
+        .map_or_else(|| FaultDetail::new(None, &failure.message), FaultDetail::of);
     let mut show = engine.show().clone();
     *show.script_run_mut() = fm_model::ScriptRunState {
         running: None,
@@ -747,6 +759,7 @@ pub(crate) fn plan_resume(
             frame: target_frame.get(),
             failure: failure.kind,
             at: fm_script::Span::new(failure.at.line.max(1), failure.at.column.max(1)),
+            detail,
         }),
     };
     Ok(CuePlan {

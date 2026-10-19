@@ -1318,15 +1318,16 @@ impl ProjectState {
     #[must_use]
     pub fn script_run_status(&self, script: u64) -> fm_protocol::ScriptRunStatus {
         self.active_script_run
+            .as_ref()
             .filter(|(found, _)| *found == script)
-            .map_or(fm_protocol::ScriptRunStatus::Idle, |(_, run)| run)
+            .map_or(fm_protocol::ScriptRunStatus::Idle, |(_, run)| run.clone())
     }
 
     /// Returns the one script whose run waits or faulted, with its state
     /// (Protocol 2.62); `None` while every script is idle.
     #[must_use]
-    pub const fn active_script_run(&self) -> Option<(u64, fm_protocol::ScriptRunStatus)> {
-        self.active_script_run
+    pub fn active_script_run(&self) -> Option<(u64, fm_protocol::ScriptRunStatus)> {
+        self.active_script_run.clone()
     }
 
     /// Returns the last accepted run of script `script` replicated since
@@ -4657,9 +4658,14 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::ScriptChanged(script) => {
             // An accepted edit clears the edited script's fault, whose line
             // named the old source (Protocol 2.62).
-            if state.active_script_run.is_some_and(|(found, run)| {
-                found == script.id && matches!(run, fm_protocol::ScriptRunStatus::Faulted { .. })
-            }) {
+            if state
+                .active_script_run
+                .as_ref()
+                .is_some_and(|(found, run)| {
+                    *found == script.id
+                        && matches!(run, fm_protocol::ScriptRunStatus::Faulted { .. })
+                })
+            {
                 state.active_script_run = None;
             }
             scripts::apply_script(state, *script);
@@ -4669,7 +4675,8 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.script_runs.retain(|run| run.script != script);
             if state
                 .active_script_run
-                .is_some_and(|(found, _)| found == script)
+                .as_ref()
+                .is_some_and(|(found, _)| *found == script)
             {
                 state.active_script_run = None;
             }

@@ -44,11 +44,12 @@ pub use codec::{
     scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes,
 };
 pub use cue::{
-    CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport, CueOperation,
-    CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS,
-    MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES,
-    MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES,
-    MAX_CUE_WAIT_FRAMES, MAX_CUES, WireCue, WireCueAction, WireCueMediaOperation,
+    CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport,
+    CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText,
+    MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS,
+    MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
+    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, WireCue, WireCueAction,
+    WireCueMediaOperation,
 };
 pub use display_output::{
     DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage,
@@ -112,7 +113,10 @@ pub use dto::{
     TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
     WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
 };
-pub use fm_command::{IdKind, InputUse, MAX_REFUSAL_FIELD_BYTES, RefusalReason, ScriptFailureKind};
+pub use fm_command::{
+    FaultDetail, IdKind, InputUse, MAX_FAULT_MESSAGE_BYTES, MAX_REFUSAL_FIELD_BYTES, RefusalReason,
+    ScriptFailureKind,
+};
 pub use input_lifecycle::{
     AddedInput, ImportItemSpec, ImportRefusal, InputCategoryStatus, InputColorLabel,
     InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason, MAX_BATCH_IMPORT_ITEMS,

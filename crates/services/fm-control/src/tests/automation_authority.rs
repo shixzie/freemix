@@ -806,7 +806,33 @@ fn a_failing_script_fails_its_cue_step_with_a_typed_reason() {
     assert_eq!(control.engine.show().desired_switcher().preview(), preview);
     let state = cue_state(&control);
     assert_eq!(state.pending, None);
-    assert_eq!(state.fault, Some(fm_model::CueFault { cue: 20, action: 3 }));
+    // The fault keeps what the step was refused with (Protocol 2.63), and
+    // `cue_run_changed` carries it.
+    let fault = state.fault.expect("the deferred step faulted");
+    assert_eq!((fault.cue, fault.action), (20, 3));
+    assert_eq!(
+        fault.detail.reason,
+        Some(fm_protocol::RefusalReason::ScriptFailed {
+            failure: fm_protocol::ScriptFailureKind::Refused,
+            line: 2,
+            column: 1,
+        })
+    );
+    assert!(
+        fault.detail.message.starts_with("script 1 stopped at")
+            && fault
+                .detail
+                .message
+                .ends_with("the show has no input number 9"),
+        "{}",
+        fault.detail.message
+    );
+    let EventPayload::CueRunChanged(change) = &advanced.output.events[0].payload else {
+        panic!("expected cue_run_changed: {:?}", advanced.output.events);
+    };
+    let published = change.state.fault.as_ref().expect("the fault is published");
+    assert_eq!((published.cue, published.action), (20, 3));
+    assert_eq!(published.detail, fault.detail);
 }
 
 /// A script step shares its frame's one take of Program.
@@ -1037,19 +1063,25 @@ fn a_stop_and_a_fault_publish_the_run_state() {
         script: 1,
         frame,
         run,
-    } = advanced.output.events[0].payload
+    } = &advanced.output.events[0].payload
     else {
         panic!("expected script_run_changed: {:?}", advanced.output.events);
     };
+    // The fault says what the refused action was refused with (Protocol
+    // 2.63): this refusal has no typed reason, only its message.
     assert_eq!(
         run,
-        fm_protocol::ScriptRunStatus::Faulted {
-            frame,
+        &fm_protocol::ScriptRunStatus::Faulted {
+            frame: *frame,
             failure: fm_protocol::ScriptFailureKind::Refused,
             line: 2,
             column: 1,
+            detail: fm_command::FaultDetail {
+                reason: None,
+                message: "the show has no input number 7".to_owned(),
+            },
         }
     );
-    assert_eq!(control.script_states()[0].run, run);
+    assert_eq!(&control.script_states()[0].run, run);
     assert_eq!(program(&control), input(1));
 }

@@ -19,11 +19,11 @@
 
 use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, Vec2};
 use fm_protocol::{
-    AutoTransitionKind, CueListSpec, CueListStatus, CueOperation, CueRunStatus, MAX_CUE_ACTIONS,
-    MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS, MAX_CUE_TRANSITION_FRAMES,
-    MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus, TransitionFavoriteEffect, WireCue, WireCueAction,
-    WireCueMediaOperation, WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
-    WireStreamTargetId,
+    AutoTransitionKind, CueFaultStatus, CueListSpec, CueListStatus, CueOperation, CueRunStatus,
+    MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
+    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus,
+    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::InputId;
 use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
@@ -87,6 +87,23 @@ pub enum CueIntent {
     /// GO, standby, back, skip, stop, or reset (`cue_go`, `cue_standby`,
     /// ...): a journaled operator control, not undoable.
     Control { list: u64, operation: CueOperation },
+}
+
+/// The note under a list whose deferred action was refused: where its cue
+/// stopped and, since Protocol 2.63, what the server refused it with.
+#[must_use]
+pub(crate) fn fault_note(l: Locale, state: &StudioUiState, fault: &CueFaultStatus) -> String {
+    let (cue, action) = (
+        fault.cue.to_string(),
+        (u32::from(fault.action) + 1).to_string(),
+    );
+    let mut text = l.format(
+        Msg::CueFaultNote,
+        &[("cue", Arg::Str(&cue)), ("action", Arg::Str(&action))],
+    );
+    text.push(' ');
+    text.push_str(&crate::scripts::fault_detail_text(l, state, &fault.detail));
+    text
 }
 
 /// Why cue controls (GO and the transport keys) are unavailable for the
@@ -269,7 +286,7 @@ impl CueRole {
     /// outranks standby and played.
     #[must_use]
     pub fn of(state: &CueRunStatus, cue: u64) -> Self {
-        if state.fault.is_some_and(|(fault, _)| fault == cue) {
+        if state.fault.as_ref().is_some_and(|fault| fault.cue == cue) {
             Self::Fault
         } else if state.pending.is_some_and(|pending| pending.cue == cue) {
             Self::Waiting
@@ -754,15 +771,8 @@ impl CuePanel {
                 l.format(Msg::CueWaitingNote, &[("frame", Arg::Str(&frame))]),
             ));
         }
-        if let Some((cue, action)) = list.state.fault {
-            let (cue, action) = (cue.to_string(), (u32::from(action) + 1).to_string());
-            ui.label(
-                RichText::new(l.format(
-                    Msg::CueFaultNote,
-                    &[("cue", Arg::Str(&cue)), ("action", Arg::Str(&action))],
-                ))
-                .color(ERROR),
-            );
+        if let Some(fault) = &list.state.fault {
+            ui.label(RichText::new(fault_note(l, state, fault)).color(ERROR));
         }
         if !state.can_transition {
             ui.label(caption(l.text(Msg::CueViewOnly)));
@@ -1924,7 +1934,14 @@ mod tests {
         };
         assert_eq!(CueRole::of(&waiting, 10), CueRole::Waiting);
         let fault = CueRunStatus {
-            fault: Some((10, 0)),
+            fault: Some(CueFaultStatus {
+                cue: 10,
+                action: 0,
+                detail: fm_protocol::FaultDetail {
+                    reason: None,
+                    message: "refused".into(),
+                },
+            }),
             ..state
         };
         assert_eq!(CueRole::of(&fault, 10), CueRole::Fault);
@@ -1933,6 +1950,41 @@ mod tests {
             ..CueRunStatus::default()
         };
         assert_eq!(CueRole::of(&played, 10), CueRole::Played);
+    }
+
+    /// Protocol 2.63: a deferred action's fault says what the server refused
+    /// it with, a typed reason in the console language, else the server's
+    /// message.
+    #[test]
+    fn a_fault_note_says_what_the_server_refused_the_action_with() {
+        let state = StudioUiState::new(crate::StudioConnectionStatus::Ready);
+        let mut fault = CueFaultStatus {
+            cue: 30,
+            action: 1,
+            detail: fm_protocol::FaultDetail {
+                reason: Some(fm_protocol::RefusalReason::StingerRealizing { slot: 2 }),
+                message: "Stinger slot 2 has not finished realizing".into(),
+            },
+        };
+        assert_eq!(
+            fault_note(Locale::ENGLISH, &state, &fault),
+            "Cue 30 stopped at action 2: the authority refused it. The server said: \
+             Stinger 2 is still being prepared; try again in a moment."
+        );
+        let spanish = fault_note(
+            Locale::new(fm_ui_model::i18n::Language::Spanish),
+            &state,
+            &fault,
+        );
+        assert!(
+            spanish.contains("El Stinger 2 aún se está preparando"),
+            "{spanish}"
+        );
+        fault.detail.reason = None;
+        assert!(
+            fault_note(Locale::ENGLISH, &state, &fault)
+                .ends_with("The server said: Stinger slot 2 has not finished realizing"),
+        );
     }
 
     #[test]

@@ -6277,11 +6277,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.62.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 62));
+    // The previous protocol is refused; the current one is 2.63.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 63));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 61),
+        protocol: ProtocolVersion::new(2, 62),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6297,7 +6297,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 62)
+        ProtocolVersion::new(2, 63)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8411,6 +8411,86 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
         stored.project().script_run(),
         &fm_model::ScriptRunState::default()
     );
+}
+
+/// Protocol 2.63, end to end through the daemon: a part refused after a
+/// wait reaches a connected client with the refused action's typed reason
+/// and message on `script_run_changed`, a late joiner reads the same from
+/// `script_state`, and the fault survives a restart (schema 57).
+#[test]
+fn a_deferred_script_failure_reaches_clients_with_its_reason() {
+    use fm_protocol::{FaultDetail, RefusalReason, ScriptFailureKind, ScriptRunStatus, ScriptSpec};
+
+    let directory = TestDirectory::new("script-deferred-fault");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    // Input 2 is not a title: the second part's `title_off` is refused.
+    admin.send(&command(
+        "set",
+        "set-key",
+        CommandPayload::SetScript {
+            script: 1,
+            spec: Box::new(ScriptSpec {
+                name: "Late".into(),
+                source: "cut 2\nwait 5\ntitle_off 2\n".into(),
+            }),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set"), 1);
+    admin.send(&command(
+        "run",
+        "run-key",
+        CommandPayload::RunScript { script: 1 },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "run"), 2);
+    // The first part cut to input number 2, which the second part names.
+    let (started, second) = match durable_event_at(&mut admin, 2).payload {
+        EventPayload::ScriptRan(change) => (change.frame, change.program),
+        other => panic!("expected script_ran, got {other:?}"),
+    };
+    let id = second.get().get();
+
+    let faulted = ScriptRunStatus::Faulted {
+        frame: started + 5,
+        failure: ScriptFailureKind::Refused,
+        line: 3,
+        column: 1,
+        detail: FaultDetail {
+            reason: Some(RefusalReason::UnknownId {
+                kind: fm_protocol::IdKind::Title,
+                id,
+            }),
+            message: format!("the script names input {id}, which is not a title"),
+        },
+    };
+    match durable_event_at(&mut admin, 3).payload {
+        EventPayload::ScriptRunChanged { script, run, .. } => {
+            assert_eq!((script, run), (1, faulted.clone()));
+        }
+        other => panic!("expected script_run_changed, got {other:?}"),
+    }
+    let (late, scripts) = script_sync(&daemon);
+    assert_eq!(late.revision, 3);
+    assert_eq!(late.desired_program, second);
+    assert_eq!(scripts[0].run, faulted);
+    drop(admin);
+    daemon.stop();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, scripts) = script_sync(&daemon);
+    assert_eq!(recovered.revision, 3);
+    assert_eq!(scripts[0].run, faulted);
+    daemon.stop();
 }
 
 /// Protocol 2.59: a simulated daemon sends a subscribed Studio session a

@@ -90,7 +90,7 @@ fn state_is_valid(list: &CueListStatus, state: &CueRunStatus) -> bool {
     state.standby.is_none_or(holds)
         && state.live.is_none_or(holds)
         && state.pending.is_none_or(|pending| holds(pending.cue))
-        && state.fault.is_none_or(|(cue, _)| holds(cue))
+        && state.fault.as_ref().is_none_or(|fault| holds(fault.cue))
         && state.played.iter().all(|cue| holds(*cue))
 }
 

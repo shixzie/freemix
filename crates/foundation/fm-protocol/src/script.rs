@@ -33,8 +33,15 @@
 //! with `cue_advance` naming list `0`. `run` reports a script's run state
 //! ([`ScriptRunStatus`]): `idle`, `waiting:<started frame>:<due
 //! frame>:<waits passed>:<frames waited>`, or `faulted:<frame>:<failure>:
-//! <line>:<column>` when a part failed on its frame (nothing of that frame
-//! applied; `failure` a [`fm_command::ScriptFailureKind`] token).
+//! <line>:<column>:<reason>:<message>` when a part failed on its frame
+//! (nothing of that frame applied; `failure` a
+//! [`fm_command::ScriptFailureKind`] token). Since Protocol 2.63 the fault
+//! says what the run was refused with ([`fm_command::FaultDetail`]):
+//! `reason` is the lowercase hex of a refused action's `reason` token (`-`
+//! when the refusal had none, or the run failed without a refused action)
+//! and `message` the lowercase hex of the English refusal text, one line of
+//! 1 to [`fm_command::MAX_FAULT_MESSAGE_BYTES`] bytes without control
+//! characters or surrounding whitespace.
 //! `script_ran` reports each part that ran (counts cover the whole run so
 //! far) and `script_run_changed` a stop, a cleared fault, or a fault.
 //! `script_stop` ends the waiting run or clears the fault; another
@@ -70,7 +77,7 @@ pub struct ScriptStatus {
 }
 
 /// A script's run (Protocol 2.62).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ScriptRunStatus {
     /// Not running, and the last run did not fault.
     #[default]
@@ -85,12 +92,15 @@ pub enum ScriptRunStatus {
         wait_frames: u32,
     },
     /// The part due on `frame` failed at `line`:`column` (1-based):
-    /// nothing of that frame applied and the run ended.
+    /// nothing of that frame applied and the run ended. `detail` says what
+    /// the run was refused with (Protocol 2.63): a refused action's typed
+    /// reason and message, else the failure's own message.
     Faulted {
         frame: u64,
         failure: fm_command::ScriptFailureKind,
         line: u32,
         column: u32,
+        detail: fm_command::FaultDetail,
     },
 }
 

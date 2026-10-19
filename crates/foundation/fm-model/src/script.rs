@@ -174,13 +174,16 @@ pub struct ScriptRun {
 
 /// Why the part of a run due on `frame` failed (schema 56): nothing of
 /// that frame was applied and the run ended.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScriptFault {
     pub script: u64,
     pub frame: u64,
     pub failure: fm_script::FailureKind,
     /// Where the run stopped (1-based).
     pub at: fm_script::Span,
+    /// What the run was refused with (schema 57): a refused action's typed
+    /// reason and message, or the failure's own message.
+    pub detail: fm_command::FaultDetail,
 }
 
 /// The show's one script run slot (schema 56): the run waiting, or the
@@ -198,14 +201,15 @@ impl ScriptRunState {
         self.running
             .as_ref()
             .map(|run| run.script)
-            .or(self.fault.map(|fault| fault.script))
+            .or(self.fault.as_ref().map(|fault| fault.script))
     }
 }
 
 /// Checks the run slot against the project's `scripts` at `rate`: a run
 /// names a script whose source parses and accepts the saved state under
 /// [`script_limits`], and resumes no earlier than its waits allow; a fault
-/// names a script and a position. A run and a fault are never both set.
+/// names a script, a position, and a valid detail (schema 57). A run and a
+/// fault are never both set.
 ///
 /// # Errors
 ///
@@ -231,7 +235,10 @@ pub fn validate_script_run(
         }
     }
     if let Some(fault) = &state.fault
-        && (known(fault.script).is_none() || fault.at.line == 0 || fault.at.column == 0)
+        && (known(fault.script).is_none()
+            || fault.at.line == 0
+            || fault.at.column == 0
+            || !fault.detail.is_valid())
     {
         return Err(ScriptError::InvalidRun);
     }

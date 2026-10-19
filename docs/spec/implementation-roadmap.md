@@ -3427,6 +3427,18 @@ show (a second is refused rather than queued); a waiting run's later parts
 are not previewed anywhere; and a local `freemix-cli script-run` runs every
 part on the simulated clock before it returns. `RC-011` remains planned.
 
+Deferred fault reasons (Protocol 2.63, schema 57): a script part that fails
+after a wait, and a cue action refused when its wait ends, now keep what a
+refused command would have said: the refused action's typed refusal reason
+(when it has one) and its English message, bounded to one line of at most
+256 bytes. The fault carries both on the wire (as hex tokens inside the
+script `run` and cue list `state`) and in `project.json`, so Studio's
+Scripts window shows "The server said: …" for a failed later part as it
+does for a first-frame refusal (a typed reason worded in the console
+language), the Cues window adds the same to its fault note, and
+`freemix-cli` prints `reason=` and `message=`. The Scripts window's Stop
+run and Clear failed run keep a row of their own below the run status.
+
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame
 durations, ordered or seeded-random cycles without repeats, cut or crossfade

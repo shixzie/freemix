@@ -6369,7 +6369,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ScriptRunFaultedHover,
         t(
-            "Una parte de la ejecución posterior a un wait falló al llegar su fotograma; la ejecución terminó ahí. El servidor indica dónde falló, no por qué se rechazó una acción. Borre el informe o ejecute el guion de nuevo",
+            "Una parte de la ejecución posterior a un wait falló al llegar su fotograma; la ejecución terminó ahí. El servidor indica dónde falló y por qué. Borre el informe o ejecute el guion de nuevo",
         ),
     ),
     (Msg::ScriptStop, t("Detener ejecución")),

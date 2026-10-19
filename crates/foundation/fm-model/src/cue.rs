@@ -216,10 +216,12 @@ pub struct CuePending {
 }
 
 /// An action that could not run when its wait ended; the cue stopped there.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CueFault {
     pub cue: u64,
     pub action: usize,
+    /// Why the action was refused (schema 57).
+    pub detail: fm_command::FaultDetail,
 }
 
 /// The persisted run state of one cue list.
@@ -532,9 +534,11 @@ pub fn validate_cue_list(list: &CueList) -> Result<(), CueListError> {
                 && cue.actions[pending.action - 1].is_wait()
         })
     });
-    let fault_valid = state.fault.is_none_or(|fault| {
-        list.cue(fault.cue)
-            .is_some_and(|cue| fault.action < cue.actions.len())
+    let fault_valid = state.fault.as_ref().is_none_or(|fault| {
+        fault.detail.is_valid()
+            && list
+                .cue(fault.cue)
+                .is_some_and(|cue| fault.action < cue.actions.len())
     });
     let played_valid = state.played.windows(2).all(|pair| pair[0] < pair[1])
         && state.played.iter().all(|cue| holds(*cue));

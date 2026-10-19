@@ -224,7 +224,8 @@ pub(crate) fn print_script_ran(script: u64, frame: u64, actions: u32, instructio
 /// Prints script `script`'s run state (Protocol 2.62):
 /// `ScriptRun(script=…, state=idle)`, `state=waiting` with the frame the
 /// next part runs on and the waits so far, or `state=faulted` with the
-/// failed part's frame, typed reason, and position.
+/// failed part's frame, failure kind, position, and (Protocol 2.63)
+/// what it was refused with.
 pub(crate) fn print_script_run(script: u64, run: &fm_protocol::ScriptRunStatus) {
     match run {
         fm_protocol::ScriptRunStatus::Idle => println!("ScriptRun(script={script}, state=idle)"),
@@ -241,11 +242,27 @@ pub(crate) fn print_script_run(script: u64, run: &fm_protocol::ScriptRunStatus) 
             failure,
             line,
             column,
+            detail,
         } => println!(
-            "ScriptRun(script={script}, state=faulted, frame={frame}, failure={}, line={line}, column={column})",
-            failure.token()
+            "ScriptRun(script={script}, state=faulted, frame={frame}, failure={}, line={line}, column={column}, {})",
+            failure.token(),
+            fault_detail(detail)
         ),
     }
+}
+
+/// `reason=<token or ->, message="<text>"`: what a deferred part or cue
+/// action was refused with (Protocol 2.63).
+pub(crate) fn fault_detail(detail: &fm_protocol::FaultDetail) -> String {
+    format!(
+        "reason={}, message={:?}",
+        detail
+            .reason
+            .as_ref()
+            .and_then(fm_protocol::RefusalReason::token)
+            .unwrap_or_else(|| "-".to_owned()),
+        detail.message
+    )
 }
 
 /// Edits or runs one script of the daemon at `address` (RC-011); a script
@@ -321,9 +338,15 @@ pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protoco
                 |pending| format!("{}.{}@{}", pending.cue, pending.action, pending.due_frame)
             ),
             state.played,
-            state
-                .fault
-                .map_or_else(|| "-".to_owned(), |(cue, action)| format!("{cue}.{action}")),
+            state.fault.as_ref().map_or_else(
+                || "-".to_owned(),
+                |fault| format!(
+                    "{}.{} ({})",
+                    fault.cue,
+                    fault.action,
+                    fault_detail(&fault.detail)
+                )
+            ),
         );
         for cue in &list.spec.cues {
             println!(

@@ -98,8 +98,10 @@ pub(super) fn state_count_is_valid(count: u16) -> bool {
 
 /// Encodes a run status (Protocol 2.62): `idle`,
 /// `waiting:<started>:<due>:<waits>:<wait frames>`, or
-/// `faulted:<frame>:<failure>:<line>:<column>`.
-pub(super) fn encode_run(run: ScriptRunStatus) -> Result<String, CodecError> {
+/// `faulted:<frame>:<failure>:<line>:<column>:<reason>:<message>` (the
+/// detail since Protocol 2.63, see
+/// [`super::refusal::encode_fault_detail`]).
+pub(super) fn encode_run(run: &ScriptRunStatus) -> Result<String, CodecError> {
     Ok(match run {
         ScriptRunStatus::Idle => "idle".to_owned(),
         ScriptRunStatus::Waiting {
@@ -108,7 +110,7 @@ pub(super) fn encode_run(run: ScriptRunStatus) -> Result<String, CodecError> {
             waits,
             wait_frames,
         } => {
-            if due_frame <= started_frame || waits == 0 || wait_frames == 0 {
+            if due_frame <= started_frame || *waits == 0 || *wait_frames == 0 {
                 return Err(invalid("run", format!("{run:?}")));
             }
             format!("waiting:{started_frame}:{due_frame}:{waits}:{wait_frames}")
@@ -118,11 +120,16 @@ pub(super) fn encode_run(run: ScriptRunStatus) -> Result<String, CodecError> {
             failure,
             line,
             column,
+            detail,
         } => {
-            if line == 0 || column == 0 {
+            if *line == 0 || *column == 0 {
                 return Err(invalid("run", format!("{run:?}")));
             }
-            format!("faulted:{frame}:{}:{line}:{column}", failure.token())
+            format!(
+                "faulted:{frame}:{}:{line}:{column}:{}",
+                failure.token(),
+                super::refusal::encode_fault_detail("run", detail, ':')?
+            )
         }
     })
 }
@@ -151,18 +158,22 @@ pub(super) fn decode_run(value: &str) -> Result<ScriptRunStatus, CodecError> {
                     wait_frames,
                 },
             ),
-        ["faulted", frame, failure, line, column] => number(frame)
-            .zip(fm_command::ScriptFailureKind::from_token(failure))
-            .zip(small(line))
-            .zip(small(column))
-            .map(
-                |(((frame, failure), line), column)| ScriptRunStatus::Faulted {
-                    frame,
-                    failure,
-                    line,
-                    column,
-                },
-            ),
+        ["faulted", frame, failure, line, column, reason, message] => {
+            let detail = super::refusal::decode_fault_detail("run", reason, message)?;
+            number(frame)
+                .zip(fm_command::ScriptFailureKind::from_token(failure))
+                .zip(small(line))
+                .zip(small(column))
+                .map(
+                    |(((frame, failure), line), column)| ScriptRunStatus::Faulted {
+                        frame,
+                        failure,
+                        line,
+                        column,
+                        detail,
+                    },
+                )
+        }
         _ => None,
     };
     run.ok_or_else(|| invalid("run", value))
