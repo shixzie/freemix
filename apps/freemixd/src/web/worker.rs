@@ -675,7 +675,10 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         let (records, dropped_after) = flood.join().unwrap();
-        assert!(records > 1, "the stalled client took {records} records");
+        // One 256 KiB record can already fill the socket buffers and block
+        // the relay's write past its deadline, so a single record is enough
+        // to get the stalled client dropped on a loaded host.
+        assert!(records >= 1, "the stalled client took {records} records");
         assert!(dropped_after < Duration::from_secs(10));
         stalled_worker.join().unwrap();
 
