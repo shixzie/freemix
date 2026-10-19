@@ -560,6 +560,15 @@ impl StudioShell {
         history_menu_items(ui, state, intents);
         ui.separator();
         self.preview_input_menu_items(ui, state, intents);
+        ui.separator();
+        if ui
+            .button(self.locale.text(Msg::MenuScripts))
+            .on_hover_text(self.locale.text(Msg::MenuScriptsHover))
+            .clicked()
+        {
+            self.open_scripts(state);
+            ui.close();
+        }
     }
 
     #[allow(clippy::too_many_lines)] // one menu group, one immediate-mode region

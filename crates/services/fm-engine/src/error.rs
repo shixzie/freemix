@@ -50,6 +50,8 @@ pub enum ShowError {
     /// or run state, `reference` for an input, title, or stream target
     /// outside the show.
     InvalidCueList(&'static str),
+    /// Restored scripts break a bound (RC-011).
+    InvalidScripts,
     Switcher(SwitcherError),
 }
 
@@ -111,6 +113,7 @@ impl fmt::Display for ShowError {
                 "Fade-to-Black duration {duration} is outside 1 through 3600 frames"
             ),
             Self::InvalidCueList(code) => write!(formatter, "invalid cue list ({code})"),
+            Self::InvalidScripts => formatter.write_str("invalid scripts"),
             Self::Switcher(error) => error.fmt(formatter),
         }
     }

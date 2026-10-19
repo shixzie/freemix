@@ -13,6 +13,7 @@ fm-grade = { path = "../../foundation/fm-grade" }
 fm-model = { path = "../../foundation/fm-model" }
 fm-playback = { path = "../../media/fm-playback" }
 fm-scheduler = { path = "../../media/fm-scheduler" }
+fm-script = { path = "../../foundation/fm-script" }
 fm-switcher = { path = "../../features/fm-switcher" }
 fm-titles = { path = "../../features/fm-titles" }
 fm-types = { path = "../../foundation/fm-types" }

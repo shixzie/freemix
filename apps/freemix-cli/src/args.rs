@@ -1273,6 +1273,28 @@ pub enum Command {
     RemoteCueLists {
         address: SocketAddr,
     },
+    /// Prints a local project's scripts (RC-011).
+    Scripts {
+        path: PathBuf,
+    },
+    /// Prints a running daemon's scripts (RC-011).
+    RemoteScripts {
+        address: SocketAddr,
+    },
+    /// A script edit or run on a local project (RC-011).
+    Script {
+        path: PathBuf,
+        command: ScriptCommand,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// A script edit or run sent to a running daemon (RC-011).
+    RemoteScript {
+        address: SocketAddr,
+        command: ScriptCommand,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// A playlist edit or control sent to a running daemon.
     RemotePlaylist {
         address: SocketAddr,
@@ -1542,6 +1564,40 @@ pub enum Command {
         file: PathBuf,
     },
     Help,
+}
+
+/// One project script command (RC-011).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScriptCommand {
+    /// Creates or replaces script `script` with `name` and the text of the
+    /// file `source` (`-` reads standard input).
+    Set {
+        script: u64,
+        name: String,
+        source: PathBuf,
+    },
+    Remove {
+        script: u64,
+    },
+    Run {
+        script: ScriptRef,
+    },
+}
+
+/// A script named on the command line: its id, or else its exact name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScriptRef {
+    Id(u64),
+    Name(String),
+}
+
+impl ScriptRef {
+    fn parse(value: String) -> Self {
+        match value.parse::<u64>() {
+            Ok(id) if id != 0 => Self::Id(id),
+            _ => Self::Name(value),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2015,6 +2071,14 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-cue-stop"
         | "cue-reset"
         | "remote-cue-reset") => parse_cue(cue, arguments),
+        script @ ("scripts"
+        | "remote-scripts"
+        | "script-set"
+        | "remote-script-set"
+        | "script-remove"
+        | "remote-script-remove"
+        | "script-run"
+        | "remote-script-run") => parse_script(script, arguments),
         "remote-undo" => parse_remote_history(false, arguments),
         "remote-redo" => parse_remote_history(true, arguments),
         "remote-lock" => parse_remote_lock(arguments),
@@ -6067,6 +6131,73 @@ fn unescape(value: &str) -> String {
         }
     }
     out
+}
+
+/// Parses the project script commands (RC-011), each taking a project path
+/// or, in its `remote-` form, a daemon address first:
+///
+/// * `scripts`;
+/// * `script-set <script> <name> <source-file>` (`-` reads the source from
+///   standard input);
+/// * `script-remove <script>`;
+/// * `script-run <script>`, where the script is its id or, when that is not
+///   a nonzero number, its exact name.
+fn parse_script(
+    command: &str,
+    arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let mut arguments = arguments.peekable();
+    let (base, remote) = command
+        .strip_prefix("remote-")
+        .map_or((command, false), |base| (base, true));
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    if base == "scripts" {
+        if let Some(argument) = arguments.next() {
+            return Err(ArgsError::UnexpectedArgument(argument));
+        }
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::Scripts { path },
+            (None, Some(address)) => Command::RemoteScripts { address },
+            (None, None) => unreachable!("a script command names a project or an address"),
+        });
+    }
+    let command = match base {
+        "script-set" => ScriptCommand::Set {
+            script: number(&required(&mut arguments, "script")?, "script")?,
+            name: required(&mut arguments, "script name")?,
+            source: PathBuf::from(required(&mut arguments, "script source")?),
+        },
+        "script-remove" => ScriptCommand::Remove {
+            script: number(&required(&mut arguments, "script")?, "script")?,
+        },
+        "script-run" => ScriptCommand::Run {
+            script: ScriptRef::parse(required(&mut arguments, "script")?),
+        },
+        other => return Err(ArgsError::UnknownCommand(other.to_owned())),
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::Script {
+            path,
+            command,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteScript {
+            address,
+            command,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a script command names a project or an address"),
+    })
 }
 
 /// Parses `cue-list-set` cues (see [`parse_cue`]).

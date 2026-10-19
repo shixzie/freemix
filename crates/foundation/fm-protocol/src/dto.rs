@@ -1738,6 +1738,21 @@ pub enum CommandPayload {
         list: u64,
         frame: u64,
     },
+    /// Creates or replaces script `script` (Protocol 2.58, RC-011): an
+    /// undoable project edit. Wire payload `script_set`.
+    SetScript {
+        script: u64,
+        spec: Box<crate::ScriptSpec>,
+    },
+    /// Removes script `script`. Wire payload `script_remove`.
+    RemoveScript {
+        script: u64,
+    },
+    /// Runs script `script` on the authority: its actions apply on the
+    /// command's target frame, all or nothing. Wire payload `script_run`.
+    RunScript {
+        script: u64,
+    },
     /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
     /// Wire payloads `grade_input_set` and `grade_input_clear`.
     SetInputGrade {
@@ -2387,6 +2402,10 @@ pub struct SnapshotMessage {
     /// (after its media states), one per cue list in project order, at
     /// most [`crate::MAX_CUE_LISTS`] (Protocol 2.50).
     pub cue_list_states: u16,
+    /// How many [`crate::ScriptStateMessage`] records follow this snapshot
+    /// (after its cue list states), one per script in project order, at
+    /// most [`crate::MAX_SCRIPTS`] (Protocol 2.58).
+    pub script_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
@@ -2524,6 +2543,15 @@ pub enum EventPayload {
     },
     /// A live cue list operation or cue clock advance was accepted.
     CueRunChanged(Box<crate::CueRunChange>),
+    /// A script was created or edited (or the edit undone or redone): the
+    /// whole script afterwards (Protocol 2.58).
+    ScriptChanged(Box<crate::ScriptStatus>),
+    /// A script was removed.
+    ScriptRemoved {
+        script: u64,
+    },
+    /// A script run was accepted (Protocol 2.58).
+    ScriptRan(Box<crate::ScriptRunChange>),
     /// A playlist command was accepted for `frame`: the complete playlist
     /// afterwards and the desired Program and Preview. When the command put
     /// an entry on air, its input reaches Program on exactly `frame`.
@@ -3079,6 +3107,8 @@ pub enum WireMessage {
     MediaState(crate::MediaStateMessage),
     /// One cue list after a snapshot (Protocol 2.50).
     CueListState(crate::CueListStateMessage),
+    /// One script after a snapshot (Protocol 2.58).
+    ScriptState(crate::ScriptStateMessage),
     /// Asks for the current display inventory (Protocol 2.42).
     DisplayInventoryRequest(crate::DisplayInventoryRequest),
     /// Answers a [`crate::DisplayInventoryRequest`] (Protocol 2.42).

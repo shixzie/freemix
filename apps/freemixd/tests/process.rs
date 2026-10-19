@@ -6149,11 +6149,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.57.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
+    // The previous protocol is refused; the current one is 2.58.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 58));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 56),
+        protocol: ProtocolVersion::new(2, 57),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6169,7 +6169,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 57)
+        ProtocolVersion::new(2, 58)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -7985,4 +7985,156 @@ fn simulated_cue_controls_catch_up_to_wall_clock_time() {
     assert_eq!(recovered.desired_program, input(1));
     assert_eq!(lists[0].list.state, close.state);
     daemon.wait_success();
+}
+
+/// Joins as a viewer and reads the snapshot and the `script_state` records
+/// that complete it (Protocol 2.58).
+fn script_sync(
+    daemon: &Daemon,
+) -> (
+    fm_protocol::SnapshotMessage,
+    Vec<fm_protocol::ScriptStateMessage>,
+) {
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Viewer, None);
+    let snapshot = client.receive_snapshot();
+    let mut scripts = Vec::new();
+    while scripts.len() < usize::from(snapshot.script_states) {
+        match client.receive() {
+            WireMessage::ScriptState(state) => scripts.push(state),
+            WireMessage::Event(event) => panic!("event before the script states: {event:?}"),
+            _ => {}
+        }
+    }
+    (snapshot, scripts)
+}
+
+/// RC-011 end to end through the daemon: a script edit is a durable
+/// project edit; a run applies its actions as one durable change and
+/// publishes `script_ran`; a run that stops early is refused with the line
+/// and column and changes nothing; a late joiner learns the scripts from
+/// `script_state`; and the scripts are saved with the project.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scripts_run_through_the_daemon_and_persist_with_the_project() {
+    use fm_command::{RefusalReason, ScriptFailureKind};
+    use fm_protocol::ScriptSpec;
+
+    let set = |script: u64, name: &str, source: &str| CommandPayload::SetScript {
+        script,
+        spec: Box::new(ScriptSpec {
+            name: name.into(),
+            source: source.into(),
+        }),
+    };
+    let directory = TestDirectory::new("scripts");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    let snapshot = admin.receive_snapshot();
+    assert_eq!(snapshot.script_states, 0);
+
+    admin.send(&command(
+        "set-take",
+        "set-take-key",
+        set(1, "Take two", "preview 2\ncut\n"),
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-take"), 1);
+    match durable_event_at(&mut admin, 1).payload {
+        EventPayload::ScriptChanged(script) => {
+            assert_eq!((script.id, script.spec.name.as_str()), (1, "Take two"));
+        }
+        other => panic!("expected script_changed, got {other:?}"),
+    }
+
+    admin.send(&command(
+        "run-take",
+        "run-take-key",
+        CommandPayload::RunScript { script: 1 },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "run-take"), 2);
+    match durable_event_at(&mut admin, 2).payload {
+        EventPayload::ScriptRan(change) => {
+            assert_eq!((change.script, change.actions), (1, 2));
+            assert_eq!(change.program, input(2));
+        }
+        other => panic!("expected script_ran, got {other:?}"),
+    }
+
+    // Two takes on one frame: the second is refused, and the first with it.
+    admin.send(&command(
+        "set-twice",
+        "set-twice-key",
+        set(2, "Twice", "cut 1\ncut 2\n"),
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-twice"), 3);
+    admin.send(&command(
+        "run-twice",
+        "run-twice-key",
+        CommandPayload::RunScript { script: 2 },
+    ));
+    match admin.next_result() {
+        CommandResult::Rejected {
+            id,
+            code,
+            reason,
+            current_revision,
+            ..
+        } => {
+            assert_eq!((id.as_str(), code.as_str()), ("run-twice", "conflict"));
+            assert_eq!(current_revision, 3);
+            assert_eq!(
+                reason,
+                Some(RefusalReason::ScriptFailed {
+                    failure: ScriptFailureKind::Refused,
+                    line: 2,
+                    column: 1,
+                })
+            );
+        }
+        other @ CommandResult::Accepted { .. } => {
+            panic!("expected run-twice to be refused, got {other:?}")
+        }
+    }
+
+    let (snapshot, scripts) = script_sync(&daemon);
+    assert_eq!(snapshot.revision, 3);
+    assert_eq!(snapshot.desired_program, input(2));
+    assert_eq!(
+        scripts
+            .iter()
+            .map(|state| (state.revision, state.script.id))
+            .collect::<Vec<_>>(),
+        [(3, 1), (3, 2)]
+    );
+    drop(admin);
+    daemon.stop();
+
+    // The restarted daemon recovers the scripts from its journal and
+    // checkpoints them into the project.
+    let daemon = Daemon::start_without_once(&project_path);
+    let (_, recovered) = script_sync(&daemon);
+    assert_eq!(recovered, scripts);
+    daemon.stop();
+    let stored = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(
+        stored
+            .project()
+            .scripts()
+            .iter()
+            .map(|script| (script.id, script.name.as_str(), script.source.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (1, "Take two", "preview 2\ncut\n"),
+            (2, "Twice", "cut 1\ncut 2\n")
+        ]
+    );
 }

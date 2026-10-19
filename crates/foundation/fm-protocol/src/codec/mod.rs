@@ -15,6 +15,7 @@ mod playlist;
 mod refusal;
 mod scene_layer;
 mod scene_layout;
+mod script;
 mod stream_target;
 mod system_audio;
 mod title;
@@ -31,7 +32,9 @@ pub use scene_layout::scene_layout_wire_bytes;
 use core::fmt;
 
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
-pub const MAX_FIELDS_PER_MESSAGE: usize = 64;
+/// Most fields one record carries (96 since Protocol 2.58, whose snapshot
+/// outgrew 64).
+pub const MAX_FIELDS_PER_MESSAGE: usize = 96;
 pub const MAX_FIELD_NAME_BYTES: usize = 64;
 pub const MAX_FIELD_VALUE_BYTES: usize = 56 * 1024;
 pub const MAX_LIST_ITEMS: usize = 256;

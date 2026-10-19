@@ -47,6 +47,7 @@ const fn kind_token(kind: IdKind) -> &'static str {
         IdKind::PlaylistEntry => "playlist_entry",
         IdKind::CueList => "cue_list",
         IdKind::Cue => "cue",
+        IdKind::Script => "script",
     }
 }
 
@@ -132,6 +133,16 @@ pub fn encode_refusal_reason(reason: &RefusalReason) -> Result<String, CodecErro
             Some(frame.to_string())
         }
         RefusalReason::CueRunning { cue } => Some(cue.to_string()),
+        RefusalReason::ScriptFailed {
+            failure,
+            line,
+            column,
+        } => {
+            if *line == 0 || *column == 0 {
+                return Err(invalid());
+            }
+            Some(format!("{}:{line}:{column}", failure.token()))
+        }
     };
     Ok(match parameters {
         Some(parameters) => format!("{}:{parameters}", reason.kind()),
@@ -218,6 +229,21 @@ pub fn decode_refusal_reason(value: &str) -> Result<RefusalReason, CodecError> {
             }
             ["cue_running", cue] => {
                 parse_canonical_u64(cue).map(|cue| RefusalReason::CueRunning { cue })
+            }
+            ["script_failed", failure, line, column] => {
+                let position = |value: &str| {
+                    parse_canonical_u64(value)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .filter(|value| *value != 0)
+                };
+                fm_command::ScriptFailureKind::from_token(failure)
+                    .zip(position(line))
+                    .zip(position(column))
+                    .map(|((failure, line), column)| RefusalReason::ScriptFailed {
+                        failure,
+                        line,
+                        column,
+                    })
             }
             ["revision_conflict", current] => parse_canonical_u64(current)
                 .map(|current| RefusalReason::RevisionConflict { current }),

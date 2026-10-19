@@ -12,6 +12,7 @@ mod project;
 mod resolve;
 mod scene_animation;
 mod scene_layer_edit;
+mod script;
 mod stream;
 mod title;
 mod transition_favorite;
@@ -31,8 +32,9 @@ pub use cue::{
     CUE_OVERLAY_CHANNELS, Cue, CueAction, CueFault, CueList, CueListError, CueMediaOperation,
     CuePending, CueRunState, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
     MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
-    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, cue_name_is_valid, delay_frames,
-    validate_cue_list, validate_cue_list_definition, validate_cue_lists,
+    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, cue_action_is_valid,
+    cue_name_is_valid, delay_frames, validate_cue_list, validate_cue_list_definition,
+    validate_cue_lists,
 };
 pub use display_output::{
     MAX_DISPLAY_OUTPUTS, SetDisplayOutputError, check_display_output, display_selector_is_valid,
@@ -95,6 +97,10 @@ pub use scene_animation::{
     apply_pose, default_scene_timebase, footprint, pose_layer, resolve_anchor, scene_animates,
 };
 pub use scene_layer_edit::{SceneLayerChange, SceneLayerEditError, check_scene_layer};
+pub use script::{
+    MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, Script, ScriptError,
+    script_name_is_valid, script_source_is_valid, validate_script_definition, validate_scripts,
+};
 pub use stream::{
     DEFAULT_STREAM_SRT_LATENCY_MS, DEFAULT_VIDEO_BITRATE_KBPS, MAX_STREAM_ENDPOINT_BYTES,
     MAX_STREAM_KEY_BYTES, MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS,

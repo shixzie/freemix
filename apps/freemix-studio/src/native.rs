@@ -2659,6 +2659,7 @@ fn intent_payload(
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Cue(intent) => cue_payload(intent),
+        StudioIntent::Script(intent) => script_payload(intent),
         StudioIntent::Media { input, operation } => {
             if let Some(view) = view
                 && !view.inputs.contains(&input)
@@ -2752,6 +2753,22 @@ fn cue_payload(intent: fm_ui_egui::CueIntent) -> CommandPayload {
         fm_ui_egui::CueIntent::Control { list, operation } => {
             CommandPayload::CueControl { list, operation }
         }
+    }
+}
+
+/// The protocol command for one Scripts window action (RC-011).
+fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
+    match intent {
+        fm_ui_egui::ScriptIntent::Set {
+            script,
+            name,
+            source,
+        } => CommandPayload::SetScript {
+            script,
+            spec: Box::new(fm_protocol::ScriptSpec { name, source }),
+        },
+        fm_ui_egui::ScriptIntent::Remove { script } => CommandPayload::RemoveScript { script },
+        fm_ui_egui::ScriptIntent::Run { script } => CommandPayload::RunScript { script },
     }
 }
 
@@ -3413,6 +3430,7 @@ mod tests {
             animation_preset_states: 0,
             media_states: 0,
             cue_list_states: 0,
+            script_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -5050,6 +5068,7 @@ mod tests {
         peer.send(&WireMessage::Snapshot(SnapshotMessage {
             media_states: 1,
             cue_list_states: 0,
+            script_states: 0,
             input_categories: Vec::new(),
             ..heartbeat_snapshot()
         }));
@@ -5872,6 +5891,40 @@ mod tests {
                 list: 3,
                 operation: CueOperation::Go { cue: Some(20) },
             })
+        );
+    }
+
+    #[test]
+    fn script_intents_map_to_script_payloads() {
+        use fm_ui_egui::ScriptIntent;
+
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Script(ScriptIntent::Set {
+                    script: 2,
+                    name: "Opening".into(),
+                    source: "cut 2".into(),
+                }),
+                None
+            ),
+            Ok(CommandPayload::SetScript {
+                script: 2,
+                spec: Box::new(fm_protocol::ScriptSpec {
+                    name: "Opening".into(),
+                    source: "cut 2".into(),
+                }),
+            })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Script(ScriptIntent::Remove { script: 2 }),
+                None
+            ),
+            Ok(CommandPayload::RemoveScript { script: 2 })
+        );
+        assert_eq!(
+            intent_payload(StudioIntent::Script(ScriptIntent::Run { script: 2 }), None),
+            Ok(CommandPayload::RunScript { script: 2 })
         );
     }
 
@@ -7332,6 +7385,7 @@ mod tests {
                 animation_preset_states: 1,
                 media_states: 0,
                 cue_list_states: 0,
+                script_states: 0,
                 input_categories: Vec::new(),
                 transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
                 ..title_snapshot()

@@ -68,6 +68,7 @@ mod playlist;
 mod preferences;
 mod preset_files;
 mod scene_designer;
+mod scripts;
 mod stinger_config;
 mod stream_control;
 mod stream_targets;
@@ -122,6 +123,7 @@ pub use playlist::{
 pub use preferences::Appearance;
 pub use preset_files::{ExportLut, ExportedLut, ImportedLut, PresetFileAnswer, PresetFileRequest};
 pub use scene_designer::SCENE_DESIGNER_SHORTCUT;
+pub use scripts::{ScriptIntent, run_block as script_run_block, save_block as script_save_block};
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
@@ -364,6 +366,8 @@ pub enum StudioIntent {
     Playlist(PlaylistIntent),
     /// Sends one cue list command: a list edit or a cue control (RC-017).
     Cue(CueIntent),
+    /// Sends one project script command: an edit or a run (RC-011).
+    Script(ScriptIntent),
     /// Drives one media-file input's transport (operator control) or edits
     /// its persisted playback settings (project edit) (Protocol 2.37).
     Media {
@@ -1430,6 +1434,7 @@ pub struct StudioShell {
     display_outputs: display_outputs::DisplayOutputsDialog,
     /// The `LiveLAN` viewers window and the PIN being typed (OR-017).
     live_lan: live_lan::LiveLanWindow,
+    scripts: scripts::ScriptsWindow,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
     stream_targets: stream_targets::StreamTargetsUi,
     /// Tab drags, native window placement, and the layout name dialog.
@@ -1789,6 +1794,7 @@ impl StudioShell {
         self.draw_preferences_window(ui.ctx());
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
+        self.draw_scripts_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.draw_stream_target_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
@@ -1904,6 +1910,7 @@ impl Default for StudioShell {
             designer: scene_designer::DesignerWindow::default(),
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
             live_lan: live_lan::LiveLanWindow::default(),
+            scripts: scripts::ScriptsWindow::default(),
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
         }

@@ -10,6 +10,7 @@ fm-animation = { path = "../../foundation/fm-animation" }
 fm-command = { path = "../../foundation/fm-command" }
 fm-grade = { path = "../../foundation/fm-grade" }
 fm-protocol = { path = "../../foundation/fm-protocol" }
+fm-script = { path = "../../foundation/fm-script" }
 fm-types = { path = "../../foundation/fm-types" }
 
 [lints]

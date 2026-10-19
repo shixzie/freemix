@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.57 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.58 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1803,6 +1803,41 @@ PIN.
   digit string or `null`, stored in the bundle under the same trust model
   as stream keys (schema 53).
 - 2.56 is refused.
+
+Protocol 2.58 adds project scripts (RC-011): named `FreeMix` Script sources
+stored in the project and run on the authority.
+
+- `payload=script_set` carries `script` (nonzero), `name` (1..=64 bytes,
+  no control characters), and `source` (lowercase hex of at most 4096
+  UTF-8 bytes whose only control characters are newline, tab, and carriage
+  return). `payload=script_remove` carries `script`. Both are padlocked,
+  undoable `edit_project` commands; a 17th script is a `conflict` (bounds
+  field `scripts`), and an unknown script is `not_found`
+  (`unknown_id:script:<id>`).
+- `payload=script_run` carries `script`. It is a journaled `transition`
+  command outside the undo history. The authority parses and runs the
+  saved source with an instruction budget of 10000 (every statement, loop
+  turn, and expression node costs one), at most 64 actions, 32 variables,
+  and 256-byte strings. Each action is an ordinary show command (the cue
+  action set: preview, takes, overlays, titles, Fade to Black, playlist,
+  strip gain and mute, recorders, streams, and media transport) checked
+  against the show as the actions before it left it, and all of them land
+  on the command's target frame in one revision, or none does. A run that
+  stops early is refused with
+  `reason=script_failed:<syntax|runtime|instructions|actions|variables|string_bytes|refused>:<line>:<column>`;
+  its code is the refused action's own code for `refused`,
+  `resource_exhausted` for a budget, and `invalid_command` otherwise.
+- `event=script_changed` carries `script`, `name`, and `source`;
+  `event=script_removed` carries `script`; `event=script_ran` carries
+  `script`, `frame`, `actions`, `instructions`, and the desired show state
+  fields of `cue_run_changed` (without the cue list run state).
+- Each snapshot gains `script_states=<count>` after `cue_list_states`, and
+  that many `script_state` records (`revision`, then the `script_changed`
+  fields) follow the cue list states, in project order. A record may now
+  carry up to 96 fields (previously 64), which the snapshot needs.
+- Durability: the project gains required
+  `"scripts": [{"id", "name", "source"}]` after `"live_lan"` (schema 54).
+- 2.57 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

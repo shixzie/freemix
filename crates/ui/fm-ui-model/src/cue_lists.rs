@@ -110,6 +110,15 @@ pub(crate) fn validate_run(update: &CueRunUpdate, state: &ProjectState) -> Resul
     if !state_is_valid(list, &update.state) {
         return Err(ModelError::InvalidCueList(update.list));
     }
+    validate_effects(update, state)
+}
+
+/// Checks the desired state a run update carries (a cue run's or a script
+/// run's, RC-011) beyond its switcher state.
+pub(crate) fn validate_effects(
+    update: &CueRunUpdate,
+    state: &ProjectState,
+) -> Result<(), ModelError> {
     crate::validate_streams(&update.streams)?;
     crate::validate_recordings(&update.recordings)?;
     if let Some(transport) = update
@@ -133,6 +142,17 @@ pub(crate) fn validate_run(update: &CueRunUpdate, state: &ProjectState) -> Resul
 
 /// Applies a validated run update.
 pub(crate) fn apply_run(state: &mut ProjectState, update: CueRunUpdate) {
+    let list = update.list;
+    let run = update.state.clone();
+    apply_effects(state, update);
+    if let Some(found) = state.cue_lists.iter_mut().find(|found| found.id == list) {
+        found.state = run;
+    }
+}
+
+/// Applies the desired state of a validated run update (a cue run's or a
+/// script run's).
+pub(crate) fn apply_effects(state: &mut ProjectState, update: CueRunUpdate) {
     state.switcher.desired = update.selection;
     state.switcher.desired_manual_transition = update.manual_transition;
     state.switcher.desired_fade_to_black = update.fade_to_black;
@@ -168,13 +188,6 @@ pub(crate) fn apply_run(state: &mut ProjectState, update: CueRunUpdate) {
                 field.value = TitleFieldValue::Text(text.text);
             }
         }
-    }
-    if let Some(list) = state
-        .cue_lists
-        .iter_mut()
-        .find(|list| list.id == update.list)
-    {
-        list.state = update.state;
     }
 }
 

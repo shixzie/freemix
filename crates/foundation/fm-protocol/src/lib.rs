@@ -12,6 +12,7 @@ mod media;
 mod monitor_image;
 mod network_stream;
 mod scene_layer;
+mod script;
 mod stream_target;
 mod system_audio;
 mod version;
@@ -110,7 +111,7 @@ pub use dto::{
     TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
     WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
 };
-pub use fm_command::{IdKind, InputUse, MAX_REFUSAL_FIELD_BYTES, RefusalReason};
+pub use fm_command::{IdKind, InputUse, MAX_REFUSAL_FIELD_BYTES, RefusalReason, ScriptFailureKind};
 pub use input_lifecycle::{
     AddedInput, ImportItemSpec, ImportRefusal, InputCategoryStatus, InputColorLabel,
     InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason, MAX_BATCH_IMPORT_ITEMS,
@@ -148,6 +149,10 @@ pub use scene_layer::{
     SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,
     SceneLayerOperation, WireChromaKey, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
     WireLayerKey, WireLayerMask, WireLumaKey,
+};
+pub use script::{
+    MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange, ScriptSpec,
+    ScriptStateMessage, ScriptStatus, script_name_is_valid, script_source_is_valid,
 };
 pub use stream_target::{
     DEFAULT_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_RECONNECT_ATTEMPTS,

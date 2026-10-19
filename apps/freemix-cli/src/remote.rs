@@ -167,6 +167,95 @@ pub fn cue_lists(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Prints the scripts of the daemon at `address` (RC-011).
+pub fn scripts(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    print_scripts(state.scripts().iter());
+    Ok(())
+}
+
+/// Prints one `Script(...)` line per script followed by its source lines,
+/// each indented, or `Scripts=none`.
+pub(crate) fn print_scripts<'a>(scripts: impl IntoIterator<Item = &'a fm_protocol::ScriptStatus>) {
+    let mut any = false;
+    for script in scripts {
+        any = true;
+        let syntax = fm_script::parse(&script.spec.source)
+            .err()
+            .map_or_else(|| "ok".to_owned(), |failure| failure.to_string());
+        println!(
+            "Script(id={}, name={:?}, bytes={}, syntax={syntax:?})",
+            script.id,
+            script.spec.name,
+            script.spec.source.len()
+        );
+        for line in script.spec.source.lines() {
+            println!("  | {line}");
+        }
+    }
+    if !any {
+        println!("Scripts=none");
+    }
+}
+
+/// Prints an accepted run's report.
+pub(crate) fn print_script_ran(script: u64, frame: u64, actions: u32, instructions: u32) {
+    println!(
+        "ScriptRan(script={script}, frame={frame}, actions={actions}, instructions={instructions})"
+    );
+}
+
+/// Edits or runs one script of the daemon at `address` (RC-011); a script
+/// named by name is resolved against the daemon's scripts. An accepted run
+/// prints `ScriptRan(...)`.
+pub fn script(
+    address: SocketAddr,
+    payload: CommandPayload,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let completion = CommandCompletion::for_payload(&payload);
+    let role = if matches!(payload, CommandPayload::RunScript { .. }) {
+        Role::Operator
+    } else {
+        Role::Graphics
+    };
+    let mut remote = Remote::connect(address, role)?;
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    let run = matches!(payload, CommandPayload::RunScript { .. });
+    remote.execute(payload, key, expected_revision, completion)?;
+    if run
+        && let Some(ran) = remote
+            .client
+            .model()
+            .state()
+            .and_then(fm_ui_model::ProjectState::last_script_run)
+    {
+        print_script_ran(ran.script, ran.frame, ran.actions, ran.instructions);
+    }
+    Ok(())
+}
+
+/// Resolves a script name against the daemon at `address`.
+pub fn script_id(address: SocketAddr, name: &str) -> RemoteResult<Option<u64>> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    Ok(remote.client.model().state().and_then(|state| {
+        state
+            .scripts()
+            .iter()
+            .find(|script| script.spec.name == name)
+            .map(|script| script.id)
+    }))
+}
+
 /// Prints one `CueList(...)` line per cue list followed by one indented
 /// `Cue(...)` line per cue, or `CueLists=none`.
 pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protocol::CueListStatus>) {
@@ -1053,6 +1142,7 @@ pub fn execute(
         | CommandCompletion::Padlock
         | CommandCompletion::Playlist { edit: true }
         | CommandCompletion::Cue { edit: true }
+        | CommandCompletion::Script { run: false }
         | CommandCompletion::Media { transport: false } => Role::Graphics,
         CommandCompletion::Audio | CommandCompletion::Mixer { .. } => Role::Audio,
         CommandCompletion::FadeToBlackOutput
@@ -1060,6 +1150,7 @@ pub fn execute(
         | CommandCompletion::Favorite
         | CommandCompletion::Playlist { edit: false }
         | CommandCompletion::Cue { edit: false }
+        | CommandCompletion::Script { run: true }
         | CommandCompletion::Media { transport: true }
         | CommandCompletion::TitleTake {
             edits_fields: false,
@@ -1103,6 +1194,12 @@ enum CommandCompletion {
     /// domain's realization (Protocol 2.50).
     Cue {
         edit: bool,
+    },
+    /// A script edit (`project`) or run (`switcher`): completes on
+    /// `script_changed`/`script_removed` or `script_ran` and that domain's
+    /// realization (Protocol 2.58).
+    Script {
+        run: bool,
     },
     /// A favourite transition assignment: a transition-class project edit
     /// that completes on `transition_favorite_changed` and project
@@ -1168,6 +1265,10 @@ impl CommandCompletion {
             CommandPayload::CueControl { .. } | CommandPayload::CueAdvance { .. } => {
                 Self::Cue { edit: false }
             }
+            CommandPayload::SetScript { .. } | CommandPayload::RemoveScript { .. } => {
+                Self::Script { run: false }
+            }
+            CommandPayload::RunScript { .. } => Self::Script { run: true },
             _ => Self::Switcher,
         }
     }
@@ -1179,6 +1280,7 @@ impl CommandCompletion {
             | Self::Favorite
             | Self::Playlist { edit: true }
             | Self::Cue { edit: true }
+            | Self::Script { run: false }
             | Self::Mixer { live: false }
             | Self::FadeToBlackOutput => domain == "project",
             Self::Audio | Self::Mixer { live: true } => domain == "audio",
@@ -1186,7 +1288,8 @@ impl CommandCompletion {
             Self::Switcher
             | Self::TitleTake { .. }
             | Self::Playlist { edit: false }
-            | Self::Cue { edit: false } => domain == "switcher",
+            | Self::Cue { edit: false }
+            | Self::Script { run: true } => domain == "switcher",
             Self::History => matches!(domain, "project" | "switcher"),
         }
     }
@@ -1286,7 +1389,8 @@ impl Remote {
                 | WireMessage::SceneLayoutState(_)
                 | WireMessage::AnimationPresetState(_)
                 | WireMessage::MediaState(_)
-                | WireMessage::CueListState(_)) => {
+                | WireMessage::CueListState(_)
+                | WireMessage::ScriptState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
@@ -1441,6 +1545,7 @@ impl Remote {
                                 | CommandCompletion::TitleTake { .. }
                                 | CommandCompletion::Playlist { .. }
                                 | CommandCompletion::Cue { .. }
+                                | CommandCompletion::Script { .. }
                         ),
                         EventPayload::PlaylistChanged { .. } => {
                             matches!(completion, CommandCompletion::Playlist { .. })
@@ -1453,6 +1558,16 @@ impl Remote {
                         }
                         EventPayload::CueRunChanged(_) => {
                             completion == CommandCompletion::Cue { edit: false }
+                        }
+                        EventPayload::ScriptChanged(_) | EventPayload::ScriptRemoved { .. } => {
+                            matches!(
+                                completion,
+                                CommandCompletion::Script { run: false }
+                                    | CommandCompletion::History
+                            )
+                        }
+                        EventPayload::ScriptRan(_) => {
+                            completion == CommandCompletion::Script { run: true }
                         }
                         EventPayload::TransitionFavoriteChanged { .. } => matches!(
                             completion,

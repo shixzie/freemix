@@ -7633,3 +7633,171 @@ fn live_lan_is_an_undoable_project_edit_with_runtime_status() {
     assert!(!locked.is_accepted());
     assert!(control.live_lan().enabled);
 }
+
+/// RC-011: script edits are graphics project edits that publish the script
+/// and undo; a run is an operator transition that publishes what it did, or
+/// is refused with the typed reason naming where it stopped; snapshots
+/// announce the `script_state` records that follow them.
+mod scripts {
+    use fm_command::{RefusalReason, ScriptFailureKind};
+    use fm_protocol::{ScriptSpec, WireMessage, encode_line};
+
+    use super::*;
+
+    fn set(script: u64, source: &str) -> CommandPayload {
+        CommandPayload::SetScript {
+            script,
+            spec: Box::new(ScriptSpec {
+                name: format!("Script {script}"),
+                source: source.to_owned(),
+            }),
+        }
+    }
+
+    fn submit(
+        control: &mut ControlService,
+        role: Role,
+        id: &str,
+        payload: CommandPayload,
+    ) -> CommandSubmission {
+        control
+            .submit(&principal(role), command(id, id, payload), 0)
+            .unwrap()
+    }
+
+    fn denied(submission: &CommandSubmission) -> bool {
+        matches!(
+            &submission.output.result,
+            CommandResult::Rejected { code, .. } if code == "permission_denied"
+        )
+    }
+
+    #[test]
+    fn authorization_matrix_covers_every_script_command() {
+        let run = CommandPayload::RunScript { script: 1 };
+        let remove = CommandPayload::RemoveScript { script: 1 };
+        for (index, (role, payload, allowed)) in [
+            (Role::Viewer, set(1, "cut 2"), false),
+            (Role::Viewer, run.clone(), false),
+            (Role::Graphics, set(1, "cut 2"), true),
+            (Role::Graphics, run.clone(), false),
+            (Role::Graphics, remove.clone(), true),
+            (Role::Operator, set(1, "cut 2"), false),
+            (Role::Operator, remove, false),
+            (Role::Operator, run.clone(), true),
+            (Role::Audio, run, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut control = service(8, 8);
+            submit(&mut control, Role::Admin, "seed", set(1, "cut 2"));
+            control.tick(&server_identity()).unwrap();
+            let submission = submit(&mut control, role, &format!("c{index}"), payload.clone());
+            assert_eq!(
+                !denied(&submission),
+                allowed,
+                "{role:?} {payload:?}: {:?}",
+                submission.output.result
+            );
+        }
+    }
+
+    #[test]
+    fn edits_publish_and_undo_runs_publish_or_refuse_where_they_stopped() {
+        let mut control = service(16, 16);
+        assert_eq!(control.snapshot().snapshot.script_states, 0);
+        let edit = submit(&mut control, Role::Admin, "set", set(1, "preview 3\ncut"));
+        let EventPayload::ScriptChanged(status) = &edit.output.events[0].payload else {
+            panic!("expected script_changed: {:?}", edit.output.events);
+        };
+        let status = (**status).clone();
+        assert_eq!(
+            (status.id, status.spec.source.as_str()),
+            (1, "preview 3\ncut")
+        );
+        control.tick(&server_identity()).unwrap();
+
+        let snapshot = control.snapshot().snapshot.clone();
+        assert_eq!(snapshot.script_states, 1);
+        let records = control.script_states();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            (records[0].revision, &records[0].script),
+            (snapshot.revision, &status)
+        );
+        encode_line(&WireMessage::ScriptState(records[0].clone())).unwrap();
+
+        let ran = submit(
+            &mut control,
+            Role::Operator,
+            "run",
+            CommandPayload::RunScript { script: 1 },
+        );
+        let EventPayload::ScriptRan(change) = &ran.output.events[0].payload else {
+            panic!("expected script_ran: {:?}", ran.output.events);
+        };
+        assert_eq!((change.script, change.actions), (1, 2));
+        assert_eq!(change.program, WireInputId::from_domain(input(3)));
+        encode_line(&WireMessage::Event(ran.output.events[0].clone())).unwrap();
+        control.tick(&server_identity()).unwrap();
+
+        // A failed run names where it stopped and publishes nothing.
+        submit(
+            &mut control,
+            Role::Admin,
+            "set-bad",
+            set(2, "preview 2\n  cut 9"),
+        );
+        control.tick(&server_identity()).unwrap();
+        let refused = submit(
+            &mut control,
+            Role::Operator,
+            "run-bad",
+            CommandPayload::RunScript { script: 2 },
+        );
+        let CommandResult::Rejected { code, reason, .. } = &refused.output.result else {
+            panic!("expected a refusal: {:?}", refused.output.result);
+        };
+        assert_eq!(code, "not_found");
+        assert_eq!(
+            reason,
+            &Some(RefusalReason::ScriptFailed {
+                failure: ScriptFailureKind::Refused,
+                line: 2,
+                column: 3,
+            })
+        );
+        assert_eq!(refused.output.events.len(), 0);
+
+        // Edits undo; the run did not join the history.
+        let undo = submit(
+            &mut control,
+            Role::Admin,
+            "undo",
+            CommandPayload::Undo {
+                expected_edit: None,
+            },
+        );
+        assert!(
+            matches!(
+                undo.output.events[0].payload,
+                EventPayload::ScriptRemoved { script: 2 }
+            ),
+            "{:?}",
+            undo.output.events
+        );
+        control.tick(&server_identity()).unwrap();
+        let remove = submit(
+            &mut control,
+            Role::Admin,
+            "remove",
+            CommandPayload::RemoveScript { script: 1 },
+        );
+        assert!(matches!(
+            remove.output.events[0].payload,
+            EventPayload::ScriptRemoved { script: 1 }
+        ));
+        assert_eq!(control.snapshot().snapshot.script_states, 0);
+    }
+}

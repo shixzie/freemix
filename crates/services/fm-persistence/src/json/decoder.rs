@@ -87,6 +87,7 @@ struct ProjectDto {
         fm_types::display::DisplayOutputConfig,
     )>,
     live_lan: fm_types::live_lan::LiveLanConfig,
+    scripts: Vec<fm_model::Script>,
 }
 
 struct EditLocks {
@@ -142,6 +143,7 @@ impl ProjectDto {
             fade_to_black_curve: super::audio_mixer::parse_fade_to_black_curve(&mut object)?,
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
             live_lan: super::live_lan::parse_live_lan(&mut object)?,
+            scripts: super::script::parse_scripts(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -254,6 +256,9 @@ impl ProjectDto {
         // An unknown source output and a viewer limit out of range are
         // reported by project validation.
         project.restore_live_lan(self.live_lan);
+        // Script bounds and duplicate ids are reported by project
+        // validation.
+        project.set_scripts(self.scripts);
         project
     }
 }

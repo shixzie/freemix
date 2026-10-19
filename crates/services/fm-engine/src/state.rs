@@ -186,6 +186,8 @@ pub struct ShowState {
     playlist: Playlist,
     /// The operator cue lists and their run states (RC-017).
     cue_lists: Vec<fm_model::CueList>,
+    /// The project scripts in display order (RC-011).
+    scripts: Vec<fm_model::Script>,
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
     animation_presets: fm_model::AnimationPresetLibrary,
@@ -287,6 +289,7 @@ impl ShowState {
             playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
                 .expect("an empty playlist is valid"),
             cue_lists: Vec::new(),
+            scripts: Vec::new(),
             grading: ProjectGrading::default(),
             luts: BTreeMap::new(),
             animation_presets: fm_model::AnimationPresetLibrary::default(),
@@ -1252,6 +1255,33 @@ impl ShowState {
 
     pub(crate) fn cue_lists_mut(&mut self) -> &mut Vec<fm_model::CueList> {
         &mut self.cue_lists
+    }
+
+    /// The project scripts, in display order (RC-011).
+    #[must_use]
+    pub fn scripts(&self) -> &[fm_model::Script] {
+        &self.scripts
+    }
+
+    /// The script with `id`.
+    #[must_use]
+    pub fn script(&self, id: u64) -> Option<&fm_model::Script> {
+        self.scripts.iter().find(|script| script.id == id)
+    }
+
+    /// Installs restored scripts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidScripts`] when they break a bound.
+    pub fn set_scripts(&mut self, scripts: Vec<fm_model::Script>) -> Result<(), ShowError> {
+        fm_model::validate_scripts(&scripts).map_err(|_| ShowError::InvalidScripts)?;
+        self.scripts = scripts;
+        Ok(())
+    }
+
+    pub(crate) fn scripts_mut(&mut self) -> &mut Vec<fm_model::Script> {
+        &mut self.scripts
     }
 
     /// Returns the project grading: the grade library, imported LUTs, and

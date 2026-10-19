@@ -31,11 +31,13 @@ pub enum IdKind {
     CueList,
     /// A cue of a cue list (RC-017).
     Cue,
+    /// A project script (RC-011).
+    Script,
 }
 
 impl IdKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Input,
         Self::Output,
         Self::Scene,
@@ -48,6 +50,7 @@ impl IdKind {
         Self::PlaylistEntry,
         Self::CueList,
         Self::Cue,
+        Self::Script,
     ];
 
     /// The kind's English noun.
@@ -66,6 +69,7 @@ impl IdKind {
             Self::PlaylistEntry => "playlist entry",
             Self::CueList => "cue list",
             Self::Cue => "cue",
+            Self::Script => "script",
         }
     }
 }
@@ -140,6 +144,83 @@ impl fmt::Display for InputUse {
     }
 }
 
+/// Why a script run stopped (RC-011).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ScriptFailureKind {
+    /// The source does not parse.
+    Syntax,
+    /// An expression or argument could not be evaluated.
+    Runtime,
+    /// The run used its whole instruction budget.
+    InstructionBudget,
+    /// The run performed its whole action budget.
+    ActionBudget,
+    /// The run defined its whole variable budget.
+    VariableBudget,
+    /// A string value outgrew its byte budget.
+    StringBudget,
+    /// The show refused one of the script's actions.
+    Refused,
+}
+
+impl ScriptFailureKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 7] = [
+        Self::Syntax,
+        Self::Runtime,
+        Self::InstructionBudget,
+        Self::ActionBudget,
+        Self::VariableBudget,
+        Self::StringBudget,
+        Self::Refused,
+    ];
+
+    /// The stable wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Syntax => "syntax",
+            Self::Runtime => "runtime",
+            Self::InstructionBudget => "instructions",
+            Self::ActionBudget => "actions",
+            Self::VariableBudget => "variables",
+            Self::StringBudget => "string_bytes",
+            Self::Refused => "refused",
+        }
+    }
+
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.token() == token)
+    }
+
+    /// Whether a budget ran out.
+    #[must_use]
+    pub const fn is_budget(self) -> bool {
+        matches!(
+            self,
+            Self::InstructionBudget
+                | Self::ActionBudget
+                | Self::VariableBudget
+                | Self::StringBudget
+        )
+    }
+}
+
+impl fmt::Display for ScriptFailureKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Syntax => "syntax error",
+            Self::Runtime => "runtime error",
+            Self::InstructionBudget => "instruction budget exceeded",
+            Self::ActionBudget => "action budget exceeded",
+            Self::VariableBudget => "variable budget exceeded",
+            Self::StringBudget => "string budget exceeded",
+            Self::Refused => "action refused",
+        })
+    }
+}
+
 /// Why a command was refused, with typed parameters.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum RefusalReason {
@@ -189,6 +270,13 @@ pub enum RefusalReason {
     /// The edit would change or remove cue `cue` while its deferred actions
     /// wait (RC-017).
     CueRunning { cue: u64 },
+    /// A script run stopped at `line`:`column` (1-based) for `failure`
+    /// (RC-011); the whole run was discarded.
+    ScriptFailed {
+        failure: ScriptFailureKind,
+        line: u32,
+        column: u32,
+    },
     /// The command could not be made durable.
     NotDurable,
     /// The session sent too much, too fast, or too large.
@@ -240,6 +328,7 @@ impl RefusalReason {
             Self::CueScheduled { .. } => "cue_scheduled",
             Self::NoCueOnStandby => "no_cue_on_standby",
             Self::CueRunning { .. } => "cue_running",
+            Self::ScriptFailed { .. } => "script_failed",
             Self::NotDurable => "not_durable",
             Self::RateLimited => "rate_limited",
             Self::RuntimeUnsupported => "runtime_unsupported",
@@ -313,6 +402,14 @@ impl fmt::Display for RefusalReason {
             }
             Self::NoCueOnStandby => formatter.write_str("no cue is on standby"),
             Self::CueRunning { cue } => write!(formatter, "cue {cue} is still running"),
+            Self::ScriptFailed {
+                failure,
+                line,
+                column,
+            } => write!(
+                formatter,
+                "the script stopped with a {failure} at line {line}, column {column}"
+            ),
             Self::NotDurable => formatter.write_str("the command could not be made durable"),
             Self::RateLimited => formatter.write_str("the session is rate limited"),
             Self::RuntimeUnsupported => {

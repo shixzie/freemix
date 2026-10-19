@@ -354,6 +354,33 @@ pub fn cue_run_changed(
         .cue_list(list)
         .map(|list| wire_state(&list.state))
         .unwrap_or_default();
+    let titles = title_texts_of(engine, title_texts);
+    let switcher = engine.show().desired_switcher();
+    EventPayload::CueRunChanged(Box::new(CueRunChange {
+        list,
+        frame,
+        state,
+        fired: fired.to_vec(),
+        program: WireInputId::from_domain(switcher.program()),
+        preview: WireInputId::from_domain(switcher.preview()),
+        manual_transition: crate::protocol_manual_status(engine.desired_manual_transition()),
+        fade_to_black: crate::protocol_fade_to_black_state(engine.desired_fade_to_black()),
+        overlays: crate::protocol_overlays(switcher.overlays()),
+        input_audio_strips: crate::protocol_input_audio_strips(engine),
+        streams: crate::protocol_streams(engine),
+        recordings: recordings(engine),
+        playlist: crate::playlist::wire_run_state(engine),
+        titles,
+        media: media_transports(engine, applied),
+    }))
+}
+
+/// The last text each field received, in first-set order, with the
+/// field revision after the command.
+pub(crate) fn title_texts_of(
+    engine: &Engine,
+    title_texts: &[(InputId, FieldId, String)],
+) -> Vec<CueTitleText> {
     // The last text each field received, in first-set order.
     let mut titles: Vec<CueTitleText> = Vec::new();
     for (input, field, text) in title_texts {
@@ -378,34 +405,26 @@ pub fn cue_run_changed(
             .title(title.input.to_domain())
             .map_or(0, |found| found.fields.revision());
     }
+    titles
+}
+
+/// The desired recorder states.
+pub(crate) fn recordings(engine: &Engine) -> Vec<RecordingStatus> {
     let switcher = engine.show().desired_switcher();
-    EventPayload::CueRunChanged(Box::new(CueRunChange {
-        list,
-        frame,
-        state,
-        fired: fired.to_vec(),
-        program: WireInputId::from_domain(switcher.program()),
-        preview: WireInputId::from_domain(switcher.preview()),
-        manual_transition: crate::protocol_manual_status(engine.desired_manual_transition()),
-        fade_to_black: crate::protocol_fade_to_black_state(engine.desired_fade_to_black()),
-        overlays: crate::protocol_overlays(switcher.overlays()),
-        input_audio_strips: crate::protocol_input_audio_strips(engine),
-        streams: crate::protocol_streams(engine),
-        recordings: fm_switcher::RecorderSlot::ALL
-            .into_iter()
-            .map(|recorder| RecordingStatus {
-                recorder: crate::wire_recorder_slot(recorder),
-                desired_active: switcher.recording_desired(recorder),
-            })
-            .collect(),
-        playlist: crate::playlist::wire_run_state(engine),
-        titles,
-        media: media_transports(engine, applied),
-    }))
+    fm_switcher::RecorderSlot::ALL
+        .into_iter()
+        .map(|recorder| RecordingStatus {
+            recorder: crate::wire_recorder_slot(recorder),
+            desired_active: switcher.recording_desired(recorder),
+        })
+        .collect()
 }
 
 /// The transports of every media input `applied` addressed, ascending.
-fn media_transports(engine: &Engine, applied: &[EngineCommand]) -> Vec<CueMediaTransport> {
+pub(crate) fn media_transports(
+    engine: &Engine,
+    applied: &[EngineCommand],
+) -> Vec<CueMediaTransport> {
     let inputs: std::collections::BTreeSet<InputId> = applied
         .iter()
         .filter_map(|command| match command {

@@ -184,6 +184,10 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             frame: fields.canonical_required("frame")?,
             list: super::cue::decode_list(&mut fields)?,
         }),
+        "script_state" => WireMessage::ScriptState(crate::ScriptStateMessage {
+            revision: fields.canonical_required("revision")?,
+            script: super::script::decode_status(&mut fields)?,
+        }),
         "media_state" => WireMessage::MediaState(MediaStateMessage {
             revision: fields.canonical_required("revision")?,
             frame: fields.canonical_required("frame")?,
@@ -335,6 +339,14 @@ impl Fields {
                 parse_canonical_u64(&value).ok_or(CodecError::InvalidField { field: name, value })
             })
             .transpose()
+    }
+
+    /// Parses a required canonical decimal that fits a `u32`.
+    fn canonical_u32(&mut self, name: &'static str) -> Result<u32, CodecError> {
+        let value = self.required(name)?;
+        parse_canonical_u64(&value)
+            .and_then(|parsed| u32::try_from(parsed).ok())
+            .ok_or(CodecError::InvalidField { field: name, value })
     }
 
     /// Parses a required canonical decimal (no sign, no leading zero).
@@ -515,6 +527,16 @@ fn decode_command_payload(
             let (config, pin) = super::live_lan::decode_set(fields)?;
             CommandPayload::SetLiveLan { config, pin }
         }
+        "script_set" => CommandPayload::SetScript {
+            script: super::script::decode_script_id(fields)?,
+            spec: Box::new(super::script::decode_spec(fields)?),
+        },
+        "script_remove" => CommandPayload::RemoveScript {
+            script: super::script::decode_script_id(fields)?,
+        },
+        "script_run" => CommandPayload::RunScript {
+            script: super::script::decode_script_id(fields)?,
+        },
         "input_capture_set" => CommandPayload::SetCaptureSettings {
             input: fields.canonical_input("input")?,
             settings: Box::new(super::capture::decode_settings(fields)?),
@@ -1623,6 +1645,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
                 })?
         },
         cue_list_states: super::cue::parse_list_count(&fields.required("cue_list_states")?)?,
+        script_states: super::script::parse_state_count(&fields.required("script_states")?)?,
         input_categories: super::input_lifecycle::decode_categories(
             &fields.required("input_categories")?,
         )?,
@@ -2422,6 +2445,29 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             frame: fields.canonical_required("frame")?,
             state: super::cue::decode_state(&fields.required("state")?)?,
             fired: super::cue::decode_fired(&fields.required("fired")?)?,
+            program: fields.input("program")?,
+            preview: fields.input("preview")?,
+            manual_transition: decode_manual_status(fields, ManualStatusFields::Unqualified)?,
+            fade_to_black: decode_fade_to_black_state(fields, FadeToBlackStateFields::Unqualified)?,
+            overlays: decode_overlays(fields, "overlays")?,
+            input_audio_strips: decode_input_audio_strips(fields)?,
+            streams: parse_stream_statuses(&fields.required("streams")?)?,
+            recordings: parse_recording_statuses(&fields.required("recordings")?)?,
+            playlist: decode_playlist_state(fields.required("playlist")?)?,
+            titles: super::cue::decode_titles(&fields.required("titles")?)?,
+            media: super::cue::decode_media(&fields.required("media")?)?,
+        })),
+        "script_changed" => {
+            EventPayload::ScriptChanged(Box::new(super::script::decode_status(fields)?))
+        }
+        "script_removed" => EventPayload::ScriptRemoved {
+            script: super::script::decode_script_id(fields)?,
+        },
+        "script_ran" => EventPayload::ScriptRan(Box::new(crate::ScriptRunChange {
+            script: super::script::decode_script_id(fields)?,
+            frame: fields.canonical_required("frame")?,
+            actions: fields.canonical_u32("actions")?,
+            instructions: fields.canonical_u32("instructions")?,
             program: fields.input("program")?,
             preview: fields.input("preview")?,
             manual_transition: decode_manual_status(fields, ManualStatusFields::Unqualified)?,

@@ -139,6 +139,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         animation_preset_states: 0,
         media_states: 0,
         cue_list_states: 0,
+        script_states: 0,
         input_lifecycle: vec![fm_protocol::InputLifecycleStatus::default(); 3],
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
@@ -1674,6 +1675,7 @@ mod titles {
             animation_preset_states: 0,
             media_states: 0,
             cue_list_states: 0,
+            script_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -3132,4 +3134,145 @@ fn a_batch_removal_forgets_the_removed_inputs_source_entries() {
     assert_eq!(view.system_audio_inputs.len(), 1);
     assert_eq!(view.capture_inputs, []);
     assert_eq!(view.network_streams, []);
+}
+
+/// RC-011: a snapshot's `script_state` records complete it in order;
+/// `script_changed`, `script_removed`, and `script_ran` keep the scripts and
+/// the desired show current; mismatched records are refused.
+#[test]
+#[allow(clippy::too_many_lines)] // one replication walk
+fn scripts_replicate_from_snapshot_records_and_events() {
+    use fm_protocol::{ScriptSpec, ScriptStateMessage, ScriptStatus};
+
+    let script = |id: u64, source: &str| ScriptStatus {
+        id,
+        spec: ScriptSpec {
+            name: format!("Script {id}"),
+            source: source.into(),
+        },
+    };
+    let project_id = project(10);
+    let identity = engine("engine-a", 1, "log-a");
+    let mut model = ClientModel::new(project_id);
+    let mut installed = snapshot(project_id, 7);
+    installed.script_states = 1;
+    model.install_snapshot(installed).unwrap();
+    assert!(!model.state().unwrap().scripts_complete());
+    assert_eq!(
+        model.apply_script_state(ScriptStateMessage {
+            revision: 6,
+            script: script(1, "cut 2"),
+        }),
+        Err(ModelError::ScriptStateMismatch)
+    );
+    assert_eq!(
+        model.apply_script_state(ScriptStateMessage {
+            revision: 7,
+            script: script(0, "cut 2"),
+        }),
+        Err(ModelError::InvalidScript(0))
+    );
+    model
+        .apply_script_state(ScriptStateMessage {
+            revision: 7,
+            script: script(1, "cut 2"),
+        })
+        .unwrap();
+    let state = model.state().unwrap();
+    assert!(state.scripts_complete());
+    assert_eq!(state.scripts(), [script(1, "cut 2")]);
+    assert_eq!(
+        model.apply_script_state(ScriptStateMessage {
+            revision: 7,
+            script: script(2, "cut 3"),
+        }),
+        Err(ModelError::ScriptStateMismatch)
+    );
+
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            8,
+            DurableChange::ScriptChanged(Box::new(script(2, "preview 3\ncut"))),
+        ))
+        .unwrap();
+    let run = ScriptRunUpdate {
+        script: 2,
+        frame: 40,
+        actions: 2,
+        instructions: 5,
+        effects: CueRunUpdate {
+            list: 0,
+            frame: 40,
+            state: fm_protocol::CueRunStatus::default(),
+            fired: Vec::new(),
+            selection: BusSelection::new(input(3), input(1)),
+            manual_transition: ManualTransitionStatus::Inactive,
+            fade_to_black: fade_to_black(false, 0),
+            overlays: overlays(),
+            input_audio_strips: input_audio_strips(),
+            streams: Vec::new(),
+            recordings: recordings(),
+            playlist: fm_protocol::PlaylistRunState::Stopped,
+            titles: Vec::new(),
+            media: Vec::new(),
+        },
+    };
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            9,
+            DurableChange::ScriptRan(Box::new(run)),
+        ))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.switcher().desired.program, input(3));
+    assert_eq!(
+        state.last_script_run(),
+        Some(ScriptRunReport {
+            script: 2,
+            frame: 40,
+            actions: 2,
+            instructions: 5,
+        })
+    );
+    assert_eq!(
+        state
+            .scripts()
+            .iter()
+            .map(|script| script.id)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            10,
+            DurableChange::ScriptRemoved { script: 1 },
+        ))
+        .unwrap();
+    assert_eq!(
+        model.state().unwrap().scripts(),
+        [script(2, "preview 3\ncut")]
+    );
+    assert_eq!(
+        model.apply_event(event(
+            project_id,
+            identity,
+            11,
+            DurableChange::ScriptRemoved { script: 1 },
+        )),
+        Err(ModelError::InvalidScript(1))
+    );
+}
+
+#[test]
+fn script_syntax_is_checked_before_saving() {
+    assert_eq!(check_script_syntax("preview 2\ncut\n"), None);
+    let check = check_script_syntax("preview 2\nif program = 1\nend").unwrap();
+    assert_eq!((check.at.line, check.at.column), (2, 12));
+    assert_eq!(check.kind, ScriptCheckKind::Syntax);
 }

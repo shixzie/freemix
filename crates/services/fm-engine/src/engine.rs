@@ -519,6 +519,19 @@ pub enum EngineCommand {
     /// form of every action due on the frame, in order. Never accepted as a
     /// command.
     RealizeCueActions(Vec<EngineCommand>),
+    /// Creates or replaces (`Some`) or removes (`None`) script `script`
+    /// (RC-011). A project edit honouring the project padlock, undone by
+    /// restoring the previous definition (see [`crate::script`]).
+    SetScript {
+        script: u64,
+        definition: Option<crate::EngineScriptDefinition>,
+    },
+    /// Runs script `script` in the sandbox on the command's target frame
+    /// (RC-011): every action it performs applies together, or the run is
+    /// refused whole. A live operation, realized like a cue GO.
+    RunScript {
+        script: u64,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -712,6 +725,22 @@ pub enum EngineEvent {
         edit: bool,
         removed: bool,
         fired: Vec<u64>,
+        title_texts: Vec<(InputId, FieldId, String)>,
+        applied: Vec<EngineCommand>,
+    },
+    /// A script was created, replaced, or removed (or the edit undone or
+    /// redone) (RC-011); it is read from [`ShowState::script`].
+    ScriptChanged {
+        script: u64,
+    },
+    /// A script run was accepted for `frame` (RC-011): it performed
+    /// `actions` actions in `instructions` instructions. `title_texts` and
+    /// `applied` are as for [`Self::CueListChanged`].
+    ScriptRan {
+        script: u64,
+        frame: u64,
+        actions: u32,
+        instructions: u32,
         title_texts: Vec<(InputId, FieldId, String)>,
         applied: Vec<EngineCommand>,
     },
@@ -1428,14 +1457,21 @@ impl Engine {
             &mut show,
             &firing.actions,
             target_frame,
-            &mut runtime,
-            &mut transition,
-            &mut title_texts,
+            &mut CueFrame {
+                runtime: &mut runtime,
+                transition: &mut transition,
+                title_texts: &mut title_texts,
+                takes: 0,
+            },
         );
         let (state, fired) = match applied {
             Ok(()) => (firing.state, firing.fired),
-            Err((_, _, rejection)) if !matches!(command, EngineCommand::CueAdvance { .. }) => {
-                return Err(rejection);
+            Err((cue, step, rejection)) if !matches!(command, EngineCommand::CueAdvance { .. }) => {
+                let message = format!("cue {cue} action {}: {}", step + 1, rejection.message);
+                return Err(Rejection {
+                    message,
+                    ..rejection
+                });
             }
             Err((cue, step, _)) => {
                 // A refused deferred action stops its cue: the clock must not
@@ -1479,36 +1515,24 @@ impl Engine {
 
     /// Applies fired cue actions in order to `show`, collecting their runtime
     /// actions, the Program transition they start, and the title texts they
-    /// set. Returns the first refused action as `(cue, step, refusal)`.
-    #[allow(clippy::type_complexity)]
+    /// set into `frame`. Returns the first refused action as
+    /// `(cue, step, refusal)`.
     #[allow(clippy::result_large_err)] // a refusal carries the failing cue and action
-    fn apply_cue_actions(
+    pub(crate) fn apply_cue_actions(
         &self,
         show: &mut ShowState,
         actions: &[fm_automation::FiredCueAction<fm_model::CueAction>],
         target_frame: FrameNumber,
-        runtime: &mut Vec<EngineCommand>,
-        transition: &mut Option<TransitionKind>,
-        title_texts: &mut Vec<(InputId, FieldId, String)>,
+        frame: &mut CueFrame<'_>,
     ) -> Result<(), (u64, usize, Rejection)> {
-        let mut takes = 0_usize;
+        let CueFrame {
+            runtime,
+            transition,
+            title_texts,
+            takes,
+        } = frame;
         for fired in actions {
-            let refuse = |rejection: Rejection| {
-                let message = format!(
-                    "cue {} action {}: {}",
-                    fired.cue,
-                    fired.step + 1,
-                    rejection.message
-                );
-                (
-                    fired.cue,
-                    fired.step,
-                    Rejection {
-                        message,
-                        ..rejection
-                    },
-                )
-            };
+            let refuse = |rejection: Rejection| (fired.cue, fired.step, rejection);
             if let fm_model::CueAction::TitleText { input, field, text } = &fired.action {
                 title_texts.push((*input, FieldId::new(field.get()), text.clone()));
             }
@@ -1517,7 +1541,7 @@ impl Engine {
                 realized.on_air_usage(input).is_some()
             });
             for sub in commands {
-                if let Some(kind) = self.transition_in_flight.or(*transition)
+                if let Some(kind) = self.transition_in_flight.or(**transition)
                     && refused_during_transition(&sub)
                     && !matches!(&sub, EngineCommand::SetInputAudioStrip { .. })
                 {
@@ -1528,11 +1552,11 @@ impl Engine {
                     )));
                 }
                 if crate::cue::takes_program(&sub) {
-                    takes += 1;
-                    if takes > 1 {
+                    *takes += 1;
+                    if *takes > 1 {
                         return Err(refuse(Rejection::new(
                             RejectionCode::Conflict,
-                            "the cues take Program more than once on one frame",
+                            "the actions take Program more than once on one frame",
                         )));
                     }
                 }
@@ -1572,7 +1596,7 @@ impl Engine {
                     cue: None,
                 };
                 mutation.apply(show, &mut Vec::new()).map_err(refuse)?;
-                *transition = transition.or(kind);
+                **transition = transition.or(kind);
                 runtime.push(action);
             }
         }
@@ -1730,6 +1754,10 @@ impl Engine {
             Ok(command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. })) => {
                 Some(self.cue_plan(command, target_frame))
             }
+            // A script run is planned the same way (RC-011).
+            Ok(EngineCommand::RunScript { script }) => {
+                Some(crate::script::plan(self, *script, target_frame))
+            }
             _ => None,
         };
         let cue_transition = match &cue {
@@ -1849,6 +1877,8 @@ impl Engine {
                     EngineCommand::CueControl { .. }
                         | EngineCommand::CueAdvance { .. }
                         | EngineCommand::SetCueList { .. }
+                        | EngineCommand::RunScript { .. }
+                        | EngineCommand::SetScript { .. }
                 )
             {
                 let name = transition_kind_name(kind);
@@ -2405,11 +2435,21 @@ struct RealizedActions<'a> {
 /// action ran, the event announcing it, the runtime actions realizing it,
 /// and the Program transition it starts.
 #[derive(Clone, Debug)]
-struct CuePlan {
-    show: Box<ShowState>,
-    event: EngineEvent,
-    runtime: Vec<EngineCommand>,
-    transition: Option<TransitionKind>,
+pub(crate) struct CuePlan {
+    pub(crate) show: Box<ShowState>,
+    pub(crate) event: EngineEvent,
+    pub(crate) runtime: Vec<EngineCommand>,
+    pub(crate) transition: Option<TransitionKind>,
+}
+
+/// What the actions applied so far on one frame collected: their runtime
+/// actions, the Program transition they start, the title texts they set,
+/// and how many took Program.
+pub(crate) struct CueFrame<'a> {
+    pub(crate) runtime: &'a mut Vec<EngineCommand>,
+    pub(crate) transition: &'a mut Option<TransitionKind>,
+    pub(crate) title_texts: &'a mut Vec<(InputId, FieldId, String)>,
+    pub(crate) takes: usize,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -2470,11 +2510,19 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetScript { script, definition } = &self.command {
+            crate::script::apply_set(state, *script, definition.as_ref())?;
+            events.push(EngineEvent::ScriptChanged { script: *script });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if matches!(
             &self.command,
             EngineCommand::CueControl { .. }
                 | EngineCommand::CueAdvance { .. }
                 | EngineCommand::RealizeCueActions(_)
+                | EngineCommand::RunScript { .. }
         ) {
             let Some(plan) = self.cue else {
                 return Err(Rejection::new(
@@ -3016,7 +3064,9 @@ impl EngineMutation {
             EngineCommand::SetCueList { .. }
             | EngineCommand::CueControl { .. }
             | EngineCommand::CueAdvance { .. }
-            | EngineCommand::RealizeCueActions(_) => {
+            | EngineCommand::RealizeCueActions(_)
+            | EngineCommand::SetScript { .. }
+            | EngineCommand::RunScript { .. } => {
                 unreachable!("cue mutations return before switcher command mapping")
             }
             EngineCommand::Grade(_)
@@ -3537,6 +3587,7 @@ fn apply_runtime(
         EngineCommand::RenameInput { .. }
             | EngineCommand::SetInputAudioStrip { .. }
             | EngineCommand::SetCueList { .. }
+            | EngineCommand::SetScript { .. }
             | EngineCommand::SetEditLock { .. }
             | EngineCommand::SetTitleFields { .. }
             | EngineCommand::Grade(_)
@@ -3720,7 +3771,9 @@ fn apply_runtime(
         EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
         | EngineCommand::CueAdvance { .. }
-        | EngineCommand::RealizeCueActions(_) => {
+        | EngineCommand::RealizeCueActions(_)
+        | EngineCommand::SetScript { .. }
+        | EngineCommand::RunScript { .. } => {
             unreachable!("cue commands are realized by the engine tick")
         }
         EngineCommand::Grade(_)
@@ -3937,7 +3990,9 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
         | EngineCommand::CueAdvance { .. }
-        | EngineCommand::RealizeCueActions(_) => None,
+        | EngineCommand::RealizeCueActions(_)
+        | EngineCommand::SetScript { .. }
+        | EngineCommand::RunScript { .. } => None,
     }
 }
 

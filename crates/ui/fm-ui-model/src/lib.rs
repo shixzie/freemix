@@ -35,6 +35,9 @@ use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId, Sc
 pub use animation_presets::AnimationPresetsStatus;
 pub use cue_lists::CueRunUpdate;
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
+pub use scripts::{
+    ScriptCheck, ScriptCheckKind, ScriptRunReport, ScriptRunUpdate, check_script_syntax,
+};
 pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 
 pub mod animation_editor;
@@ -45,6 +48,7 @@ mod grading;
 pub mod i18n;
 mod input_lifecycle;
 pub mod scene_designer;
+pub mod scripts;
 pub mod title_animation;
 pub mod title_editor;
 
@@ -446,6 +450,9 @@ pub struct ProjectSnapshot {
     /// How many `cue_list_state` records complete this snapshot (Protocol
     /// 2.50).
     pub cue_list_states: u16,
+    /// How many `script_state` records complete this snapshot (Protocol
+    /// 2.58).
+    pub script_states: u16,
     /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -564,6 +571,7 @@ impl ProjectSnapshot {
             transition_favorites: message.transition_favorites,
             media_states: message.media_states,
             cue_list_states: message.cue_list_states,
+            script_states: message.script_states,
             input_lifecycle,
             input_categories: message.input_categories,
             audio_mixer: message.audio_mixer,
@@ -752,6 +760,14 @@ pub enum DurableChange {
     },
     /// A live cue operation or clock advance.
     CueRunChanged(Box<CueRunUpdate>),
+    /// A script after an edit, undo, or redo (Protocol 2.58).
+    ScriptChanged(Box<fm_protocol::ScriptStatus>),
+    /// A script was removed.
+    ScriptRemoved {
+        script: u64,
+    },
+    /// An accepted script run.
+    ScriptRan(Box<ScriptRunUpdate>),
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -990,6 +1006,11 @@ impl DurableProjectEvent {
             EventPayload::CueRunChanged(change) => {
                 DurableChange::CueRunChanged(Box::new(CueRunUpdate::from_protocol(*change)))
             }
+            EventPayload::ScriptChanged(script) => DurableChange::ScriptChanged(script),
+            EventPayload::ScriptRemoved { script } => DurableChange::ScriptRemoved { script },
+            EventPayload::ScriptRan(change) => {
+                DurableChange::ScriptRan(Box::new(ScriptRunUpdate::from_protocol(*change)))
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -1080,6 +1101,12 @@ pub struct ProjectState {
     /// `cue_list_state` records the snapshot announced that have not
     /// arrived.
     cue_list_states_pending: u16,
+    /// Every script in project order (Protocol 2.58).
+    scripts: Vec<fm_protocol::ScriptStatus>,
+    /// `script_state` records the snapshot announced that have not arrived.
+    script_states_pending: u16,
+    /// The last accepted script run since this snapshot.
+    last_script_run: Option<ScriptRunReport>,
     /// Every input's non-default lifecycle (Protocol 2.38).
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -1244,6 +1271,30 @@ impl ProjectState {
     #[must_use]
     pub const fn cue_lists_complete(&self) -> bool {
         self.cue_list_states_pending == 0
+    }
+
+    /// Returns every replicated script in project order (Protocol 2.58).
+    #[must_use]
+    pub fn scripts(&self) -> &[fm_protocol::ScriptStatus] {
+        &self.scripts
+    }
+
+    /// Returns script `script`.
+    #[must_use]
+    pub fn script(&self, script: u64) -> Option<&fm_protocol::ScriptStatus> {
+        self.scripts.iter().find(|candidate| candidate.id == script)
+    }
+
+    /// Returns whether every `script_state` the snapshot announced arrived.
+    #[must_use]
+    pub const fn scripts_complete(&self) -> bool {
+        self.script_states_pending == 0
+    }
+
+    /// Returns the last accepted script run replicated since the snapshot.
+    #[must_use]
+    pub const fn last_script_run(&self) -> Option<ScriptRunReport> {
+        self.last_script_run
     }
 
     /// Returns the replicated project grading. Complete only once
@@ -1915,6 +1966,11 @@ pub enum ModelError {
     CueListStateMismatch,
     /// A cue list change names an unknown list or cue, or does not apply.
     InvalidCueList(u64),
+    /// A `script_state` arrived that the snapshot did not announce or at
+    /// another revision (Protocol 2.58).
+    ScriptStateMismatch,
+    /// A script change names an unknown script or does not fit its bounds.
+    InvalidScript(u64),
 }
 
 impl fmt::Display for ModelError {
@@ -2057,6 +2113,12 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidCueList(list) => {
                 write!(formatter, "cue list {list} change does not apply")
+            }
+            Self::ScriptStateMismatch => {
+                formatter.write_str("script state does not match the snapshot it follows")
+            }
+            Self::InvalidScript(script) => {
+                write!(formatter, "script {script} change does not apply")
             }
         }
     }
@@ -2633,6 +2695,9 @@ impl ClientModel {
             media_states_pending: snapshot.media_states,
             cue_lists: Vec::new(),
             cue_list_states_pending: snapshot.cue_list_states,
+            scripts: Vec::new(),
+            script_states_pending: snapshot.script_states,
+            last_script_run: None,
             input_lifecycle,
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
@@ -2973,6 +3038,37 @@ impl ClientModel {
         cue_lists::validate_list(&message.list, state)?;
         state.cue_lists.push(message.list);
         state.cue_list_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `script_state` records the installed snapshot
+    /// announced (Protocol 2.58), in project order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::ScriptStateMismatch`] when the record is at another
+    /// revision, unannounced, or duplicates a script; a script outside its
+    /// bounds is refused like a `script_changed`.
+    pub fn apply_script_state(
+        &mut self,
+        message: fm_protocol::ScriptStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if Revision::new(message.revision) != revision
+            || state.script_states_pending == 0
+            || state.script(message.script.id).is_some()
+        {
+            return Err(ModelError::ScriptStateMismatch);
+        }
+        scripts::validate_script(&message.script)?;
+        state.scripts.push(message.script);
+        state.script_states_pending -= 1;
         Ok(())
     }
 
@@ -3937,6 +4033,30 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidCueList(*list))
             };
         }
+        DurableChange::ScriptChanged(script) => {
+            return if state.scripts_complete() {
+                scripts::validate_script(script)
+            } else {
+                Err(ModelError::InvalidScript(script.id))
+            };
+        }
+        DurableChange::ScriptRemoved { script } => {
+            return if state.script(*script).is_some() {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidScript(*script))
+            };
+        }
+        DurableChange::ScriptRan(update) => {
+            scripts::validate_run(update, state)?;
+            (
+                update.effects.selection,
+                update.effects.manual_transition,
+                None,
+                &update.effects.overlays,
+                &update.effects.input_audio_strips,
+            )
+        }
         DurableChange::CueRunChanged(update) => {
             cue_lists::validate_run(update, state)?;
             (
@@ -4481,6 +4601,11 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.cue_lists.retain(|candidate| candidate.id != list);
         }
         DurableChange::CueRunChanged(update) => cue_lists::apply_run(state, *update),
+        DurableChange::ScriptChanged(script) => scripts::apply_script(state, *script),
+        DurableChange::ScriptRemoved { script } => {
+            state.scripts.retain(|candidate| candidate.id != script);
+        }
+        DurableChange::ScriptRan(update) => scripts::apply_run(state, *update),
         DurableChange::GradeChanged(change) => state.grading.apply(change),
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TransitionFavoriteChanged { slot, favorite } => {

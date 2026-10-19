@@ -162,6 +162,7 @@ impl EngineCommand {
             | Self::SetNetworkStream { .. }
             | Self::SetCaptureSettings { .. }
             | Self::SetCueList { .. }
+            | Self::SetScript { .. }
             | Self::SetStreamTarget { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
@@ -214,7 +215,8 @@ impl EngineCommand {
             | Self::RealizeTitle(_)
             | Self::CueControl { .. }
             | Self::CueAdvance { .. }
-            | Self::RealizeCueActions(_) => EngineCommandKind::LiveOperation,
+            | Self::RealizeCueActions(_)
+            | Self::RunScript { .. } => EngineCommandKind::LiveOperation,
         }
     }
 }
@@ -951,6 +953,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                 .position(|config| config.id().get() == target.get()),
         }),
 
+        EngineCommand::SetScript { script, .. } => Some(EngineCommand::SetScript {
+            script: *script,
+            definition: crate::script::definition(state, *script),
+        }),
         EngineCommand::SetCueList { list, .. } => Some(EngineCommand::SetCueList {
             list: *list,
             definition: crate::cue::definition(state, *list),

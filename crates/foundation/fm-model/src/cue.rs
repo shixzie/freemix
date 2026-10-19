@@ -330,7 +330,10 @@ pub fn cue_name_is_valid(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= MAX_CUE_NAME_BYTES
 }
 
-fn action_is_valid(action: &CueAction) -> bool {
+/// Whether one action is within its ranges (durations, channels, text,
+/// gain, waits); references are checked against the owning show.
+#[must_use]
+pub fn cue_action_is_valid(action: &CueAction) -> bool {
     let transition = |frames: u32| (1..=MAX_CUE_TRANSITION_FRAMES).contains(&frames);
     let channel = |channel: u8| (1..=CUE_OVERLAY_CHANNELS).contains(&channel);
     match action {
@@ -407,7 +410,7 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
         actions += cue.actions.len();
         let mut taker = carried;
         for (position, action) in cue.actions.iter().enumerate() {
-            if !action_is_valid(action) {
+            if !cue_action_is_valid(action) {
                 return Err(CueListError::InvalidAction {
                     cue: cue.id,
                     action: position,

@@ -199,6 +199,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         animation_preset_states: 0,
         media_states: 0,
         cue_list_states: 0,
+        script_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         stream_targets: Vec::new(),
@@ -2060,6 +2061,7 @@ mod playlists {
             animation_preset_states: 0,
             media_states: 0,
             cue_list_states: 0,
+            script_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             ..snapshot(revision)
@@ -3788,4 +3790,115 @@ fn system_audio_inputs_and_their_status_replicate() {
             .system_audio_input(input(5).to_domain())
             .is_none()
     );
+}
+
+/// Protocol 2.58 (RC-011): a snapshot announces one `script_state` per
+/// project script, which complete it after its cue list states;
+/// `script_changed` and `script_removed` keep the scripts current.
+mod scripts {
+    use fm_protocol::{ScriptSpec, ScriptStateMessage, ScriptStatus};
+
+    use super::*;
+
+    fn script(id: u64) -> ScriptStatus {
+        ScriptStatus {
+            id,
+            spec: ScriptSpec {
+                name: format!("Script {id}"),
+                source: "cut 2".into(),
+            },
+        }
+    }
+
+    fn script_state(revision: u64, id: u64) -> WireMessage {
+        WireMessage::ScriptState(ScriptStateMessage {
+            revision,
+            script: script(id),
+        })
+    }
+
+    fn synchronizing(script_states: u16) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(SnapshotMessage {
+                script_states,
+                ..snapshot(4)
+            }))
+            .unwrap();
+        client
+    }
+
+    fn resyncs(client: &mut Client, message: WireMessage) {
+        let error = client.intake(message).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn announced_script_states_complete_the_snapshot_and_events_track_them() {
+        let mut client = synchronizing(2);
+        assert_eq!(
+            client.intake(script_state(4, 3)).unwrap(),
+            Intake::ScriptStateApplied
+        );
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        client.intake(script_state(4, 1)).unwrap();
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let ids = |client: &Client| {
+            client
+                .model()
+                .state()
+                .unwrap()
+                .scripts()
+                .iter()
+                .map(|script| script.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&client), [3, 1]);
+
+        client
+            .apply_event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 5,
+                },
+                payload: EventPayload::ScriptRemoved { script: 3 },
+            })
+            .unwrap();
+        client
+            .apply_event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 6,
+                },
+                payload: EventPayload::ScriptChanged(Box::new(script(7))),
+            })
+            .unwrap();
+        assert_eq!(ids(&client), [1, 7]);
+    }
+
+    #[test]
+    fn unannounced_or_misplaced_script_states_force_a_fresh_snapshot() {
+        // Beyond the announced count.
+        let mut client = synchronizing(1);
+        client.intake(script_state(4, 1)).unwrap();
+        resyncs(&mut client, script_state(4, 2));
+        // At another revision.
+        resyncs(&mut synchronizing(1), script_state(3, 1));
+        // Out of bounds.
+        resyncs(&mut synchronizing(1), script_state(4, 0));
+    }
 }

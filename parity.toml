@@ -459,7 +459,9 @@ paths = ["crates/features/fm-automation/tests/catalog_scripts.rs"]
 commands = ["cargo test -p fm-automation --test catalog_scripts"]
 [[tests]]
 id = "accept-rc-011"
-state = "planned"
+state = "present"
+paths = ["crates/foundation/fm-script/tests/scripts.rs", "crates/services/fm-persistence/tests/scripts.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/foundation/fm-protocol/tests/scripts.rs", "crates/foundation/fm-protocol/tests/refusal.rs", "crates/services/fm-engine/tests/scripts.rs", "crates/services/fm-client/tests/client.rs", "apps/freemixd/tests/process.rs", "apps/freemix-cli/tests/scripts.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-script --test scripts", "cargo test -p fm-persistence --test scripts", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-protocol --test scripts", "cargo test -p fm-protocol --test refusal", "cargo test -p fm-engine --test scripts", "cargo test -p fm-client --test client", "cargo test -p freemixd --test process", "cargo test -p freemix-cli --test scripts", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-rc-012"
 state = "present"

@@ -3331,6 +3331,34 @@ it. Remaining gaps: lists are not bound to an input button or previewed
 before GO; there is no data-source update action and no timecode delays;
 the web tally page offers only GO and Standby. `RC-017` remains planned.
 
+Current implementation boundary for sandboxed scripting (`RC-011`): the
+first slice is a purpose-built language rather than a Wasm runtime (schema
+54, Protocol 2.58). `fm-script`, a dependency-free foundation crate, parses
+and interprets `FreeMix` Script: integer, boolean, and string variables,
+`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 24 action verbs that map
+onto cue actions. The language has no file, network, process,
+clock, or randomness access at all; its only host interface reads the
+Program and Preview input numbers and performs one show action at a time.
+Runs are deterministic and bounded by an instruction budget (time), an
+action budget, and variable and string budgets (memory); the parser bounds
+source size, lines, block nesting, and expression nesting. A project stores
+up to sixteen named scripts; edits are padlocked, undoable project edits,
+and a run is a journaled operator command whose actions go through the cue
+GO machinery, so each is checked and refused exactly as the matching
+command would be, and the whole run lands on one frame or is refused with a
+typed `script_failed` reason naming the failure kind, line, and column.
+Studio adds Edit ▸ Scripts… (a list, a name field, a monospace editor that
+marks the first syntax error's line as the operator types and the line a
+refused run stopped at, Save, Discard, Run, Delete, and the last run's
+action and instruction counts) with English and Spanish hover help, and
+`freemix-cli` has local and `remote-` `scripts`, `script-set`,
+`script-remove`, and `script-run` (by id or name). Remaining gaps: no Wasm
+component runtime or declared capability manifest; scripts cannot wait,
+loop across frames, or read state beyond Program and Preview; the budget
+is counted in instructions, not wall-clock time; a cue cannot trigger a
+script yet; and a refused action's own typed reason is folded into
+`script_failed` (its code and message are kept). `RC-011` remains planned.
+
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame
 durations, ordered or seeded-random cycles without repeats, cut or crossfade

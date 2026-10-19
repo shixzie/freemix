@@ -1049,8 +1049,12 @@ impl Runtime<'_> {
         simulated: bool,
     ) -> Result<(), DispatchError> {
         let cue = matches!(command.payload, CommandPayload::CueControl { .. });
-        if !simulated || !(cue || matches!(command.payload, CommandPayload::PlaylistControl { .. }))
-        {
+        // A script run may start or stop the playlist too (RC-011).
+        let playlist = matches!(
+            command.payload,
+            CommandPayload::PlaylistControl { .. } | CommandPayload::RunScript { .. }
+        );
+        if !simulated || !(cue || playlist) {
             return Ok(());
         }
         let rate = durable.project().settings().frame_rate;
@@ -1374,6 +1378,12 @@ impl Runtime<'_> {
                             .observed_frame(state.frame, rate, Instant::now());
                     WireMessage::CueListState(state)
                 }));
+            peer.initial_sync.extend(
+                control
+                    .script_states()
+                    .into_iter()
+                    .map(WireMessage::ScriptState),
+            );
         }
     }
 

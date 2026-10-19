@@ -57,6 +57,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_input_lifecycle(project, &mut errors);
     validate_playlist(project, &mut errors);
     validate_cue_lists(project, &mut errors);
+    validate_scripts(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -301,6 +302,22 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
             entity: None,
             field: "playlist.next_take",
             kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+fn validate_scripts(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Err(error) = crate::validate_scripts(project.scripts()) {
+        errors.push(ValidationError {
+            entity: None,
+            field: "scripts",
+            kind: match error {
+                crate::ScriptError::DuplicateId(_) => ValidationErrorKind::DuplicateId,
+                crate::ScriptError::InvalidName => ValidationErrorKind::Empty,
+                crate::ScriptError::InvalidId
+                | crate::ScriptError::InvalidSource
+                | crate::ScriptError::TooManyScripts => ValidationErrorKind::OutOfRange,
+            },
         });
     }
 }

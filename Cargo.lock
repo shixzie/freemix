@@ -1329,6 +1329,7 @@ dependencies = [
  "fm-model",
  "fm-playback",
  "fm-scheduler",
+ "fm-script",
  "fm-switcher",
  "fm-titles",
  "fm-types",
@@ -1431,6 +1432,7 @@ version = "0.1.0"
 dependencies = [
  "fm-animation",
  "fm-grade",
+ "fm-script",
  "fm-types",
 ]
 
@@ -1552,6 +1554,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-script"
+version = "0.1.0"
+
+[[package]]
 name = "fm-server"
 version = "0.1.0"
 dependencies = [
@@ -1650,6 +1656,7 @@ dependencies = [
  "fm-command",
  "fm-grade",
  "fm-protocol",
+ "fm-script",
  "fm-types",
 ]
 
@@ -1760,6 +1767,7 @@ dependencies = [
  "fm-model",
  "fm-persistence",
  "fm-protocol",
+ "fm-script",
  "fm-sim",
  "fm-switcher",
  "fm-title-render",

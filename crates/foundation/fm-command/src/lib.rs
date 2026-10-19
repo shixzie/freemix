@@ -26,5 +26,5 @@ pub use machine::{
     ApplyOutcome, CommandState, CommitCounter, CommitError, DurableEvent, Mutation, PrepareOutcome,
     PreparedCommit,
 };
-pub use refusal::{IdKind, InputUse, MAX_REFUSAL_FIELD_BYTES, RefusalReason};
+pub use refusal::{IdKind, InputUse, MAX_REFUSAL_FIELD_BYTES, RefusalReason, ScriptFailureKind};
 pub use transaction::{MAX_TRANSACTION_COMMANDS, Transaction, TransactionError};

@@ -160,60 +160,67 @@ pub(crate) fn run_state(state: CueStackState) -> CueRunState {
 pub(crate) fn check_references(state: &ShowState, cues: &[Cue]) -> Result<(), Rejection> {
     for cue in cues {
         for action in &cue.actions {
-            if let Some(input) = action.input() {
-                if !state.inputs().contains(&input) {
-                    return Err(Rejection::new(
-                        RejectionCode::NotFound,
-                        format!("cue {} names input {input}, which the show lacks", cue.id),
-                    )
-                    .with_reason(crate::error::unknown_input_reason(input)));
-                }
-                if matches!(action, CueAction::Media { .. })
-                    && state.media_settings(input).is_none()
-                {
-                    return Err(Rejection::new(
-                        RejectionCode::InvalidCommand,
-                        format!(
-                            "cue {} names input {input}, which is not a media input",
-                            cue.id
-                        ),
-                    )
-                    .with_field(FieldIssue::new(
-                        "cues",
-                        "not_media",
-                        format!("input {input} is not a media input"),
-                    )));
-                }
-                let title = matches!(
-                    action,
-                    CueAction::TitleOn { .. }
-                        | CueAction::TitleText { .. }
-                        | CueAction::TitleOff { .. }
-                );
-                if title && state.title(input).is_none() {
-                    return Err(Rejection::new(
-                        RejectionCode::InvalidCommand,
-                        format!("cue {} names input {input}, which is not a title", cue.id),
-                    )
-                    .with_reason(RefusalReason::UnknownId {
-                        kind: IdKind::Title,
-                        id: input.get().get(),
-                    }));
-                }
-            }
-            if let CueAction::Stream { target, .. } = action {
-                let target = StreamTargetId::from_non_zero(target.get());
-                if state.desired_switcher().stream_running(target).is_none() {
-                    return Err(Rejection::new(
-                        RejectionCode::NotFound,
-                        format!(
-                            "cue {} names stream target {}, which the show lacks",
-                            cue.id,
-                            target.get()
-                        ),
-                    ));
-                }
-            }
+            check_action_references(state, action, &format!("cue {}", cue.id))?;
+        }
+    }
+    Ok(())
+}
+
+/// Refuses one action naming an input, title, or stream target outside
+/// `state`; `owner` names what holds the action in the message.
+///
+/// # Errors
+///
+/// Returns the refusal for the first unknown reference.
+pub(crate) fn check_action_references(
+    state: &ShowState,
+    action: &CueAction,
+    owner: &str,
+) -> Result<(), Rejection> {
+    if let Some(input) = action.input() {
+        if !state.inputs().contains(&input) {
+            return Err(Rejection::new(
+                RejectionCode::NotFound,
+                format!("{owner} names input {input}, which the show lacks"),
+            )
+            .with_reason(crate::error::unknown_input_reason(input)));
+        }
+        if matches!(action, CueAction::Media { .. }) && state.media_settings(input).is_none() {
+            return Err(Rejection::new(
+                RejectionCode::InvalidCommand,
+                format!("{owner} names input {input}, which is not a media input"),
+            )
+            .with_field(FieldIssue::new(
+                "cues",
+                "not_media",
+                format!("input {input} is not a media input"),
+            )));
+        }
+        let title = matches!(
+            action,
+            CueAction::TitleOn { .. } | CueAction::TitleText { .. } | CueAction::TitleOff { .. }
+        );
+        if title && state.title(input).is_none() {
+            return Err(Rejection::new(
+                RejectionCode::InvalidCommand,
+                format!("{owner} names input {input}, which is not a title"),
+            )
+            .with_reason(RefusalReason::UnknownId {
+                kind: IdKind::Title,
+                id: input.get().get(),
+            }));
+        }
+    }
+    if let CueAction::Stream { target, .. } = action {
+        let target = StreamTargetId::from_non_zero(target.get());
+        if state.desired_switcher().stream_running(target).is_none() {
+            return Err(Rejection::new(
+                RejectionCode::NotFound,
+                format!(
+                    "{owner} names stream target {}, which the show lacks",
+                    target.get()
+                ),
+            ));
         }
     }
     Ok(())

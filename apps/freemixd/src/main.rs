@@ -2883,12 +2883,13 @@ fn recording_command_slot(payload: &CommandPayload) -> Option<(bool, usize)> {
     }
 }
 
-/// The recorder and stream commands an accepted cue GO or advance ran
-/// (RC-017), in the order its actions ran them, as the direct commands the
-/// native runtime realizes: a cue that starts REC 1 opens a segment exactly
-/// like `record_start`, and one that stops a stream retires its worker
-/// exactly like `stream_stop`. Every other command yields nothing; the
-/// direct record and stream commands are observed as themselves.
+/// The recorder and stream commands an accepted cue GO or advance (RC-017)
+/// or script run (RC-011) ran, in the order its actions ran them, as the
+/// direct commands the native runtime realizes: a cue that starts REC 1
+/// opens a segment exactly like `record_start`, and one that stops a stream
+/// retires its worker exactly like `stream_stop`. Every other command yields
+/// nothing; the direct record and stream commands are observed as
+/// themselves.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 fn cue_worker_commands(
     command: &CommandMessage,
@@ -2896,7 +2897,9 @@ fn cue_worker_commands(
 ) -> Vec<CommandMessage> {
     if !matches!(
         command.payload,
-        CommandPayload::CueControl { .. } | CommandPayload::CueAdvance { .. }
+        CommandPayload::CueControl { .. }
+            | CommandPayload::CueAdvance { .. }
+            | CommandPayload::RunScript { .. }
     ) {
         return Vec::new();
     }
@@ -2907,7 +2910,8 @@ fn cue_worker_commands(
         .events
         .iter()
         .filter_map(|event| match &event.payload {
-            fm_engine::EngineEvent::CueListChanged { applied, .. } => Some(applied),
+            fm_engine::EngineEvent::CueListChanged { applied, .. }
+            | fm_engine::EngineEvent::ScriptRan { applied, .. } => Some(applied),
             _ => None,
         })
         .flatten()
@@ -11331,6 +11335,7 @@ fn restore_engine_with_titles(
     restore_presets_favorites_and_media(&mut show, canonical)?;
     // Checked against the restored titles and media inputs.
     show.set_cue_lists(canonical.cue_lists().to_vec())?;
+    show.set_scripts(canonical.scripts().to_vec())?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -11810,6 +11815,9 @@ fn handle_client(
                     &mut session,
                     &WireMessage::CueListState(state),
                 )?;
+            }
+            for state in control.borrow().script_states() {
+                write_session_message(&mut writer, &mut session, &WireMessage::ScriptState(state))?;
             }
         }
         SyncPayload::Resume(events) => {
@@ -13329,10 +13337,13 @@ fn command_base_ticks(
     ) {
         return prepared.playlist_ticks();
     }
-    // A cue operation may target a later frame and start transitions.
+    // A cue operation or script run may target a later frame and start
+    // transitions.
     if matches!(
         command.payload,
-        CommandPayload::CueControl { .. } | CommandPayload::CueAdvance { .. }
+        CommandPayload::CueControl { .. }
+            | CommandPayload::CueAdvance { .. }
+            | CommandPayload::RunScript { .. }
     ) {
         return prepared.cue_ticks();
     }
@@ -13423,6 +13434,9 @@ fn command_base_ticks(
         | CommandPayload::RemoveCueList { .. }
         | CommandPayload::CueControl { .. }
         | CommandPayload::CueAdvance { .. }
+        | CommandPayload::SetScript { .. }
+        | CommandPayload::RemoveScript { .. }
+        | CommandPayload::RunScript { .. }
         | CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
@@ -13578,6 +13592,7 @@ fn stored_project_with_receipts(
     sync_project_display_outputs(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_cue_lists(show.cue_lists().to_vec());
+    project.set_scripts(show.scripts().to_vec());
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());

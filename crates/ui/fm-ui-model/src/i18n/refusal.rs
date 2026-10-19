@@ -4,7 +4,7 @@
 //! carries a [`RefusalReason`] is worded here from its typed parameters, so
 //! a Spanish console never shows "a layer source of scene 100".
 
-use fm_protocol::{IdKind, InputUse, RefusalReason};
+use fm_protocol::{IdKind, InputUse, RefusalReason, ScriptFailureKind};
 
 use super::{Arg, Locale, Msg};
 
@@ -38,6 +38,7 @@ const fn id_kind_msg(kind: IdKind) -> Msg {
         IdKind::PlaylistEntry => Msg::IdKindPlaylistEntry,
         IdKind::CueList => Msg::IdKindCueList,
         IdKind::Cue => Msg::IdKindCue,
+        IdKind::Script => Msg::IdKindScript,
     }
 }
 
@@ -61,9 +62,26 @@ pub fn bounds_field_name(l: Locale, field: &str) -> String {
         "actions" => Msg::BoundsFieldCueActions,
         "list_actions" => Msg::BoundsFieldCueListActions,
         "text" => Msg::BoundsFieldCueText,
+        "scripts" => Msg::BoundsFieldScripts,
+        "source" => Msg::BoundsFieldScriptSource,
         other => return other.to_owned(),
     };
     l.text(msg).to_owned()
+}
+
+/// The localized phrase naming why a script stopped (RC-011), as it
+/// completes "stopped with …".
+#[must_use]
+pub const fn script_failure_msg(failure: ScriptFailureKind) -> Msg {
+    match failure {
+        ScriptFailureKind::Syntax => Msg::ScriptFailSyntax,
+        ScriptFailureKind::Runtime => Msg::ScriptFailRuntime,
+        ScriptFailureKind::InstructionBudget => Msg::ScriptFailInstructions,
+        ScriptFailureKind::ActionBudget => Msg::ScriptFailActions,
+        ScriptFailureKind::VariableBudget => Msg::ScriptFailVariables,
+        ScriptFailureKind::StringBudget => Msg::ScriptFailStringBytes,
+        ScriptFailureKind::Refused => Msg::ScriptFailRefused,
+    }
 }
 
 /// What an operator does about one input usage.
@@ -211,6 +229,18 @@ pub fn refusal_reason_text(l: Locale, reason: &RefusalReason, names: InputNames<
         RefusalReason::NotDurable => plain(Msg::RsnNotDurable),
         RefusalReason::RateLimited => plain(Msg::RsnRateLimited),
         RefusalReason::RuntimeUnsupported => plain(Msg::RsnRuntimeUnsupported),
+        RefusalReason::ScriptFailed {
+            failure,
+            line,
+            column,
+        } => l.format(
+            Msg::RsnScriptFailed,
+            &[
+                ("failure", Arg::Str(l.text(script_failure_msg(*failure)))),
+                ("line", Arg::Plain(u64::from(*line))),
+                ("column", Arg::Plain(u64::from(*column))),
+            ],
+        ),
     }
 }
 
@@ -272,6 +302,13 @@ mod tests {
             RefusalReason::RateLimited,
             RefusalReason::RuntimeUnsupported,
         ];
+        for failure in ScriptFailureKind::ALL {
+            reasons.push(RefusalReason::ScriptFailed {
+                failure,
+                line: 4,
+                column: 12,
+            });
+        }
         for kind in IdKind::ALL {
             reasons.push(RefusalReason::UnknownId { kind, id: 4 });
             reasons.push(RefusalReason::DuplicateId { kind, id: 4 });

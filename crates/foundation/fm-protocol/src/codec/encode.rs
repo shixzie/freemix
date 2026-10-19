@@ -161,6 +161,13 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::ScriptState(message) => {
+            record.kind("script_state");
+            record.field("revision", message.revision)?;
+            super::script::encode_status(&message.script, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::MediaState(message) => {
             record.kind("media_state");
             record.field("revision", message.revision)?;
@@ -308,6 +315,24 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             super::cue::encode_operation(*list, *operation, &mut |name, value| {
                 record.field_string(name, value)
             })?;
+        }
+        CommandPayload::SetScript { script, spec } => {
+            record.field("payload", "script_set")?;
+            super::script::encode_spec(*script, spec, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::RemoveScript { script } | CommandPayload::RunScript { script } => {
+            record.field(
+                "payload",
+                if matches!(&message.payload, CommandPayload::RunScript { .. }) {
+                    "script_run"
+                } else {
+                    "script_remove"
+                },
+            )?;
+            super::script::validate_script_id(*script)?;
+            record.field("script", script)?;
         }
         CommandPayload::CueAdvance { list, frame } => {
             record.field("payload", "cue_advance")?;
@@ -1501,6 +1526,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         });
     }
     record.field("cue_list_states", message.cue_list_states)?;
+    if !super::script::state_count_is_valid(message.script_states) {
+        return Err(CodecError::InvalidField {
+            field: "script_states",
+            value: message.script_states.to_string(),
+        });
+    }
+    record.field("script_states", message.script_states)?;
     record.field_string(
         "input_categories",
         super::input_lifecycle::encode_categories(&message.input_categories)?,
@@ -2150,6 +2182,47 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("frame", change.frame)?;
             record.field_string("state", super::cue::encode_state(&change.state))?;
             record.field_string("fired", super::cue::encode_fired(&change.fired))?;
+            record.field("program", change.program)?;
+            record.field("preview", change.preview)?;
+            encode_manual_status(
+                record,
+                change.manual_transition,
+                ManualStatusFields::Unqualified,
+            )?;
+            encode_fade_to_black_state(
+                record,
+                change.fade_to_black,
+                FadeToBlackStateFields::Unqualified,
+            )?;
+            encode_overlays(record, "overlays", &change.overlays)?;
+            encode_input_audio_strips(record, &change.input_audio_strips)?;
+            record.field_string("streams", stream_statuses(&change.streams)?)?;
+            record.field_string("recordings", recording_statuses(&change.recordings)?)?;
+            record.field_string(
+                "playlist",
+                super::playlist::encode_playlist_state(change.playlist),
+            )?;
+            record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
+            record.field_string("media", super::cue::encode_media(&change.media)?)?;
+        }
+        EventPayload::ScriptChanged(status) => {
+            record.field("event", "script_changed")?;
+            super::script::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::ScriptRemoved { script } => {
+            record.field("event", "script_removed")?;
+            super::script::validate_script_id(*script)?;
+            record.field("script", script)?;
+        }
+        EventPayload::ScriptRan(change) => {
+            record.field("event", "script_ran")?;
+            super::script::validate_script_id(change.script)?;
+            record.field("script", change.script)?;
+            record.field("frame", change.frame)?;
+            record.field("actions", change.actions)?;
+            record.field("instructions", change.instructions)?;
             record.field("program", change.program)?;
             record.field("preview", change.preview)?;
             encode_manual_status(

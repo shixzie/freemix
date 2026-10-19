@@ -29,6 +29,7 @@ mod network_stream;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
+mod script;
 mod stream_target;
 mod system_audio;
 mod title_animation;
@@ -51,6 +52,7 @@ pub use scene_layer::{
     quarter_turns, wire_crop, wire_effects, wire_geometry, wire_key, wire_layer_outline,
     wire_layer_source, wire_layer_spec, wire_mask, wire_scene_layer_edit,
 };
+pub use script::{script_engine_command, wire_script};
 pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
 pub use transition::{
@@ -1637,6 +1639,14 @@ impl<A: AuthorizationHook> ControlService<A> {
         cue::cue_list_states(&self.engine)
     }
 
+    /// Returns the `script_state` records a session writes after
+    /// [`Self::cue_list_states`], one per project script in project order
+    /// (Protocol 2.58).
+    #[must_use]
+    pub fn script_states(&self) -> Vec<fm_protocol::ScriptStateMessage> {
+        script::script_states(&self.engine)
+    }
+
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
     /// `None` while no cue waits (see [`Engine::cue_advance_frame`]).
     #[must_use]
@@ -2292,6 +2302,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetTitleFields { .. }
         | EngineCommand::SetPlaylist { .. }
         | EngineCommand::SetCueList { .. }
+        | EngineCommand::SetScript { .. }
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
@@ -2377,6 +2388,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetPlaylist { .. }
         | CommandPayload::SetCueList { .. }
         | CommandPayload::RemoveCueList { .. }
+        | CommandPayload::SetScript { .. }
+        | CommandPayload::RemoveScript { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::SetDisplayOutput { .. }
@@ -2434,7 +2447,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }
         | CommandPayload::CueControl { .. }
-        | CommandPayload::CueAdvance { .. } => CommandClass::Transition,
+        | CommandPayload::CueAdvance { .. }
+        | CommandPayload::RunScript { .. } => CommandClass::Transition,
     }
 }
 
@@ -2614,6 +2628,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::RemoveCueList { .. }
         | CommandPayload::CueControl { .. }
         | CommandPayload::CueAdvance { .. }) => cue::cue_engine_command(payload),
+        payload @ (CommandPayload::SetScript { .. }
+        | CommandPayload::RemoveScript { .. }
+        | CommandPayload::RunScript { .. }) => script::script_engine_command(payload),
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
@@ -3019,6 +3036,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetCueList { .. } => {
             return cue::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetScript { .. } => {
+            return script::wire_edit_payload(command);
+        }
         _ => return None,
     })
 }
@@ -3203,6 +3223,8 @@ const fn is_program_transition(command: &EngineCommand) -> bool {
             // A cue may take Program with a transition too.
             | EngineCommand::CueControl { .. }
             | EngineCommand::CueAdvance { .. }
+            // So may a script run.
+            | EngineCommand::RunScript { .. }
     )
 }
 
@@ -3304,6 +3326,34 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
             cue::cue_run_changed(engine, *list, *frame, fired, title_texts, applied)
         })
     }) {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EngineEvent::ScriptChanged { script } => Some(script::script_changed(engine, *script)),
+            EngineEvent::ScriptRan {
+                script,
+                frame,
+                actions,
+                instructions,
+                title_texts,
+                applied,
+            } => Some(script::script_ran(
+                engine,
+                &script::ScriptRun {
+                    script: *script,
+                    frame: *frame,
+                    actions: *actions,
+                    instructions: *instructions,
+                    title_texts,
+                    applied,
+                },
+            )),
+            _ => None,
+        })
+    {
         return payload;
     }
     // A field save and a title take both publish the title's complete values
@@ -3658,6 +3708,7 @@ fn snapshot_record(
         transition_favorites: transition::wire_favorites(engine),
         media_states: media::media_state_count(engine),
         cue_list_states: cue::cue_list_state_count(engine),
+        script_states: script::script_state_count(engine),
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),

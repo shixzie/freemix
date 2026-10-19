@@ -20,6 +20,7 @@ fn rejected(reason: Option<RefusalReason>) -> WireMessage {
 }
 
 /// One reason of every kind, with its exact wire form.
+#[allow(clippy::too_many_lines)] // one entry per reason
 fn every_reason() -> Vec<(RefusalReason, &'static str)> {
     let in_use = |usage| RefusalReason::InputInUse { input: 2, usage };
     vec![
@@ -113,6 +114,30 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
         ),
         (RefusalReason::NoCueOnStandby, "no_cue_on_standby"),
         (RefusalReason::CueRunning { cue: 4 }, "cue_running:4"),
+        (
+            RefusalReason::ScriptFailed {
+                failure: fm_command::ScriptFailureKind::Syntax,
+                line: 3,
+                column: 12,
+            },
+            "script_failed:syntax:3:12",
+        ),
+        (
+            RefusalReason::ScriptFailed {
+                failure: fm_command::ScriptFailureKind::InstructionBudget,
+                line: 1,
+                column: 1,
+            },
+            "script_failed:instructions:1:1",
+        ),
+        (
+            RefusalReason::ScriptFailed {
+                failure: fm_command::ScriptFailureKind::Refused,
+                line: 256,
+                column: 4,
+            },
+            "script_failed:refused:256:4",
+        ),
         (RefusalReason::NotDurable, "not_durable"),
         (RefusalReason::RateLimited, "rate_limited"),
         (RefusalReason::RuntimeUnsupported, "runtime_unsupported"),
@@ -121,7 +146,7 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 58));
 }
 
 #[test]
@@ -183,6 +208,12 @@ fn malformed_reasons_are_refused_both_ways() {
         "bounds_exceeded:inputs",
         "stinger_realizing:0",
         "invalid_name:4294967296",
+        "script_failed:syntax:0:1",
+        "script_failed:syntax:1:0",
+        "script_failed:typo:1:1",
+        "script_failed:refused:1",
+        "script_failed:refused:1:01",
+        "script_failed:refused:1:1:1",
     ] {
         assert!(decode_refusal_reason(bad).is_err(), "{bad:?}");
     }

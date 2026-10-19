@@ -46,7 +46,7 @@ fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
     }
 }
 
-fn hex(value: &str) -> String {
+pub(super) fn hex(value: &str) -> String {
     use core::fmt::Write as _;
     let mut out = String::with_capacity(value.len() * 2);
     for byte in value.bytes() {
@@ -55,7 +55,7 @@ fn hex(value: &str) -> String {
     out
 }
 
-fn unhex(field: &'static str, value: &str) -> Result<String, CodecError> {
+pub(super) fn unhex(field: &'static str, value: &str) -> Result<String, CodecError> {
     let digit = |byte: u8| match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),

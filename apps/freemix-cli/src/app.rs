@@ -1713,6 +1713,39 @@ pub fn run(command: Command) -> AppResult<()> {
             );
         }
         Command::RemoteCueLists { address } => remote::cue_lists(address)?,
+        Command::Scripts { path } => {
+            let project = inspect_engine(&path)?;
+            remote::print_scripts(
+                project
+                    .engine
+                    .show()
+                    .scripts()
+                    .iter()
+                    .map(fm_control::wire_script)
+                    .collect::<Vec<_>>()
+                    .iter(),
+            );
+        }
+        Command::RemoteScripts { address } => remote::scripts(address)?,
+        Command::Script {
+            path,
+            command,
+            key,
+            expected_revision,
+        } => script(&path, command, key, expected_revision)?,
+        Command::RemoteScript {
+            address,
+            command,
+            key,
+            expected_revision,
+        } => remote::script(
+            address,
+            script_payload(command, |name| {
+                remote::script_id(address, name)?.ok_or_else(|| unknown_script(name).into())
+            })?,
+            key,
+            expected_revision,
+        )?,
         Command::RemoteUndo {
             address,
             redo,
@@ -2444,6 +2477,93 @@ fn cue(
     Ok(())
 }
 
+fn unknown_script(name: &str) -> AppFailure {
+    AppFailure(format!("no script is named {name:?}"))
+}
+
+/// The wire command of a script command line, reading a new source from
+/// its file (or standard input for `-`) and resolving a script named by
+/// name through `resolve`.
+pub(crate) fn script_payload(
+    command: crate::args::ScriptCommand,
+    resolve: impl FnOnce(&str) -> AppResult<u64>,
+) -> AppResult<fm_protocol::CommandPayload> {
+    use crate::args::{ScriptCommand, ScriptRef};
+    use fm_protocol::{CommandPayload, ScriptSpec};
+
+    Ok(match command {
+        ScriptCommand::Set {
+            script,
+            name,
+            source,
+        } => {
+            let source = if source.as_os_str() == "-" {
+                io::read_to_string(io::stdin())?
+            } else {
+                fs::read_to_string(&source)?
+            };
+            CommandPayload::SetScript {
+                script,
+                spec: Box::new(ScriptSpec { name, source }),
+            }
+        }
+        ScriptCommand::Remove { script } => CommandPayload::RemoveScript { script },
+        ScriptCommand::Run {
+            script: ScriptRef::Id(script),
+        } => CommandPayload::RunScript { script },
+        ScriptCommand::Run {
+            script: ScriptRef::Name(name),
+        } => CommandPayload::RunScript {
+            script: resolve(&name)?,
+        },
+    })
+}
+
+/// Edits or runs one script of a local project (RC-011). A run performs
+/// its actions on one frame, all or nothing, then plays any transition it
+/// started to its end; an accepted run prints `ScriptRan(...)`.
+fn script(
+    path: &Path,
+    command: crate::args::ScriptCommand,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> AppResult<()> {
+    let mut project = load_engine(path)?;
+    let payload = script_payload(command, |name| {
+        project
+            .engine
+            .show()
+            .scripts()
+            .iter()
+            .find(|script| script.name == name)
+            .map(|script| script.id)
+            .ok_or_else(|| unknown_script(name).into())
+    })?;
+    let command = fm_control::script_engine_command(&payload);
+    let result = execute(&mut project.engine, command, 1, key, expected_revision)?;
+    if result.replayed {
+        if let Some(rejection) = result.rejection {
+            return Err(rejection.into());
+        }
+        print_status(&project);
+        return Ok(());
+    }
+    if result.rejection.is_none() {
+        run_cue_clock(&mut project.engine)?;
+    }
+    save_engine(path, &project)?;
+    if let Some(rejection) = result.rejection {
+        return Err(rejection.into());
+    }
+    if let (fm_protocol::CommandPayload::RunScript { script }, Some(ran)) =
+        (&payload, result.script_ran)
+    {
+        remote::print_script_ran(*script, ran.0, ran.1, ran.2);
+    }
+    print_status(&project);
+    Ok(())
+}
+
 /// Runs every waiting cue to its end on the simulated clock.
 fn run_cue_clock(engine: &mut Engine) -> AppResult<()> {
     while let Some((list, due)) = engine.cue_advance_frame() {
@@ -2486,6 +2606,18 @@ fn execute(
         envelope = envelope.expecting(Revision::new(revision));
     }
     let outcome = engine.execute(envelope, 0)?;
+    let script_ran = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            fm_engine::EngineEvent::ScriptRan {
+                frame,
+                actions,
+                instructions,
+                ..
+            } => Some((*frame, *actions, *instructions)),
+            _ => None,
+        });
     let rejection = outcome.receipt.rejected().map(|rejected| {
         AppFailure(crate::remote::refusal_text(
             rejected.rejection.code.as_str(),
@@ -2501,6 +2633,7 @@ fn execute(
     Ok(ExecuteResult {
         replayed: outcome.replayed,
         rejection,
+        script_ran,
     })
 }
 
@@ -2666,6 +2799,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_capture_inputs(&mut project, snapshot.show())?;
     project.set_transition_favorites(*snapshot.show().transition_favorites());
     project.set_cue_lists(snapshot.show().cue_lists().to_vec());
+    project.set_scripts(snapshot.show().scripts().to_vec());
     sync_title_fields(&mut project, snapshot.show())?;
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
@@ -4054,6 +4188,7 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         project.input_lifecycles(),
     )?;
     show.set_cue_lists(project.cue_lists().to_vec())?;
+    show.set_scripts(project.scripts().to_vec())?;
     Ok(())
 }
 
@@ -5740,6 +5875,14 @@ Usage:
   freemix-cli remote-cue-standby <127.0.0.1:port> <list> <cue> [--key <key>] [--expect <revision>]
   freemix-cli <cue-back|cue-skip|cue-stop|cue-reset> <project.freemix> <list> [--key <key>] [--expect <revision>]
   freemix-cli <remote-cue-back|remote-cue-skip|remote-cue-stop|remote-cue-reset> <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
+  freemix-cli scripts <project.freemix>
+  freemix-cli remote-scripts <127.0.0.1:port>
+  freemix-cli script-set <project.freemix> <script> <name> <source-file|-> [--key <key>] [--expect <revision>]
+  freemix-cli remote-script-set <127.0.0.1:port> <script> <name> <source-file|-> [--key <key>] [--expect <revision>]
+  freemix-cli script-remove <project.freemix> <script> [--key <key>] [--expect <revision>]
+  freemix-cli remote-script-remove <127.0.0.1:port> <script> [--key <key>] [--expect <revision>]
+  freemix-cli script-run <project.freemix> <script|name> [--key <key>] [--expect <revision>]
+  freemix-cli remote-script-run <127.0.0.1:port> <script|name> [--key <key>] [--expect <revision>]
   freemix-cli remote-undo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-redo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-lock <127.0.0.1:port> <on|off> [--input <input>] [--key <key>] [--expect <revision>]
@@ -6116,6 +6259,8 @@ fn source_pattern(input: &Input) -> AppResult<SourcePattern> {
 struct ExecuteResult {
     replayed: bool,
     rejection: Option<AppFailure>,
+    /// An accepted script run's frame, actions, and instructions.
+    script_ran: Option<(u64, u32, u32)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

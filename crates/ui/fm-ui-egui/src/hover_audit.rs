@@ -432,6 +432,7 @@ fn model(variant: Variant) -> ClientModel {
         animation_preset_states: 0,
         media_states: 2,
         cue_list_states: 2,
+        script_states: 2,
         input_categories: vec![
             fm_protocol::InputCategoryStatus {
                 id: 1,
@@ -666,7 +667,35 @@ fn model(variant: Variant) -> ClientModel {
             })
             .unwrap();
     }
+    for script in audit_scripts() {
+        model
+            .apply_script_state(fm_protocol::ScriptStateMessage {
+                revision: 10,
+                script,
+            })
+            .unwrap();
+    }
     model
+}
+
+/// RC-011: the project's scripts. Script 1 is valid; script 2 has a
+/// syntax error on its second line.
+fn audit_scripts() -> Vec<fm_protocol::ScriptStatus> {
+    let script = |id: u64, name: &str, source: &str| fm_protocol::ScriptStatus {
+        id,
+        spec: fm_protocol::ScriptSpec {
+            name: name.into(),
+            source: source.into(),
+        },
+    };
+    vec![
+        script(
+            1,
+            "Opening",
+            "preview 2\ntransition fade, 25\noverlay 1, \"Camera\"\n",
+        ),
+        script(2, "Broken", "preview 2\nif program = 1\nend\n"),
+    ]
 }
 
 /// RC-017: the show's cue lists. List 1 is mid-show (cue 10 live with every
@@ -1968,6 +1997,66 @@ fn scenes(language: Language) -> Vec<Scene> {
         ),
     ];
     for (name, open, state) in live_lan {
+        scenes.push(Scene::console(name, shell(open), state));
+    }
+    let scripts: Vec<(&str, Configure, StudioUiState)> = vec![
+        (
+            "dialog/scripts",
+            &|shell| shell.scripts.open = true,
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/scripts-syntax-error",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(2));
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/scripts-run-stopped",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+                shell.scripts.failure = Some(crate::scripts::RunFailure {
+                    script: 1,
+                    failure: fm_protocol::ScriptFailureKind::Refused,
+                    line: 3,
+                    column: 1,
+                });
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/scripts-new",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.new_draft(&audit_scripts());
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "viewer/scripts",
+            &|shell| shell.scripts.open = true,
+            ready(false, Variant::default()),
+        ),
+        (
+            "operator/scripts-locked",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+                shell.scripts.source.push_str("cut\n");
+            },
+            ready(
+                true,
+                Variant {
+                    locked: true,
+                    ..Variant::default()
+                },
+            ),
+        ),
+    ];
+    for (name, open, state) in scripts {
         scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.extend(animation_scenes(locale));

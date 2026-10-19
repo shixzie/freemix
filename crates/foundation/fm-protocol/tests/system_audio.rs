@@ -13,7 +13,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.57\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.58\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -76,7 +76,7 @@ fn monitor() -> SystemAudioConfig {
 
 #[test]
 fn the_current_protocol_is_2_55() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 57));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 58));
 }
 
 #[test]
@@ -352,6 +352,7 @@ fn snapshot(system_audio_inputs: Vec<SystemAudioEntry>) -> WireMessage {
         animation_preset_states: 0,
         media_states: 0,
         cue_list_states: 0,
+        script_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),

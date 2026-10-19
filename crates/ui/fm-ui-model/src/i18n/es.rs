@@ -6296,6 +6296,124 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::BoundsFieldCueText,
         t("Texto de títulos en una lista de cues (bytes)"),
     ),
+    (Msg::IdKindScript, t("Guion {id}")),
+    (Msg::BoundsFieldScripts, t("Guiones de un proyecto")),
+    (
+        Msg::BoundsFieldScriptSource,
+        t("Longitud del guion (bytes)"),
+    ),
+    (
+        Msg::RsnScriptFailed,
+        t(
+            "El guion se detuvo con {failure} en la línea {line}, columna {column}; no se conservó nada de lo que hizo.",
+        ),
+    ),
+    (Msg::ScriptFailSyntax, t("un error de sintaxis")),
+    (Msg::ScriptFailRuntime, t("un error de ejecución")),
+    (
+        Msg::ScriptFailInstructions,
+        t("su presupuesto de instrucciones agotado"),
+    ),
+    (Msg::ScriptFailActions, t("demasiadas acciones")),
+    (Msg::ScriptFailVariables, t("demasiadas variables")),
+    (Msg::ScriptFailStringBytes, t("una cadena demasiado larga")),
+    (Msg::ScriptFailRefused, t("una acción rechazada")),
+    (Msg::MenuScripts, t("Guiones…")),
+    (
+        Msg::MenuScriptsHover,
+        t(
+            "Escriba y ejecute guiones del proyecto: pequeños programas de acciones de show que se ejecutan en el servidor de una vez",
+        ),
+    ),
+    (Msg::ScriptsTitle, t("Guiones del proyecto")),
+    (
+        Msg::ScriptsIntro,
+        t(
+            "Un guion ejecuta acciones de show en el servidor, todas en un mismo fotograma o ninguna. Los guiones se guardan con el proyecto y no pueden acceder a archivos, a la red ni a otros programas.",
+        ),
+    ),
+    (Msg::ScriptsEmpty, t("Este proyecto aún no tiene guiones")),
+    (Msg::ScriptListHover, t("Abrir {name} en el editor")),
+    (Msg::ScriptNew, t("Nuevo guion")),
+    (
+        Msg::ScriptNewHover,
+        t("Empieza un guion nuevo y vacío; se añade al proyecto al guardarlo"),
+    ),
+    (Msg::ScriptNameLabel, t("Nombre del guion")),
+    (
+        Msg::ScriptNameHover,
+        t(
+            "El nombre que se muestra en esta lista y que acepta la línea de comandos (de 1 a 64 bytes)",
+        ),
+    ),
+    (
+        Msg::ScriptSourceHover,
+        t(
+            "El texto del guion, una instrucción por línea; la línea con un error de sintaxis se marca en rojo mientras escribe",
+        ),
+    ),
+    (Msg::ScriptSave, t("Guardar guion")),
+    (
+        Msg::ScriptSaveHover,
+        t("Guarda el nombre y el texto en el proyecto como una edición que se puede deshacer"),
+    ),
+    (Msg::ScriptRevert, t("Descartar cambios del guion")),
+    (
+        Msg::ScriptRevertHover,
+        t("Vuelve al guion tal como está guardado en el proyecto"),
+    ),
+    (Msg::ScriptRun, t("Ejecutar guion")),
+    (
+        Msg::ScriptRunHover,
+        t(
+            "Ejecuta ahora el guion guardado en el servidor; si falla algún paso, no se conserva nada de lo que hizo",
+        ),
+    ),
+    (Msg::ScriptRemove, t("Eliminar guion")),
+    (
+        Msg::ScriptRemoveHover,
+        t("Quita el guion del proyecto como una edición que se puede deshacer"),
+    ),
+    (Msg::ScriptSyntaxOk, t("Sin errores de sintaxis")),
+    (
+        Msg::ScriptSyntaxError,
+        t("Error de sintaxis en la línea {line}, columna {column}: {message}"),
+    ),
+    (
+        Msg::ScriptLastRun,
+        t(
+            "Última ejecución: {actions} acciones en {instructions} instrucciones, en el fotograma {frame}",
+        ),
+    ),
+    (
+        Msg::ScriptLastFailure,
+        t("La última ejecución se detuvo con {failure} en la línea {line}, columna {column}."),
+    ),
+    (
+        Msg::ScriptReference,
+        t(
+            "Instrucciones: let NOMBRE = VALOR · if … elif … else … end · repeat N … end · while … end · stop. Acciones: preview, cut, transition EFECTO, FOTOGRAMAS, stinger, overlay CANAL, ENTRADA, overlay_off, title_on, title_text, title_off, ftb, ftb_off, playlist_start, playlist_stop, gain, mute, unmute, record_start, record_stop, stream_start, stream_stop, play, pause, seek, restart. program y preview contienen los números de las entradas en el aire; una entrada es su número (1 es la primera) o su nombre entre comillas; # empieza un comentario.",
+        ),
+    ),
+    (Msg::ScriptReasonUnsaved, t("guarde el guion primero")),
+    (Msg::ScriptReasonUnchanged, t("el guion no ha cambiado")),
+    (
+        Msg::ScriptReasonName,
+        t("escriba un nombre de 1 a 64 bytes"),
+    ),
+    (Msg::ScriptReasonLimit, t("el proyecto ya tiene 16 guiones")),
+    (
+        Msg::ScriptReasonTooLong,
+        t("el guion supera los 4096 bytes o contiene caracteres de control"),
+    ),
+    (
+        Msg::ScriptReasonSyntax,
+        t("corrija primero el error de sintaxis"),
+    ),
+    (
+        Msg::ScriptReasonNotSaved,
+        t("el guion aún no está en el proyecto"),
+    ),
     (Msg::TabCues, t("Cues")),
     (
         Msg::TabCuesHover,

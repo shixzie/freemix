@@ -914,7 +914,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(53);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(54);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -951,6 +951,7 @@ pub struct Project {
     locked_inputs: BTreeSet<InputId>,
     playlist: Playlist,
     cue_lists: Vec<crate::CueList>,
+    scripts: Vec<crate::Script>,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
@@ -989,6 +990,7 @@ impl Project {
             locked_inputs: BTreeSet::new(),
             playlist: Playlist::default(),
             cue_lists: Vec::new(),
+            scripts: Vec::new(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
@@ -1433,6 +1435,18 @@ impl Project {
     /// stream targets.
     pub fn set_cue_lists(&mut self, cue_lists: Vec<crate::CueList>) {
         self.cue_lists = cue_lists;
+    }
+
+    /// The project's scripts, in display order (RC-011, schema 54).
+    #[must_use]
+    pub fn scripts(&self) -> &[crate::Script] {
+        &self.scripts
+    }
+
+    /// Replaces the scripts without checking them; [`Project::validate`]
+    /// reports structural errors.
+    pub fn set_scripts(&mut self, scripts: Vec<crate::Script>) {
+        self.scripts = scripts;
     }
 
     /// Every persisted grading value: the grade library, imported LUTs, and

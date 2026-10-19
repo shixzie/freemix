@@ -11,6 +11,7 @@ fm-client = { path = "../../crates/services/fm-client" }
 fm-command = { path = "../../crates/foundation/fm-command" }
 fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
+fm-script = { path = "../../crates/foundation/fm-script" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-grade = { path = "../../crates/foundation/fm-grade" }
 fm-model = { path = "../../crates/foundation/fm-model" }
