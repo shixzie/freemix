@@ -300,6 +300,23 @@ fn model(variant: Variant) -> ClientModel {
         // SIGNAL LOST banner, the corner badge, and their details are
         // audited (Protocol 2.47).
         capture_inputs: capture_entries(),
+        // AU-011: a system audio input whose ALSA device is reopening, so
+        // its tile badge and details are audited (Protocol 2.55).
+        system_audio_inputs: vec![fm_protocol::SystemAudioEntry {
+            input: wire(5),
+            config: fm_protocol::SystemAudioConfig::new(
+                fm_protocol::SystemAudioBackend::Alsa,
+                "hw:Loopback,1",
+            ),
+            status: fm_protocol::SystemAudioStatus {
+                state: fm_protocol::SystemAudioState::Reopening {
+                    attempt: 2,
+                    next_in_ms: 1_000,
+                },
+                reopens: 2,
+                last_error: Some("No such file or directory".into()),
+            },
+        }],
         // OR-006: the two roster targets' settings (a running local HLS
         // ladder and a stopped keyed RTMP destination with a backup), so
         // the rows' Retry / Edit / Remove keys and the destination dialog
@@ -1503,7 +1520,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         state
     }));
     let operator = ready(true, Variant::default());
-    let dialogs: [(&str, Configure); 15] = [
+    let dialogs: [(&str, Configure); 16] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
         ("about", &|shell| shell.show_about = true),
         ("preferences", &|shell| shell.show_preferences = true),
@@ -1565,6 +1582,17 @@ fn scenes(language: Language) -> Vec<Scene> {
                     connection: true,
                     recovery: true,
                 };
+            }
+        }),
+        // AU-011: the system audio form on ALSA with a typed device, so
+        // the audio system keys and the device field are audited.
+        ("add-input-system-audio", &|shell| {
+            shell.open_add_input(&operator);
+            if let Some(draft) = shell.add_input.as_mut() {
+                draft.kind = crate::input_catalogue::NewInputKind::SystemAudio;
+                draft
+                    .system_audio
+                    .set_backend(fm_protocol::SystemAudioBackend::Alsa);
             }
         }),
         ("remove-input", &|shell| {

@@ -18,7 +18,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.55\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -113,7 +113,7 @@ const SETTINGS: &str = "format=1920x1080%4030000%2F1001%3Ayuyv%3Atff\taudio=alsa
 
 #[test]
 fn the_current_protocol_is_2_47() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 54));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 55));
 }
 
 #[test]
@@ -191,6 +191,7 @@ fn durable_events_carry_the_config_and_settings() {
         input: input(5),
         name: "Camera".into(),
         network_stream: None,
+        system_audio: None,
         capture: Some(Box::new(CaptureInputConfig {
             stable_key: "v4l2:usb-1#Cam".into(),
             settings: settings(),
@@ -212,6 +213,7 @@ fn durable_events_carry_the_config_and_settings() {
         network_stream: Some(Box::new(fm_protocol::NetworkStreamConfig::new(
             "udp://@:9000",
         ))),
+        system_audio: None,
         capture: Some(Box::new(CaptureInputConfig::new("cam"))),
     });
     assert!(encode_line(&both).is_err());
@@ -508,7 +510,7 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     assert_eq!(decoded.capture_inputs, entries);
     assert!(
         line.ends_with(
-            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tstream_targets=\n"
+            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tstream_targets=\n"
                 .replace('~', "%7E")
                 .as_str()
         ),
@@ -613,6 +615,7 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        system_audio_inputs: Vec::new(),
         capture_inputs,
         stream_targets: Vec::new(),
     })

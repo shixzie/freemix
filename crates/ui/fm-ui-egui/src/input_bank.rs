@@ -403,12 +403,19 @@ impl StudioShell {
             .view
             .as_ref()
             .and_then(|view| view.capture_input(input));
+        // A system audio input's capture state (AU-011).
+        let system_audio = state
+            .view
+            .as_ref()
+            .and_then(|view| view.system_audio_input(input));
         // A status badge sits where the `no thumbnail` caption goes, so the
         // caption gives way to it.
         let status_badge = stream.is_some_and(|entry| {
             crate::network_stream_ui::stream_badge(l, &entry.status).is_some()
         }) || capture.is_some_and(|entry| {
             crate::capture_input_ui::capture_badge(l, &entry.status).is_some()
+        }) || system_audio.is_some_and(|entry| {
+            crate::system_audio_ui::system_audio_badge(l, &entry.status).is_some()
         });
         if ui.is_rect_visible(rect) {
             paint_tile(
@@ -449,6 +456,16 @@ impl StudioShell {
                 &entry.status,
             );
         }
+        if let Some(entry) = system_audio
+            && ui.is_rect_visible(rect)
+        {
+            crate::system_audio_ui::paint_system_audio_badge(
+                ui.painter(),
+                Rect::from_min_size(rect.min, Vec2::new(width, thumb_height)),
+                l,
+                &entry.status,
+            );
+        }
         let shortcut = if index < 8 {
             format!("  [{}]", index + 1)
         } else {
@@ -466,6 +483,10 @@ impl StudioShell {
         if let Some(entry) = capture {
             status.push_str(" · ");
             status.push_str(&crate::capture_input_ui::capture_details(l, entry));
+        }
+        if let Some(entry) = system_audio {
+            status.push_str(" · ");
+            status.push_str(&crate::system_audio_ui::system_audio_details(l, entry));
         }
         let hover = format!(
             "{status}\n{}\n{source}\n{}",

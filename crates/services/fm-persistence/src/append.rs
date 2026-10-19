@@ -590,6 +590,7 @@ fn append_inputs(
             InputKind::Color
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
+            | InputKind::SystemAudio(_)
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
             | InputKind::Title(_) => input.kind.clone(),

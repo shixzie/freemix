@@ -2783,7 +2783,7 @@ fn input_add_and_remove_project_events_snapshots_history_and_journal() {
     assert!(matches!(
         added.output.events.as_slice(),
         [EventMessage {
-            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None },
+            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None, system_audio: None },
             edit_history: EditHistoryStatus {
                 undo_depth: 1,
                 next_undo: Some(1),
@@ -7314,4 +7314,120 @@ fn capture_inputs_replicate_with_their_status_and_inventory() {
         .unwrap();
     assert_eq!(control.capture_status(input(5)), None);
     assert_eq!(control.snapshot().snapshot.capture_inputs.len(), 0);
+}
+
+/// AU-011, Protocol 2.55: a system audio input added live replicates as
+/// `input_added` with its device and is listed for the media plane; its
+/// status becomes a `system_audio_status` runtime event and the snapshot's
+/// entry (without the error text); an undone add drops both.
+#[test]
+#[allow(clippy::too_many_lines)] // one add, status, and undo round trip
+fn system_audio_inputs_replicate_with_their_status() {
+    use fm_protocol::{SystemAudioBackend, SystemAudioConfig, SystemAudioState, SystemAudioStatus};
+
+    let mut control = service(16, 16);
+    let admin = principal(Role::Admin);
+    let config = SystemAudioConfig::new(SystemAudioBackend::Pulse, "@DEFAULT_MONITOR@");
+    let added = control
+        .submit(
+            &admin,
+            command(
+                "add",
+                "add-key",
+                CommandPayload::AddInput {
+                    input: WireInputId::from_domain(input(5)),
+                    name: "Desktop".to_owned(),
+                    source: LiveInputSource::SystemAudio(Box::new(config.clone())),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        added.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputAdded {
+                system_audio: Some(added),
+                network_stream: None,
+                capture: None,
+                ..
+            },
+            ..
+        }] if **added == config
+    ));
+    assert_wire_exact(&control, &added);
+    assert_eq!(control.system_audio_inputs(), [(input(5), config.clone())]);
+    let entries = &control.snapshot().snapshot.system_audio_inputs;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].config, config);
+    assert_eq!(entries[0].status, SystemAudioStatus::default());
+
+    let status = SystemAudioStatus {
+        state: SystemAudioState::Reopening {
+            attempt: 1,
+            next_in_ms: 500,
+        },
+        reopens: 1,
+        last_error: Some(format!("{}\nsecond line", "x".repeat(400))),
+    };
+    let event = control
+        .set_system_audio_status(&server_identity(), input(5), &status)
+        .unwrap()
+        .expect("a changed status is published");
+    let RuntimeLifecycleEvent::SystemAudioStatus {
+        status: published, ..
+    } = &event.event
+    else {
+        panic!("{event:?}");
+    };
+    let error = published.last_error.as_deref().unwrap();
+    assert!(
+        error.len() <= fm_protocol::MAX_SYSTEM_AUDIO_ERROR_BYTES && !error.contains('\n'),
+        "{error:?}"
+    );
+    assert!(fm_protocol::encode_line(&WireMessage::RuntimeEvent(event.clone())).is_ok());
+    // Unchanged, or not a system audio input: nothing.
+    assert!(
+        control
+            .set_system_audio_status(&server_identity(), input(5), &status)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        control
+            .set_system_audio_status(&server_identity(), input(1), &status)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        control
+            .system_audio_status(input(5))
+            .map(|status| status.state),
+        Some(status.state)
+    );
+    let entry = &control.snapshot().snapshot.system_audio_inputs[0];
+    assert_eq!(entry.status.state, status.state);
+    assert_eq!(entry.status.reopens, 1);
+    assert_eq!(
+        entry.status.last_error, None,
+        "a snapshot carries no error text"
+    );
+
+    // Undoing the add removes the input, its entry, and its state.
+    control
+        .submit(
+            &admin,
+            command(
+                "undo",
+                "undo-key",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(control.system_audio_inputs(), []);
+    assert_eq!(control.snapshot().snapshot.system_audio_inputs, []);
+    assert_eq!(control.system_audio_status(input(5)), None);
 }

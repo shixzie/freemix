@@ -6,7 +6,8 @@
 //! * `input_categories` (snapshot field, `input_categories_set` command)
 //!   is a comma-separated list of `<id>~<name>` (empty for none).
 //! * A source is `solid:<rrggbbaa>`, `bars`, either optionally followed by
-//!   `:<tone hz>`, or `media:<uri>`, `device:<key>`, `network:<endpoint>`.
+//!   `:<tone hz>`, or `media:<uri>`, `device:<key>`, `network:<endpoint>`,
+//!   or `system_audio:<pulse|alsa>:<device>` (Protocol 2.55).
 //! * `items` (`input_import_batch`) is a comma-separated list of
 //!   `<input>~<name|->~<uri>`.
 //! * `added` (event) is a comma-separated list of `<input>~<name>`, and
@@ -209,6 +210,16 @@ pub(super) fn encode_source(source: &WireInputSource) -> Result<String, CodecErr
             validate_locator("source", endpoint)?;
             format!("network:{}", escape_bounded(endpoint)?)
         }
+        WireInputSource::SystemAudio(config) => {
+            config
+                .validate()
+                .map_err(|error| invalid("source", error.code()))?;
+            format!(
+                "system_audio:{}:{}",
+                config.backend.token(),
+                escape_bounded(&config.device)?
+            )
+        }
     })
 }
 
@@ -258,6 +269,20 @@ pub(super) fn decode_source(value: &str) -> Result<WireInputSource, CodecError> 
         "network" => WireInputSource::Network {
             endpoint: locator(rest)?,
         },
+        "system_audio" => {
+            let (backend, device) = rest
+                .split_once(':')
+                .ok_or_else(|| invalid("source", value))?;
+            let config = crate::SystemAudioConfig {
+                backend: crate::SystemAudioBackend::from_token(backend)
+                    .ok_or_else(|| invalid("source", value))?,
+                device: unescape(device)?,
+            };
+            config
+                .validate()
+                .map_err(|error| invalid("source", error.code()))?;
+            WireInputSource::SystemAudio(config)
+        }
         _ => return Err(invalid("source", value)),
     })
 }

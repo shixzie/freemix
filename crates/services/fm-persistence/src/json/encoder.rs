@@ -722,6 +722,9 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
         InputKind::NetworkStream(config) => {
             super::network_stream::write_network_stream(output, config);
         }
+        InputKind::SystemAudio(config) => {
+            super::system_audio::write_system_audio_input(output, config);
+        }
         InputKind::Scene {
             scene_id,
             audio_source,

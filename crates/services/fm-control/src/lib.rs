@@ -29,6 +29,7 @@ mod playlist;
 mod scene_animation;
 mod scene_layer;
 mod stream_target;
+mod system_audio;
 mod title_animation;
 mod title_layout;
 mod transition;
@@ -561,6 +562,13 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 control
                     .capture_states
                     .retain(|input, _| control.engine.show().capture_settings(*input).is_some());
+                control.system_audio_states.retain(|input, _| {
+                    control
+                        .engine
+                        .show()
+                        .system_audio_inputs()
+                        .any(|(candidate, _)| candidate == *input)
+                });
                 control.snapshot = snapshot_record(
                     &control.engine,
                     &control.identity,
@@ -568,6 +576,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                     &control.display_states,
                     &control.network_states,
                     &control.capture_states,
+                    &control.system_audio_states,
                 );
 
                 let live_events = submission
@@ -847,6 +856,9 @@ pub struct ControlService<A = Policy> {
     /// The capture devices as the media plane last enumerated them
     /// (IN-001).
     capture_inventory: fm_protocol::CaptureInventory,
+    /// Each system audio input's capture status as the media plane last
+    /// reported it (AU-011).
+    system_audio_states: BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -887,6 +899,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         Self {
             engine,
@@ -912,6 +925,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             network_states: BTreeMap::new(),
             capture_states: BTreeMap::new(),
             capture_inventory: fm_protocol::CaptureInventory::default(),
+            system_audio_states: BTreeMap::new(),
         }
     }
 
@@ -1089,6 +1103,67 @@ impl<A: AuthorizationHook> ControlService<A> {
             revision,
             generation,
             RuntimeLifecycleEvent::CaptureStatus {
+                input: WireInputId::from_domain(input),
+                status: Box::new(status),
+            },
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// Every system audio input with its device, ascending, for the media
+    /// plane that captures it (AU-011).
+    #[must_use]
+    pub fn system_audio_inputs(&self) -> Vec<(InputId, fm_protocol::SystemAudioConfig)> {
+        self.engine
+            .show()
+            .system_audio_inputs()
+            .map(|(input, config)| (input, config.clone()))
+            .collect()
+    }
+
+    /// System audio input `input`'s capture status as last reported
+    /// (AU-011), or `None` when nothing reported on it.
+    #[must_use]
+    pub fn system_audio_status(&self, input: InputId) -> Option<&fm_protocol::SystemAudioStatus> {
+        self.system_audio_states.get(&input)
+    }
+
+    /// Records system audio input `input`'s capture status as the media
+    /// plane observes it (AU-011), its error bounded to one wire line. A
+    /// change refreshes the snapshot and returns the published
+    /// `system_audio_status` runtime event; an unchanged status, or an
+    /// input that is not a system audio input, returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_system_audio_status(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        status: &fm_protocol::SystemAudioStatus,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        let status = system_audio::wire_status(status);
+        if !self
+            .engine
+            .show()
+            .system_audio_inputs()
+            .any(|(candidate, _)| candidate == input)
+            || self.system_audio_states.get(&input) == Some(&status)
+        {
+            return Ok(None);
+        }
+        self.system_audio_states.insert(input, status.clone());
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::SystemAudioStatus {
                 input: WireInputId::from_domain(input),
                 status: Box::new(status),
             },
@@ -1925,6 +2000,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &self.display_states,
             &self.network_states,
             &self.capture_states,
+            &self.system_audio_states,
         );
     }
 
@@ -2684,6 +2760,7 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         LiveInputSource::Bars => EngineInputSource::Bars,
         LiveInputSource::NetworkStream(config) => EngineInputSource::NetworkStream(config.clone()),
         LiveInputSource::Capture(config) => EngineInputSource::Capture(config.clone()),
+        LiveInputSource::SystemAudio(config) => EngineInputSource::SystemAudio(config.clone()),
     }
 }
 
@@ -2703,6 +2780,7 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         EngineInputSource::Bars => LiveInputSource::Bars,
         EngineInputSource::NetworkStream(config) => LiveInputSource::NetworkStream(config.clone()),
         EngineInputSource::Capture(config) => LiveInputSource::Capture(config.clone()),
+        EngineInputSource::SystemAudio(config) => LiveInputSource::SystemAudio(config.clone()),
     }
 }
 
@@ -3352,6 +3430,10 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
                     EngineInputSource::Capture(config) => Some(config.clone()),
                     _ => None,
                 },
+                system_audio: match source {
+                    EngineInputSource::SystemAudio(config) => Some(config.clone()),
+                    _ => None,
+                },
             }),
             EngineEvent::InputRemoved { input } => Some(EventPayload::InputRemoved {
                 input: WireInputId::from_domain(*input),
@@ -3426,6 +3508,7 @@ fn snapshot_record(
     display_states: &BTreeMap<fm_protocol::DisplayOutputSlot, fm_protocol::WireDisplayOutputState>,
     network_states: &BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
     capture_states: &BTreeMap<InputId, fm_protocol::CaptureStatus>,
+    system_audio_states: &BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
@@ -3501,6 +3584,7 @@ fn snapshot_record(
         display_output_states: display_output::wire_states(engine.show(), display_states),
         network_streams: network_stream::wire_entries(engine.show(), network_states),
         capture_inputs: capture::wire_entries(engine.show(), capture_states),
+        system_audio_inputs: system_audio::wire_entries(engine.show(), system_audio_states),
         stream_targets: stream_target::wire_entries(engine.show()),
     };
 

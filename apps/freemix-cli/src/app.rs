@@ -1453,6 +1453,48 @@ pub fn run(command: Command) -> AppResult<()> {
         }
         Command::RemoteCaptureStatus { address } => remote::capture_inputs(address)?,
         Command::RemoteCaptureDevices { address } => remote::capture_devices(address)?,
+        Command::SystemAudioInputAdd {
+            path,
+            input,
+            name,
+            config,
+        } => {
+            add_input_with_kind(
+                &path,
+                input_id(input)?,
+                name,
+                InputKind::SystemAudio(*config),
+            )?;
+        }
+        Command::RemoteSystemAudioInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::SystemAudio(config),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::SystemAudioStatus { path } => {
+            let project = inspect_engine(&path)?;
+            // Nothing captures a project's devices: every input is idle.
+            remote::print_system_audio_inputs(project.engine.show().system_audio_inputs().map(
+                |(input, config)| fm_protocol::SystemAudioEntry {
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    config: config.clone(),
+                    status: fm_protocol::SystemAudioStatus::default(),
+                },
+            ));
+        }
+        Command::RemoteSystemAudioStatus { address } => remote::system_audio_inputs(address)?,
         Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
         Command::RemoteAudioStrip {
             address,
@@ -5239,6 +5281,7 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::Media { .. } => "media",
         InputKind::Device { .. } => "device",
         InputKind::NetworkStream(_) => "network-stream",
+        InputKind::SystemAudio(_) => "system-audio",
         InputKind::Scene { .. } => "scene",
         InputKind::Simulated(_) => "simulated",
         InputKind::Alias { .. } => "alias",
@@ -5596,6 +5639,8 @@ Usage:
   freemix-cli input-capture-set <show.freemix> <input> [capture options] [--key <key>] [--expect <revision>]
   freemix-cli input-capture-status <show.freemix>
     capture options: [--format <W>x<H>@<num>/<den>:<yuyv|nv12|mjpeg>:<p|tff|bff>|auto] [--audio none|paired|alsa:<device>] [--loss hold|black]
+  freemix-cli input-add-system-audio <show.freemix> <nonzero-input-id> <name> <pulse|alsa> <device: a PulseAudio source such as <sink>.monitor or @DEFAULT_MONITOR@, or an ALSA PCM such as hw:Loopback,1>
+  freemix-cli input-system-audio-status <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
@@ -5610,9 +5655,11 @@ Usage:
   freemix-cli remote-input-capture-set <127.0.0.1:port> <input> [capture options] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-capture-status <127.0.0.1:port>
   freemix-cli remote-capture-devices <127.0.0.1:port>
+  freemix-cli remote-input-add-system-audio <127.0.0.1:port> <input> <name> <pulse|alsa> <device> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-system-audio-status <127.0.0.1:port>
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
-  freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>|system-audio:<pulse|alsa>:<device>> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-categories <127.0.0.1:port> [<id>=<name>...] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-category <127.0.0.1:port> <input> <category-id|none> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-color <127.0.0.1:port> <input> <colour|none> [--key <key>] [--expect <revision>]

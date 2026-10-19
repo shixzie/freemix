@@ -11,7 +11,7 @@ use fm_protocol::{
     WireInputSource, WireMessage, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.54\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.55\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -92,6 +92,13 @@ fn operations() -> Vec<InputLifecycleOperation> {
             source: WireInputSource::Network {
                 endpoint: "srt://10.0.0.2:9000".into(),
             },
+        },
+        InputLifecycleOperation::ReplaceSource {
+            input: input(2),
+            source: WireInputSource::SystemAudio(fm_protocol::SystemAudioConfig::new(
+                fm_protocol::SystemAudioBackend::Pulse,
+                "alsa_output.pci:analog-stereo.monitor",
+            )),
         },
         InputLifecycleOperation::SetCategory {
             input: input(3),
@@ -245,7 +252,7 @@ fn the_lifecycle_event_carries_the_operation_added_inputs_and_refusals() {
         },
         edit_history: EditHistoryStatus::EMPTY,
         payload: EventPayload::InputLifecycleChanged {
-            operation: operations()[15].clone(),
+            operation: operations()[16].clone(),
             added: vec![AddedInput {
                 input: input(20),
                 name: "Interview Take".into(),

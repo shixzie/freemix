@@ -64,6 +64,7 @@ pub fn wire_source(source: &InputSourceSpec) -> WireInputSource {
         InputSourceSpec::Network(config) => WireInputSource::Network {
             endpoint: config.url.clone(),
         },
+        InputSourceSpec::SystemAudio(config) => WireInputSource::SystemAudio(config.clone()),
     }
 }
 
@@ -89,6 +90,7 @@ pub fn model_source(source: &WireInputSource) -> InputSourceSpec {
         WireInputSource::Network { endpoint } => InputSourceSpec::Network(
             fm_types::network_stream::NetworkStreamConfig::new(endpoint.clone()),
         ),
+        WireInputSource::SystemAudio(config) => InputSourceSpec::SystemAudio(config.clone()),
     }
 }
 

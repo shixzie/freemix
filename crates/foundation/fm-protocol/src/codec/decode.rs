@@ -1231,6 +1231,9 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
         "capture" => Ok(LiveInputSource::Capture(Box::new(
             super::capture::decode_config(fields)?,
         ))),
+        "system_audio" => Ok(LiveInputSource::SystemAudio(Box::new(
+            super::system_audio::decode_config(fields)?,
+        ))),
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,
@@ -1637,6 +1640,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
             &fields.required("network_streams")?,
         )?,
         capture_inputs: super::capture::decode_entries(&fields.required("capture_inputs")?)?,
+        system_audio_inputs: super::system_audio::decode_entries(
+            &fields.required("system_audio_inputs")?,
+        )?,
         stream_targets: super::stream_target::decode_entries(&fields.required("stream_targets")?)?,
     })
 }
@@ -2197,28 +2203,34 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_added" => {
             let input = fields.canonical_input("input")?;
             let name = decode_new_input_name(fields)?;
-            let (network_stream, capture) = match fields.optional("kind").as_deref() {
-                None => (None, None),
-                Some("network_stream") => (
-                    Some(Box::new(super::network_stream::decode_config(
+            let (mut network_stream, mut capture, mut system_audio) = (None, None, None);
+            match fields.optional("kind").as_deref() {
+                None => {}
+                Some("network_stream") => {
+                    network_stream = Some(Box::new(super::network_stream::decode_config(
                         fields,
                         super::network_stream::Secrets::Redacted,
-                    )?)),
-                    None,
-                ),
-                Some("capture") => (None, Some(Box::new(super::capture::decode_config(fields)?))),
+                    )?));
+                }
+                Some("capture") => {
+                    capture = Some(Box::new(super::capture::decode_config(fields)?));
+                }
+                Some("system_audio") => {
+                    system_audio = Some(Box::new(super::system_audio::decode_config(fields)?));
+                }
                 Some(other) => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
                         value: other.to_owned(),
                     });
                 }
-            };
+            }
             EventPayload::InputAdded {
                 input,
                 name,
                 network_stream,
                 capture,
+                system_audio,
             }
         }
         "input_removed" => EventPayload::InputRemoved {
@@ -2651,6 +2663,13 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         }
         "capture_devices" => {
             RuntimeLifecycleEvent::CaptureDevices(super::capture::decode_inventory(fields)?)
+        }
+        "system_audio_status" => {
+            let (input, status) = super::system_audio::decode_status(fields)?;
+            RuntimeLifecycleEvent::SystemAudioStatus {
+                input,
+                status: Box::new(status),
+            }
         }
         "network_stream_status" => {
             let (input, status) = super::network_stream::decode_status(fields)?;

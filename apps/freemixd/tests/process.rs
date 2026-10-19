@@ -5503,7 +5503,7 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
     let added = durable_event_at(&mut admin, 1);
     assert!(matches!(
         added.payload,
-        EventPayload::InputAdded { input: id, ref name, network_stream: None, capture: None } if id == input(3) && name == "Guest"
+        EventPayload::InputAdded { input: id, ref name, network_stream: None, capture: None, system_audio: None } if id == input(3) && name == "Guest"
     ));
     let with_guest = snapshot_of(&daemon, Role::Viewer);
     assert_eq!(input_ids(&with_guest), vec![input(1), input(2), input(3)]);
@@ -6138,11 +6138,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.54.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 54));
+    // The previous protocol is refused; the current one is 2.55.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 55));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 53),
+        protocol: ProtocolVersion::new(2, 54),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6158,7 +6158,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 54)
+        ProtocolVersion::new(2, 55)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

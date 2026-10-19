@@ -791,6 +791,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                 capture,
             } => validate_capture_input(entity, stable_key, capture, errors),
             InputKind::NetworkStream(config) => validate_network_stream(entity, config, errors),
+            InputKind::SystemAudio(config) => validate_system_audio(entity, config, errors),
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -859,6 +860,39 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
     validate_network_stream_count(project, errors);
     validate_network_stream_listen_ports(project, errors);
     validate_capture_input_count(project, errors);
+    validate_system_audio_count(project, errors);
+}
+
+/// AU-011: a system audio input names a usable device.
+fn validate_system_audio(
+    entity: Option<EntityRef>,
+    config: &fm_types::system_audio::SystemAudioConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    if config.validate().is_err() {
+        errors.push(ValidationError {
+            entity,
+            field: "kind.system_audio.device",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+/// AU-011: a bounded number of system audio inputs keeps every snapshot
+/// that carries them inside one line.
+fn validate_system_audio_count(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(input) = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::SystemAudio(_)))
+        .nth(fm_types::system_audio::MAX_SYSTEM_AUDIO_INPUTS)
+    {
+        errors.push(ValidationError {
+            entity: Some(EntityRef::Input(input.id)),
+            field: "kind.system_audio",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
 }
 
 /// IN-016/IN-017: two network stream inputs never listen on the same local

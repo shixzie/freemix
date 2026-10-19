@@ -97,6 +97,8 @@ pub enum NewInputKind {
     Network,
     /// A local camera or capture card input (IN-001).
     Capture,
+    /// An audio-only input that hears the server's system audio (AU-011).
+    SystemAudio,
 }
 
 impl NewInputKind {
@@ -112,6 +114,7 @@ impl NewInputKind {
             Self::Bars => Msg::NameColourBars,
             Self::Network => Msg::NameNetworkStream,
             Self::Capture => Msg::NameCapture,
+            Self::SystemAudio => Msg::NameSystemAudio,
         }
     }
 
@@ -121,6 +124,7 @@ impl NewInputKind {
             Self::Bars => Msg::KindBarsKey,
             Self::Network => Msg::KindNetworkKey,
             Self::Capture => Msg::KindCaptureKey,
+            Self::SystemAudio => Msg::KindSystemAudioKey,
         }
     }
 
@@ -130,6 +134,7 @@ impl NewInputKind {
             Self::Bars => Msg::KindBarsHover,
             Self::Network => Msg::KindNetworkHover,
             Self::Capture => Msg::KindCaptureHover,
+            Self::SystemAudio => Msg::KindSystemAudioHover,
         }
     }
 }
@@ -440,6 +445,8 @@ pub(crate) struct AddInputDraft {
     pub(crate) stream: crate::network_stream_ui::NetworkStreamDraft,
     /// The capture form of a camera or capture card input (IN-001).
     pub(crate) capture: crate::capture_input_ui::CaptureDraft,
+    /// The system audio form (AU-011).
+    pub(crate) system_audio: crate::system_audio_ui::SystemAudioDraft,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -468,6 +475,7 @@ impl AddInputDraft {
             color: COLOUR_PRESETS[5].1,
             stream: crate::network_stream_ui::NetworkStreamDraft::default(),
             capture: crate::capture_input_ui::CaptureDraft::default(),
+            system_audio: crate::system_audio_ui::SystemAudioDraft::default(),
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -496,6 +504,9 @@ impl AddInputDraft {
                 LiveInputSource::NetworkStream(Box::new(self.stream.config()?))
             }
             NewInputKind::Capture => LiveInputSource::Capture(Box::new(self.capture.config()?)),
+            NewInputKind::SystemAudio => {
+                LiveInputSource::SystemAudio(Box::new(self.system_audio.config()?))
+            }
         })
     }
 
@@ -510,6 +521,10 @@ impl AddInputDraft {
             }
             NewInputKind::Capture => {
                 let problem = self.capture.checked().err()?;
+                (problem.field.label(), problem.reason, problem.prompt)
+            }
+            NewInputKind::SystemAudio => {
+                let problem = self.system_audio.checked().err()?;
                 (problem.field.label(), problem.reason, problem.prompt)
             }
         };
@@ -1071,6 +1086,7 @@ impl StudioShell {
                                 NewInputKind::Bars,
                                 NewInputKind::Network,
                                 NewInputKind::Capture,
+                                NewInputKind::SystemAudio,
                             ] {
                                 let selected = draft.kind == kind;
                                 let response = ui
@@ -1127,6 +1143,14 @@ impl StudioShell {
                         if draft.kind == NewInputKind::Network {
                             ui.add_space(6.0);
                             crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
+                        }
+                        if draft.kind == NewInputKind::SystemAudio {
+                            ui.add_space(6.0);
+                            crate::system_audio_ui::draw_system_audio_form(
+                                ui,
+                                l,
+                                &mut draft.system_audio,
+                            );
                         }
                         if draft.kind == NewInputKind::Capture {
                             ui.add_space(6.0);
@@ -1548,6 +1572,16 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 muted_color(),
             );
         }
+        // A system audio input has no picture of its own.
+        NewInputKind::SystemAudio => {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                l.text(Msg::SaPreview),
+                FontId::new(10.0, FontFamily::Proportional),
+                muted_color(),
+            );
+        }
     }
     if let Some(input) = next_id {
         let tag = painter.layout_no_wrap(
@@ -1613,6 +1647,7 @@ mod tests {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            system_audio_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
@@ -2402,6 +2437,17 @@ mod tests {
                     draft.capture.format = Some(webcam.formats[0]);
                     draft.capture.audio = AudioChoice::Alsa;
                     draft.capture.alsa_device = "bad name".into();
+                }),
+            ),
+            ("system-audio", with(NewInputKind::SystemAudio, &|_| {})),
+            (
+                "system-audio-alsa-bad",
+                with(NewInputKind::SystemAudio, &|draft| {
+                    draft
+                        .system_audio
+                        .set_backend(fm_protocol::SystemAudioBackend::Alsa);
+                    draft.system_audio.device = "-f lavfi".into();
+                    draft.system_audio.device_edited = true;
                 }),
             ),
         ]

@@ -526,6 +526,11 @@ pub(crate) fn apply(
             {
                 crate::engine::check_capture_room(state)?;
             }
+            if matches!(source, InputSourceSpec::SystemAudio(_))
+                && !matches!(current, InputSourceSpec::SystemAudio(_))
+            {
+                crate::engine::check_system_audio_room(state)?;
+            }
             match (current.is_media(), source.is_media()) {
                 (false, true) => {
                     state.insert_media_input(*input, fm_model::MediaPlaybackSettings::default());

@@ -12,6 +12,7 @@ use fm_types::network_stream::{
     AudioChannels, GiveUp, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings,
     RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamUrl,
 };
+use fm_types::system_audio::{SystemAudioBackend, SystemAudioConfig, SystemAudioError};
 
 /// How automatic Fade-to-Black moves ease (SW-004).
 pub use fm_protocol::FadeToBlackCurve;
@@ -1182,6 +1183,30 @@ pub enum Command {
     RemoteCaptureDevices {
         address: SocketAddr,
     },
+    /// Adds a system audio input to a project (AU-011).
+    SystemAudioInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        config: Box<SystemAudioConfig>,
+    },
+    /// Adds a system audio input to a running daemon (AU-011).
+    RemoteSystemAudioInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        config: Box<SystemAudioConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists a project's system audio inputs (idle: nothing captures).
+    SystemAudioStatus {
+        path: PathBuf,
+    },
+    /// Lists a running daemon's system audio inputs with their status.
+    RemoteSystemAudioStatus {
+        address: SocketAddr,
+    },
     RemoteInputRemove {
         address: SocketAddr,
         input: u128,
@@ -1556,6 +1581,8 @@ pub enum ArgsError {
     InvalidNetworkStream(NetworkStreamError),
     /// A capture device key or setting is unusable (IN-001).
     InvalidCapture(CaptureError),
+    /// A system audio device name is unusable (AU-011).
+    InvalidSystemAudio(SystemAudioError),
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1590,6 +1617,9 @@ impl core::fmt::Display for ArgsError {
                 write!(formatter, "invalid network stream: {error}")
             }
             Self::InvalidCapture(error) => write!(formatter, "invalid capture input: {error}"),
+            Self::InvalidSystemAudio(error) => {
+                write!(formatter, "invalid system audio input: {error}")
+            }
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -1927,6 +1957,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "input-capture-status"
         | "remote-input-capture-status"
         | "remote-capture-devices") => parse_capture(capture, arguments),
+        system_audio @ ("input-add-system-audio"
+        | "remote-input-add-system-audio"
+        | "input-system-audio-status"
+        | "remote-input-system-audio-status") => parse_system_audio(system_audio, arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -5580,6 +5614,70 @@ fn parse_capture(
     })
 }
 
+/// Parses the system audio input commands (AU-011):
+/// `input-add-system-audio <project> <input> <name> <pulse|alsa> <device>`,
+/// `remote-input-add-system-audio <address> <input> <name> <pulse|alsa>
+/// <device> [--key <key>] [--expect <revision>]`, and
+/// `input-system-audio-status <project>` /
+/// `remote-input-system-audio-status <address>`.
+fn parse_system_audio(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command.strip_prefix("remote-").unwrap_or(command);
+    if action == "input-system-audio-status" {
+        reject_extra(&mut arguments)?;
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::SystemAudioStatus { path },
+            (None, Some(address)) => Command::RemoteSystemAudioStatus { address },
+            (None, None) => unreachable!("a system audio command names a target"),
+        });
+    }
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let name = nonblank(&mut arguments, "input name")?;
+    let backend_token = required(&mut arguments, "system audio backend")?;
+    let backend =
+        SystemAudioBackend::from_token(&backend_token).ok_or(ArgsError::InvalidChoice {
+            field: "system audio backend (pulse or alsa)",
+            value: backend_token,
+        })?;
+    let device = required(&mut arguments, "system audio device")?;
+    let config = Box::new(SystemAudioConfig::new(backend, device));
+    config.validate().map_err(ArgsError::InvalidSystemAudio)?;
+    match (path, address) {
+        (Some(path), _) => {
+            reject_extra(&mut arguments)?;
+            Ok(Command::SystemAudioInputAdd {
+                path,
+                input,
+                name,
+                config,
+            })
+        }
+        (None, Some(address)) => {
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::RemoteSystemAudioInputAdd {
+                address,
+                input,
+                name,
+                config,
+                key,
+                expected_revision,
+            })
+        }
+        (None, None) => unreachable!("a system audio command names a target"),
+    }
+}
+
 /// Parses `remote-input-remove <address> <input> [--key <key>]
 /// [--expect <revision>]`.
 fn parse_remote_input_remove(
@@ -6325,12 +6423,14 @@ fn host_media_uri(value: &str) -> String {
 }
 
 /// Parses a replacement source: `solid:RRGGBBAA`, `bars`, `media:<file or
-/// asset://key>`, `device:<stable key>`, or `network:<endpoint>`, each
-/// generator optionally followed by `:<tone hz>`.
+/// asset://key>`, `device:<stable key>`, `network:<endpoint>`, or
+/// `system-audio:<pulse|alsa>:<device>`, each generator optionally followed
+/// by `:<tone hz>`.
 fn input_source(value: &str) -> Result<fm_protocol::WireInputSource, ArgsError> {
     use fm_protocol::{WireGeneratorVideo, WireInputSource};
     let invalid = || ArgsError::InvalidChoice {
-        field: "source (solid:RRGGBBAA, bars, media:<file>, device:<key>, network:<endpoint>)",
+        field: "source (solid:RRGGBBAA, bars, media:<file>, device:<key>, network:<endpoint>, \
+                system-audio:<pulse|alsa>:<device>)",
         value: value.to_owned(),
     };
     let tone = |rest: Option<&str>| -> Result<Option<u32>, ArgsError> {
@@ -6377,6 +6477,17 @@ fn input_source(value: &str) -> Result<fm_protocol::WireInputSource, ArgsError> 
                 .ok_or_else(invalid)?
                 .to_owned(),
         }),
+        "system-audio" => {
+            let (backend, device) = rest
+                .and_then(|rest| rest.split_once(':'))
+                .ok_or_else(invalid)?;
+            let config = SystemAudioConfig::new(
+                SystemAudioBackend::from_token(backend).ok_or_else(invalid)?,
+                device,
+            );
+            config.validate().map_err(ArgsError::InvalidSystemAudio)?;
+            Ok(WireInputSource::SystemAudio(config))
+        }
         _ => Err(invalid()),
     }
 }

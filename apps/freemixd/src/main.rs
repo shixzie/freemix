@@ -113,6 +113,8 @@ mod native_files;
 #[cfg(feature = "native-media")]
 mod native_streams;
 #[cfg(feature = "native-media")]
+mod native_system_audio;
+#[cfg(feature = "native-media")]
 mod native_titles;
 // The inventory host and status records are wired into native daemons only;
 // the parser and validation compile (and are unit-tested) in every build.
@@ -718,6 +720,8 @@ struct NativeDaemon {
     files: native_files::NativeMediaFiles,
     /// Network stream inputs and their receivers (IN-015).
     network: native_streams::NativeNetworkStreams,
+    /// System audio inputs and their audio-only receivers (AU-011).
+    system_audio: native_system_audio::NativeSystemAudio,
     /// Local camera and capture-card inputs and their device backend
     /// (IN-001); `None` without a capture backend.
     captures: Option<native_captures::NativeCaptures>,
@@ -4838,6 +4842,10 @@ impl NativeDaemon {
         for input in network.inputs() {
             master.attach_pushed_audio(input)?;
         }
+        let system_audio = start_native_system_audio(stored);
+        for input in system_audio.inputs() {
+            master.attach_pushed_audio(input)?;
+        }
         let captures = start_native_captures(stored)?;
         for input in captures
             .iter()
@@ -4927,6 +4935,7 @@ impl NativeDaemon {
             titles,
             files,
             network,
+            system_audio,
             captures,
             catalogue: native_catalogue::catalogue_keys(stored.project()),
             stills: Vec::new(),
@@ -5039,6 +5048,14 @@ impl NativeDaemon {
             control
                 .set_network_stream_status(server, input, status)
                 .map_err(|error| AppFailure(format!("network input {input} status: {error}")))?;
+        }
+        // System audio inputs (AU-011): each input's capture status.
+        for (input, status) in self.system_audio.statuses(Instant::now()) {
+            control
+                .set_system_audio_status(server, input, &status)
+                .map_err(|error| {
+                    AppFailure(format!("system audio input {input} status: {error}"))
+                })?;
         }
         // Capture inputs (IN-001): each input's acquisition status, and the
         // device inventory whenever it changes.
@@ -6509,6 +6526,10 @@ impl NativeDaemon {
             .sync(&control.network_stream_configs(), |input| {
                 control.input_lifecycle(input).closed
             });
+        self.system_audio
+            .sync(&control.system_audio_inputs(), |input| {
+                control.input_lifecycle(input).closed
+            });
         if let Some(captures) = &mut self.captures {
             let inputs = control
                 .capture_inputs()
@@ -6581,11 +6602,13 @@ impl NativeDaemon {
             .as_mut()
             .map(|captures| captures.pull(projected.frame.get()))
             .unwrap_or_default();
+        let system_audio = self.system_audio.pull(projected.frame.get());
         for pulled in self
             .network
             .pull(projected.frame.get())
             .into_iter()
             .chain(captured)
+            .chain(system_audio)
         {
             if let Some(frame) = pulled.video {
                 self.runtime.ingest_live_video_frame_blocking(
@@ -7172,6 +7195,35 @@ fn start_native_network_streams(stored: &StoredProject) -> native_streams::Nativ
         .collect();
     let dimensions = settings.video.dimensions;
     native_streams::NativeNetworkStreams::start(
+        inputs,
+        settings.frame_rate,
+        native_clock_domain(),
+        (dimensions.width(), dimensions.height()),
+        settings.audio.sample_rate,
+    )
+}
+
+/// Starts a receiver for every open system audio input of `stored`
+/// (AU-011). A device that does not open keeps reopening; none stops the
+/// daemon.
+#[cfg(feature = "native-media")]
+fn start_native_system_audio(stored: &StoredProject) -> native_system_audio::NativeSystemAudio {
+    let project = stored.project();
+    let settings = project.settings();
+    let inputs = project
+        .inputs()
+        .iter()
+        .filter_map(|input| match &input.kind {
+            InputKind::SystemAudio(config) => Some(native_system_audio::SystemAudioInput {
+                input: input.id,
+                config: config.clone(),
+                closed: project.input_lifecycle(input.id).closed,
+            }),
+            _ => None,
+        })
+        .collect();
+    let dimensions = settings.video.dimensions;
+    native_system_audio::NativeSystemAudio::start(
         inputs,
         settings.frame_rate,
         native_clock_domain(),
@@ -7775,8 +7827,9 @@ fn resolve_native_sources(
             // Title inputs are rendered by [`resolve_native_title_sources`].
             InputKind::Device { .. } | InputKind::Scene { .. } | InputKind::Title(_) => continue,
             // A network stream starts on a blank picture; its receiver
-            // ingests every picture after it (IN-015).
-            InputKind::NetworkStream(_) => {
+            // ingests every picture after it (IN-015). A system audio
+            // input keeps its blank picture (AU-011).
+            InputKind::NetworkStream(_) | InputKind::SystemAudio(_) => {
                 let dimensions = settings.video.dimensions;
                 native_streams::startup_picture(
                     (dimensions.width(), dimensions.height()),
@@ -13572,6 +13625,19 @@ fn sync_project_inputs(
                             stable_key: config.stable_key,
                             capture: config.settings,
                         },
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::SystemAudio(config) => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::SystemAudio(*config),
                         required_capabilities: Vec::new(),
                     })
                     .map_err(|error| {

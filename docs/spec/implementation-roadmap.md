@@ -1704,6 +1704,41 @@ outputs refuse 7.1 and discrete layouts; there is no device ancillary-data
 extraction, composite or Lt/Rt downmix, or hardware evidence. `AU-003`
 remains planned.
 
+Current implementation boundary for system audio inputs (`AU-011`):
+Protocol 2.55 (schema 52) adds an audio-only input kind that captures the
+server's own sound. The operator names a PulseAudio/PipeWire source (for
+example `@DEFAULT_MONITOR@` or `<sink>.monitor`) or an ALSA PCM (for example
+`hw:Loopback,1`), checked against the same device rule on every surface; a
+show holds at most 8. The input is an undoable add, a replaceable source, and
+persisted exactly. The native daemon on Linux opens each device through an
+audio-only `FFmpeg` receiver (`-f pulse|alsa -i <device>`) that keeps only
+`PATH`, `HOME`, `XDG_RUNTIME_DIR`, and the `PULSE_*` variables, paces 2x2
+pictures from the audio, and mixes the input on Program like any other.
+A device that does not open, or goes away, reopens with backoff
+(500–5000 ms, never giving up). Each input's state reaches clients as
+`system_audio_status` and the snapshot's `system_audio_inputs`. Other
+platforms refuse a live add with `runtime_unsupported`. Studio's Add input
+dialog has a System audio kind with audio-system keys and a device field;
+the tile shows OPENING / LIVE / REOPENING n / FAILED with its details. The CLI
+adds `input-add-system-audio`, `input-system-audio-status`, their `remote-`
+forms, and the `system-audio:<backend>:<device>` replacement source.
+A codec test reads the real ALSA `null` device and a missing PCM. A native
+process test plays a paced tone through a wrapped `FFmpeg` onto Master, checks
+the arguments and the environment the child keeps, and adds a missing card
+live, which keeps reopening with the real error.
+
+Remaining gaps:
+- the server's audio devices are not listed, so the device is typed;
+- there is no edit command beyond replacing the source;
+- capture is stereo only, with no channel selection or per-input delay;
+- there is no Windows (WASAPI loopback) or macOS capture, and no
+  per-application capture;
+- there is no virtual audio device publishing Program or buses;
+- the simulated daemon reports every system audio input as idle;
+- there is no evidence from a real PulseAudio or PipeWire server.
+
+`AU-011` remains planned.
+
 Current implementation boundary for secondary mixes (`IN-023`): `fm-switcher`
 provides a deterministic `MixBank` with Main plus fifteen addressable
 secondary mixes, each with its own preview/program, cuts, timed transitions,

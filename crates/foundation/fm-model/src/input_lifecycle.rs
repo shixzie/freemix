@@ -294,7 +294,8 @@ pub enum GeneratorVideo {
 }
 
 /// An input source that can be named on the wire and swapped live: a
-/// generator, a media file, a capture device, or a network stream.
+/// generator, a media file, a capture device, a network stream, or a
+/// system audio source.
 ///
 /// Scene, alias, title, mix-feed, and plain colour inputs have no
 /// replaceable source.
@@ -311,6 +312,8 @@ pub enum InputSourceSpec {
     Device { stable_key: String },
     /// A network stream (IN-015): its URL and receive settings.
     Network(fm_types::network_stream::NetworkStreamConfig),
+    /// A system audio capture source (AU-011): its backend and device.
+    SystemAudio(fm_types::system_audio::SystemAudioConfig),
 }
 
 /// Why a source specification is unusable.
@@ -326,6 +329,8 @@ pub enum InputSourceError {
     InvalidTone,
     /// A network stream's URL or settings are unusable (IN-015).
     InvalidNetworkStream,
+    /// A system audio device name is unusable (AU-011).
+    InvalidSystemAudio,
 }
 
 impl InputSourceError {
@@ -338,6 +343,7 @@ impl InputSourceError {
             Self::UnsupportedMediaType => "unsupported_type",
             Self::InvalidTone => "invalid_tone",
             Self::InvalidNetworkStream => "invalid_network_stream",
+            Self::InvalidSystemAudio => "invalid_system_audio",
         }
     }
 }
@@ -352,6 +358,7 @@ impl fmt::Display for InputSourceError {
             Self::UnsupportedMediaType => "the file type is not a supported media type",
             Self::InvalidTone => "the tone frequency is outside the simulated range",
             Self::InvalidNetworkStream => "the network stream URL or settings are unusable",
+            Self::InvalidSystemAudio => "the system audio device name is unusable",
         })
     }
 }
@@ -486,6 +493,9 @@ impl InputSourceSpec {
                 .validate()
                 .map(|_| ())
                 .map_err(|_| InputSourceError::InvalidNetworkStream),
+            Self::SystemAudio(config) => config
+                .validate()
+                .map_err(|_| InputSourceError::InvalidSystemAudio),
         }
     }
 
@@ -513,6 +523,7 @@ impl InputSourceSpec {
                 stable_key: stable_key.clone(),
             }),
             InputKind::NetworkStream(config) => Some(Self::Network(config.clone())),
+            InputKind::SystemAudio(config) => Some(Self::SystemAudio(config.clone())),
             InputKind::Color
             | InputKind::Scene { .. }
             | InputKind::Alias { .. }
@@ -547,6 +558,7 @@ impl InputSourceSpec {
                 capture: fm_types::capture::CaptureSettings::default(),
             },
             Self::Network(config) => InputKind::NetworkStream(config.clone()),
+            Self::SystemAudio(config) => InputKind::SystemAudio(config.clone()),
         }
     }
 

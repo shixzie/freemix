@@ -167,6 +167,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        system_audio_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         engine: engine(),
         revision,
@@ -1608,6 +1609,7 @@ fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
                     input: input(3),
                     name: "Red".to_owned(),
                     network_stream: None,
+                    system_audio: None,
                     capture: None,
                 },
             ),
@@ -3499,6 +3501,7 @@ fn network_stream_inputs_and_status_replicate() {
                     input: input(5),
                     name: "Remote camera".into(),
                     network_stream: Some(Box::new(config.clone())),
+                    system_audio: None,
                     capture: None,
                 },
             ))
@@ -3601,6 +3604,7 @@ fn capture_inputs_status_and_inventory_replicate() {
                     input: input(5),
                     name: "USB camera".into(),
                     network_stream: None,
+                    system_audio: None,
                     capture: Some(Box::new(config.clone())),
                 },
             ))
@@ -3698,6 +3702,88 @@ fn capture_inputs_status_and_inventory_replicate() {
             .view()
             .unwrap()
             .capture_input(input(5).to_domain())
+            .is_none()
+    );
+}
+
+/// AU-011, Protocol 2.55: a system audio input added live carries its
+/// audio system and device into the view as idle, `system_audio_status`
+/// runtime events update its status, and removing it drops its entry.
+#[test]
+fn system_audio_inputs_and_their_status_replicate() {
+    use fm_protocol::{SystemAudioBackend, SystemAudioConfig, SystemAudioState, SystemAudioStatus};
+    let mut client = ready_client(4);
+    let event = |revision, payload| {
+        WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            payload,
+        })
+    };
+    let config = SystemAudioConfig::new(SystemAudioBackend::Alsa, "hw:Loopback,1");
+    assert_eq!(
+        client
+            .intake(event(
+                5,
+                EventPayload::InputAdded {
+                    input: input(5),
+                    name: "Loopback".into(),
+                    network_stream: None,
+                    capture: None,
+                    system_audio: Some(Box::new(config.clone())),
+                },
+            ))
+            .unwrap(),
+        Intake::EventApplied
+    );
+    let view = client.model().view().unwrap();
+    let entry = view
+        .system_audio_input(input(5).to_domain())
+        .expect("the added system audio input");
+    assert_eq!(entry.config, config);
+    assert_eq!(entry.status, SystemAudioStatus::default());
+    assert!(view.system_audio_input(input(1).to_domain()).is_none());
+
+    let status = SystemAudioStatus {
+        state: SystemAudioState::Reopening {
+            attempt: 2,
+            next_in_ms: 1_000,
+        },
+        reopens: 2,
+        last_error: Some("No such file or directory".into()),
+    };
+    client
+        .apply_runtime_event(runtime_event(
+            5,
+            7,
+            1,
+            RuntimeLifecycleEvent::SystemAudioStatus {
+                input: input(5),
+                status: Box::new(status.clone()),
+            },
+        ))
+        .unwrap();
+    let view = client.model().view().unwrap();
+    assert_eq!(
+        view.system_audio_input(input(5).to_domain())
+            .unwrap()
+            .status,
+        status
+    );
+    assert_eq!(view.system_audio_inputs.len(), 1);
+
+    client
+        .intake(event(6, EventPayload::InputRemoved { input: input(5) }))
+        .unwrap();
+    assert!(
+        client
+            .model()
+            .view()
+            .unwrap()
+            .system_audio_input(input(5).to_domain())
             .is_none()
     );
 }

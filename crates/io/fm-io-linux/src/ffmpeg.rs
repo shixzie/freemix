@@ -93,6 +93,7 @@ impl FfmpegAcquirer {
                 format: self.audio_demuxer.clone(),
                 path: path.clone(),
             }),
+            audio_only: false,
         }
     }
 }

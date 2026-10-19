@@ -12,6 +12,7 @@ mod monitor_image;
 mod network_stream;
 mod scene_layer;
 mod stream_target;
+mod system_audio;
 mod version;
 
 pub use fm_types::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
@@ -150,5 +151,10 @@ pub use stream_target::{
     MIN_STREAM_TARGET_BITRATE_KBPS, MIN_STREAM_TARGET_PASSPHRASE_BYTES,
     MIN_STREAM_TARGET_SRT_LATENCY_MS, StreamReconnect, StreamTargetConfig, StreamTargetEntry,
     StreamTargetProtocol, srt_passphrase_is_valid, stream_key_is_valid,
+};
+pub use system_audio::{
+    MAX_SYSTEM_AUDIO_DEVICE_BYTES, MAX_SYSTEM_AUDIO_ERROR_BYTES, MAX_SYSTEM_AUDIO_INPUTS,
+    SystemAudioBackend, SystemAudioConfig, SystemAudioEntry, SystemAudioError, SystemAudioState,
+    SystemAudioStatus, bound_system_audio_error, validate_system_audio_device,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};

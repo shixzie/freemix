@@ -3071,6 +3071,10 @@ fn apply_input_catalogue_mutation(
                 config.validate().map_err(capture_rejection)?;
                 check_capture_room(state)?;
             }
+            if let EngineInputSource::SystemAudio(config) = &source {
+                config.validate().map_err(system_audio_rejection)?;
+                check_system_audio_room(state)?;
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
@@ -3111,6 +3115,34 @@ fn capture_rejection(error: fm_types::capture::CaptureError) -> Rejection {
     };
     Rejection::new(RejectionCode::InvalidCommand, message.clone())
         .with_field(FieldIssue::new(field, code, message))
+}
+
+/// Refuses an unusable system audio device name (AU-011).
+pub(crate) fn system_audio_rejection(error: fm_types::system_audio::SystemAudioError) -> Rejection {
+    let message = error.to_string();
+    Rejection::new(RejectionCode::InvalidCommand, message.clone()).with_field(FieldIssue::new(
+        error.field(),
+        error.code(),
+        message,
+    ))
+}
+
+/// Refuses another system audio input once the show holds
+/// [`fm_types::system_audio::MAX_SYSTEM_AUDIO_INPUTS`] (AU-011).
+pub(crate) fn check_system_audio_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state.system_audio_inputs().count();
+    if count >= fm_types::system_audio::MAX_SYSTEM_AUDIO_INPUTS {
+        let message =
+            format!("the show already has {count} system audio inputs, the most it may hold");
+        return Err(
+            Rejection::new(RejectionCode::Conflict, message.clone()).with_field(FieldIssue::new(
+                "kind",
+                "too_many_system_audio_inputs",
+                message,
+            )),
+        );
+    }
+    Ok(())
 }
 
 /// Refuses another capture input once the show holds

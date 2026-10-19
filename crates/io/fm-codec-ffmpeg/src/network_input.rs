@@ -79,6 +79,20 @@
 //! This receiver's child is the only one that reads from the network, and
 //! so the only one that could wait forever on its own.)
 //!
+//! # Audio-only devices (AU-011)
+//!
+//! A system audio source (a `PulseAudio`/`PipeWire` source or an ALSA capture
+//! device) is read as an audio-only [`DeviceInput`]: the child decodes the
+//! device's audio and paces one tiny `showwaves` picture per program frame
+//! from that same audio, so the jitter buffer, frame-locked audio cut,
+//! stall detection, and reopen policy work exactly as for a stream, and a
+//! device that stops delivering stops the pictures too. Its audio is
+//! required: the receiver never falls back to reopening it without audio.
+//! The child keeps the audio-server environment (`HOME`,
+//! `XDG_RUNTIME_DIR`, `PULSE_SERVER`, `PULSE_COOKIE`, and
+//! `PULSE_RUNTIME_PATH`), which `PulseAudio` needs to find its server and
+//! ALSA to read the user's `~/.asoundrc`.
+//!
 //! Credentials in the stream URL, the RTMP stream key, and the SRT
 //! passphrase never leave the receiver: the last error is scrubbed of every
 //! secret and bounded, and [`NetworkInputConfig`]'s `Debug` output redacts
@@ -181,6 +195,10 @@ pub struct DeviceInput {
     pub field_order: Option<&'static str>,
     /// The audio input read beside the pictures, if any.
     pub audio: Option<DeviceAudioInput>,
+    /// The device is an audio source without pictures (AU-011): `format`,
+    /// `options`, and `path` name the audio input, `audio` is `None`, and
+    /// the receiver paces its pictures from the audio.
+    pub audio_only: bool,
 }
 
 /// The audio input of a [`DeviceInput`].
@@ -258,6 +276,40 @@ impl NetworkInputConfig {
             stream_key: None,
             passphrase: None,
         }
+    }
+
+    /// A receiver of the audio-only system audio source `path` read with
+    /// the `ffmpeg` input `format` (such as `pulse` or `alsa`, AU-011), one
+    /// 2x2 pacing picture per program frame at `frame_rate`, with 48 kHz
+    /// stereo audio and `settings` for its buffer, reopen policy, and
+    /// timeout.
+    #[must_use]
+    pub fn audio_device(
+        format: impl Into<String>,
+        path: impl Into<String>,
+        settings: NetworkStreamSettings,
+        frame_rate: FrameRate,
+    ) -> Self {
+        Self::device(
+            DeviceInput {
+                format: format.into(),
+                options: Vec::new(),
+                path: path.into(),
+                field_order: None,
+                audio: None,
+                audio_only: true,
+            },
+            settings,
+            2,
+            2,
+            frame_rate,
+        )
+    }
+
+    /// Whether this receiver reads an audio-only device (AU-011).
+    #[must_use]
+    pub fn is_audio_only(&self) -> bool {
+        self.device.as_ref().is_some_and(|device| device.audio_only)
     }
 
     fn frame_bytes(&self) -> Option<usize> {
@@ -619,7 +671,10 @@ impl NetworkReceiver {
     /// it through [`Self::status`] and keeps reconnecting.
     pub fn start(config: NetworkInputConfig) -> Result<Self, NetworkInputError> {
         let (protocol, stream) = if let Some(device) = &config.device {
-            if device.path.is_empty() || device.format.is_empty() {
+            if device.path.is_empty()
+                || device.format.is_empty()
+                || (device.audio_only && device.audio.is_some())
+            {
                 return Err(NetworkInputError::InvalidFormat);
             }
             config
@@ -657,11 +712,12 @@ impl NetworkReceiver {
             .ok_or(NetworkInputError::InvalidFormat)?;
         let executable = receiver_executable(&config.ffmpeg)?;
         let channels = usize::from(config.channels);
-        // A device without an audio input connects without audio.
+        // A device without an audio input connects without audio; an
+        // audio-only device always reads its audio.
         let audio_absent = config
             .device
             .as_ref()
-            .is_some_and(|device| device.audio.is_none());
+            .is_some_and(|device| device.audio.is_none() && !device.audio_only);
         let plan = Arc::new(Plan {
             executable,
             protocol,
@@ -1124,6 +1180,9 @@ fn device_arguments(
     audio_port: Option<u16>,
 ) -> Vec<OsString> {
     let config = &plan.config;
+    if device.audio_only {
+        return audio_device_arguments(plan, device, args, audio_port);
+    }
     args.extend(["-thread_queue_size".into(), "64".into()]);
     args.extend(["-f".into(), device.format.clone()]);
     for (name, value) in &device.options {
@@ -1185,6 +1244,76 @@ fn device_arguments(
     args.into_iter().map(OsString::from).collect()
 }
 
+/// The child's arguments for an audio-only device (AU-011): the audio
+/// input, the pacing pictures `showwaves` draws from it, and the audio.
+fn audio_device_arguments(
+    plan: &Plan,
+    device: &DeviceInput,
+    mut args: Vec<String>,
+    audio_port: Option<u16>,
+) -> Vec<OsString> {
+    let config = &plan.config;
+    args.extend([
+        "-thread_queue_size".into(),
+        "1024".into(),
+        "-f".into(),
+        device.format.clone(),
+    ]);
+    for (name, value) in &device.options {
+        args.extend([format!("-{name}"), value.clone()]);
+    }
+    args.extend(["-i".into(), device.path.clone()]);
+    let rate = config.frame_rate;
+    args.extend([
+        "-filter_complex".into(),
+        format!(
+            "[0:a:0]showwaves=s={}x{}:rate={}/{}:mode=point,format=rgba[pace]",
+            config.width,
+            config.height,
+            rate.numerator(),
+            rate.denominator()
+        ),
+        "-map".into(),
+        "[pace]".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "pipe:1".into(),
+    ]);
+    if let Some(port) = audio_port {
+        args.extend([
+            "-map".into(),
+            "0:a:0".into(),
+            "-af".into(),
+            format!("aresample={}:async=1:first_pts=0", config.sample_rate),
+            "-ac".into(),
+            config.channels.to_string(),
+            "-c:a".into(),
+            "pcm_f32le".into(),
+            "-f".into(),
+            "f32le".into(),
+            "-chunked_post".into(),
+            "0".into(),
+            "-method".into(),
+            "POST".into(),
+            format!("http://127.0.0.1:{port}/{}", plan.token),
+        ]);
+    }
+    args.into_iter().map(OsString::from).collect()
+}
+
+/// The audio-server environment an audio-only device's child keeps
+/// (AU-011): `PulseAudio` finds its server and cookie through these, and
+/// ALSA reads `~/.asoundrc` through `HOME`.
+const AUDIO_SERVER_ENVIRONMENT: &[&str] = &[
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "PULSE_SERVER",
+    "PULSE_COOKIE",
+    "PULSE_RUNTIME_PATH",
+];
+
 fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     #[cfg(target_os = "linux")]
     let mut command = match parent_death_wrapper() {
@@ -1209,7 +1338,12 @@ fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     let retained: &[&str] = &["PATH", "SystemRoot", "WINDIR", "PATHEXT"];
     #[cfg(not(windows))]
     let retained: &[&str] = &["PATH"];
-    for name in retained {
+    let audio_server: &[&str] = if plan.config.is_audio_only() {
+        AUDIO_SERVER_ENVIRONMENT
+    } else {
+        &[]
+    };
+    for name in retained.iter().chain(audio_server) {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
@@ -1260,7 +1394,7 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
                 }
             }
         }
-        {
+        if !plan.config.is_audio_only() {
             let mut inner = shared.lock();
             if inner.audio_input_failed && !inner.audio_absent && !inner.delivered {
                 // The audio input kept the device from opening: reopen it
@@ -2002,6 +2136,7 @@ mod tests {
                 format: "alsa".into(),
                 path: "hw:CARD=Cam,DEV=0".into(),
             }),
+            audio_only: false,
         };
         let config = NetworkInputConfig::device(
             device,
@@ -2027,6 +2162,50 @@ mod tests {
         let silent = args(&plan, None).join(" ");
         assert!(!silent.contains("alsa"));
         assert!(!silent.contains("f32le"));
+    }
+
+    #[test]
+    fn audio_device_arguments_pace_pictures_from_the_audio() {
+        let config = NetworkInputConfig::audio_device(
+            "pulse",
+            "sink.monitor",
+            NetworkStreamSettings::default(),
+            FrameRate::new(30_000, 1_001).unwrap(),
+        );
+        assert!(config.is_audio_only());
+        assert_eq!((config.width, config.height), (2, 2));
+        let mut plan = plan("udp://@:9000", RtspTransport::Auto);
+        plan.protocol = None;
+        plan.stream = None;
+        plan.config = config;
+        let joined = args(&plan, Some(4000)).join(" ");
+        assert!(joined.contains("-thread_queue_size 1024 -f pulse -i sink.monitor"));
+        assert!(joined.contains(
+            "[0:a:0]showwaves=s=2x2:rate=30000/1001:mode=point,format=rgba[pace] -map [pace]"
+        ));
+        assert!(joined.contains("-map 0:a:0 -af aresample=48000:async=1:first_pts=0 -ac 2"));
+        assert!(!joined.contains("framecrc"));
+        assert!(!joined.contains("scale="));
+        // Audio is never dropped: an audio-only device always reads it.
+        let receiver = NetworkReceiver::start(NetworkInputConfig {
+            ffmpeg: Executable::Explicit("/nonexistent/ffmpeg".into()),
+            ..plan.config.clone()
+        });
+        assert!(matches!(
+            receiver,
+            Err(NetworkInputError::InvalidExecutable)
+        ));
+        let mut both = plan.config.clone();
+        if let Some(device) = &mut both.device {
+            device.audio = Some(DeviceAudioInput {
+                format: "alsa".into(),
+                path: "default".into(),
+            });
+        }
+        assert!(matches!(
+            NetworkReceiver::start(both),
+            Err(NetworkInputError::InvalidFormat)
+        ));
     }
 
     #[test]

@@ -1460,19 +1460,36 @@ impl Client {
         if let RuntimeLifecycleEvent::DisplayInventory(inventory) = &event.event {
             self.model.apply_display_inventory(inventory.clone());
         }
-        if let RuntimeLifecycleEvent::CaptureStatus { input, status } = &event.event {
-            self.model
-                .apply_runtime_capture_status(input.to_domain(), (**status).clone())?;
-        }
-        if let RuntimeLifecycleEvent::CaptureDevices(inventory) = &event.event {
-            self.model.apply_capture_inventory(inventory.clone());
-        }
-        if let RuntimeLifecycleEvent::NetworkStreamStatus { input, status } = &event.event {
-            self.model
-                .apply_runtime_network_stream_status(input.to_domain(), (**status).clone())?;
-        }
+        self.apply_runtime_source_status(&event.event)?;
         self.runtime_server = Some(event.server);
         self.runtime_sequence = Some((event.generation, event.sequence));
+        Ok(())
+    }
+
+    /// Applies a capture, system audio, or network stream input's status
+    /// and the capture device inventory.
+    fn apply_runtime_source_status(
+        &mut self,
+        event: &RuntimeLifecycleEvent,
+    ) -> Result<(), ClientError> {
+        match event {
+            RuntimeLifecycleEvent::CaptureStatus { input, status } => {
+                self.model
+                    .apply_runtime_capture_status(input.to_domain(), (**status).clone())?;
+            }
+            RuntimeLifecycleEvent::CaptureDevices(inventory) => {
+                self.model.apply_capture_inventory(inventory.clone());
+            }
+            RuntimeLifecycleEvent::SystemAudioStatus { input, status } => {
+                self.model
+                    .apply_runtime_system_audio_status(input.to_domain(), (**status).clone())?;
+            }
+            RuntimeLifecycleEvent::NetworkStreamStatus { input, status } => {
+                self.model
+                    .apply_runtime_network_stream_status(input.to_domain(), (**status).clone())?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 

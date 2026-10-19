@@ -894,9 +894,10 @@ impl EditHistoryStatus {
 /// kind (media files, Scenes, aliases, mix feeds) is added offline. Wire
 /// encoding: `kind=solid` plus `color=<rrggbbaa>` (eight lowercase hex
 /// digits), `kind=bars`, `kind=network_stream` plus the config fields (see
-/// [`crate::NetworkStreamConfig`]), or `kind=capture` plus `device` and the
-/// settings fields (see [`crate::CaptureInputConfig`]). Generator audio is
-/// always silent.
+/// [`crate::NetworkStreamConfig`]), `kind=capture` plus `device` and the
+/// settings fields (see [`crate::CaptureInputConfig`]), or
+/// `kind=system_audio` plus `backend` and `device` (Protocol 2.55, see
+/// [`crate::SystemAudioConfig`]). Generator audio is always silent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiveInputSource {
     Solid {
@@ -910,6 +911,8 @@ pub enum LiveInputSource {
     NetworkStream(Box<crate::NetworkStreamConfig>),
     /// A local capture device and its settings (Protocol 2.47, IN-001).
     Capture(Box<crate::CaptureInputConfig>),
+    /// A system audio capture source (Protocol 2.55, AU-011).
+    SystemAudio(Box<crate::SystemAudioConfig>),
 }
 
 /// Most fields one title carries; equals the title domain bound.
@@ -2374,6 +2377,9 @@ pub struct SnapshotMessage {
     /// Every capture input, ascending, with its stable key, settings, and
     /// latest status (Protocol 2.47).
     pub capture_inputs: Vec<crate::CaptureInputEntry>,
+    /// Every system audio input, ascending, with its device and latest
+    /// status (Protocol 2.55, AU-011).
+    pub system_audio_inputs: Vec<crate::SystemAudioEntry>,
     /// Every configured stream destination in authored order, without its
     /// stream key (Protocol 2.52, OR-006).
     pub stream_targets: Vec<crate::StreamTargetEntry>,
@@ -2419,6 +2425,9 @@ pub enum EventPayload {
         /// The device and settings of an added capture input (Protocol
         /// 2.47); `None` for any other source.
         capture: Option<Box<crate::CaptureInputConfig>>,
+        /// The device of an added system audio input (Protocol 2.55);
+        /// `None` for any other source.
+        system_audio: Option<Box<crate::SystemAudioConfig>>,
     },
     /// An input left the show together with its Master strip and padlock.
     /// It was neither Program nor Preview nor otherwise on air; a settled-off
@@ -2674,6 +2683,11 @@ pub enum RuntimeLifecycleEvent {
     CaptureStatus {
         input: WireInputId,
         status: Box<crate::CaptureStatus>,
+    },
+    /// A system audio input's capture status changed (Protocol 2.55).
+    SystemAudioStatus {
+        input: WireInputId,
+        status: Box<crate::SystemAudioStatus>,
     },
     /// The capture devices the daemon can open changed (Protocol 2.47).
     CaptureDevices(crate::CaptureInventory),

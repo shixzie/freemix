@@ -9,6 +9,7 @@ mod id;
 mod memory;
 pub mod network_stream;
 mod scaling;
+pub mod system_audio;
 mod time;
 mod video;
 

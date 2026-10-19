@@ -907,7 +907,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(51);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(52);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1712,6 +1712,7 @@ impl Project {
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
                 | InputKind::NetworkStream(_)
+                | InputKind::SystemAudio(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
@@ -4106,6 +4107,10 @@ pub enum InputKind {
     /// UDP, TCP, or HTTP(S) MPEG-TS, or an HLS playlist, with its jitter
     /// buffer, reconnect policy, timeout, and stall slate.
     NetworkStream(fm_types::network_stream::NetworkStreamConfig),
+    /// A local system audio capture source (schema 52, AU-011): a
+    /// `PulseAudio`/`PipeWire` source such as a sink monitor, or an ALSA capture
+    /// device, named by the operator. Audio-only: it has no picture.
+    SystemAudio(fm_types::system_audio::SystemAudioConfig),
     Scene {
         scene_id: SceneId,
         audio_source: Option<InputId>,

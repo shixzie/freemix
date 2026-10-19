@@ -469,6 +469,9 @@ pub struct ProjectSnapshot {
     /// Every capture input, ascending, with its stable key, settings, and
     /// status (Protocol 2.47).
     pub capture_inputs: Vec<fm_protocol::CaptureInputEntry>,
+    /// Every system audio input, ascending, with its device and status
+    /// (Protocol 2.55).
+    pub system_audio_inputs: Vec<fm_protocol::SystemAudioEntry>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -574,6 +577,7 @@ impl ProjectSnapshot {
             display_output_states: message.display_output_states,
             network_streams: message.network_streams,
             capture_inputs: message.capture_inputs,
+            system_audio_inputs: message.system_audio_inputs,
             stream_targets: message.stream_targets,
         }
     }
@@ -600,6 +604,8 @@ pub enum DurableChange {
         /// The device and settings of an added capture input (Protocol
         /// 2.47).
         capture: Option<Box<fm_protocol::CaptureInputConfig>>,
+        /// The device of an added system audio input (Protocol 2.55).
+        system_audio: Option<Box<fm_protocol::SystemAudioConfig>>,
     },
     /// An input removed with its strip and padlock.
     InputRemoved {
@@ -809,11 +815,13 @@ impl DurableProjectEvent {
                 name,
                 network_stream,
                 capture,
+                system_audio,
             } => DurableChange::InputAdded {
                 input: input.to_domain(),
                 name,
                 network_stream,
                 capture,
+                system_audio,
             },
             EventPayload::CaptureSettingsChanged { input, settings } => {
                 DurableChange::CaptureSettingsChanged {
@@ -1086,6 +1094,8 @@ pub struct ProjectState {
     /// Every capture input's stable key, settings, and latest status
     /// (Protocol 2.47).
     capture_inputs: BTreeMap<InputId, fm_protocol::CaptureInputEntry>,
+    /// Every system audio input's device and latest status (Protocol 2.55).
+    system_audio_inputs: BTreeMap<InputId, fm_protocol::SystemAudioEntry>,
     /// Every configured stream destination in authored order (Protocol
     /// 2.52).
     stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -1104,6 +1114,13 @@ impl ProjectState {
     #[must_use]
     pub fn capture_input(&self, input: InputId) -> Option<&fm_protocol::CaptureInputEntry> {
         self.capture_inputs.get(&input)
+    }
+
+    /// System audio input `input`'s device and latest status (Protocol
+    /// 2.55).
+    #[must_use]
+    pub fn system_audio_input(&self, input: InputId) -> Option<&fm_protocol::SystemAudioEntry> {
+        self.system_audio_inputs.get(&input)
     }
 
     /// Returns every configured display-output slot (Protocol 2.42).
@@ -1483,6 +1500,9 @@ pub struct ClientView {
     /// The capture devices as the daemon last reported them (Protocol
     /// 2.47); `None` until a `capture_devices` reply or event arrives.
     pub capture_inventory: Option<fm_protocol::CaptureInventory>,
+    /// Every system audio input, ascending, with its device and latest
+    /// status (Protocol 2.55).
+    pub system_audio_inputs: Vec<fm_protocol::SystemAudioEntry>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -1512,6 +1532,15 @@ impl ClientView {
     #[must_use]
     pub fn network_stream(&self, input: InputId) -> Option<&fm_protocol::NetworkStreamEntry> {
         self.network_streams
+            .iter()
+            .find(|entry| entry.input.to_domain() == input)
+    }
+
+    /// System audio input `input`'s device and latest status, if it is a
+    /// system audio input (Protocol 2.55).
+    #[must_use]
+    pub fn system_audio_input(&self, input: InputId) -> Option<&fm_protocol::SystemAudioEntry> {
+        self.system_audio_inputs
             .iter()
             .find(|entry| entry.input.to_domain() == input)
     }
@@ -2188,6 +2217,26 @@ impl ClientModel {
         Ok(())
     }
 
+    /// Records a system audio input's capture status from a
+    /// `system_audio_status` runtime event (Protocol 2.55). Runtime events
+    /// never move the durable cursor; a status for an input the model does
+    /// not know as a system audio input is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_system_audio_status(
+        &mut self,
+        input: InputId,
+        status: fm_protocol::SystemAudioStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if let Some(entry) = state.system_audio_inputs.get_mut(&input) {
+            entry.status = status;
+        }
+        Ok(())
+    }
+
     /// Records the connected displays from a `display_inventory` runtime
     /// event or reply (Protocol 2.42).
     pub fn apply_display_inventory(&mut self, inventory: fm_protocol::DisplayInventory) {
@@ -2315,6 +2364,12 @@ impl ClientModel {
                 .cloned()
                 .collect(),
             capture_inventory: self.capture_inventory.clone(),
+            system_audio_inputs: state
+                .system_audio_inputs
+                .values()
+                .filter(|entry| state.inputs.contains(&entry.input.to_domain()))
+                .cloned()
+                .collect(),
             stream_targets: state.stream_targets.clone(),
         })
     }
@@ -2549,6 +2604,11 @@ impl ClientModel {
                 .collect(),
             capture_inputs: snapshot
                 .capture_inputs
+                .into_iter()
+                .map(|entry| (entry.input.to_domain(), entry))
+                .collect(),
+            system_audio_inputs: snapshot
+                .system_audio_inputs
                 .into_iter()
                 .map(|entry| (entry.input.to_domain(), entry))
                 .collect(),
@@ -4063,7 +4123,18 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             name,
             network_stream,
             capture,
+            system_audio,
         } => {
+            if let Some(config) = system_audio {
+                state.system_audio_inputs.insert(
+                    input,
+                    fm_protocol::SystemAudioEntry {
+                        input: fm_protocol::WireInputId::from_domain(input),
+                        config: *config,
+                        status: fm_protocol::SystemAudioStatus::default(),
+                    },
+                );
+            }
             if let Some(config) = capture {
                 state.capture_inputs.insert(
                     input,
@@ -4089,6 +4160,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::InputRemoved { input } => {
             state.network_streams.remove(&input);
             state.capture_inputs.remove(&input);
+            state.system_audio_inputs.remove(&input);
             apply_input_removed(state, input);
         }
         DurableChange::CaptureSettingsChanged { input, settings } => {
@@ -4143,6 +4215,32 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                         state.capture_inputs.remove(&input);
                     }
                 }
+                match source {
+                    fm_protocol::WireInputSource::SystemAudio(config) => {
+                        state.system_audio_inputs.insert(
+                            input,
+                            fm_protocol::SystemAudioEntry {
+                                input: fm_protocol::WireInputId::from_domain(input),
+                                config: config.clone(),
+                                status: fm_protocol::SystemAudioStatus::default(),
+                            },
+                        );
+                    }
+                    _ => {
+                        state.system_audio_inputs.remove(&input);
+                    }
+                }
+            }
+            if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
+                &operation
+                && let Some(original) = state.system_audio_inputs.get(&source.to_domain())
+            {
+                let copy = fm_protocol::SystemAudioEntry {
+                    input: *input,
+                    config: original.config.clone(),
+                    status: fm_protocol::SystemAudioStatus::default(),
+                };
+                state.system_audio_inputs.insert(input.to_domain(), copy);
             }
             if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
                 &operation

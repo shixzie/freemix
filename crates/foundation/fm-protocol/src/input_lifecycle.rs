@@ -167,6 +167,8 @@ pub enum WireInputSource {
     Network {
         endpoint: String,
     },
+    /// A system audio capture source (Protocol 2.55, AU-011).
+    SystemAudio(crate::SystemAudioConfig),
 }
 
 /// One requested item of a batch import.

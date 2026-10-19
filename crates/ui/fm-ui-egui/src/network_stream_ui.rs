@@ -1028,6 +1028,11 @@ pub(crate) fn paint_stream_badge(
     let Some((text, color)) = stream_badge(l, status) else {
         return;
     };
+    paint_corner_badge(painter, thumb, text, color);
+}
+
+/// Paints a status badge in a picture's bottom trailing corner.
+pub(crate) fn paint_corner_badge(painter: &Painter, thumb: Rect, text: String, color: Color32) {
     let galley = painter.layout_no_wrap(
         text,
         FontId::new(9.0, FontFamily::Proportional),

@@ -73,6 +73,9 @@ pub(crate) enum NativeSourceKey {
     Generator(SimulatedInput),
     Media(String),
     Network,
+    /// A system audio input (AU-011): a changed device restarts its
+    /// receiver without a new source.
+    SystemAudio,
     Scene {
         scene: SceneId,
         audio: Option<InputId>,
@@ -90,6 +93,7 @@ impl NativeSourceKey {
             InputKind::Simulated(simulated) => Self::Generator(*simulated),
             InputKind::Media { asset_uri, .. } => Self::Media(asset_uri.clone()),
             InputKind::NetworkStream(_) => Self::Network,
+            InputKind::SystemAudio(_) => Self::SystemAudio,
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -122,6 +126,11 @@ impl NativeSourceKey {
                  not realize"
             )),
             Self::Generator(_) | Self::Media(_) | Self::Network | Self::Scene { .. } => None,
+            Self::SystemAudio if super::native_system_audio::SUPPORTED => None,
+            Self::SystemAudio => Some(format!(
+                "system audio input {input} cannot be added: {}",
+                super::native_system_audio::UNSUPPORTED
+            )),
             Self::Title => Some(format!(
                 "title input {input} cannot be added while the native media runtime runs; stop \
                  the daemon and use freemix-cli"
@@ -417,7 +426,7 @@ impl NativeDaemon {
                     pushed.push(input);
                     Some(frame)
                 }
-                NativeSourceKey::Network => {
+                NativeSourceKey::Network | NativeSourceKey::SystemAudio => {
                     let frame = native_streams::startup_picture(
                         size,
                         settings.frame_rate,
@@ -655,6 +664,17 @@ mod tests {
             let candidate = project(&[(1, silent.clone()), (2, added.clone())]);
             assert!(budget.refusal(&current, &candidate).is_none(), "{added:?}");
         }
+        // A system audio input is added live where the platform captures
+        // system audio, and refused with the typed reason elsewhere.
+        let system_audio = InputKind::SystemAudio(fm_types::system_audio::SystemAudioConfig::new(
+            fm_types::system_audio::SystemAudioBackend::Pulse,
+            "@DEFAULT_MONITOR@",
+        ));
+        let candidate = project(&[(1, silent.clone()), (2, system_audio)]);
+        assert_eq!(
+            reason(budget.refusal(&current, &candidate)),
+            (!crate::native_system_audio::SUPPORTED).then_some(RefusalReason::RuntimeUnsupported)
+        );
         // A replacement and a removal free what they leave.
         assert!(budget.refusal(&current, &project(&[(1, media)])).is_none());
         assert!(budget.refusal(&current, &project(&[])).is_none());

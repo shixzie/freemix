@@ -587,6 +587,12 @@ fn encode_input_catalogue_command(
                         record.field_string(name, value)
                     })
                 }
+                LiveInputSource::SystemAudio(config) => {
+                    record.field("kind", "system_audio")?;
+                    super::system_audio::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })
+                }
             }
         }
         CommandPayload::RemoveInput { input } => {
@@ -1522,6 +1528,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::capture::encode_entries(&message.capture_inputs)?,
     )?;
     record.field_string(
+        "system_audio_inputs",
+        super::system_audio::encode_entries(&message.system_audio_inputs)?,
+    )?;
+    record.field_string(
         "stream_targets",
         super::stream_target::encode_entries(&message.stream_targets)?,
     )
@@ -1965,13 +1975,14 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             name,
             network_stream,
             capture,
+            system_audio,
         } => {
             validate_new_input_name(name)?;
             record.field("event", "input_added")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
-            match (network_stream, capture) {
-                (Some(config), None) => {
+            match (network_stream, capture, system_audio) {
+                (Some(config), None, None) => {
                     record.field("kind", "network_stream")?;
                     super::network_stream::encode_config(
                         config,
@@ -1979,17 +1990,23 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                         &mut |name, value| record.field_string(name, value),
                     )?;
                 }
-                (None, Some(config)) => {
+                (None, Some(config), None) => {
                     record.field("kind", "capture")?;
                     super::capture::encode_config(config, &mut |name, value| {
                         record.field_string(name, value)
                     })?;
                 }
-                (None, None) => {}
-                (Some(_), Some(_)) => {
+                (None, None, Some(config)) => {
+                    record.field("kind", "system_audio")?;
+                    super::system_audio::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })?;
+                }
+                (None, None, None) => {}
+                _ => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
-                        value: "network_stream and capture".to_owned(),
+                        value: "more than one input source".to_owned(),
                     });
                 }
             }
@@ -2430,6 +2447,12 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::DisplayOutputStatus(status) => {
             record.field("event", "display_output_status")?;
             super::display_output::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::SystemAudioStatus { input, status } => {
+            record.field("event", "system_audio_status")?;
+            super::system_audio::encode_status(*input, status, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

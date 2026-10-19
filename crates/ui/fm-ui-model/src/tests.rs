@@ -86,6 +86,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         fade_to_black_curve: fm_protocol::FadeToBlackCurve::default(),
         display_outputs: Vec::new(),
         network_streams: Vec::new(),
+        system_audio_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         display_output_states: Vec::new(),
         cursor: ProjectCursor {
@@ -1349,6 +1350,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(9),
                 name: "Red".into(),
                 network_stream: None,
+                system_audio: None,
                 capture: None,
             },
         ))
@@ -1399,6 +1401,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(2),
                 name: "Twin".into(),
                 network_stream: None,
+                system_audio: None,
                 capture: None,
             },
             ModelError::DuplicateInput(input(2)),
@@ -1408,6 +1411,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(10),
                 name: "Camera".into(),
                 network_stream: None,
+                system_audio: None,
                 capture: None,
             },
             ModelError::InvalidInputNames,
@@ -1417,6 +1421,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: input(10),
                 name: " ".into(),
                 network_stream: None,
+                system_audio: None,
                 capture: None,
             },
             ModelError::InvalidInputNames,
@@ -1462,6 +1467,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 input: fm_protocol::WireInputId::from_domain(input(11)),
                 name: "Bars".into(),
                 network_stream: None,
+                system_audio: None,
                 capture: None,
             },
             edit_history: EditHistoryStatus::EMPTY,
@@ -1473,6 +1479,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             input: input(11),
             name: "Bars".into(),
             network_stream: None,
+            system_audio: None,
             capture: None,
         }
     );
@@ -1627,6 +1634,7 @@ mod titles {
             display_outputs: Vec::new(),
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
+            system_audio_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: engine("engine-a", 1, "log-a"),
             revision: 10,

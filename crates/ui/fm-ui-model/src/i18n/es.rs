@@ -6657,4 +6657,63 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("use de 10 a 79 caracteres imprimibles, sin espacios"),
     ),
     (Msg::StreamErrLatency, t("use de 20 a 8000 ms")),
+    (Msg::NameSystemAudio, t("Audio del sistema")),
+    (Msg::KindSystemAudioKey, t("AUDIO DEL SISTEMA")),
+    (
+        Msg::KindSystemAudioHover,
+        t(
+            "Una entrada solo de audio que escucha el sonido del propio servidor: un monitor de PulseAudio o PipeWire de lo que reproduce una salida, o un dispositivo de captura ALSA como un loopback; se vuelve a abrir automáticamente si el dispositivo desaparece",
+        ),
+    ),
+    (Msg::SaBackend, t("Sistema de audio")),
+    (Msg::SaBackendPulse, t("PulseAudio / PipeWire")),
+    (
+        Msg::SaBackendPulseHover,
+        t(
+            "Captura una fuente de PulseAudio o PipeWire del servidor; el monitor de una salida escucha lo que esa salida reproduce",
+        ),
+    ),
+    (Msg::SaBackendAlsa, t("ALSA")),
+    (
+        Msg::SaBackendAlsaHover,
+        t(
+            "Captura un PCM de ALSA del servidor, como el lado de captura de una tarjeta loopback snd-aloop",
+        ),
+    ),
+    (Msg::SaDevice, t("Dispositivo de origen")),
+    (
+        Msg::SaDeviceHover,
+        t(
+            "El nombre del dispositivo tal como lo conoce el sistema de audio del servidor; el servidor no lista aquí sus dispositivos, así que escriba el nombre (de 1 a 128 caracteres imprimibles)",
+        ),
+    ),
+    (
+        Msg::SaDevicePulseCaption,
+        t(
+            "@DEFAULT_MONITOR@ escucha la salida predeterminada; o indique una fuente como <sink>.monitor",
+        ),
+    ),
+    (
+        Msg::SaDeviceAlsaCaption,
+        t("Por ejemplo hw:Loopback,1 (lado de captura de snd-aloop) o plughw:1,0"),
+    ),
+    (
+        Msg::SaReasonDeviceEmpty,
+        t("escriba el dispositivo que se captura"),
+    ),
+    (
+        Msg::SaReasonDeviceInvalid,
+        t("use de 1 a 128 caracteres imprimibles, sin empezar por - ni por un espacio"),
+    ),
+    (Msg::SaPreview, t("Solo audio")),
+    (Msg::SaBadgeOpening, t("ABRIENDO")),
+    (Msg::SaBadgeReopening, t("REABRIENDO {attempt}")),
+    (
+        Msg::SaDetail,
+        t("Audio del sistema {device} ({backend}): {state}"),
+    ),
+    (
+        Msg::SaDetailReopens,
+        plural("reabierto {count} vez", "reabierto {count} veces"),
+    ),
 ];

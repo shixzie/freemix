@@ -79,6 +79,7 @@ fn control() -> FakeControl {
         display_outputs: Vec::new(),
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
+        system_audio_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         engine: engine.clone(),
         revision: 4,

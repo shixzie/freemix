@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.54 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.55 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1707,6 +1707,35 @@ keeps a destination's place in the authored list across undo.
   stored in the bundle under the same trust model as `stream_key`)
   (schema 51).
 - 2.53 is refused.
+
+Protocol 2.55 adds system audio inputs (AU-011): an audio-only input that
+captures the server's own sound through a PulseAudio/PipeWire source or an
+ALSA PCM.
+
+- `payload=input_add` gains `kind=system_audio` with required
+  `backend=pulse|alsa` and `device`: 1..=128 bytes of printable ASCII, not
+  starting with `-` or a space and not ending with a space. At most 8 per
+  show (field issue `too_many_system_audio_inputs`, `conflict`); a bad device
+  is refused with field issue `device` (`invalid_device`).
+- `event=input_added` carries the same `kind=system_audio`, `backend`, and
+  `device`; one kind at most.
+- `input_replace_source` accepts the source
+  `system_audio:<backend>:<device>`; an unusable device is refused.
+- `runtime_event` `event=system_audio_status` carries `input`,
+  `state=idle|opening|live|reopening|failed`, `attempt` and `next_in_ms`
+  exactly when `reopening` (`attempt` at least 1), `reopens`, and an optional
+  one-line `last_error` of at most 160 bytes.
+- Each snapshot gains `system_audio_inputs`, after `capture_inputs`: a
+  comma-separated, strictly ascending list of
+  `<input>~<backend>~<state>~<attempt>~<next_in_ms>~<reopens>~<length>:<device>`
+  without error text. An input nothing captures is `idle`.
+- A daemon that cannot capture system audio on its platform refuses a live
+  add with `runtime_unsupported`; the native daemon captures on Linux only,
+  and reports a stored input elsewhere as `failed` with the error
+  `system audio capture is not supported on this platform`.
+- Durability: an input kind `{"type": "system_audio", "backend", "device"}`
+  (schema 52).
+- 2.54 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

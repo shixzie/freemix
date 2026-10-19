@@ -44,6 +44,8 @@ pub enum EngineInputSource {
     Bars,
     NetworkStream(Box<fm_types::network_stream::NetworkStreamConfig>),
     Capture(Box<fm_types::capture::CaptureInputConfig>),
+    /// A system audio capture source (AU-011).
+    SystemAudio(Box<fm_types::system_audio::SystemAudioConfig>),
 }
 
 impl EngineInputSource {
@@ -67,6 +69,9 @@ impl EngineInputSource {
                 return fm_model::InputSourceSpec::Device {
                     stable_key: config.stable_key.clone(),
                 };
+            }
+            Self::SystemAudio(config) => {
+                return fm_model::InputSourceSpec::SystemAudio((**config).clone());
             }
         };
         fm_model::InputSourceSpec::Generator {
@@ -1464,6 +1469,19 @@ impl ShowState {
             .iter()
             .filter_map(|(input, source)| match source {
                 fm_model::InputSourceSpec::Network(config) => Some((*input, config)),
+                _ => None,
+            })
+    }
+
+    /// Every system audio input and its device, ascending by input
+    /// (AU-011).
+    pub fn system_audio_inputs(
+        &self,
+    ) -> impl Iterator<Item = (InputId, &fm_types::system_audio::SystemAudioConfig)> {
+        self.input_sources
+            .iter()
+            .filter_map(|(input, source)| match source {
+                fm_model::InputSourceSpec::SystemAudio(config) => Some((*input, config)),
                 _ => None,
             })
     }

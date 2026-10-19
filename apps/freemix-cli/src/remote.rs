@@ -590,6 +590,49 @@ pub fn capture_inputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Lists the system audio inputs of the daemon at `address` with their
+/// latest status (AU-011).
+pub fn system_audio_inputs(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let view = remote
+        .client
+        .model()
+        .view()
+        .ok_or_else(|| RemoteFailure("remote project view is unavailable".into()))?;
+    print_system_audio_inputs(view.system_audio_inputs.iter().cloned());
+    Ok(())
+}
+
+/// Prints one `SystemAudioInput(...)` line per system audio input, or
+/// `SystemAudioInputs=none`.
+pub(crate) fn print_system_audio_inputs(
+    entries: impl IntoIterator<Item = fm_protocol::SystemAudioEntry>,
+) {
+    let mut any = false;
+    for entry in entries {
+        any = true;
+        let (attempt, next_in_ms) = match entry.status.state {
+            fm_protocol::SystemAudioState::Reopening {
+                attempt,
+                next_in_ms,
+            } => (attempt, next_in_ms),
+            _ => (0, 0),
+        };
+        println!(
+            "SystemAudioInput(input={}, backend={}, device={:?}, state={}, attempt={attempt}, next_in_ms={next_in_ms}, reopens={}, last_error={})",
+            entry.input,
+            entry.config.backend.token(),
+            entry.config.device,
+            entry.status.state.token(),
+            entry.status.reopens,
+            quoted_or_none(entry.status.last_error.as_deref()),
+        );
+    }
+    if !any {
+        println!("SystemAudioInputs=none");
+    }
+}
+
 /// Edits capture input `input` of the daemon at `address`: the options
 /// given replace the input's current settings (IN-001).
 pub fn set_capture_settings(

@@ -10,6 +10,7 @@ mod input_lifecycle;
 mod media_playback;
 mod network_stream;
 mod scene_animation;
+mod system_audio;
 mod transition_favorite;
 
 use crate::ProjectValidationError;

@@ -72,6 +72,7 @@ mod stream_control;
 mod stream_targets;
 mod studio_animation;
 mod studio_color;
+mod system_audio_ui;
 mod theme;
 mod titles;
 mod toasts;
@@ -2790,6 +2791,7 @@ mod tests {
             display_output_states: Vec::new(),
             display_inventory: None,
             network_streams: Vec::new(),
+            system_audio_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             capture_inventory: None,
             cursor: ProjectCursor::from_resume_cursor(
