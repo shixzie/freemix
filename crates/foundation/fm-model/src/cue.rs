@@ -55,6 +55,9 @@ pub const MAX_CUE_NAME_BYTES: usize = 64;
 pub const MAX_CUE_TEXT_BYTES: usize = 128;
 /// Most title text bytes one list carries across all its actions.
 pub const MAX_CUE_LIST_TEXT_BYTES: usize = 2_048;
+/// Largest magnitude a title number action sets or adds (schema 59), and
+/// largest magnitude an added value may reach.
+pub const MAX_CUE_TITLE_NUMBER: i64 = 999_999_999_999;
 /// Longest wait, in frames.
 pub const MAX_CUE_WAIT_FRAMES: u32 = 216_000;
 /// Longest millisecond delay (one hour).
@@ -91,6 +94,15 @@ pub enum CueAction {
         field: TitleFieldId,
         text: String,
     },
+    /// Sets or steps one number field of title `input`, on or off air
+    /// (schema 59): a data update such as a score. A text field receives
+    /// decimal text; stepping it needs it to hold a plain decimal integer
+    /// (or nothing, read as zero; see [`title_text_number`]).
+    TitleNumber {
+        input: InputId,
+        field: TitleFieldId,
+        update: CueNumberUpdate,
+    },
     /// Takes title `input` off the overlay channel that shows it.
     TitleOff { input: InputId },
     /// Fades Program to black (`active`) or back over `duration_frames`.
@@ -120,6 +132,65 @@ pub enum CueAction {
     Delay { millis: u32 },
     /// Runs project script `script` (nonzero) as one step (schema 55).
     RunScript { script: u64 },
+}
+
+/// How a [`CueAction::TitleNumber`] changes its field (schema 59).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueNumberUpdate {
+    /// Sets the field to the value (`-`[`MAX_CUE_TITLE_NUMBER`]`..=`
+    /// [`MAX_CUE_TITLE_NUMBER`]).
+    Set(i64),
+    /// Adds the nonzero delta (same magnitude bound) to the field's value
+    /// when the action runs; a result beyond [`MAX_CUE_TITLE_NUMBER`] is
+    /// refused.
+    Add(i64),
+}
+
+impl CueNumberUpdate {
+    /// Whether the value or delta is in range.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        match self {
+            Self::Set(value) => value.unsigned_abs() <= MAX_CUE_TITLE_NUMBER.unsigned_abs(),
+            Self::Add(delta) => {
+                delta != 0 && delta.unsigned_abs() <= MAX_CUE_TITLE_NUMBER.unsigned_abs()
+            }
+        }
+    }
+
+    /// The field's value after the update of `current`, or `None` when it
+    /// leaves `-`[`MAX_CUE_TITLE_NUMBER`]`..=`[`MAX_CUE_TITLE_NUMBER`].
+    #[must_use]
+    pub const fn apply(self, current: i64) -> Option<i64> {
+        let value = match self {
+            Self::Set(value) => value,
+            Self::Add(delta) => match current.checked_add(delta) {
+                Some(value) => value,
+                None => return None,
+            },
+        };
+        if value.unsigned_abs() <= MAX_CUE_TITLE_NUMBER.unsigned_abs() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
+/// The integer a title text field holds for a number update (schema 59):
+/// blank text is zero, otherwise an optional `-` and 1 to 19 ASCII digits,
+/// surrounding whitespace ignored; anything else is `None`.
+#[must_use]
+pub fn title_text_number(text: &str) -> Option<i64> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(0);
+    }
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || digits.len() > 19 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// A media transport operation a cue runs.
@@ -156,6 +227,7 @@ impl CueAction {
             | Self::OverlayOn { input, .. }
             | Self::TitleOn { input, .. }
             | Self::TitleText { input, .. }
+            | Self::TitleNumber { input, .. }
             | Self::TitleOff { input }
             | Self::AudioGain { input, .. }
             | Self::AudioMute { input, .. }
@@ -426,6 +498,7 @@ pub fn cue_action_is_valid(action: &CueAction) -> bool {
             channel: number, ..
         } => channel(*number),
         CueAction::TitleText { text, .. } => text.len() <= MAX_CUE_TEXT_BYTES,
+        CueAction::TitleNumber { update, .. } => update.is_valid(),
         CueAction::FadeToBlack {
             duration_frames, ..
         } => transition(*duration_frames),

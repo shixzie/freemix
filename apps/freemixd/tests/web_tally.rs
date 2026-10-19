@@ -623,6 +623,17 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
         "[\"payload\", \"cue_go\"], [\"list\", retry.list], [\"cue\", retry.cue], [\"expected_revision\", String(link.revision)]"
     ));
     assert!(page.contains("[\"payload\", \"cue_standby\"]"));
+    // Protocol 2.65: an Operator page arms the cue it shows on standby for
+    // the chosen delay, disarms it, and counts the armed GO down from the
+    // state's sixth part.
+    assert!(page.contains(
+        "[\"payload\", \"cue_arm\"], [\"list\", cues.id], [\"cue\", cues.standby], [\"in_ms\", String(delay * 1000)]"
+    ));
+    assert!(page.contains("[\"payload\", \"cue_disarm\"], [\"list\", cues.id]"));
+    assert!(page.contains("if (parts[5] === \"-\") return null;"));
+    assert!(page.contains("id=\"arm-delay\""));
+    assert!(page.contains("id=\"arm\""));
+    assert!(page.contains("id=\"disarm\""));
     assert!(page.contains("id=\"go\""));
     assert!(page.contains("id=\"standby\""));
     assert!(page.contains("\"freemix.control.v1\""));
@@ -927,6 +938,106 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
     // Full control is unchanged: Admin fires the whole chain.
     admin.send(&command("admin-go", go(Some(10))));
     assert_eq!(admin.accepted("admin-go"), revision + 2);
+}
+
+/// RC-017 (Protocol 2.65): the tally page arms the cue on standby for a
+/// later frame and disarms it with the exact records it writes. Arming
+/// needs exactly a GO's permissions (the chain's title number update needs
+/// `edit_project`, which an Operator page lacks), a Viewer page may do
+/// neither, and the armed GO is due the chosen delay after the command's
+/// frame at the show rate.
+#[test]
+fn web_tally_arms_and_disarms_a_timed_go_within_its_role() {
+    use fm_protocol::{CueListSpec, WireCue, WireCueAction, WireTitleFieldId};
+
+    let directory = TestDirectory::new("arm");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+    let cue = |id: u64, actions: Vec<WireCueAction>| WireCue {
+        id,
+        name: format!("Cue {id}"),
+        auto_follow: false,
+        actions,
+    };
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    admin.send(&command(
+        "set-cues",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(CueListSpec {
+                name: "Show".into(),
+                cues: vec![
+                    cue(
+                        10,
+                        vec![WireCueAction::Take {
+                            input: Some(input(2)),
+                            effect: fm_protocol::TransitionFavoriteEffect::Cut,
+                            duration_frames: 0,
+                        }],
+                    ),
+                    cue(
+                        20,
+                        vec![WireCueAction::TitleNumber {
+                            input: input(4),
+                            field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                            add: true,
+                            value: 1,
+                        }],
+                    ),
+                ],
+            }),
+        },
+    ));
+    admin.accepted("set-cues");
+
+    let (mut viewer, _, _, _) = web_session(daemon.web, Role::Viewer);
+    for (id, payload) in [
+        ("viewer-arm", "payload=cue_arm\tlist=7\tcue=10\tin_ms=60000"),
+        ("viewer-disarm", "payload=cue_disarm\tlist=7"),
+    ] {
+        assert_eq!(
+            page_command(&mut viewer, id, None, payload).unwrap_err().0,
+            "permission_denied",
+            "{id}"
+        );
+    }
+    viewer.close(None).unwrap();
+    drop(viewer);
+
+    let (mut page, _, permissions, _) = web_session(daemon.web, Role::Operator);
+    assert!(!permissions.iter().any(|granted| granted == "edit_project"));
+    // Cue 20 updates a title number: arming it needs what its GO needs.
+    assert_eq!(
+        page_command(
+            &mut page,
+            "arm-title",
+            None,
+            "payload=cue_arm\tlist=7\tcue=20\tin_ms=60000"
+        )
+        .unwrap_err()
+        .0,
+        "permission_denied"
+    );
+    let (_, event) = page_command(
+        &mut page,
+        "arm",
+        None,
+        "payload=cue_arm\tlist=7\tcue=10\tin_ms=60000",
+    )
+    .unwrap();
+    let EventPayload::CueRunChanged(change) = event else {
+        panic!("an arm replicates the run state: {event:?}");
+    };
+    let armed = change.state.armed.expect("cue 10 is armed");
+    assert_eq!(armed.cue, 10);
+    // One minute at 25 frames per second after the command's frame.
+    assert_eq!(armed.due_frame, change.frame + 1_500);
+    let (_, event) = page_command(&mut page, "disarm", None, "payload=cue_disarm\tlist=7").unwrap();
+    let EventPayload::CueRunChanged(change) = event else {
+        panic!("a disarm replicates the run state: {event:?}");
+    };
+    assert_eq!(change.state.armed, None);
 }
 
 #[test]
@@ -1490,6 +1601,12 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
         ("preview: \"Previo\"", "\"Previo\""),
         ("cut: \"Corte\"", "t(\"Corte\")"),
         ("standby: \"En espera\"", "\"En espera: {name}\""),
+        ("arm: \"Armar GO\"", "t(\"Armar GO\")"),
+        ("disarm: \"Desarmar\"", "t(\"Desarmar\")"),
+        (
+            "delaySeconds: \"Disparar en {count} s\"",
+            "t(\"Disparar en\")",
+        ),
         (
             "cueNothing: \"{list} — Nada en espera\"",
             "t(\"Nada en espera\")",

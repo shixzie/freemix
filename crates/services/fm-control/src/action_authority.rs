@@ -140,7 +140,7 @@ pub const fn cue_action_class(action: &CueAction) -> Option<CommandClass> {
         | CueAction::Media { .. } => CommandClass::Transition,
         // Saving a title's field values (`title_fields_set`) edits project
         // content.
-        CueAction::TitleText { .. } => CommandClass::EditProject,
+        CueAction::TitleText { .. } | CueAction::TitleNumber { .. } => CommandClass::EditProject,
         // Strip gain and mute (`input_audio_strip_set`).
         CueAction::AudioGain { .. } | CueAction::AudioMute { .. } => CommandClass::ControlAudio,
         CueAction::Wait { .. } | CueAction::Delay { .. } | CueAction::RunScript { .. } => {
@@ -155,7 +155,7 @@ pub const fn cue_action_class(action: &CueAction) -> Option<CommandClass> {
 pub const fn verb_class(verb: Verb) -> CommandClass {
     match verb {
         Verb::Preview => CommandClass::SelectPreview,
-        Verb::TitleText => CommandClass::EditProject,
+        Verb::TitleText | Verb::TitleNumber | Verb::TitleAdd => CommandClass::EditProject,
         Verb::Gain | Verb::Mute | Verb::Unmute => CommandClass::ControlAudio,
         Verb::Cut
         | Verb::Transition

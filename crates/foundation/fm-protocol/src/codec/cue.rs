@@ -7,6 +7,8 @@
 //!   favourite effect token: `cut`, a mix kind, or `stinger_<slot>`),
 //!   `overlay_on.<channel>.<input>`, `overlay_off.<channel>`,
 //!   `title_on.<input>.<channel>`, `title_text.<input>.<field>.<text hex>`,
+//!   `title_number.<input>.<field>.<set|add>.<value>` (Protocol 2.65, a
+//!   signed decimal),
 //!   `title_off.<input>`, `fade_to_black.<active 0|1>.<frames>`,
 //!   `playlist_start`, `playlist_stop`, `audio_gain.<input>.<millidB>`,
 //!   `audio_mute.<input>.<0|1>`, `record.<recorder>.<0|1>`,
@@ -26,7 +28,8 @@
 //! * `cue_arm` carries `list`, an optional `cue`, and `in_ms` (canonical
 //!   decimal, `1..=86400000`); `cue_disarm` carries `list` (Protocol 2.64).
 //! * `fired` is `.`-separated cue ids; `titles` is a `/`-separated list of
-//!   `<input>.<field revision>.<field>.<text hex>`; `media` (Protocol
+//!   `<input>.<field revision>.<field>.<value>`, `value` the text's hex or,
+//!   for a number field, `n<signed decimal>` (Protocol 2.65); `media` (Protocol
 //!   2.51) is a `/`-separated list of
 //!   `<input>.<transport state>.<position>.<time numerator>.<time denominator>`;
 //!   `scripts` (Protocol 2.61) is a `/`-separated list (empty for none) of
@@ -39,12 +42,13 @@ use core::num::NonZeroU128;
 
 use crate::{
     CodecError, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStatus, CueMediaTransport,
-    CueOperation, CuePendingStatus, CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS,
-    MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS,
-    MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
-    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, MediaTime, MediaTransportState,
-    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireOverlayChannelId,
-    WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
+    CueOperation, CuePendingStatus, CueRunStatus, CueScriptRun, CueTitleText, CueTitleValue,
+    MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
+    MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES,
+    MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
+    MAX_CUES, MediaTime, MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction,
+    WireCueMediaOperation, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId,
+    WireTitleFieldId,
 };
 
 use super::media::{FieldSource, Push};
@@ -105,6 +109,9 @@ fn action_is_valid(action: &WireCueAction) -> bool {
         },
         WireCueAction::TitleText { text, .. } => {
             text.len() <= MAX_CUE_TEXT_BYTES && !text.chars().any(char::is_control)
+        }
+        WireCueAction::TitleNumber { add, value, .. } => {
+            (!*add || *value != 0) && value.unsigned_abs() <= MAX_CUE_TITLE_NUMBER.unsigned_abs()
         }
         WireCueAction::FadeToBlack {
             duration_frames, ..
@@ -187,6 +194,15 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
         WireCueAction::TitleText { input, field, text } => {
             format!("title_text.{input}.{field}.{}", hex(text))
         }
+        WireCueAction::TitleNumber {
+            input,
+            field,
+            add,
+            value,
+        } => format!(
+            "title_number.{input}.{field}.{}.{value}",
+            if *add { "add" } else { "set" }
+        ),
         WireCueAction::TitleOff { input } => format!("title_off.{input}"),
         WireCueAction::FadeToBlack {
             active,
@@ -228,6 +244,11 @@ fn parse_u32(value: &str) -> Option<u32> {
 }
 
 fn parse_i32(value: &str) -> Option<i32> {
+    i32::try_from(parse_i64(value)?).ok()
+}
+
+/// A canonical signed decimal: no `+`, no leading zeros, no `-0`.
+fn parse_i64(value: &str) -> Option<i64> {
     let (negative, digits) = value
         .strip_prefix('-')
         .map_or((false, value), |digits| (true, digits));
@@ -236,7 +257,7 @@ fn parse_i32(value: &str) -> Option<i32> {
         return None;
     }
     let magnitude = i64::try_from(magnitude).ok()?;
-    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 fn parse_flag(value: &str) -> Option<bool> {
@@ -281,6 +302,16 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
             input: input(id)?,
             field: WireTitleFieldId::new(parse_u128(field)?),
             text: unhex("cues", text).ok()?,
+        },
+        ["title_number", id, field, update, value] => WireCueAction::TitleNumber {
+            input: input(id)?,
+            field: WireTitleFieldId::new(parse_u128(field)?),
+            add: match *update {
+                "set" => false,
+                "add" => true,
+                _ => return None,
+            },
+            value: parse_i64(value)?,
         },
         ["title_off", id] => WireCueAction::TitleOff { input: input(id)? },
         ["fade_to_black", active, frames] => WireCueAction::FadeToBlack {
@@ -662,12 +693,13 @@ pub(super) fn encode_titles(titles: &[CueTitleText]) -> Result<String, CodecErro
     Ok(titles
         .iter()
         .map(|title| {
+            let value = match &title.value {
+                CueTitleValue::Text(text) => hex(text),
+                CueTitleValue::Number(number) => format!("n{number}"),
+            };
             format!(
-                "{}.{}.{}.{}",
-                title.input,
-                title.field_revision,
-                title.field,
-                hex(&title.text)
+                "{}.{}.{}.{value}",
+                title.input, title.field_revision, title.field
             )
         })
         .collect::<Vec<_>>()
@@ -691,7 +723,10 @@ pub(super) fn decode_titles(value: &str) -> Result<Vec<CueTitleText>, CodecError
                     input: parse_canonical_input(input).ok_or_else(bad)?,
                     field_revision: parse_canonical_u64(revision).ok_or_else(bad)?,
                     field: WireTitleFieldId::new(parse_u128(field).ok_or_else(bad)?),
-                    text: unhex("titles", text)?,
+                    value: match text.strip_prefix('n') {
+                        Some(number) => CueTitleValue::Number(parse_i64(number).ok_or_else(bad)?),
+                        None => CueTitleValue::Text(unhex("titles", text)?),
+                    },
                 }),
                 _ => Err(bad()),
             }

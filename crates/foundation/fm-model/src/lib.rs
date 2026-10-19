@@ -30,11 +30,12 @@ pub use audio_mixer::{
 };
 pub use cue::{
     CUE_OVERLAY_CHANNELS, Cue, CueAction, CueArmed, CueFault, CueList, CueListError,
-    CueMediaOperation, CuePending, CueRunState, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS,
-    MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS,
-    MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
-    MAX_CUES, cue_action_is_valid, cue_chain_actions, cue_name_is_valid, delay_frames,
-    validate_cue_list, validate_cue_list_definition, validate_cue_lists,
+    CueMediaOperation, CueNumberUpdate, CuePending, CueRunState, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS,
+    MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES,
+    MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER,
+    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, cue_action_is_valid,
+    cue_chain_actions, cue_name_is_valid, delay_frames, title_text_number, validate_cue_list,
+    validate_cue_list_definition, validate_cue_lists,
 };
 pub use display_output::{
     MAX_DISPLAY_OUTPUTS, SetDisplayOutputError, check_display_output, display_selector_is_valid,

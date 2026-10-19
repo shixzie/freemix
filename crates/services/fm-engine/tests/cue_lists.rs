@@ -1308,3 +1308,208 @@ fn a_restored_armed_go_beyond_the_longest_delay_is_refused() {
         Some(fm_engine::SnapshotError::CueRunOutOfReach { list: 1, .. })
     ));
 }
+
+/// A scoreboard title: text `name` ("Ana"), number `score` (0), color
+/// `bar`, and text `count` ("7").
+fn score_show() -> ShowState {
+    use fm_titles::{
+        Alignment, Bounds, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId,
+        FieldValue, Style, TemplateId, TitleFieldSet, TitleTemplate,
+    };
+    let id = |value: u128| NonZeroU128::new(value).unwrap();
+    let field = |value: u128, name: &str, default: FieldValue| FieldDefinition {
+        id: FieldId::new(id(value)),
+        name: name.into(),
+        default,
+    };
+    let template = TitleTemplate {
+        id: TemplateId::new(id(9)),
+        name: "Score".into(),
+        width: 64,
+        height: 16,
+        background: Color::TRANSPARENT,
+        fields: vec![
+            field(1, "name", FieldValue::Text("Ana".into())),
+            field(2, "score", FieldValue::Number(0)),
+            field(3, "bar", FieldValue::Color(Color::BLACK)),
+            field(4, "count", FieldValue::Text("7".into())),
+        ],
+        elements: vec![Element {
+            id: ElementId::new(id(1)),
+            name: "bar".into(),
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 16,
+            },
+            z_index: 0,
+            visible: true,
+            style: Style {
+                fill: Color::BLACK,
+                background: None,
+                opacity: 255,
+                font: None,
+                alignment: Alignment::default(),
+            },
+            color_field: None,
+            kind: ElementKind::Rectangle,
+        }],
+        animation: fm_titles::TitleAnimation::default(),
+    };
+    let mut show = ShowState::new(
+        "score cue show",
+        [1, 2, 3]
+            .into_iter()
+            .map(|value| (input(value), format!("Input {value}")))
+            .collect(),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    show.set_title(
+        input(3),
+        fm_engine::EngineTitle::new("Score", TitleFieldSet::from_template(&template).unwrap()),
+    )
+    .unwrap();
+    show
+}
+
+fn number(field: u128, update: fm_model::CueNumberUpdate) -> CueAction {
+    CueAction::TitleNumber {
+        input: input(3),
+        field: fm_model::TitleFieldId::new(NonZeroU128::new(field).unwrap()),
+        update,
+    }
+}
+
+fn field_value(engine: &Engine, field: u128) -> fm_titles::FieldValue {
+    engine
+        .show()
+        .title(input(3))
+        .unwrap()
+        .fields
+        .value(fm_titles::FieldId::new(NonZeroU128::new(field).unwrap()))
+        .unwrap()
+        .clone()
+}
+
+/// Schema 59: a data update sets or steps a title's number field, or a
+/// text field holding a whole number as decimal text, reading the value
+/// the frame's earlier actions left; the event reports each value set.
+#[test]
+fn title_number_actions_set_and_step_number_and_text_fields() {
+    use fm_model::CueNumberUpdate::{Add, Set};
+    use fm_titles::{FieldId, FieldValue};
+
+    let mut engine = Engine::new(
+        score_show(),
+        FrameRate::new(25, 1).unwrap(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![
+                cue(
+                    1,
+                    vec![number(2, Add(1)), number(2, Add(2)), number(4, Add(-10))],
+                    false,
+                ),
+                cue(2, vec![number(2, Set(-5)), number(1, Set(42))], false),
+            ],
+        ),
+    ));
+    let outcome = submit(&mut engine, "go1", control(1, GO));
+    accepted(&outcome);
+    let EngineEvent::CueListChanged { title_texts, .. } = &outcome.events[0].payload else {
+        panic!("a GO reports its cue run: {:?}", outcome.events);
+    };
+    let field = |value: u128| FieldId::new(NonZeroU128::new(value).unwrap());
+    assert_eq!(
+        title_texts,
+        &vec![
+            (input(3), field(2), FieldValue::Number(1)),
+            (input(3), field(2), FieldValue::Number(3)),
+            (input(3), field(4), FieldValue::Text("-3".into())),
+        ]
+    );
+    assert_eq!(field_value(&engine, 2), FieldValue::Number(3));
+    assert_eq!(field_value(&engine, 4), FieldValue::Text("-3".into()));
+    accepted(&submit(&mut engine, "go2", control(1, GO)));
+    assert_eq!(field_value(&engine, 2), FieldValue::Number(-5));
+    // Setting a text field needs no number in it.
+    assert_eq!(field_value(&engine, 1), FieldValue::Text("42".into()));
+}
+
+/// A data update of a missing or unsuitable field is refused when the list
+/// is defined; stepping text that is not a whole number, or past the
+/// bound, refuses the GO whole.
+#[test]
+fn title_number_actions_refuse_unsuitable_fields_and_out_of_range_results() {
+    use fm_model::CueNumberUpdate::{Add, Set};
+
+    let mut engine = Engine::new(
+        score_show(),
+        FrameRate::new(25, 1).unwrap(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+    for (key, action, code) in [
+        ("color", number(3, Add(1)), RejectionCode::InvalidCommand),
+        ("missing", number(9, Add(1)), RejectionCode::NotFound),
+        (
+            "zero-step",
+            number(2, Add(0)),
+            RejectionCode::InvalidCommand,
+        ),
+        (
+            "too-large",
+            number(2, Set(fm_model::MAX_CUE_TITLE_NUMBER + 1)),
+            RejectionCode::InvalidCommand,
+        ),
+    ] {
+        let refused = submit(&mut engine, key, set(1, vec![cue(1, vec![action], false)]));
+        assert_eq!(refusal(&refused).0, code, "{key}");
+    }
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(
+            1,
+            vec![
+                cue(1, vec![number(1, Add(1))], false),
+                cue(
+                    2,
+                    vec![
+                        number(2, Set(fm_model::MAX_CUE_TITLE_NUMBER)),
+                        number(2, Add(1)),
+                    ],
+                    false,
+                ),
+            ],
+        ),
+    ));
+    let revision = engine.revision();
+    // "Ana" is not a whole number.
+    let refused = submit(&mut engine, "go-name", control(1, GO));
+    assert_eq!(refusal(&refused).0, RejectionCode::InvalidCommand);
+    let refused = submit(
+        &mut engine,
+        "go-max",
+        control(1, EngineCueOperation::Go { cue: Some(2) }),
+    );
+    assert_eq!(
+        refusal(&refused),
+        (
+            RejectionCode::InvalidCommand,
+            Some(RefusalReason::bounds(
+                "title_number",
+                fm_model::MAX_CUE_TITLE_NUMBER.unsigned_abs()
+            ))
+        )
+    );
+    assert_eq!(engine.revision(), revision);
+    assert_eq!(field_value(&engine, 2), fm_titles::FieldValue::Number(0));
+}

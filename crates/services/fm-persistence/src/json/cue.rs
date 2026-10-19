@@ -23,7 +23,9 @@
 //! current Preview, `effect` a [`fm_model::TransitionEffect`] token or
 //! `"stinger"` with a `slot`, `duration_frames`), `overlay_on` (`channel`,
 //! `input`), `overlay_off` (`channel`), `title_on` (`input`, `channel`),
-//! `title_text` (`input`, `field`, `text`), `title_off` (`input`),
+//! `title_text` (`input`, `field`, `text`), `title_number` (`input`,
+//! `field`, `update` `"set"` or `"add"`, `value`; schema 59), `title_off`
+//! (`input`),
 //! `fade_to_black` (`active`, `duration_frames`), `playlist_start`,
 //! `playlist_stop`, `audio_gain` (`input`, `gain_milli_db`), `audio_mute`
 //! (`input`, `muted`), `record` (`recorder`, `start`), `stream` (`target`,
@@ -35,8 +37,8 @@
 use core::fmt::Write as _;
 
 use fm_model::{
-    Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CuePending, CueRunState,
-    RecorderSlot, StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
+    Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CueNumberUpdate, CuePending,
+    CueRunState, RecorderSlot, StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
 };
 use fm_types::InputId;
 
@@ -94,6 +96,7 @@ fn write_cue(output: &mut String, cue: &Cue) {
     output.push_str("]}");
 }
 
+#[allow(clippy::too_many_lines)] // one arm per action type
 fn write_action(output: &mut String, action: &CueAction) {
     let result = match action {
         CueAction::Preview { input } => {
@@ -142,6 +145,21 @@ fn write_action(output: &mut String, action: &CueAction) {
             .expect("writing to a string cannot fail");
             escape_string(output, text);
             write!(output, "\"}}")
+        }
+        CueAction::TitleNumber {
+            input,
+            field,
+            update,
+        } => {
+            let (kind, value) = match update {
+                CueNumberUpdate::Set(value) => ("set", value),
+                CueNumberUpdate::Add(delta) => ("add", delta),
+            };
+            write!(
+                output,
+                "{{\"type\": \"title_number\", \"input\": {input}, \"field\": {field}, \
+                 \"update\": \"{kind}\", \"value\": {value}}}"
+            )
         }
         CueAction::TitleOff { input } => {
             write!(output, "{{\"type\": \"title_off\", \"input\": {input}}}")
@@ -349,6 +367,20 @@ fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
             field: TitleFieldId::new(object.nonzero_u128("field")?),
             text: object.string("text")?,
         },
+        "title_number" => {
+            let input = input(&mut object)?;
+            let field = TitleFieldId::new(object.nonzero_u128("field")?);
+            let update = match object.string("update")?.as_str() {
+                "set" => CueNumberUpdate::Set,
+                "add" => CueNumberUpdate::Add,
+                value => return Err(super::unknown_enum("cue title number update", value)),
+            };
+            CueAction::TitleNumber {
+                input,
+                field,
+                update: update(object.i64("value")?),
+            }
+        }
         "title_off" => CueAction::TitleOff {
             input: input(&mut object)?,
         },

@@ -3,14 +3,15 @@
 
 use fm_engine::{Engine, EngineCommand, EngineCueListDefinition, EngineCueOperation};
 use fm_model::{
-    Cue, CueAction, CueList, CueMediaOperation, CueRunState, RecorderSlot, StreamTargetId,
-    TitleFieldId,
+    Cue, CueAction, CueList, CueMediaOperation, CueNumberUpdate, CueRunState, RecorderSlot,
+    StreamTargetId, TitleFieldId,
 };
 use fm_protocol::{
     CommandPayload, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage,
     CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus,
-    CueTitleText, EventPayload, RecordingStatus, WireCue, WireCueAction, WireCueMediaOperation,
-    WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
+    CueTitleText, CueTitleValue, EventPayload, RecordingStatus, WireCue, WireCueAction,
+    WireCueMediaOperation, WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId,
+    WireTitleFieldId,
 };
 use fm_titles::FieldId;
 use fm_types::InputId;
@@ -28,6 +29,7 @@ const _: () = {
     assert!(fm_protocol::MAX_CUE_DELAY_MS == fm_model::MAX_CUE_DELAY_MS);
     assert!(fm_protocol::MAX_CUE_ARM_MS == fm_model::MAX_CUE_ARM_MS);
     assert!(fm_protocol::MAX_CUE_TRANSITION_FRAMES == fm_model::MAX_CUE_TRANSITION_FRAMES);
+    assert!(fm_protocol::MAX_CUE_TITLE_NUMBER == fm_model::MAX_CUE_TITLE_NUMBER);
 };
 
 fn channel(channel: WireOverlayChannelId) -> u8 {
@@ -75,6 +77,20 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             input: input.to_domain(),
             field: TitleFieldId::new(field.get()),
             text: text.clone(),
+        },
+        WireCueAction::TitleNumber {
+            input,
+            field,
+            add,
+            value,
+        } => CueAction::TitleNumber {
+            input: input.to_domain(),
+            field: TitleFieldId::new(field.get()),
+            update: if *add {
+                CueNumberUpdate::Add(*value)
+            } else {
+                CueNumberUpdate::Set(*value)
+            },
         },
         WireCueAction::TitleOff { input } => CueAction::TitleOff {
             input: input.to_domain(),
@@ -154,6 +170,22 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
             field: WireTitleFieldId::new(field.get()),
             text: text.clone(),
         },
+        CueAction::TitleNumber {
+            input,
+            field,
+            update,
+        } => {
+            let (add, value) = match *update {
+                CueNumberUpdate::Set(value) => (false, value),
+                CueNumberUpdate::Add(delta) => (true, delta),
+            };
+            WireCueAction::TitleNumber {
+                input: WireInputId::from_domain(*input),
+                field: WireTitleFieldId::new(field.get()),
+                add,
+                value,
+            }
+        }
         CueAction::TitleOff { input } => WireCueAction::TitleOff {
             input: WireInputId::from_domain(*input),
         },
@@ -360,7 +392,7 @@ pub struct CueRun<'a> {
     pub list: u64,
     pub frame: u64,
     pub fired: &'a [u64],
-    pub title_texts: &'a [(InputId, FieldId, String)],
+    pub title_texts: &'a [(InputId, FieldId, fm_titles::FieldValue)],
     pub applied: &'a [EngineCommand],
     /// The script steps the frame ran, in order (Protocol 2.61).
     pub scripts: &'a [fm_engine::CueScriptRun],
@@ -403,27 +435,33 @@ pub fn cue_run_changed(engine: &Engine, run: &CueRun<'_>) -> EventPayload {
     }))
 }
 
-/// The last text each field received, in first-set order, with the
+/// The last value each field received, in first-set order, with the
 /// field revision after the command.
 pub(crate) fn title_texts_of(
     engine: &Engine,
-    title_texts: &[(InputId, FieldId, String)],
+    title_texts: &[(InputId, FieldId, fm_titles::FieldValue)],
 ) -> Vec<CueTitleText> {
-    // The last text each field received, in first-set order.
+    // The last value each field received, in first-set order.
     let mut titles: Vec<CueTitleText> = Vec::new();
-    for (input, field, text) in title_texts {
+    for (input, field, value) in title_texts {
+        let value = match value {
+            fm_titles::FieldValue::Text(text) => CueTitleValue::Text(text.clone()),
+            fm_titles::FieldValue::Number(number) => CueTitleValue::Number(*number),
+            // A cue sets only text and number fields.
+            fm_titles::FieldValue::Image(_) | fm_titles::FieldValue::Color(_) => continue,
+        };
         let input = WireInputId::from_domain(*input);
         let field = WireTitleFieldId::new(field.get());
         match titles
             .iter_mut()
             .find(|title| title.input == input && title.field == field)
         {
-            Some(title) => title.text.clone_from(text),
+            Some(title) => title.value = value,
             None => titles.push(CueTitleText {
                 input,
                 field_revision: 0,
                 field,
-                text: text.clone(),
+                value,
             }),
         }
     }

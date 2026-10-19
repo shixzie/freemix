@@ -98,7 +98,7 @@ fn inventory() -> DisplayInventory {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 64));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 65));
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn commands_have_an_exact_wire_form_and_are_strict() {
         )),
     });
     let line = round_trip(&set);
-    let prefix = "command\tprotocol=2.64\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.65\tid=a\tidempotency_key=k";
     assert_eq!(
         line,
         format!(

@@ -3371,20 +3371,44 @@ that authority, and edits of an armed chain need what they add. Studio's
 Cues panel has a "Fire in" field, Arm GO, Disarm, an ARMED chip, and an
 approximate countdown (English and Spanish hover help); `freemix-cli` has
 local and `remote-` `cue-arm` and `cue-disarm`.
+Data update (Protocol 2.65, schema 59): a `title_number` action sets a
+title's number field to a value or steps it by a nonzero amount (a score
++1, a countdown -1), each within ±999 999 999 999, without retyping the
+title's text. The value is read when the action runs, after the frame's
+earlier actions, so two steps of one field on one frame add both; a text
+field takes the result as decimal text, and stepping it needs it to hold
+a plain whole number (blank reads as zero). A missing, image, or color
+field is refused when the list is set; non-numeric text or a result past
+the bound refuses the GO whole (or faults the list after a wait). It
+needs `edit_project` like `title_text`; a numeric result adds no bytes to
+the frame's 8192-byte title text bound. `cue_run_changed` and
+`script_ran` carry each field's final value as text or a number, so Studio
+and the CLI see the new score; scripts gain `title_number` and
+`title_add` (`edit_project`). Studio's Cues panel adds a Title number
+action (title picker, a field picker of the title's number and text
+fields, Set to or Step by, and the value) with English and Spanish hover
+help; `freemix-cli` takes `title_number.<input>.<field>.<set|add>.<value>`.
+The web tally page (Operator role) arms the cue it shows on standby with a
+"Fire in" picker (10 s to 1 h), Arm GO, and Disarm beside GO, gated like
+GO, and its cue line shows the armed cue with an approximate countdown,
+in English and Spanish.
 Remaining gaps: lists are not bound to an input button, MIDI, or a
 keyboard shortcut other than `G`, and nothing previews a cue's effect
-before GO; there is no data-source update action; an armed GO takes a
-relative delay only (Studio and the CLI convert nothing from a wall-clock
+before GO; the data update writes literal values only: no external data
+source (`GX-004`) or row binding feeds it, and it updates text and number
+fields, not colors or images; an armed GO takes a relative delay only
+(Studio, the CLI, and the web tally convert nothing from a wall-clock
 time of day or external timecode, and the daemon's frame clock, not a
-house clock, decides when it fires); Studio's countdown is extrapolated
-and approximate, most on the simulated daemon; the web tally page offers
-only GO and Standby. `RC-017` remains planned.
+house clock, decides when it fires); Studio's and the web tally's
+countdowns are extrapolated and approximate, most on the simulated
+daemon; the web tally offers fixed delays and arms only the standby cue
+of its lowest-numbered list. `RC-017` remains planned.
 
 Current implementation boundary for sandboxed scripting (`RC-011`): the
 first slice is a purpose-built language rather than a Wasm runtime (schema
 54, Protocol 2.58). `fm-script`, a dependency-free foundation crate, parses
 and interprets `FreeMix` Script: integer, boolean, and string variables,
-`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 24 action verbs that map
+`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 26 action verbs that map
 onto cue actions. The language has no file, network, process,
 clock, or randomness access at all; its only host interface reads the
 Program and Preview input numbers and performs one show action at a time.

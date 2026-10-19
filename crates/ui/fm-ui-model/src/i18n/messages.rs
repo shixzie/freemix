@@ -2351,6 +2351,7 @@ messages! {
     BoundsFieldCueActions => t("Actions in a cue"),
     BoundsFieldCueListActions => t("Actions in a cue list"),
     BoundsFieldCueText => t("Title text in a cue list (bytes)"),
+    BoundsFieldTitleNumber => t("Size of a title number"),
 
     // Project scripts (RC-011, Protocol 2.58).
     IdKindScript => t("Script {id}"),
@@ -2485,6 +2486,7 @@ messages! {
     CueActOverlayOff => t("Overlay off"),
     CueActTitleOn => t("Title on"),
     CueActTitleText => t("Title text"),
+    CueActTitleNumber => t("Title number"),
     CueActTitleOff => t("Title off"),
     CueActPlaylistStart => t("Playlist start"),
     CueActPlaylistStop => t("Playlist stop"),
@@ -2511,6 +2513,11 @@ messages! {
     CueParamChannelHover => t("Overlay channel, 1 to 8"),
     CueParamFieldHover => t("The title's text field to set"),
     CueParamTextHover => t("Text to set: up to 128 bytes; press Enter to save"),
+    CueParamNumberFieldHover => t("The title's number field to set or step; a text field holding a whole number works too"),
+    CueParamNumberModeHover => t("Set to replaces the field's number; Step by adds the amount to it (a negative amount counts down)"),
+    CueParamNumberHover => t("The number to set, or the nonzero amount to step by: at most 999999999999 either way"),
+    CueNumberSet => t("Set to"),
+    CueNumberStep => t("Step by"),
     CueParamActiveHover => t("Ticked fades to black; unticked fades back"),
     CueParamGainHover => t("Fader level in dB"),
     CueParamMuteHover => t("Ticked mutes the strip; unticked unmutes it"),
@@ -2532,7 +2539,7 @@ messages! {
     // A GO runs the cue and every cue it follows into (RC-017 authority).
     CueReasonChainPreview => t("a cue this runs selects Preview, which needs the select_preview permission this session lacks"),
     CueReasonChainAudio => t("a cue this runs changes audio, which needs the control_audio permission this session lacks"),
-    CueReasonChainTitle => t("a cue this runs sets title text, which needs the edit_project permission this session lacks"),
+    CueReasonChainTitle => t("a cue this runs sets title text or numbers, which needs the edit_project permission this session lacks"),
     CueReasonNoScriptsLeft => t("this list already runs the maximum of 8 scripts"),
 
     // Stream destinations (OR-006).

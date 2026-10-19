@@ -6023,7 +6023,9 @@ fn parse_remote_playlist(
 ///   list (`-` for none) of `<id>:<name>:<follow 0|1>:<actions>` and
 ///   `<actions>` a `,`-separated list (empty for none) of wire action
 ///   tokens, e.g. `take.3.fade.25`, `overlay_on.1.4`, `wait.50`,
-///   `delay.1500`, `media_restart.4`, `media_seek.4.250`, `run_script.2`
+///   `delay.1500`, `media_restart.4`, `media_seek.4.250`, `title_number.5.2.add.1`
+///   (adds one to number field 2 of title 5, Protocol 2.65; `set` sets it),
+///   `run_script.2`
 ///   (runs project script 2 as one step, Protocol 2.60) — except that
 ///   `title_text.<input>.<field>.<text>` takes plain text. A backslash
 ///   escapes the next character, so names and title text may hold the

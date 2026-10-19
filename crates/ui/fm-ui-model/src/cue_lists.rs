@@ -76,6 +76,7 @@ pub fn list_inputs(list: &CueListStatus) -> impl Iterator<Item = InputId> + '_ {
             | WireCueAction::OverlayOn { input, .. }
             | WireCueAction::TitleOn { input, .. }
             | WireCueAction::TitleText { input, .. }
+            | WireCueAction::TitleNumber { input, .. }
             | WireCueAction::TitleOff { input }
             | WireCueAction::AudioGain { input, .. }
             | WireCueAction::AudioMute { input, .. }
@@ -218,7 +219,10 @@ pub(crate) fn apply_effects(state: &mut ProjectState, update: CueRunUpdate) {
                 .iter_mut()
                 .find(|field| field.field == text.field)
             {
-                field.value = TitleFieldValue::Text(text.text);
+                field.value = match text.value {
+                    fm_protocol::CueTitleValue::Text(text) => TitleFieldValue::Text(text),
+                    fm_protocol::CueTitleValue::Number(number) => TitleFieldValue::Number(number),
+                };
             }
         }
     }

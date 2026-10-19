@@ -265,7 +265,7 @@ fn a_waitless_follow_into_a_second_take_is_refused() {
 
 /// A `.fmtitle` source document that needs no font (see `e2e.rs`).
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 58,
+  "schema_version": 59,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -318,6 +318,61 @@ fn title_cues_are_authored_and_fired_locally() {
     succeed(&["go", &project, "1"]);
     let lists = succeed(&["cue-lists", &project]);
     assert!(lists.contains("standby=-, live=2"), "{lists}");
+}
+
+/// Protocol 2.65, schema 59: a cue's data update steps and sets a title's
+/// number field, saved in the project; a color field is refused when the
+/// list is set, leaving the project unchanged.
+#[test]
+fn title_number_cues_step_and_set_a_score_locally() {
+    let root = Root::new("score");
+    let project = root.project();
+    let source = root.0.join("score-bar.fmtitle");
+    fs::write(&source, SHAPE_TITLE_SOURCE).unwrap();
+    succeed(&[
+        "title-input-add",
+        &project,
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        source.to_str().unwrap(),
+    ]);
+    let manifest = || fs::read_to_string(format!("{project}/project.json")).unwrap();
+    fail(
+        &[
+            "cue-list-set",
+            &project,
+            "1",
+            "Score",
+            "1:Goal:0:title_number.9.2.add.1",
+        ],
+        "not a number or text field",
+    );
+    assert!(!manifest().contains("title_number"));
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "1",
+        "Score",
+        "1:Goal:0:title_number.9.1.add.1,title_number.9.1.add.2;2:Reset:0:title_number.9.1.set.0",
+    ]);
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(lists.contains("title_number.9.1.add.2"), "{lists}");
+    succeed(&["go", &project, "1"]);
+    // -4 + 1 + 2.
+    assert!(
+        manifest().contains("{\"id\": 1, \"type\": \"number\", \"value\": -1}"),
+        "{}",
+        manifest()
+    );
+    succeed(&["go", &project, "1"]);
+    assert!(
+        manifest().contains("{\"id\": 1, \"type\": \"number\", \"value\": 0}"),
+        "{}",
+        manifest()
+    );
 }
 
 /// A saved waiting cue (as the daemon saves one) is due within the wait

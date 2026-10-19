@@ -704,6 +704,7 @@ impl Arguments {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per verb
 fn build_action(
     verb: Verb,
     effect: Option<Effect>,
@@ -764,6 +765,16 @@ fn build_action(
                 input,
                 field,
                 text: arguments.text()?,
+            }
+        }
+        Verb::TitleNumber | Verb::TitleAdd => {
+            let input = arguments.input()?;
+            let field = arguments.integer("a field number")?;
+            ScriptAction::TitleNumber {
+                input,
+                field,
+                add: verb == Verb::TitleAdd,
+                value: arguments.integer("a number")?,
             }
         }
         Verb::TitleOff => ScriptAction::TitleOff(arguments.input()?),

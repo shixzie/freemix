@@ -22,6 +22,11 @@
 //! cue fires `in_ms` milliseconds after the command's frame, rounded up to
 //! whole frames at the show rate, on the authority's cue clock exactly as a
 //! GO would; the run state carries it as [`CueArmedStatus`].
+//!
+//! Protocol 2.65 adds the data update action [`WireCueAction::TitleNumber`]
+//! (set or step one number field of a title, such as a score) and carries
+//! the value each title field received as a [`CueTitleValue`]: text for a
+//! text field, an integer for a number field.
 
 use crate::{
     FadeToBlackState, InputAudioStripStatus, ManualTransitionStatus, MediaTime,
@@ -54,6 +59,9 @@ pub const MAX_CUE_DELAY_MS: u32 = 3_600_000;
 pub const MAX_CUE_ARM_MS: u32 = 86_400_000;
 /// Longest transition or Fade to Black an action requests, in frames.
 pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
+/// Largest magnitude a title number action sets or adds, and largest an
+/// added value may reach (Protocol 2.65).
+pub const MAX_CUE_TITLE_NUMBER: i64 = 999_999_999_999;
 
 /// One step of a cue.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +94,16 @@ pub enum WireCueAction {
         input: WireInputId,
         field: WireTitleFieldId,
         text: String,
+    },
+    /// Sets (`add` false) or adds the nonzero `value` to (`add` true) one
+    /// number field of title `input`, or a text field holding a plain
+    /// decimal integer (Protocol 2.65): `value` at most
+    /// [`MAX_CUE_TITLE_NUMBER`] in magnitude.
+    TitleNumber {
+        input: WireInputId,
+        field: WireTitleFieldId,
+        add: bool,
+        value: i64,
     },
     TitleOff {
         input: WireInputId,
@@ -255,14 +273,21 @@ impl CueOperation {
     }
 }
 
-/// The final text a live operation gave one title field.
+/// The final value a live operation gave one title field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CueTitleText {
     pub input: WireInputId,
     /// The title's field revision afterwards.
     pub field_revision: u64,
     pub field: WireTitleFieldId,
-    pub text: String,
+    pub value: CueTitleValue,
+}
+
+/// A value a live operation gave a title field (Protocol 2.65).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CueTitleValue {
+    Text(String),
+    Number(i64),
 }
 
 /// A live operation was accepted for `frame`: the list's run state, the

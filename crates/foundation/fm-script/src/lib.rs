@@ -394,6 +394,13 @@ pub enum ScriptAction {
         field: u64,
         text: String,
     },
+    /// Sets (`add` false) or adds `value` to (`add` true) one number field.
+    TitleNumber {
+        input: InputRef,
+        field: u64,
+        add: bool,
+        value: i64,
+    },
     TitleOff(InputRef),
     FadeToBlack {
         active: bool,
@@ -442,6 +449,10 @@ pub enum Verb {
     TitleOn,
     /// `title_text INPUT, FIELD, TEXT`
     TitleText,
+    /// `title_number INPUT, FIELD, VALUE` sets a number field.
+    TitleNumber,
+    /// `title_add INPUT, FIELD, DELTA` adds to a number field.
+    TitleAdd,
     /// `title_off INPUT`
     TitleOff,
     /// `ftb FRAMES` fades Program to black.
@@ -478,7 +489,7 @@ pub enum Verb {
 
 impl Verb {
     /// Every verb, in declaration order.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 26] = [
         Self::Preview,
         Self::Cut,
         Self::Transition,
@@ -487,6 +498,8 @@ impl Verb {
         Self::OverlayOff,
         Self::TitleOn,
         Self::TitleText,
+        Self::TitleNumber,
+        Self::TitleAdd,
         Self::TitleOff,
         Self::Ftb,
         Self::FtbOff,
@@ -517,6 +530,8 @@ impl Verb {
             Self::OverlayOff => "overlay_off",
             Self::TitleOn => "title_on",
             Self::TitleText => "title_text",
+            Self::TitleNumber => "title_number",
+            Self::TitleAdd => "title_add",
             Self::TitleOff => "title_off",
             Self::Ftb => "ftb",
             Self::FtbOff => "ftb_off",
@@ -551,7 +566,7 @@ impl Verb {
             Self::Transition => (1, 2),
             Self::Stinger => (2, 3),
             Self::Overlay | Self::TitleOn | Self::Gain | Self::Seek => (2, 2),
-            Self::TitleText => (3, 3),
+            Self::TitleText | Self::TitleNumber | Self::TitleAdd => (3, 3),
             Self::Preview
             | Self::OverlayOff
             | Self::TitleOff

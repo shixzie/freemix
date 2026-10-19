@@ -6337,6 +6337,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::BoundsFieldCueText,
         t("Texto de títulos en una lista de cues (bytes)"),
     ),
+    (
+        Msg::BoundsFieldTitleNumber,
+        t("Magnitud de un número de título"),
+    ),
     (Msg::IdKindScript, t("Guion {id}")),
     (Msg::BoundsFieldScripts, t("Guiones de un proyecto")),
     (
@@ -6708,6 +6712,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueActOverlayOff, t("Overlay fuera")),
     (Msg::CueActTitleOn, t("Título dentro")),
     (Msg::CueActTitleText, t("Texto de título")),
+    (Msg::CueActTitleNumber, t("Número de título")),
     (Msg::CueActTitleOff, t("Título fuera")),
     (Msg::CueActPlaylistStart, t("Iniciar lista")),
     (Msg::CueActPlaylistStop, t("Detener lista")),
@@ -6759,6 +6764,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::CueParamTextHover,
         t("Texto que se fija: hasta 128 bytes; pulse Intro para guardar"),
     ),
+    (
+        Msg::CueParamNumberFieldHover,
+        t(
+            "El campo numérico del título que se fija o se incrementa; también sirve un campo de texto con un número entero",
+        ),
+    ),
+    (
+        Msg::CueParamNumberModeHover,
+        t(
+            "Fijar en reemplaza el número del campo; Sumar le añade la cantidad (una cantidad negativa descuenta)",
+        ),
+    ),
+    (
+        Msg::CueParamNumberHover,
+        t(
+            "El número que se fija, o la cantidad distinta de cero que se suma: como máximo 999999999999 en valor absoluto",
+        ),
+    ),
+    (Msg::CueNumberSet, t("Fijar en")),
+    (Msg::CueNumberStep, t("Sumar")),
     (
         Msg::CueParamActiveHover,
         t("Marcado funde a negro; sin marcar vuelve de negro"),
@@ -6826,7 +6851,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::CueReasonChainTitle,
         t(
-            "un cue que esto ejecuta cambia el texto de un título, lo que requiere el permiso edit_project que esta sesión no tiene",
+            "un cue que esto ejecuta cambia el texto o los números de un título, lo que requiere el permiso edit_project que esta sesión no tiene",
         ),
     ),
     // Stream destinations (OR-006).

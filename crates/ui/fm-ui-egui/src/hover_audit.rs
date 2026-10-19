@@ -732,6 +732,12 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
             field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
             text: "Ana Ruiz".into(),
         },
+        WireCueAction::TitleNumber {
+            input: wire(TITLE_INPUT),
+            field: WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+            add: true,
+            value: 1,
+        },
         WireCueAction::TitleOff {
             input: wire(TITLE_INPUT),
         },

@@ -254,6 +254,20 @@ fn each_cue_action_needs_the_class_of_its_direct_command() {
                 fields: Vec::new(),
             },
         ),
+        // Schema 59: a data update saves a field like a title text.
+        (
+            CueAction::TitleNumber {
+                input: input(2),
+                field: TitleFieldId::new(id),
+                update: fm_model::CueNumberUpdate::Add(1),
+            },
+            CommandPayload::SetTitleFields {
+                input: wire(2),
+                base_revision: 0,
+                require: TitleAirRequirement::OnAir,
+                fields: Vec::new(),
+            },
+        ),
         (
             CueAction::TitleOff { input: input(2) },
             CommandPayload::TitleOffAir { input: wire(2) },
@@ -334,6 +348,14 @@ fn each_cue_action_needs_the_class_of_its_direct_command() {
     assert_eq!(cue_action_class(&CueAction::Delay { millis: 1 }), None);
     // A script step needs the classes of its script's verbs instead.
     assert_eq!(cue_action_class(&CueAction::RunScript { script: 1 }), None);
+    // The script verbs of a data update need what the cue action needs.
+    for verb in [fm_script::Verb::TitleNumber, fm_script::Verb::TitleAdd] {
+        assert_eq!(
+            crate::action_authority::verb_class(verb),
+            CommandClass::EditProject,
+            "{verb:?}"
+        );
+    }
 }
 
 /// The regression: a Transition-only session used to change audio by

@@ -59,6 +59,9 @@
   <button type="button" id="cut" hidden data-i18n="cut" data-i18n-label="cutLabel" aria-label="Cut Preview to Program (C)">Cut</button>
   <button type="button" id="standby" hidden data-i18n="standby" data-i18n-label="standbyLabel" aria-label="Put the next cue on standby (S)">Standby</button>
   <button type="button" id="go" hidden data-i18n="go" data-i18n-label="goLabel" aria-label="GO: fire the cue on standby (G)">GO</button>
+  <select id="arm-delay" hidden data-i18n-label="armDelayLabel" aria-label="Fire in: how long after arming the cue on standby fires"></select>
+  <button type="button" id="arm" hidden data-i18n="arm" data-i18n-label="armLabel" aria-label="Arm the cue on standby to fire by itself after the chosen delay, like GO">Arm GO</button>
+  <button type="button" id="disarm" hidden data-i18n="disarm" data-i18n-label="disarmLabel" aria-label="Cancel the armed GO so it never fires">Disarm</button>
   <button type="button" id="fullscreen" data-i18n="fullscreen" data-i18n-label="fullscreenLabel" aria-label="Toggle full-screen tally (F)">Full screen</button>
 </header>
 <main id="tally" data-light="offline">
@@ -85,7 +88,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.64";
+  const PROTOCOL = "2.65";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -97,6 +100,10 @@
   const INITIAL_BACKOFF_MS = 500;
   const MAX_BACKOFF_MS = 10000;
   const MAX_TRACKED_REVISIONS = 64;
+  // The delays an armed GO (Protocol 2.64) may be given here, in seconds;
+  // the server accepts 1 ms to 24 hours.
+  const ARM_DELAYS_S = [10, 30, 60, 120, 300, 600, 1800, 3600];
+  const DEFAULT_ARM_DELAY_S = 60;
 
   // ---- Every user-visible string, one entry per line per language. ----
   // Spanish follows Studio's catalog (fm-ui-model i18n/es.rs): Programa,
@@ -115,6 +122,14 @@
       standbyLabel: "Put the next cue on standby (S)",
       go: "GO",
       goLabel: "GO: fire the cue on standby (G)",
+      armDelayLabel: "Fire in: how long after arming the cue on standby fires",
+      delaySeconds: "Fire in {count} s",
+      delayMinutes: "Fire in {count} min",
+      delayHours: "Fire in {count} h",
+      arm: "Arm GO",
+      armLabel: "Arm the cue on standby to fire by itself after the chosen delay, like GO",
+      disarm: "Disarm",
+      disarmLabel: "Cancel the armed GO so it never fires",
       fullscreen: "Full screen",
       fullscreenLabel: "Toggle full-screen tally (F)",
       otherLanguage: "ES",
@@ -138,6 +153,7 @@
       inputLocked: "{input}, input locked",
       cueStandby: "{list} — Standby: {cue}",
       cueNothing: "{list} — Nothing on standby",
+      cueArmed: "{list} — ARMED: {cue} fires in {time}",
       statusIdle: "Enter the daemon's web access token to connect",
       statusConnecting: "Connecting",
       statusReconnecting: "Reconnecting (attempt {attempt})",
@@ -165,6 +181,14 @@
       standbyLabel: "Poner el siguiente cue en espera (S)",
       go: "GO",
       goLabel: "GO: disparar el cue en espera (G)",
+      armDelayLabel: "Disparar en: cuánto después de armarlo se dispara el cue en espera",
+      delaySeconds: "Disparar en {count} s",
+      delayMinutes: "Disparar en {count} min",
+      delayHours: "Disparar en {count} h",
+      arm: "Armar GO",
+      armLabel: "Armar el cue en espera para que se dispare solo tras el retardo elegido, igual que GO",
+      disarm: "Desarmar",
+      disarmLabel: "Cancelar el GO armado para que nunca se dispare",
       fullscreen: "Pantalla completa",
       fullscreenLabel: "Alternar el tally a pantalla completa (F)",
       otherLanguage: "EN",
@@ -188,6 +212,7 @@
       inputLocked: "{input}, entrada bloqueada",
       cueStandby: "{list} — En espera: {cue}",
       cueNothing: "{list} — Nada en espera",
+      cueArmed: "{list} — ARMADO: {cue} se dispara en {time}",
       statusIdle: "Introduzca el token de acceso web del daemon para conectar",
       statusConnecting: "Conectando",
       statusReconnecting: "Reconectando (intento {attempt})",
@@ -212,6 +237,7 @@
     inputs: $("inputs"), preview: $("preview"), cut: $("cut"), fullscreen: $("fullscreen"),
     lock: $("lock"), lockText: $("lock-text"),
     go: $("go"), standby: $("standby"), cue: $("cue"), language: $("language"),
+    armDelay: $("arm-delay"), arm: $("arm"), disarm: $("disarm"),
   };
 
   const store = window.sessionStorage;
@@ -260,6 +286,21 @@
       element.setAttribute("aria-label", tr(element.dataset.i18nLabel));
     }
     ui.language.lang = language === "es" ? "en" : "es";
+    fillArmDelays();
+  }
+  // The arm delay picker's choices, worded in the page language; the
+  // operator's choice survives a language toggle.
+  function fillArmDelays() {
+    const chosen = ui.armDelay.value || String(DEFAULT_ARM_DELAY_S);
+    ui.armDelay.replaceChildren(...ARM_DELAYS_S.map((delay) => {
+      const option = document.createElement("option");
+      option.value = String(delay);
+      option.textContent = delay % 3600 === 0 ? tr("delayHours", { count: delay / 3600 })
+        : delay % 60 === 0 ? tr("delayMinutes", { count: delay / 60 })
+          : tr("delaySeconds", { count: delay });
+      return option;
+    }));
+    ui.armDelay.value = chosen;
   }
   function toggleLanguage() {
     language = language === "es" ? "en" : "es";
@@ -283,9 +324,15 @@
     desiredByRevision: new Map(),
     // Replicated edit padlocks: the project lock and each input's own lock.
     locks: { project: false, inputs: new Set() },
-    // Replicated cue lists (RC-017) by id: name, cues [{ id, name }], and
-    // the cue on standby ("" for none). GO drives the lowest-numbered list.
+    // Replicated cue lists (RC-017) by id: name, cues [{ id, name }], the
+    // cue on standby ("" for none), and the armed GO ({ cue, due } or
+    // null, Protocol 2.64). GO drives the lowest-numbered list.
     cueLists: new Map(),
+    // The show rate (frames per second) and the newest cue frame with when
+    // it arrived, so an armed GO's countdown runs between events. The
+    // countdown is approximate: the server's frame clock decides.
+    rate: 0,
+    cueFrame: null,
   };
   let selected = store.getItem("freemix.tally.input") || "";
   let choosing = !selected;
@@ -346,11 +393,39 @@
         return { id: parts[0], name: unhex(parts[1]) };
       }) : [],
       standby: cueStandby(record),
+      armed: cueArmed(record),
     };
   }
   function cueStandby(record) {
     const standby = required(record, "state").split(":")[0];
     return standby === "-" ? "" : standby;
+  }
+  // The state's sixth part: `<cue>.<due frame>` or `-`.
+  function cueArmed(record) {
+    const parts = required(record, "state").split(":");
+    if (parts.length !== 6) throw new Error("malformed cue state");
+    if (parts[5] === "-") return null;
+    const [cue, due] = parts[5].split(".");
+    if (!cue || !/^\d+$/.test(due || "")) throw new Error("malformed armed cue");
+    return { cue, due: Number(due) };
+  }
+  function noteCueFrame(record) {
+    const frame = Number(required(record, "frame"));
+    if (!show.cueFrame || frame >= show.cueFrame.frame) show.cueFrame = { frame, at: Date.now() };
+  }
+  // Milliseconds until `due`, extrapolated from the newest cue frame at the
+  // show rate; null when the page cannot tell.
+  function msUntil(due) {
+    if (!show.cueFrame || !show.rate) return null;
+    const now = show.cueFrame.frame + (Date.now() - show.cueFrame.at) * show.rate / 1000;
+    return Math.max(0, (due - now) * 1000 / show.rate);
+  }
+  function countdown(ms) {
+    const total = Math.ceil(ms / 1000);
+    const pad = (value) => String(value).padStart(2, "0");
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor(total / 60) % 60;
+    return (hours ? hours + ":" + pad(minutes) : String(minutes)) + ":" + pad(total % 60);
   }
   function goList() {
     const ids = [...show.cueLists.keys()].sort((a, b) => Number(a) - Number(b));
@@ -493,6 +568,11 @@
           inputs: new Set(lockedInputs ? lockedInputs.split(",") : []),
         };
         show.cueLists = new Map(); // its cue_list_state records follow
+        show.cueFrame = null;
+        {
+          const [numerator, denominator] = required(record, "frame_rate").split("/").map(Number);
+          show.rate = numerator > 0 && denominator > 0 ? numerator / denominator : 0;
+        }
         show.desiredByRevision.clear();
         trackDesired(link.revision, show.desired.program, show.desired.preview);
         if (!show.inputs.some((input) => input.id === selected)) { selected = ""; choosing = true; }
@@ -518,7 +598,8 @@
           trackDesired(revision, show.desired.program, show.desired.preview);
           if (name === "cue_run_changed") {
             const list = show.cueLists.get(required(record, "list"));
-            if (list) list.standby = cueStandby(record);
+            if (list) { list.standby = cueStandby(record); list.armed = cueArmed(record); }
+            noteCueFrame(record);
           }
         } else if (name === "cue_list_changed") {
           show.cueLists.set(required(record, "list"), cueList(record));
@@ -564,6 +645,7 @@
       case "cue_list_state":
         if (link.phase !== "live") throw new Error("unexpected cue list state");
         show.cueLists.set(required(record, "list"), cueList(record));
+        noteCueFrame(record);
         return;
       case "heartbeat_acknowledgement":
         if (Number(required(record, "heartbeat_sequence")) === link.pendingHeartbeat) {
@@ -622,6 +704,7 @@
       ui.status.textContent = tr("goStale");
     }
     if (link.phase === "waiting") render();
+    else if (link.phase === "live") renderCue();
   }
 
   // ---- Presentation: mirrors freemix-web's TallyPresentation. ----
@@ -705,20 +788,43 @@
     ui.setup.hidden = link.phase !== "idle" && link.phase !== "stopped";
     ui.board.hidden = !choosing || link.phase !== "live";
     if (!ui.board.hidden) renderBoard();
-    const cues = link.phase === "live" ? goList() : null;
+    const cues = renderCue();
     const standby = cues && cues.cues.find((cue) => cue.id === cues.standby);
-    ui.cue.hidden = !cues;
-    ui.cue.textContent = !cues ? "" : standby ? tr("cueStandby", { list: cues.name, cue: standby.name })
-      : tr("cueNothing", { list: cues.name });
+    // Arming needs exactly GO's permissions (the server checks the chain
+    // the armed cue fires); Disarm needs only a cue control's.
     for (const [button, state] of [
       [ui.preview, shortcutState("select_preview", input && show.desired.preview !== input.id)],
       [ui.cut, shortcutState("transition", true)],
       [ui.go, cues ? shortcutState("transition", Boolean(standby)) : "hidden"],
       [ui.standby, cues ? shortcutState("transition", cues.cues.length > 0) : "hidden"],
+      [ui.armDelay, cues ? shortcutState("transition", Boolean(standby)) : "hidden"],
+      [ui.arm, cues ? shortcutState("transition", Boolean(standby)) : "hidden"],
+      [ui.disarm, cues ? shortcutState("transition", Boolean(cues.armed)) : "hidden"],
     ]) {
       button.hidden = state === "hidden";
       button.disabled = state !== "enabled";
     }
+  }
+  // The cue line: the armed GO and its countdown, else the cue on standby.
+  // Returns the list GO drives (null when there is none or not live).
+  function renderCue() {
+    const cues = link.phase === "live" ? goList() : null;
+    const standby = cues && cues.cues.find((cue) => cue.id === cues.standby);
+    const armed = cues && cues.armed;
+    ui.cue.hidden = !cues;
+    let text = "";
+    if (armed) {
+      const cue = cues.cues.find((candidate) => candidate.id === armed.cue);
+      const ms = msUntil(armed.due);
+      text = tr("cueArmed", {
+        list: cues.name, cue: cue ? cue.name : armed.cue, time: ms === null ? "?" : countdown(ms),
+      });
+    } else if (cues) {
+      text = standby ? tr("cueStandby", { list: cues.name, cue: standby.name })
+        : tr("cueNothing", { list: cues.name });
+    }
+    if (ui.cue.textContent !== text) ui.cue.textContent = text;
+    return cues;
   }
 
   function renderBoard() {
@@ -790,6 +896,20 @@
       ui.status.textContent = tr("goStandbyChanged");
     }
   }
+  // Arm GO fires the cue the operator sees on standby (named, so a standby
+  // move in between cannot arm another cue) after the chosen delay, on the
+  // server's frame clock; Disarm drops it.
+  function arm() {
+    const cues = goList();
+    if (ui.arm.hidden || ui.arm.disabled || !cues || !cues.standby) return;
+    const delay = Number(ui.armDelay.value) || DEFAULT_ARM_DELAY_S;
+    sendCommand([["payload", "cue_arm"], ["list", cues.id], ["cue", cues.standby], ["in_ms", String(delay * 1000)]]);
+  }
+  function disarm() {
+    const cues = goList();
+    if (ui.disarm.hidden || ui.disarm.disabled || !cues) return;
+    sendCommand([["payload", "cue_disarm"], ["list", cues.id]]);
+  }
   function standbyNext() {
     const cues = goList();
     if (ui.standby.hidden || ui.standby.disabled || !cues || !cues.cues.length) return;
@@ -821,6 +941,8 @@
   ui.cut.addEventListener("click", cut);
   ui.go.addEventListener("click", go);
   ui.standby.addEventListener("click", standbyNext);
+  ui.arm.addEventListener("click", arm);
+  ui.disarm.addEventListener("click", disarm);
   ui.fullscreen.addEventListener("click", toggleFullScreen);
   ui.language.addEventListener("click", toggleLanguage);
   ui.tally.addEventListener("dblclick", (event) => {

@@ -369,6 +369,7 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                 action,
                 crate::CueAction::TitleOn { .. }
                     | crate::CueAction::TitleText { .. }
+                    | crate::CueAction::TitleNumber { .. }
                     | crate::CueAction::TitleOff { .. }
             );
             let is_media = matches!(action, crate::CueAction::Media { .. });

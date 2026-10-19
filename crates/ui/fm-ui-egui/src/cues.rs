@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 use fm_protocol::{
     AutoTransitionKind, CueFaultStatus, CueListSpec, CueListStatus, CueOperation, CueRunStatus,
     MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
-    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus,
-    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus,
+    TitleFieldStatus, TitleFieldValue, TransitionFavoriteEffect, WireCue, WireCueAction,
+    WireCueMediaOperation, WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireStreamTargetId, WireTitleFieldId,
 };
 use fm_types::{FrameRate, InputId};
 use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
@@ -160,7 +161,9 @@ const fn action_capability(action: &WireCueAction) -> Option<Capability> {
         WireCueAction::AudioGain { .. } | WireCueAction::AudioMute { .. } => {
             Some(Capability::Audio)
         }
-        WireCueAction::TitleText { .. } => Some(Capability::EditProject),
+        WireCueAction::TitleText { .. } | WireCueAction::TitleNumber { .. } => {
+            Some(Capability::EditProject)
+        }
         _ => None,
     }
 }
@@ -170,7 +173,9 @@ const fn verb_capability(verb: ScriptVerb) -> Option<Capability> {
     match verb {
         ScriptVerb::Preview => Some(Capability::SelectPreview),
         ScriptVerb::Gain | ScriptVerb::Mute | ScriptVerb::Unmute => Some(Capability::Audio),
-        ScriptVerb::TitleText => Some(Capability::EditProject),
+        ScriptVerb::TitleText | ScriptVerb::TitleNumber | ScriptVerb::TitleAdd => {
+            Some(Capability::EditProject)
+        }
         _ => None,
     }
 }
@@ -380,6 +385,7 @@ pub enum ActionKind {
     OverlayOff,
     TitleOn,
     TitleText,
+    TitleNumber,
     TitleOff,
     FadeToBlack,
     PlaylistStart,
@@ -398,13 +404,14 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Preview,
         Self::Take,
         Self::OverlayOn,
         Self::OverlayOff,
         Self::TitleOn,
         Self::TitleText,
+        Self::TitleNumber,
         Self::TitleOff,
         Self::FadeToBlack,
         Self::PlaylistStart,
@@ -431,6 +438,7 @@ impl ActionKind {
             WireCueAction::OverlayOff { .. } => Self::OverlayOff,
             WireCueAction::TitleOn { .. } => Self::TitleOn,
             WireCueAction::TitleText { .. } => Self::TitleText,
+            WireCueAction::TitleNumber { .. } => Self::TitleNumber,
             WireCueAction::TitleOff { .. } => Self::TitleOff,
             WireCueAction::FadeToBlack { .. } => Self::FadeToBlack,
             WireCueAction::PlaylistStart => Self::PlaylistStart,
@@ -461,6 +469,7 @@ impl ActionKind {
             Self::OverlayOff => Msg::CueActOverlayOff.en(),
             Self::TitleOn => Msg::CueActTitleOn.en(),
             Self::TitleText => Msg::CueActTitleText.en(),
+            Self::TitleNumber => Msg::CueActTitleNumber.en(),
             Self::TitleOff => Msg::CueActTitleOff.en(),
             Self::FadeToBlack => Msg::FadeToBlack.en(),
             Self::PlaylistStart => Msg::CueActPlaylistStart.en(),
@@ -527,6 +536,24 @@ impl ActionKind {
                     text: String::new(),
                 }
             }
+            // A data update: the first title with a number field (or a text
+            // field, which may hold a whole number) steps it by one.
+            Self::TitleNumber => {
+                let (input, field) = project.titles().iter().find_map(|title| {
+                    let field = title
+                        .fields
+                        .iter()
+                        .find(|field| matches!(field.value, TitleFieldValue::Number(_)))
+                        .or_else(|| title.fields.iter().find(|field| number_field(&field.value)))?;
+                    Some((title.input, field.field))
+                })?;
+                WireCueAction::TitleNumber {
+                    input: WireInputId::from_domain(input),
+                    field,
+                    add: true,
+                    value: 1,
+                }
+            }
             Self::TitleOff => WireCueAction::TitleOff {
                 input: WireInputId::from_domain(title()?.input),
             },
@@ -563,6 +590,12 @@ impl ActionKind {
             },
         })
     }
+}
+
+/// Whether a title field of this value can take a number update: a number
+/// or a text field (Protocol 2.65).
+const fn number_field(value: &TitleFieldValue) -> bool {
+    matches!(value, TitleFieldValue::Number(_) | TitleFieldValue::Text(_))
 }
 
 /// The show's media inputs, in input order: the media actions' choices.
@@ -1605,6 +1638,47 @@ fn input_picker(
     changed
 }
 
+/// A title field picker over `fields`; reports whether the operator picked
+/// another field.
+fn field_picker(
+    ui: &mut Ui,
+    l: Locale,
+    (field, fields): (&mut WireTitleFieldId, &[&TitleFieldStatus]),
+    hover: Msg,
+    edit: Option<&'static str>,
+) -> bool {
+    let hover = l.text(hover);
+    let current = fields
+        .iter()
+        .find(|candidate| candidate.field == *field)
+        .map(|candidate| candidate.name.clone())
+        .unwrap_or_default();
+    let mut changed = false;
+    let width = fit_width(ui, 90.0);
+    ui.add_enabled_ui(edit.is_none(), |ui| {
+        ComboBox::from_id_salt("field")
+            .width(width)
+            .truncate()
+            .selected_text(RichText::new(current).size(legible(11.0)))
+            .show_ui(ui, |ui| {
+                for candidate in fields {
+                    if ui
+                        .selectable_label(candidate.field == *field, &candidate.name)
+                        .on_hover_text(hover)
+                        .clicked()
+                        && candidate.field != *field
+                    {
+                        *field = candidate.field;
+                        changed = true;
+                    }
+                }
+            })
+            .response
+            .hint(hover, edit.unwrap_or(""));
+    });
+    changed
+}
+
 /// A numeric field; reports a commit when its drag ends or it loses focus.
 fn number<T: egui::emath::Numeric>(
     ui: &mut Ui,
@@ -1782,36 +1856,12 @@ fn draw_params(
             {
                 *field = first.field;
             }
-            let fields = title
-                .map(|title| title.fields.as_slice())
+            let fields: Vec<_> = title
+                .map(|title| title.fields.iter().collect())
                 .unwrap_or_default();
-            let current = fields
-                .iter()
-                .find(|candidate| candidate.field == *field)
-                .map(|candidate| candidate.name.clone())
-                .unwrap_or_default();
-            let width = fit_width(ui, 90.0);
-            ui.add_enabled_ui(edit.is_none(), |ui| {
-                ComboBox::from_id_salt("field")
-                    .width(width)
-                    .truncate()
-                    .selected_text(RichText::new(current).size(legible(11.0)))
-                    .show_ui(ui, |ui| {
-                        for candidate in fields {
-                            if ui
-                                .selectable_label(candidate.field == *field, &candidate.name)
-                                .on_hover_text(l.text(Msg::CueParamFieldHover))
-                                .clicked()
-                                && candidate.field != *field
-                            {
-                                *field = candidate.field;
-                                change = Some(Change::Commit);
-                            }
-                        }
-                    })
-                    .response
-                    .hint(l.text(Msg::CueParamFieldHover), edit.unwrap_or(""));
-            });
+            if field_picker(ui, l, (field, &fields), Msg::CueParamFieldHover, edit) {
+                change = Some(Change::Commit);
+            }
             let width = fit_width(ui, 120.0);
             let response = ui
                 .add_enabled(
@@ -1823,6 +1873,76 @@ fn draw_params(
                 change = Some(Change::Commit);
             }
             change
+        }
+        WireCueAction::TitleNumber {
+            input,
+            field,
+            add,
+            value,
+        } => {
+            let before = *input;
+            let mut change = pick(ui, "title", input, &titles);
+            let fields: Vec<_> = names
+                .project
+                .title(input.to_domain())
+                .map(|title| {
+                    title
+                        .fields
+                        .iter()
+                        .filter(|field| number_field(&field.value))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if *input != before
+                && let Some(first) = fields.first()
+            {
+                *field = first.field;
+            }
+            if field_picker(ui, l, (field, &fields), Msg::CueParamNumberFieldHover, edit) {
+                change = Some(Change::Commit);
+            }
+            let mode = |step: bool| {
+                l.text(if step {
+                    Msg::CueNumberStep
+                } else {
+                    Msg::CueNumberSet
+                })
+            };
+            let hover = l.text(Msg::CueParamNumberModeHover);
+            let width = fit_width(ui, 72.0);
+            ui.add_enabled_ui(edit.is_none(), |ui| {
+                ComboBox::from_id_salt("number_mode")
+                    .width(width)
+                    .truncate()
+                    .selected_text(RichText::new(mode(*add)).size(legible(11.0)))
+                    .show_ui(ui, |ui| {
+                        for option in [false, true] {
+                            if ui
+                                .selectable_label(*add == option, mode(option))
+                                .on_hover_text(hover)
+                                .clicked()
+                                && *add != option
+                            {
+                                *add = option;
+                                change = Some(Change::Commit);
+                            }
+                        }
+                    })
+                    .response
+                    .hint(hover, edit.unwrap_or(""));
+            });
+            let number_change = number(
+                ui,
+                value,
+                -MAX_CUE_TITLE_NUMBER..=MAX_CUE_TITLE_NUMBER,
+                (l.text(Msg::CueParamNumberHover), ""),
+                enabled,
+            );
+            // A step of nothing is no update: the authority refuses it.
+            if *add && *value == 0 {
+                *value = 1;
+            }
+            number_change.or(change)
         }
         WireCueAction::TitleOff { input } => pick(ui, "title", input, &titles),
         WireCueAction::FadeToBlack {
@@ -2293,6 +2413,7 @@ mod tests {
     /// the authority checks that whole chain up front, so each needs the
     /// permissions its actions need.
     #[test]
+    #[allow(clippy::too_many_lines)] // one case per permission class
     fn firing_needs_the_permissions_of_the_chain_it_runs() {
         let wire = |value: u128| {
             WireInputId::from_domain(InputId::new(core::num::NonZeroU128::new(value).unwrap()))
@@ -2343,6 +2464,18 @@ mod tests {
         );
         let admin = operator.clone().with_edit_project_permission(true);
         assert_eq!(chain_block(&admin, &[], &status, 30), None);
+        // A data update (Protocol 2.65) needs edit_project like title text.
+        status.spec.cues[2].actions = vec![WireCueAction::TitleNumber {
+            input: wire(3),
+            field: fm_protocol::WireTitleFieldId::new(core::num::NonZeroU128::MIN),
+            add: true,
+            value: 1,
+        }];
+        assert_eq!(
+            chain_block(&operator, &[], &status, 30),
+            Some(Msg::CueReasonChainTitle.en())
+        );
+        assert_eq!(chain_block(&admin, &[], &status, 30), None);
         // Cue 20 does not follow on into cue 30.
         status.spec.cues[2].actions.clear();
         assert_eq!(chain_block(&operator, &[], &status, 20), None);
@@ -2367,6 +2500,11 @@ mod tests {
             chain_block(&operator, &titling, &status, 30),
             Some(Msg::CueReasonChainTitle.en())
         );
+        let scoring = [script("title_add 3, 1, 1\n")];
+        assert_eq!(
+            chain_block(&operator, &scoring, &status, 30),
+            Some(Msg::CueReasonChainTitle.en())
+        );
         assert_eq!(
             chain_block(&transition_only, &[script("cut 1\n")], &status, 30),
             None
@@ -2388,6 +2526,12 @@ mod tests {
             Msg::CueParamScriptHover,
             Msg::CueActRunScript,
             Msg::ScriptReasonRunByCue,
+            Msg::CueActTitleNumber,
+            Msg::CueParamNumberFieldHover,
+            Msg::CueParamNumberModeHover,
+            Msg::CueParamNumberHover,
+            Msg::CueNumberSet,
+            Msg::CueNumberStep,
         ] {
             assert_ne!(spanish.text(msg), msg.en());
         }

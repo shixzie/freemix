@@ -341,6 +341,7 @@ fn nonzero(value: u64, what: &str) -> Result<core::num::NonZeroU128, String> {
 }
 
 /// The cue action a script action performs on `state`.
+#[allow(clippy::too_many_lines)] // one arm per action
 fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, String> {
     let input = |reference: &InputRef| resolve(state, reference);
     Ok(match action {
@@ -386,6 +387,20 @@ fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, Str
             input: input(reference)?,
             field: TitleFieldId::new(nonzero(*field, "title field")?),
             text: text.clone(),
+        },
+        ScriptAction::TitleNumber {
+            input: reference,
+            field,
+            add,
+            value,
+        } => CueAction::TitleNumber {
+            input: input(reference)?,
+            field: TitleFieldId::new(nonzero(*field, "title field")?),
+            update: if *add {
+                fm_model::CueNumberUpdate::Add(*value)
+            } else {
+                fm_model::CueNumberUpdate::Set(*value)
+            },
         },
         ScriptAction::TitleOff(reference) => CueAction::TitleOff {
             input: input(reference)?,
@@ -488,7 +503,8 @@ impl ScriptHost for Host<'_, '_> {
             let rejection = Rejection::new(
                 RejectionCode::InvalidCommand,
                 "an argument is out of range (a duration of 1 to 3600 frames, an overlay \
-                 channel of 1 to 8, a gain in range, or title text of at most 128 bytes)",
+                 channel of 1 to 8, a gain in range, title text of at most 128 bytes, or a \
+                 nonzero title number step of at most 999999999999)",
             );
             return refuse(self, rejection);
         }

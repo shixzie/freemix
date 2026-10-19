@@ -74,6 +74,8 @@ overlay 1, 3
 overlay_off 1
 title_on "Lower third", 2
 title_text 4, 1, "Score: " + (2 + 1)
+title_number 4, 2, 10 - 3
+title_add "Lower third", 2, -1
 title_off 4
 ftb 25
 ftb_off 25
@@ -94,7 +96,7 @@ restart 2
     let mut host = host();
     let report = run_source(source, &mut host, Limits::default());
     assert_eq!(report.failure, None);
-    assert_eq!(report.actions, 26);
+    assert_eq!(report.actions, 28);
     let name = |text: &str| InputRef::Name(text.to_owned());
     assert_eq!(
         host.actions,
@@ -138,6 +140,18 @@ restart 2
                 input: InputRef::Number(4),
                 field: 1,
                 text: "Score: 3".to_owned()
+            },
+            ScriptAction::TitleNumber {
+                input: InputRef::Number(4),
+                field: 2,
+                add: false,
+                value: 7
+            },
+            ScriptAction::TitleNumber {
+                input: name("Lower third"),
+                field: 2,
+                add: true,
+                value: -1
             },
             ScriptAction::TitleOff(InputRef::Number(4)),
             ScriptAction::FadeToBlack {
@@ -560,6 +574,7 @@ fn verbs_cover_every_branch_whatever_a_run_takes() {
          if false\n  mute 1\nelif program == 99\n  title_text 1, 1, \"x\"\nelse\n  cut\nend\n\
          repeat 0\n  preview 2\nend\n\
          while false\n  gain 1, 0\nend\n\
+         if false\n  title_add 1, 2, 1\nend\n\
          stop\nrecord_start 1\n",
     )
     .expect("parses");
@@ -569,6 +584,7 @@ fn verbs_cover_every_branch_whatever_a_run_takes() {
             Verb::Preview,
             Verb::Cut,
             Verb::TitleText,
+            Verb::TitleAdd,
             Verb::Gain,
             Verb::Mute,
             Verb::RecordStart

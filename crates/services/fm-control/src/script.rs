@@ -138,7 +138,7 @@ pub struct ScriptRun<'a> {
     pub frame: u64,
     pub actions: u32,
     pub instructions: u32,
-    pub title_texts: &'a [(InputId, FieldId, String)],
+    pub title_texts: &'a [(InputId, FieldId, fm_titles::FieldValue)],
     pub applied: &'a [EngineCommand],
 }
 

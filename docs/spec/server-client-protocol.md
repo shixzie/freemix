@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.64 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.65 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2242,6 +2242,47 @@ Protocol 2.64 arms a cue list GO for later (RC-017).
   local command runs the simulated cue clock to its end, so a local
   `cue-arm` fires the cue before it returns.
 - 2.63 is refused.
+
+Protocol 2.65 adds a cue data update action and arms a GO from the web
+tally page (RC-017).
+
+- Action token `title_number.<input>.<field>.<set|add>.<value>`, `value` a
+  canonical signed decimal (no `+`, no leading zeros, no `-0`): `set` gives
+  the title field `value`, `add` adds the nonzero `value` (a negative one
+  counts down), each at most 999 999 999 999 in magnitude. The field may be
+  a number field or a text field. A text field receives the result as
+  decimal text, and an `add` needs it to hold a plain decimal integer (an
+  optional `-` and 1 to 19 digits, surrounding whitespace ignored; blank
+  reads as zero).
+  The value is read when the action runs, after the frame's earlier
+  actions, so two `add`s of one field on one frame add both. A missing
+  field or an image or color field is refused at definition time
+  (`not_found` with field issue `unknown_field`, or `invalid_command` with
+  `not_number`), text that is not a whole number and a result out of range
+  when the action runs (`invalid_command` with `not_number`, or reason
+  `bounds_exceeded` field `title_number`). Like `title_text` it sets the
+  field on or off air and needs `edit_project`; a numeric result adds no
+  title text bytes, a text result adds its decimal bytes to the
+  frame's 8192-byte title text bound.
+- `titles` on `cue_run_changed` and `script_ran`: each entry is
+  `<input>.<field revision>.<field>.<value>` with `value` the text's
+  lowercase hex for a text field or `n<signed decimal>` for a number field
+  (`CueTitleValue`).
+- Scripts: `title_number INPUT, FIELD, VALUE` and `title_add INPUT, FIELD,
+  DELTA` run the action (`set` and `add`); both need `edit_project`, so a
+  GO of a cue whose script holds either needs it too.
+- Durability (schema 59): a cue action
+  `{"type": "title_number", "input", "field", "update": "set" | "add",
+  "value"}`.
+- The web tally page (Operator role) adds a "Fire in" picker (10 s to 1 h),
+  Arm GO, and Disarm beside GO. Arm GO sends `cue_arm` naming the cue on
+  standby it shows (so a standby move in between arms nothing else), with
+  the same `transition` gate as GO (the authority checks the armed chain),
+  and Disarm sends `cue_disarm`. The cue line reads the armed cue and an
+  approximate countdown extrapolated from the newest `cue_list_state` or
+  `cue_run_changed` frame at the snapshot's `frame_rate`; English and
+  Spanish strings.
+- 2.64 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

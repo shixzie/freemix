@@ -12,16 +12,17 @@ use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload,
     CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
     CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun,
-    CueTitleText, EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
-    FadeToBlackPosition, FadeToBlackState, InputAudioStripStatus, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS,
-    MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUES, ManualTransitionStatus, MediaTime, MediaTransportState,
-    OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus, StreamRealizedState,
-    StreamStatus, TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation,
-    WireInputId, WireMessage, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
-    WireStreamTargetId, WireTitleFieldId, decode_line, encode_line,
+    CueTitleText, CueTitleValue, EditHistoryStatus, EngineIdentity, EventCursor, EventMessage,
+    EventPayload, FadeToBlackPosition, FadeToBlackState, InputAudioStripStatus, MAX_CUE_ACTIONS,
+    MAX_CUE_ARM_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_TITLE_NUMBER, MAX_CUES,
+    ManualTransitionStatus, MediaTime, MediaTransportState, OverlayStatus, PlaylistRunState,
+    ProtocolVersion, RecordingStatus, StreamRealizedState, StreamStatus, TransitionFavoriteEffect,
+    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireMessage, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line,
+    encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.64\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.65\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {
@@ -152,6 +153,18 @@ fn spec() -> CueListSpec {
                         operation: WireCueMediaOperation::Pause,
                     },
                     WireCueAction::RunScript { script: 4 },
+                    WireCueAction::TitleNumber {
+                        input: input(5),
+                        field: WireTitleFieldId::new(NonZeroU128::new(3).unwrap()),
+                        add: true,
+                        value: -2,
+                    },
+                    WireCueAction::TitleNumber {
+                        input: input(5),
+                        field: WireTitleFieldId::new(NonZeroU128::new(3).unwrap()),
+                        add: false,
+                        value: MAX_CUE_TITLE_NUMBER,
+                    },
                 ],
             },
         ],
@@ -194,7 +207,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 64));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 65));
 }
 
 #[test]
@@ -212,6 +225,11 @@ fn cue_commands_round_trip_exactly() {
     assert!(line.contains("take.3.fade.25%2Foverlay_on.2.4"), "{line}");
     assert!(line.contains("wait.50%2Ftake.-.stinger_1.40"), "{line}");
     assert!(line.contains("audio_gain.3.-12500"), "{line}");
+    // Protocol 2.65: the data update action, `set` or `add` and a signed value.
+    assert!(
+        line.contains("title_number.5.3.add.-2%2Ftitle_number.5.3.set.999999999999"),
+        "{line}"
+    );
     assert!(
         line.contains(
             "media_restart.6%2Fdelay.1500%2Fmedia_seek.6.0%2Fmedia_play.6%2Fmedia_pause.6\
@@ -297,6 +315,14 @@ fn cue_commands_are_strict() {
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_seek.6",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_seek.6.-1",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_stop.6",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.add.0",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.set.-0",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.set.%2B1",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.add.01",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.set.1000000000000",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.inc.1",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.0.set.1",
+        "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Etitle_number.5.3.set",
         "payload=cue_advance\tlist=3",
         "payload=cue_arm\tlist=3",
         "payload=cue_arm\tlist=3\tin_ms=0",
@@ -549,12 +575,21 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
             },
         ],
         playlist: PlaylistRunState::Stopped,
-        titles: vec![CueTitleText {
-            input: input(5),
-            field_revision: 4,
-            field: WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
-            text: "Señor".to_owned(),
-        }],
+        titles: vec![
+            CueTitleText {
+                input: input(5),
+                field_revision: 4,
+                field: WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                value: CueTitleValue::Text("Señor".to_owned()),
+            },
+            // Protocol 2.65: a number field's value.
+            CueTitleText {
+                input: input(5),
+                field_revision: 4,
+                field: WireTitleFieldId::new(NonZeroU128::new(3).unwrap()),
+                value: CueTitleValue::Number(-12),
+            },
+        ],
         media: vec![CueMediaTransport {
             input: input(6),
             state: MediaTransportState::Playing,
@@ -570,6 +605,14 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
         change.clone(),
     ))));
     assert!(line.contains("\tfired=1.7\t"), "{line}");
+    assert!(
+        line.contains(&format!("\ttitles=5.4.2.{}%2F5.4.3.n-12\t", hex("Señor"))),
+        "{line}"
+    );
+    for bad in ["5.4.3.n", "5.4.3.n-0", "5.4.3.n01", "5.4.3.nx"] {
+        let broken = line.replacen("5.4.3.n-12", bad, 1);
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
     // Protocol 2.63: `<cue>.<action>.<reason hex>.<message hex>`.
     let fault = format!(
         "1.2.{}.{}",

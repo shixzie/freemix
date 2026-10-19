@@ -654,7 +654,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -724,7 +724,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -880,7 +880,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 58"));
+    assert!(valid.contains("\"schema_version\": 59"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -896,7 +896,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 58", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 59", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1397,7 +1397,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1742,7 +1742,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1835,7 +1835,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -1976,7 +1976,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 58,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 59,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
@@ -2065,11 +2065,84 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 58", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 59", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
     assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+}
+
+/// Schema 59: a cue's data update action (`title_number`) round-trips
+/// exactly; its update kind and value are strict, and a step of nothing
+/// or an out-of-range value is a validation error.
+#[test]
+fn title_number_cue_actions_round_trip_exactly_at_the_current_schema() {
+    use fm_model::{Cue, CueAction, CueList, CueNumberUpdate, CueRunState, TitleFieldId};
+
+    let temp = TestDirectory::new("title-number-cues");
+    let store = temp.store("show");
+    let number = |update| CueAction::TitleNumber {
+        input: input_id(2),
+        field: TitleFieldId::new(nz(2)),
+        update,
+    };
+    let mut project = title_project();
+    project.set_cue_lists(vec![CueList {
+        id: 1,
+        name: "Score".into(),
+        cues: vec![Cue {
+            id: 1,
+            name: "Goal".into(),
+            actions: vec![
+                number(CueNumberUpdate::Add(1)),
+                number(CueNumberUpdate::Set(-999_999_999_999)),
+            ],
+            auto_follow: false,
+        }],
+        state: CueRunState {
+            standby: Some(1),
+            ..CueRunState::default()
+        },
+    }]);
+    let expected = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    let add = "{\"type\": \"title_number\", \"input\": 2, \"field\": 2, \"update\": \"add\", \
+               \"value\": 1}";
+    let set = "{\"type\": \"title_number\", \"input\": 2, \"field\": 2, \"update\": \"set\", \
+               \"value\": -999999999999}";
+    assert!(encoded.contains(&format!("{add}, {set}")), "{encoded}");
+    assert_eq!(store.load().unwrap(), expected);
+
+    for malformed in [
+        encoded.replacen("\"update\": \"add\"", "\"update\": \"inc\"", 1),
+        encoded.replacen("\"update\": \"add\", ", "", 1),
+        encoded.replacen("\"value\": 1}", "\"value\": \"1\"}", 1),
+        encoded.replacen("\"field\": 2, \"update\"", "\"field\": 0, \"update\"", 1),
+    ] {
+        assert_ne!(malformed, encoded);
+        fs::write(store.manifest_path(), &malformed).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(
+            matches!(error, StoreError::MalformedManifest { .. }),
+            "got {error:?} for {malformed}"
+        );
+    }
+    for invalid in [
+        encoded.replacen("\"value\": 1}", "\"value\": 0}", 1),
+        encoded.replacen("-999999999999", "-1000000000000", 1),
+    ] {
+        assert_ne!(invalid, encoded);
+        fs::write(store.manifest_path(), &invalid).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+    }
 }
 
 #[test]
@@ -2196,7 +2269,7 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!(
@@ -2497,7 +2570,7 @@ fn capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         Some(("decklink:1", &settings))
     );
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     let object = "{\"type\": \"device\", \"stable_key\": \"decklink:1\", \"capture\": {\"format\": \"1920x1080@30000/1001:yuyv:tff\", \"audio\": \"alsa:hw:CARD=C920,DEV=0\", \"loss\": \"black\"}}";
     assert!(encoded.contains(object), "{encoded}");
 
@@ -2598,7 +2671,7 @@ fn system_audio_inputs_round_trip_exactly_and_reject_malformed_values() {
         .kind;
     assert_eq!(*kind, InputKind::SystemAudio(config));
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 58"));
+    assert!(encoded.contains("\"schema_version\": 59"));
     let object = "{\"type\": \"system_audio\", \"backend\": \"pulse\", \"device\": \"alsa_output.pci-0000_00_1f.3.analog-stereo.monitor\"}";
     assert!(encoded.contains(object), "{encoded}");
 

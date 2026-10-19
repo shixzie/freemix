@@ -62,6 +62,7 @@ pub fn bounds_field_name(l: Locale, field: &str) -> String {
         "actions" => Msg::BoundsFieldCueActions,
         "list_actions" => Msg::BoundsFieldCueListActions,
         "text" => Msg::BoundsFieldCueText,
+        "title_number" => Msg::BoundsFieldTitleNumber,
         "scripts" => Msg::BoundsFieldScripts,
         "source" => Msg::BoundsFieldScriptSource,
         other => return other.to_owned(),
@@ -401,6 +402,7 @@ mod tests {
             "presets",
             "title_content_bytes",
             "title_text_chars",
+            "title_number",
         ] {
             let english = bounds_field_name(Locale::ENGLISH, field);
             let spanish = bounds_field_name(ES, field);

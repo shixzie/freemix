@@ -46,10 +46,10 @@ pub use codec::{
 pub use cue::{
     CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
     CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun,
-    CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
-    MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES,
-    MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, WireCue,
-    WireCueAction, WireCueMediaOperation,
+    CueTitleText, CueTitleValue, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS,
+    MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS,
+    MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES,
+    MAX_CUE_WAIT_FRAMES, MAX_CUES, WireCue, WireCueAction, WireCueMediaOperation,
 };
 pub use display_output::{
     DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage,

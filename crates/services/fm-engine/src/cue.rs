@@ -37,7 +37,7 @@ use fm_model::{
     TransitionEffect,
 };
 use fm_switcher::{OverlayChannelId, RecorderSlot, StingerSlotId, StreamTargetId, TransitionKind};
-use fm_titles::{FieldId, FieldValue};
+use fm_titles::{FieldId, FieldType, FieldValue};
 use fm_types::FrameRate;
 
 use crate::{
@@ -247,7 +247,10 @@ pub(crate) fn check_action_references(
         }
         let title = matches!(
             action,
-            CueAction::TitleOn { .. } | CueAction::TitleText { .. } | CueAction::TitleOff { .. }
+            CueAction::TitleOn { .. }
+                | CueAction::TitleText { .. }
+                | CueAction::TitleNumber { .. }
+                | CueAction::TitleOff { .. }
         );
         if title && state.title(input).is_none() {
             return Err(Rejection::new(
@@ -258,6 +261,9 @@ pub(crate) fn check_action_references(
                 kind: IdKind::Title,
                 id: input.get().get(),
             }));
+        }
+        if let CueAction::TitleNumber { field, .. } = action {
+            number_field(state, input, FieldId::new(field.get()), owner)?;
         }
     }
     if let Some(script) = action.script() {
@@ -283,6 +289,104 @@ pub(crate) fn check_action_references(
         }
     }
     Ok(())
+}
+
+/// Refuses a number update of a title field that is missing or neither a
+/// number nor a text field (schema 59); returns the field's type.
+fn number_field(
+    state: &ShowState,
+    input: fm_types::InputId,
+    field: FieldId,
+    owner: &str,
+) -> Result<FieldType, Rejection> {
+    let found = state
+        .title(input)
+        .and_then(|title| title.fields.field_type(field));
+    match found {
+        Some(kind @ (FieldType::Number | FieldType::Text)) => Ok(kind),
+        Some(FieldType::Image | FieldType::Color) => Err(Rejection::new(
+            RejectionCode::InvalidCommand,
+            format!(
+                "{owner} updates field {} of title {input}, which is not a number or text field",
+                field.get()
+            ),
+        )
+        .with_field(FieldIssue::new(
+            "cues",
+            "not_number",
+            format!("field {} is not a number or text field", field.get()),
+        ))),
+        None => Err(Rejection::new(
+            RejectionCode::NotFound,
+            format!(
+                "{owner} updates field {} of title {input}, which the title lacks",
+                field.get()
+            ),
+        )
+        .with_field(FieldIssue::new(
+            "cues",
+            "unknown_field",
+            format!("title {input} has no field {}", field.get()),
+        ))),
+    }
+}
+
+/// The value a [`CueAction::TitleNumber`] gives its field on `state`, the
+/// show as earlier actions of the frame left it (schema 59): a number for a
+/// number field, decimal text for a text field holding a plain integer.
+///
+/// # Errors
+///
+/// Refuses a missing or unsuitable field, text that is not a plain
+/// integer, and a result beyond [`fm_model::MAX_CUE_TITLE_NUMBER`].
+pub(crate) fn title_number_value(
+    state: &ShowState,
+    input: fm_types::InputId,
+    field: FieldId,
+    update: fm_model::CueNumberUpdate,
+) -> Result<FieldValue, Rejection> {
+    let kind = number_field(state, input, field, "the action")?;
+    // Setting needs no current value; stepping needs a whole number.
+    let current = match (
+        update,
+        state
+            .title(input)
+            .and_then(|title| title.fields.value(field)),
+    ) {
+        (fm_model::CueNumberUpdate::Set(_), _) => Some(0),
+        (_, Some(FieldValue::Number(number))) => Some(*number),
+        (_, Some(FieldValue::Text(text))) => fm_model::title_text_number(text),
+        _ => None,
+    };
+    let Some(current) = current else {
+        return Err(Rejection::new(
+            RejectionCode::InvalidCommand,
+            format!(
+                "field {} of title {input} does not hold a whole number",
+                field.get()
+            ),
+        )
+        .with_field(FieldIssue::new(
+            "cues",
+            "not_number",
+            format!("field {} does not hold a whole number", field.get()),
+        )));
+    };
+    let max = fm_model::MAX_CUE_TITLE_NUMBER;
+    let value = update.apply(current).ok_or_else(|| {
+        Rejection::new(
+            RejectionCode::InvalidCommand,
+            format!(
+                "field {} of title {input} would leave -{max} to {max}",
+                field.get()
+            ),
+        )
+        .with_reason(RefusalReason::bounds("title_number", max.unsigned_abs()))
+    })?;
+    Ok(match kind {
+        FieldType::Text => FieldValue::Text(value.to_string()),
+        _ => FieldValue::Number(value),
+    })
 }
 
 /// The refusal of a list id of zero: the cue clock's list `0` is the
@@ -502,15 +606,33 @@ const fn switcher_kind(effect: TransitionEffect) -> Option<TransitionKind> {
 /// show as it stands (`state`, which already holds the effect of every
 /// earlier action on the frame). `on_air` reports whether a title is on air
 /// in the realized switcher.
+///
+/// # Errors
+///
+/// Refuses a title number update its field cannot take (see
+/// [`title_number_value`]).
 #[allow(clippy::too_many_lines)] // one arm per action kind
 pub(crate) fn expand(
     state: &ShowState,
     action: &CueAction,
     on_air: impl Fn(fm_types::InputId) -> bool,
-) -> Vec<EngineCommand> {
+) -> Result<Vec<EngineCommand>, Rejection> {
     let channel = |number: u8| OverlayChannelId::new(number).expect("validated overlay channel");
     let switcher = state.desired_switcher();
-    match action {
+    let set_field = |input: fm_types::InputId, field: FieldId, value: FieldValue| {
+        let live = switcher.on_air_usage(input).is_some() || on_air(input);
+        EngineCommand::SetTitleFields {
+            input,
+            base_revision: title_revision(state, input),
+            require: if live {
+                crate::TitleAirRequirement::OnAir
+            } else {
+                crate::TitleAirRequirement::OffAir
+            },
+            fields: vec![(field, value)],
+        }
+    };
+    Ok(match action {
         CueAction::Preview { input } => vec![EngineCommand::SelectPreview(*input)],
         CueAction::Take {
             input,
@@ -520,7 +642,7 @@ pub(crate) fn expand(
             let mut commands = Vec::new();
             if let Some(input) = input {
                 if switcher.program() == *input {
-                    return commands;
+                    return Ok(commands);
                 }
                 if switcher.preview() != *input {
                     commands.push(EngineCommand::SelectPreview(*input));
@@ -558,18 +680,19 @@ pub(crate) fn expand(
             base_revision: title_revision(state, *input),
             fields: Vec::new(),
         }],
-        CueAction::TitleText { input, field, text } => {
-            let live = switcher.on_air_usage(*input).is_some() || on_air(*input);
-            vec![EngineCommand::SetTitleFields {
-                input: *input,
-                base_revision: title_revision(state, *input),
-                require: if live {
-                    crate::TitleAirRequirement::OnAir
-                } else {
-                    crate::TitleAirRequirement::OffAir
-                },
-                fields: vec![(FieldId::new(field.get()), FieldValue::Text(text.clone()))],
-            }]
+        CueAction::TitleText { input, field, text } => vec![set_field(
+            *input,
+            FieldId::new(field.get()),
+            FieldValue::Text(text.clone()),
+        )],
+        CueAction::TitleNumber {
+            input,
+            field,
+            update,
+        } => {
+            let field = FieldId::new(field.get());
+            let value = title_number_value(state, *input, field, *update)?;
+            vec![set_field(*input, field, value)]
         }
         CueAction::TitleOff { input } => vec![EngineCommand::TitleOffAir { input: *input }],
         CueAction::FadeToBlack {
@@ -655,7 +778,7 @@ pub(crate) fn expand(
         CueAction::Wait { .. } | CueAction::Delay { .. } | CueAction::RunScript { .. } => {
             Vec::new()
         }
-    }
+    })
 }
 
 fn title_revision(state: &ShowState, input: fm_types::InputId) -> u64 {

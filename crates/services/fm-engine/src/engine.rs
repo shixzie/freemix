@@ -718,7 +718,8 @@ pub enum EngineEvent {
     /// A cue list command was accepted for `frame` (RC-017): the list
     /// afterwards is read from [`ShowState::cue_list`] (`removed` when it no
     /// longer exists). `fired` lists the cues a GO or advance fired and
-    /// `title_texts` every title text it set, in order. `applied` lists
+    /// `title_texts` every title text or number (schema 59) it set, in
+    /// order. `applied` lists
     /// the runtime actions the frame's cue actions realize, in order (a
     /// record, stream, or media command appears as itself), so a runtime
     /// that realizes more than the show (recorders, stream workers) acts on
@@ -732,7 +733,7 @@ pub enum EngineEvent {
         edit: bool,
         removed: bool,
         fired: Vec<u64>,
-        title_texts: Vec<(InputId, FieldId, String)>,
+        title_texts: Vec<(InputId, FieldId, FieldValue)>,
         applied: Vec<EngineCommand>,
         scripts: Vec<CueScriptRun>,
     },
@@ -749,7 +750,7 @@ pub enum EngineEvent {
         frame: u64,
         actions: u32,
         instructions: u32,
-        title_texts: Vec<(InputId, FieldId, String)>,
+        title_texts: Vec<(InputId, FieldId, FieldValue)>,
         applied: Vec<EngineCommand>,
     },
     /// The show's script run slot changed on `frame` without a part running
@@ -1685,14 +1686,12 @@ impl Engine {
                 *takes = step.takes;
                 continue;
             }
-            if let fm_model::CueAction::TitleText { input, field, text } = &fired.action {
-                title_texts.push((*input, FieldId::new(field.get()), text.clone()));
-                check_frame_title_texts(title_texts).map_err(refuse)?;
-            }
             let realized = &self.realized_switcher;
             let commands = crate::cue::expand(show, &fired.action, |input| {
                 realized.on_air_usage(input).is_some()
-            });
+            })
+            .map_err(refuse)?;
+            record_title_values(title_texts, &fired.action, &commands).map_err(refuse)?;
             for sub in commands {
                 if let Some(kind) = self.transition_in_flight.or(**transition)
                     && refused_during_transition(&sub)
@@ -2684,11 +2683,45 @@ pub(crate) struct CuePlan {
 pub(crate) const MAX_FRAME_TITLE_TEXT_BYTES: usize =
     fm_script::DEFAULT_ACTIONS as usize * fm_model::MAX_CUE_TEXT_BYTES;
 
+/// Records the title values a title text or number action's `commands`
+/// set (schema 59) for the frame's event, refusing a frame past the bound
+/// of [`check_frame_title_texts`].
+fn record_title_values(
+    title_texts: &mut Vec<(InputId, FieldId, FieldValue)>,
+    action: &fm_model::CueAction,
+    commands: &[EngineCommand],
+) -> Result<(), Rejection> {
+    if !matches!(
+        action,
+        fm_model::CueAction::TitleText { .. } | fm_model::CueAction::TitleNumber { .. }
+    ) {
+        return Ok(());
+    }
+    for command in commands {
+        if let EngineCommand::SetTitleFields { input, fields, .. } = command {
+            title_texts.extend(
+                fields
+                    .iter()
+                    .map(|(field, value)| (*input, *field, value.clone())),
+            );
+        }
+    }
+    check_frame_title_texts(title_texts)
+}
+
 /// Refuses a frame whose actions set more title text than its event may
 /// carry: a cue list and a lone script run stay far inside the bound, only
 /// script steps on one cue frame can reach it.
-fn check_frame_title_texts(title_texts: &[(InputId, FieldId, String)]) -> Result<(), Rejection> {
-    let bytes: usize = title_texts.iter().map(|(_, _, text)| text.len()).sum();
+fn check_frame_title_texts(
+    title_texts: &[(InputId, FieldId, FieldValue)],
+) -> Result<(), Rejection> {
+    let bytes: usize = title_texts
+        .iter()
+        .map(|(_, _, value)| match value {
+            FieldValue::Text(text) => text.len(),
+            _ => 0,
+        })
+        .sum();
     if title_texts.len() > fm_model::MAX_CUE_LIST_ACTIONS || bytes > MAX_FRAME_TITLE_TEXT_BYTES {
         return Err(Rejection::new(
             RejectionCode::ResourceExhausted,
@@ -2733,7 +2766,7 @@ fn record_script_step(scripts: &mut Vec<CueScriptRun>, ran: CueScriptRun) -> Res
 pub(crate) struct CueFrame<'a> {
     pub(crate) runtime: &'a mut Vec<EngineCommand>,
     pub(crate) transition: &'a mut Option<TransitionKind>,
-    pub(crate) title_texts: &'a mut Vec<(InputId, FieldId, String)>,
+    pub(crate) title_texts: &'a mut Vec<(InputId, FieldId, FieldValue)>,
     /// The script steps run so far, in order; `None` inside a script,
     /// whose actions never run a script.
     pub(crate) scripts: Option<&'a mut Vec<CueScriptRun>>,
