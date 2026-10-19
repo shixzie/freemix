@@ -789,10 +789,15 @@ pub(super) fn run(
             .is_some()
             .then(|| command_turn(&peers, &close, start))
             .flatten();
+        // A command whose append would queue behind a background checkpoint
+        // or progress marker on the journal's worker waits for it too, for
+        // the same reason: the journal folds in the background so that no
+        // frame waits for the manifest rewrite.
         let command_turn = ready_turn.filter(|_| {
-            native
-                .as_deref_mut()
-                .is_some_and(|native| native.command_window(store.recent_append_peak()))
+            !store.busy()
+                && native
+                    .as_deref_mut()
+                    .is_some_and(|native| native.command_window(store.recent_append_peak()))
         });
         dispatch_cursor = match (ready_turn, command_turn) {
             (Some(_), None) => start,
@@ -834,10 +839,10 @@ pub(super) fn run(
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
-        // The native command just realized its frame, so the next deadline is
-        // as far off as it gets: fold the journal now rather than in front of
-        // a later command's frame. Every mutation is durable already, so a
-        // failure is only reported.
+        // The native command just realized its frame: hand the journal fold
+        // to the persistence worker now, so it runs while the loop realizes
+        // the next frames. Every mutation is durable already, so a failure is
+        // only reported.
         if command_turn.is_some()
             && let Err(error) = store.checkpoint_if_due(durable)
         {

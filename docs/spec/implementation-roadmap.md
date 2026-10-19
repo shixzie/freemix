@@ -3721,6 +3721,50 @@ sync longer than about a frame still makes its frame late; llvmpipe frame
 realization still stalls 50–200 ms under host load; each readback still
 allocates its staging buffer; displays were not measured.
 
+Persistence worker (no protocol or schema change): the journal writer now
+lives on one persistence worker thread. The worker runs every storage
+operation the daemon makes (appends, checkpoints, progress markers, staged
+template animations, imported files) one at a time, in the order the daemon
+hands them over. It therefore performs the same sequence of writes against
+the same journal state as before, so the crash windows and the replay
+contract are unchanged. A command's append is still a synchronous job: it is
+durable before the command is acknowledged or committed. Three writes are now
+background jobs: the early journal fold into the manifest, the idle-progress
+fold, and the progress marker. No frame waits for a manifest rewrite or a
+marker's disk sync any more. A session command is held back while background
+work is in flight, so its append does not queue behind it. It waits at most
+one checkpoint, once every 48 commands, or one marker a second. A crash test
+SIGKILLs the cutting, recording, and streaming daemon right after the worker
+reports that a checkpoint or a marker began. In every run the kill came
+before the write finished, and recovery held every acknowledged cut and the
+matching Program. `fm-gpu` texture readback now reuses its mapped staging
+buffers per size, and a test counts the buffers created. Same 25 s
+measurement, three runs per build, before → after (llvmpipe on a shared
+host):
+
+| Build | Frames after 2 s, p99 | Frames > 1 frame late | Command frames, p99 | Cut round trip p50 / p99 |
+| --- | --- | --- | --- | --- |
+| debug | 74–321 → 5.1–5.2 ms | 8–21 → 0–1 | 128–321 → 0.1–8.5 ms | 46–58 / 193–518 → 33–46 / 49–99 ms |
+| release | 5.0–43 → 4.9–14 ms | 0–6 → 0–1 | 0.1–47 → 0.1–28 ms | 30–55 / 59–196 → 30–46 / 48–97 ms |
+
+The first 2 s stayed at p99 of about 5 ms, apart from one 180 ms stall
+before (release). The single late frame after the change, in each build,
+came in a run with a host stall. Group commit was evaluated again and not
+implemented. The session loop dispatches at most one command per pass, and
+each journal record carries the position its realization reaches. A shared
+disk sync would therefore need either several commands realized on one frame,
+which changes ordering, or an engine API that prepares a command for a frame
+several idle frames ahead. The engine cannot predict that frame's position
+while transitions, playlists, and cue clocks move state in between, and a
+missed prediction would still have to stall the frame. With appends kept off
+the frame deadline by the command window, grouping would only raise
+throughput past one command per frame, and the loop does not offer that.
+Remaining gaps: a daemon-issued command (playlist or cue clock, end of media)
+does not wait for background work, so its append can still queue behind a
+checkpoint. A disk sync longer than about a frame still makes its frame late.
+llvmpipe frame realization still stalls under host load, and displays were
+not measured.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)

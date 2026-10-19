@@ -4,7 +4,10 @@
 //! and waits for that append to be durable *before* the acceptance reaches the
 //! client and before any runtime realization is published. The manifest is no
 //! longer rewritten per command; it is rewritten at a checkpoint, which folds
-//! the recorded mutations into it and compacts the journal.
+//! the recorded mutations into it and compacts the journal. Every write runs
+//! on one persistence worker in the order the daemon hands it over, and the
+//! daemon waits for a command's append but not for a checkpoint or a
+//! progress marker (see [`DurableJournal`]).
 //!
 //! Frames a native daemon realizes between commands move no revision, so no
 //! mutation records them. A progress marker does (see [`ProgressCadence`]):
@@ -24,6 +27,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use fm_persistence::{JournalWriter, MutationBatch, ProjectPosition, ProjectStore, StoredProject};
@@ -90,8 +95,9 @@ pub(crate) trait DurableStore {
     /// [`MAX_MUTATIONS_PER_CHECKPOINT`] bound once enough of them are pending.
     /// `project` must hold the newest recorded mutation's revision, as for
     /// [`Self::checkpoint`]. Nothing depends on it: every recorded mutation is
-    /// already durable in the journal, so a caller only reports a failure and
-    /// the bounded checkpoint in front of a later append tries again.
+    /// already durable in the journal, so the journal runs it in the
+    /// background, a failure is only reported, and the bounded checkpoint in
+    /// front of a later append tries again.
     fn checkpoint_if_due(&self, _project: &StoredProject) -> AppResult<()> {
         Ok(())
     }
@@ -99,9 +105,25 @@ pub(crate) trait DurableStore {
     /// Durably records that the show reached `position` without a mutation:
     /// idle frames realized above the newest recorded mutation. `position`
     /// must hold that mutation's revision. Stores without a journal record
-    /// nothing.
+    /// nothing. The journal writes the marker in the background and reports
+    /// a failure itself: a lost marker loses only idle progress.
     fn record_progress(&self, _position: ProjectPosition) -> AppResult<()> {
         Ok(())
+    }
+
+    /// Folds idle progress into the manifest: `project` holds the newest
+    /// recorded mutation's revision and the idle position the show reached.
+    /// The journal folds in the background and reports a failure itself,
+    /// as for [`Self::record_progress`].
+    fn fold_progress(&self, project: &StoredProject) -> AppResult<()> {
+        self.checkpoint(project)
+    }
+
+    /// Whether background persistence work ([`Self::checkpoint_if_due`],
+    /// [`Self::record_progress`], [`Self::fold_progress`]) is still running.
+    /// A [`Self::record`] handed over meanwhile waits for it.
+    fn busy(&self) -> bool {
+        false
     }
 
     /// Stages the template `animations` (stored template URI and the
@@ -174,61 +196,334 @@ pub(crate) fn commit_staged_title_animations(
 /// The journal database is opened once, at startup, and held for the daemon's
 /// run: it is a single-writer resource this process owns, and reopening it per
 /// command made an accepted command cost what the whole show had cost so far.
-pub(crate) struct DurableJournal<'store> {
-    writer: JournalWriter<'store>,
+///
+/// # The persistence worker
+///
+/// The writer lives on a persistence worker thread, and every operation on
+/// the bundle this store makes (journal appends, checkpoints, progress
+/// markers, staged template animations, imported files) is a job the worker
+/// runs one at a time in the order the daemon handed them over. The worker
+/// therefore performs exactly the sequence of storage operations the daemon
+/// used to perform on its own thread, against exactly the journal state it
+/// used to see. What changed is only which operations the daemon waits for:
+///
+/// - a command's append (and everything a command stages) is a synchronous
+///   job, so [`DurableStore::record`] still returns only once the append is
+///   durable, before the command is acknowledged or committed;
+/// - folding the journal into the manifest ([`DurableStore::checkpoint_if_due`],
+///   [`DurableStore::fold_progress`]) and the progress marker
+///   ([`DurableStore::record_progress`]) are background jobs, so the frame
+///   loop no longer waits for a manifest rewrite or a marker's sync.
+///
+/// A background job never stands for an acknowledgement: everything it
+/// writes is either already durable in the journal (a checkpoint folds
+/// recorded batches) or is idle progress a crash may lose by design. A job
+/// handed over after it (the next append) runs after it, so it sees the
+/// journal head it was asked about. [`DurableStore::busy`] reports
+/// background work in flight; a native daemon holds a session command back
+/// while it is, so the command's append does not queue behind a checkpoint
+/// in front of the frame it is realized on.
+pub(crate) struct DurableJournal {
+    jobs: Option<mpsc::Sender<Job>>,
+    worker: Option<thread::JoinHandle<()>>,
+    finished: mpsc::Receiver<Finished>,
+    /// Background jobs handed over whose [`Finished`] was not drained yet.
+    in_flight: Cell<usize>,
+    /// Mutations (and refusal receipts) since the newest checkpoint asked
+    /// for, background or not.
     pending: Cell<u64>,
+    /// Background checkpoints asked for, numbering each, so a failure
+    /// restores its mutations to `pending` only while it is the newest.
+    checkpoints_requested: Cell<u64>,
     /// How long each of the last [`RECENT_APPENDS`] recorded mutations took
-    /// to become durable, oldest first.
+    /// to become durable on the worker, oldest first.
     appends: RefCell<VecDeque<Duration>>,
-    /// Every template URI this run staged an animation for. Startup
-    /// recovery committed (or discarded) every copy staged before the run,
-    /// so these are the only templates a checkpoint can find staged —
-    /// including one whose last title was removed after its edit.
-    staged: RefCell<BTreeSet<String>>,
+    /// A background progress write failed and has not succeeded since.
+    progress_failing: Cell<bool>,
 }
 
-impl<'store> DurableJournal<'store> {
-    pub(crate) const fn new(writer: JournalWriter<'store>) -> Self {
-        Self {
-            writer,
-            pending: Cell::new(0),
-            appends: RefCell::new(VecDeque::new()),
-            staged: RefCell::new(BTreeSet::new()),
+/// The environment variable that makes the persistence worker report when
+/// each background checkpoint and progress marker begins and ends, so a
+/// crash test can kill the daemon while one is being written.
+const JOURNAL_TRACE_ENV: &str = "FREEMIXD_JOURNAL_TRACE";
+
+/// A failure on the worker, sent back to the daemon's thread.
+enum WorkerError {
+    /// The command can never succeed and is refused as decided.
+    Refusal(crate::CommandRefusal),
+    Failure(String),
+}
+
+impl WorkerError {
+    fn from_app(error: Box<dyn std::error::Error>) -> Self {
+        match error.downcast::<crate::CommandRefusal>() {
+            Ok(refusal) => Self::Refusal(*refusal),
+            Err(error) => Self::Failure(error.to_string()),
         }
     }
 
-    /// Folds anything recorded since the last checkpoint into the manifest.
+    fn into_app(self) -> Box<dyn std::error::Error> {
+        match self {
+            Self::Refusal(refusal) => Box::new(refusal),
+            Self::Failure(message) => Box::new(AppFailure(message)),
+        }
+    }
+}
+
+type WorkerResult<T> = Result<T, WorkerError>;
+type Reply<T> = mpsc::SyncSender<WorkerResult<T>>;
+
+/// What the daemon asks the worker to do, in order.
+enum Job {
+    Record {
+        command: Box<CommandMessage>,
+        now_millis: u64,
+        base_revision: u64,
+        revision: u64,
+        position: ProjectPosition,
+        /// How long the append took on the worker, excluding the wait in
+        /// the queue.
+        reply: Reply<Duration>,
+    },
+    Checkpoint {
+        project: Box<StoredProject>,
+        /// `None` for a background checkpoint, whose outcome comes back as
+        /// [`Finished`].
+        reply: Option<Reply<()>>,
+        background: Background,
+    },
+    Progress {
+        position: ProjectPosition,
+    },
+    Stage {
+        revision: u64,
+        animations: Vec<(String, fm_titles::TitleAnimation)>,
+        reply: Reply<()>,
+    },
+    DiscardStaged {
+        revision: u64,
+        uris: Vec<String>,
+        reply: Reply<()>,
+    },
+    Import {
+        path: std::path::PathBuf,
+        reply: Reply<(String, bool)>,
+    },
+    DiscardImport {
+        asset_uri: String,
+        reply: Reply<()>,
+    },
+    /// Answers once every job handed over before it has run.
+    Flush {
+        reply: Reply<()>,
+    },
+}
+
+/// What a background job was for, which decides how its outcome is reported.
+#[derive(Clone, Copy, Debug)]
+enum Background {
+    /// Not a background job.
+    None,
+    /// An early checkpoint covering `mutations` mutations, the `request`th
+    /// asked for.
+    Checkpoint { mutations: u64, request: u64 },
+    /// Idle progress folded into the manifest at `frame`.
+    Fold { frame: u64 },
+    /// A progress marker at `frame`.
+    Marker { frame: u64 },
+}
+
+/// A background job's outcome.
+struct Finished {
+    background: Background,
+    result: Result<(), String>,
+}
+
+impl DurableJournal {
+    /// Opens `store`'s journal writer on a new persistence worker, failing
+    /// as opening the writer fails.
+    pub(crate) fn open(store: &ProjectStore) -> AppResult<Self> {
+        let store = store.clone();
+        let (jobs, queue) = mpsc::channel();
+        let (finished_sender, finished) = mpsc::channel();
+        let (opened_sender, opened) = mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name("freemixd-journal".into())
+            .spawn(move || {
+                let writer = match store.open_journal_writer() {
+                    Ok(writer) => writer,
+                    Err(error) => {
+                        let _ = opened_sender.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                let _ = opened_sender.send(Ok(()));
+                Worker {
+                    writer,
+                    staged: BTreeSet::new(),
+                    trace: std::env::var(JOURNAL_TRACE_ENV).as_deref() == Ok("1"),
+                }
+                .run(&queue, &finished_sender);
+            })?;
+        match opened.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                let _ = worker.join();
+                return Err(AppFailure(message).into());
+            }
+            Err(_) => {
+                let _ = worker.join();
+                return Err(AppFailure("the journal worker stopped while opening".into()).into());
+            }
+        }
+        Ok(Self {
+            jobs: Some(jobs),
+            worker: Some(worker),
+            finished,
+            in_flight: Cell::new(0),
+            pending: Cell::new(0),
+            checkpoints_requested: Cell::new(0),
+            appends: RefCell::new(VecDeque::new()),
+            progress_failing: Cell::new(false),
+        })
+    }
+
+    /// Folds anything recorded since the last checkpoint into the manifest,
+    /// after every background job handed over before it.
     ///
     /// Nothing recorded means the manifest already holds `project`, so this
     /// does not rewrite it.
     pub(crate) fn settle(&self, project: &StoredProject) -> AppResult<()> {
+        self.flush()?;
         if self.pending.get() == 0 {
             return Ok(());
         }
         self.checkpoint(project)
     }
+
+    /// Waits for every job handed over so far, reporting the background
+    /// ones' outcomes.
+    pub(crate) fn flush(&self) -> AppResult<()> {
+        self.call(|reply| Job::Flush { reply })
+    }
+
+    fn send(&self, job: Job) -> AppResult<()> {
+        self.jobs
+            .as_ref()
+            .and_then(|jobs| jobs.send(job).ok())
+            .ok_or_else(|| AppFailure("the journal worker stopped".into()).into())
+    }
+
+    /// Hands over a synchronous job and waits for its answer. Every
+    /// background job handed over before it has finished by then, and their
+    /// outcomes are applied before this returns.
+    fn call<T>(&self, job: impl FnOnce(Reply<T>) -> Job) -> AppResult<T> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.send(job(reply))?;
+        let answer = answer
+            .recv()
+            .map_err(|_| AppFailure("the journal worker stopped".into()));
+        self.drain();
+        answer?.map_err(WorkerError::into_app)
+    }
+
+    /// Hands over a background job.
+    fn queue(&self, job: Job) -> AppResult<()> {
+        self.send(job)?;
+        self.in_flight.set(self.in_flight.get() + 1);
+        Ok(())
+    }
+
+    /// Applies and reports every finished background job.
+    fn drain(&self) {
+        while let Ok(Finished { background, result }) = self.finished.try_recv() {
+            self.in_flight.set(self.in_flight.get().saturating_sub(1));
+            match background {
+                Background::None => {}
+                Background::Checkpoint { mutations, request } => {
+                    if let Err(error) = result {
+                        // Its mutations are still only in the journal: they
+                        // count toward the next checkpoint again, unless a
+                        // newer one was asked for and covers them.
+                        if request == self.checkpoints_requested.get() {
+                            self.pending
+                                .set(self.pending.get().saturating_add(mutations));
+                        }
+                        eprintln!("FREEMIXD_JOURNAL\tv=1\tcheckpoint=deferred\terror={error}");
+                    }
+                }
+                Background::Fold { frame } | Background::Marker { frame } => {
+                    match (result, self.progress_failing.get()) {
+                        (Ok(()), true) => {
+                            self.progress_failing.set(false);
+                            eprintln!("FREEMIXD_JOURNAL\tv=1\tprogress=recovered\tframe={frame}");
+                        }
+                        (Err(error), false) => {
+                            self.progress_failing.set(true);
+                            eprintln!(
+                                "FREEMIXD_JOURNAL\tv=1\tprogress=failed\tframe={frame}\terror={error}"
+                            );
+                        }
+                        // Reported once per failing streak.
+                        (Ok(()), false) | (Err(_), true) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hands over a background checkpoint of `project`, which holds the
+    /// newest recorded mutation's revision.
+    fn checkpoint_in_background(
+        &self,
+        project: &StoredProject,
+        fold_frame: Option<u64>,
+    ) -> AppResult<()> {
+        let request = self.checkpoints_requested.get() + 1;
+        let background = fold_frame.map_or(
+            Background::Checkpoint {
+                mutations: self.pending.get(),
+                request,
+            },
+            |frame| Background::Fold { frame },
+        );
+        self.queue(Job::Checkpoint {
+            project: Box::new(project.clone()),
+            reply: None,
+            background,
+        })?;
+        self.checkpoints_requested.set(request);
+        self.pending.set(0);
+        Ok(())
+    }
 }
 
-impl DurableStore for DurableJournal<'_> {
+impl Drop for DurableJournal {
+    /// Runs every job handed over, background ones included, before the
+    /// journal closes.
+    fn drop(&mut self) {
+        drop(self.jobs.take());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        self.drain();
+    }
+}
+
+impl DurableStore for DurableJournal {
     fn import_media_path(&self, path: &std::path::Path) -> AppResult<Option<(String, bool)>> {
-        let imported = self
-            .writer
-            .project_store()
-            .import_media_file(path)
-            .map_err(|error| AppFailure(format!("media file cannot be imported: {error}")))?;
-        let copied = matches!(
-            imported.disposition,
-            fm_persistence::AssetDisposition::Copied { .. }
-        );
-        Ok(Some((imported.asset_uri, copied)))
+        self.call(|reply| Job::Import {
+            path: path.to_path_buf(),
+            reply,
+        })
+        .map(Some)
     }
 
     fn discard_imported_media(&self, asset_uri: &str) -> AppResult<()> {
-        self.writer
-            .project_store()
-            .remove_imported_media(asset_uri)
-            .map_err(|error| AppFailure(format!("imported media cannot be removed: {error}")))?;
-        Ok(())
+        self.call(|reply| Job::DiscardImport {
+            asset_uri: asset_uri.to_owned(),
+            reply,
+        })
     }
 
     fn record(
@@ -255,7 +550,6 @@ impl DurableStore for DurableJournal<'_> {
             }
             return Ok(());
         };
-        let started = Instant::now();
         // Checkpoint *before* the append, never after. Everything that can fail
         // then fails while the command is still refusable; a checkpoint after a
         // durable append would have to choose between reporting its failure and
@@ -263,14 +557,224 @@ impl DurableStore for DurableJournal<'_> {
         if self.pending.get() >= MAX_MUTATIONS_PER_CHECKPOINT {
             self.checkpoint(previous)?;
         }
+        let took = self.call(|reply| Job::Record {
+            command: Box::new(command.clone()),
+            now_millis,
+            base_revision: previous.position().revision,
+            revision,
+            position: updated.position(),
+            reply,
+        })?;
+        self.pending.set(self.pending.get().saturating_add(1));
+        let mut appends = self.appends.borrow_mut();
+        if appends.len() == RECENT_APPENDS {
+            appends.pop_front();
+        }
+        appends.push_back(took);
+        Ok(())
+    }
+
+    fn recent_append_peak(&self) -> Option<Duration> {
+        self.appends.borrow().iter().copied().max()
+    }
+
+    fn checkpoint(&self, project: &StoredProject) -> AppResult<()> {
+        self.call(|reply| Job::Checkpoint {
+            project: Box::new(project.clone()),
+            reply: Some(reply),
+            background: Background::None,
+        })?;
+        self.pending.set(0);
+        Ok(())
+    }
+
+    fn stage_title_animations(
+        &self,
+        revision: u64,
+        animations: &[(String, fm_titles::TitleAnimation)],
+    ) -> AppResult<()> {
+        if animations.is_empty() {
+            return Ok(());
+        }
+        self.call(|reply| Job::Stage {
+            revision,
+            animations: animations.to_vec(),
+            reply,
+        })
+    }
+
+    fn discard_staged_title_animations(&self, revision: u64, uris: &[String]) -> AppResult<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        self.call(|reply| Job::DiscardStaged {
+            revision,
+            uris: uris.to_vec(),
+            reply,
+        })
+    }
+
+    fn checkpoint_if_due(&self, project: &StoredProject) -> AppResult<()> {
+        self.drain();
+        if self.pending.get() < EARLY_CHECKPOINT_MUTATIONS || self.in_flight.get() > 0 {
+            return Ok(());
+        }
+        self.checkpoint_in_background(project, None)
+    }
+
+    fn fold_progress(&self, project: &StoredProject) -> AppResult<()> {
+        self.checkpoint_in_background(project, Some(project.position().frames_rendered))
+    }
+
+    fn record_progress(&self, position: ProjectPosition) -> AppResult<()> {
+        self.queue(Job::Progress { position })
+    }
+
+    fn busy(&self) -> bool {
+        self.drain();
+        self.in_flight.get() > 0
+    }
+}
+
+/// The persistence worker: the journal writer and what it staged.
+struct Worker<'store> {
+    writer: JournalWriter<'store>,
+    /// Every template URI this run staged an animation for. Startup
+    /// recovery committed (or discarded) every copy staged before the run,
+    /// so these are the only templates a checkpoint can find staged —
+    /// including one whose last title was removed after its edit.
+    staged: BTreeSet<String>,
+    trace: bool,
+}
+
+impl Worker<'_> {
+    fn run(mut self, queue: &mpsc::Receiver<Job>, finished: &mpsc::Sender<Finished>) {
+        while let Ok(job) = queue.recv() {
+            match job {
+                Job::Record {
+                    command,
+                    now_millis,
+                    base_revision,
+                    revision,
+                    position,
+                    reply,
+                } => {
+                    let started = Instant::now();
+                    let result = self
+                        .append(&command, now_millis, base_revision, revision, position)
+                        .map(|()| started.elapsed());
+                    let _ = reply.send(result);
+                }
+                Job::Checkpoint {
+                    project,
+                    reply,
+                    background,
+                } => {
+                    self.trace_event("checkpoint=begin", project.position());
+                    let result = self.checkpoint(&project);
+                    self.trace_event("checkpoint=end", project.position());
+                    match reply {
+                        Some(reply) => {
+                            let _ = reply.send(result.map_err(WorkerError::from_app));
+                        }
+                        None => {
+                            let _ = finished.send(Finished {
+                                background,
+                                result: result.map_err(|error| error.to_string()),
+                            });
+                        }
+                    }
+                }
+                Job::Progress { position } => {
+                    self.trace_event("marker=begin", position);
+                    let result = self
+                        .writer
+                        .record_progress(&encode_progress(position))
+                        .map_err(|error| error.to_string());
+                    self.trace_event("marker=end", position);
+                    let _ = finished.send(Finished {
+                        background: Background::Marker {
+                            frame: position.frames_rendered,
+                        },
+                        result,
+                    });
+                }
+                Job::Stage {
+                    revision,
+                    animations,
+                    reply,
+                } => {
+                    let _ = reply.send(self.stage(revision, &animations));
+                }
+                Job::DiscardStaged {
+                    revision,
+                    uris,
+                    reply,
+                } => {
+                    let _ = reply.send(self.discard_staged(revision, &uris));
+                }
+                Job::Import { path, reply } => {
+                    let _ = reply.send(self.import(&path));
+                }
+                Job::DiscardImport { asset_uri, reply } => {
+                    let result = self
+                        .writer
+                        .project_store()
+                        .remove_imported_media(&asset_uri)
+                        .map_err(|error| {
+                            WorkerError::Failure(format!(
+                                "imported media cannot be removed: {error}"
+                            ))
+                        });
+                    let _ = reply.send(result);
+                }
+                Job::Flush { reply } => {
+                    let _ = reply.send(Ok(()));
+                }
+            }
+        }
+    }
+
+    fn trace_event(&self, event: &str, position: ProjectPosition) {
+        if self.trace {
+            eprintln!(
+                "FREEMIXD_JOURNAL\tv=1\t{event}\trevision={}\tframe={}",
+                position.revision, position.frames_rendered
+            );
+        }
+    }
+
+    fn import(&self, path: &std::path::Path) -> WorkerResult<(String, bool)> {
+        let imported = self
+            .writer
+            .project_store()
+            .import_media_file(path)
+            .map_err(|error| {
+                WorkerError::Failure(format!("media file cannot be imported: {error}"))
+            })?;
+        let copied = matches!(
+            imported.disposition,
+            fm_persistence::AssetDisposition::Copied { .. }
+        );
+        Ok((imported.asset_uri, copied))
+    }
+
+    fn append(
+        &self,
+        command: &CommandMessage,
+        now_millis: u64,
+        base_revision: u64,
+        revision: u64,
+        position: ProjectPosition,
+    ) -> WorkerResult<()> {
         // An imported LUT's file is written before its batch, so every
         // manifest and journal that names the LUT finds the file.
         crate::grading::write_imported_lut(self.writer.project_store(), command).map_err(
-            |error| -> Box<dyn std::error::Error> {
-                match error {
-                    // Not a durability failure: the same command can never
-                    // succeed, so it is refused as a conflict.
-                    fm_persistence::LutError::IdReused(id) => Box::new(crate::CommandRefusal {
+            |error| match error {
+                // Not a durability failure: the same command can never
+                // succeed, so it is refused as a conflict.
+                fm_persistence::LutError::IdReused(id) => {
+                    WorkerError::Refusal(crate::CommandRefusal {
                         code: fm_command::RejectionCode::Conflict,
                         retryable: false,
                         message: error.to_string(),
@@ -278,35 +782,29 @@ impl DurableStore for DurableJournal<'_> {
                             kind: fm_protocol::IdKind::Lut,
                             id: u128::from(id.get().get()),
                         }),
-                    }),
-                    error => Box::new(AppFailure(format!(
-                        "imported LUT could not be written: {error}"
-                    ))),
+                    })
+                }
+                error => {
+                    WorkerError::Failure(format!("imported LUT could not be written: {error}"))
                 }
             },
         )?;
+        let fail = |error: &dyn std::fmt::Display| WorkerError::Failure(error.to_string());
         let sequence = self
             .writer
             .head_sequence()
             .checked_add(1)
-            .ok_or_else(|| AppFailure("journal sequence overflow".into()))?;
-        self.writer.append_batch(&MutationBatch::new(
-            sequence,
-            previous.position().revision,
-            revision,
-            encode_mutation(command, now_millis, updated.position())?,
-        ))?;
-        self.pending.set(self.pending.get().saturating_add(1));
-        let mut appends = self.appends.borrow_mut();
-        if appends.len() == RECENT_APPENDS {
-            appends.pop_front();
-        }
-        appends.push_back(started.elapsed());
-        Ok(())
-    }
-
-    fn recent_append_peak(&self) -> Option<Duration> {
-        self.appends.borrow().iter().copied().max()
+            .ok_or_else(|| WorkerError::Failure("journal sequence overflow".into()))?;
+        let payload =
+            encode_mutation(command, now_millis, position).map_err(|error| fail(&error))?;
+        self.writer
+            .append_batch(&MutationBatch::new(
+                sequence,
+                base_revision,
+                revision,
+                payload,
+            ))
+            .map_err(|error| fail(&error))
     }
 
     fn checkpoint(&self, project: &StoredProject) -> AppResult<()> {
@@ -316,14 +814,12 @@ impl DurableStore for DurableJournal<'_> {
         // it is checkpointing.
         self.writer
             .checkpoint_and_compact(project, self.writer.head_sequence())?;
-        self.pending.set(0);
         // The manifest now holds every staged animation edit through its
         // revision; later ones still wait for their batches' checkpoint.
-        let staged = self.staged.borrow();
         self.writer
             .project_store()
             .commit_staged_title_animations(
-                staged.iter().map(String::as_str),
+                self.staged.iter().map(String::as_str),
                 project.position().revision,
                 false,
             )
@@ -331,24 +827,24 @@ impl DurableStore for DurableJournal<'_> {
         Ok(())
     }
 
-    fn stage_title_animations(
-        &self,
+    fn stage(
+        &mut self,
         revision: u64,
         animations: &[(String, fm_titles::TitleAnimation)],
-    ) -> AppResult<()> {
+    ) -> WorkerResult<()> {
         for (uri, animation) in animations {
-            self.staged.borrow_mut().insert(uri.clone());
+            self.staged.insert(uri.clone());
             self.writer
                 .project_store()
                 .stage_title_animation(uri, revision, animation)
                 .map_err(|error| {
-                    AppFailure(format!("title animation could not be staged: {error}"))
+                    WorkerError::Failure(format!("title animation could not be staged: {error}"))
                 })?;
         }
         Ok(())
     }
 
-    fn discard_staged_title_animations(&self, revision: u64, uris: &[String]) -> AppResult<()> {
+    fn discard_staged(&self, revision: u64, uris: &[String]) -> WorkerResult<()> {
         let mut failure = None;
         for uri in uris {
             if let Err(error) = self
@@ -361,23 +857,10 @@ impl DurableStore for DurableJournal<'_> {
         }
         match failure {
             None => Ok(()),
-            Some(error) => Err(AppFailure(format!(
+            Some(error) => Err(WorkerError::Failure(format!(
                 "staged title animation at revision {revision} could not be discarded: {error}"
-            ))
-            .into()),
+            ))),
         }
-    }
-
-    fn checkpoint_if_due(&self, project: &StoredProject) -> AppResult<()> {
-        if self.pending.get() < EARLY_CHECKPOINT_MUTATIONS {
-            return Ok(());
-        }
-        self.checkpoint(project)
-    }
-
-    fn record_progress(&self, position: ProjectPosition) -> AppResult<()> {
-        self.writer.record_progress(&encode_progress(position))?;
-        Ok(())
     }
 }
 

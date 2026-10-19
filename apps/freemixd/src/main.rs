@@ -10353,7 +10353,7 @@ fn serve_inner(
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command
     // cost what the whole show had cost so far.
-    let journal = DurableJournal::new(store.open_journal_writer()?);
+    let journal = DurableJournal::open(&store)?;
     let project = persist_display_output_overrides(&journal, &project, mode.display_overrides())?;
     let project_id = project.project().id();
     let engine = restore_engine_with_titles(&project, &bundle_assets)?;
@@ -10790,8 +10790,8 @@ fn checkpoint_native(
 /// Records a native daemon's idle progress (see [`journal::ProgressCadence`]).
 ///
 /// The session loop calls [`Self::poll`] once per pass, right after the
-/// pacer's frame, so a write lands in the slack before the next deadline
-/// rather than in front of a frame. A marker is one small journal commit per
+/// pacer's frame. The journal writes a marker or fold on its persistence
+/// worker, so neither delays a frame. A marker is one small journal commit per
 /// [`journal::PROGRESS_MARKER_SECONDS`]; a fold is a manifest checkpoint per
 /// [`journal::PROGRESS_FOLD_SECONDS`]. Progress is only recorded at an idle
 /// frame boundary — the only position replay (and a checkpoint) can
@@ -10823,7 +10823,10 @@ impl NativeProgress {
         let control = control.borrow();
         let cursor = control.frame_cursor();
         let due = self.cadence.due(cursor, durable.position().frames_rendered);
-        if due == journal::ProgressDue::Nothing {
+        // One background write at a time: a marker or fold due while the
+        // previous one (or a checkpoint) is still being written waits for a
+        // later pass instead of queueing behind it.
+        if due == journal::ProgressDue::Nothing || store.busy() {
             return;
         }
         let Ok(snapshot) = control.idle_engine_snapshot() else {
@@ -10835,7 +10838,7 @@ impl NativeProgress {
             // The idle snapshot moves the runtime position without moving
             // the revision, exactly as the shutdown checkpoint does.
             stored_project_checkpoint(durable, &snapshot).and_then(|folded| {
-                store.checkpoint(&folded)?;
+                store.fold_progress(&folded)?;
                 *durable = folded;
                 Ok(())
             })
@@ -13213,7 +13216,7 @@ fn rejected_submission(
 /// Raised directly where the refusal is decided (a Stinger slot still
 /// realizing) or derived by [`staging_refusal`] from a staging error.
 #[derive(Debug)]
-struct CommandRefusal {
+pub(crate) struct CommandRefusal {
     code: RejectionCode,
     retryable: bool,
     message: String,
@@ -18212,7 +18215,7 @@ mod tests {
             let store = ProjectStore::new(project_path).unwrap();
             let mut durable = test_project();
             store.save(&durable).unwrap();
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             let project_id = durable.project().id();
             let control = Rc::new(RefCell::new(test_control(&durable)));
             let authority = control_server_identity(&control.borrow(), project_id);
@@ -18288,7 +18291,7 @@ mod tests {
             let store = ProjectStore::new(project_path).unwrap();
             let mut durable = test_project();
             store.save(&durable).unwrap();
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             let project_id = durable.project().id();
             let control = Rc::new(RefCell::new(test_control(&durable)));
             let authority = control_server_identity(&control.borrow(), project_id);
@@ -18398,7 +18401,7 @@ mod tests {
             let store = ProjectStore::new(project_path).unwrap();
             let mut durable = test_project();
             store.save(&durable).unwrap();
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             let project_id = durable.project().id();
             let control = Rc::new(RefCell::new(test_control(&durable)));
             let authority = control_server_identity(&control.borrow(), project_id);
@@ -19039,7 +19042,7 @@ mod tests {
         let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
         store.save(&test_project()).unwrap();
         let mut durable = load_and_recover(&store, false).unwrap();
-        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let journal = DurableJournal::open(&store).unwrap();
         assert_eq!(journal.recent_append_peak(), None);
         let mut control = test_control(&durable);
         let server = test_server(&control);
@@ -19088,7 +19091,7 @@ mod tests {
         store.save(&stored).unwrap();
 
         let recovered = load_and_recover(&store, false).unwrap();
-        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let journal = DurableJournal::open(&store).unwrap();
         let overrides = ["display=index:0".parse::<DisplayOutputConfig>().unwrap()];
         let mut durable =
             persist_display_output_overrides(&journal, &recovered, &overrides).unwrap();
@@ -22144,7 +22147,7 @@ mod tests {
         let start_frame;
         let mut advances = Vec::new();
         {
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             let entries = vec![
                 PlaylistEntrySpec {
                     id: 1,
@@ -22302,7 +22305,7 @@ mod tests {
         let mut realized = Vec::new();
         let late_frame;
         {
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             for (id, payload) in [
                 (
                     "set",
@@ -22401,7 +22404,7 @@ mod tests {
         let mut realized = Vec::new();
         let marker_frames = frames_in(journal::PROGRESS_MARKER_SECONDS, rate);
         {
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             let result = native_paced_command(
                 &mut control.borrow_mut(),
                 &journal,
@@ -22435,6 +22438,8 @@ mod tests {
             for _ in 0..(marker_frames * 2 + 7) {
                 control.borrow_mut().tick(&server).unwrap();
                 progress.poll(&control, &journal, &mut durable);
+                // Markers are written on the journal's worker.
+                journal.flush().unwrap();
                 if let Some(marker) = store_progress(&store)
                     && markers.last() != Some(&marker.frames_rendered)
                 {
@@ -22477,15 +22482,86 @@ mod tests {
         let control = Rc::new(RefCell::new(test_control(&recovered)));
         let server = test_server(&control.borrow());
         let mut durable = recovered;
-        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let journal = DurableJournal::open(&store).unwrap();
         let mut progress = NativeProgress::new(&durable);
         let fold_at = marker.frames_rendered + frames_in(PROGRESS_FOLD_SECONDS, rate);
         while control.borrow().frame_cursor() < fold_at {
             control.borrow_mut().tick(&server).unwrap();
             progress.poll(&control, &journal, &mut durable);
+            // Frames come far faster than a real pacer's, so each write is
+            // waited for: a poll finding the worker busy defers its write.
+            journal.flush().unwrap();
         }
         assert_eq!(durable.position().frames_rendered, fold_at);
         assert_eq!(store.load().unwrap().position(), durable.position());
+    }
+
+    /// The early checkpoint runs on the journal's persistence worker, and a
+    /// command recorded right after it is handed over still lands after it:
+    /// the fold covers exactly the mutations recorded before it was asked
+    /// for, the later append stays in the journal above the new checkpoint,
+    /// and recovery holds every recorded command.
+    #[test]
+    fn a_background_checkpoint_folds_what_preceded_it_and_later_appends_stay_journaled() {
+        use journal::DurableJournal;
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("background.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let mut control = test_control(&manifest);
+        let server = test_server(&control);
+        let mut durable = manifest.clone();
+        let mut realized = Vec::new();
+        let cut = |index: u64| {
+            test_command(
+                &format!("cut-{index}"),
+                &format!("cut-{index}-key"),
+                CommandPayload::Cut,
+            )
+        };
+        let early = 48;
+        {
+            let journal = DurableJournal::open(&store).unwrap();
+            for index in 1..=early {
+                let result = native_paced_command(
+                    &mut control,
+                    &journal,
+                    &mut durable,
+                    &server,
+                    &cut(index),
+                    &mut realized,
+                );
+                assert!(
+                    matches!(result, CommandResult::Accepted { .. }),
+                    "{result:?}"
+                );
+            }
+            assert_eq!(durable.position().revision, early);
+            journal.checkpoint_if_due(&durable).unwrap();
+            // Handed over behind the checkpoint, whether or not it finished.
+            let result = native_paced_command(
+                &mut control,
+                &journal,
+                &mut durable,
+                &server,
+                &cut(early + 1),
+                &mut realized,
+            );
+            assert!(
+                matches!(result, CommandResult::Accepted { .. }),
+                "{result:?}"
+            );
+            journal.flush().unwrap();
+            assert!(!journal.busy());
+            assert_eq!(store.load().unwrap().position().revision, early);
+            // Dropped without settling, as a crash would leave it.
+        }
+        let scan = store.scan_journal().unwrap();
+        assert_eq!(scan.checkpoint_sequence(), early);
+        assert_eq!(scan.batches().len(), 1);
+        let recovered = load_and_recover(&store, false).unwrap();
+        assert_eq!(recovered.position(), durable.position());
     }
 
     fn store_progress(store: &ProjectStore) -> Option<ProjectPosition> {
@@ -22658,7 +22734,7 @@ mod tests {
         let server = test_server(&control);
         let mut durable = durable;
         {
-            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&store).unwrap();
             let stopped = execute_durable_command(
                 &mut control,
                 &journal,
@@ -22700,7 +22776,7 @@ mod tests {
         let server = test_server(&control);
         let mut durable = replayed;
         {
-            let journal = DurableJournal::new(reloaded.open_journal_writer().unwrap());
+            let journal = DurableJournal::open(&reloaded).unwrap();
             let started = execute_durable_command(
                 &mut control,
                 &journal,
@@ -24875,7 +24951,7 @@ mod tests {
             let server = test_server(&control);
             let mut durable = manifest.clone();
             {
-                let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+                let journal = DurableJournal::open(&store).unwrap();
                 for command in [
                     test_command(
                         "animate",
@@ -24960,7 +25036,7 @@ mod tests {
         let mut control = test_control(&manifest);
         let server = test_server(&control);
         let mut durable = manifest.clone();
-        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let journal = DurableJournal::open(&store).unwrap();
         let import = |key: &str, data: &str| {
             test_command(
                 key,

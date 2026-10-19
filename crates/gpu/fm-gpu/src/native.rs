@@ -20,6 +20,11 @@ const FULLSCREEN_UNIFORM_SIZE: usize = 16;
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(10);
 const FULLSCREEN_TIMING_RING_SIZE: usize = 4;
 const FULLSCREEN_TIMESTAMP_BYTES: u64 = 16;
+/// Idle readback staging buffers a context keeps for reuse.
+const MAX_POOLED_READBACK_BUFFERS: usize = 8;
+/// Bytes of idle readback staging buffers a context keeps for reuse. The
+/// buffer a readback just returned is kept even when it alone is larger.
+const MAX_POOLED_READBACK_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Maximum number of fullscreen draws accepted by one native render pass.
 pub const MAX_NATIVE_FULLSCREEN_DRAWS: usize = 64;
@@ -1092,6 +1097,64 @@ pub struct NativeContext {
     context_id: u64,
     max_texture_dimension_2d: u32,
     fullscreen_timing: FullscreenTimingProfiler,
+    readback_staging: ReadbackStagingPool,
+}
+
+/// Mappable staging buffers a context's readbacks copy into, kept for reuse.
+///
+/// A steady stream of same-sized readbacks (a Program frame every frame)
+/// used to create and destroy one buffer each. A finished readback now
+/// returns its unmapped buffer here and the next readback of that size takes
+/// it back. Buffers are handed out exclusively, so concurrent readbacks of
+/// the same size each get their own. A buffer whose copy or mapping failed is
+/// dropped rather than returned.
+#[derive(Default)]
+struct ReadbackStagingPool {
+    /// Idle buffers and their sizes, least recently returned first.
+    idle: Mutex<VecDeque<(u64, wgpu::Buffer)>>,
+    created: AtomicU64,
+}
+
+impl ReadbackStagingPool {
+    fn take(&self, device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        {
+            let mut idle = self
+                .idle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(index) = idle.iter().rposition(|(pooled, _)| *pooled == size)
+                && let Some((_, buffer)) = idle.remove(index)
+            {
+                return buffer;
+            }
+        }
+        self.created.fetch_add(1, Ordering::Relaxed);
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fm-gpu texture readback"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Returns an unmapped `buffer` of `size` bytes for reuse, evicting the
+    /// least recently returned buffers past the pool's bounds.
+    fn give_back(&self, size: u64, buffer: wgpu::Buffer) {
+        let mut idle = self
+            .idle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        idle.push_back((size, buffer));
+        while idle.len() > 1
+            && (idle.len() > MAX_POOLED_READBACK_BUFFERS
+                || idle
+                    .iter()
+                    .fold(0_u64, |total, (size, _)| total.saturating_add(*size))
+                    > MAX_POOLED_READBACK_BYTES)
+        {
+            idle.pop_front();
+        }
+    }
 }
 
 impl NativeContext {
@@ -1203,7 +1266,16 @@ impl NativeContext {
             context_id: NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
             max_texture_dimension_2d,
             fullscreen_timing,
+            readback_staging: ReadbackStagingPool::default(),
         })
+    }
+
+    /// How many readback staging buffers this context has created. Readbacks
+    /// reuse their staging buffers, so in a steady stream of same-sized
+    /// readbacks this stops growing after the first.
+    #[must_use]
+    pub fn readback_staging_buffers_created(&self) -> u64 {
+        self.readback_staging.created.load(Ordering::Relaxed)
     }
 
     /// Returns portable identification reported by the selected adapter.
@@ -1823,12 +1895,7 @@ impl NativeContext {
             .ok_or(NativeGpuError::ReadbackSizeOverflow)?;
 
         let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fm-gpu texture readback"),
-            size: readback_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = self.readback_staging.take(&self.device, readback_size);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1880,9 +1947,12 @@ impl NativeContext {
             texture.height,
             bytes_per_pixel,
             padded_stride,
-        )?;
+        );
         drop(mapped);
         readback.unmap();
+        // Only a buffer that copied, mapped, and unmapped cleanly is reused.
+        let bytes = bytes?;
+        self.readback_staging.give_back(readback_size, readback);
 
         Ok(NativeTextureReadback {
             width: texture.width,

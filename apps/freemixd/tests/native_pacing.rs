@@ -234,6 +234,15 @@ impl DaemonProcess {
     /// with the pacing trace on, or returns `None` when this host has no
     /// native media runtime (unless `FM_REQUIRE_NATIVE_MEDIA=1`).
     fn start(project: &Path, output: Option<&Path>) -> Option<Self> {
+        Self::start_with(project, output, &[])
+    }
+
+    /// [`Self::start`] with extra `environment` variables.
+    fn start_with(
+        project: &Path,
+        output: Option<&Path>,
+        environment: &[(&str, &str)],
+    ) -> Option<Self> {
         // A measurement may compare another build of the daemon.
         let binary = std::env::var_os("FREEMIXD_PACING_BINARY").map_or_else(
             || PathBuf::from(env!("CARGO_BIN_EXE_freemixd")),
@@ -244,6 +253,7 @@ impl DaemonProcess {
         if let Some(output) = output {
             command.arg("--record-program").arg(output);
         }
+        command.envs(environment.iter().copied());
         let mut child = command
             .env("FREEMIXD_PACING_TRACE", "1")
             .stdin(Stdio::null())
@@ -301,10 +311,16 @@ impl DaemonProcess {
 }
 
 impl DaemonProcess {
-    /// Kills the daemon with SIGKILL, as a crash or power loss would stop it.
-    fn crash(mut self) {
+    /// Kills the daemon with SIGKILL, as a crash or power loss would stop
+    /// it, and returns what it wrote to stderr that was not read yet.
+    fn crash(mut self) -> String {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
+        let mut rest = String::new();
+        while let Ok(chunk) = self.stderr.recv_timeout(Duration::from_secs(2)) {
+            rest.push_str(&chunk);
+        }
+        rest
     }
 }
 
@@ -685,13 +701,126 @@ fn program_at(revision: u64) -> WireInputId {
     })
 }
 
-/// Crash consistency of the command path while frames are paced: two
-/// sessions cut as fast as they are answered while the daemon records and
-/// streams, and the daemon is killed with SIGKILL at an arbitrary moment,
-/// three times. After each restart the recovered show holds every cut a
-/// client was told was accepted (a command is durable before it is
-/// acknowledged, however it waited for its frame), holds no cut that was
-/// never sent, and its Program is the one its revision's cut left on air.
+/// When a crash round kills the daemon.
+#[derive(Clone, Copy, Debug)]
+enum Kill {
+    /// This long after the cutters started.
+    After(Duration),
+    /// As soon as the persistence worker reports it began this background
+    /// write (`checkpoint` or `marker`), with cuts acknowledged before it.
+    During(&'static str),
+}
+
+/// One crash round over `project`: two sessions cut as fast as they are
+/// answered while the daemon records `segment` and streams, the daemon is
+/// killed with SIGKILL as `kill` says, and it is restarted. The recovered
+/// show holds every cut a client was told was accepted (a command is durable
+/// before it is acknowledged, however it waited for its frame and whatever
+/// background write was in flight), holds no cut that was never sent, and
+/// its Program is the one its revision's cut left on air. Returns the
+/// recovered revision and, for [`Kill::During`], whether the write was still
+/// unfinished when the daemon died; `None` when the host has no native
+/// media.
+fn crash_round(
+    project: &Path,
+    segment: &Path,
+    previous: u64,
+    kill: Kill,
+    label: &str,
+) -> Option<(u64, bool)> {
+    let daemon =
+        DaemonProcess::start_with(project, Some(segment), &[("FREEMIXD_JOURNAL_TRACE", "1")])?;
+    let address = daemon.control;
+    let (_, snapshot) = Session::connect("observer", address);
+    let base = snapshot.revision;
+    assert!(base >= previous, "{base} < {previous}");
+    let acknowledged = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(base));
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let cutters: Vec<_> = (0..2)
+        .map(|index| {
+            let acknowledged = std::sync::Arc::clone(&acknowledged);
+            let sent = std::sync::Arc::clone(&sent);
+            let name = format!("{label}-{index}");
+            thread::spawn(move || {
+                let (mut session, _) = Session::connect(&name, address);
+                for cut in 1_u64.. {
+                    sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    match session.cut(&format!("cut-{cut}")) {
+                        Ok(revision) => {
+                            acknowledged.fetch_max(revision, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Err(Closed) => return,
+                    }
+                }
+            })
+        })
+        .collect();
+    let mut seen = String::new();
+    let begun = match kill {
+        Kill::After(delay) => {
+            thread::sleep(delay);
+            None
+        }
+        Kill::During(write) => {
+            let begin = format!("\t{write}=begin\t");
+            let deadline = Instant::now() + PROCESS_TIMEOUT;
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "{label}: no background {write} began: {seen}"
+                );
+                if let Ok(chunk) = daemon.stderr.recv_timeout(READ_POLL) {
+                    seen.push_str(&chunk);
+                }
+                // The begin line of a write that started after a cut was
+                // acknowledged, so the kill lands with acknowledged cuts on
+                // both sides of it.
+                let found = seen.lines().rev().find(|line| line.contains(&begin));
+                if let Some(line) = found
+                    && acknowledged.load(std::sync::atomic::Ordering::SeqCst) > base
+                {
+                    break Some(line.replace(&begin, &format!("\t{write}=end\t")));
+                }
+            }
+        }
+    };
+    let rest = daemon.crash();
+    for cutter in cutters {
+        cutter.join().unwrap();
+    }
+    seen.push_str(&rest);
+    // Unfinished when the daemon died: its end line was never written.
+    let unfinished = begun.is_some_and(|end| !seen.lines().any(|line| line == end));
+    let acknowledged = acknowledged.load(std::sync::atomic::Ordering::SeqCst);
+    let sent = sent.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        acknowledged > base,
+        "{label}: no cut was acknowledged before the kill"
+    );
+
+    let daemon = DaemonProcess::start(project, None)?;
+    let (_, recovered) = Session::connect("recovered", daemon.control);
+    assert!(
+        recovered.revision >= acknowledged,
+        "{label} ({kill:?}): recovered revision {} lost acknowledged revision {acknowledged}",
+        recovered.revision
+    );
+    assert!(
+        recovered.revision <= base + sent,
+        "{label}: recovered revision {} holds cuts never sent ({sent} after {base})",
+        recovered.revision
+    );
+    assert_eq!(
+        recovered.realized_program,
+        program_at(recovered.revision),
+        "{label}: recovered Program"
+    );
+    daemon.stop();
+    Some((recovered.revision, unfinished))
+}
+
+/// Crash consistency of the command path while frames are paced: the daemon
+/// is killed at an arbitrary moment, three times (see [`crash_round`]).
 #[test]
 fn acknowledged_cuts_survive_sigkill_at_any_moment() {
     const KILLS: u64 = 3;
@@ -708,71 +837,50 @@ fn acknowledged_cuts_survive_sigkill_at_any_moment() {
             .unwrap()
             .subsec_micros(),
     );
-    let mut acknowledged_total = 0_u64;
+    let mut recovered = 0_u64;
     for kill in 0..KILLS {
         let segment = recording.with_file_name(format!("program-{kill}.mp4"));
-        let Some(daemon) = DaemonProcess::start(&project, Some(&segment)) else {
+        let delay = Duration::from_millis(700 + (seed.wrapping_mul(kill + 1) % 80));
+        let label = format!("crash-{kill}");
+        let Some((revision, _)) =
+            crash_round(&project, &segment, recovered, Kill::After(delay), &label)
+        else {
             return;
         };
-        let address = daemon.control;
-        let (_, snapshot) = Session::connect("observer", address);
-        let base = snapshot.revision;
-        assert!(base >= acknowledged_total, "{base} < {acknowledged_total}");
-        let acknowledged = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(base));
-        let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cutters: Vec<_> = (0..2)
-            .map(|index| {
-                let acknowledged = std::sync::Arc::clone(&acknowledged);
-                let sent = std::sync::Arc::clone(&sent);
-                thread::spawn(move || {
-                    let (mut session, _) =
-                        Session::connect(&format!("crash-{kill}-{index}"), address);
-                    for cut in 1_u64.. {
-                        sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        match session.cut(&format!("cut-{cut}")) {
-                            Ok(revision) => {
-                                acknowledged
-                                    .fetch_max(revision, std::sync::atomic::Ordering::SeqCst);
-                            }
-                            Err(Closed) => return,
-                        }
-                    }
-                })
-            })
-            .collect();
-        let delay = 700 + (seed.wrapping_mul(kill + 1) % 80);
-        thread::sleep(Duration::from_millis(delay));
-        daemon.crash();
-        for cutter in cutters {
-            cutter.join().unwrap();
-        }
-        let acknowledged = acknowledged.load(std::sync::atomic::Ordering::SeqCst);
-        let sent = sent.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(
-            acknowledged > base,
-            "no cut was acknowledged before the kill"
-        );
+        recovered = revision;
+    }
+}
 
-        let Some(daemon) = DaemonProcess::start(&project, None) else {
+/// The journal folds into the manifest and writes progress markers on its
+/// persistence worker while the frame loop keeps acknowledging cuts. Killing
+/// the daemon while a checkpoint (manifest rewrite, journal checkpoint and
+/// compaction) or a progress marker is being written must lose no
+/// acknowledged cut and recover the Program its revision left on air. Each
+/// write is killed twice; the kill lands as the worker reports the write
+/// began, which is almost always before it finished (reported per kill).
+#[test]
+fn acknowledged_cuts_survive_sigkill_during_a_checkpoint_or_progress_marker() {
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("crash-background");
+    let (project, recording) = show(&directory);
+    let mut recovered = 0_u64;
+    for (round, write) in ["checkpoint", "marker", "checkpoint", "marker"]
+        .into_iter()
+        .enumerate()
+    {
+        let segment = recording.with_file_name(format!("program-{round}.mp4"));
+        let label = format!("{write}-{round}");
+        let Some((revision, unfinished)) =
+            crash_round(&project, &segment, recovered, Kill::During(write), &label)
+        else {
             return;
         };
-        let (_, recovered) = Session::connect("recovered", daemon.control);
-        assert!(
-            recovered.revision >= acknowledged,
-            "kill {kill} after {delay} ms: recovered revision {} lost acknowledged revision {acknowledged}",
-            recovered.revision
+        eprintln!(
+            "{label}: killed {} the {write} finished; recovered revision {revision}",
+            if unfinished { "before" } else { "after" }
         );
-        assert!(
-            recovered.revision <= base + sent,
-            "kill {kill}: recovered revision {} holds cuts never sent ({sent} after {base})",
-            recovered.revision
-        );
-        assert_eq!(
-            recovered.realized_program,
-            program_at(recovered.revision),
-            "kill {kill}: recovered Program"
-        );
-        acknowledged_total = recovered.revision;
-        daemon.stop();
+        recovered = revision;
     }
 }
