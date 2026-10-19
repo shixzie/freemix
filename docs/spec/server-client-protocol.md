@@ -58,7 +58,13 @@ subscription, rate limits, and outbound queue, exactly like a raw TCP peer
 (clients are never multiplexed onto one session). An authorized upgrade beyond
 that bound is refused with `503 Service Unavailable`; an unauthorized one
 still receives `401`/`403` first. Idempotency keys remain engine-wide, so
-browser pages derive theirs from a random per-page-load nonce.
+browser pages derive theirs from a random per-page-load nonce. The simulated
+and the native-media daemon serve the same sessions: up to two raw TCP peers
+(a further raw connection waits unaccepted until one leaves) next to the Web
+clients, each its own session as above. The gateway is unavailable only with
+`--fullscreen-program`. A native daemon dispatches at most one command per
+scheduler pass, round-robin across sessions, since each realizes a Program
+frame; heartbeats and records of every session are served between commands.
 
 Snapshots carry bounded project-order input and output catalogs as exact ID/name pairs.
 The canonical persisted name labels input tiles and mixer strips; clients do not

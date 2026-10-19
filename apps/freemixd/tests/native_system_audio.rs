@@ -520,10 +520,8 @@ fn native_daemon_captures_system_audio_and_reports_its_state() {
         (TONE_LOW..TONE_HIGH).contains(&master_peak(meters))
     });
 
-    // A new session's snapshot lists both, the missing card reopening (the
-    // native daemon serves one session at a time).
-    drop(client);
-    let (mut client, snapshot) = Client::connect(daemon.address);
+    // A second session's snapshot lists both, the missing card reopening.
+    let snapshot = Client::connect(daemon.address).1;
     let inputs: Vec<_> = snapshot
         .system_audio_inputs
         .iter()
@@ -557,8 +555,7 @@ fn native_daemon_captures_system_audio_and_reports_its_state() {
         "the removal",
         |event| matches!(event, fm_protocol::EventPayload::InputRemoved { input } if *input == wire(4)),
     );
-    drop(client);
-    let (mut client, snapshot) = Client::connect(daemon.address);
+    let snapshot = Client::connect(daemon.address).1;
     assert_eq!(
         snapshot.system_audio_inputs.len(),
         1,

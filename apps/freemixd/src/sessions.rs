@@ -1,3 +1,16 @@
+//! The daemon's one control-session scheduler, shared by the simulated and
+//! the native-media daemon.
+//!
+//! A single thread serves every control session: up to [`MAX_PEERS`] raw TCP
+//! peers plus up to [`MAX_WEB_CLIENTS`] Web peers from the gateway. Each peer
+//! is its own session (handshake, granted role, heartbeat, live
+//! subscription, rate limits, outbound queue, and lossy side channels), and
+//! no peer ever blocks the loop: sockets are non-blocking, Web records are
+//! handed over with `try_send`, and every queue is bounded. A native daemon
+//! realizes its Program frames from the same loop, so it dispatches at most
+//! one command per pass (each realizes a frame) and serves every peer's
+//! reads, heartbeats, and writes between commands.
+
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -37,6 +50,10 @@ use crate::monitor_tap::SimulatedMonitorWorker;
 use crate::title_render::TitleAssets;
 use crate::web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
 
+/// The most raw TCP control sessions served at once, by the simulated and
+/// the native daemon alike (Studio and one CLI or automation peer); a further
+/// raw connection waits unaccepted until one leaves. Web peers are bounded
+/// separately by [`MAX_WEB_CLIENTS`].
 const MAX_PEERS: usize = 2;
 const INBOUND_CAPACITY: usize = 8;
 const OUTBOUND_CAPACITY: usize = 32;
@@ -570,9 +587,10 @@ pub(super) fn run(
 ) -> AppResult<DaemonShutdownReason> {
     let handshake_timeout =
         Duration::from_millis(server.config().session_limits.heartbeat_timeout_ms);
-    let peer_limit = if native.is_some() { 1 } else { MAX_PEERS };
-    let mut peers = Vec::with_capacity(peer_limit + web.map_or(0, |_| MAX_WEB_CLIENTS));
+    let mut peers = Vec::with_capacity(MAX_PEERS + web.map_or(0, |_| MAX_WEB_CLIENTS));
     let mut next_peer_id = 0_u64;
+    // Where the next pass starts dispatching, so no peer is always last.
+    let mut dispatch_cursor = 0_usize;
     let mut once_peer = None;
     // Exact title previews render off this loop, as simulated monitor
     // frames do.
@@ -660,7 +678,7 @@ pub(super) fn run(
             }
         }
 
-        if once_peer.is_none() && (!once || peers.is_empty()) && raw_peer_count(&peers) < peer_limit
+        if once_peer.is_none() && (!once || peers.is_empty()) && raw_peer_count(&peers) < MAX_PEERS
         {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -719,15 +737,36 @@ pub(super) fn run(
         }
 
         let mut live_budget = vec![LIVE_EVENTS_PER_PASS; peers.len()];
-        for index in 0..peers.len() {
+        // A native command waits for and realizes the pacer's next frame, so
+        // a pass dispatches at most one: the next peer's command waits for
+        // the next pass, after every peer was read and written. Throughput
+        // stays one command per frame, and no peer's commands delay another
+        // peer's heartbeats or records by more than one frame.
+        let mut command_slot = true;
+        let start = dispatch_cursor % peers.len().max(1);
+        dispatch_cursor = start.wrapping_add(1);
+        for offset in 0..peers.len() {
+            let index = (start + offset) % peers.len();
             if close[index] || peers[index].held_result.is_some() {
                 continue;
             }
-            let message = match peers[index].phase {
-                Phase::AwaitHandshake | Phase::Active => peers[index].inbound.pop_front(),
+            let ready = match peers[index].phase {
+                Phase::AwaitHandshake | Phase::Active => peers[index].inbound.front(),
                 Phase::Syncing | Phase::Closing => None,
             };
-            let Some(message) = message else {
+            let Some(ready) = ready else {
+                continue;
+            };
+            if native.is_some()
+                && peers[index].phase == Phase::Active
+                && matches!(ready, WireMessage::Command(_))
+            {
+                if !command_slot {
+                    continue;
+                }
+                command_slot = false;
+            }
+            let Some(message) = peers[index].inbound.pop_front() else {
                 continue;
             };
             match runtime.dispatch(&mut peers[index], message, durable, native.as_deref_mut()) {

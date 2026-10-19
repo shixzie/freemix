@@ -903,9 +903,7 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
         "{running:?}"
     );
 
-    // A fresh session sees the configuration, never a key. The daemon serves
-    // one session at a time, so the operator session leaves first.
-    drop(client);
+    // A second session sees the configuration, never a key.
     let viewer = Client::connect(daemon.address);
     let entries = &viewer.snapshot.as_ref().unwrap().stream_targets;
     assert_eq!(
@@ -927,7 +925,6 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
     assert_eq!(entries[1].config.reconnect.max_attempts, Some(3));
     drop(viewer);
 
-    let mut client = Client::connect(daemon.address);
     client.command(
         "stop-3",
         CommandPayload::StreamStop {

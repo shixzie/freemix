@@ -125,8 +125,8 @@ mod native_titles;
 // the parser and validation compile (and are unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod display_outputs;
-mod non_native_sessions;
 mod playlist_clock;
+mod sessions;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
@@ -9411,9 +9411,9 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         AppFailure("--web-listen cannot be combined with --once".into()).into(),
                     );
                 }
-                if native_media {
+                if fullscreen_program {
                     return Err(AppFailure(
-                        "--web-listen cannot be combined with --native-media".into(),
+                        "--web-listen cannot be combined with --fullscreen-program".into(),
                     )
                     .into());
                 }
@@ -10122,10 +10122,12 @@ fn serve_inner(
         if once {
             return Err(AppFailure("--web-listen cannot be combined with --once".into()).into());
         }
-        if !matches!(&mode, NativeServeMode::Disabled) {
-            return Err(
-                AppFailure("--web-listen requires non-native simulated mode".into()).into(),
-            );
+        #[cfg(feature = "display-surface")]
+        if matches!(&mode, NativeServeMode::Program(_)) {
+            return Err(AppFailure(
+                "--web-listen cannot be combined with --fullscreen-program".into(),
+            )
+            .into());
         }
     }
     if status_listen.is_some_and(|address| !address.ip().is_loopback()) {
@@ -10481,7 +10483,7 @@ fn serve_inner(
     // too). Native media loads its own for its title render worker (see
     // `native_titles`).
     let titles = Arc::new(title_render::TitleAssets::load(&store, durable.project()));
-    let session_result = non_native_sessions::run(
+    let session_result = sessions::run(
         &listener,
         &server,
         &control,
@@ -14727,7 +14729,8 @@ Fullscreen display selection is a zero-based index ordered by desktop position, 
 --diagnostic-capture-inventory FILE (requires --native-media) replaces the capture backend with a deterministic fake whose devices follow a tab-separated inventory re-read from FILE (one device per line: key=, path=, formats=, optional name=, rgba=, audio=, stalled=, no_signal=; a missing file means no device is connected). Capture inputs acquire solid pictures from it and report capture_status as with real devices. It is a test and diagnostic aid.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
---web-listen enables the loopback-only `/v1/control` WebSocket listener (up to 16 clients at once, each its own session, plus the /tally and /operator pages) and requires FREEMIXD_WEB_TOKEN.\n\
+The daemon, simulated or native, serves up to two raw `--listen` control sessions at once (a further connection waits until one leaves) next to the Web clients; each session keeps its own role, heartbeat, subscriptions, rate limits, and outbound queue.\n\
+--web-listen enables the loopback-only `/v1/control` WebSocket listener (up to 16 clients at once, each its own session, plus the /tally and /operator pages) and requires FREEMIXD_WEB_TOKEN; it works with or without --native-media and is unavailable with --fullscreen-program.\n\
 --status-listen enables the loopback-only operator status listener serving /healthz, /readyz, and the token-guarded /v1/support-bundle; it requires FREEMIXD_STATUS_TOKEN and is unavailable with --fullscreen-program.\n\
 --hls-listen enables the loopback-only HLS listener for local hls:// stream destinations. It serves GET /v1/hls/<target>/index.m3u8 and GET /v1/hls/<target>/segment-NNNNN.ts, plus the same shapes under rung directories 0..=7 for a multi-bitrate ladder, and requires both --native-media and FREEMIXD_HLS_TOKEN; TLS, LAN binding, Web Controller roles, and per-viewer capacity remain future work.\n\
 Native mode continues across client disconnects; close the Program window or press Escape for bounded shutdown."
@@ -15413,6 +15416,23 @@ mod tests {
             ]))
             .is_err()
         );
+        // The native daemon serves the gateway too.
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--web-listen",
+                "127.0.0.1:9234",
+                "--native-media",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                web_listen: Some(_),
+                native_media: true,
+                ..
+            }
+        ));
+        // The windowed program daemon serves no gateway.
         assert!(
             parse_args(strings(&[
                 "serve",
@@ -15420,6 +15440,7 @@ mod tests {
                 "--web-listen",
                 "127.0.0.1:9234",
                 "--native-media",
+                "--fullscreen-program",
             ]))
             .is_err()
         );

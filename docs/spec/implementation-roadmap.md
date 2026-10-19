@@ -102,8 +102,9 @@ This is control-plane peer liveness. It is not service readiness, production
 authentication, media health, HTTP resources, WebSocket event subscriptions,
 or transport-level production rate limits. Native and non-native raw TCP now
 share the bounded single-thread scheduler: an idle Viewer can receive live
-events while an Operator controls the show, and native mode remains limited to
-one peer. Native-media acceptance is not proven on this Mac. This is
+events while an Operator controls the show, and both modes serve two raw
+peers and up to 16 Web peers at once (see the item 10 web tally boundary).
+Native-media acceptance is not proven on this Mac. This is
 prerequisite transport infrastructure only; AU-001 daemon and Studio meter
 transport remain planned. It is not HTTP/WebSocket/service/media readiness or
 RC-008 completion. Expired raw TCP sessions are reclaimed. Phase 1 also
@@ -3565,10 +3566,9 @@ permissions side by side), its own heartbeat and handshake deadlines, live
 subscription, inbound and outbound rate limits, and outbound queue. That keeps
 the authority model unchanged: every command is authorized against the
 session that sent it, exactly as for a raw TCP peer, and nothing one client
-sends is ever attributed to another. The non-native scheduler already served
-raw and Web peers as separate sessions; it now admits up to 16 Web sessions
-next to its two raw peers. The native daemon still serves one control session
-at a time and still refuses `--web-listen`. Idempotency keys stay engine-wide
+sends is ever attributed to another. The scheduler already served raw and
+Web peers as separate sessions; it now admits up to 16 Web sessions next to
+its two raw peers. Idempotency keys stay engine-wide
 (a reconnected session must be able to replay the result its previous session
 lost), so each page draws its command ids and keys from a random per-load
 nonce; authorization runs before any receipt replay, so a lower role never
@@ -3595,6 +3595,36 @@ browser's preferred languages. The operator page's recorders now say
 note that the daemon does not tell web pages whether a file is being written,
 because Web peers only receive the desired recorder state.
 
+
+The native daemon serves several control sessions and the Web gateway (no
+protocol or schema change): `freemixd serve --native-media` now admits the
+same sessions the simulated daemon does, two raw peers (Studio and a CLI or
+automation peer) and up to 16 Web clients, and accepts `--web-listen`
+(still refused with `--fullscreen-program`), so tally tablets and an operator
+phone follow a real show. Both modes run one session scheduler
+(`apps/freemixd/src/sessions.rs`, formerly the non-native scheduler): every
+peer keeps its own role and permissions, heartbeat and handshake deadlines,
+live subscription, inbound and outbound rate limits, outbound queue, and
+lossy side channels (Program monitor frames, meters, stream status, and input
+thumbnails with their per-peer budgets go to raw Studio peers with
+`view_status`; Web peers get none). Because a native command waits for and
+realizes the pacer's next frame, the native scheduler dispatches at most one
+command per loop pass, round-robin across peers, and reads, answers
+heartbeats, and writes every peer between commands; command throughput stays
+one per frame, and no peer's commands hold another's heartbeats or records
+for more than a frame each. A raw connection beyond the two raw slots still
+waits unaccepted until one leaves, and an authorized Web upgrade beyond 16 is
+refused with `503`. Process tests (`apps/freemixd/tests/native_sessions.rs`)
+drive cuts from a Studio-like admin, a CLI operator, and an Operator page
+while a Viewer tally is refused and every session sees every cut in revision
+order; they hold a third raw peer and refuse the seventeenth Web client until
+a slot frees; and they show a Studio peer that never reads delaying neither
+the other sessions (round trips under a second) nor the Program (median
+host lateness under half a frame, a recording holding every paced frame).
+Remaining gaps: the windowed program daemon (`--fullscreen-program`,
+`--display-presenter`) still serves no Web gateway, two raw peers remain the
+bound in both modes, and a journaled command's disk sync still lands in front
+of its frame, so a debug build's lateness tail belongs to the disk as before.
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 

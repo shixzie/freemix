@@ -734,10 +734,9 @@ fn native_daemon_serves_live_lan_viewers_over_http() {
             .starts_with("HTTP/1.1 503")
     );
 
-    // A new session's snapshot keeps the settings, with only whether a PIN
-    // is set (the native daemon serves one session at a time).
-    drop(client);
-    let (_client, snapshot) = Client::connect(daemon.address);
+    // A second session's snapshot keeps the settings, with only whether a
+    // PIN is set.
+    let (_viewer, snapshot) = Client::connect(daemon.address);
     assert_eq!(snapshot.live_lan_status, LiveLanStatus::default());
     assert_eq!(
         snapshot.live_lan,

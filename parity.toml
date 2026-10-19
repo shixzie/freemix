@@ -445,8 +445,8 @@ commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web
 [[tests]]
 id = "accept-rc-008"
 state = "present"
-paths = ["apps/freemixd/tests/process.rs", "crates/services/fm-server/tests/server.rs", "crates/foundation/fm-protocol/tests/protocol.rs", "crates/services/fm-client/tests/client.rs"]
-commands = ["cargo test -p freemixd --test process", "cargo test -p fm-server --test server", "cargo test -p fm-protocol --test protocol", "cargo test -p fm-client --test client"]
+paths = ["apps/freemixd/tests/process.rs", "apps/freemixd/tests/native_sessions.rs", "crates/services/fm-server/tests/server.rs", "crates/foundation/fm-protocol/tests/protocol.rs", "crates/services/fm-client/tests/client.rs"]
+commands = ["cargo test -p freemixd --test process", "cargo test -p freemixd --test native_sessions", "cargo test -p fm-server --test server", "cargo test -p fm-protocol --test protocol", "cargo test -p fm-client --test client"]
 [[tests]]
 id = "accept-rc-009"
 state = "present"
@@ -475,8 +475,8 @@ commands = ["cargo test -p fm-persistence --test settings_import_export"]
 [[tests]]
 id = "accept-rc-014"
 state = "present"
-paths = ["apps/freemix-web/tests/tally.rs", "apps/freemix-web/tests/operator.rs", "apps/freemixd/tests/web_tally.rs"]
-commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web --test operator", "cargo test -p freemixd --test web_tally"]
+paths = ["apps/freemix-web/tests/tally.rs", "apps/freemix-web/tests/operator.rs", "apps/freemixd/tests/web_tally.rs", "apps/freemixd/tests/native_sessions.rs"]
+commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web --test operator", "cargo test -p freemixd --test web_tally", "cargo test -p freemixd --test native_sessions"]
 [[tests]]
 id = "accept-rc-015"
 state = "present"
