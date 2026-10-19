@@ -86,6 +86,32 @@ pub(crate) trait DurableStore {
         updated: &StoredProject,
     ) -> AppResult<()>;
 
+    /// Whether [`Self::record_group`] can make a group of commands durable
+    /// at once. Stores that cannot are only ever handed one command at a
+    /// time, through [`Self::record`].
+    fn groups_commits(&self) -> bool {
+        false
+    }
+
+    /// Records a group of commands executed one after another from `base`
+    /// (the durable project before the first) to `last` (the project after
+    /// the last), in order: a group commit.
+    ///
+    /// The group is all or nothing. On success every record in it will
+    /// survive loss of power, exactly as if each had gone through
+    /// [`Self::record`] in turn; on error none of it was recorded, so the
+    /// caller must refuse every command of the group. A record that moves
+    /// no revision (a refused command) is a receipt that rides the next
+    /// checkpoint, as in [`Self::record`].
+    fn record_group(
+        &self,
+        _base: &StoredProject,
+        _records: &[GroupRecord],
+        _last: &StoredProject,
+    ) -> AppResult<()> {
+        Err(AppFailure("this store records one command at a time".into()).into())
+    }
+
     /// Folds every recorded mutation into the manifest and compacts the
     /// journal. `project` must hold the revision of the newest recorded
     /// mutation, which is what the journal checkpoint is validated against.
@@ -173,6 +199,28 @@ pub(crate) trait DurableStore {
     }
 }
 
+/// One command of a group commit ([`DurableStore::record_group`]): what
+/// [`DurableStore::record`] would have been handed for it.
+#[derive(Clone, Debug)]
+pub(crate) struct GroupRecord {
+    /// The command as it is journaled.
+    pub(crate) command: CommandMessage,
+    pub(crate) now_millis: u64,
+    /// The revision the command was executed at.
+    pub(crate) base_revision: u64,
+    /// The position the command left the project at.
+    pub(crate) position: ProjectPosition,
+}
+
+impl GroupRecord {
+    /// The revision of the journal batch this record appends, or `None`
+    /// for a refusal, which moves no revision and appends nothing.
+    pub(crate) fn appended_revision(&self) -> Option<u64> {
+        let next = self.base_revision.checked_add(1)?;
+        (self.position.revision == next).then_some(next)
+    }
+}
+
 /// Commits every staged template animation in `store`'s bundle through
 /// `project`'s revision (see the module docs), including templates no title
 /// names any more: an edit is durable once a manifest covers its revision,
@@ -210,6 +258,9 @@ pub(crate) fn commit_staged_title_animations(
 /// - a command's append (and everything a command stages) is a synchronous
 ///   job, so [`DurableStore::record`] still returns only once the append is
 ///   durable, before the command is acknowledged or committed;
+/// - a group of commands ([`DurableStore::record_group`]) is one such job
+///   whose batches are appended in one transaction, so the group pays one
+///   disk sync, and none of it is committed or acknowledged before it;
 /// - folding the journal into the manifest ([`DurableStore::checkpoint_if_due`],
 ///   [`DurableStore::fold_progress`]) and the progress marker
 ///   ([`DurableStore::record_progress`]) are background jobs, so the frame
@@ -275,12 +326,9 @@ type Reply<T> = mpsc::SyncSender<WorkerResult<T>>;
 
 /// What the daemon asks the worker to do, in order.
 enum Job {
+    /// Appends one command's batch, or a group's batches in one commit.
     Record {
-        command: Box<CommandMessage>,
-        now_millis: u64,
-        base_revision: u64,
-        revision: u64,
-        position: ProjectPosition,
+        appends: Vec<Append>,
         /// How long the append took on the worker, excluding the wait in
         /// the queue.
         reply: Reply<Duration>,
@@ -317,6 +365,16 @@ enum Job {
     Flush {
         reply: Reply<()>,
     },
+}
+
+/// One journal batch to append: an accepted command and where it left the
+/// project.
+struct Append {
+    command: CommandMessage,
+    now_millis: u64,
+    base_revision: u64,
+    revision: u64,
+    position: ProjectPosition,
 }
 
 /// What a background job was for, which decides how its outcome is reported.
@@ -472,6 +530,21 @@ impl DurableJournal {
         }
     }
 
+    /// Appends `appends` in one commit and waits until it is durable, then
+    /// counts `mutations` toward the next checkpoint (the appended batches
+    /// and any refusal receipts that ride with them).
+    fn append(&self, appends: Vec<Append>, mutations: u64) -> AppResult<()> {
+        let took = self.call(|reply| Job::Record { appends, reply })?;
+        self.pending
+            .set(self.pending.get().saturating_add(mutations));
+        let mut recent = self.appends.borrow_mut();
+        if recent.len() == RECENT_APPENDS {
+            recent.pop_front();
+        }
+        recent.push_back(took);
+        Ok(())
+    }
+
     /// Hands over a background checkpoint of `project`, which holds the
     /// newest recorded mutation's revision.
     fn checkpoint_in_background(
@@ -557,21 +630,58 @@ impl DurableStore for DurableJournal {
         if self.pending.get() >= MAX_MUTATIONS_PER_CHECKPOINT {
             self.checkpoint(previous)?;
         }
-        let took = self.call(|reply| Job::Record {
-            command: Box::new(command.clone()),
-            now_millis,
-            base_revision: previous.position().revision,
-            revision,
-            position: updated.position(),
-            reply,
-        })?;
-        self.pending.set(self.pending.get().saturating_add(1));
-        let mut appends = self.appends.borrow_mut();
-        if appends.len() == RECENT_APPENDS {
-            appends.pop_front();
+        self.append(
+            vec![Append {
+                command: command.clone(),
+                now_millis,
+                base_revision: previous.position().revision,
+                revision,
+                position: updated.position(),
+            }],
+            1,
+        )
+    }
+
+    fn groups_commits(&self) -> bool {
+        true
+    }
+
+    /// The group's batches go to the journal in one transaction, so the
+    /// whole group costs one append and one disk sync. The checkpoint the
+    /// mutation bound asks for runs *before* that append, against `base`,
+    /// for the reason [`Self::record`] gives; the bound is therefore
+    /// exceeded by at most one group's records until the next append.
+    fn record_group(
+        &self,
+        base: &StoredProject,
+        records: &[GroupRecord],
+        last: &StoredProject,
+    ) -> AppResult<()> {
+        let appends: Vec<Append> = records
+            .iter()
+            .filter_map(|record| {
+                record.appended_revision().map(|revision| Append {
+                    command: record.command.clone(),
+                    now_millis: record.now_millis,
+                    base_revision: record.base_revision,
+                    revision,
+                    position: record.position,
+                })
+            })
+            .collect();
+        let count = u64::try_from(records.len()).unwrap_or(u64::MAX);
+        if appends.is_empty() {
+            // Only receipts, as for a refused command in `record`.
+            self.pending.set(self.pending.get().saturating_add(count));
+            if self.pending.get() >= MAX_MUTATIONS_PER_CHECKPOINT {
+                return self.checkpoint(last);
+            }
+            return Ok(());
         }
-        appends.push_back(took);
-        Ok(())
+        if self.pending.get() >= MAX_MUTATIONS_PER_CHECKPOINT {
+            self.checkpoint(base)?;
+        }
+        self.append(appends, count)
     }
 
     fn recent_append_peak(&self) -> Option<Duration> {
@@ -651,18 +761,21 @@ impl Worker<'_> {
     fn run(mut self, queue: &mpsc::Receiver<Job>, finished: &mpsc::Sender<Finished>) {
         while let Ok(job) = queue.recv() {
             match job {
-                Job::Record {
-                    command,
-                    now_millis,
-                    base_revision,
-                    revision,
-                    position,
-                    reply,
-                } => {
+                Job::Record { appends, reply } => {
                     let started = Instant::now();
-                    let result = self
-                        .append(&command, now_millis, base_revision, revision, position)
-                        .map(|()| started.elapsed());
+                    let result = self.append(&appends).map(|()| started.elapsed());
+                    if self.trace
+                        && result.is_ok()
+                        && let Some(last) = appends.last()
+                    {
+                        // One line per commit, so a test can count the disk
+                        // syncs commands cost.
+                        eprintln!(
+                            "FREEMIXD_JOURNAL\tv=1\tappend=end\tbatches={}\trevision={}",
+                            appends.len(),
+                            last.revision
+                        );
+                    }
                     let _ = reply.send(result);
                 }
                 Job::Checkpoint {
@@ -759,51 +872,49 @@ impl Worker<'_> {
         Ok((imported.asset_uri, copied))
     }
 
-    fn append(
-        &self,
-        command: &CommandMessage,
-        now_millis: u64,
-        base_revision: u64,
-        revision: u64,
-        position: ProjectPosition,
-    ) -> WorkerResult<()> {
-        // An imported LUT's file is written before its batch, so every
-        // manifest and journal that names the LUT finds the file.
-        crate::grading::write_imported_lut(self.writer.project_store(), command).map_err(
-            |error| match error {
-                // Not a durability failure: the same command can never
-                // succeed, so it is refused as a conflict.
-                fm_persistence::LutError::IdReused(id) => {
-                    WorkerError::Refusal(crate::CommandRefusal {
-                        code: fm_command::RejectionCode::Conflict,
-                        retryable: false,
-                        message: error.to_string(),
-                        reason: Some(fm_protocol::RefusalReason::DuplicateId {
-                            kind: fm_protocol::IdKind::Lut,
-                            id: u128::from(id.get().get()),
-                        }),
-                    })
-                }
-                error => {
-                    WorkerError::Failure(format!("imported LUT could not be written: {error}"))
-                }
-            },
-        )?;
+    /// Appends `appends` as consecutive batches in one commit (a group
+    /// commit when there is more than one): all of them are durable when
+    /// this returns, or none was appended.
+    fn append(&self, appends: &[Append]) -> WorkerResult<()> {
         let fail = |error: &dyn std::fmt::Display| WorkerError::Failure(error.to_string());
-        let sequence = self
-            .writer
-            .head_sequence()
-            .checked_add(1)
-            .ok_or_else(|| WorkerError::Failure("journal sequence overflow".into()))?;
-        let payload =
-            encode_mutation(command, now_millis, position).map_err(|error| fail(&error))?;
-        self.writer
-            .append_batch(&MutationBatch::new(
+        let mut batches = Vec::with_capacity(appends.len());
+        let mut sequence = self.writer.head_sequence();
+        for append in appends {
+            // An imported LUT's file is written before its batch, so every
+            // manifest and journal that names the LUT finds the file.
+            crate::grading::write_imported_lut(self.writer.project_store(), &append.command)
+                .map_err(|error| match error {
+                    // Not a durability failure: the same command can never
+                    // succeed, so it is refused as a conflict.
+                    fm_persistence::LutError::IdReused(id) => {
+                        WorkerError::Refusal(crate::CommandRefusal {
+                            code: fm_command::RejectionCode::Conflict,
+                            retryable: false,
+                            message: error.to_string(),
+                            reason: Some(fm_protocol::RefusalReason::DuplicateId {
+                                kind: fm_protocol::IdKind::Lut,
+                                id: u128::from(id.get().get()),
+                            }),
+                        })
+                    }
+                    error => {
+                        WorkerError::Failure(format!("imported LUT could not be written: {error}"))
+                    }
+                })?;
+            sequence = sequence
+                .checked_add(1)
+                .ok_or_else(|| WorkerError::Failure("journal sequence overflow".into()))?;
+            let payload = encode_mutation(&append.command, append.now_millis, append.position)
+                .map_err(|error| fail(&error))?;
+            batches.push(MutationBatch::new(
                 sequence,
-                base_revision,
-                revision,
+                append.base_revision,
+                append.revision,
                 payload,
-            ))
+            ));
+        }
+        self.writer
+            .append_batches(&batches)
             .map_err(|error| fail(&error))
     }
 

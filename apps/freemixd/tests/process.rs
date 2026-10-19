@@ -224,11 +224,16 @@ impl Daemon {
     }
 
     fn start_with_once(project: &Path, once: bool) -> Self {
+        Self::start_with_env(project, once, &[])
+    }
+
+    fn start_with_env(project: &Path, once: bool, env: &[(&str, &str)]) -> Self {
         let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"));
         command.arg("serve").arg(project);
         if once {
             command.arg("--once");
         }
+        command.envs(env.iter().copied());
         let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2759,6 +2764,115 @@ fn acknowledged_commands_survive_sigkill_before_any_checkpoint() {
         persisted.runtime_routing().desired_program_id,
         Some(domain_input(3))
     );
+}
+
+/// Group commit, measured: several clients pipelining commands at once share
+/// journal appends (one disk sync per group, not per command), each client
+/// is still answered in its own order, every revision is acknowledged once,
+/// and every acknowledged command survives `SIGKILL`.
+#[test]
+fn several_clients_commands_share_journal_appends_and_survive_sigkill() {
+    const CLIENTS: usize = 4;
+    /// Below the daemon's 64-mutation checkpoint bound, so every command
+    /// is still a journal batch when the daemon is killed.
+    const COMMANDS: usize = 12;
+    const TOTAL: usize = CLIENTS * COMMANDS;
+
+    let directory = TestDirectory::new("group-commit");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let store = ProjectStore::new(&project_path).unwrap();
+    let mut daemon =
+        Daemon::start_with_env(&project_path, false, &[("FREEMIXD_JOURNAL_TRACE", "1")]);
+    let mut clients: Vec<Client> = (0..CLIENTS)
+        .map(|_| {
+            let mut client = daemon.connect();
+            client
+                .reader
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            assert_eq!(client.handshake(None).current_revision, 0);
+            client.receive_snapshot();
+            client
+        })
+        .collect();
+
+    // Every client sends all of its commands in one write.
+    let started = Instant::now();
+    for (index, client) in clients.iter_mut().enumerate() {
+        let mut burst = String::new();
+        for sent in 0..COMMANDS {
+            burst.push_str(
+                &encode_line(&command(
+                    &format!("cut-{index}-{sent}"),
+                    &format!("cut-key-{index}-{sent}"),
+                    CommandPayload::Cut,
+                ))
+                .unwrap(),
+            );
+        }
+        client.writer.write_all(burst.as_bytes()).unwrap();
+    }
+    let mut acknowledged = Vec::new();
+    for (index, client) in clients.iter_mut().enumerate() {
+        let mut previous = 0;
+        for sent in 0..COMMANDS {
+            match client.next_result() {
+                CommandResult::Accepted { id, revision, .. } => {
+                    assert_eq!(id, format!("cut-{index}-{sent}"));
+                    assert!(revision > previous, "{revision} after {previous}");
+                    previous = revision;
+                    acknowledged.push(revision);
+                }
+                rejected @ CommandResult::Rejected { .. } => panic!("{rejected:?}"),
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    acknowledged.sort_unstable();
+    assert_eq!(acknowledged, (1..=TOTAL as u64).collect::<Vec<_>>());
+
+    // Every acknowledgement is in hand. Kill the process outright.
+    let mut child = daemon.child.take().unwrap();
+    assert!(terminate_child(&mut child));
+    let stderr = child_stderr(&mut child);
+    let appends: Vec<usize> = stderr
+        .lines()
+        .filter(|line| line.starts_with("FREEMIXD_JOURNAL\tv=1\tappend=end\t"))
+        .map(|line| {
+            line.split('\t')
+                .find_map(|field| field.strip_prefix("batches="))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(appends.iter().sum::<usize>(), TOTAL, "{stderr}");
+    eprintln!(
+        "group commit: {TOTAL} commands from {CLIENTS} clients took {} journal appends, \
+         largest group {}, all acknowledged in {elapsed:?}",
+        appends.len(),
+        appends.iter().max().unwrap()
+    );
+    assert!(
+        appends.len() <= TOTAL / 2,
+        "commands ready together must share appends: {appends:?}"
+    );
+    drop(clients);
+
+    let crashed = store.scan_journal().unwrap();
+    assert_eq!(crashed.batches().len(), TOTAL);
+    assert_eq!(crashed.checkpoint_sequence(), 0);
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    assert_eq!(restarted.handshake(None).current_revision, TOTAL as u64);
+    restarted.receive_snapshot();
+    drop(restarted);
+    daemon.wait_success();
+    let persisted = store.load().unwrap();
+    assert_eq!(persisted.position().revision, TOTAL as u64);
+    assert_eq!(persisted.idempotency_receipts().len(), TOTAL);
 }
 
 /// Checkpoints must bound journal growth on their own, and recovery must land

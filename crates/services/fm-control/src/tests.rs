@@ -1639,6 +1639,67 @@ fn ticks_do_not_change_durable_resume_history() {
     assert_eq!(control.diagnostics().current_revision, 1);
 }
 
+/// A speculative copy executes commands (with their receipts and ticks)
+/// without the service or its subscribers seeing any of it: dropping the
+/// copy leaves nothing behind, and adopting it installs its state and only
+/// then publishes what it held back, in order.
+#[test]
+fn a_speculation_publishes_nothing_until_it_is_adopted() {
+    let mut control = service(8, 8);
+    let subscription = control.subscribe().unwrap();
+    let operator = principal(Role::Operator);
+    let server = server_identity();
+    let cut = || command("cut", "cut-key", CommandPayload::Cut);
+
+    let mut abandoned = control.speculate();
+    abandoned.submit(&operator, cut(), 0).unwrap();
+    abandoned.tick(&server).unwrap();
+    assert_eq!(abandoned.diagnostics().current_revision, 1);
+    drop(abandoned);
+    assert!(matches!(subscription.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(control.diagnostics().current_revision, 0);
+    assert_eq!(control.engine.frame_cursor().get(), 0);
+
+    let mut adopted = control.speculate();
+    adopted.submit(&operator, cut(), 0).unwrap();
+    adopted.tick(&server).unwrap();
+    adopted
+        .submit(
+            &operator,
+            command(
+                "preview",
+                "preview-key",
+                CommandPayload::SelectPreview {
+                    input: WireInputId::from_domain(input(3)),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(subscription.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(control.adopt(adopted), []);
+    assert_eq!(control.diagnostics().current_revision, 2);
+    let published: Vec<_> = std::iter::from_fn(|| subscription.try_recv().ok()).collect();
+    assert!(
+        matches!(
+            published.as_slice(),
+            [
+                LiveEvent::Durable(EventMessage { cursor: first, .. }),
+                LiveEvent::Runtime(_),
+                ..,
+                LiveEvent::Durable(EventMessage { cursor: last, .. }),
+            ] if first.revision == 1 && last.revision == 2
+        ),
+        "{published:?}"
+    );
+    // The adopted service publishes as it goes again, and the cut's receipt
+    // came with it.
+    control.tick(&server).unwrap();
+    assert!(subscription.try_recv().is_ok());
+    let replayed = control.submit(&operator, cut(), 0).unwrap();
+    assert!(replayed.replayed);
+}
+
 #[test]
 fn runtime_ordering_is_independent_per_generation() {
     let mut control = service(8, 8);

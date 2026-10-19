@@ -889,6 +889,10 @@ pub struct ControlService<A = Policy> {
     /// The `LiveLAN` stream's status as the media plane last reported it
     /// (OR-017); clients see it through [`live_lan::wire_status`].
     live_lan_status: fm_protocol::LiveLanStatus,
+    /// What a copy from [`ControlService::speculate`] would have published,
+    /// in order, held for [`ControlService::adopt`]; `None` on a service
+    /// that publishes as it goes.
+    held_publications: Option<Vec<LiveEvent>>,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -958,7 +962,77 @@ impl<A: AuthorizationHook> ControlService<A> {
             capture_inventory: fm_protocol::CaptureInventory::default(),
             system_audio_states: BTreeMap::new(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            held_publications: None,
         }
+    }
+
+    /// A copy of this service that executes commands before they are
+    /// durable, for a group commit: the daemon executes a group of commands
+    /// on the copy, makes all of their journal records durable at once, and
+    /// only then installs the copy with [`Self::adopt`]. Dropping the copy
+    /// instead (the group could not be made durable) abandons every command
+    /// executed on it without this service ever having seen them.
+    ///
+    /// The copy holds everything this service holds, its live subscribers
+    /// included, but publishes nothing: every durable and runtime event it
+    /// would publish is held back until [`Self::adopt`] publishes it, so no
+    /// subscriber hears of a command before its record is durable.
+    #[must_use]
+    pub fn speculate(&self) -> Self
+    where
+        A: Clone,
+    {
+        Self {
+            engine: self.engine.clone(),
+            authorizer: self.authorizer.clone(),
+            identity: self.identity.clone(),
+            limits: self.limits,
+            authorization_denials: self.authorization_denials.clone(),
+            authorization_denial_order: self.authorization_denial_order.clone(),
+            log: self.log.clone(),
+            snapshot: self.snapshot.clone(),
+            subscribers: self
+                .subscribers
+                .iter()
+                .map(|(id, subscriber)| {
+                    (
+                        *id,
+                        Subscriber {
+                            sender: subscriber.sender.clone(),
+                            failure: Arc::clone(&subscriber.failure),
+                        },
+                    )
+                })
+                .collect(),
+            next_subscriber_id: self.next_subscriber_id,
+            pending_runtime_actions: self.pending_runtime_actions.clone(),
+            active_transition: self.active_transition,
+            active_fade_to_black: self.active_fade_to_black,
+            runtime_sequence_generation: self.runtime_sequence_generation,
+            runtime_sequence: self.runtime_sequence,
+            media_published: self.media_published.clone(),
+            media_end_triggers: self.media_end_triggers.clone(),
+            input_offline: self.input_offline.clone(),
+            display_states: self.display_states.clone(),
+            display_inventory: self.display_inventory.clone(),
+            network_states: self.network_states.clone(),
+            capture_states: self.capture_states.clone(),
+            capture_inventory: self.capture_inventory.clone(),
+            system_audio_states: self.system_audio_states.clone(),
+            live_lan_status: self.live_lan_status.clone(),
+            held_publications: Some(Vec::new()),
+        }
+    }
+
+    /// Installs `speculation`, a copy from [`Self::speculate`] that the
+    /// commands executed on it left, as this service, then publishes what
+    /// the copy held back, in the order it would have been published.
+    /// Returns the subscribers that publication failed.
+    pub fn adopt(&mut self, mut speculation: Self) -> Vec<SubscriberFailure> {
+        let held = speculation.held_publications.take().unwrap_or_default();
+        speculation.held_publications = self.held_publications.take();
+        *self = speculation;
+        self.publish(&held)
     }
 
     /// Every input whose source is unavailable, and why (IN-026).
@@ -2293,6 +2367,10 @@ impl<A: AuthorizationHook> ControlService<A> {
     }
 
     fn publish(&mut self, events: &[LiveEvent]) -> Vec<SubscriberFailure> {
+        if let Some(held) = self.held_publications.as_mut() {
+            held.extend_from_slice(events);
+            return Vec::new();
+        }
         let mut failures = Vec::new();
         for event in events {
             self.subscribers.retain(|id, subscriber| {

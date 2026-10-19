@@ -12523,6 +12523,284 @@ struct CommandDelivery {
     runtime_events: Vec<RuntimeEventMessage>,
 }
 
+impl CommandDelivery {
+    fn answer(result: CommandResult) -> Self {
+        Self {
+            result,
+            #[cfg(test)]
+            events: Vec::new(),
+            #[cfg(test)]
+            runtime_events: Vec::new(),
+        }
+    }
+}
+
+/// Admits `command` to `session`'s in-flight and rate budgets, or returns
+/// the session's refusal of it. An admitted command holds an in-flight slot
+/// until [`Session::command_completed`].
+fn admit_session_command(
+    session: &mut Session,
+    control: &ControlService<Policy>,
+    command: &CommandMessage,
+    now: u64,
+) -> AppResult<Option<CommandResult>> {
+    let encoded_bytes = encode_line(&WireMessage::Command(command.clone()))?.len();
+    // The session authorizes its scoped role against the classes fm-control
+    // resolves now, including the edit an undo or redo would revert or reapply.
+    let required = control.required_classes(&command.payload);
+    Ok(session
+        .admit_command(command, required, encoded_bytes, now)
+        .err()
+        .map(|error| session_rejection(command, &error, control.diagnostics().current_revision)))
+}
+
+/// Whether a session command may join a group commit
+/// ([`execute_command_group`]). Commands that write files outside the
+/// journal transaction as part of their append (a LUT import) or before it
+/// (host media copied into the bundle) are executed on their own, exactly
+/// as before group commit, so that their refusals and clean-ups stay those
+/// of a single command.
+fn group_commit_eligible(command: &CommandMessage) -> bool {
+    !matches!(
+        command.payload,
+        CommandPayload::ImportGradeLut { .. }
+            | CommandPayload::InputLifecycle(
+                fm_protocol::InputLifecycleOperation::Import { .. }
+                    | fm_protocol::InputLifecycleOperation::ReplaceSource {
+                        source: fm_protocol::WireInputSource::Media { .. },
+                        ..
+                    }
+            )
+    )
+}
+
+/// One client command of a group commit and who sent it.
+struct GroupMember {
+    principal: Principal,
+    server: ServerIdentity,
+    command: CommandMessage,
+}
+
+/// What a group commit answers one member.
+struct GroupOutcome {
+    delivery: CommandDelivery,
+    /// The session admitted the command, so it holds an in-flight slot the
+    /// caller releases.
+    admitted: bool,
+}
+
+/// Executes several clients' commands as one group commit: one journal
+/// append and one disk sync for all of them, where executing them one by
+/// one costs one each. Simulated runtime only (a native command realizes
+/// its own frame, see the session loop).
+///
+/// The members are executed in order, exactly as one-by-one execution
+/// would (each sees the state the previous one left), but on a speculative
+/// copy of the control service ([`ControlService::speculate`]) that
+/// publishes nothing, and their journal records are collected instead of
+/// appended ([`GroupRecorder`]). Then:
+///
+/// - the whole group is appended in one transaction
+///   ([`DurableStore::record_group`]); only once it is durable does the
+///   copy replace the live service ([`ControlService::adopt`]), which then
+///   publishes the members' events in order, and are the members answered;
+/// - if the append fails, the copy is dropped: no member applied, nothing
+///   was published, no receipt was kept, and every admitted member is
+///   refused as not durable (retryable), as a single command whose append
+///   failed is. Members refused or answered from a receipt are refused the
+///   same way, since their answers were decided against the group's
+///   unrecorded state.
+///
+/// A refused command is never journaled: its receipt rides the next
+/// checkpoint, as for one command. `admit` runs before each member on the
+/// copy (catch-up and session admission) and returns the session's refusal
+/// of a member it did not admit. An error executing any member stops the
+/// daemon, as it does for one command; no member of the group was made
+/// durable or answered then.
+fn execute_command_group(
+    control: &SharedControl,
+    store: &dyn DurableStore,
+    durable: &mut StoredProject,
+    members: &[GroupMember],
+    process_shutdown: Option<&ProcessShutdown>,
+    mut admit: impl FnMut(
+        usize,
+        &mut ControlService<Policy>,
+        &StoredProject,
+        u64,
+    ) -> AppResult<Option<CommandResult>>,
+) -> AppResult<Vec<GroupOutcome>> {
+    let speculation: SharedControl = Rc::new(RefCell::new(control.borrow().speculate()));
+    let recorder = GroupRecorder::new(store);
+    let mut staged = durable.clone();
+    let mut outcomes = Vec::with_capacity(members.len());
+    for (index, member) in members.iter().enumerate() {
+        let now = now_millis()?;
+        if let Some(result) = admit(index, &mut speculation.borrow_mut(), &staged, now)? {
+            outcomes.push(GroupOutcome {
+                delivery: CommandDelivery::answer(result),
+                admitted: false,
+            });
+            continue;
+        }
+        let delivery = execute_admitted_command(
+            &speculation,
+            &recorder,
+            &mut staged,
+            &member.principal,
+            &member.server,
+            &member.command,
+            now,
+            None,
+            process_shutdown,
+        )?;
+        outcomes.push(GroupOutcome {
+            delivery,
+            admitted: true,
+        });
+    }
+    let records = recorder.records.take();
+    let durability = if records.is_empty() {
+        Ok(())
+    } else {
+        store.record_group(durable, &records, &staged)
+    };
+    match durability {
+        Ok(()) => {
+            let speculation = Rc::try_unwrap(speculation)
+                .map_err(|_| AppFailure("the group commit's control copy is still shared".into()))?
+                .into_inner();
+            let _ = control.borrow_mut().adopt(speculation);
+            *durable = staged;
+        }
+        Err(error) => {
+            drop(speculation);
+            recorder.discard()?;
+            let current_revision = control.borrow().diagnostics().current_revision;
+            let attempted = staged.position().revision;
+            for (outcome, member) in outcomes.iter_mut().zip(members) {
+                if outcome.admitted {
+                    eprintln!(
+                        "FREEMIXD_DURABILITY\tv=1\tcommand={}\trevision={attempted}\terror={error}",
+                        member.command.id
+                    );
+                    outcome.delivery = CommandDelivery::answer(
+                        refused_submission(&member.command, current_revision, error.as_ref())
+                            .output
+                            .result,
+                    );
+                }
+            }
+        }
+    }
+    Ok(outcomes)
+}
+
+/// The store a group commit's members execute against: it collects each
+/// member's journal record for [`DurableStore::record_group`] instead of
+/// appending it, and hands everything else (staging template animations,
+/// importing media) to the daemon's store, remembering what it wrote so a
+/// group that cannot be made durable removes it again.
+struct GroupRecorder<'a> {
+    store: &'a dyn DurableStore,
+    records: RefCell<Vec<journal::GroupRecord>>,
+    staged: RefCell<Vec<(u64, Vec<String>)>>,
+    imported: RefCell<Vec<String>>,
+}
+
+impl<'a> GroupRecorder<'a> {
+    fn new(store: &'a dyn DurableStore) -> Self {
+        Self {
+            store,
+            records: RefCell::new(Vec::new()),
+            staged: RefCell::new(Vec::new()),
+            imported: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Removes what the group staged and imported, as each member would
+    /// have on its own failed append.
+    fn discard(&self) -> AppResult<()> {
+        for asset in self.imported.take() {
+            if let Err(error) = self.store.discard_imported_media(&asset) {
+                eprintln!("FREEMIXD_IMPORT\tv=1\tasset={asset}\terror={error}");
+            }
+        }
+        for (revision, uris) in self.staged.take() {
+            self.store
+                .discard_staged_title_animations(revision, &uris)?;
+        }
+        Ok(())
+    }
+}
+
+impl DurableStore for GroupRecorder<'_> {
+    fn record(
+        &self,
+        command: &CommandMessage,
+        now_millis: u64,
+        previous: &StoredProject,
+        updated: &StoredProject,
+    ) -> AppResult<()> {
+        self.records.borrow_mut().push(journal::GroupRecord {
+            command: command.clone(),
+            now_millis,
+            base_revision: previous.position().revision,
+            position: updated.position(),
+        });
+        Ok(())
+    }
+
+    fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
+        Err(AppFailure("a group commit checkpoints only when it is recorded".into()).into())
+    }
+
+    fn busy(&self) -> bool {
+        self.store.busy()
+    }
+
+    fn stage_title_animations(
+        &self,
+        revision: u64,
+        animations: &[(String, fm_titles::TitleAnimation)],
+    ) -> AppResult<()> {
+        if animations.is_empty() {
+            return Ok(());
+        }
+        self.staged.borrow_mut().push((
+            revision,
+            animations.iter().map(|(uri, _)| uri.clone()).collect(),
+        ));
+        self.store.stage_title_animations(revision, animations)
+    }
+
+    fn discard_staged_title_animations(&self, revision: u64, uris: &[String]) -> AppResult<()> {
+        self.staged
+            .borrow_mut()
+            .retain(|(staged, _)| *staged != revision);
+        self.store.discard_staged_title_animations(revision, uris)
+    }
+
+    fn recent_append_peak(&self) -> Option<Duration> {
+        self.store.recent_append_peak()
+    }
+
+    fn import_media_path(&self, path: &Path) -> AppResult<Option<(String, bool)>> {
+        let imported = self.store.import_media_path(path)?;
+        if let Some((asset, true)) = &imported {
+            self.imported.borrow_mut().push(asset.clone());
+        }
+        Ok(imported)
+    }
+
+    fn discard_imported_media(&self, asset_uri: &str) -> AppResult<()> {
+        self.imported
+            .borrow_mut()
+            .retain(|asset| asset != asset_uri);
+        self.store.discard_imported_media(asset_uri)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_session_command(
     session: &mut Session,
@@ -12535,24 +12813,9 @@ fn execute_session_command(
     native: Option<&mut NativeDaemon>,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
-    let encoded_bytes = encode_line(&WireMessage::Command(command.clone()))?.len();
     let now = now_millis()?;
-    // The session authorizes its scoped role against the classes fm-control
-    // resolves now, including the edit an undo or redo would revert or reapply.
-    let required = control.borrow().required_classes(&command.payload);
-    if let Err(error) = session.admit_command(command, required, encoded_bytes, now) {
-        let result = session_rejection(
-            command,
-            &error,
-            control.borrow().diagnostics().current_revision,
-        );
-        return Ok(CommandDelivery {
-            result,
-            #[cfg(test)]
-            events: Vec::new(),
-            #[cfg(test)]
-            runtime_events: Vec::new(),
-        });
+    if let Some(result) = admit_session_command(session, &control.borrow(), command, now)? {
+        return Ok(CommandDelivery::answer(result));
     }
     // Admission reserved an in-flight slot; it is released whether execution
     // succeeds, is refused, or fails, so no exit path can leak the slot.
@@ -23084,10 +23347,14 @@ mod tests {
 
     /// A journal that fails every record while `available` is false, as a
     /// failing or full show disk does, and keeps what it recorded.
+    /// Each record (one command's, or a whole group's) is one attempt: one
+    /// append and disk sync on a real journal.
     struct FlakyJournal {
         available: Cell<bool>,
         attempts: Cell<u32>,
         recorded: RefCell<Vec<CommandMessage>>,
+        /// Every group commit recorded, in order.
+        groups: RefCell<Vec<Vec<journal::GroupRecord>>>,
     }
 
     impl FlakyJournal {
@@ -23096,11 +23363,33 @@ mod tests {
                 available: Cell::new(true),
                 attempts: Cell::new(0),
                 recorded: RefCell::new(Vec::new()),
+                groups: RefCell::new(Vec::new()),
             }
         }
     }
 
     impl DurableStore for FlakyJournal {
+        fn groups_commits(&self) -> bool {
+            true
+        }
+
+        fn record_group(
+            &self,
+            _base: &StoredProject,
+            records: &[journal::GroupRecord],
+            _last: &StoredProject,
+        ) -> AppResult<()> {
+            self.attempts.set(self.attempts.get() + 1);
+            if !self.available.get() {
+                return Err(AppFailure("injected journal unavailability".into()).into());
+            }
+            self.recorded
+                .borrow_mut()
+                .extend(records.iter().map(|record| record.command.clone()));
+            self.groups.borrow_mut().push(records.to_vec());
+            Ok(())
+        }
+
         fn record(
             &self,
             command: &CommandMessage,
@@ -23118,6 +23407,304 @@ mod tests {
 
         fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
             Ok(())
+        }
+    }
+
+    fn group_members(commands: &[CommandMessage], server: &ServerIdentity) -> Vec<GroupMember> {
+        commands
+            .iter()
+            .map(|command| GroupMember {
+                principal: operator(),
+                server: server.clone(),
+                command: command.clone(),
+            })
+            .collect()
+    }
+
+    /// Five clients' commands for one pass: two renames of one input whose
+    /// order decides its name, a cut that expects the revision before both
+    /// (refused as stale, so never journaled), then a fade and a cut.
+    fn group_commands() -> Vec<CommandMessage> {
+        let rename = |name: &str| CommandPayload::RenameInput {
+            input: fm_protocol::WireInputId::from_domain(test_input_id(1)),
+            name: name.into(),
+        };
+        let mut stale = test_command("stale", "stale-key", CommandPayload::Cut);
+        stale.expected_revision = Some(0);
+        vec![
+            test_command("rename-first", "rename-first-key", rename("First")),
+            test_command("rename-second", "rename-second-key", rename("Second")),
+            stale,
+            test_command(
+                "fade",
+                "fade-key",
+                CommandPayload::Fade { duration_frames: 4 },
+            ),
+            test_command("cut", "cut-key", CommandPayload::Cut),
+        ]
+    }
+
+    /// The receipts of accepted commands: a refusal's receipt rides the
+    /// next checkpoint, so a crash before it may lose it by design.
+    fn accepted_receipts(project: &StoredProject) -> Vec<&fm_persistence::IdempotencyReceipt> {
+        project
+            .idempotency_receipts()
+            .iter()
+            .filter(|receipt| {
+                matches!(
+                    receipt.outcome(),
+                    fm_persistence::ReceiptOutcome::Accepted { .. }
+                )
+            })
+            .collect()
+    }
+
+    fn durable_revisions(subscription: &fm_control::Subscription) -> Vec<u64> {
+        std::iter::from_fn(|| subscription.try_recv().ok())
+            .filter_map(|event| match event {
+                fm_control::LiveEvent::Durable(event) => Some(event.cursor.revision),
+                fm_control::LiveEvent::Runtime(_) => None,
+            })
+            .collect()
+    }
+
+    /// Several clients' commands in one pass become durable with one
+    /// append, in the order the pass took them: each executes against the
+    /// state the one before it left, exactly as one at a time, the refused
+    /// one is not journaled, and the live service and its subscribers see
+    /// the group only after its append.
+    #[test]
+    fn a_group_commit_records_several_clients_commands_with_one_append_in_order() {
+        let commands = group_commands();
+        let one_at_a_time = FlakyJournal::new();
+        let mut sequential = test_project();
+        let sequential_control: SharedControl = Rc::new(RefCell::new(test_control(&sequential)));
+        let server = test_server(&sequential_control.borrow());
+        let expected: Vec<CommandResult> = commands
+            .iter()
+            .map(|command| {
+                execute_authority_command(
+                    &sequential_control,
+                    &one_at_a_time,
+                    &mut sequential,
+                    &operator(),
+                    &server,
+                    command,
+                    0,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .result
+            })
+            .collect();
+        assert_eq!(one_at_a_time.attempts.get(), 5, "one append per command");
+
+        let store = FlakyJournal::new();
+        let mut durable = test_project();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let subscription = control.borrow_mut().subscribe().unwrap();
+        let mut admitted_at = Vec::new();
+        let outcomes = execute_command_group(
+            &control,
+            &store,
+            &mut durable,
+            &group_members(&commands, &server),
+            None,
+            |member, speculation, _, _| {
+                admitted_at.push((member, speculation.diagnostics().current_revision));
+                Ok(None)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(store.attempts.get(), 1, "one append for the whole group");
+        assert_eq!(
+            admitted_at,
+            [(0, 0), (1, 1), (2, 2), (3, 2), (4, 3)],
+            "each member runs against the state the one before it left"
+        );
+        let results: Vec<CommandResult> = outcomes
+            .into_iter()
+            .map(|outcome| {
+                assert!(outcome.admitted);
+                outcome.delivery.result
+            })
+            .collect();
+        assert_eq!(results, expected);
+        assert!(matches!(&results[2], CommandResult::Rejected { .. }));
+        let groups = store.groups.borrow();
+        let [group] = groups.as_slice() else {
+            panic!("one group expected, got {}", groups.len());
+        };
+        let journaled: Vec<(&str, Option<u64>)> = group
+            .iter()
+            .map(|record| (record.command.id.as_str(), record.appended_revision()))
+            .collect();
+        assert_eq!(
+            journaled,
+            [
+                ("rename-first", Some(1)),
+                ("rename-second", Some(2)),
+                ("stale", None),
+                ("fade", Some(3)),
+                ("cut", Some(4)),
+            ]
+        );
+        assert_eq!(durable.position(), sequential.position());
+        assert_eq!(durable.project(), sequential.project());
+        assert_eq!(durable.project().inputs()[0].name, "Second");
+        assert_eq!(control.borrow().diagnostics().current_revision, 4);
+        assert_eq!(durable_revisions(&subscription), [1, 2, 3, 4]);
+    }
+
+    /// The group's append fails: no command of it applies (no revision, no
+    /// receipt, no event), every client is refused as not durable and may
+    /// retry, and the retried group runs afresh.
+    #[test]
+    fn a_group_commit_whose_append_fails_applies_none_of_its_commands() {
+        let store = FlakyJournal::new();
+        store.available.set(false);
+        let mut durable = test_project();
+        let before = durable.clone();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let server = test_server(&control.borrow());
+        let subscription = control.borrow_mut().subscribe().unwrap();
+        let members = group_members(&group_commands(), &server);
+        let outcomes = execute_command_group(
+            &control,
+            &store,
+            &mut durable,
+            &members,
+            None,
+            |_, _, _, _| Ok(None),
+        )
+        .unwrap();
+
+        assert_eq!(store.attempts.get(), 1);
+        assert_eq!(outcomes.len(), 5);
+        for (outcome, member) in outcomes.iter().zip(&members) {
+            assert!(
+                matches!(
+                    &outcome.delivery.result,
+                    CommandResult::Rejected {
+                        id,
+                        code,
+                        retryable: true,
+                        current_revision: 0,
+                        reason: Some(fm_protocol::RefusalReason::NotDurable),
+                        ..
+                    } if *id == member.command.id && code == "unavailable"
+                ),
+                "{:?}",
+                outcome.delivery.result
+            );
+        }
+        assert_eq!(durable, before);
+        assert_eq!(control.borrow().diagnostics().current_revision, 0);
+        assert_eq!(durable_revisions(&subscription), Vec::<u64>::new());
+        assert!(store.groups.borrow().is_empty());
+
+        // Nothing was kept, receipts included: the retried group executes.
+        store.available.set(true);
+        let outcomes = execute_command_group(
+            &control,
+            &store,
+            &mut durable,
+            &members,
+            None,
+            |_, _, _, _| Ok(None),
+        )
+        .unwrap();
+        let revisions: Vec<Option<u64>> = outcomes
+            .iter()
+            .map(|outcome| match &outcome.delivery.result {
+                CommandResult::Accepted { revision, .. } => Some(*revision),
+                CommandResult::Rejected { .. } => None,
+            })
+            .collect();
+        assert_eq!(revisions, [Some(1), Some(2), None, Some(3), Some(4)]);
+        assert_eq!(store.attempts.get(), 2);
+        assert_eq!(durable_revisions(&subscription), [1, 2, 3, 4]);
+    }
+
+    /// A crash while a group's append was being written: the log holds the
+    /// command before the group and a torn tail of the group. Recovery lands
+    /// exactly on the state before the group, none of it partially applied;
+    /// with the group's commit whole, it lands exactly on the state after
+    /// the group.
+    #[test]
+    fn a_group_commit_torn_by_a_crash_recovers_whole_or_not_at_all() {
+        for torn in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+            store.save(&test_project()).unwrap();
+            let mut durable = load_and_recover(&store, false).unwrap();
+            let journal = DurableJournal::open(&store).unwrap();
+            let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+            let server = test_server(&control.borrow());
+            let alone = execute_authority_command(
+                &control,
+                &journal,
+                &mut durable,
+                &operator(),
+                &server,
+                &test_command(
+                    "alone",
+                    "alone-key",
+                    CommandPayload::Fade { duration_frames: 4 },
+                ),
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(matches!(
+                alone.result,
+                CommandResult::Accepted { revision: 1, .. }
+            ));
+            let before_group = durable.clone();
+            let log = store.journal_path().join("journal.db-wal");
+            let log_before = std::fs::metadata(&log).unwrap().len();
+            let outcomes = execute_command_group(
+                &control,
+                &journal,
+                &mut durable,
+                &group_members(&group_commands(), &server),
+                None,
+                |_, _, _, _| Ok(None),
+            )
+            .unwrap();
+            assert!(matches!(
+                outcomes[4].delivery.result,
+                CommandResult::Accepted { revision: 5, .. }
+            ));
+            // Killed: no checkpoint, no clean stop.
+            drop(journal);
+            let log_after = std::fs::metadata(&log).unwrap().len();
+            assert!(log_after > log_before, "the group was appended to the log");
+            if torn {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&log)
+                    .unwrap()
+                    .set_len(log_after - 7)
+                    .unwrap();
+            }
+
+            let recovered = load_and_recover(&store, false).unwrap();
+            let expected = if torn { &before_group } else { &durable };
+            assert_eq!(recovered.position(), expected.position(), "torn: {torn}");
+            assert_eq!(recovered.project(), expected.project(), "torn: {torn}");
+            assert_eq!(
+                accepted_receipts(&recovered),
+                accepted_receipts(expected),
+                "torn: {torn}"
+            );
+            assert_eq!(
+                accepted_receipts(&recovered).len(),
+                if torn { 1 } else { 5 }
+            );
         }
     }
 

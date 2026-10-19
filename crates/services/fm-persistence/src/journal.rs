@@ -1105,34 +1105,69 @@ impl JournalWriter<'_> {
     /// Returns journal consistency, size-limit, database, lock, deadline, or
     /// filesystem errors.
     pub fn append_batch(&self, batch: &MutationBatch) -> Result<(), StoreError> {
+        self.append_batches(std::slice::from_ref(batch))
+    }
+
+    /// Appends consecutive mutation batches in one transaction: a group
+    /// commit, made durable by a single commit of the write-ahead log.
+    ///
+    /// Each batch is exactly the row [`Self::append_batch`] writes, with its
+    /// own sequence, revisions and checksum, so a journal written in groups
+    /// reads back exactly as one written a batch at a time; only the number
+    /// of commits differs. The batches must continue the chain from the head
+    /// and from each other. The group is atomic: a refused or failed group,
+    /// or one a crash tore before its commit frame reached the log, leaves
+    /// none of its batches behind and the writer unchanged. An empty group
+    /// writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::append_batch`] returns, for any batch of the
+    /// group.
+    pub fn append_batches(&self, batches: &[MutationBatch]) -> Result<(), StoreError> {
         let deadline = Deadline::new("append_batch");
-        let size = record_size(&batch.payload);
-        enforce_record_size(size)?;
+        if batches.is_empty() {
+            return Ok(());
+        }
+        let mut sizes = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let size = record_size(&batch.payload);
+            enforce_record_size(size)?;
+            sizes.push(size);
+        }
         let mut state = self.state.borrow_mut();
-        let expected_sequence = state
-            .head_sequence
-            .checked_add(1)
-            .ok_or(StoreError::Journal(JournalError::SequenceOverflow))?;
-        validate_batch(batch, expected_sequence, state.head_revision)?;
-        enforce_unapplied_limit(state.checkpoint.sequence, batch.sequence)?;
-        let unapplied_bytes = state.checkpoint.unapplied_bytes.saturating_add(size);
-        enforce_unapplied_bytes(unapplied_bytes)?;
+        let mut head_sequence = state.head_sequence;
+        let mut head_revision = state.head_revision;
+        let mut unapplied_bytes = state.checkpoint.unapplied_bytes;
+        for (batch, size) in batches.iter().zip(&sizes) {
+            let expected_sequence = head_sequence
+                .checked_add(1)
+                .ok_or(StoreError::Journal(JournalError::SequenceOverflow))?;
+            validate_batch(batch, expected_sequence, head_revision)?;
+            enforce_unapplied_limit(state.checkpoint.sequence, batch.sequence)?;
+            unapplied_bytes = unapplied_bytes.saturating_add(*size);
+            enforce_unapplied_bytes(unapplied_bytes)?;
+            head_sequence = batch.sequence;
+            head_revision = batch.revision;
+        }
 
         let transaction =
             Transaction::begin(&self.database, &deadline).map_err(StoreError::Journal)?;
-        self.database
-            .execute_prepared(
-                INSERT_BATCH_SQL,
-                vec![
-                    sql_u64(batch.sequence)?,
-                    sql_u64(batch.base_revision)?,
-                    sql_u64(batch.revision)?,
-                    Value::Blob(batch.payload.clone()),
-                    Value::Integer(i64::from(checksum(batch))),
-                ],
-                &deadline,
-            )
-            .map_err(StoreError::Journal)?;
+        for batch in batches {
+            self.database
+                .execute_prepared(
+                    INSERT_BATCH_SQL,
+                    vec![
+                        sql_u64(batch.sequence)?,
+                        sql_u64(batch.base_revision)?,
+                        sql_u64(batch.revision)?,
+                        Value::Blob(batch.payload.clone()),
+                        Value::Integer(i64::from(checksum(batch))),
+                    ],
+                    &deadline,
+                )
+                .map_err(StoreError::Journal)?;
+        }
         self.database
             .execute_prepared(
                 UPDATE_UNAPPLIED_BYTES_SQL,
@@ -1143,9 +1178,9 @@ impl JournalWriter<'_> {
         transaction.commit(&deadline).map_err(StoreError::Journal)?;
 
         state.checkpoint.unapplied_bytes = unapplied_bytes;
-        state.head_sequence = batch.sequence;
-        state.head_revision = batch.revision;
-        state.unapplied.push_back(size);
+        state.head_sequence = head_sequence;
+        state.head_revision = head_revision;
+        state.unapplied.extend(sizes);
         Ok(())
     }
 

@@ -9,7 +9,10 @@
 //! handed over with `try_send`, and every queue is bounded. A native daemon
 //! realizes its Program frames from the same loop, so it dispatches at most
 //! one command per pass (each realizes a frame) and serves every peer's
-//! reads, heartbeats, and writes between commands.
+//! reads, heartbeats, and writes between commands. A simulated daemon
+//! dispatches one message per peer per pass, and the commands several peers
+//! sent in one pass share one journal append (a group commit, see
+//! `Runtime::dispatch_group`).
 
 use std::{
     collections::VecDeque,
@@ -37,11 +40,12 @@ use fm_server::{Server, Session, SessionError, SyncPayload};
 
 use super::{
     AppResult, CLIENT_READ_POLL_INTERVAL, CLIENT_WRITE_TIMEOUT, CommandDelivery, ControlHandle,
-    DaemonShutdownReason, NativeDaemon, PendingWrite, ProcessShutdown, SharedControl,
-    current_handshake, diagnostics_response, error_message, execute_session_command,
-    handshake_code, handshake_response, is_client_session_termination, now_millis,
-    reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
-    requested_daemon_shutdown, server_identity, shutdown_message, structured_session_error,
+    DaemonShutdownReason, GroupMember, NativeDaemon, PendingWrite, ProcessShutdown, SharedControl,
+    admit_session_command, current_handshake, diagnostics_response, error_message,
+    execute_command_group, execute_session_command, group_commit_eligible, handshake_code,
+    handshake_response, is_client_session_termination, now_millis, reconciled_handshake_outcome,
+    record_heartbeat, rejected_handshake_response, requested_daemon_shutdown, server_identity,
+    shutdown_message, structured_session_error,
 };
 use crate::input_thumbnails::{ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
 use crate::journal::DurableStore;
@@ -845,6 +849,17 @@ pub(super) fn run(
             (Some(_), None) => start,
             _ => command_turn.unwrap_or(start).wrapping_add(1),
         };
+        // A simulated daemon dispatches one message per peer per pass, so a
+        // pass may carry several peers' commands. Consecutive ones (in the
+        // pass's round-robin order) are held and executed as one group
+        // commit: one journal append and disk sync instead of one each (see
+        // `Runtime::dispatch_group`). A command that cannot join a group is
+        // executed after the group held before it, so commands still run in
+        // the order the pass took them. Other messages are answered as they
+        // come: they record nothing, and a peer's next message waits for
+        // the next pass.
+        let group_commits = native.is_none() && store.groups_commits();
+        let mut group: Vec<(usize, fm_protocol::CommandMessage)> = Vec::new();
         for offset in 0..peers.len() {
             let index = (start + offset) % peers.len();
             if close[index] || peers[index].held_result.is_some() {
@@ -867,6 +882,32 @@ pub(super) fn run(
             let Some(message) = peers[index].inbound.pop_front() else {
                 continue;
             };
+            let message = match message {
+                WireMessage::Command(command)
+                    if group_commits && peers[index].phase == Phase::Active =>
+                {
+                    if group_commit_eligible(&command) {
+                        group.push((index, command));
+                        continue;
+                    }
+                    if !group.is_empty()
+                        && let Err(DispatchError::Daemon(error)) = runtime.dispatch_group(
+                            &mut peers,
+                            &mut close,
+                            std::mem::take(&mut group),
+                            durable,
+                        )
+                    {
+                        shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+                        return Err(error);
+                    }
+                    if close[index] {
+                        continue;
+                    }
+                    WireMessage::Command(command)
+                }
+                message => message,
+            };
             match runtime.dispatch(&mut peers[index], message, durable, native.as_deref_mut()) {
                 Ok(()) => {}
                 Err(DispatchError::Peer) => {
@@ -877,6 +918,13 @@ pub(super) fn run(
                     return Err(error);
                 }
             }
+        }
+        if !group.is_empty()
+            && let Err(DispatchError::Daemon(error)) =
+                runtime.dispatch_group(&mut peers, &mut close, group, durable)
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
         }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
@@ -1368,13 +1416,28 @@ impl Runtime<'_> {
         durable: &StoredProject,
         simulated: bool,
     ) -> Result<(), DispatchError> {
+        if !simulated {
+            return Ok(());
+        }
+        self.catch_up_simulated(&mut self.control.borrow_mut(), command, durable)
+            .map_err(DispatchError::Daemon)
+    }
+
+    /// [`Self::catch_up_playlist`] for a simulated `control` (the live
+    /// service, or a group commit's copy of it).
+    fn catch_up_simulated(
+        &self,
+        control: &mut fm_control::ControlService<fm_auth::Policy>,
+        command: &fm_protocol::CommandMessage,
+        durable: &StoredProject,
+    ) -> AppResult<()> {
         let cue = matches!(command.payload, CommandPayload::CueControl { .. });
         // A script run may start or stop the playlist too (RC-011).
         let playlist = matches!(
             command.payload,
             CommandPayload::PlaylistControl { .. } | CommandPayload::RunScript { .. }
         );
-        if !simulated || !(cue || playlist) {
+        if !(cue || playlist) {
             return Ok(());
         }
         let rate = durable.project().settings().frame_rate;
@@ -1385,13 +1448,99 @@ impl Runtime<'_> {
         if cue {
             self.cue_clock
                 .borrow()
-                .catch_up(&mut self.control.borrow_mut(), self.authority, rate, now)
-                .map_err(DispatchError::Daemon)?;
+                .catch_up(control, self.authority, rate, now)?;
         }
         self.playlist_clock
             .borrow()
-            .catch_up(&mut self.control.borrow_mut(), self.authority, rate, now)
-            .map_err(DispatchError::Daemon)
+            .catch_up(control, self.authority, rate, now)
+    }
+
+    /// Executes the commands several peers sent in one pass of a simulated
+    /// daemon as one group commit ([`execute_command_group`]): one journal
+    /// append and disk sync for the group instead of one per command. Each
+    /// peer still sends at most one command per pass, the group runs in the
+    /// pass's round-robin order, and each peer is answered only once the
+    /// whole group is durable (or refused, when it could not be made so).
+    /// One command alone goes the single-command way.
+    fn dispatch_group(
+        &self,
+        peers: &mut [Peer],
+        close: &mut [bool],
+        group: Vec<(usize, fm_protocol::CommandMessage)>,
+        durable: &mut StoredProject,
+    ) -> Result<(), DispatchError> {
+        if let [(index, _)] = group.as_slice() {
+            let index = *index;
+            let (_, command) = group.into_iter().next().expect("one command");
+            return match self.dispatch(
+                &mut peers[index],
+                WireMessage::Command(command),
+                durable,
+                None,
+            ) {
+                Err(DispatchError::Peer) => {
+                    close[index] = dropping(peers[index].id, "dispatch_refused");
+                    Ok(())
+                }
+                result => result,
+            };
+        }
+        let members: Vec<GroupMember> = group
+            .iter()
+            .map(|(index, command)| GroupMember {
+                principal: peers[*index].principal.clone(),
+                server: peers[*index]
+                    .identity
+                    .clone()
+                    .expect("active peers have identities"),
+                command: command.clone(),
+            })
+            .collect();
+        let outcomes = execute_command_group(
+            self.control,
+            self.store,
+            durable,
+            &members,
+            Some(self.process_shutdown),
+            |member, control, staged, now| {
+                let command = &members[member].command;
+                self.catch_up_simulated(control, command, staged)?;
+                admit_session_command(
+                    peers[group[member].0]
+                        .session
+                        .as_mut()
+                        .expect("active peers have sessions"),
+                    control,
+                    command,
+                    now,
+                )
+            },
+        )
+        .map_err(DispatchError::Daemon)?;
+        self.sync_title_templates();
+        for ((index, _), outcome) in group.iter().zip(outcomes) {
+            let peer = &mut peers[*index];
+            if outcome.admitted
+                && let Err(error) = peer
+                    .session
+                    .as_mut()
+                    .expect("active peers have sessions")
+                    .command_completed()
+            {
+                if is_client_session_termination(&error) {
+                    close[*index] = dropping(peer.id, "dispatch_refused");
+                    continue;
+                }
+                return Err(DispatchError::Daemon(error.into()));
+            }
+            if peer
+                .reply(WireMessage::CommandResult(outcome.delivery.result))
+                .is_err()
+            {
+                close[*index] = dropping(peer.id, "dispatch_refused");
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // one match over every client message

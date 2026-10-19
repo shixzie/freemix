@@ -205,3 +205,127 @@ fn the_held_writer_appends_without_reopening_the_database() {
     assert_eq!(sequences, vec![1, 2, 3]);
     assert_eq!(scan.observations(), []);
 }
+
+/// A group commit is the rows a batch at a time writes, in one transaction:
+/// it reads back exactly like them, it continues the chain like them, and a
+/// group whose chain breaks anywhere leaves none of its batches behind.
+#[test]
+fn a_group_commit_reads_back_as_single_appends_and_is_refused_whole() {
+    let bundle = TestBundle::new("group-commit");
+    let store = bundle.store();
+    let writer = store.open_journal_writer().unwrap();
+    writer.append_batch(&batch(1)).unwrap();
+    writer
+        .append_batches(&[batch(2), batch(3), batch(4)])
+        .unwrap();
+    writer.append_batches(&[]).unwrap();
+    assert_eq!(writer.head_sequence(), 4);
+
+    // The fourth batch of this group skips a sequence: nothing of it lands.
+    let refused = writer.append_batches(&[batch(5), batch(6), batch(7), batch(9)]);
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::Journal(JournalError::SequenceGap {
+                expected: 8,
+                found: 9
+            }))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(writer.head_sequence(), 4);
+    writer.append_batches(&[batch(5), batch(6)]).unwrap();
+    drop(writer);
+
+    let scan = store.scan_journal().unwrap();
+    let sequences: Vec<u64> = scan.batches().iter().map(MutationBatch::sequence).collect();
+    assert_eq!(sequences, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(scan.batches()[2], batch(3));
+    assert_eq!(scan.observations(), []);
+}
+
+/// The page size the write-ahead log at `path` records in its header.
+fn log_page_bytes(path: &std::path::Path) -> u64 {
+    let header = fs::read(path).unwrap();
+    u64::from(u32::from_be_bytes(header[8..12].try_into().unwrap()))
+}
+
+/// A crash in the middle of a group commit: the log holds only part of the
+/// group's frames. Recovery keeps every batch committed before the group and
+/// none of the group, whether the tear falls inside a frame or exactly on a
+/// frame boundary before the group's commit frame, and the journal continues
+/// from the last whole commit.
+#[test]
+fn a_group_commit_torn_by_a_crash_is_dropped_whole() {
+    const LOG_HEADER_BYTES: u64 = 32;
+    const FRAME_HEADER_BYTES: u64 = 24;
+    // Large enough that the group spans several logged pages.
+    let large =
+        |sequence: u64| MutationBatch::new(sequence, sequence - 1, sequence, vec![0xa5; 3_000]);
+
+    for tear_on_frame_boundary in [false, true] {
+        let bundle = TestBundle::new("torn-group");
+        let store = bundle.store();
+        let log = store.journal_path().join(WRITE_AHEAD_LOG_NAME);
+        let writer = store.open_journal_writer().unwrap();
+        writer.append_batch(&large(1)).unwrap();
+        writer.append_batch(&large(2)).unwrap();
+        let before = fs::metadata(&log).unwrap().len();
+        writer
+            .append_batches(&[large(3), large(4), large(5), large(6)])
+            .unwrap();
+        let after = fs::metadata(&log).unwrap().len();
+        drop(writer);
+
+        let frame_bytes = FRAME_HEADER_BYTES + log_page_bytes(&log);
+        assert_eq!((before - LOG_HEADER_BYTES) % frame_bytes, 0);
+        let group_frames = (after - before) / frame_bytes;
+        assert!(
+            group_frames >= 3,
+            "the group must span several frames to be torn inside, it wrote {group_frames}"
+        );
+        // Keep the group's first frames and lose the rest, including its
+        // commit frame: either a whole number of frames or one cut short.
+        let kept = before + frame_bytes * (group_frames / 2);
+        let torn = if tear_on_frame_boundary {
+            kept
+        } else {
+            kept + frame_bytes / 2
+        };
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_len(torn)
+            .unwrap();
+
+        let scan = store.recover_journal().unwrap();
+        let sequences: Vec<u64> = scan.batches().iter().map(MutationBatch::sequence).collect();
+        assert_eq!(
+            sequences,
+            vec![1, 2],
+            "a torn group must leave none of its batches (tear on a frame boundary: \
+             {tear_on_frame_boundary})"
+        );
+        assert_eq!(
+            scan.observations().is_empty(),
+            tear_on_frame_boundary,
+            "{:?}",
+            scan.observations()
+        );
+        // The journal continues from the last whole commit: the lost group's
+        // sequences are free again.
+        let writer = store.open_journal_writer().unwrap();
+        assert_eq!(writer.head_sequence(), 2);
+        writer.append_batches(&[large(3), large(4)]).unwrap();
+        drop(writer);
+        let sequences: Vec<u64> = store
+            .scan_journal()
+            .unwrap()
+            .batches()
+            .iter()
+            .map(MutationBatch::sequence)
+            .collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4]);
+    }
+}

@@ -3966,6 +3966,32 @@ checkpoint. A disk sync longer than about a frame still makes its frame late.
 llvmpipe frame realization still stalls under host load, and displays were
 not measured.
 
+Group commit (no protocol, schema, or journal format change): a simulated
+daemon dispatches one message per peer per pass, so one pass can carry
+several peers' commands, and each used to pay its own append and disk sync.
+Those commands now share one. They run in the pass's round-robin order on a
+speculative copy of the control service (`ControlService::speculate`), which
+publishes nothing, and their journal records are collected. The records are
+then appended as consecutive batches in one transaction
+(`JournalWriter::append_batches`), the same rows a batch at a time writes.
+Only once that commit is durable does the copy replace the live service
+(`ControlService::adopt`), publishing the held events in order, and are the
+peers answered. If the append fails, the copy is dropped: no command
+applies, no receipt is kept, and every peer in the group is refused as not
+durable and may retry. A refused command still journals nothing. A crash
+that tears the group's commit drops the whole group on recovery, so no
+command is partly applied. LUT and host media imports, which write files
+around their append, still run alone. The fairness rule is unchanged: each
+peer still gets one message per pass. Measured with four clients each
+pipelining 12 cuts (debug, local disk): journal appends 48 → 12, `fsync`
+calls for the run (including startup) 60 → 24, all acknowledged in about
+290 → 185 ms. Native daemons are not grouped: a native command is still
+dispatched alone, at most one per pass, and realizes its own frame. Its
+record carries that frame's position, so grouping would mean either
+realizing several commands on one frame or predicting the frames the
+earlier members realize. The command window and the clock retries are
+unchanged.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
