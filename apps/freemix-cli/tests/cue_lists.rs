@@ -82,7 +82,7 @@ fn cue_lists_are_authored_listed_and_removed_in_the_saved_project() {
     succeed(&["cue-list-set", &project, "7", "Show", CUES]);
     assert_eq!(
         succeed(&["cue-lists", &project]),
-        "CueList(id=7, name=\"Show\", standby=10, live=-, pending=-, played=[], fault=-)\n\
+        "CueList(id=7, name=\"Show\", standby=10, live=-, pending=-, played=[], fault=-, armed=-)\n\
          \x20 Cue(id=10, name=\"Open\", follow=false, actions=take.2.fade.5,wait.3,overlay_on.1.1)\n\
          \x20 Cue(id=20, name=\"Close\", follow=true, actions=take.1.cut.0)\n\
          \x20 Cue(id=30, name=\"End\", follow=false, actions=fade_to_black.1.4)\n"
@@ -108,7 +108,7 @@ fn go_runs_waits_and_auto_follow_and_successive_gos_walk_the_list() {
     let lists = succeed(&["cue-lists", &project]);
     assert!(
         lists.starts_with(
-            "CueList(id=7, name=\"Show\", standby=20, live=10, pending=-, played=[10], fault=-)"
+            "CueList(id=7, name=\"Show\", standby=20, live=10, pending=-, played=[10], fault=-, armed=-)"
         ),
         "{lists}"
     );
@@ -123,7 +123,7 @@ fn go_runs_waits_and_auto_follow_and_successive_gos_walk_the_list() {
     let lists = succeed(&["cue-lists", &project]);
     assert!(
         lists.starts_with(
-            "CueList(id=7, name=\"Show\", standby=-, live=30, pending=-, played=[10, 20, 30], fault=-)"
+            "CueList(id=7, name=\"Show\", standby=-, live=30, pending=-, played=[10, 20, 30], fault=-, armed=-)"
         ),
         "{lists}"
     );
@@ -137,6 +137,28 @@ fn go_runs_waits_and_auto_follow_and_successive_gos_walk_the_list() {
     let lists = succeed(&["cue-lists", &project]);
     assert!(lists.contains("standby=20"), "{lists}");
     succeed(&["cue-stop", &project, "7"]);
+}
+
+/// Protocol 2.64 locally: `cue-arm` arms a GO that the simulated cue clock
+/// fires on its frame (a local command runs the clock to its end, as for a
+/// GO's waits), and `cue-disarm` takes an armed GO back.
+#[test]
+fn an_armed_go_fires_on_the_local_clock() {
+    let root = Root::new("arm");
+    let project = root.project();
+    succeed(&["cue-list-set", &project, "7", "Show", CUES]);
+    fail(&["cue-arm", &project, "7", "0"], "milliseconds");
+    fail(&["cue-arm", &project, "7", "200", "99"], "cue 99");
+    let status = succeed(&["cue-arm", &project, "7", "200", "30"]);
+    assert!(status.contains("FTB(desired=black@65535/65535"), "{status}");
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(
+        lists.starts_with(
+            "CueList(id=7, name=\"Show\", standby=-, live=30, pending=-, played=[30], fault=-, armed=-)"
+        ),
+        "{lists}"
+    );
+    succeed(&["cue-disarm", &project, "7"]);
 }
 
 #[test]
@@ -237,7 +259,7 @@ fn a_waitless_follow_into_a_second_take_is_refused() {
 
 /// A `.fmtitle` source document that needs no font (see `e2e.rs`).
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 57,
+  "schema_version": 58,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -319,7 +341,7 @@ fn a_saved_waiting_cue_restores_and_one_out_of_reach_is_refused() {
         .parse()
         .unwrap();
     let idle = "\"state\": {\"standby\": 10, \"live\": null, \"pending\": null, \
-                \"played\": [], \"fault\": null}";
+                \"played\": [], \"fault\": null, \"armed\": null}";
     assert!(saved.contains(idle), "{saved}");
     let waiting = |due: u64| {
         saved.replace(
@@ -327,7 +349,7 @@ fn a_saved_waiting_cue_restores_and_one_out_of_reach_is_refused() {
             &format!(
                 "\"state\": {{\"standby\": null, \"live\": 10, \"pending\": \
                  {{\"cue\": 10, \"action\": 1, \"due_frame\": {due}}}, \"played\": [10], \
-                 \"fault\": null}}"
+                 \"fault\": null, \"armed\": null}}"
             ),
         )
     };

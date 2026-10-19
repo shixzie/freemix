@@ -7,10 +7,10 @@ use fm_model::{
     TitleFieldId,
 };
 use fm_protocol::{
-    CommandPayload, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
-    CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText,
-    EventPayload, RecordingStatus, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
-    WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
+    CommandPayload, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage,
+    CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus,
+    CueTitleText, EventPayload, RecordingStatus, WireCue, WireCueAction, WireCueMediaOperation,
+    WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
 };
 use fm_titles::FieldId;
 use fm_types::InputId;
@@ -26,6 +26,7 @@ const _: () = {
     assert!(fm_protocol::MAX_CUE_LIST_TEXT_BYTES == fm_model::MAX_CUE_LIST_TEXT_BYTES);
     assert!(fm_protocol::MAX_CUE_WAIT_FRAMES == fm_model::MAX_CUE_WAIT_FRAMES);
     assert!(fm_protocol::MAX_CUE_DELAY_MS == fm_model::MAX_CUE_DELAY_MS);
+    assert!(fm_protocol::MAX_CUE_ARM_MS == fm_model::MAX_CUE_ARM_MS);
     assert!(fm_protocol::MAX_CUE_TRANSITION_FRAMES == fm_model::MAX_CUE_TRANSITION_FRAMES);
 };
 
@@ -251,6 +252,10 @@ pub fn wire_state(state: &CueRunState) -> CueRunStatus {
             action: action_index(fault.action),
             detail: fault.detail.clone(),
         }),
+        armed: state.armed.map(|armed| CueArmedStatus {
+            cue: armed.cue,
+            due_frame: armed.due_frame,
+        }),
     }
 }
 
@@ -272,6 +277,11 @@ const fn domain_operation(operation: CueOperation) -> EngineCueOperation {
         CueOperation::Skip => EngineCueOperation::Skip,
         CueOperation::Stop => EngineCueOperation::Stop,
         CueOperation::Reset => EngineCueOperation::Reset,
+        CueOperation::Arm { cue, in_ms } => EngineCueOperation::Arm {
+            cue,
+            in_millis: in_ms,
+        },
+        CueOperation::Disarm => EngineCueOperation::Disarm,
     }
 }
 

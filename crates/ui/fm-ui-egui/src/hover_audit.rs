@@ -824,6 +824,11 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                         message: "Stinger slot 2 has not finished realizing".to_owned(),
                     },
                 }),
+                // Protocol 2.64: the standby cue is armed to fire later.
+                armed: Some(fm_protocol::CueArmedStatus {
+                    cue: 20,
+                    due_frame: 900,
+                }),
             },
         },
         CueListStatus {
@@ -850,6 +855,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                 }),
                 played: vec![1],
                 fault: None,
+                armed: None,
             },
         },
     ]

@@ -7,6 +7,13 @@
 //! GO, standby (a row's standby key), and fire-now (a row's fire key) need the
 //! transition permission; `G` presses GO from anywhere in the console.
 //!
+//! Arm GO (Protocol 2.64) arms the cue on standby to fire by itself after a
+//! delay typed beside it (seconds, `MM:SS`, or `HH:MM:SS`, up to 24 hours),
+//! with GO's gates; Disarm cancels it. The armed cue's chip reads ARMED and
+//! a note counts it down, extrapolated at the show rate from the newest
+//! frame a cue record reported ([`ProjectState::cue_frame`]), so the
+//! countdown is approximate; the server's clock fires it on its frame.
+//!
 //! Editing (lists, cues, and actions, all inline) needs `edit_project`, an
 //! unlocked project, and no cue of the list waiting on its next actions,
 //! because the engine refuses to change a running cue. The tab edits a
@@ -18,9 +25,11 @@
 //! lands; an edit refused (resolved without an echo) snaps back.
 
 use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, Vec2};
+use std::time::{Duration, Instant};
+
 use fm_protocol::{
     AutoTransitionKind, CueFaultStatus, CueListSpec, CueListStatus, CueOperation, CueRunStatus,
-    MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
+    MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
     MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus,
     TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
     WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
@@ -32,7 +41,7 @@ use crate::edit_history::stinger_edit_lock_reason;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
-use crate::playlist::key_button;
+use crate::playlist::{countdown_timecode, estimated_frame, key_button};
 use crate::theme::{
     ERROR, KeyIcon, PREVIEW, PROGRAM, Tone, add_icon_button, border_color, caption, empty_state,
     field_label, legible, raised_color, small_button, status_chip,
@@ -84,8 +93,9 @@ pub enum CueIntent {
     Set { list: u64, spec: CueListSpec },
     /// Deletes one list (`cue_list_remove`): an undoable project edit.
     Remove { list: u64 },
-    /// GO, standby, back, skip, stop, or reset (`cue_go`, `cue_standby`,
-    /// ...): a journaled operator control, not undoable.
+    /// GO, standby, back, skip, stop, reset, arm, or disarm (`cue_go`,
+    /// `cue_standby`, ..., `cue_arm`, `cue_disarm`): a journaled operator
+    /// control, not undoable.
     Control { list: u64, operation: CueOperation },
 }
 
@@ -254,6 +264,49 @@ pub fn go_key_list(
         .then_some(list.id)
 }
 
+/// The milliseconds an operator's arm delay names: whole seconds as
+/// `SS`, `MM:SS`, or `HH:MM:SS` (minutes and seconds below 60 after the
+/// first part), from one second to [`MAX_CUE_ARM_MS`]. `None` otherwise.
+#[must_use]
+pub fn parse_arm_delay(text: &str) -> Option<u32> {
+    let parts = text
+        .trim()
+        .split(':')
+        .map(|part| {
+            (!part.is_empty() && part.len() <= 6 && part.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| part.parse::<u64>().ok())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let seconds = match parts[..] {
+        [seconds] => seconds,
+        [minutes, seconds] if seconds < 60 => minutes * 60 + seconds,
+        [hours, minutes, seconds] if minutes < 60 && seconds < 60 => {
+            hours * 3_600 + minutes * 60 + seconds
+        }
+        _ => return None,
+    };
+    let millis = u32::try_from(seconds.checked_mul(1_000)?).ok()?;
+    (1_000..=MAX_CUE_ARM_MS).contains(&millis).then_some(millis)
+}
+
+/// Why cue `cue` of `list` cannot be deleted from the list, if it cannot:
+/// the list edit block, then a GO armed for it (the engine refuses to
+/// remove an armed cue).
+#[must_use]
+pub fn cue_remove_block(
+    list: &CueListStatus,
+    cue: u64,
+    edit: Option<&'static str>,
+) -> Option<&'static str> {
+    edit.or_else(|| {
+        list.state
+            .armed
+            .is_some_and(|armed| armed.cue == cue)
+            .then_some(Msg::CueReasonArmed.en())
+    })
+}
+
 /// The lowest list id not in use, or `None` at the list limit.
 #[must_use]
 pub fn new_list_id(lists: &[CueListStatus]) -> Option<u64> {
@@ -277,13 +330,15 @@ pub enum CueRole {
     Live,
     Standby,
     Waiting,
+    /// A GO of the cue is armed (Protocol 2.64).
+    Armed,
     Played,
     Fault,
 }
 
 impl CueRole {
     /// The role of `cue` under `state`: a fault or wait outranks live, which
-    /// outranks standby and played.
+    /// outranks an armed GO, which outranks standby and played.
     #[must_use]
     pub fn of(state: &CueRunStatus, cue: u64) -> Self {
         if state.fault.as_ref().is_some_and(|fault| fault.cue == cue) {
@@ -292,6 +347,8 @@ impl CueRole {
             Self::Waiting
         } else if state.live == Some(cue) {
             Self::Live
+        } else if state.armed.is_some_and(|armed| armed.cue == cue) {
+            Self::Armed
         } else if state.standby == Some(cue) {
             Self::Standby
         } else if state.played.contains(&cue) {
@@ -307,6 +364,7 @@ impl CueRole {
             Self::Live => (Msg::Live, Tone::OnAir),
             Self::Standby => (Msg::CueStateStandby, Tone::Ready),
             Self::Waiting => (Msg::MediaStateWaiting, Tone::Pending),
+            Self::Armed => (Msg::PlaylistStateArmed, Tone::Pending),
             Self::Played => (Msg::CueStatePlayed, Tone::Idle),
             Self::Fault => (Msg::CueStateFault, Tone::Fault),
         }
@@ -545,7 +603,15 @@ pub(crate) struct CuePanel {
     /// The cue whose actions are shown.
     expanded: Option<u64>,
     draft: Option<Draft>,
+    /// The arm delay as typed (Protocol 2.64).
+    arm_delay: String,
+    /// The newest cue frame seen and when it was first seen, for the armed
+    /// GO's countdown.
+    clock: Option<(u64, Instant)>,
 }
+
+/// The arm delay a fresh panel offers: one minute.
+const DEFAULT_ARM_DELAY: &str = "1:00";
 
 /// One edit the rows asked for this frame.
 enum Change {
@@ -576,6 +642,63 @@ impl CuePanel {
     pub(crate) fn select(&mut self, list: u64, expanded: Option<u64>) {
         self.selected = Some(list);
         self.expanded = expanded;
+    }
+
+    /// The arm row (Protocol 2.64): the delay field, Arm GO (gated like GO
+    /// by `go_block`), and Disarm (gated by `control`, and on an armed GO).
+    fn draw_arm(
+        &mut self,
+        ui: &mut Ui,
+        list: &CueListStatus,
+        go_block: Option<&'static str>,
+        control: Option<&'static str>,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let l = l10n::locale(ui.ctx());
+        if self.arm_delay.is_empty() {
+            DEFAULT_ARM_DELAY.clone_into(&mut self.arm_delay);
+        }
+        let delay = parse_arm_delay(&self.arm_delay);
+        ui.horizontal(|ui| {
+            ui.label(field_label(l.text(Msg::CueArmIn)));
+            ui.add(
+                TextEdit::singleline(&mut self.arm_delay)
+                    .desired_width(72.0)
+                    .font(egui::TextStyle::Monospace),
+            )
+            .on_hover_text(l.text(Msg::CueArmDelayHover));
+            let arm = go_block.or_else(|| delay.is_none().then_some(Msg::CueReasonArmDelay.en()));
+            if ui
+                .add_enabled(arm.is_none(), key_button(l.text(Msg::CueArm), None, 72.0))
+                .hint(l.text(Msg::CueArmHover), arm.unwrap_or(""))
+                .clicked()
+                && let Some(in_ms) = delay
+            {
+                intents.push(StudioIntent::Cue(CueIntent::Control {
+                    list: list.id,
+                    operation: CueOperation::Arm { cue: None, in_ms },
+                }));
+            }
+            let disarm = control.or_else(|| {
+                list.state
+                    .armed
+                    .is_none()
+                    .then_some(Msg::CueReasonNotArmed.en())
+            });
+            if ui
+                .add_enabled(
+                    disarm.is_none(),
+                    key_button(l.text(Msg::CueDisarm), None, 64.0),
+                )
+                .hint(l.text(Msg::CueDisarmHover), disarm.unwrap_or(""))
+                .clicked()
+            {
+                intents.push(StudioIntent::Cue(CueIntent::Control {
+                    list: list.id,
+                    operation: CueOperation::Disarm,
+                }));
+            }
+        });
     }
 
     /// Keeps the working copy in step with the replicated list. The echo of
@@ -683,10 +806,16 @@ impl CuePanel {
                 }));
                 self.selected = Some(id);
             }
+            let remove = edit.or_else(|| {
+                shown
+                    .as_ref()
+                    .is_some_and(|list| list.state.armed.is_some())
+                    .then_some(Msg::CueReasonArmed.en())
+            });
             if let Some(list) = &shown
                 && ui
-                    .add_enabled(edit.is_none(), small_button(l.text(Msg::CueListRemove)))
-                    .hint(l.text(Msg::CueListRemoveHover), edit.unwrap_or(""))
+                    .add_enabled(remove.is_none(), small_button(l.text(Msg::CueListRemove)))
+                    .hint(l.text(Msg::CueListRemoveHover), remove.unwrap_or(""))
                     .clicked()
             {
                 intents.push(StudioIntent::Cue(CueIntent::Remove { list: list.id }));
@@ -698,6 +827,12 @@ impl CuePanel {
         };
         self.sync_draft(&list, state.pending_commands > 0);
         let list_edit = list_edit_block(state, &list);
+        let now = Instant::now();
+        if let Some(frame) = project.cue_frame()
+            && self.clock.is_none_or(|(seen, _)| seen != frame)
+        {
+            self.clock = Some((frame, now));
+        }
         ui.add_space(4.0);
 
         // The GO key and the cue on standby.
@@ -765,6 +900,37 @@ impl CuePanel {
                 }
             }
         });
+        self.draw_arm(ui, &list, go.as_ref().err().copied(), control, intents);
+        if let Some(armed) = list.state.armed {
+            let name = list
+                .spec
+                .cues
+                .iter()
+                .find(|cue| cue.id == armed.cue)
+                .map_or_else(|| armed.cue.to_string(), |cue| cue.name.clone());
+            let frame = armed.due_frame.to_string();
+            let rate = project.frame_rate();
+            let note = match self.clock {
+                Some((seen, at)) => {
+                    let now_frame = estimated_frame(seen, now.saturating_duration_since(at), rate);
+                    let time = countdown_timecode(armed.due_frame.saturating_sub(now_frame), rate);
+                    l.format(
+                        Msg::CueArmedNote,
+                        &[
+                            ("name", Arg::Str(&name)),
+                            ("time", Arg::Str(&time)),
+                            ("frame", Arg::Str(&frame)),
+                        ],
+                    )
+                }
+                None => l.format(
+                    Msg::CueArmedFrameNote,
+                    &[("name", Arg::Str(&name)), ("frame", Arg::Str(&frame))],
+                ),
+            };
+            ui.label(RichText::new(note).size(legible(12.0)).strong());
+            ui.ctx().request_repaint_after(Duration::from_millis(200));
+        }
         if let Some(pending) = list.state.pending {
             let frame = pending.due_frame.to_string();
             ui.label(caption(
@@ -829,12 +995,13 @@ impl CuePanel {
                 });
             // Firing runs the saved cue and every cue it follows into.
             let fire = control.or_else(|| chain_block(state, project.scripts(), &list, id));
+            let remove = cue_remove_block(&list, id, list_edit);
             let row = draw_cue_row(
                 ui,
                 &names,
                 &list,
                 (&mut draft.spec.cues, index),
-                (control, fire, list_edit),
+                (control, fire, list_edit, remove),
                 (self.expanded, conflict),
                 intents,
             );
@@ -979,7 +1146,8 @@ fn draw_cue_row(
     names: &Names<'_>,
     list: &CueListStatus,
     (cues, index): (&mut Vec<WireCue>, usize),
-    (control, fire, edit): (
+    (control, fire, edit, remove): (
+        Option<&'static str>,
         Option<&'static str>,
         Option<&'static str>,
         Option<&'static str>,
@@ -992,7 +1160,7 @@ fn draw_cue_row(
     let role = CueRole::of(&list.state, id);
     let mut result = None;
     let stroke = match role {
-        CueRole::Live | CueRole::Waiting => Stroke::new(1.5, PROGRAM),
+        CueRole::Live | CueRole::Waiting | CueRole::Armed => Stroke::new(1.5, PROGRAM),
         CueRole::Standby => Stroke::new(1.5, PREVIEW),
         _ => Stroke::new(1.0, border_color()),
     };
@@ -1036,7 +1204,7 @@ fn draw_cue_row(
                         l,
                         list.id,
                         (cues, index),
-                        (control, fire, edit),
+                        (control, fire, edit, remove),
                         intents,
                     ) {
                         removed = matches!(change, RowControl::Removed);
@@ -1054,7 +1222,7 @@ fn draw_cue_row(
                             l,
                             list.id,
                             (cues, index),
-                            (control, fire, edit),
+                            (control, fire, edit, remove),
                             intents,
                         ) {
                             removed = matches!(change, RowControl::Removed);
@@ -1105,7 +1273,8 @@ fn row_controls(
     l: Locale,
     list: u64,
     (cues, index): (&mut Vec<WireCue>, usize),
-    (control, fire, edit): (
+    (control, fire, edit, remove): (
+        Option<&'static str>,
         Option<&'static str>,
         Option<&'static str>,
         Option<&'static str>,
@@ -1182,12 +1351,12 @@ fn row_controls(
     }
     if add_icon_button(
         ui,
-        edit.is_none(),
+        remove.is_none(),
         key_button("", Some(ERROR), ROW_KEY_WIDTH),
         KeyIcon::Remove,
         l.text(Msg::CueRemoveHover),
     )
-    .hint(l.text(Msg::CueRemoveHover), edit.unwrap_or(""))
+    .hint(l.text(Msg::CueRemoveHover), remove.unwrap_or(""))
     .clicked()
     {
         cues.remove(index);
@@ -1920,6 +2089,7 @@ mod tests {
             pending: None,
             played: vec![10],
             fault: None,
+            armed: None,
         };
         assert_eq!(CueRole::of(&state, 10), CueRole::Live);
         assert_eq!(CueRole::of(&state, 20), CueRole::Standby);
@@ -1950,6 +2120,36 @@ mod tests {
             ..CueRunStatus::default()
         };
         assert_eq!(CueRole::of(&played, 10), CueRole::Played);
+        // Protocol 2.64: an armed GO outranks standby and played, not live.
+        let armed = CueRunStatus {
+            armed: Some(fm_protocol::CueArmedStatus {
+                cue: 20,
+                due_frame: 90,
+            }),
+            ..played
+        };
+        assert_eq!(CueRole::of(&armed, 20), CueRole::Armed);
+        assert_eq!(
+            cue_remove_block(&list(1, armed.clone()), 20, None),
+            Some(Msg::CueReasonArmed.en())
+        );
+        assert_eq!(cue_remove_block(&list(1, armed), 10, None), None);
+    }
+
+    /// Protocol 2.64: the arm delay is whole seconds, `MM:SS`, or
+    /// `HH:MM:SS`, from one second to 24 hours.
+    #[test]
+    fn arm_delays_parse_from_one_second_to_a_day() {
+        assert_eq!(parse_arm_delay("5"), Some(5_000));
+        assert_eq!(parse_arm_delay(" 1:30 "), Some(90_000));
+        assert_eq!(parse_arm_delay("01:00:00"), Some(3_600_000));
+        assert_eq!(parse_arm_delay("24:00:00"), Some(86_400_000));
+        assert_eq!(parse_arm_delay("86400"), Some(86_400_000));
+        for bad in [
+            "", "0", "24:00:01", "86401", "1:60", "1:60:00", "a", "1::2", "-3", "1:2:3:4",
+        ] {
+            assert_eq!(parse_arm_delay(bad), None, "{bad}");
+        }
     }
 
     /// Protocol 2.63: a deferred action's fault says what the server refused

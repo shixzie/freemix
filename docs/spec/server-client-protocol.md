@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.63 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.64 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2160,6 +2160,80 @@ Protocol 2.63 says why a deferred part failed (RC-011, RC-017).
   `reason=<token or ->, message="…"` after a faulted `ScriptRun(...)` and
   a `CueList(...)` fault.
 - 2.62 is refused.
+
+Protocol 2.64 arms a cue list GO for later (RC-017).
+
+- `payload=cue_arm` with `list`, an optional `cue`, and `in_ms` (canonical
+  decimal, 1 to 86 400 000, that is up to 24 hours) arms a GO of `cue`, or
+  of the cue on standby without one, to fire `in_ms` milliseconds after
+  the command's target frame. The authority converts the delay to whole
+  frames at the show rate, rounded up (as a cue `delay` action), so the
+  armed GO is due on one exact engine frame; arming fires nothing and
+  moves no standby pointer. A list holds one armed GO; arming again
+  replaces it. `payload=cue_disarm` with `list` drops it. Both are
+  journaled live operations without undo, outside the project padlock,
+  like `cue_go`. Refusals: an unknown list or cue (`unknown_id`), nothing
+  on standby (`no_cue_on_standby`), and `in_ms` out of range
+  (`invalid_command`, field `in_ms`).
+- Firing: the authority's cue clock submits the list's `cue_advance` on
+  the armed GO's due frame (simulated daemon: wall time anchored to the
+  engine cursor; native daemon: the frame pacer), exactly as for a wait.
+  The advance fires the armed cue as a `cue_go` of it would on that frame:
+  its actions up to its first wait run frame-atomically, its waits and
+  follows continue on the clock, standby moves past the last cue fired,
+  and, as the newest GO, it drops the remaining actions of a cue still
+  waiting in the list. A wait of the same list due on the same frame runs
+  first; the armed GO then fires on the next frame. A list's earliest due
+  wait or armed GO, across lists and the waiting script run, orders the
+  clock exactly as before.
+- An armed GO is unattended, so a refused action does not refuse a
+  command: the advance is accepted with the list's `fault` set to the
+  refused action of the armed chain (Protocol 2.63 detail included), the
+  GO disarmed, nothing of its frame applied, and a cue still waiting in
+  the list left waiting.
+- Interactions: any GO (direct, followed, or armed) that fires the armed
+  cue disarms it, so firing it early by hand does not fire it twice;
+  `cue_stop` drops the waiting cue's remaining actions and the armed GO;
+  `cue_reset` clears both. `cue_back`, `cue_skip`, `cue_standby`, and a GO
+  of another cue leave the armed GO alone. A list edit may change the
+  armed cue but not remove it, and the list cannot be removed while a GO
+  is armed (`conflict`, reason `cue_running`); an input or script the
+  armed cue names cannot be removed, as for any cue.
+- Authority: `cue_arm` needs exactly what `cue_go` of the same cue needs
+  now (its own `transition` plus the class of every action of the chain
+  the cue fires, its waits and follows included, and every verb of a
+  script step's script); the clock later fires it on that authority.
+  `cue_disarm` needs only `transition`. An edit (and an undo or redo
+  restoring one) of a list whose GO is armed needs every class the edited
+  armed chain runs that the armed chain did not, as for a waiting chain;
+  so does an edit of a script the armed chain runs. The web tally and
+  `freemix-server` session scopes classify `cue_arm` and `cue_disarm` like
+  the other cue controls.
+- Wire: a cue list `state` (on `cue_list_state`, `cue_list_changed`, and
+  `cue_run_changed`) gains a sixth `:`-separated part, `armed`:
+  `<cue>.<due frame>` or `-`. The decoder refuses a five-part state and a
+  malformed armed part; `cue_run_changed` for an arm or disarm carries
+  `fired=` empty and the unchanged desired state.
+- Durability (schema 58): a list's run `state` gains
+  `"armed": null | {"cue": <id>, "due_frame": <frame>}`. The armed cue must
+  be one of the list's cues (project validation). Show time is engine
+  frames, so a restarted daemon fires the armed GO on its due engine frame
+  and downtime does not count; restoring a project whose armed GO is due
+  more than 24 hours of frames past the frame cursor is refused
+  (`CueRunOutOfReach`), as an out-of-reach wait is.
+- Studio's Cues panel adds a "Fire in" field (seconds, `MM:SS`, or
+  `HH:MM:SS`, 1 second to 24 hours), Arm GO (gated exactly like GO: the
+  session's `transition` and the armed chain's permissions), and Disarm,
+  with English and Spanish hover help. The armed cue's chip reads ARMED,
+  and a note names it with a `-HH:MM:SS:FF` countdown extrapolated at the
+  show rate from the newest frame a `cue_list_state` or `cue_run_changed`
+  reported (approximate; the authority fires it on its frame). Deleting
+  the armed cue or its list is disabled with a reason. `freemix-cli`
+  adds local and `remote-` `cue-arm <list> <milliseconds> [cue]` and
+  `cue-disarm <list>`; `cue-lists` prints `armed=<cue>@<frame>` or `-`. A
+  local command runs the simulated cue clock to its end, so a local
+  `cue-arm` fires the cue before it returns.
+- 2.63 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

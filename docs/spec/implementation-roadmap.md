@@ -3352,9 +3352,33 @@ Standby; and `freemix-cli` has local and `remote-` `cue-lists`,
 `cue-list-remove`, `go`, `cue-standby`, `cue-back`, `cue-skip`, `cue-stop`,
 and `cue-reset`. The older per-input `GoEngine` was removed from
 `fm-automation` and `fm-control`'s `AutomationPlane`; cue lists supersede
-it. Remaining gaps: lists are not bound to an input button or previewed
-before GO; there is no data-source update action and no timecode delays;
-the web tally page offers only GO and Standby. `RC-017` remains planned.
+it.
+Timed GO (Protocol 2.64, schema 58): `cue_arm` arms the standby cue (or a
+named cue) to fire 1 ms to 24 hours after the command's frame, converted
+to whole frames at the show rate and rounded up, so it is due on one exact
+engine frame; `cue_disarm` drops it. A list holds one armed GO beside its
+waiting cue, persisted in the run state and journaled, so a restarted
+daemon fires it on the same engine frame (downtime does not count) and
+restore refuses one due more than a day of frames past the cursor. The
+cue clock fires it through the list's `cue_advance` exactly as a GO of the
+cue on that frame (a wait of the same list due on that frame runs first,
+the GO one frame later); a refused action faults the list, disarms, and
+applies nothing, leaving a waiting cue waiting. Any GO that fires the
+armed cue disarms it; Stop and Reset disarm; edits may change but not
+remove the armed cue, and its list cannot be removed while armed. Arming
+needs exactly a GO's permissions for the armed chain, the clock fires on
+that authority, and edits of an armed chain need what they add. Studio's
+Cues panel has a "Fire in" field, Arm GO, Disarm, an ARMED chip, and an
+approximate countdown (English and Spanish hover help); `freemix-cli` has
+local and `remote-` `cue-arm` and `cue-disarm`.
+Remaining gaps: lists are not bound to an input button, MIDI, or a
+keyboard shortcut other than `G`, and nothing previews a cue's effect
+before GO; there is no data-source update action; an armed GO takes a
+relative delay only (Studio and the CLI convert nothing from a wall-clock
+time of day or external timecode, and the daemon's frame clock, not a
+house clock, decides when it fires); Studio's countdown is extrapolated
+and approximate, most on the simulated daemon; the web tally page offers
+only GO and Standby. `RC-017` remains planned.
 
 Current implementation boundary for sandboxed scripting (`RC-011`): the
 first slice is a purpose-built language rather than a Wasm runtime (schema

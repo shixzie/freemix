@@ -15,6 +15,12 @@
 //! wait ends. Firing moves the standby pointer to the cue after the last cue
 //! fired. A GO while another cue still waits drops that cue's remaining
 //! steps: the newest GO owns the list.
+//!
+//! A GO can also be armed for a later frame ([`CueStack::arm`]): the armed
+//! cue fires on its due frame exactly as a GO would ([`CueStack::advance`]),
+//! independently of any cue waiting meanwhile. One GO is armed per stack; a
+//! fired cue (by any GO or follow) that is the armed cue disarms it, Stop and
+//! Reset disarm, and a wait ending on the same frame runs first.
 
 use core::fmt;
 
@@ -43,6 +49,22 @@ pub struct CuePendingStep {
     pub due_frame: u64,
 }
 
+/// A GO of `cue` armed to fire on `due_frame`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CueArmedGo {
+    pub cue: u64,
+    pub due_frame: u64,
+}
+
+/// What a stack runs on its next due frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueDue {
+    /// The waiting cue's remaining steps.
+    Wait,
+    /// The armed GO.
+    Armed,
+}
+
 /// The run state of a stack.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CueStackState {
@@ -53,8 +75,11 @@ pub struct CueStackState {
     pub pending: Option<CuePendingStep>,
     /// Every cue fired since creation or the last reset, ascending.
     pub played: Vec<u64>,
-    /// The step that failed when a wait ended: `(cue, step)`.
+    /// The step that failed when a wait ended or an armed GO fired:
+    /// `(cue, step)`.
     pub fault: Option<(u64, usize)>,
+    /// The GO armed for a later frame.
+    pub armed: Option<CueArmedGo>,
 }
 
 /// One action due on the firing frame.
@@ -85,7 +110,7 @@ pub enum CueStackError {
     UnknownCue(u64),
     /// GO with nothing on standby (the list ran off its end or is empty).
     NothingOnStandby,
-    /// No cue waits, or its wait ends after the advance frame.
+    /// No cue waits and no GO is armed by the advance frame.
     NothingDue { frame: u64 },
     /// A wait would end past the frame counter.
     FrameOverflow,
@@ -178,8 +203,54 @@ impl<A: Clone> CueStack<A> {
         self.run(next, index, 0, frame)
     }
 
-    /// Runs the waiting cue's remaining steps on `frame`, which must be its
-    /// due frame or later.
+    /// Arms a GO of `cue`, or of the standby cue with `None`, to fire on
+    /// `due_frame`, replacing any GO armed before.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown cue and arming with nothing on standby.
+    pub fn arm(
+        &self,
+        state: &CueStackState,
+        cue: Option<u64>,
+        due_frame: u64,
+    ) -> Result<CueStackState, CueStackError> {
+        let cue = cue
+            .or(state.standby)
+            .ok_or(CueStackError::NothingOnStandby)?;
+        self.position(cue).ok_or(CueStackError::UnknownCue(cue))?;
+        Ok(CueStackState {
+            armed: Some(CueArmedGo { cue, due_frame }),
+            ..state.clone()
+        })
+    }
+
+    /// Drops the armed GO.
+    #[must_use]
+    pub fn disarm(&self, state: &CueStackState) -> CueStackState {
+        CueStackState {
+            armed: None,
+            ..state.clone()
+        }
+    }
+
+    /// The earliest frame something is due on and what runs then: the
+    /// waiting cue's steps first when the armed GO is due on the same frame.
+    #[must_use]
+    pub fn due(state: &CueStackState) -> Option<(u64, CueDue)> {
+        let wait = state
+            .pending
+            .map(|pending| (pending.due_frame, CueDue::Wait));
+        let armed = state.armed.map(|armed| (armed.due_frame, CueDue::Armed));
+        match (wait, armed) {
+            (Some(wait), Some(armed)) if armed.0 < wait.0 => Some(armed),
+            (wait, armed) => wait.or(armed),
+        }
+    }
+
+    /// Runs what is due by `frame` (see [`Self::due`]): the waiting cue's
+    /// remaining steps, or else the armed GO, exactly as a GO of the armed
+    /// cue on `frame` would.
     ///
     /// # Errors
     ///
@@ -190,6 +261,13 @@ impl<A: Clone> CueStack<A> {
         state: &CueStackState,
         frame: u64,
     ) -> Result<CueFiring<A>, CueStackError> {
+        if let (Some((due, CueDue::Armed)), Some(armed)) = (Self::due(state), state.armed)
+            && due <= frame
+        {
+            let mut next = state.clone();
+            next.armed = None;
+            return self.go(&next, Some(armed.cue), frame);
+        }
         let pending = state
             .pending
             .filter(|pending| pending.due_frame <= frame)
@@ -216,6 +294,9 @@ impl<A: Clone> CueStack<A> {
             let cue = &self.cues[index];
             if step == 0 {
                 fired.push(cue.id);
+                if state.armed.is_some_and(|armed| armed.cue == cue.id) {
+                    state.armed = None;
+                }
                 state.live = Some(cue.id);
                 if let Err(position) = state.played.binary_search(&cue.id) {
                     state.played.insert(position, cue.id);
@@ -308,11 +389,12 @@ impl<A: Clone> CueStack<A> {
         }
     }
 
-    /// Drops the waiting cue's remaining steps.
+    /// Drops the waiting cue's remaining steps and the armed GO.
     #[must_use]
     pub fn stop(&self, state: &CueStackState) -> CueStackState {
         CueStackState {
             pending: None,
+            armed: None,
             ..state.clone()
         }
     }
@@ -323,15 +405,18 @@ impl<A: Clone> CueStack<A> {
         self.initial_state()
     }
 
-    /// Records that step `step` of the waiting cue could not run: the cue
-    /// stops there.
+    /// Records that step `step` of `cue` could not run when `due` came: a
+    /// waiting cue stops there; a refused armed GO is disarmed and fired
+    /// nothing, so a cue still waiting keeps waiting.
     #[must_use]
-    pub fn fail(&self, state: &CueStackState, cue: u64, step: usize) -> CueStackState {
-        CueStackState {
-            pending: None,
-            fault: Some((cue, step)),
-            ..state.clone()
+    pub fn fail(&self, state: &CueStackState, due: CueDue, cue: u64, step: usize) -> CueStackState {
+        let mut next = state.clone();
+        match due {
+            CueDue::Wait => next.pending = None,
+            CueDue::Armed => next.armed = None,
         }
+        next.fault = Some((cue, step));
+        next
     }
 
     /// The state carried across an edit that replaced `previous` (the old
@@ -341,8 +426,9 @@ impl<A: Clone> CueStack<A> {
     /// nothing on standby (it ran off its end, or was empty) or whose
     /// standby cue was removed with no surviving cue after it puts the
     /// first cue added after its last surviving cue on standby. References
-    /// to removed cues are dropped, and a waiting cue keeps waiting while
-    /// it still holds the step it resumes at (after a wait).
+    /// to removed cues are dropped, a waiting cue keeps waiting while it
+    /// still holds the step it resumes at (after a wait), and an armed GO
+    /// stays armed while its cue survives.
     #[must_use]
     pub fn reconcile(&self, previous: &[u64], state: &CueStackState) -> CueStackState {
         let holds = |cue: u64| self.position(cue).is_some();
@@ -396,6 +482,7 @@ impl<A: Clone> CueStack<A> {
                 self.position(*cue)
                     .is_some_and(|index| *step < self.cues[index].steps.len())
             }),
+            armed: state.armed.filter(|armed| holds(armed.cue)),
         }
     }
 }

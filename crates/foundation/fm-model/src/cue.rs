@@ -59,6 +59,8 @@ pub const MAX_CUE_LIST_TEXT_BYTES: usize = 2_048;
 pub const MAX_CUE_WAIT_FRAMES: u32 = 216_000;
 /// Longest millisecond delay (one hour).
 pub const MAX_CUE_DELAY_MS: u32 = 3_600_000;
+/// Longest an armed GO waits, in milliseconds (24 hours, schema 58).
+pub const MAX_CUE_ARM_MS: u32 = 86_400_000;
 /// Longest transition or Fade to Black an action requests, in frames.
 pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 /// Overlay channels an action may address (`1..=8`).
@@ -224,6 +226,14 @@ pub struct CueFault {
     pub detail: fm_command::FaultDetail,
 }
 
+/// A GO of `cue` armed to fire on `due_frame` (schema 58): the cue clock
+/// fires it on that engine frame exactly as a GO would.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CueArmed {
+    pub cue: u64,
+    pub due_frame: u64,
+}
+
 /// The persisted run state of one cue list.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CueRunState {
@@ -235,8 +245,10 @@ pub struct CueRunState {
     pub pending: Option<CuePending>,
     /// Every cue fired since the list was created or reset, ascending.
     pub played: Vec<u64>,
-    /// The deferred action that last failed to run.
+    /// The deferred action (or armed GO action) that last failed to run.
     pub fault: Option<CueFault>,
+    /// The GO armed for a later frame (schema 58).
+    pub armed: Option<CueArmed>,
 }
 
 /// One cue list: its definition and run state.
@@ -547,6 +559,7 @@ pub fn validate_cue_list(list: &CueList) -> Result<(), CueListError> {
         || !pending_valid
         || !fault_valid
         || !played_valid
+        || !state.armed.is_none_or(|armed| holds(armed.cue))
     {
         return Err(CueListError::InvalidState);
     }

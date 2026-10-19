@@ -6277,11 +6277,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.63.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 63));
+    // The previous protocol is refused; the current one is 2.64.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 64));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 62),
+        protocol: ProtocolVersion::new(2, 63),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6297,7 +6297,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 63)
+        ProtocolVersion::new(2, 64)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -7951,6 +7951,7 @@ fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
             }),
             played: vec![10],
             fault: None,
+            armed: None,
         }
     );
 
@@ -7991,6 +7992,149 @@ fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
     assert_eq!(lists.len(), 1);
     assert_eq!((lists[0].id, lists[0].name.as_str()), (7, "Show"));
     assert_eq!(lists[0].state.standby, Some(20));
+}
+
+/// Protocol 2.64, schema 58, end to end through the daemon: `cue_arm`
+/// arms the standby cue without firing it, the daemon's cue clock fires it
+/// on exactly its due frame once wall time reaches it, an armed GO is saved
+/// with the project and journal so a restarted daemon still holds it on the
+/// same engine frame, and `cue_disarm` drops it.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn an_armed_go_fires_on_the_clock_and_survives_restart() {
+    use fm_protocol::{
+        CueArmedStatus, CueListSpec, CueOperation, TransitionFavoriteEffect, WireCue, WireCueAction,
+    };
+
+    fn run_event(client: &mut Client, revision: u64) -> fm_protocol::CueRunChange {
+        match durable_event_at(client, revision).payload {
+            EventPayload::CueRunChanged(change) => *change,
+            other => panic!("expected cue_run_changed at {revision}, got {other:?}"),
+        }
+    }
+    let cut = |input| WireCueAction::Take {
+        input: Some(input),
+        effect: TransitionFavoriteEffect::Cut,
+        duration_frames: 0,
+    };
+    let control = |id: &str, operation| {
+        command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::CueControl { list: 7, operation },
+        )
+    };
+
+    let directory = TestDirectory::new("cue-arm");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    let spec = CueListSpec {
+        name: "Show".into(),
+        cues: vec![
+            WireCue {
+                id: 10,
+                name: "Open".into(),
+                auto_follow: false,
+                actions: vec![cut(input(2))],
+            },
+            WireCue {
+                id: 20,
+                name: "Close".into(),
+                auto_follow: false,
+                actions: vec![cut(input(1))],
+            },
+        ],
+    };
+    admin.send(&command(
+        "set-cues",
+        "set-cues-key",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(spec),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-cues"), 1);
+
+    // 400 ms at 25 fps: the standby cue fires ten frames after arming.
+    let armed_at = Instant::now();
+    admin.send(&control(
+        "arm",
+        CueOperation::Arm {
+            cue: None,
+            in_ms: 400,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "arm"), 2);
+    let arm = run_event(&mut admin, 2);
+    let due = arm.frame + 10;
+    assert_eq!(arm.fired, Vec::<u64>::new());
+    assert_eq!(arm.program, input(1), "arming fires nothing");
+    assert_eq!(
+        arm.state.armed,
+        Some(CueArmedStatus {
+            cue: 10,
+            due_frame: due,
+        })
+    );
+    let fired = run_event(&mut admin, 3);
+    assert!(
+        armed_at.elapsed() >= Duration::from_millis(300),
+        "the armed GO fired after {:?}",
+        armed_at.elapsed()
+    );
+    assert_eq!((fired.frame, fired.program), (due, input(2)));
+    assert_eq!(fired.fired, vec![10]);
+    assert_eq!(fired.state.armed, None);
+    assert_eq!(fired.state.standby, Some(20));
+
+    // A GO armed a minute ahead is saved and journaled.
+    admin.send(&control(
+        "arm-later",
+        CueOperation::Arm {
+            cue: Some(20),
+            in_ms: 60_000,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "arm-later"), 4);
+    let later = run_event(&mut admin, 4).state.armed.expect("armed");
+    assert_eq!(later.cue, 20);
+    drop(admin);
+    daemon.stop();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, lists) = cue_list_sync(&daemon);
+    assert_eq!(recovered.revision, 4);
+    assert_eq!(recovered.desired_program, input(2));
+    assert_eq!(lists[0].list.state.armed, Some(later));
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    admin.send(&control("disarm", CueOperation::Disarm));
+    assert_eq!(accepted_revision(&mut admin, "disarm"), 5);
+    let disarmed = run_event(&mut admin, 5);
+    assert_eq!(disarmed.state.armed, None);
+    assert_eq!(disarmed.program, input(2), "disarming fires nothing");
+    drop(admin);
+    daemon.stop();
+    let daemon = Daemon::start_without_once(&project_path);
+    let (recovered, lists) = cue_list_sync(&daemon);
+    assert_eq!(recovered.revision, 5);
+    assert_eq!(lists[0].list.state.armed, None);
+    daemon.stop();
 }
 
 /// RC-017 on the simulated daemon: a client's cue control mid-wait catches

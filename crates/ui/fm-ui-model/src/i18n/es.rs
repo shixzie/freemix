@@ -6543,7 +6543,46 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::CueStopHover,
-        t("Descartar las acciones pendientes del cue que espera"),
+        t("Descartar las acciones pendientes del cue que espera y el GO armado"),
+    ),
+    (Msg::CueArmIn, t("Disparar en")),
+    (
+        Msg::CueArmDelayHover,
+        t(
+            "Cuánto después de armarlo se dispara el cue en espera: segundos, MM:SS o HH:MM:SS, de 1 segundo a 24 horas",
+        ),
+    ),
+    (Msg::CueArm, t("Armar GO")),
+    (
+        Msg::CueArmHover,
+        t(
+            "Armar el cue en espera para que se dispare solo cuando pase el retardo de al lado, igual que GO; el reloj del servidor lo dispara aunque se cierre esta consola",
+        ),
+    ),
+    (Msg::CueDisarm, t("Desarmar")),
+    (
+        Msg::CueDisarmHover,
+        t("Cancelar el GO armado para que nunca se dispare"),
+    ),
+    (
+        Msg::CueArmedNote,
+        t("Armado: «{name}» se dispara en {time} (fotograma {frame})"),
+    ),
+    (
+        Msg::CueArmedFrameNote,
+        t("Armado: «{name}» se dispara en el fotograma {frame}"),
+    ),
+    (
+        Msg::CueReasonArmDelay,
+        t("escribe un retardo de 1 segundo a 24 horas en segundos, MM:SS o HH:MM:SS"),
+    ),
+    (
+        Msg::CueReasonNotArmed,
+        t("no hay ningún GO armado en esta lista"),
+    ),
+    (
+        Msg::CueReasonArmed,
+        t("hay un GO armado para este cue en esta lista; desármalo primero"),
     ),
     (Msg::CueReset, t("Reiniciar")),
     (
@@ -6615,7 +6654,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::CueStateHover,
         t(
-            "Estado de este cue: en cola (aún sin disparar), al aire, en espera, esperando sus próximas acciones, disparado o detenido por una acción rechazada",
+            "Estado de este cue: en cola (aún sin disparar), al aire, en espera, armado para dispararse más tarde, esperando sus próximas acciones, disparado o detenido por una acción rechazada",
         ),
     ),
     (

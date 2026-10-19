@@ -10,10 +10,10 @@ use core::num::NonZeroU128;
 
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload,
-    CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport,
-    CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText,
-    EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
-    FadeToBlackPosition, FadeToBlackState, InputAudioStripStatus, MAX_CUE_ACTIONS,
+    CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
+    CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun,
+    CueTitleText, EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
+    FadeToBlackPosition, FadeToBlackState, InputAudioStripStatus, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS,
     MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUES, ManualTransitionStatus, MediaTime, MediaTransportState,
     OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus, StreamRealizedState,
     StreamStatus, TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation,
@@ -21,7 +21,7 @@ use fm_protocol::{
     WireStreamTargetId, WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.63\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.64\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {
@@ -169,6 +169,7 @@ fn state() -> CueRunStatus {
         }),
         played: vec![1],
         fault: None,
+        armed: None,
     }
 }
 
@@ -193,7 +194,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 63));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 64));
 }
 
 #[test]
@@ -233,6 +234,22 @@ fn cue_commands_round_trip_exactly() {
         (CueOperation::Skip, "payload=cue_skip\tlist=3\n"),
         (CueOperation::Stop, "payload=cue_stop\tlist=3\n"),
         (CueOperation::Reset, "payload=cue_reset\tlist=3\n"),
+        // Protocol 2.64: arm a GO of the standby or a named cue, disarm it.
+        (
+            CueOperation::Arm {
+                cue: None,
+                in_ms: 1,
+            },
+            "payload=cue_arm\tlist=3\tin_ms=1\n",
+        ),
+        (
+            CueOperation::Arm {
+                cue: Some(7),
+                in_ms: MAX_CUE_ARM_MS,
+            },
+            "payload=cue_arm\tlist=3\tcue=7\tin_ms=86400000\n",
+        ),
+        (CueOperation::Disarm, "payload=cue_disarm\tlist=3\n"),
     ] {
         let line = round_trip(&command(CommandPayload::CueControl { list: 3, operation }));
         assert_eq!(line, format!("{PREFIX}\t{wire}"));
@@ -281,6 +298,13 @@ fn cue_commands_are_strict() {
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_seek.6.-1",
         "payload=cue_list_set\tlist=3\tname=A\tcues=1%7E41%7E0%7Emedia_stop.6",
         "payload=cue_advance\tlist=3",
+        "payload=cue_arm\tlist=3",
+        "payload=cue_arm\tlist=3\tin_ms=0",
+        "payload=cue_arm\tlist=3\tin_ms=86400001",
+        "payload=cue_arm\tlist=3\tin_ms=01",
+        "payload=cue_arm\tlist=3\tcue=x\tin_ms=5",
+        "payload=cue_arm\tlist=0\tin_ms=5",
+        "payload=cue_disarm\tlist=3\tcue=1",
     ] {
         let line = format!("{PREFIX}\t{bad}\n");
         assert!(decode_line(&line).is_err(), "{bad}");
@@ -305,6 +329,52 @@ fn cue_commands_are_strict() {
     let mut long = spec();
     long.cues[1].actions = vec![WireCueAction::Wait { frames: 1 }; MAX_CUE_ACTIONS + 1];
     assert_eq!(encode(long), Err(CodecError::TooManyItems("cues")));
+    for in_ms in [0, MAX_CUE_ARM_MS + 1] {
+        assert!(
+            encode_line(&command(CommandPayload::CueControl {
+                list: 3,
+                operation: CueOperation::Arm { cue: None, in_ms },
+            }))
+            .is_err(),
+            "{in_ms}"
+        );
+    }
+}
+
+/// Protocol 2.64: a list's run state carries its armed GO as
+/// `<cue>.<due frame>` after the fault, strictly.
+#[test]
+fn an_armed_go_round_trips_in_the_run_state() {
+    let armed = CueRunStatus {
+        armed: Some(CueArmedStatus {
+            cue: 7,
+            due_frame: 90_000,
+        }),
+        ..state()
+    };
+    let message = WireMessage::CueListState(CueListStateMessage {
+        revision: 12,
+        frame: 1_000,
+        list: CueListStatus {
+            id: 3,
+            spec: spec(),
+            state: armed,
+        },
+    });
+    let line = round_trip(&message);
+    assert!(
+        line.contains("\tstate=7%3A1%3A1.15.1234%3A1%3A-%3A7.90000\n"),
+        "{line}"
+    );
+    for bad in ["7.", "7", "x.5", "7.05", "7.5.1"] {
+        let broken = line.replace("%3A7.90000\n", &format!("%3A{bad}\n"));
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    let five = line.replace("%3A-%3A7.90000\n", "%3A-\n");
+    assert!(
+        decode_line(&five).is_err(),
+        "a state without its armed part"
+    );
 }
 
 /// A bare run event of list 3 on frame 1000 carrying `scripts`.
@@ -506,7 +576,8 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
         hex("input_in_use:4:program"),
         hex("input 4 is on Program")
     );
-    assert!(line.contains(&format!("%3A1%3A{fault}\t")), "{line}");
+    // Protocol 2.64: the armed GO follows the fault (`-` for none).
+    assert!(line.contains(&format!("%3A1%3A{fault}%3A-\t")), "{line}");
     let no_reason = line.replacen(
         &format!("1.2.{}.", hex("input_in_use:4:program")),
         "1.2.-.",
@@ -573,15 +644,15 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
     }));
     assert!(
         decode_line(
-            "cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\tstate=-%3A-%3A-%3A%3A-\n"
+            "cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\tstate=-%3A-%3A-%3A%3A-%3A-\n"
         )
         .is_ok()
     );
     for bad in [
-        "state=-%3A-%3A-%3A2.1%3A-",
+        "state=-%3A-%3A-%3A2.1%3A-%3A-",
         "state=-%3A-%3A-%3A%3A",
-        "state=-%3A-%3A1.1%3A%3A-",
-        "state=x%3A-%3A-%3A%3A-",
+        "state=-%3A-%3A1.1%3A%3A-%3A-",
+        "state=x%3A-%3A-%3A%3A-%3A-",
     ] {
         let line = format!("cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\t{bad}\n");
         assert!(decode_line(&line).is_err(), "{bad}");

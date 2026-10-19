@@ -709,7 +709,8 @@ fn decode_playlist_command(fields: &mut Fields, name: &str) -> Result<CommandPay
                 frame: fields.canonical_required("frame")?,
             });
         }
-        cue @ ("cue_go" | "cue_standby" | "cue_back" | "cue_skip" | "cue_stop" | "cue_reset") => {
+        cue @ ("cue_go" | "cue_standby" | "cue_back" | "cue_skip" | "cue_stop" | "cue_reset"
+        | "cue_arm" | "cue_disarm") => {
             let (list, operation) = super::cue::decode_operation(cue, fields)?
                 .expect("every listed payload is a cue operation");
             return Ok(CommandPayload::CueControl { list, operation });

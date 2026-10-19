@@ -17,6 +17,11 @@
 //! `cue_list_removed` a removed list, and `cue_run_changed` the run state
 //! after a live operation together with every desired state its actions
 //! changed and, since Protocol 2.61, what each script step it ran did.
+//!
+//! Protocol 2.64 arms a GO for later (`cue_arm`, `cue_disarm`): the armed
+//! cue fires `in_ms` milliseconds after the command's frame, rounded up to
+//! whole frames at the show rate, on the authority's cue clock exactly as a
+//! GO would; the run state carries it as [`CueArmedStatus`].
 
 use crate::{
     FadeToBlackState, InputAudioStripStatus, ManualTransitionStatus, MediaTime,
@@ -45,6 +50,8 @@ pub const MAX_CUE_LIST_TEXT_BYTES: usize = 2_048;
 pub const MAX_CUE_WAIT_FRAMES: u32 = 216_000;
 /// Longest millisecond delay (one hour).
 pub const MAX_CUE_DELAY_MS: u32 = 3_600_000;
+/// Longest an armed GO waits, in milliseconds (24 hours, Protocol 2.64).
+pub const MAX_CUE_ARM_MS: u32 = 86_400_000;
 /// Longest transition or Fade to Black an action requests, in frames.
 pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 
@@ -166,6 +173,13 @@ pub struct CuePendingStatus {
     pub due_frame: u64,
 }
 
+/// A GO of `cue` armed to fire on engine frame `due_frame` (Protocol 2.64).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CueArmedStatus {
+    pub cue: u64,
+    pub due_frame: u64,
+}
+
 /// A list's run state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CueRunStatus {
@@ -176,8 +190,11 @@ pub struct CueRunStatus {
     pub pending: Option<CuePendingStatus>,
     /// Every cue fired since the list was created or reset, ascending.
     pub played: Vec<u64>,
-    /// The action that was refused when its wait ended.
+    /// The action that was refused when its wait ended or its armed GO
+    /// fired.
     pub fault: Option<CueFaultStatus>,
+    /// The GO armed for a later frame (Protocol 2.64).
+    pub armed: Option<CueArmedStatus>,
 }
 
 /// Action `action` of cue `cue` was refused when its wait ended; the cue
@@ -209,10 +226,16 @@ pub enum CueOperation {
     Back,
     /// Moves standby past its cue without firing it.
     Skip,
-    /// Drops a waiting cue's remaining actions.
+    /// Drops a waiting cue's remaining actions and the armed GO.
     Stop,
     /// Clears the run state and puts the first cue on standby.
     Reset,
+    /// Arms a GO of `cue`, or of the standby cue with `None`, to fire
+    /// `in_ms` (`1..=`[`MAX_CUE_ARM_MS`]) milliseconds after the command's
+    /// frame (Protocol 2.64), replacing a GO armed before.
+    Arm { cue: Option<u64>, in_ms: u32 },
+    /// Drops the armed GO (Protocol 2.64).
+    Disarm,
 }
 
 impl CueOperation {
@@ -226,6 +249,8 @@ impl CueOperation {
             Self::Skip => "cue_skip",
             Self::Stop => "cue_stop",
             Self::Reset => "cue_reset",
+            Self::Arm { .. } => "cue_arm",
+            Self::Disarm => "cue_disarm",
         }
     }
 }

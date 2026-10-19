@@ -172,6 +172,7 @@ fn run_states_name_only_held_cues_and_resume_after_a_wait() {
         }),
         played: vec![1],
         fault: None,
+        armed: None,
     };
     assert_eq!(validate_cue_list(&list(1, cues(), waiting.clone())), Ok(()));
     // A fault keeps the refusal that stopped its cue (schema 57).

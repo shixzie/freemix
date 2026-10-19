@@ -14,14 +14,17 @@
 //!   `media_restart.<input>`, `media_seek.<input>.<frame>`, `wait.<frames>`,
 //!   `delay.<millis>` (the media and delay tokens since Protocol 2.51),
 //!   `run_script.<script>` (Protocol 2.60, a nonzero project script id).
-//! * `state` is `<standby>:<live>:<pending>:<played>:<fault>`, each of
+//! * `state` is `<standby>:<live>:<pending>:<played>:<fault>:<armed>`, each of
 //!   `standby` and `live` a cue id or `-`, `pending`
 //!   `<cue>.<action>.<due frame>` or `-`, `played` `.`-separated ascending
 //!   cue ids (empty for none), and `fault` `<cue>.<action>.<reason>.<message>`
 //!   or `-`: since Protocol 2.63 a fault says what its action was refused
 //!   with, `reason` the lowercase hex of the refusal's `reason` token (`-`
 //!   for none) and `message` the lowercase hex of its English text (see
-//!   [`fm_command::FaultDetail`]).
+//!   [`fm_command::FaultDetail`]); `armed` (Protocol 2.64) is
+//!   `<cue>.<due frame>` or `-`.
+//! * `cue_arm` carries `list`, an optional `cue`, and `in_ms` (canonical
+//!   decimal, `1..=86400000`); `cue_disarm` carries `list` (Protocol 2.64).
 //! * `fired` is `.`-separated cue ids; `titles` is a `/`-separated list of
 //!   `<input>.<field revision>.<field>.<text hex>`; `media` (Protocol
 //!   2.51) is a `/`-separated list of
@@ -35,13 +38,13 @@
 use core::num::NonZeroU128;
 
 use crate::{
-    CodecError, CueFaultStatus, CueListSpec, CueListStatus, CueMediaTransport, CueOperation,
-    CuePendingStatus, CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS,
-    MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS,
-    MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
-    MAX_CUES, MediaTime, MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction,
-    WireCueMediaOperation, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId,
-    WireTitleFieldId,
+    CodecError, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStatus, CueMediaTransport,
+    CueOperation, CuePendingStatus, CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS,
+    MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS,
+    MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES,
+    MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, MediaTime, MediaTransportState,
+    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireOverlayChannelId,
+    WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
 };
 
 use super::media::{FieldSource, Push};
@@ -437,7 +440,7 @@ pub(super) fn encode_state(state: &CueRunStatus) -> Result<String, CodecError> {
         ),
     };
     Ok(format!(
-        "{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}",
         optional_id(state.standby),
         optional_id(state.live),
         state.pending.map_or_else(
@@ -446,6 +449,10 @@ pub(super) fn encode_state(state: &CueRunStatus) -> Result<String, CodecError> {
         ),
         encode_ids(&state.played),
         fault,
+        state.armed.map_or_else(
+            || "-".to_owned(),
+            |armed| format!("{}.{}", armed.cue, armed.due_frame)
+        ),
     ))
 }
 
@@ -453,7 +460,7 @@ pub(super) fn encode_state(state: &CueRunStatus) -> Result<String, CodecError> {
 pub(super) fn decode_state(value: &str) -> Result<CueRunStatus, CodecError> {
     let bad = || invalid("state", value);
     let parts: Vec<&str> = value.split(':').collect();
-    let [standby, live, pending, played, fault] = parts.as_slice() else {
+    let [standby, live, pending, played, fault, armed] = parts.as_slice() else {
         return Err(bad());
     };
     let played = decode_ids("state", played)?;
@@ -484,6 +491,16 @@ pub(super) fn decode_state(value: &str) -> Result<CueRunStatus, CodecError> {
                     cue: parse_canonical_u64(cue).ok_or_else(bad)?,
                     action: action(step).ok_or_else(bad)?,
                     detail: super::refusal::decode_fault_detail("state", reason, message)?,
+                }),
+                _ => return Err(bad()),
+            },
+        },
+        armed: match *armed {
+            "-" => None,
+            armed => match armed.split('.').collect::<Vec<_>>().as_slice() {
+                [cue, due] => Some(CueArmedStatus {
+                    cue: parse_canonical_u64(cue).ok_or_else(bad)?,
+                    due_frame: parse_canonical_u64(due).ok_or_else(bad)?,
                 }),
                 _ => return Err(bad()),
             },
@@ -558,11 +575,21 @@ pub(super) fn encode_operation(
         CueOperation::Go { cue: Some(cue) } | CueOperation::Standby { cue } => {
             push("cue", cue.to_string())
         }
+        CueOperation::Arm { cue, in_ms } => {
+            if !(1..=MAX_CUE_ARM_MS).contains(&in_ms) {
+                return Err(invalid("in_ms", in_ms.to_string()));
+            }
+            if let Some(cue) = cue {
+                push("cue", cue.to_string())?;
+            }
+            push("in_ms", in_ms.to_string())
+        }
         CueOperation::Go { cue: None }
         | CueOperation::Back
         | CueOperation::Skip
         | CueOperation::Stop
-        | CueOperation::Reset => Ok(()),
+        | CueOperation::Reset
+        | CueOperation::Disarm => Ok(()),
     }
 }
 
@@ -587,6 +614,22 @@ pub(super) fn decode_operation(
             };
             return Ok(Some((list, CueOperation::Go { cue })));
         }
+        "cue_arm" => {
+            let list = decode_list_id(fields)?;
+            let cue = match fields.optional("cue") {
+                Some(value) => {
+                    Some(parse_canonical_u64(&value).ok_or_else(|| invalid("cue", value))?)
+                }
+                None => None,
+            };
+            let value = fields.required("in_ms")?;
+            let in_ms = parse_canonical_u64(&value)
+                .and_then(|millis| u32::try_from(millis).ok())
+                .filter(|millis| (1..=MAX_CUE_ARM_MS).contains(millis))
+                .ok_or_else(|| invalid("in_ms", value))?;
+            return Ok(Some((list, CueOperation::Arm { cue, in_ms })));
+        }
+        "cue_disarm" => CueOperation::Disarm,
         "cue_standby" => {
             let list = decode_list_id(fields)?;
             return Ok(Some((list, CueOperation::Standby { cue: cue(fields)? })));

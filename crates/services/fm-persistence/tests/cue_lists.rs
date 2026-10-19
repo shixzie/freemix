@@ -11,7 +11,7 @@ use std::{
 };
 
 use fm_model::{
-    AudioBus, Cue, CueAction, CueList, CueMediaOperation, CuePending, CueRunState, Input,
+    AudioBus, Cue, CueAction, CueArmed, CueList, CueMediaOperation, CuePending, CueRunState, Input,
     InputKind, Output, Project, ProjectSettings, RecorderSlot, Rgba8, Scene, SimulatedAudio,
     SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy, StingerSlotNumber, TransitionEffect,
 };
@@ -210,6 +210,11 @@ fn lists() -> Vec<CueList> {
                 }),
                 played: vec![1],
                 fault: None,
+                // Schema 58: cue 4 is armed to fire on frame 300.
+                armed: Some(CueArmed {
+                    cue: 4,
+                    due_frame: 300,
+                }),
             },
         },
         CueList {
@@ -262,6 +267,7 @@ fn clips_list() -> CueList {
             }),
             played: vec![1],
             fault: None,
+            armed: None,
         },
     }
 }
@@ -277,7 +283,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 57"));
+    assert!(text.contains("\"schema_version\": 58"));
     assert!(text.contains("\"cue_lists\": ["), "{text}");
     assert!(
         text.contains("{\"type\": \"wait\", \"frames\": 30}"),
@@ -299,6 +305,8 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         "{\"type\": \"media_play\", \"input\": 12}",
         "{\"type\": \"run_script\", \"script\": 5}",
         "\"pending\": {\"cue\": 1, \"action\": 2, \"due_frame\": 45}",
+        "\"armed\": {\"cue\": 4, \"due_frame\": 300}}",
+        "\"fault\": null, \"armed\": null}",
     ] {
         assert!(text.contains(token), "{token}: {text}");
     }
@@ -344,6 +352,15 @@ fn cue_lists_round_trip_exactly_and_strictly() {
             "{\"type\": \"run_script\"}",
         ),
         (",\n    \"cue_lists\": [", ",\n    \"cue_list\": ["),
+        (
+            "\"armed\": {\"cue\": 4, \"due_frame\": 300}",
+            "\"armed\": {\"cue\": 4}",
+        ),
+        (
+            "\"armed\": {\"cue\": 4, \"due_frame\": 300}",
+            "\"armed\": 4",
+        ),
+        ("\"fault\": null, \"armed\": null}", "\"fault\": null}"),
     ] {
         let malformed = text.replacen(from, to, 1);
         assert_ne!(malformed, text, "{from}");
@@ -383,6 +400,7 @@ fn cue_lists_round_trip_exactly_and_strictly() {
             "{\"type\": \"run_script\", \"script\": 6}",
         ),
         ("\"standby\": 4", "\"standby\": 5"),
+        ("\"armed\": {\"cue\": 4,", "\"armed\": {\"cue\": 5,"),
         ("\"action\": 7", "\"action\": 6"),
         ("\"played\": [1]", "\"played\": [4, 1]"),
         ("\"channel\": 2, \"input\"", "\"channel\": 9, \"input\""),

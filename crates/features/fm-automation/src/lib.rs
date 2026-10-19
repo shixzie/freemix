@@ -49,8 +49,8 @@ pub use controller::{
     MappedControllerIntent, Mapping, TallySnapshot, ValueRange,
 };
 pub use cue::{
-    CueFiring, CuePendingStep, CueStack, CueStackError, CueStackState, CueStep, FiredCueAction,
-    StackCue,
+    CueArmedGo, CueDue, CueFiring, CuePendingStep, CueStack, CueStackError, CueStackState, CueStep,
+    FiredCueAction, StackCue,
 };
 pub use feedback::{
     FeedbackBinding, FeedbackError, FeedbackMessage, FeedbackPayload, FeedbackRouter,

@@ -3531,12 +3531,38 @@ fn a_cue_run_records_the_last_run_of_each_script_it_ran() {
         ),
         Err(ModelError::InvalidCueList(4))
     );
+    // Protocol 2.64: an armed GO must name a cue of its list.
+    let mut stray = cue_run(Vec::new());
+    stray.state.armed = Some(fm_protocol::CueArmedStatus {
+        cue: 9,
+        due_frame: 90,
+    });
+    assert_eq!(
+        apply(&mut model, DurableChange::CueRunChanged(Box::new(stray))),
+        Err(ModelError::InvalidCueList(4))
+    );
     assert_eq!(model.state().unwrap(), &before);
+    assert_eq!(before.cue_frame(), None);
 
     let mut update = cue_run(vec![run(1, 1, 2), run(2, 3, 9), run(1, 4, 11)]);
     update.frame = 50;
+    update.state.armed = Some(fm_protocol::CueArmedStatus {
+        cue: 1,
+        due_frame: 90,
+    });
     apply(&mut model, DurableChange::CueRunChanged(Box::new(update))).unwrap();
     let state = model.state().unwrap();
+    // The run's frame anchors Studio's armed-GO countdown.
+    assert_eq!(state.cue_frame(), Some(50));
+    assert_eq!(
+        state
+            .cue_list(4)
+            .unwrap()
+            .state
+            .armed
+            .map(|armed| armed.due_frame),
+        Some(90)
+    );
     let by_cue = |script, actions, instructions| ScriptRunReport {
         script,
         frame: 50,

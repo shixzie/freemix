@@ -92,6 +92,7 @@ fn state_is_valid(list: &CueListStatus, state: &CueRunStatus) -> bool {
         && state.pending.is_none_or(|pending| holds(pending.cue))
         && state.fault.as_ref().is_none_or(|fault| holds(fault.cue))
         && state.played.iter().all(|cue| holds(*cue))
+        && state.armed.is_none_or(|armed| holds(armed.cue))
 }
 
 /// Checks a whole list against the replicated project.
@@ -171,6 +172,11 @@ pub(crate) fn apply_run(state: &mut ProjectState, mut update: CueRunUpdate) {
             },
         );
     }
+    state.cue_frame = Some(
+        state
+            .cue_frame
+            .map_or(update.frame, |seen| seen.max(update.frame)),
+    );
     apply_effects(state, update);
     if let Some(found) = state.cue_lists.iter_mut().find(|found| found.id == list) {
         found.state = run;

@@ -5959,6 +5959,10 @@ Usage:
   freemix-cli remote-cue-standby <127.0.0.1:port> <list> <cue> [--key <key>] [--expect <revision>]
   freemix-cli <cue-back|cue-skip|cue-stop|cue-reset> <project.freemix> <list> [--key <key>] [--expect <revision>]
   freemix-cli <remote-cue-back|remote-cue-skip|remote-cue-stop|remote-cue-reset> <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
+  freemix-cli cue-arm <project.freemix> <list> <milliseconds> [cue] [--key <key>] [--expect <revision>]
+  freemix-cli remote-cue-arm <127.0.0.1:port> <list> <milliseconds> [cue] [--key <key>] [--expect <revision>]
+  freemix-cli cue-disarm <project.freemix> <list> [--key <key>] [--expect <revision>]
+  freemix-cli remote-cue-disarm <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
   freemix-cli scripts <project.freemix>
   freemix-cli remote-scripts <127.0.0.1:port>
   freemix-cli script-set <project.freemix> <script> <name> <source-file|-> [--key <key>] [--expect <revision>]

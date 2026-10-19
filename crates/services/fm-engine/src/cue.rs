@@ -10,11 +10,13 @@
 //!   change or remove the cue whose deferred actions still wait is refused.
 //! - [`crate::EngineCommand::CueControl`] fires the standby (or a named)
 //!   cue, moves the standby pointer, drops a waiting cue's remaining
-//!   actions, or resets the list: a live operation without undo, journaled
-//!   like every command.
+//!   actions, arms or disarms a GO for a later frame, or resets the list: a
+//!   live operation without undo, journaled like every command.
 //! - [`crate::EngineCommand::CueAdvance`] is the daemon clock's: it runs a
-//!   waiting cue's remaining actions on exactly their due frame (or the next
-//!   frame once that has passed).
+//!   waiting cue's remaining actions, or fires the armed GO (schema 58), on
+//!   exactly their due frame (or the next frame once that has passed). A
+//!   wait due on the same frame as the list's armed GO runs first; the
+//!   armed GO then fires on the next frame.
 //!
 //! A GO and an advance run every action due on the frame as one accepted
 //! command: the actions are expanded to ordinary engine commands, applied to
@@ -23,12 +25,16 @@
 //! advance whose action is refused is accepted with the list's fault set and
 //! its remaining actions dropped, so the clock never retries it. The fault
 //! keeps the refusal's typed reason and bounded message (schema 57,
-//! Protocol 2.63), what a refused GO of the action would have said.
+//! Protocol 2.63), what a refused GO of the action would have said. An
+//! armed GO is unattended like an advance: a refused action disarms it with
+//! the fault set and applies nothing of its frame, and a cue still waiting
+//! in the list keeps waiting.
 
 use fm_automation::{CueStack, CueStackError, CueStackState, CueStep, StackCue};
 use fm_command::{FaultDetail, FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
 use fm_model::{
-    Cue, CueAction, CueFault, CueList, CueMediaOperation, CuePending, CueRunState, TransitionEffect,
+    Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CuePending, CueRunState,
+    TransitionEffect,
 };
 use fm_switcher::{OverlayChannelId, RecorderSlot, StingerSlotId, StreamTargetId, TransitionKind};
 use fm_titles::{FieldId, FieldValue};
@@ -57,8 +63,15 @@ pub enum EngineCueOperation {
     Back,
     /// Moves standby past its cue without firing it.
     Skip,
-    /// Drops the waiting cue's remaining actions.
+    /// Drops the waiting cue's remaining actions and the armed GO.
     Stop,
+    /// Arms a GO of `cue`, or of the standby cue with `None`, to fire
+    /// `in_millis` milliseconds (`1..=`[`fm_model::MAX_CUE_ARM_MS`]) after
+    /// the command's frame, converted to whole frames at the show rate and
+    /// rounded up (schema 58). Replaces a GO armed before.
+    Arm { cue: Option<u64>, in_millis: u32 },
+    /// Drops the armed GO.
+    Disarm,
     /// Returns the list to its initial state: nothing played, the first
     /// cue on standby.
     Reset,
@@ -137,6 +150,10 @@ pub(crate) fn stack_state(state: &CueRunState) -> CueStackState {
         }),
         played: state.played.clone(),
         fault: state.fault.as_ref().map(|fault| (fault.cue, fault.action)),
+        armed: state.armed.map(|armed| fm_automation::CueArmedGo {
+            cue: armed.cue,
+            due_frame: armed.due_frame,
+        }),
     }
 }
 
@@ -165,6 +182,10 @@ pub(crate) fn run_state(state: CueStackState, previous: &CueRunState) -> CueRunS
                     action,
                     detail: FaultDetail::new(None, ""),
                 })
+        }),
+        armed: state.armed.map(|armed| CueArmed {
+            cue: armed.cue,
+            due_frame: armed.due_frame,
         }),
     }
 }
@@ -307,18 +328,10 @@ fn replace(
         .cue_lists()
         .iter()
         .position(|candidate| candidate.id == list);
-    let waiting = existing.and_then(|index| {
-        let current = &state.cue_lists()[index];
-        current
-            .state
-            .pending
-            .and_then(|pending| current.cue(pending.cue).cloned())
-    });
+    let current = existing.map(|index| &state.cue_lists()[index]);
     let Some(definition) = definition else {
         let index = existing.ok_or_else(|| unknown_list(list))?;
-        if let Some(cue) = waiting {
-            return Err(running(cue.id));
-        }
+        guard_running(current, None)?;
         state.cue_lists_mut().remove(index);
         return Ok(());
     };
@@ -364,11 +377,10 @@ fn replace(
         },
     )?;
     check_references(state, &definition.cues)?;
-    if let Some(cue) = waiting
-        && !definition.cues.contains(&cue)
-    {
-        return Err(running(cue.id));
-    }
+    guard_running(
+        existing.map(|index| &state.cue_lists()[index]),
+        Some(&definition.cues),
+    )?;
     let mut next = CueList {
         id: list,
         name: definition.name.clone(),
@@ -406,12 +418,57 @@ fn replace(
     Ok(())
 }
 
+/// Refuses an edit of `current` to `cues` (a removal with `None`) that
+/// changes or removes the cue whose deferred actions still wait, or
+/// removes the armed cue. The armed cue may change (the armed authority
+/// covers the edit, see `fm-control`), but not go away.
+fn guard_running(current: Option<&CueList>, cues: Option<&[Cue]>) -> Result<(), Rejection> {
+    let Some(current) = current else {
+        return Ok(());
+    };
+    if let Some(cue) = current
+        .state
+        .pending
+        .and_then(|pending| current.cue(pending.cue))
+        && cues.is_none_or(|cues| !cues.contains(cue))
+    {
+        return Err(running(cue.id));
+    }
+    if let Some(armed) = current.state.armed
+        && cues.is_none_or(|cues| !cues.iter().any(|cue| cue.id == armed.cue))
+    {
+        return Err(armed_cue(armed.cue));
+    }
+    Ok(())
+}
+
 fn running(cue: u64) -> Rejection {
     Rejection::new(
         RejectionCode::Conflict,
         format!("cue {cue} is still running; stop it before changing it"),
     )
     .with_reason(RefusalReason::CueRunning { cue })
+}
+
+fn armed_cue(cue: u64) -> Rejection {
+    Rejection::new(
+        RejectionCode::Conflict,
+        format!("cue {cue} is armed; disarm it before removing it"),
+    )
+    .with_reason(RefusalReason::CueRunning { cue })
+}
+
+/// The refusal of an armed GO delay outside `1..=`[`fm_model::MAX_CUE_ARM_MS`].
+pub(crate) fn arm_delay_out_of_range() -> Rejection {
+    let message = format!(
+        "an armed GO fires 1 to {} milliseconds after it is armed",
+        fm_model::MAX_CUE_ARM_MS
+    );
+    Rejection::new(RejectionCode::InvalidCommand, message.clone()).with_field(FieldIssue::new(
+        "in_ms",
+        "out_of_range",
+        message,
+    ))
 }
 
 /// The definition of list `list` in `state`, for an undo.
@@ -619,16 +676,20 @@ pub(crate) const fn takes_program(command: &EngineCommand) -> bool {
     )
 }
 
-/// The earliest cue advance due: `(list, due frame)` of the waiting cue
-/// with the smallest due frame, the first list in order on a tie.
+/// The earliest cue advance due: `(list, due frame)` of the waiting cue or
+/// armed GO with the smallest due frame, the first list in order on a tie.
 #[must_use]
 pub fn cue_due(lists: &[CueList]) -> Option<(u64, u64)> {
     lists
         .iter()
         .filter_map(|list| {
-            list.state
-                .pending
-                .map(|pending| (list.id, pending.due_frame))
+            let pending = list.state.pending.map(|pending| pending.due_frame);
+            let armed = list.state.armed.map(|armed| armed.due_frame);
+            match (pending, armed) {
+                (Some(pending), Some(armed)) => Some(pending.min(armed)),
+                (pending, armed) => pending.or(armed),
+            }
+            .map(|due| (list.id, due))
         })
         .min_by_key(|(_, due)| *due)
 }

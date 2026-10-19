@@ -1,7 +1,9 @@
 //! RC-017: the generic cue stack runs GO, frame waits, auto-follow, and
 //! the standby pointer deterministically on frame numbers alone.
 
-use fm_automation::{CuePendingStep, CueStack, CueStackError, CueStep, StackCue};
+use fm_automation::{
+    CueArmedGo, CueDue, CuePendingStep, CueStack, CueStackError, CueStep, StackCue,
+};
 
 fn stack() -> CueStack<&'static str> {
     CueStack::new(vec![
@@ -128,7 +130,7 @@ fn reconcile_carries_the_run_state_across_an_edit() {
     assert_eq!(carried.pending.unwrap().step, 2);
     assert_eq!(carried.played, vec![1]);
 
-    let failed = stack.fail(&state, 1, 2);
+    let failed = stack.fail(&state, CueDue::Wait, 1, 2);
     assert_eq!(failed.fault, Some((1, 2)));
     assert_eq!(failed.pending, None);
     assert!(matches!(
@@ -198,4 +200,68 @@ fn reconcile_moves_standby_to_the_cue_replacing_it_at_its_position() {
     assert_eq!(carried.standby, Some(8));
     let carried = single_steps(&[1, 2]).reconcile(&[1, 2, 3], &last);
     assert_eq!(carried.standby, None);
+}
+
+#[test]
+fn an_armed_go_fires_on_its_frame_beside_a_waiting_cue() {
+    let stack = stack();
+    let initial = stack.initial_state();
+    assert_eq!(
+        stack.arm(&initial, Some(9), 50),
+        Err(CueStackError::UnknownCue(9))
+    );
+    // Cue 4 is armed for frame 50 while cue 1 runs and waits.
+    let armed = stack.arm(&initial, Some(4), 50).unwrap();
+    assert_eq!(
+        armed.armed,
+        Some(CueArmedGo {
+            cue: 4,
+            due_frame: 50
+        })
+    );
+    assert_eq!(CueStack::<&str>::due(&armed), Some((50, CueDue::Armed)));
+    let running = stack.go(&armed, None, 40).unwrap().state;
+    assert_eq!(running.pending.unwrap().due_frame, 50);
+    assert_eq!(running.armed, armed.armed);
+    // The wait due on the same frame runs first; the armed GO stays armed.
+    assert_eq!(CueStack::<&str>::due(&running), Some((50, CueDue::Wait)));
+    let waited = stack.advance(&running, 50).unwrap();
+    assert_eq!(actions(&waited), vec!["b"]);
+    assert_eq!(waited.state.armed, armed.armed);
+    assert_eq!(
+        CueStack::<&str>::due(&waited.state),
+        Some((50, CueDue::Armed))
+    );
+    // The armed GO fires like a GO of cue 4 and owns the list.
+    let fired = stack.advance(&waited.state, 51).unwrap();
+    assert_eq!(actions(&fired), vec!["e"]);
+    assert_eq!(fired.fired, vec![4]);
+    assert_eq!(fired.state.armed, None);
+    assert_eq!(fired.state.pending, None);
+    assert_eq!(fired.state.standby, None);
+
+    // Firing the armed cue by hand disarms it; Stop and Reset disarm.
+    let standby = stack.arm(&initial, None, 70).unwrap();
+    assert_eq!(standby.armed.unwrap().cue, 1);
+    assert_eq!(stack.go(&standby, None, 60).unwrap().state.armed, None);
+    assert_eq!(stack.stop(&standby).armed, None);
+    assert_eq!(stack.disarm(&standby).armed, None);
+    assert_eq!(stack.reset().armed, None);
+    // A refused armed GO disarms and keeps a waiting cue waiting.
+    let failed = stack.fail(&running, CueDue::Armed, 4, 0);
+    assert_eq!(failed.armed, None);
+    assert_eq!(failed.pending, running.pending);
+    assert_eq!(failed.fault, Some((4, 0)));
+    // An edit keeps the armed GO while its cue survives.
+    let edited = CueStack::new(vec![StackCue {
+        id: 1,
+        steps: vec![CueStep::Action("a")],
+        auto_follow: false,
+    }])
+    .unwrap();
+    assert_eq!(edited.reconcile(&[1, 2, 3, 4], &armed).armed, None);
+    assert_eq!(
+        edited.reconcile(&[1, 2, 3, 4], &standby).armed,
+        standby.armed
+    );
 }

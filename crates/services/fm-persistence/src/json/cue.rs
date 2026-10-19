@@ -9,13 +9,15 @@
 //!       {"type": "title_on", "input": 5, "channel": 2}
 //!     ]}
 //!   ], "state": {"standby": 1, "live": null, "pending": null, "played": [],
-//!                "fault": null}}
+//!                "fault": null, "armed": null}}
 //! ]
 //! ```
 //!
 //! A fault is `{"cue", "action", "reason", "message"}`: the action refused
 //! when its wait ended, and (schema 57) what it was refused with, as a
-//! script run's fault says it (see [`super::script`]).
+//! script run's fault says it (see [`super::script`]). `armed` (schema 58)
+//! is `null` or `{"cue", "due_frame"}`: a GO armed to fire on that engine
+//! frame.
 //!
 //! Action types: `preview` (`input`), `take` (`input` or `null` for the
 //! current Preview, `effect` a [`fm_model::TransitionEffect`] token or
@@ -33,8 +35,8 @@
 use core::fmt::Write as _;
 
 use fm_model::{
-    Cue, CueAction, CueFault, CueList, CueMediaOperation, CuePending, CueRunState, RecorderSlot,
-    StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
+    Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CuePending, CueRunState,
+    RecorderSlot, StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
 };
 use fm_types::InputId;
 
@@ -249,6 +251,16 @@ fn write_state(output: &mut String, state: &CueRunState) {
             output.push('}');
         }
     }
+    output.push_str(", \"armed\": ");
+    match state.armed {
+        None => output.push_str("null"),
+        Some(armed) => write!(
+            output,
+            "{{\"cue\": {}, \"due_frame\": {}}}",
+            armed.cue, armed.due_frame
+        )
+        .expect("writing to a string cannot fail"),
+    }
     output.push('}');
 }
 
@@ -439,6 +451,15 @@ fn parse_state(value: Value) -> Result<CueRunState, DecodeError> {
         fault.finish()?;
         Ok(parsed)
     })?;
+    let armed = parse_optional(object.take("armed")?, |value| {
+        let mut armed = Object::new(value, "cue armed")?;
+        let parsed = CueArmed {
+            cue: armed.u64("cue")?,
+            due_frame: armed.u64("due_frame")?,
+        };
+        armed.finish()?;
+        Ok(parsed)
+    })?;
     object.finish()?;
     Ok(CueRunState {
         standby,
@@ -446,5 +467,6 @@ fn parse_state(value: Value) -> Result<CueRunState, DecodeError> {
         pending,
         played,
         fault,
+        armed,
     })
 }

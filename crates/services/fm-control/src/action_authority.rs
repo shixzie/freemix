@@ -22,10 +22,13 @@
 //!   GO arms. The daemon's clock later runs the waits' remaining actions and
 //!   the follows (`cue_advance`) on the authority checked here, up front,
 //!   when the chain was armed; nothing it can run was not authorized then.
-//! - An edit of a list whose cue is waiting changes what the armed chain
-//!   will run, so it also needs every class the edited chain runs that the
-//!   chain armed before the edit did not (an undo or redo of such an edit
-//!   too).
+//! - `cue_arm` (Protocol 2.64) needs exactly what a `cue_go` of the same
+//!   cue needs now: the clock later fires the armed GO, and every wait and
+//!   follow it reaches, on the authority checked when it was armed.
+//! - An edit of a list whose cue is waiting, or whose GO is armed, changes
+//!   what the armed chains will run, so it also needs every class the
+//!   edited chains run that the chains armed before the edit did not (an
+//!   undo or redo of such an edit too).
 //! - A cue's `run_script` step (Protocol 2.60) runs a script on the frame
 //!   the step runs, which for a step after a wait or in a followed cue is a
 //!   later frame whose show (and so the branches the script takes) is not
@@ -38,8 +41,8 @@
 //!   source's verbs need that the script's verbs did not, like an armed
 //!   list edit. A script a cue runs cannot be removed.
 //!
-//! The other cue controls (standby, back, skip, stop, reset) never perform
-//! an action and need only `transition`.
+//! The other cue controls (standby, back, skip, stop, reset, disarm) never
+//! perform an action and need only `transition`.
 
 use fm_auth::CommandClass;
 use fm_engine::Engine;
@@ -198,14 +201,26 @@ fn classes<'a>(engine: &Engine, actions: impl IntoIterator<Item = &'a CueAction>
     set
 }
 
-/// Whether a waiting cue's armed chain runs script `script`.
+/// Every action the chains `list` has armed can still run, from the cues
+/// `cues` (the list's own, or an edit of them): the waiting cue's from the
+/// action it resumes at, then the armed GO's (Protocol 2.64).
+fn armed_actions<'a>(list: &fm_model::CueList, cues: &'a [fm_model::Cue]) -> Vec<&'a CueAction> {
+    let mut actions = Vec::new();
+    if let Some(pending) = list.state.pending {
+        actions.extend(cue_chain_actions(cues, pending.cue, pending.action));
+    }
+    if let Some(armed) = list.state.armed {
+        actions.extend(cue_chain_actions(cues, armed.cue, 0));
+    }
+    actions
+}
+
+/// Whether a waiting cue's or an armed GO's chain runs script `script`.
 fn armed_chain_runs(engine: &Engine, script: u64) -> bool {
     engine.show().cue_lists().iter().any(|list| {
-        list.state.pending.is_some_and(|pending| {
-            cue_chain_actions(&list.cues, pending.cue, pending.action)
-                .into_iter()
-                .any(|action| action.script() == Some(script))
-        })
+        armed_actions(list, &list.cues)
+            .into_iter()
+            .any(|action| action.script() == Some(script))
     })
 }
 
@@ -224,7 +239,7 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
         }
         CommandPayload::CueControl {
             list,
-            operation: CueOperation::Go { cue },
+            operation: CueOperation::Go { cue } | CueOperation::Arm { cue, .. },
         } => engine
             .show()
             .cue_list(*list)
@@ -236,19 +251,12 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             let Some(found) = engine.show().cue_list(*list) else {
                 return ClassSet::default();
             };
-            let Some(pending) = found.state.pending else {
+            if found.state.pending.is_none() && found.state.armed.is_none() {
                 return ClassSet::default();
-            };
-            let armed = classes(
-                engine,
-                cue_chain_actions(&found.cues, pending.cue, pending.action),
-            );
+            }
+            let armed = classes(engine, armed_actions(found, &found.cues));
             let edited: Vec<fm_model::Cue> = spec.cues.iter().map(crate::cue::domain_cue).collect();
-            classes(
-                engine,
-                cue_chain_actions(&edited, pending.cue, pending.action),
-            )
-            .without(armed)
+            classes(engine, armed_actions(found, &edited)).without(armed)
         }
         CommandPayload::SetScript { script, spec } if armed_chain_runs(engine, *script) => {
             let edited = fm_script::parse(&spec.source)

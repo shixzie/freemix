@@ -1112,6 +1112,9 @@ pub struct ProjectState {
     /// `cue_list_state` records the snapshot announced that have not
     /// arrived.
     cue_list_states_pending: u16,
+    /// The newest engine frame a `cue_list_state` or `cue_run_changed`
+    /// reported (Protocol 2.64), from which Studio counts an armed GO down.
+    cue_frame: Option<u64>,
     /// Every script in project order (Protocol 2.58).
     scripts: Vec<fm_protocol::ScriptStatus>,
     /// `script_state` records the snapshot announced that have not arrived.
@@ -1273,6 +1276,14 @@ impl ProjectState {
     #[must_use]
     pub fn cue_lists(&self) -> &[fm_protocol::CueListStatus] {
         &self.cue_lists
+    }
+
+    /// The newest engine frame a cue record reported (Protocol 2.64): the
+    /// frame of the latest `cue_list_state` or `cue_run_changed`, `None`
+    /// before either arrived.
+    #[must_use]
+    pub const fn cue_frame(&self) -> Option<u64> {
+        self.cue_frame
     }
 
     /// Returns cue list `list`.
@@ -2738,6 +2749,7 @@ impl ClientModel {
             media_states_pending: snapshot.media_states,
             cue_lists: Vec::new(),
             cue_list_states_pending: snapshot.cue_list_states,
+            cue_frame: None,
             scripts: Vec::new(),
             script_states_pending: snapshot.script_states,
             script_runs: Vec::new(),
@@ -3082,6 +3094,11 @@ impl ClientModel {
         cue_lists::validate_list(&message.list, state)?;
         state.cue_lists.push(message.list);
         state.cue_list_states_pending -= 1;
+        state.cue_frame = Some(
+            state
+                .cue_frame
+                .map_or(message.frame, |seen| seen.max(message.frame)),
+        );
         Ok(())
     }
 

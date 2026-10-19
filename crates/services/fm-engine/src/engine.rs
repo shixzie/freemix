@@ -1505,6 +1505,19 @@ impl Engine {
             Some(crate::EngineCueOperation::Back) => quiet(stack.back(&state)),
             Some(crate::EngineCueOperation::Skip) => quiet(stack.skip(&state)),
             Some(crate::EngineCueOperation::Stop) => quiet(stack.stop(&state)),
+            Some(crate::EngineCueOperation::Arm { cue, in_millis }) => {
+                if in_millis == 0 || in_millis > fm_model::MAX_CUE_ARM_MS {
+                    return Err(crate::cue::arm_delay_out_of_range());
+                }
+                let due = frame
+                    .checked_add(u64::from(fm_model::delay_frames(
+                        in_millis,
+                        self.frame_rate,
+                    )))
+                    .ok_or_else(|| refused(fm_automation::CueStackError::FrameOverflow))?;
+                quiet(stack.arm(&state, cue, due).map_err(refused)?)
+            }
+            Some(crate::EngineCueOperation::Disarm) => quiet(stack.disarm(&state)),
             Some(crate::EngineCueOperation::Reset) => quiet(stack.reset()),
         };
         Ok((list_id, firing))
@@ -1558,9 +1571,12 @@ impl Engine {
                     .cue_list(list_id)
                     .expect("the planned list exists");
                 let state = crate::cue::stack_state(&list.state);
+                // What the advance ran: the armed GO or the waiting cue.
+                let due = fm_automation::CueStack::<fm_model::CueAction>::due(&state)
+                    .map_or(fm_automation::CueDue::Wait, |(_, due)| due);
                 fault = Some(crate::cue::fault(cue, step, &rejection));
                 (
-                    crate::cue::stack(list, self.frame_rate).fail(&state, cue, step),
+                    crate::cue::stack(list, self.frame_rate).fail(&state, due, cue, step),
                     Vec::new(),
                 )
             }
@@ -2477,7 +2493,22 @@ fn validate_cue_run_reach(
     cursor: u64,
     frame_rate: FrameRate,
 ) -> Result<(), SnapshotError> {
+    // An armed GO (schema 58) fires at most the longest arm delay after
+    // the frame it was armed on, which ran before `cursor`.
+    let arm_reach = cursor.checked_add(u64::from(fm_model::delay_frames(
+        fm_model::MAX_CUE_ARM_MS,
+        frame_rate,
+    )));
     for list in show.cue_lists() {
+        if let Some(armed) = list.state.armed
+            && arm_reach.is_none_or(|reach| armed.due_frame > reach)
+        {
+            return Err(SnapshotError::CueRunOutOfReach {
+                list: list.id,
+                due_frame: armed.due_frame,
+                frame_cursor: cursor,
+            });
+        }
         let Some(pending) = list.state.pending else {
             continue;
         };

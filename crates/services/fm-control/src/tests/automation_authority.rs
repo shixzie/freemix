@@ -628,6 +628,65 @@ fn an_edit_to_an_armed_chain_needs_what_it_adds() {
     );
 }
 
+/// Protocol 2.64: arming a GO needs exactly what a GO of the same cue needs
+/// now, the clock fires it on that authority, an edit of the armed cue's
+/// chain needs what it adds, and disarming needs only `transition`.
+#[test]
+fn an_armed_go_needs_what_a_go_needs_and_fires_on_the_clock() {
+    let arm = |cue| CommandPayload::CueControl {
+        list: 7,
+        operation: CueOperation::Arm { cue, in_ms: 100 },
+    };
+    let cues = |last: Vec<WireCueAction>| {
+        set_list(vec![
+            cue(10, true, vec![cut(2)]),
+            cue(20, false, vec![mute(3)]),
+            cue(30, false, last),
+        ])
+    };
+    let mut control = granted(EDIT_AND_TRANSITION);
+    submit(&mut control, &admin(), "set", cues(vec![cut(1)]));
+    assert_eq!(
+        control.required_classes(&arm(None)).additional(),
+        control.required_classes(&go(None)).additional()
+    );
+    assert!(
+        control
+            .required_classes(&arm(None))
+            .additional()
+            .contains(&CommandClass::ControlAudio)
+    );
+    // The standby cue follows into the mute: refused up front, nothing armed.
+    assert_denied(
+        &submit(&mut control, &session(), "arm", arm(None)),
+        "ControlAudio",
+    );
+    assert_eq!(control.cue_advance_frame(), None);
+    let armed = submit(&mut control, &session(), "arm-30", arm(Some(30)));
+    assert!(armed.is_accepted(), "{:?}", armed.output.result);
+    assert_eq!(cue_state(&control).armed.map(|armed| armed.cue), Some(30));
+
+    // Adding a mute to the armed cue needs control_audio; a cut does not.
+    assert_denied(
+        &submit(&mut control, &session(), "add-mute", cues(vec![mute(1)])),
+        "ControlAudio",
+    );
+    let recut = submit(&mut control, &session(), "recut", cues(vec![cut(3)]));
+    assert!(recut.is_accepted(), "{:?}", recut.output.result);
+    let disarm = CommandPayload::CueControl {
+        list: 7,
+        operation: CueOperation::Disarm,
+    };
+    assert_eq!(control.required_classes(&disarm).additional(), []);
+
+    // The clock fires the edited cue on the authority checked when armed.
+    let fired = advance(&mut control, "fire");
+    assert!(fired.is_accepted(), "{:?}", fired.output.result);
+    assert_eq!(program(&control), input(3));
+    let state = cue_state(&control);
+    assert_eq!((state.armed, state.live), (None, Some(30)));
+}
+
 fn run_step(script: u64) -> WireCueAction {
     WireCueAction::RunScript { script }
 }

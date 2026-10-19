@@ -1133,3 +1133,178 @@ fn a_restored_cue_due_beyond_its_wait_is_refused() {
         );
     }
 }
+
+fn arm(cue: Option<u64>, in_millis: u32) -> EngineCueOperation {
+    EngineCueOperation::Arm { cue, in_millis }
+}
+
+/// Protocol 2.64, schema 58: a GO armed for later fires on exactly its due
+/// frame as a GO would, survives edits that keep its cue, and is disarmed,
+/// stopped, or refused like a GO.
+#[test]
+fn an_armed_go_fires_on_its_frame_and_keeps_through_edits() {
+    let mut engine = engine();
+    let cues = |first: CueAction| vec![cue(10, vec![first], false), cue(20, vec![cut(4)], false)];
+    accepted(&submit(&mut engine, "set", set(1, cues(cut(2)))));
+    engine.tick().unwrap();
+    for (key, in_millis) in [("zero", 0), ("long", fm_model::MAX_CUE_ARM_MS + 1)] {
+        assert_eq!(
+            refusal(&submit(&mut engine, key, control(1, arm(None, in_millis)))).0,
+            RejectionCode::InvalidCommand
+        );
+    }
+    assert_eq!(
+        refusal(&submit(
+            &mut engine,
+            "unknown",
+            control(1, arm(Some(99), 40))
+        ))
+        .1,
+        Some(RefusalReason::UnknownId {
+            kind: fm_command::IdKind::Cue,
+            id: 99
+        })
+    );
+    // One second at 25 fps: the standby cue fires 25 frames later.
+    let armed_at = accepted(&submit(&mut engine, "arm", control(1, arm(None, 1_000))));
+    let due = armed_at + 25;
+    let state = &engine.show().cue_list(1).unwrap().state;
+    assert_eq!(
+        state.armed,
+        Some(fm_model::CueArmed {
+            cue: 10,
+            due_frame: due
+        })
+    );
+    assert_eq!(state.live, None, "arming fires nothing");
+    assert_eq!(engine.cue_advance_frame(), Some((1, due)));
+
+    // The armed cue may change but not go away, nor may its list.
+    let dropped = set(1, vec![cue(20, vec![cut(4)], false)]);
+    assert_eq!(
+        refusal(&submit(&mut engine, "drop", dropped)).1,
+        Some(RefusalReason::CueRunning { cue: 10 })
+    );
+    let removed = EngineCommand::SetCueList {
+        list: 1,
+        definition: None,
+    };
+    assert_eq!(
+        refusal(&submit(&mut engine, "remove", removed)).1,
+        Some(RefusalReason::CueRunning { cue: 10 })
+    );
+    accepted(&submit(&mut engine, "edit", set(1, cues(cut(3)))));
+    let armed = engine.show().cue_list(1).unwrap().state.armed;
+    assert_eq!(armed.map(|armed| armed.due_frame), Some(due));
+
+    let ahead = due + 3 - engine.frame_cursor().get();
+    let frames = drive(&mut engine, ahead);
+    assert_eq!(program_changes(&frames), vec![(due, input(3))]);
+    let state = &engine.show().cue_list(1).unwrap().state;
+    assert_eq!(state.armed, None);
+    assert_eq!(state.live, Some(10));
+    assert_eq!(state.standby, Some(20));
+    assert_eq!(engine.cue_advance_frame(), None);
+
+    // Disarm and Stop drop an armed GO; nothing fires.
+    for (key, drop) in [
+        ("disarm", EngineCueOperation::Disarm),
+        ("stop", EngineCueOperation::Stop),
+    ] {
+        accepted(&submit(
+            &mut engine,
+            &format!("arm-{key}"),
+            control(1, arm(Some(20), 200)),
+        ));
+        assert!(engine.cue_advance_frame().is_some());
+        accepted(&submit(&mut engine, key, control(1, drop)));
+        assert_eq!(engine.cue_advance_frame(), None);
+        let frames = drive(&mut engine, 10);
+        assert_eq!(program_changes(&frames), Vec::new());
+    }
+}
+
+/// An armed GO refused when it fires (here: a cut while the chain's fade is
+/// in flight) sets the list's fault, applies nothing of its frame, and
+/// leaves a cue waiting in the list waiting.
+#[test]
+fn a_refused_armed_go_faults_and_keeps_the_waiting_cue() {
+    let mut engine = engine();
+    let fade = CueAction::Take {
+        input: Some(input(2)),
+        effect: TransitionEffect::Fade,
+        duration_frames: 50,
+    };
+    let cues = vec![
+        cue(
+            30,
+            vec![fade, CueAction::Wait { frames: 60 }, cut(3)],
+            false,
+        ),
+        cue(40, vec![cut(4)], false),
+    ];
+    accepted(&submit(&mut engine, "set", set(1, cues)));
+    engine.tick().unwrap();
+    let go = accepted(&submit(&mut engine, "go", control(1, GO)));
+    let armed_at = accepted(&submit(&mut engine, "arm", control(1, arm(Some(40), 200))));
+    let due = armed_at + 5;
+    assert_eq!(engine.cue_advance_frame(), Some((1, due)));
+    let ahead = due + 2 - engine.frame_cursor().get();
+    let frames = drive(&mut engine, ahead);
+    assert!(
+        program_changes(&frames)
+            .iter()
+            .all(|(_, program)| *program != input(4))
+    );
+    let state = &engine.show().cue_list(1).unwrap().state;
+    assert_eq!(state.armed, None);
+    let fault = state.fault.as_ref().expect("the armed GO faulted");
+    assert_eq!((fault.cue, fault.action), (40, 0));
+    assert!(fault.detail.message.contains("transition"), "{fault:?}");
+    assert_eq!(
+        state.pending.map(|pending| pending.due_frame),
+        Some(go + 60)
+    );
+    assert_eq!(state.live, Some(30));
+}
+
+/// A restored armed GO may be due at most the longest arm delay past the
+/// frame cursor (a further one would hold the cue clock for ever).
+#[test]
+fn a_restored_armed_go_beyond_the_longest_delay_is_refused() {
+    let mut engine = engine();
+    let cues = vec![cue(10, vec![cut(2)], false)];
+    accepted(&submit(&mut engine, "set", set(1, cues)));
+    accepted(&submit(&mut engine, "arm", control(1, arm(None, 1_000))));
+    engine.tick().unwrap();
+    let snapshot = engine.snapshot().expect("idle");
+    let cursor = snapshot.frames_rendered();
+    let restore = |due_frame: u64| {
+        let mut show = snapshot.show().clone();
+        let mut lists = show.cue_lists().to_vec();
+        lists[0].state.armed.as_mut().unwrap().due_frame = due_frame;
+        show.set_cue_lists(lists).unwrap();
+        Engine::restore_persisted(
+            show,
+            snapshot.realized_switcher().clone(),
+            snapshot.frame_rate(),
+            fm_clock::ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+            fm_engine::EngineRestoreState {
+                state_epoch: snapshot.state_epoch(),
+                revision: snapshot.revision(),
+                event_sequence: snapshot.event_sequence(),
+                runtime_generation: snapshot.runtime_generation(),
+                clock_time: snapshot.clock_time(),
+                frame_cursor: fm_scheduler::FrameNumber::new(cursor),
+                receipts: snapshot.receipts().to_vec(),
+            },
+        )
+    };
+    let longest = 25 * 86_400;
+    let restored = restore(cursor + longest).expect("a day from the cursor restores");
+    assert_eq!(restored.cue_advance_frame(), Some((1, cursor + longest)));
+    assert!(matches!(
+        restore(cursor + longest + 1).err(),
+        Some(fm_engine::SnapshotError::CueRunOutOfReach { list: 1, .. })
+    ));
+}

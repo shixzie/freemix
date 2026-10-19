@@ -3248,6 +3248,7 @@ mod cue_lists {
             pending: None,
             played: vec![10],
             fault: None,
+            armed: None,
         };
         client
             .apply_event(event(

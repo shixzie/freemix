@@ -2073,7 +2073,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "cue-stop"
         | "remote-cue-stop"
         | "cue-reset"
-        | "remote-cue-reset") => parse_cue(cue, arguments),
+        | "remote-cue-reset"
+        | "cue-arm"
+        | "remote-cue-arm"
+        | "cue-disarm"
+        | "remote-cue-disarm") => parse_cue(cue, arguments),
         script @ ("scripts"
         | "remote-scripts"
         | "script-set"
@@ -6027,7 +6031,9 @@ fn parse_remote_playlist(
 ///   `\` (see [`split_escaped`]);
 /// * `cue-list-remove <list>`;
 /// * `go <list> [<cue>]`, `cue-standby <list> <cue>`, and `cue-back`,
-///   `cue-skip`, `cue-stop`, or `cue-reset <list>`.
+///   `cue-skip`, `cue-stop`, or `cue-reset <list>`;
+/// * `cue-arm <list> <milliseconds> [<cue>]` and `cue-disarm <list>`
+///   (Protocol 2.64).
 fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     use fm_protocol::{CommandPayload, CueListSpec, CueOperation};
 
@@ -6079,6 +6085,23 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
         "cue-skip" => control(CueOperation::Skip),
         "cue-stop" => control(CueOperation::Stop),
         "cue-reset" => control(CueOperation::Reset),
+        "cue-arm" => {
+            let in_ms = required(&mut arguments, "milliseconds")?;
+            let in_ms = in_ms
+                .parse::<u32>()
+                .ok()
+                .filter(|millis| (1..=fm_protocol::MAX_CUE_ARM_MS).contains(millis))
+                .ok_or(ArgsError::InvalidNumber {
+                    field: "milliseconds",
+                    value: in_ms,
+                })?;
+            let cue = match arguments.next_if(|argument| !argument.starts_with("--")) {
+                Some(cue) => Some(number(&cue, "cue")?),
+                None => None,
+            };
+            control(CueOperation::Arm { cue, in_ms })
+        }
+        "cue-disarm" => control(CueOperation::Disarm),
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
     };
     let (key, expected_revision) = command_options(arguments)?;
@@ -8387,6 +8410,66 @@ mod tests {
         assert_eq!(
             ArgsError::InvalidRecorder("nope".into()).to_string(),
             "invalid value for --recorder `nope`; expected 1 or 2"
+        );
+    }
+
+    /// Protocol 2.64: arm a GO of the standby cue, or of a named cue, a
+    /// delay of 1 ms to 24 hours ahead.
+    #[test]
+    fn parses_cue_arm_local_and_remote() {
+        use fm_protocol::{CommandPayload, CueOperation};
+
+        let address: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let control = |operation| CommandPayload::CueControl { list: 3, operation };
+        assert_eq!(
+            parse(strings(&["remote-cue-arm", "127.0.0.1:9123", "3", "1500"])),
+            Ok(Command::RemoteCue {
+                address,
+                payload: control(CueOperation::Arm {
+                    cue: None,
+                    in_ms: 1_500
+                }),
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "cue-arm",
+                "show.freemix",
+                "3",
+                "86400000",
+                "20",
+                "--expect",
+                "4"
+            ])),
+            Ok(Command::Cue {
+                path: PathBuf::from("show.freemix"),
+                payload: control(CueOperation::Arm {
+                    cue: Some(20),
+                    in_ms: 86_400_000
+                }),
+                key: None,
+                expected_revision: Some(4),
+            })
+        );
+        for bad in ["0", "86400001", "soon"] {
+            assert!(matches!(
+                parse(strings(&["remote-cue-arm", "127.0.0.1:9123", "3", bad])),
+                Err(ArgsError::InvalidNumber {
+                    field: "milliseconds",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            parse(strings(&["remote-cue-disarm", "127.0.0.1:9123", "3"])),
+            Ok(Command::RemoteCue {
+                address,
+                payload: control(CueOperation::Disarm),
+                key: None,
+                expected_revision: None,
+            })
         );
     }
 

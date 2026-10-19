@@ -328,7 +328,7 @@ pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protoco
         any = true;
         let state = &list.state;
         println!(
-            "CueList(id={}, name={:?}, standby={}, live={}, pending={}, played={:?}, fault={})",
+            "CueList(id={}, name={:?}, standby={}, live={}, pending={}, played={:?}, fault={}, armed={})",
             list.id,
             list.spec.name,
             optional(state.standby),
@@ -346,6 +346,10 @@ pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protoco
                     fault.action,
                     fault_detail(&fault.detail)
                 )
+            ),
+            state.armed.map_or_else(
+                || "-".to_owned(),
+                |armed| format!("{}@{}", armed.cue, armed.due_frame)
             ),
         );
         for cue in &list.spec.cues {
@@ -1212,7 +1216,7 @@ pub fn execute(
     let fires = matches!(
         payload,
         CommandPayload::CueControl {
-            operation: fm_protocol::CueOperation::Go { .. },
+            operation: fm_protocol::CueOperation::Go { .. } | fm_protocol::CueOperation::Arm { .. },
             ..
         } | CommandPayload::RunScript { .. }
     );
