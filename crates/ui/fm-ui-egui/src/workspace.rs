@@ -1163,7 +1163,17 @@ impl StudioShell {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let viewport = ui.available_size();
-                let width = viewport.x.max(min_width);
+                // A tall body's vertical scroll bar takes its width from a
+                // tile sized to the minimum: give it that width rather than
+                // overflow by it and scroll sideways too (the Cues panel's
+                // GO key ran under the bar at 1280x720).
+                let width = if fills_height {
+                    viewport.x.max(min_width)
+                } else {
+                    viewport
+                        .x
+                        .max(min_width - ui.spacing().scroll.allocated_width())
+                };
                 let height = if fills_height {
                     viewport.y.max(min_height)
                 } else {

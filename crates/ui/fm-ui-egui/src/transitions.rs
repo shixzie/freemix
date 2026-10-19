@@ -472,8 +472,29 @@ fn draw_more_transitions(
     duration_frames: u32,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let size = Vec2::new(width, 24.0);
+    // A button's label follows its layout's alignment: in a centred child
+    // as wide as the key, MORE is centred like the keys above it.
+    ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Center), |ui| {
+        draw_more_transitions_key(
+            ui,
+            key.min_size(size),
+            (enabled, reason),
+            duration_frames,
+            intents,
+        );
+    });
+}
+
+fn draw_more_transitions_key(
+    ui: &mut Ui,
+    key: egui::Button<'static>,
+    (enabled, reason): (bool, &str),
+    duration_frames: u32,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = l10n::locale(ui.ctx());
-    egui::containers::menu::MenuButton::from_button(key.min_size(Vec2::new(width, 24.0)))
+    egui::containers::menu::MenuButton::from_button(key)
         .ui(ui, |ui| {
             for kind in MORE_KINDS {
                 let label = l.text(mix_name(kind).name);

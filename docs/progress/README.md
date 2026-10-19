@@ -4,7 +4,7 @@ Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
 supervised daemon runs in simulated mode and sends no audio meters, so a
 normal build reports `METERS UNAVAILABLE` with unlit meter wells. Every
-console capture (regenerated on 2026-10-15/16 at Protocol 2.41, with the later additions at Protocol 2.48 and the round 5 additions at Protocol 2.52 and the round 6 additions at Protocol 2.62, see below) on the simulated daemon was taken
+console capture (regenerated on 2026-10-15/16 at Protocol 2.41, with the later additions at Protocol 2.48 and the round 5 additions at Protocol 2.52, the round 6 additions at Protocol 2.62, and the round 7 captures at Protocol 2.67, see below) on the simulated daemon was taken
 with a synthetic meter feed (see Reproducing): those meter levels are a
 Studio-side test signal, not daemon audio. The
 Preview/Program monitors show
@@ -889,6 +889,88 @@ audio bus, an output, a two-rung local HLS ladder target (desired running), an
 RTMP target (stopped), the scene routed to Program and Camera 2 Close on
 Preview.
 
+## Round 7
+
+Captures of 2026-10-19 at Protocol 2.67, schema 59: the current Studio as a
+news operator sees it mid-show, on the native console (Xvfb + lavapipe,
+`--role admin`, simulated daemon, synthetic meter feed; see "Round 7
+captures" under Reproducing). The show is "Metro Evening News": Anchor Wide,
+Anchor Close, Guest Cam (colour bars), Field Reporter (an RTSP network
+stream), Weather Wall, Studio Playback (system audio), the scene Two-Shot +
+Remote, and the title Guest Lower Third; mixer labels Anchor Mic, Guest Mic,
+and Field Return; three destinations (YouTube Main, Affiliate SRT, Web HLS
+Archive, fake keys); and the cue list "6pm Rundown", played to Anchor intro
+(REC 2 recording, YouTube Main and Affiliate SRT started), with Guest Cam
+then put on Preview.
+
+| File | What it shows |
+| --- | --- |
+| `studio-round7-workspace.png` | 1920x1080, the docked Default workspace: Preview (Guest Cam bars) and Program (Anchor Close) with their tally headers and `SIMULATED` badges, the transition column, the input bank as a multiview of live thumbnails (`PGM TAP` / `PVW TAP` / `FEED`, the `audio only` tile, the title's lower-third thumbnail), the audio mixer with moving meters (Field Return latched `CLIP`, Master at -1.0) and the `MON` headphone strip, Recording & streams (`1 / 2 RECORDING`, two destinations `NOT LIVE · Started · no stats`, Web HLS Archive `OFF · Not started`), the top bar's `REC` and amber `LIVE`, and the Cues tab with `Standby: Guest interview` and its `GO will:` box: `Put Guest Cam on Preview (now Guest Cam)` marked `already on Preview: no change`, the wipe, `Overlay 1: take title Guest Lower Third`, `Wait 150 frames (2.5 s), then:` and the title off. |
+| `studio-round7-workspace-720.png` | The same show and steps at 1280x720: the side group keeps the Cues panel (GO, standby, `GO will:`) without a sideways scroll, the stream rows fold their keys into `···`, the mixer keeps one input strip beside `MON` and Master, and the side tabs are cut to `OVE…`, `STI…` (see the issues below). |
+| `studio-round7-colour.png` | Ctrl+G, target `03 · Guest Cam`, the Warm look, then `Advanced` and `Vectorscope`: the green `APPLIED` chip (Guest Cam is on Preview, not on air), the basics with pivot, the Lift/Gamma/Gain/Offset wheels, the curves, the LUT slot (`No LUT`, strength track empty at 0 %), the graded preview, and the bars on the vectorscope's 75 % targets. Preview shows the server-applied grade. |
+| `studio-round7-animation.png` | Titles tab, Guest Lower Third's `Animate…`: `Fit`, `Stagger…` › `Apply stagger` (Bar, Accent, Name, Role 5 frames apart, IN grew from 15 to 30 frames, one auto-saved undo step), `Fit` again, and the ruler clicked at frame 21: the server's exact preview there (bar and accent in, the name in, the role still arriving), with the element outlines and onion skins. |
+| `studio-round7-shortcuts.png` | `?`: the keyboard reference with the `CUE LIST` group (`G` GO, `,` / `.` standby back and forward, `Ctrl+Shift+M` arm, `Ctrl+Shift+D` disarm, `Ctrl+Shift+X` stop, `Ctrl+Shift+E` reset) beside Recording and streaming, Windows, and Console, all in view without scrolling. |
+| `studio-round7-workspace-es.png` | The 1920x1080 workspace with `--lang es`: `PREVIO` / `PROGRAMA`, `CORTE`, `FUNDIDO`, `MÁS`, `BANCO DE ENTRADAS`, `MEZCLADOR DE AUDIO`, `GRABACIÓN Y TRANSMISIONES` (`Iniciado · sin datos`, `Sin iniciar`), `En espera: Guest interview`, and `GO hará:` with `Poner Guest Cam en Previo (ahora Guest Cam)` / `ya está en Previo: sin cambios`. |
+
+Defects found in these captures and fixed in `fm-ui-egui` (the captures
+above are after the fixes):
+
+- The `GO will:` preview named a title by its template ("Lower third")
+  while the bank, the Titles tab, and the cue rows name the input ("Guest
+  Lower Third"); it now uses the input's name.
+- The Spanish `GO hará:` preview said `Preview` and `Program` where the rest
+  of the Spanish console says `Previo` and `Programa`.
+- The large `MORE` transition key was the only key with a left-aligned
+  label; it is centred like the keys above it.
+- An off destination's row read `Desired off` (internal wording); it reads
+  `Not started` (`Sin iniciar`).
+- Master's tap caption read `PRE-STINGER/ FTB` with a stray space; it reads
+  `PRE-STINGER/FTB`.
+- The Colour window's status chip was a red `ON AIR` for any applied grade,
+  including a source only on Preview; it is red `ON AIR` only when the
+  target is Program or the input on Program, and a green `APPLIED`
+  (`APLICADA`) otherwise.
+- The LUT strength slider was filled from its 100 % default, so `No LUT` at
+  0 % looked like a full bar; it fills from zero.
+- The keyboard reference opened by `?` or F1 found its height over several
+  passes but stopped repainting after the first, so it opened cut short and
+  scrolling until the pointer moved; it now repaints until its size
+  settles.
+- In Spanish the stream rows kept `REINTENTAR` / `EDITAR…` inline and cut the
+  detail to `Iniciado · …`; a row now folds its keys into `···` before the
+  detail drops below a short phrase.
+- At 1280x720 the side panels' vertical scroll bar pushed a minimum-width
+  body sideways, so the Cues panel scrolled horizontally and its GO key ran
+  under the bar; a body sized to its minimum now leaves the bar its width.
+
+Larger issues seen and not fixed here:
+
+- There is no dedicated multiview: the input bank's thumbnails stand in for
+  one, without Program/Preview tiles in the grid, labels in a broadcast
+  multiviewer style, or audio bars per source.
+- The scene input's tile (Two-Shot + Remote) reads `no thumbnail` for the
+  whole session on the simulated daemon, although Program shows simulated
+  renders.
+- The title tile's `FEED · SIM` tag sits exactly where a lower third is drawn,
+  hiding the picture it labels.
+- At 1280x720 the side tab group truncates its tabs (`OVE…`, `STI…`,
+  `PLA…`, `ME…`) instead of scrolling or folding them into a menu, the mixer
+  header cuts `RMS · PEAK HOL…`, and the stream detail is still `Started ·
+  no …`.
+- The monitors leave a band of empty panel above and below the 16:9 well in
+  the 1920x1080 Default layout.
+- The Colour and Animation windows have no title bar; their close keys sit
+  mid-row after the last key, and the Animation window opens over the top
+  bar's padlock.
+- The Colour window offers the audio-only input (Studio Playback) as a
+  grade target.
+- The vectorscope trace of colour bars is a few faint pixels per bar; the
+  waveform is similarly dim.
+- The animation ruler's playhead and the first and last time labels overlap
+  or clip (`0:00`, `1:00`).
+- The `,` and `.` key caps in the keyboard reference are tiny and hard to
+  read at a glance.
+
 ## Reproducing
 
 ```sh
@@ -1471,3 +1553,74 @@ opening, with `remote-script-set`:
   rotation", and 3 "Break bumper", start the fresh Studio, run
   `remote-script-run … 1`, and open the window
   (`studio-scripts-waiting.png`).
+
+### Round 7 captures
+
+The round 7 captures (2026-10-19, Protocol 2.67, schema 59) built the
+working tree with `CARGO_TARGET_DIR=/tmp/shots4-target cargo build -p
+freemix-cli -p freemixd -p freemix-studio --features
+freemix-studio/capture-meter-signal` and ran Studio with `--role admin`, a
+fresh `FREEMIX_STUDIO_PREFS` file per launch, and
+`FREEMIX_STUDIO_CAPTURE_METERS=1` on Xvfb (`:172` English, `:173` Spanish
+with `--lang es`, both 1920x1080x24; `:174` at 1280x720x24), each against a
+freshly built show:
+
+```sh
+freemix-cli demo news.freemix program.ppm
+freemix-cli project-rename news.freemix "Metro Evening News"
+freemix-cli rename news.freemix 1 "Anchor Wide"
+freemix-cli rename news.freemix 2 "Anchor Close"
+freemix-cli input-add news.freemix 3 "Guest Cam"
+freemix-cli input-add-stream news.freemix 4 "Field Reporter" "rtsp://10.20.0.42:554/live"
+freemix-cli simulated-solid-input-add news.freemix 5 "Weather Wall" 20 60 140 255
+freemix-cli input-add-system-audio news.freemix 6 "Studio Playback" pulse "@DEFAULT_MONITOR@"
+freemix-cli scene-input-add news.freemix 7 100 "Two-Shot + Remote"
+freemix-cli scene-layer-add news.freemix 100 1 0 "Studio"
+freemix-cli scene-layer-add news.freemix 100 4 1 "Remote Box"
+freemix-cli scene-layer-geometry news.freemix 100 0 0 0 1920 1080 0
+freemix-cli scene-layer-geometry news.freemix 100 1 1180 120 640 360 0
+freemix-cli title-input-add news.freemix --id 8 --name "Guest Lower Third" \
+    --template lower-third.fmtitle \
+    --font "DejaVu Sans=$D/DejaVuSans.ttf" --font "DejaVu Sans Bold=$D/DejaVuSans-Bold.ttf"
+# In: element 1 slide-from-left, 2 wipe, 3 fade, 4 slide-from-bottom, 15
+# frames each (one command per element, as below); Out: 1 fade, 12 frames.
+freemix-cli title-animation-preset news.freemix asset://titles/lower-third.fmtitle 1 \
+    --phase in --preset slide-from-left --frames 15
+freemix-cli audio-label news.freemix 1 "Anchor Mic"
+freemix-cli audio-label news.freemix 3 "Guest Mic"
+freemix-cli audio-label news.freemix 4 "Field Return"
+freemix-cli audio-bus-add news.freemix 1 "Program Bus"
+freemix-cli output-add news.freemix 1 100 1 "Program Output"
+freemix-cli stream-add news.freemix 1 1 rtmps://a.rtmp.youtube.com/live2 demo-yt-key-not-real "YouTube Main" \
+    --backup rtmps://b.rtmp.youtube.com/live2 --video-bitrate-kbps 6000
+freemix-cli stream-add news.freemix 2 1 srt://srt.example.com:9000 demo-srt-passphrase-not-real "Affiliate SRT" \
+    --video-bitrate-kbps 8000 --reconnect 250:2000:none
+freemix-cli stream-add news.freemix 3 1 hls:///tmp/shots7/work/hls "Web HLS Archive" \
+    --rung 2500:1280x720 --rung 6000:1920x1080
+freemix-cli cue-list-set news.freemix 1 "6pm Rundown" "1:Pre-show standby:0:preview.1,record.2.1;\
+2:Cold open:0:take.-.fade.30,stream.1.1,stream.2.1;3:Anchor intro:0:preview.2,take.-.cut.0;\
+4:Guest interview:0:preview.3,take.-.wipe.20,title_on.8.1,wait.150,title_off.8;\
+5:Field report:0:preview.4,take.-.fade.25,audio_mute.3.1;6:Weather:0:take.5.fade.20,audio_mute.3.0;\
+7:Break to black:0:fade_to_black.1.45;8:Close and stop streams:0:fade_to_black.1.60,stream.1.0,stream.2.0,record.2.0"
+freemix-cli cue-list-set news.freemix 2 "Contingency" \
+    "1:Technical difficulties:0:take.5.cut.0,audio_mute.4.1;2:Resume programme:0:audio_mute.4.0,take.7.fade.30"
+freemix-cli audio-monitor-device news.freemix "hw:CARD=Headset,DEV=0"
+freemix-cli audio-monitor-level news.freemix -6000 off
+freemix-cli preview news.freemix 7 && freemix-cli cut news.freemix && freemix-cli preview news.freemix 2
+```
+
+(`D=/usr/share/fonts/truetype/dejavu`; each cue string is one argument.)
+`lower-third.fmtitle` is a schema 59 document with the fields Name ("Dr.
+Maya Okafor"), Role ("Climate scientist, Northfield University"), and Bar
+colour (`#0B3D91F0`), and the elements Bar (a rectangle at 120,820,
+980x150, coloured by Bar colour), Accent (a 14 px amber rectangle), Name
+(DejaVu Sans Bold 54 px), and Role (DejaVu Sans 34 px). With Studio up and
+its window sized to the screen, `remote-go 127.0.0.1:<port> 1` three times
+(a few seconds apart, so the recorder starts), `remote-preview … 3`, a
+click on the side group's `CUES` tab, and the pointer parked on the status
+bar give the workspace captures. The colour capture then presses Ctrl+G,
+picks `03 · Guest Cam` in Target, and clicks `Warm`, `Advanced`, and
+`Vectorscope`. The animation capture closes that window, clicks `TITLES`
+and `Animate…`, then `Fit`, `Stagger…` › `Apply stagger`, `Fit`, and the
+ruler at frame 21. The shortcuts capture closes it and presses `?`
+(`xdotool windowfocus`, then `key question`).

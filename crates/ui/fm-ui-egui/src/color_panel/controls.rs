@@ -164,8 +164,8 @@ pub(super) fn slider(
     response
 }
 
-/// The track: an optional gradient, a fill from the default to the value,
-/// and the thumb.
+/// The track: an optional gradient, a fill from the default (a LUT strength:
+/// from zero) to the value, and the thumb.
 #[allow(clippy::cast_precision_loss)] // Grade ranges are tiny.
 fn paint_track(
     painter: &egui::Painter,
@@ -193,7 +193,14 @@ fn paint_track(
     );
     let start = x_of(param.default_value());
     let end = x_of(value);
-    let fill = Rect::from_x_y_ranges(start.min(end)..=start.max(end), bar.y_range());
+    // A LUT's strength is an amount, filled from zero: filled from its 100 %
+    // default, 0 % (and no LUT at all) read as a full bar.
+    let origin = if matches!(param, GradeParam::LutStrength) {
+        x_of(low)
+    } else {
+        start
+    };
+    let fill = Rect::from_x_y_ranges(origin.min(end)..=origin.max(end), bar.y_range());
     painter.rect_filled(
         fill.shrink2(vec2(0.0, 1.5)),
         CornerRadius::same(2),

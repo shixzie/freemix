@@ -441,10 +441,19 @@ fn layer_targets(state: &StudioUiState) -> Vec<GradeTarget> {
         })
 }
 
-const fn status_look(status: GradeSyncStatus) -> (Msg, Msg, Tone) {
+const fn status_look(status: GradeSyncStatus, on_program: bool) -> (Msg, Msg, Tone) {
     match status {
         // The grade is what Program shows: on-air red, as every ON AIR mark.
-        GradeSyncStatus::OnAir => (Msg::OverlayOnAir, Msg::ColorStatusOnAirHover, Tone::OnAir),
+        GradeSyncStatus::OnAir if on_program => {
+            (Msg::OverlayOnAir, Msg::ColorStatusOnAirHover, Tone::OnAir)
+        }
+        // Applied to a source that is not on Program: red would read as
+        // on air to an operator, so it is the ready green.
+        GradeSyncStatus::OnAir => (
+            Msg::ColorStatusApplied,
+            Msg::ColorStatusOnAirHover,
+            Tone::Ready,
+        ),
         GradeSyncStatus::Editing => (
             Msg::ColorStatusEditing,
             Msg::ColorStatusEditingHover,
@@ -835,7 +844,15 @@ impl StudioShell {
                 self.color.target = candidate;
             }
             if let Some(binding) = &self.color.binding {
-                let (text, hover, tone) = status_look(binding.status());
+                let on_program = match target {
+                    GradeTarget::Program => true,
+                    GradeTarget::Input(input) => state
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| view.switcher.realized.program.get() == input.get()),
+                    GradeTarget::Layer { .. } => false,
+                };
+                let (text, hover, tone) = status_look(binding.status(), on_program);
                 status_chip(ui, l.text(text), tone, 96.0).on_hover_text(l.text(hover));
                 let differs = binding.document().grade() != binding.authority();
                 let revert = ui

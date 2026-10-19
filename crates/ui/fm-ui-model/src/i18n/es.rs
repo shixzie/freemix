@@ -997,7 +997,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::RowSegments, plural("{count} seg.", "{count} seg.")),
     (Msg::RowRequestedNoSample, t("Iniciado · sin datos")),
-    (Msg::RowDesiredOff, t("Apagado por decisión")),
+    (Msg::RowDesiredOff, t("Sin iniciar")),
     (Msg::StingerStateUnavailable, t("ESTADO NO DISPONIBLE")),
     (Msg::StingerUnconfigured, t("SIN CONFIGURAR")),
     (Msg::StingerNotRequested, t("NO SOLICITADO")),
@@ -1873,7 +1873,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::MasterStrip, t("MÁSTER")),
     (Msg::ProgramMix, t("MEZCLA PGM")),
-    (Msg::MasterTap, t("PRE-STINGER/ FTB")),
+    (Msg::MasterTap, t("PRE-STINGER/FTB")),
     (
         Msg::MasterTapHover,
         t("Los medidores del Máster se toman antes del Stinger y del fundido a negro"),
@@ -4853,6 +4853,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ColorStatusOnAirHover,
         t("El servidor aplicó esta corrección; los monitores la muestran"),
     ),
+    (Msg::ColorStatusApplied, t("APLICADA")),
     (Msg::ColorStatusEditing, t("EDITANDO")),
     (
         Msg::ColorStatusEditingHover,
@@ -7024,30 +7025,30 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::CuePvPvwHover,
         t(
-            "Poner ahora en el bus de Preview la entrada que este cue lleva a Program, sin dispararlo, para revisar el plano antes",
+            "Poner ahora en el bus de Previo la entrada que este cue lleva a Programa, sin dispararlo, para revisar el plano antes",
         ),
     ),
     (
         Msg::CuePvReasonNoBus,
-        t("este cue no pone ninguna entrada conocida en Program ni en Preview"),
+        t("este cue no pone ninguna entrada conocida en Programa ni en Previo"),
     ),
     (
         Msg::CuePvReasonOnPreview,
-        t("la entrada del cue ya está en Preview"),
+        t("la entrada del cue ya está en Previo"),
     ),
     (
         Msg::CuePvReasonOnProgram,
-        t("la entrada del cue ya está en Program"),
+        t("la entrada del cue ya está en Programa"),
     ),
     (Msg::CuePvNow, t("(ahora {value})")),
     (Msg::CuePvQuoted, t("«{text}»")),
-    (Msg::CuePvPreviewInput, t("lo que haya en Preview")),
+    (Msg::CuePvPreviewInput, t("lo que haya en Previo")),
     (Msg::CuePvCut, t("Corte a {input}")),
     (
         Msg::CuePvMix,
         t("{effect} a {input} en {frames} fotogramas"),
     ),
-    (Msg::CuePvPreview, t("Poner {input} en Preview")),
+    (Msg::CuePvPreview, t("Poner {input} en Previo")),
     (Msg::CuePvOverlayOn, t("Overlay {channel}: mostrar {input}")),
     (
         Msg::CuePvOverlayOff,
@@ -7072,7 +7073,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::CuePvPlaylistStart,
-        t("Iniciar la lista de reproducción (toma Program)"),
+        t("Iniciar la lista de reproducción (toma Programa)"),
     ),
     (
         Msg::CuePvPlaylistStop,
@@ -7105,11 +7106,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CuePvFollow, t("Después sigue el cue {name}:")),
     (
         Msg::CuePvAlreadyProgram,
-        t("ya está en Program: esta toma no hace nada"),
+        t("ya está en Programa: esta toma no hace nada"),
     ),
     (
         Msg::CuePvAlreadyPreview,
-        t("ya está en Preview: sin cambios"),
+        t("ya está en Previo: sin cambios"),
     ),
     (Msg::CuePvAlreadyState, t("sin cambios: ya está así")),
     (
@@ -7155,11 +7156,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::CuePvRefPreviewIsProgram,
-        t("esa entrada está en Program, y Preview y Program deben ser distintos"),
+        t("esa entrada está en Programa, y Previo y Programa deben ser distintos"),
     ),
     (
         Msg::CuePvRefTwice,
-        t("Program se tomaría dos veces en un mismo fotograma"),
+        t("Programa se tomaría dos veces en un mismo fotograma"),
     ),
     (
         Msg::CuePvRefInFlight,

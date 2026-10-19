@@ -1666,6 +1666,16 @@ pub(crate) fn help_modal(
                 close = true;
             }
         });
+    // A centred modal finds its height over a few passes (each pass offers
+    // it the room below last pass's top). Keep painting until it settles,
+    // or a reference opened by a key press stays cut short, scrolling,
+    // until the pointer happens to move.
+    let size_id = egui::Id::new(id).with("settled-size");
+    let size = response.response.rect.size();
+    if context.data(|data| data.get_temp::<Vec2>(size_id)) != Some(size) {
+        context.data_mut(|data| data.insert_temp(size_id, size));
+        context.request_repaint();
+    }
     close || response.should_close()
 }
 

@@ -155,7 +155,12 @@ impl Show {
         self.titles.iter().find(|title| title.input == input)
     }
 
+    /// The title input's name as the bank and the Titles tab lead with it;
+    /// the template's name only when the input is not in the show.
     fn title_name(&self, l: Locale, input: InputId) -> String {
+        if self.inputs.contains(&input) {
+            return self.input(l, input);
+        }
         self.title(input)
             .map(|title| title.name.clone())
             .filter(|name| !name.is_empty())

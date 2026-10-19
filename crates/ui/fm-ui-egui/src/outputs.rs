@@ -265,8 +265,9 @@ pub(crate) fn row_key_style(starts: bool, tone: Tone) -> (Msg, Color32, Color32)
 type RowExtras<'a> = (f32, &'a mut dyn FnMut(&mut Ui, bool, f32));
 
 /// Width of the row's text column below which its extra keys collapse into
-/// one menu key: the status chip and a few words of detail.
-const MIN_TEXT_WIDTH: f32 = CHIP_WIDTH + 60.0;
+/// one menu key: the status chip and a short detail whole (`Started · no
+/// stats`, the wider `Iniciado · sin datos`), not cut to `Iniciado · …`.
+const MIN_TEXT_WIDTH: f32 = CHIP_WIDTH + 100.0;
 
 /// Where a row's extra keys go, left of its Start/Stop key at `key_rect`,
 /// and whether they collapse into one menu key so the text column from
@@ -864,7 +865,7 @@ mod tests {
         );
         assert_eq!(
             (off.status, off.tone, off.detail.as_str()),
-            ("OFF", Tone::Idle, "Desired off")
+            ("OFF", Tone::Idle, "Not started")
         );
         // Live but desired off: a stop the daemon has not realized yet.
         let stopping = stream_row(
