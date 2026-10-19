@@ -135,8 +135,11 @@ impl PlaylistClock {
     /// Returns the advance to execute now, if any (see [`Self::due`]).
     ///
     /// A retry waits for `retry_window` (no session command waiting this
-    /// pass and the journal idle), so retries never take a frame or a
-    /// journal turn from a client. It is then prepared and dropped first
+    /// pass, the journal idle and, under native pacing, room before the next
+    /// frame's deadline for the retry's journal append), so retries never
+    /// take a frame or a journal turn from a client nor make a frame late.
+    /// The window is asked only for a retry: a first attempt keeps its
+    /// scheduled frame. It is then prepared and dropped first
     /// ([`probe_refusal`]): a refusal the engine still gives is observed
     /// without executing it, so such a retry records no receipt, journals
     /// nothing and logs nothing.
@@ -148,7 +151,7 @@ impl PlaylistClock {
         &mut self,
         control: &mut ControlService<Policy>,
         pacing: Pacing,
-        retry_window: bool,
+        retry_window: impl FnOnce() -> bool,
         now_millis: u64,
     ) -> AppResult<Option<Advance>> {
         let Some(advance) = self.due(control, pacing) else {
@@ -157,7 +160,7 @@ impl PlaylistClock {
         if advance.retry == 0 {
             return Ok(Some(advance));
         }
-        if !retry_window {
+        if !retry_window() {
             return Ok(None);
         }
         if let Some(result) = probe_refusal(control, advance.command(), now_millis)? {
@@ -209,7 +212,7 @@ impl PlaylistClock {
         store: &dyn DurableStore,
         durable: &mut StoredProject,
         server: &fm_protocol::ServerIdentity,
-        native: Option<&mut NativeDaemon>,
+        mut native: Option<&mut NativeDaemon>,
         process_shutdown: Option<&ProcessShutdown>,
         now: Instant,
         retry_window: bool,
@@ -225,7 +228,13 @@ impl PlaylistClock {
         let Some(advance) = self.next(
             &mut control.borrow_mut(),
             pacing,
-            retry_window && !store.busy(),
+            || {
+                retry_window
+                    && !store.busy()
+                    && native
+                        .as_deref_mut()
+                        .is_none_or(|native| native.retry_window(store.recent_append_peak()))
+            },
             now_millis()?,
         )?
         else {

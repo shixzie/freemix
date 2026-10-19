@@ -626,6 +626,10 @@ struct NativeDaemon {
     /// [`Self::command_window`]); it is dispatched once that frame was
     /// realized.
     command_deferred_at: Option<FrameNumber>,
+    /// The frame a daemon clock's retry was first held back for (see
+    /// [`Self::retry_window`]), kept apart from client commands' hold so a
+    /// retry never opens the window early for a client.
+    retry_deferred_at: Option<FrameNumber>,
     /// Every realized frame's lateness, when `FREEMIXD_PACING_TRACE=1`.
     pacing_trace: Option<pacing_trace::PacingTrace>,
     latest_output: Option<NativeTexture>,
@@ -4974,6 +4978,7 @@ impl NativeDaemon {
             origin,
             pacing_origin: None,
             command_deferred_at: None,
+            retry_deferred_at: None,
             pacing_trace: pacing_trace::PacingTrace::from_environment(),
             latest_output: None,
             latest_project_outputs: Vec::new(),
@@ -7247,6 +7252,33 @@ impl NativeDaemon {
     /// the state it is realized on, durable before it is committed, and
     /// realized on the frame right after its append.
     fn command_window(&mut self, append_peak: Option<Duration>) -> bool {
+        let mut deferred = self.command_deferred_at.take();
+        let open = self.window_open(append_peak, &mut deferred);
+        self.command_deferred_at = deferred;
+        open
+    }
+
+    /// Whether a daemon clock's retry of a refused advance may run now: the
+    /// same window as [`Self::command_window`], since an accepted retry is
+    /// journaled and fsynced before its frame like a client command. Only a
+    /// clock's first attempt keeps its scheduled frame without asking; a
+    /// retry is already late, so it waits (at most one frame) rather than
+    /// make a frame late. Its hold is its own, so asking for a retry never
+    /// lets a client command skip its wait.
+    fn retry_window(&mut self, append_peak: Option<Duration>) -> bool {
+        let mut deferred = self.retry_deferred_at.take();
+        let open = self.window_open(append_peak, &mut deferred);
+        self.retry_deferred_at = deferred;
+        open
+    }
+
+    /// [`command_window_open`] for the pacer's next deadline, holding with
+    /// `deferred`.
+    fn window_open(
+        &self,
+        append_peak: Option<Duration>,
+        deferred: &mut Option<FrameNumber>,
+    ) -> bool {
         let Ok(deadline) = self.next_deadline() else {
             return true;
         };
@@ -7260,7 +7292,7 @@ impl NativeDaemon {
             interval,
             append_peak,
             self.pacer.next_frame(),
-            &mut self.command_deferred_at,
+            deferred,
         )
     }
 
@@ -7951,6 +7983,11 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn command_window(&mut self, _append_peak: Option<Duration>) -> bool {
+        true
+    }
+
+    #[allow(clippy::unused_self)]
+    fn retry_window(&mut self, _append_peak: Option<Duration>) -> bool {
         true
     }
 
@@ -10486,7 +10523,7 @@ fn serve_inner(
                     if let Some(advance) = clock.next(
                         control,
                         playlist_clock::Pacing::Engine,
-                        !journal.busy(),
+                        || !journal.busy() && native.retry_window(journal.recent_append_peak()),
                         now_millis()?,
                     )? {
                         let delivery = execute_native_authority_command(
@@ -10505,7 +10542,7 @@ fn serve_inner(
                     if let Some(advance) = cues.next(
                         control,
                         playlist_clock::Pacing::Engine,
-                        !journal.busy(),
+                        || !journal.busy() && native.retry_window(journal.recent_append_peak()),
                         now_millis()?,
                     )? {
                         let delivery = execute_native_authority_command(
@@ -22839,7 +22876,7 @@ mod tests {
         let start = Instant::now();
         // One idle pass before the GO, as the session loop runs.
         assert_eq!(
-            cues.next(&mut control, Pacing::Wall { now: start, rate }, true, 0)
+            cues.next(&mut control, Pacing::Wall { now: start, rate }, || true, 0)
                 .unwrap(),
             None
         );
@@ -22909,7 +22946,7 @@ mod tests {
         for pass in 1..=50 {
             let at = start + frame * pass;
             if let Some(advance) = cues
-                .next(&mut control, Pacing::Wall { now: at, rate }, true, 0)
+                .next(&mut control, Pacing::Wall { now: at, rate }, || true, 0)
                 .unwrap()
             {
                 fired = Some(advance);
@@ -22952,7 +22989,7 @@ mod tests {
         let mut clock = PlaylistClock::default();
         assert_eq!(
             clock
-                .next(&mut control, Pacing::Wall { now: start, rate }, true, 0)
+                .next(&mut control, Pacing::Wall { now: start, rate }, || true, 0)
                 .unwrap(),
             None
         );
@@ -23166,7 +23203,9 @@ mod tests {
         let mut clock = CueClock::default();
         while control.frame_cursor() < due {
             assert_eq!(
-                clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+                clock
+                    .next(&mut control, Pacing::Engine, || true, 0)
+                    .unwrap(),
                 None
             );
             control.tick(&server).unwrap();
@@ -23182,8 +23221,15 @@ mod tests {
             .unwrap();
         assert!(take.is_accepted(), "{:?}", take.output.result);
         let revision = control.diagnostics().current_revision;
+        // A first attempt keeps its frame: it never asks for the window a
+        // retry waits for (a client command's, under native pacing).
         let advance = clock
-            .next(&mut control, Pacing::Engine, true, 0)
+            .next(
+                &mut control,
+                Pacing::Engine,
+                || panic!("a first attempt asked for a retry window"),
+                0,
+            )
             .unwrap()
             .expect("the wait ended");
         assert_eq!(
@@ -23218,7 +23264,9 @@ mod tests {
         assert!(has_receipt(&mut control, advance.frame, 0));
         // Not again on the same frame.
         assert_eq!(
-            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            clock
+                .next(&mut control, Pacing::Engine, || true, 0)
+                .unwrap(),
             None
         );
 
@@ -23233,12 +23281,17 @@ mod tests {
             );
             control.tick(&server).unwrap();
             assert_eq!(
-                clock.next(&mut control, Pacing::Engine, false, 0).unwrap(),
+                clock
+                    .next(&mut control, Pacing::Engine, || false, 0)
+                    .unwrap(),
                 None,
                 "a retry ran without its window"
             );
             let attempting = clock.due(&control, Pacing::Engine).is_some();
-            if let Some(retried) = clock.next(&mut control, Pacing::Engine, true, 0).unwrap() {
+            if let Some(retried) = clock
+                .next(&mut control, Pacing::Engine, || true, 0)
+                .unwrap()
+            {
                 break retried;
             }
             assert_eq!(control.diagnostics().current_revision, revision);
@@ -23276,7 +23329,9 @@ mod tests {
             "its cut is on Program"
         );
         assert_eq!(
-            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            clock
+                .next(&mut control, Pacing::Engine, || true, 0)
+                .unwrap(),
             None
         );
     }
@@ -23310,7 +23365,7 @@ mod tests {
 
         // Final: nothing until the revision changes.
         let first = clock
-            .next(&mut control, Pacing::Engine, true, 0)
+            .next(&mut control, Pacing::Engine, || true, 0)
             .unwrap()
             .unwrap();
         assert_eq!(first.retry, 0);
@@ -23543,13 +23598,22 @@ mod tests {
         let mut clock = PlaylistClock::default();
         while control.frame_cursor() < boundary {
             assert_eq!(
-                clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+                clock
+                    .next(&mut control, Pacing::Engine, || true, 0)
+                    .unwrap(),
                 None
             );
             control.tick(&server).unwrap();
         }
+        // A first attempt keeps its frame: it never asks for the window a
+        // retry waits for (a client command's, under native pacing).
         let advance = clock
-            .next(&mut control, Pacing::Engine, true, 0)
+            .next(
+                &mut control,
+                Pacing::Engine,
+                || panic!("a first attempt asked for a retry window"),
+                0,
+            )
             .unwrap()
             .expect("the boundary is reached");
         assert_eq!(
@@ -23583,7 +23647,9 @@ mod tests {
         };
         assert!(has_receipt(&mut control, advance.frame, 0));
         assert_eq!(
-            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            clock
+                .next(&mut control, Pacing::Engine, || true, 0)
+                .unwrap(),
             None,
             "not again on the same frame"
         );
@@ -23599,12 +23665,17 @@ mod tests {
             );
             control.tick(&server).unwrap();
             assert_eq!(
-                clock.next(&mut control, Pacing::Engine, false, 0).unwrap(),
+                clock
+                    .next(&mut control, Pacing::Engine, || false, 0)
+                    .unwrap(),
                 None,
                 "a retry ran without its window"
             );
             let attempting = clock.due(&control, Pacing::Engine).is_some();
-            if let Some(retried) = clock.next(&mut control, Pacing::Engine, true, 0).unwrap() {
+            if let Some(retried) = clock
+                .next(&mut control, Pacing::Engine, || true, 0)
+                .unwrap()
+            {
                 break retried;
             }
             assert_eq!(control.diagnostics().current_revision, revision);
@@ -23643,7 +23714,9 @@ mod tests {
             "the entry's input is on Program, after the cue's cut"
         );
         assert_eq!(
-            clock.next(&mut control, Pacing::Engine, true, 0).unwrap(),
+            clock
+                .next(&mut control, Pacing::Engine, || true, 0)
+                .unwrap(),
             None
         );
     }
@@ -23709,23 +23782,22 @@ mod tests {
     /// not record is retried, on the simulated runtime by wall time, while
     /// the airing it ends is still on, and only the accepted retry is
     /// journaled. A trigger whose airing an operator ended first is dropped.
+    /// The playlist loops, so the last entry has a next entry too.
     #[test]
     #[allow(clippy::too_many_lines)]
     fn an_end_trigger_the_journal_could_not_record_is_retried_while_its_airing_is_on() {
         use fm_control::MediaEndTrigger;
-        use fm_protocol::{PlaylistOperation, PlaylistRunState};
+        use fm_protocol::{PlaylistLoopMode, PlaylistOperation, PlaylistRunState};
 
         let store = FlakyJournal::new();
         let mut durable = test_project();
         let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
         let server = test_server(&control.borrow());
-        execute_accepted(
-            &control,
-            &store,
-            &mut durable,
-            &server,
-            playlist_commands(500, fm_protocol::PlaylistStart::Now),
-        );
+        let mut commands = playlist_commands(500, fm_protocol::PlaylistStart::Now);
+        if let CommandPayload::SetPlaylist { loop_mode, .. } = &mut commands[0].payload {
+            *loop_mode = PlaylistLoopMode::All;
+        }
+        execute_accepted(&control, &store, &mut durable, &server, commands);
         control.borrow_mut().tick(&server).unwrap();
         let airing = |control: &SharedControl| control.borrow().playlist_state().unwrap().state;
         let PlaylistRunState::Playing { entry: 1, take, .. } = airing(&control) else {
@@ -23769,7 +23841,15 @@ mod tests {
         let mut feed = media_clock::EndTriggerFeed::default();
         let start = Instant::now();
         let cursor = control.borrow().frame_cursor();
-        feed.observe_first(trigger, take, revision, cursor, &first.result, start);
+        feed.observe_first(
+            &control.borrow(),
+            trigger,
+            take,
+            revision,
+            cursor,
+            &first.result,
+            start,
+        );
         let attempts = store.attempts.get();
         let frame = Duration::from_millis(40);
         let mut poll = |feed: &mut media_clock::EndTriggerFeed, at: Instant, window: bool| {
@@ -23850,7 +23930,15 @@ mod tests {
         };
         let later = start + frame * 50;
         let cursor = control.borrow().frame_cursor();
-        feed.observe_first(trigger, take, revision, cursor, &refused, later);
+        feed.observe_first(
+            &control.borrow(),
+            trigger,
+            take,
+            revision,
+            cursor,
+            &refused,
+            later,
+        );
         execute_accepted(
             &control,
             &store,
@@ -23880,6 +23968,285 @@ mod tests {
         }
         assert_eq!(store.attempts.get(), attempts, "dropped with its airing");
         assert!(matches!(airing(&control), PlaylistRunState::Stopped));
+    }
+
+    /// A refused end trigger is owed only while its clip is still at its
+    /// end: an operator who seeks the clip back while the playlist still airs
+    /// the same take has it playing again, and the retry is dropped instead
+    /// of cutting away from it. Left at its end, the same refusal is retried
+    /// and advances the playlist.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn an_end_trigger_retry_is_dropped_once_its_clip_is_sought_back() {
+        use fm_control::MediaEndTrigger;
+        use fm_protocol::{MediaOperation, MediaSeekTarget, PlaylistRunState};
+
+        let store = FlakyJournal::new();
+        let mut durable = media_test_project("asset://clip.mov");
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        attach_synthetic_media(&mut control.borrow_mut(), durable.project()).unwrap();
+        let server = test_server(&control.borrow());
+        // Entry 1 airs media input 2; entry 2 (media input 1) is next.
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            playlist_commands(5_000, fm_protocol::PlaylistStart::Now),
+        );
+        control.borrow_mut().tick(&server).unwrap();
+        let airing = |control: &SharedControl| control.borrow().playlist_state().unwrap().state;
+        let PlaylistRunState::Playing { entry: 1, take, .. } = airing(&control) else {
+            panic!("entry 1 airs: {:?}", airing(&control));
+        };
+        let clip = test_input_id(2);
+        let end = control
+            .borrow()
+            .media_status(clip)
+            .expect("a media input")
+            .playable_end;
+        let media = |id: &str, operation: MediaOperation| {
+            test_command(
+                id,
+                &format!("{id}-key"),
+                CommandPayload::Media {
+                    input: fm_protocol::WireInputId::from_domain(clip),
+                    operation,
+                },
+            )
+        };
+        // The clip paused inside its 20-frame end-trigger lead.
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            [
+                media("lead", MediaOperation::EndTriggerLead(Some(20))),
+                media(
+                    "cue-end",
+                    MediaOperation::Seek(MediaSeekTarget::Frame(end - 8)),
+                ),
+                media("play", MediaOperation::Play),
+                media("pause", MediaOperation::Pause),
+            ],
+        );
+        control.borrow_mut().take_media_end_triggers();
+        assert!(media_clock::end_reached(&control.borrow(), clip));
+
+        let refused = |revision: u64| CommandResult::Rejected {
+            id: "next".into(),
+            code: "conflict".into(),
+            message: "held".into(),
+            fields: Vec::new(),
+            current_revision: revision,
+            retryable: false,
+            reason: None,
+        };
+        let trigger = MediaEndTrigger {
+            input: clip,
+            frame: control.borrow().frame_cursor(),
+        };
+        let mut feed = media_clock::EndTriggerFeed::default();
+        let start = Instant::now();
+        let frame = Duration::from_millis(40);
+        let observe_refusal = |feed: &mut media_clock::EndTriggerFeed, at: Instant| {
+            let control = control.borrow();
+            let revision = control.diagnostics().current_revision;
+            let cursor = control.frame_cursor();
+            feed.observe_first(
+                &control,
+                trigger,
+                take,
+                revision,
+                cursor,
+                &refused(revision),
+                at,
+            );
+        };
+        observe_refusal(&mut feed, start);
+        assert!(feed.pending());
+
+        // The operator rewinds the clip: it plays again, so no cut.
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            [media(
+                "rewind",
+                MediaOperation::Seek(MediaSeekTarget::Frame(0)),
+            )],
+        );
+        assert!(!media_clock::end_reached(&control.borrow(), clip));
+        let attempts = store.attempts.get();
+        for pass in 1..=30 {
+            feed.poll(
+                &control,
+                &store,
+                &mut durable,
+                &server,
+                None,
+                None,
+                start + frame * pass,
+                true,
+            )
+            .unwrap();
+        }
+        assert!(!feed.pending(), "dropped once the clip played again");
+        assert_eq!(store.attempts.get(), attempts, "nothing executed");
+        assert!(
+            matches!(
+                airing(&control),
+                PlaylistRunState::Playing { entry: 1, take: now, .. } if now == take
+            ),
+            "{:?}",
+            airing(&control)
+        );
+
+        // At its end again, the same refusal is retried and cuts.
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            [media(
+                "cue-end-again",
+                MediaOperation::Seek(MediaSeekTarget::Frame(end - 8)),
+            )],
+        );
+        control.borrow_mut().take_media_end_triggers();
+        assert!(media_clock::end_reached(&control.borrow(), clip));
+        let later = start + frame * 40;
+        observe_refusal(&mut feed, later);
+        assert!(feed.pending());
+        feed.poll(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            None,
+            None,
+            later + frame,
+            true,
+        )
+        .unwrap();
+        assert!(!feed.pending());
+        assert!(
+            matches!(airing(&control), PlaylistRunState::Playing { entry: 2, .. }),
+            "{:?}",
+            airing(&control)
+        );
+    }
+
+    /// The last entry of a playlist that does not loop has no next entry:
+    /// the engine refuses its end trigger's `playlist_control next` as a
+    /// conflict (with no reason that tells it apart from a passing one), and
+    /// the feed takes the playlist state's word that it cannot clear. The
+    /// refusal is final, so no dry-run repeats every second while the clip
+    /// holds, and nothing is cut later.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn an_end_trigger_with_no_next_entry_is_final() {
+        use fm_control::MediaEndTrigger;
+        use fm_protocol::{PlaylistOperation, PlaylistRunState};
+
+        let store = FlakyJournal::new();
+        let mut durable = test_project();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&durable)));
+        let server = test_server(&control.borrow());
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            playlist_commands(500, fm_protocol::PlaylistStart::Now),
+        );
+        execute_accepted(
+            &control,
+            &store,
+            &mut durable,
+            &server,
+            [test_command(
+                "next",
+                "next-key",
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Next,
+                },
+            )],
+        );
+        control.borrow_mut().tick(&server).unwrap();
+        let airing = |control: &SharedControl| control.borrow().playlist_state().unwrap().state;
+        let PlaylistRunState::Playing { entry: 2, take, .. } = airing(&control) else {
+            panic!("entry 2 airs: {:?}", airing(&control));
+        };
+        assert!(!media_clock::has_next_entry(&control.borrow()));
+        let trigger = MediaEndTrigger {
+            input: test_input_id(1),
+            frame: control.borrow().frame_cursor(),
+        };
+        let revision = control.borrow().diagnostics().current_revision;
+        let first = execute_authority_command(
+            &control,
+            &store,
+            &mut durable,
+            &development_principal().unwrap(),
+            &server,
+            &media_clock::end_trigger_command(trigger, revision),
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+        let CommandResult::Rejected {
+            code,
+            retryable,
+            reason,
+            ..
+        } = &first.result
+        else {
+            panic!("no next entry: {:?}", first.result);
+        };
+        // What the retry policy alone would retry for as long as it airs.
+        assert!(crate::clock_retry::retries(code, *retryable));
+        assert_eq!(*reason, None);
+
+        let mut feed = media_clock::EndTriggerFeed::default();
+        let start = Instant::now();
+        let cursor = control.borrow().frame_cursor();
+        feed.observe_first(
+            &control.borrow(),
+            trigger,
+            take,
+            revision,
+            cursor,
+            &first.result,
+            start,
+        );
+        assert!(!feed.pending(), "final, not retried");
+        let attempts = store.attempts.get();
+        for pass in 1..=60 {
+            feed.poll(
+                &control,
+                &store,
+                &mut durable,
+                &server,
+                None,
+                None,
+                start + Duration::from_millis(40) * pass,
+                true,
+            )
+            .unwrap();
+        }
+        assert_eq!(store.attempts.get(), attempts);
+        assert!(
+            matches!(
+                airing(&control),
+                PlaylistRunState::Playing { entry: 2, take: now, .. } if now == take
+            ),
+            "{:?}",
+            airing(&control)
+        );
     }
 
     #[test]

@@ -14,9 +14,10 @@
 //! new revision, as does every refusal of the same advance once the show
 //! changes. A retry:
 //!
-//! - runs only on a pass that leaves room for it (no session command ready
-//!   and the journal idle), so it never takes a client's frame or command
-//!   turn;
+//! - runs only on a pass that leaves room for it (no session command ready,
+//!   the journal idle and, under native pacing, enough of the frame interval
+//!   left for its journal append, as a client command waits for), so it
+//!   never takes a client's frame or command turn nor makes a frame late;
 //! - is prepared and dropped first ([`probe_refusal`]), so while the engine
 //!   still refuses it nothing is executed: no receipt, no journal entry, no
 //!   log line;
@@ -182,6 +183,24 @@ impl<K: PartialEq> Retries<K> {
         reached: u64,
         result: &'r CommandResult,
     ) -> Outcome<'r> {
+        self.observe_with(key, revision, retry, reached, result, true)
+    }
+
+    /// [`Self::observe`], where `clears` is the clock's own word on whether
+    /// a refusal could clear: `false` when the show's state says the advance
+    /// cannot succeed whatever the refusal's code (an end trigger's
+    /// `playlist_control next` with no next entry, which the engine reports
+    /// as an ordinary conflict), making it final like any refusal
+    /// [`retries`] does not allow.
+    pub(super) fn observe_with<'r>(
+        &mut self,
+        key: K,
+        revision: u64,
+        retry: u32,
+        reached: u64,
+        result: &'r CommandResult,
+        clears: bool,
+    ) -> Outcome<'r> {
         match result {
             CommandResult::Rejected {
                 code,
@@ -189,7 +208,7 @@ impl<K: PartialEq> Retries<K> {
                 retryable,
                 ..
             } => {
-                let retrying = retries(code, *retryable);
+                let retrying = clears && retries(code, *retryable);
                 let attempts = retry.saturating_add(1);
                 self.refused = Some(Refusal {
                     key,
@@ -275,6 +294,36 @@ mod tests {
             frame += retry_delay(probes);
         }
         assert_eq!(probes, 25 + 59);
+    }
+
+    #[test]
+    fn a_refusal_the_clock_knows_cannot_clear_is_final_whatever_its_code() {
+        let mut retries = Retries::<u64>::default();
+        let conflict = refusal("conflict", false);
+        assert_eq!(
+            retries.observe_with(7, 3, 0, 40, &conflict, false),
+            Outcome::Refused {
+                code: "conflict",
+                message: "refused",
+                retrying: false
+            }
+        );
+        assert_eq!(retries.attempt(&7, 3, u64::MAX), None);
+        // A retry meeting it is logged as final too.
+        assert_eq!(retries.attempt(&7, 4, 41), Some(0));
+        assert!(matches!(
+            retries.observe_with(7, 4, 0, 41, &conflict, true),
+            Outcome::Refused { retrying: true, .. }
+        ));
+        assert_eq!(retries.attempt(&7, 4, 42), Some(1));
+        assert!(matches!(
+            retries.observe_with(7, 4, 1, 42, &conflict, false),
+            Outcome::Refused {
+                retrying: false,
+                ..
+            }
+        ));
+        assert_eq!(retries.attempt(&7, 4, u64::MAX), None);
     }
 
     #[test]
