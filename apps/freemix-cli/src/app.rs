@@ -2591,22 +2591,25 @@ fn script(
 /// script steps the advances ran.
 ///
 /// The clock is bounded defensively, whatever the restored project holds:
-/// every wait is at most the longest cue wait, delay, or script wait at the
-/// engine rate, each advance runs at least one wait of a list (each list
-/// holds at most [`fm_model::MAX_CUE_LIST_ACTIONS`]) or a script part (at
-/// most [`fm_model::MAX_SCRIPT_WAITS`] per run), and nothing a cue or a
-/// script step runs starts another waiting run. A clock beyond that bound
-/// is refused instead of ticking for ever.
+/// every wait is at most the longest cue wait, delay, script wait, or armed
+/// GO delay (Protocol 2.64) at the engine rate, each advance runs at least
+/// one wait of a list (each list holds at most
+/// [`fm_model::MAX_CUE_LIST_ACTIONS`]), a list's armed GO (at most one per
+/// list), or a script part (at most [`fm_model::MAX_SCRIPT_WAITS`] per
+/// run), and nothing a cue or a script step runs starts another waiting
+/// run. A clock beyond that bound is refused instead of ticking for ever.
 fn run_cue_clock(engine: &mut Engine) -> AppResult<Vec<CueScriptRan>> {
     let rate = engine.frame_rate();
     let longest_wait = u64::from(
         fm_model::MAX_CUE_WAIT_FRAMES
             .max(fm_model::delay_frames(fm_model::MAX_CUE_DELAY_MS, rate))
+            .max(fm_model::delay_frames(fm_model::MAX_CUE_ARM_MS, rate))
             .max(fm_model::script_wait_frames(rate)),
     );
-    let max_advances = u64::try_from(fm_model::MAX_CUE_LISTS * fm_model::MAX_CUE_LIST_ACTIONS)
-        .unwrap_or(u64::MAX)
-        .saturating_add(u64::from(fm_model::MAX_SCRIPT_WAITS));
+    let max_advances =
+        u64::try_from(fm_model::MAX_CUE_LISTS * (fm_model::MAX_CUE_LIST_ACTIONS + 1))
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::from(fm_model::MAX_SCRIPT_WAITS));
     let mut advances = 0_u64;
     let mut cue_scripts = Vec::new();
     while let Some((list, due)) = engine.cue_advance_frame() {

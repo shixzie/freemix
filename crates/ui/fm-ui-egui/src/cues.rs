@@ -34,7 +34,7 @@ use fm_protocol::{
     TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
     WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
-use fm_types::InputId;
+use fm_types::{FrameRate, InputId};
 use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
 
 use crate::edit_history::stinger_edit_lock_reason;
@@ -603,10 +603,12 @@ pub(crate) struct CuePanel {
     /// The cue whose actions are shown.
     expanded: Option<u64>,
     draft: Option<Draft>,
-    /// The arm delay as typed (Protocol 2.64).
-    arm_delay: String,
-    /// The newest cue frame seen and when it was first seen, for the armed
-    /// GO's countdown.
+    /// The arm delay as typed (Protocol 2.64); `None` until the arm row is
+    /// first drawn, which offers [`DEFAULT_ARM_DELAY`]. An emptied field
+    /// stays empty while the operator types a new delay.
+    arm_delay: Option<String>,
+    /// The newest cue frame seen and when it arrived ([`Self::sync`]), for
+    /// the armed GO's countdown.
     clock: Option<(u64, Instant)>,
 }
 
@@ -644,6 +646,30 @@ impl CuePanel {
         self.expanded = expanded;
     }
 
+    /// Re-anchors the armed GO's countdown when a newer cue frame arrives.
+    /// Called every frame, whichever tab is shown, so the anchor is the
+    /// moment the frame arrived, not when the Cues tab was next drawn.
+    pub(crate) fn sync(&mut self, state: &StudioUiState, now: Instant) {
+        let Some(frame) = state
+            .project_state
+            .as_ref()
+            .and_then(ProjectState::cue_frame)
+        else {
+            self.clock = None;
+            return;
+        };
+        if self.clock.is_none_or(|(seen, _)| seen != frame) {
+            self.clock = Some((frame, now));
+        }
+    }
+
+    /// The engine frame at `now`, extrapolated at `rate` from the newest
+    /// cue frame seen.
+    fn now_frame(&self, rate: FrameRate, now: Instant) -> Option<u64> {
+        self.clock
+            .map(|(seen, at)| estimated_frame(seen, now.saturating_duration_since(at), rate))
+    }
+
     /// The arm row (Protocol 2.64): the delay field, Arm GO (gated like GO
     /// by `go_block`), and Disarm (gated by `control`, and on an armed GO).
     fn draw_arm(
@@ -655,14 +681,14 @@ impl CuePanel {
         intents: &mut Vec<StudioIntent>,
     ) {
         let l = l10n::locale(ui.ctx());
-        if self.arm_delay.is_empty() {
-            DEFAULT_ARM_DELAY.clone_into(&mut self.arm_delay);
-        }
-        let delay = parse_arm_delay(&self.arm_delay);
+        let typed = self
+            .arm_delay
+            .get_or_insert_with(|| DEFAULT_ARM_DELAY.to_owned());
+        let delay = parse_arm_delay(typed);
         ui.horizontal(|ui| {
             ui.label(field_label(l.text(Msg::CueArmIn)));
             ui.add(
-                TextEdit::singleline(&mut self.arm_delay)
+                TextEdit::singleline(typed)
                     .desired_width(72.0)
                     .font(egui::TextStyle::Monospace),
             )
@@ -828,11 +854,6 @@ impl CuePanel {
         self.sync_draft(&list, state.pending_commands > 0);
         let list_edit = list_edit_block(state, &list);
         let now = Instant::now();
-        if let Some(frame) = project.cue_frame()
-            && self.clock.is_none_or(|(seen, _)| seen != frame)
-        {
-            self.clock = Some((frame, now));
-        }
         ui.add_space(4.0);
 
         // The GO key and the cue on standby.
@@ -910,9 +931,8 @@ impl CuePanel {
                 .map_or_else(|| armed.cue.to_string(), |cue| cue.name.clone());
             let frame = armed.due_frame.to_string();
             let rate = project.frame_rate();
-            let note = match self.clock {
-                Some((seen, at)) => {
-                    let now_frame = estimated_frame(seen, now.saturating_duration_since(at), rate);
+            let note = match self.now_frame(rate, now) {
+                Some(now_frame) => {
                     let time = countdown_timecode(armed.due_frame.saturating_sub(now_frame), rate);
                     l.format(
                         Msg::CueArmedNote,
@@ -2150,6 +2170,67 @@ mod tests {
         ] {
             assert_eq!(parse_arm_delay(bad), None, "{bad}");
         }
+    }
+
+    /// The armed GO's countdown runs from when the newest cue frame
+    /// arrived, even while the Cues tab is hidden: opening the tab later
+    /// must not restart the count from that frame.
+    #[test]
+    fn the_armed_countdown_is_anchored_when_the_frame_arrives() {
+        let state = crate::hover_audit::bank_fixture();
+        let project = state.project_state.as_ref().unwrap();
+        let rate = project.frame_rate();
+        let seen = project.cue_frame().unwrap();
+        let arrived = Instant::now();
+        let mut panel = CuePanel::default();
+        panel.sync(&state, arrived);
+        let later = arrived + Duration::from_secs(10);
+        panel.sync(&state, later);
+        assert_eq!(
+            panel.now_frame(rate, later),
+            Some(estimated_frame(seen, Duration::from_secs(10), rate))
+        );
+        assert!(panel.now_frame(rate, later) > Some(seen));
+        panel.sync(
+            &StudioUiState::new(crate::StudioConnectionStatus::Ready),
+            later,
+        );
+        assert_eq!(panel.now_frame(rate, later), None);
+    }
+
+    /// An operator who empties the delay field to type a new one keeps it
+    /// empty (Arm GO disabled) instead of having the default typed back in
+    /// front of the cursor.
+    #[test]
+    fn an_emptied_arm_delay_stays_empty() {
+        let state = crate::hover_audit::bank_fixture();
+        let context = egui::Context::default();
+        let mut panel = CuePanel::default();
+        let pass = |panel: &mut CuePanel| {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1_920.0, 1_080.0),
+                )),
+                ..egui::RawInput::default()
+            });
+            let mut ui = Ui::new(
+                context.clone(),
+                egui::Id::new("fm-cues-test"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let mut intents = Vec::new();
+            panel.draw(&mut ui, &state, &mut intents);
+            drop(ui);
+            let _ = context.end_pass();
+        };
+        pass(&mut panel);
+        assert_eq!(panel.arm_delay.as_deref(), Some(DEFAULT_ARM_DELAY));
+        panel.arm_delay = Some(String::new());
+        pass(&mut panel);
+        assert_eq!(panel.arm_delay.as_deref(), Some(""));
     }
 
     /// Protocol 2.63: a deferred action's fault says what the server refused

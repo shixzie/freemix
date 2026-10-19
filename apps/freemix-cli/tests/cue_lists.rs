@@ -159,6 +159,12 @@ fn an_armed_go_fires_on_the_local_clock() {
         "{lists}"
     );
     succeed(&["cue-disarm", &project, "7"]);
+    // A GO armed past the longest cue wait (two hours at 59.94 fps) still
+    // settles on the local clock instead of being refused as runaway.
+    succeed(&["cue-arm", &project, "7", "7200000", "20"]);
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(lists.contains("played=[20, 30]"), "{lists}");
+    assert!(lists.contains("armed=-)"), "{lists}");
 }
 
 #[test]

@@ -1747,7 +1747,9 @@ impl StudioShell {
         self.reconcile_catalogue_dialogs(state);
         self.reconcile_lifecycle(state);
         self.titles.sync(state);
-        self.playlist.sync(state, std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.playlist.sync(state, now);
+        self.cues.sync(state, now);
     }
 
     /// Publishes the console locale to this frame's drawing code and to the
