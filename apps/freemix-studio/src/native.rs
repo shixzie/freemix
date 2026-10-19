@@ -2050,6 +2050,7 @@ fn consume_command_sequence(
         } => {
             let refusal = catalogue_refusal(runtime.session().client(), command_id, &result);
             let grade = grade_refusal(runtime.session().client(), command_id);
+            let notice = command_refusal(runtime.session().client(), command_id, &result);
             if let Some(refusal) =
                 animation::animation_refusal(runtime.session().client(), command_id, &result)
             {
@@ -2058,7 +2059,7 @@ fn consume_command_sequence(
             publication.rejection(
                 runtime,
                 fm_ui_egui::command_rejection_message(code, message, fields),
-                (refusal, grade, CommandRefusalNotice::from_result(&result)),
+                (refusal, grade, notice),
                 *deferred_rejections,
             );
             return Ok(());
@@ -2893,6 +2894,21 @@ fn display_output_answer(
 
 /// The refusal of a grade command, naming the target a refused grade set
 /// addressed, so the Colour window marks that draft as not on air.
+/// The notice of refused command `command_id`, noting the script a refused
+/// `script_run` asked to run (a cue GO's script step refuses with the same
+/// typed reason, Protocol 2.60).
+fn command_refusal(
+    client: &Client,
+    command_id: &str,
+    result: &CommandResult,
+) -> Option<CommandRefusalNotice> {
+    let notice = CommandRefusalNotice::from_result(result)?;
+    Some(match client.command(command_id) {
+        Some(record) => notice.with_command(&record.command.payload),
+        None => notice,
+    })
+}
+
 fn grade_refusal(client: &Client, command_id: &str) -> Option<GradeRefusal> {
     let command = GradeCommand::from_payload(&client.command(command_id)?.command.payload)?;
     Some(GradeRefusal {
@@ -3749,6 +3765,7 @@ mod tests {
             }),
             issue: None,
             error: "Command rejected (conflict): input 1 is on Program".to_owned(),
+            script_run: None,
         };
         refused.command_refusals = vec![notice.clone()];
         refused.error = Some("Command rejected (conflict): input 1 is on Program".to_owned());

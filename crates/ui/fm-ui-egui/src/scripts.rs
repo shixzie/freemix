@@ -67,8 +67,6 @@ pub(crate) struct ScriptsWindow {
     /// The replicated name and text the draft was loaded from (`None` for
     /// a new script), so an unchanged draft follows the project.
     loaded: Option<(String, String)>,
-    /// The script this console last asked to run.
-    last_run: Option<u64>,
     pub(crate) failure: Option<RunFailure>,
     seen_refusals: Vec<String>,
 }
@@ -151,7 +149,9 @@ impl ScriptsWindow {
     }
 
     /// Notes where a run this console asked for stopped, from the refusals
-    /// the session reports.
+    /// the session reports. Only a refused `script_run` names its script: a
+    /// cue GO refused by its script step (Protocol 2.60) carries the same
+    /// typed reason for a script of the cue's, not the last one run here.
     pub(crate) fn observe_refusals(&mut self, state: &StudioUiState) {
         for refusal in &state.command_refusals {
             if self.seen_refusals.contains(&refusal.command_id) {
@@ -168,7 +168,7 @@ impl ScriptsWindow {
                     column,
                 }),
                 Some(script),
-            ) = (&refusal.reason, self.last_run)
+            ) = (&refusal.reason, refusal.script_run)
             {
                 self.failure = Some(RunFailure {
                     script,
@@ -480,7 +480,6 @@ fn draw_editor(
             .hint(l.text(Msg::ScriptRunHover), run.unwrap_or(""))
             .clicked()
         {
-            window.last_run = Some(script);
             window.failure = None;
             intents.push(StudioIntent::Script(ScriptIntent::Run { script }));
         }
@@ -660,5 +659,57 @@ mod tests {
         assert_eq!(marked_line(&window), Some(2));
         window.source = "if\n".into();
         assert_eq!(marked_line(&window), Some(1));
+    }
+
+    /// Regression (Protocol 2.60): a cue GO refused by its script step
+    /// carries the same typed `script_failed` reason as a refused run, and
+    /// the window used to pin it on the script this console last ran,
+    /// marking a line of a script that never stopped there.
+    #[test]
+    fn only_a_refused_run_marks_where_its_script_stopped() {
+        use fm_protocol::{CommandPayload, CommandResult, CueOperation, RefusalReason};
+        let refused = |id: &str, payload: &CommandPayload| {
+            crate::CommandRefusalNotice::from_result(&CommandResult::Rejected {
+                id: id.to_owned(),
+                code: "not_found".to_owned(),
+                message: format!("{id}: script stopped at line 2, column 1"),
+                fields: Vec::new(),
+                current_revision: 3,
+                retryable: false,
+                reason: Some(RefusalReason::ScriptFailed {
+                    failure: ScriptFailureKind::Refused,
+                    line: 2,
+                    column: 1,
+                }),
+            })
+            .unwrap()
+            .with_command(payload)
+        };
+        let mut window = ScriptsWindow::default();
+        window.follow(&[script(1, "cut 2"), script(2, "preview 2\ncut 9")]);
+        let mut state = StudioUiState::new(crate::StudioConnectionStatus::Ready);
+
+        // This console ran script 1 (accepted), then a GO's step failed in
+        // another script: nothing is marked.
+        let go = CommandPayload::CueControl {
+            list: 7,
+            operation: CueOperation::Go { cue: None },
+        };
+        state.command_refusals = vec![refused("go", &go)];
+        window.observe_refusals(&state);
+        assert_eq!(window.failure, None);
+
+        // A refused run marks its own script.
+        state.command_refusals = vec![refused("run", &CommandPayload::RunScript { script: 2 })];
+        window.observe_refusals(&state);
+        assert_eq!(
+            window.failure,
+            Some(RunFailure {
+                script: 2,
+                failure: ScriptFailureKind::Refused,
+                line: 2,
+                column: 1,
+            })
+        );
     }
 }

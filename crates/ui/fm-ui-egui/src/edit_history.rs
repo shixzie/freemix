@@ -361,6 +361,12 @@ pub struct CommandRefusalNotice {
     /// [`StudioUiState::error`] this refusal explains. Anything else joined
     /// onto that error is not explained by the refusal and is shown too.
     pub error: String,
+    /// The script a refused `script_run` asked to run, set by the worker
+    /// that sent the command ([`Self::with_command`]). A cue GO whose
+    /// script step fails carries the same typed `script_failed` reason
+    /// (Protocol 2.60) for a script the console cannot tell, so only this
+    /// says which script a stop belongs to.
+    pub script_run: Option<u64>,
 }
 
 impl CommandRefusalNotice {
@@ -382,9 +388,20 @@ impl CommandRefusalNotice {
                 reason: reason.clone(),
                 issue: fields.first().map(|issue| issue.code.clone()),
                 error: command_rejection_message(code, message, fields),
+                script_run: None,
             }),
             CommandResult::Accepted { .. } => None,
         }
+    }
+
+    /// The notice of a refused command `payload`: a `script_run` notes the
+    /// script it asked to run ([`Self::script_run`]).
+    #[must_use]
+    pub fn with_command(mut self, payload: &fm_protocol::CommandPayload) -> Self {
+        if let fm_protocol::CommandPayload::RunScript { script } = payload {
+            self.script_run = Some(*script);
+        }
+        self
     }
 
     /// The console's own wording of an untyped field issue, if it has one.

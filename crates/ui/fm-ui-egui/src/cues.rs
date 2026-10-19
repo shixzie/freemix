@@ -221,6 +221,22 @@ pub fn go_intent(
     })
 }
 
+/// The list the `G` key fires, if it may fire `list`: like the GO key, it
+/// needs a cue on standby and the permissions of the chain that cue runs
+/// ([`chain_block`]), including every verb of a script step's script.
+/// (The `transition` gate is the caller's, as for every switcher key.)
+#[must_use]
+pub fn go_key_list(
+    state: &StudioUiState,
+    scripts: &[ScriptStatus],
+    list: &CueListStatus,
+) -> Option<u64> {
+    let standby = list.state.standby?;
+    chain_block(state, scripts, list, standby)
+        .is_none()
+        .then_some(list.id)
+}
+
 /// The lowest list id not in use, or `None` at the list limit.
 #[must_use]
 pub fn new_list_id(lists: &[CueListStatus]) -> Option<u64> {
@@ -532,10 +548,11 @@ impl CuePanel {
             .or_else(|| lists.first())
     }
 
-    /// The list `G` fires: the shown list while it has a cue on standby.
+    /// The list `G` fires: the shown list while it has a cue on standby
+    /// whose chain the session may fire ([`go_key_list`]).
     pub(crate) fn go_list(&self, state: &StudioUiState) -> Option<u64> {
-        let list = self.shown(state.project_state.as_ref()?)?;
-        list.state.standby.is_some().then_some(list.id)
+        let project = state.project_state.as_ref()?;
+        go_key_list(state, project.scripts(), self.shown(project)?)
     }
 
     /// Shows list `list` (for tests and fixtures).
@@ -2041,6 +2058,36 @@ mod tests {
         ] {
             assert_ne!(spanish.text(msg), msg.en());
         }
+    }
+
+    /// Regression: the `G` key fired the standby cue whatever its chain
+    /// needed, while the GO key beside it was disabled because a script
+    /// step's script mutes a strip the session may not touch.
+    #[test]
+    fn the_g_key_fires_only_a_chain_the_go_key_would() {
+        let mut status = list(
+            7,
+            CueRunStatus {
+                standby: Some(10),
+                ..CueRunStatus::default()
+            },
+        );
+        status.spec.cues[0].actions = vec![WireCueAction::RunScript { script: 5 }];
+        let muting = [ScriptStatus {
+            id: 5,
+            spec: fm_protocol::ScriptSpec {
+                name: "Open".into(),
+                source: "if program == 9\n  mute 2\nend\ncut 1\n".into(),
+            },
+        }];
+        let transition_only = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_switcher_permissions(false, true);
+        let operator = transition_only.clone().with_audio_permission(true);
+        assert_eq!(go_key_list(&transition_only, &muting, &status), None);
+        assert!(go_intent(&status, chain_block(&transition_only, &muting, &status, 10)).is_err());
+        assert_eq!(go_key_list(&operator, &muting, &status), Some(7));
+        status.state.standby = None;
+        assert_eq!(go_key_list(&operator, &muting, &status), None);
     }
 
     #[test]
