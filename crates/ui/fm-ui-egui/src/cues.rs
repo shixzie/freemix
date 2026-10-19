@@ -123,6 +123,51 @@ pub fn list_edit_block(state: &StudioUiState, list: &CueListStatus) -> Option<&'
     })
 }
 
+/// The permission an action needs beyond the `transition` every cue
+/// control needs: the permission of the equivalent direct command.
+const fn action_capability(action: &WireCueAction) -> Option<Capability> {
+    match action {
+        WireCueAction::Preview { .. } => Some(Capability::SelectPreview),
+        WireCueAction::AudioGain { .. } | WireCueAction::AudioMute { .. } => {
+            Some(Capability::Audio)
+        }
+        WireCueAction::TitleText { .. } => Some(Capability::EditProject),
+        _ => None,
+    }
+}
+
+/// Why this session may not fire cue `cue` of `list`, if it may not. A GO
+/// runs the cue and every cue it auto-follows into, and the authority
+/// checks that whole chain up front: each action needs the permission its
+/// equivalent direct command needs.
+#[must_use]
+pub fn chain_block(state: &StudioUiState, list: &CueListStatus, cue: u64) -> Option<&'static str> {
+    let start = list.spec.cues.iter().position(|found| found.id == cue)?;
+    let (mut preview, mut audio, mut title) = (false, false, false);
+    for found in &list.spec.cues[start..] {
+        for action in &found.actions {
+            match action_capability(action) {
+                Some(Capability::SelectPreview) => preview = true,
+                Some(Capability::Audio) => audio = true,
+                Some(Capability::EditProject) => title = true,
+                Some(Capability::Transition) | None => {}
+            }
+        }
+        if !found.auto_follow {
+            break;
+        }
+    }
+    if preview && !state.can_select_preview {
+        Some(Msg::CueReasonChainPreview.en())
+    } else if audio && !state.can_control_audio {
+        Some(Msg::CueReasonChainAudio.en())
+    } else if title && !state.can_edit_project {
+        Some(Msg::CueReasonChainTitle.en())
+    } else {
+        None
+    }
+}
+
 /// The GO key's intent for `list`.
 ///
 /// # Errors
@@ -583,7 +628,14 @@ impl CuePanel {
         ui.add_space(4.0);
 
         // The GO key and the cue on standby.
-        let go = go_intent(&list, control);
+        let go = go_intent(
+            &list,
+            control.or_else(|| {
+                list.state
+                    .standby
+                    .and_then(|standby| chain_block(state, &list, standby))
+            }),
+        );
         let standby_name = list
             .state
             .standby
@@ -697,12 +749,14 @@ impl CuePanel {
                         .find(|cue| cue.id == *earlier)
                         .map(|cue| (cue.id, cue.name.clone()))
                 });
+            // Firing runs the saved cue and every cue it follows into.
+            let fire = control.or_else(|| chain_block(state, &list, id));
             let row = draw_cue_row(
                 ui,
                 &names,
                 &list,
                 (&mut draft.spec.cues, index),
-                (control, list_edit),
+                (control, fire, list_edit),
                 (self.expanded, conflict),
                 intents,
             );
@@ -845,7 +899,11 @@ fn draw_cue_row(
     names: &Names<'_>,
     list: &CueListStatus,
     (cues, index): (&mut Vec<WireCue>, usize),
-    (control, edit): (Option<&'static str>, Option<&'static str>),
+    (control, fire, edit): (
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+    ),
     (expanded, conflict): (Option<u64>, Option<(u64, String)>),
     intents: &mut Vec<StudioIntent>,
 ) -> Option<RowEdit> {
@@ -893,9 +951,14 @@ fn draw_cue_row(
                         }
                         return;
                     }
-                    if let Some(change) =
-                        row_controls(ui, l, list.id, (cues, index), (control, edit), intents)
-                    {
+                    if let Some(change) = row_controls(
+                        ui,
+                        l,
+                        list.id,
+                        (cues, index),
+                        (control, fire, edit),
+                        intents,
+                    ) {
                         removed = matches!(change, RowControl::Removed);
                         result = Some(RowEdit::Change(Change::Commit));
                     }
@@ -906,9 +969,14 @@ fn draw_cue_row(
                 if !one_line {
                     ui.horizontal(|ui| {
                         ui.add_space(CHIP_WIDTH);
-                        if let Some(change) =
-                            row_controls(ui, l, list.id, (cues, index), (control, edit), intents)
-                        {
+                        if let Some(change) = row_controls(
+                            ui,
+                            l,
+                            list.id,
+                            (cues, index),
+                            (control, fire, edit),
+                            intents,
+                        ) {
                             removed = matches!(change, RowControl::Removed);
                             result = Some(RowEdit::Change(Change::Commit));
                         }
@@ -957,7 +1025,11 @@ fn row_controls(
     l: Locale,
     list: u64,
     (cues, index): (&mut Vec<WireCue>, usize),
-    (control, edit): (Option<&'static str>, Option<&'static str>),
+    (control, fire, edit): (
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+    ),
     intents: &mut Vec<StudioIntent>,
 ) -> Option<RowControl> {
     let id = cues[index].id;
@@ -987,8 +1059,8 @@ fn row_controls(
         }));
     }
     if ui
-        .add_enabled(control.is_none(), key_button("▶", None, ROW_KEY_WIDTH))
-        .hint(l.text(Msg::CueFireHover), control.unwrap_or(""))
+        .add_enabled(fire.is_none(), key_button("▶", None, ROW_KEY_WIDTH))
+        .hint(l.text(Msg::CueFireHover), fire.unwrap_or(""))
         .clicked()
     {
         intents.push(StudioIntent::Cue(CueIntent::Control {
@@ -1770,6 +1842,74 @@ mod tests {
         assert_eq!(go_intent(&ready, Some("blocked")), Err("blocked"));
         let done = list(7, CueRunStatus::default());
         assert_eq!(go_intent(&done, None), Err(Msg::CueReasonNoStandby.en()));
+    }
+
+    /// GO and a row's fire key run the cue and every cue it follows into;
+    /// the authority checks that whole chain up front, so each needs the
+    /// permissions its actions need.
+    #[test]
+    fn firing_needs_the_permissions_of_the_chain_it_runs() {
+        let wire = |value: u128| {
+            WireInputId::from_domain(InputId::new(core::num::NonZeroU128::new(value).unwrap()))
+        };
+        let mut status = list(7, CueRunStatus::default());
+        status.spec.cues[0].auto_follow = true;
+        status.spec.cues[0].actions = vec![WireCueAction::Take {
+            input: Some(wire(2)),
+            effect: fm_protocol::TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        }];
+        status.spec.cues[1].actions = vec![WireCueAction::AudioMute {
+            input: wire(2),
+            muted: true,
+        }];
+        status.spec.cues[2].actions = vec![
+            WireCueAction::Preview { input: wire(1) },
+            WireCueAction::TitleText {
+                input: wire(3),
+                field: fm_protocol::WireTitleFieldId::new(core::num::NonZeroU128::MIN),
+                text: "x".into(),
+            },
+        ];
+        let operator = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_switcher_permissions(true, true)
+            .with_audio_permission(true);
+        let transition_only = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_switcher_permissions(false, true);
+
+        // Cue 10 follows into cue 20's mute.
+        assert_eq!(chain_block(&operator, &status, 10), None);
+        assert_eq!(
+            chain_block(&transition_only, &status, 10),
+            Some(Msg::CueReasonChainAudio.en())
+        );
+        assert_eq!(
+            chain_block(&transition_only, &status, 20),
+            Some(Msg::CueReasonChainAudio.en())
+        );
+        // Cue 30 selects Preview and sets title text.
+        assert_eq!(
+            chain_block(&transition_only, &status, 30),
+            Some(Msg::CueReasonChainPreview.en())
+        );
+        assert_eq!(
+            chain_block(&operator, &status, 30),
+            Some(Msg::CueReasonChainTitle.en())
+        );
+        let admin = operator.clone().with_edit_project_permission(true);
+        assert_eq!(chain_block(&admin, &status, 30), None);
+        // Cue 20 does not follow on into cue 30.
+        status.spec.cues[2].actions.clear();
+        assert_eq!(chain_block(&operator, &status, 20), None);
+        // Every reason is translated.
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        for msg in [
+            Msg::CueReasonChainPreview,
+            Msg::CueReasonChainAudio,
+            Msg::CueReasonChainTitle,
+        ] {
+            assert_ne!(spanish.text(msg), msg.en());
+        }
     }
 
     #[test]

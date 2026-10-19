@@ -1386,6 +1386,18 @@ impl Engine {
             .map(|(list, due)| (list, due.max(self.scheduler.pacer().next_frame().get())))
     }
 
+    /// Every show action running script `script` now would ask for, in
+    /// order (RC-011): the script runs on a copy of the show exactly as an
+    /// [`EngineCommand::RunScript`] submitted now plans it, so the list
+    /// covers the branches it takes on the current show. Nothing changes.
+    /// A run that would stop early lists the actions it asked for up to and
+    /// including the refused one; an unknown script or a syntax error lists
+    /// none.
+    #[must_use]
+    pub fn script_run_actions(&self, script: u64) -> Vec<fm_model::CueAction> {
+        crate::script::requested_actions(self, script, self.scheduler.pacer().next_frame())
+    }
+
     /// Steps a cue operation or advance on the current show for
     /// `target_frame`: the list's next run state and, for a GO or advance,
     /// every due action applied in order to a copy of the show.

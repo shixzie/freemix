@@ -1509,6 +1509,26 @@ Protocol 2.50 adds operator cue lists with a GO key (RC-017).
   played cues and stands by the first) are the other controls. All are
   `transition`-class operator controls in the `switcher` domain, journaled
   but never undoable. A refused action refuses the whole GO.
+- Automation authority: a cue never acts with more authority than the
+  session that fires it. Each cue action needs the permission of its
+  direct command: `preview` needs `select_preview`; `audio_gain` and
+  `audio_mute` need `control_audio`; `title_text` needs `edit_project`;
+  takes, overlays, title on/off, Fade to Black, the playlist, recorders,
+  streams, and media transport need `transition`; waits and delays need
+  nothing. A `cue_go` additionally needs the permission of every action of
+  the chain it arms, checked up front before anything is applied: the
+  fired cue's actions across all of its waits, and, while the cue that
+  ends auto-follows, every action of the next cue in list order. A
+  session lacking one is refused `permission_denied` (reason
+  `permission_denied`, the message naming the missing permission) and
+  nothing fires. The daemon's clock then runs the armed chain's waits and
+  follows (`cue_advance`) on that authority: it never runs an action the
+  firing session was not checked for. Because an edit can change what an
+  armed chain will run, a `cue_list_set` (or an undo or redo restoring
+  one) of a list whose cue is waiting additionally needs every permission
+  the edited chain needs that the armed chain did not. Standby, back,
+  skip, stop, and reset fire nothing and need only `transition`; a list
+  edit that arms nothing is a plain `edit_project` edit.
 - `payload=cue_advance` with `list` and `frame` runs a waiting cue's next
   actions; only the daemon's cue clock submits it, on exactly the due frame
   (a client's is refused `unavailable`), and a cue that auto-follows fires
@@ -1827,6 +1847,17 @@ stored in the project and run on the authority.
   `reason=script_failed:<syntax|runtime|instructions|actions|variables|string_bytes|refused>:<line>:<column>`;
   its code is the refused action's own code for `refused`,
   `resource_exhausted` for a budget, and `invalid_command` otherwise.
+  A run never acts with more authority than the session that starts it:
+  before anything is applied, the authority plans the run on a copy of the
+  show exactly as it will execute it, and the session must also hold the
+  permission of every action the planned run asks for (the cue action
+  permissions above: `select_preview` for preview, `control_audio` for
+  gain and mute, `edit_project` for title text, `transition` for the
+  rest). The check follows the branches the script takes on the current
+  show, and covers the actions a run that would stop early asked for up to
+  and including the refused one. A session lacking one is refused
+  `permission_denied` (reason `permission_denied`, the message naming the
+  missing permission) and nothing runs.
 - `event=script_changed` carries `script`, `name`, and `source`;
   `event=script_removed` carries `script`; `event=script_ran` carries
   `script`, `frame`, `actions`, `instructions`, and the desired show state

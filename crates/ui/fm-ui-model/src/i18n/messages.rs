@@ -2370,7 +2370,7 @@ messages! {
     ScriptRevert => t("Discard script changes"),
     ScriptRevertHover => t("Go back to the script as saved in the project"),
     ScriptRun => t("Run script"),
-    ScriptRunHover => t("Run the saved script on the server now; if any step fails, nothing it did is kept"),
+    ScriptRunHover => t("Run the saved script on the server now; if any step fails, nothing it did is kept. The session needs the permission of every action it runs (Preview, audio, title text)"),
     ScriptRemove => t("Delete script"),
     ScriptRemoveHover => t("Remove the script from the project as one undoable edit"),
     ScriptSyntaxOk => t("No syntax errors"),
@@ -2482,6 +2482,10 @@ messages! {
     CueReasonLast => t("this is already last"),
     CueReasonNothingToName => t("the show has nothing this action could name"),
     CueReasonNoStandby => t("no cue is on standby"),
+    // A GO runs the cue and every cue it follows into (RC-017 authority).
+    CueReasonChainPreview => t("a cue this runs selects Preview, which needs the select_preview permission this session lacks"),
+    CueReasonChainAudio => t("a cue this runs changes audio, which needs the control_audio permission this session lacks"),
+    CueReasonChainTitle => t("a cue this runs sets title text, which needs the edit_project permission this session lacks"),
 
     // Stream destinations (OR-006).
     StreamStartAllKey => t("START ALL"),

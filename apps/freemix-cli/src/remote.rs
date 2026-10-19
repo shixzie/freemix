@@ -220,8 +220,12 @@ pub fn script(
     expected_revision: Option<u64>,
 ) -> RemoteResult<()> {
     let completion = CommandCompletion::for_payload(&payload);
+    // A run also needs the class of every action the script asks for,
+    // which only the daemon knows once it plans the run on its show; a
+    // title text needs project-edit authority on top of transition, which
+    // only Admin holds.
     let role = if matches!(payload, CommandPayload::RunScript { .. }) {
-        Role::Operator
+        Role::Admin
     } else {
         Role::Graphics
     };
@@ -1137,7 +1141,18 @@ pub fn execute(
     expected_revision: Option<u64>,
 ) -> RemoteResult<()> {
     let completion = CommandCompletion::for_payload(&payload);
+    // A GO also needs the class of every action of the chain it fires
+    // (RC-017), which may include a title text only Admin may also edit;
+    // a script run (RC-011) likewise. The other cue controls fire nothing.
+    let fires = matches!(
+        payload,
+        CommandPayload::CueControl {
+            operation: fm_protocol::CueOperation::Go { .. },
+            ..
+        } | CommandPayload::RunScript { .. }
+    );
     let role = match completion {
+        _ if fires => Role::Admin,
         CommandCompletion::Project
         | CommandCompletion::Padlock
         | CommandCompletion::Playlist { edit: true }

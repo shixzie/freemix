@@ -235,6 +235,31 @@ impl CueList {
     }
 }
 
+/// Every action a run starting at action `first_action` of cue `cue` in
+/// `cues` can perform, in order: the cue's actions from `first_action` on
+/// (across its waits), then, while the cue that ends auto-follows, every
+/// action of the next cue in list order. This is exactly what a GO of `cue`
+/// (with `first_action` zero), or a waiting cue resumed at `first_action`,
+/// runs over all its later clock advances, unless a stop, reset, another
+/// GO, or a refused action ends it earlier. Empty when `cues` holds no such
+/// cue.
+#[must_use]
+pub fn cue_chain_actions(cues: &[Cue], cue: u64, first_action: usize) -> Vec<&CueAction> {
+    let Some(start) = cues.iter().position(|candidate| candidate.id == cue) else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+    let mut skip = first_action;
+    for cue in &cues[start..] {
+        actions.extend(cue.actions.iter().skip(skip));
+        skip = 0;
+        if !cue.auto_follow {
+            break;
+        }
+    }
+    actions
+}
+
 /// Why a cue list is structurally invalid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CueListError {

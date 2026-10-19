@@ -6378,7 +6378,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ScriptRunHover,
         t(
-            "Ejecuta ahora el guion guardado en el servidor; si falla algún paso, no se conserva nada de lo que hizo",
+            "Ejecuta ahora el guion guardado en el servidor; si falla algún paso, no se conserva nada de lo que hizo. La sesión necesita el permiso de cada acción que ejecuta (Preview, audio, texto de título)",
         ),
     ),
     (Msg::ScriptRemove, t("Eliminar guion")),
@@ -6654,6 +6654,24 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("el show no tiene nada que esta acción pueda nombrar"),
     ),
     (Msg::CueReasonNoStandby, t("no hay ningún cue en espera")),
+    (
+        Msg::CueReasonChainPreview,
+        t(
+            "un cue que esto ejecuta selecciona Preview, lo que requiere el permiso select_preview que esta sesión no tiene",
+        ),
+    ),
+    (
+        Msg::CueReasonChainAudio,
+        t(
+            "un cue que esto ejecuta cambia el audio, lo que requiere el permiso control_audio que esta sesión no tiene",
+        ),
+    ),
+    (
+        Msg::CueReasonChainTitle,
+        t(
+            "un cue que esto ejecuta cambia el texto de un título, lo que requiere el permiso edit_project que esta sesión no tiene",
+        ),
+    ),
     // Stream destinations (OR-006).
     (Msg::StreamStartAllKey, t("INICIAR TODO")),
     (Msg::StreamStopAllKey, t("DETENER TODO")),

@@ -113,6 +113,44 @@ fn input(value: u128) -> WireInputId {
 }
 
 fn create_project(path: &Path) {
+    create_project_with(path, false);
+}
+
+const TITLE_TEMPLATE_KEY: &str = "titles/tally-title.fmtitle";
+
+/// Writes the stored template of a lower third with one text field.
+fn write_title_template(store: &ProjectStore) {
+    use fm_titles::{FieldDefinition, FieldId, FieldValue, TemplateId, TitleTemplate};
+
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+        name: "Lower third".into(),
+        width: 1_280,
+        height: 720,
+        background: fm_titles::Color::TRANSPARENT,
+        fields: vec![FieldDefinition {
+            id: FieldId::new(NonZeroU128::new(1).unwrap()),
+            name: "Name".into(),
+            default: FieldValue::Text("Name".into()),
+        }],
+        elements: Vec::new(),
+        animation: fm_titles::TitleAnimation::default(),
+    };
+    let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+        template,
+        fonts: Vec::new(),
+        clocks: Vec::new(),
+    })
+    .unwrap();
+    let template_path = store.assets_root().join(TITLE_TEMPLATE_KEY);
+    fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+    fs::write(&template_path, document).unwrap();
+}
+
+/// The tally project; with `title`, title input 4 ("Lower third") too.
+#[allow(clippy::too_many_lines)] // one flat project fixture
+fn create_project_with(path: &Path, title: bool) {
+    let store = ProjectStore::new(path).unwrap();
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
         ProjectId::new(NonZeroU128::new(PROJECT_ID).unwrap()),
@@ -142,6 +180,22 @@ fn create_project(path: &Path) {
                 SimulatedAudio::Silence,
             )),
             required_capabilities: vec![format!("simulation.source.{number}")],
+        });
+    }
+    if title {
+        write_title_template(&store);
+        project.add_input(Input {
+            id: domain_input(4),
+            name: "Lower third".into(),
+            kind: InputKind::Title(fm_model::TitleInput {
+                template_uri: format!("asset://{TITLE_TEMPLATE_KEY}"),
+                field_revision: 0,
+                fields: vec![fm_model::TitleFieldEntry {
+                    id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                    value: fm_model::TitleFieldValue::Text("Name".into()),
+                }],
+            }),
+            required_capabilities: Vec::new(),
         });
     }
     project.set_main_mix(MainMix::new(domain_input(1), domain_input(2)));
@@ -198,7 +252,7 @@ fn create_project(path: &Path) {
         Vec::new(),
     )
     .unwrap();
-    ProjectStore::new(path).unwrap().save(&stored).unwrap();
+    store.save(&stored).unwrap();
 }
 
 /// One HTTP/1.1 exchange; returns status line, lower-cased headers, and body.
@@ -337,6 +391,15 @@ fn hello(role: Role) -> WireMessage {
 /// Connects and handshakes as a Viewer tally, retrying while the gateway's
 /// single Web slot is still releasing a previous session.
 fn viewer_session(address: SocketAddr) -> (Browser, ServerIdentity, Vec<String>, SnapshotMessage) {
+    web_session(address, Role::Viewer)
+}
+
+/// Connects and handshakes as a `role` tally, retrying while the gateway's
+/// single Web slot is still releasing a previous session.
+fn web_session(
+    address: SocketAddr,
+    role: Role,
+) -> (Browser, ServerIdentity, Vec<String>, SnapshotMessage) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         assert!(Instant::now() < deadline, "tally never reconnected");
@@ -344,7 +407,7 @@ fn viewer_session(address: SocketAddr) -> (Browser, ServerIdentity, Vec<String>,
             std::thread::sleep(Duration::from_millis(50));
             continue;
         };
-        send(&mut socket, &hello(Role::Viewer));
+        send(&mut socket, &hello(role));
         let Ok(Message::Text(text)) = socket.read() else {
             // The scheduler refused the duplicate Web peer; back off and retry.
             std::thread::sleep(Duration::from_millis(50));
@@ -353,7 +416,7 @@ fn viewer_session(address: SocketAddr) -> (Browser, ServerIdentity, Vec<String>,
         let WireMessage::HandshakeResponse(response) = decode_line(text.as_str()).unwrap() else {
             panic!("expected a handshake response");
         };
-        assert_eq!(response.granted_role, Role::Viewer);
+        assert_eq!(response.granted_role, role);
         assert!(matches!(
             response.outcome,
             HandshakeOutcome::Snapshot { .. }
@@ -361,13 +424,17 @@ fn viewer_session(address: SocketAddr) -> (Browser, ServerIdentity, Vec<String>,
         let WireMessage::Snapshot(snapshot) = receive(&mut socket) else {
             panic!("expected a snapshot");
         };
-        // Every project scene's layout follows (Protocol 2.35); the page
-        // ignores these records.
-        for _ in &snapshot.layout_scenes {
-            assert!(matches!(
-                receive(&mut socket),
-                WireMessage::SceneLayoutState(_)
-            ));
+        // Every project scene's layout follows (Protocol 2.35), after the
+        // state records of a title project; the page ignores these records.
+        let mut layouts = snapshot.layout_scenes.len();
+        while layouts > 0 {
+            match receive(&mut socket) {
+                WireMessage::SceneLayoutState(_) => layouts -= 1,
+                WireMessage::Event(_)
+                | WireMessage::RuntimeEvent(_)
+                | WireMessage::CommandResult(_) => panic!("expected snapshot records"),
+                _ => {}
+            }
         }
         return (socket, response.server, response.permissions, snapshot);
     }
@@ -402,12 +469,17 @@ impl RawOperator {
         let WireMessage::Snapshot(snapshot) = operator.receive() else {
             panic!("expected a snapshot");
         };
-        // Every project scene's layout follows (Protocol 2.35).
-        for _ in &snapshot.layout_scenes {
-            assert!(matches!(
-                operator.receive(),
-                WireMessage::SceneLayoutState(_)
-            ));
+        // Every project scene's layout follows (Protocol 2.35), after the
+        // state records of a title project.
+        let mut layouts = snapshot.layout_scenes.len();
+        while layouts > 0 {
+            match operator.receive() {
+                WireMessage::SceneLayoutState(_) => layouts -= 1,
+                WireMessage::Event(_)
+                | WireMessage::RuntimeEvent(_)
+                | WireMessage::CommandResult(_) => panic!("expected snapshot records"),
+                _ => {}
+            }
         }
         operator
     }
@@ -735,4 +807,104 @@ fn browser_tally_follows_realized_cuts_with_role_limits_and_reconnects() {
                 .any(|granted| granted == permission)
         );
     }
+}
+
+/// Waits for the result of command `id` on a web peer, skipping events.
+fn web_result(socket: &mut Browser, id: &str) -> CommandResult {
+    loop {
+        if let WireMessage::CommandResult(result) = receive(socket) {
+            let (CommandResult::Accepted { id: found, .. }
+            | CommandResult::Rejected { id: found, .. }) = &result;
+            if found == id {
+                return result;
+            }
+        }
+    }
+}
+
+/// RC-017 authority over the web tally's GO path: an Operator tally's GO
+/// needs the permission of every action of the chain it would fire, here a
+/// title text the Operator role may not edit, two cues down an auto-follow.
+/// The refusal is the typed permission denial naming the missing
+/// permission; nothing fires, and a chain within the role still fires.
+#[test]
+fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
+    use fm_protocol::{CueListSpec, CueOperation, WireCue, WireCueAction, WireTitleFieldId};
+
+    let directory = TestDirectory::new("go-authority");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true);
+    let daemon = Daemon::start(&project);
+    let (mut tally, _, permissions, _) = web_session(daemon.web, Role::Operator);
+    assert!(permissions.iter().any(|granted| granted == "transition"));
+    assert!(!permissions.iter().any(|granted| granted == "edit_project"));
+
+    let cut = |value: u128| WireCueAction::Take {
+        input: Some(input(value)),
+        effect: fm_protocol::TransitionFavoriteEffect::Cut,
+        duration_frames: 0,
+    };
+    let cue = |id: u64, auto_follow: bool, actions: Vec<WireCueAction>| WireCue {
+        id,
+        name: format!("Cue {id}"),
+        auto_follow,
+        actions,
+    };
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    admin.send(&command(
+        "set-cues",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(CueListSpec {
+                name: "Show".into(),
+                cues: vec![
+                    cue(10, true, vec![cut(2)]),
+                    cue(
+                        20,
+                        false,
+                        vec![WireCueAction::TitleText {
+                            input: input(4),
+                            field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                            text: "Live".into(),
+                        }],
+                    ),
+                    cue(30, false, vec![cut(3)]),
+                ],
+            }),
+        },
+    ));
+    let revision = admin.accepted("set-cues");
+
+    // The tally's GO, exactly as the page sends it.
+    let go = |cue: Option<u64>| CommandPayload::CueControl {
+        list: 7,
+        operation: CueOperation::Go { cue },
+    };
+    send(&mut tally, &command("tally-go", go(None)));
+    match web_result(&mut tally, "tally-go") {
+        CommandResult::Rejected {
+            code,
+            message,
+            reason,
+            current_revision,
+            ..
+        } => {
+            assert_eq!(code, "permission_denied");
+            assert_eq!(reason, Some(fm_protocol::RefusalReason::PermissionDenied));
+            assert!(message.contains("EditProject"), "{message}");
+            assert_eq!(current_revision, revision);
+        }
+        other @ CommandResult::Accepted { .. } => panic!("expected a permission denial: {other:?}"),
+    }
+
+    // A cue whose chain stays within the Operator role fires.
+    send(&mut tally, &command("tally-go-30", go(Some(30))));
+    assert!(matches!(
+        web_result(&mut tally, "tally-go-30"),
+        CommandResult::Accepted { revision: fired, .. } if fired == revision + 1
+    ));
+
+    // Full control is unchanged: Admin fires the whole chain.
+    admin.send(&command("admin-go", go(Some(10))));
+    assert_eq!(admin.accepted("admin-go"), revision + 2);
 }

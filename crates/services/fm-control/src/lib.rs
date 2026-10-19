@@ -15,6 +15,7 @@ use std::{
     },
 };
 
+mod action_authority;
 mod animation_preset;
 mod audio_mixer;
 mod automation;
@@ -141,20 +142,35 @@ impl AuthorizationHook for Policy {
 /// lets a role change configuration it could not change directly. A title take
 /// that also saves field values edits project content as well as switching,
 /// so it additionally needs `EditProject`.
+///
+/// Automation never runs with more authority than the session that starts
+/// it: a script run and a cue GO additionally need the class of every
+/// action they would perform, a GO including the actions its waits and
+/// auto-follows run later on the daemon's clock, and an edit of a cue list
+/// whose cue is waiting needs the classes its edit adds to what the waiting
+/// chain will run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RequiredClasses {
     primary: CommandClass,
-    additional: Option<CommandClass>,
+    additional: action_authority::ClassSet,
 }
 
 impl RequiredClasses {
-    fn resolve(payload: &CommandPayload, history_target: Option<&EngineCommand>) -> Self {
-        let additional = history_target
-            .and_then(wire_edit_payload)
-            .map(|target| command_class(&target))
-            .or_else(|| additional_command_class(payload));
+    fn resolve(
+        engine: &Engine,
+        payload: &CommandPayload,
+        history_target: Option<&EngineCommand>,
+    ) -> Self {
+        let primary = command_class(payload);
+        let mut additional = action_authority::ClassSet::default();
+        additional.extend(additional_command_class(payload));
+        additional.union(action_authority::action_classes(engine, payload));
+        if let Some(target) = history_target.and_then(wire_edit_payload) {
+            additional.insert(command_class(&target));
+            additional.union(action_authority::action_classes(engine, &target));
+        }
         Self {
-            primary: command_class(payload),
+            primary,
             additional,
         }
     }
@@ -165,17 +181,18 @@ impl RequiredClasses {
         self.primary
     }
 
-    /// The second class the command needs, if any.
+    /// Every further class the command needs, in `CommandClass`
+    /// declaration order (it may repeat [`Self::primary`]).
     #[must_use]
-    pub const fn additional(self) -> Option<CommandClass> {
-        self.additional
+    pub fn additional(self) -> Vec<CommandClass> {
+        self.additional.iter().collect()
     }
 
     /// Authorizes every required class, the payload's own class first.
     ///
     /// # Errors
     ///
-    /// Returns the first denial.
+    /// Returns the first denial; it names the missing permission.
     pub fn authorize<A: AuthorizationHook + ?Sized>(
         self,
         authorizer: &A,
@@ -183,7 +200,8 @@ impl RequiredClasses {
     ) -> Result<(), AuthorizationDenial> {
         authorizer.authorize(principal, self.primary)?;
         self.additional
-            .map_or(Ok(()), |class| authorizer.authorize(principal, class))
+            .iter()
+            .try_for_each(|class| authorizer.authorize(principal, class))
     }
 }
 
@@ -1776,10 +1794,15 @@ impl<A: AuthorizationHook> ControlService<A> {
     /// A transport session that scopes a connection to a narrower role than
     /// the principal executing in this service must authorize these classes,
     /// not only the payload's own class: undo and redo resolve to the edit at
-    /// the top of the history stack, which only the engine knows.
+    /// the top of the history stack, and a script run or cue GO to the
+    /// actions it will perform, which only the engine knows.
     #[must_use]
     pub fn required_classes(&self, payload: &CommandPayload) -> RequiredClasses {
-        RequiredClasses::resolve(payload, history_target(&self.engine, payload).as_ref())
+        RequiredClasses::resolve(
+            &self.engine,
+            payload,
+            history_target(&self.engine, payload).as_ref(),
+        )
     }
 
     /// Prepares an authorized protocol command without changing live control state.
@@ -1813,8 +1836,9 @@ impl<A: AuthorizationHook> ControlService<A> {
         }
 
         let history_target = history_target(&self.engine, &message.payload);
-        let authorization = RequiredClasses::resolve(&message.payload, history_target.as_ref())
-            .authorize(&self.authorizer, principal);
+        let authorization =
+            RequiredClasses::resolve(&self.engine, &message.payload, history_target.as_ref())
+                .authorize(&self.authorizer, principal);
         if let Err(denial) = authorization {
             // A cached denial must never shadow a durable engine receipt.
             let remember = self.engine.receipt(&idempotency_key).is_none();

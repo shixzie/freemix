@@ -47,6 +47,17 @@ Dangerous actions include:
 They require both permission and the configured confirmation policy. Automation
 can receive narrowly scoped preauthorization; it is auditable and revocable.
 
+Automation never escalates a session's authority. Running a project script
+(`RC-011`) or firing a cue (`RC-017`) requires, besides its own `transition`
+permission, the permission every action it will perform would need as a
+direct command, checked before anything is applied and refused
+`permission_denied` naming the missing permission. A script is checked
+against the run planned on a copy of the show, so its dynamic branches are
+covered; a cue GO is checked for the whole chain it arms (waits and
+auto-follows), which the daemon's cue clock later runs on that up-front
+authority; and an edit to a list whose chain is armed needs whatever
+permission it adds to that chain.
+
 ## 4. Guest and browser isolation
 
 Guest invitations are random, short-lived, single-slot credentials. Admission,

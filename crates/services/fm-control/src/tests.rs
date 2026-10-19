@@ -2355,7 +2355,7 @@ fn undo_of_a_transition_class_edit_also_requires_the_transition_permission() {
     };
     let required = control.required_classes(&undo_payload);
     assert_eq!(required.primary(), CommandClass::EditProject);
-    assert_eq!(required.additional(), Some(CommandClass::Transition));
+    assert_eq!(required.additional(), [CommandClass::Transition]);
     assert!(
         required
             .authorize(&Policy::production(), &principal(Role::Graphics))
@@ -2370,7 +2370,7 @@ fn undo_of_a_transition_class_edit_also_requires_the_transition_permission() {
     let redo_payload = CommandPayload::Redo {
         expected_edit: None,
     };
-    assert_eq!(control.required_classes(&redo_payload).additional(), None);
+    assert_eq!(control.required_classes(&redo_payload).additional(), []);
 
     // Graphics may edit the project but may not change Stinger slots, so it
     // may not revert a Stinger slot change through history either.
@@ -2392,9 +2392,9 @@ fn undo_of_a_transition_class_edit_also_requires_the_transition_permission() {
     // Redo reapplies the Stinger change, so it needs Transition as well.
     assert_eq!(
         control.required_classes(&redo_payload).additional(),
-        Some(CommandClass::Transition)
+        [CommandClass::Transition]
     );
-    assert_eq!(control.required_classes(&undo_payload).additional(), None);
+    assert_eq!(control.required_classes(&undo_payload).additional(), []);
     assert!(matches!(
         undone.output.events.as_slice(),
         [EventMessage {
@@ -4017,7 +4017,7 @@ fn grade_commands_are_project_edits_with_state_records_and_undo() {
     };
     assert_eq!(
         control.required_classes(&undo).additional(),
-        Some(CommandClass::EditProject)
+        [CommandClass::EditProject]
     );
     let undone = control
         .submit(&principal(Role::Graphics), command("u", "u", undo), 0)
@@ -5257,7 +5257,7 @@ fn animation_preset_library_edits_are_project_edits_with_state_records_and_undo(
     };
     assert_eq!(
         control.required_classes(&undo).additional(),
-        Some(CommandClass::EditProject)
+        [CommandClass::EditProject]
     );
     let undone = control
         .submit(&principal(Role::Graphics), command("z", "z", undo), 0)
@@ -7801,3 +7801,5 @@ mod scripts {
         assert_eq!(control.snapshot().snapshot.script_states, 0);
     }
 }
+
+mod automation_authority;

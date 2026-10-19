@@ -321,6 +321,9 @@ struct Host<'e> {
     step: usize,
     /// The show's refusal of the action that stopped the run.
     refused: Option<Rejection>,
+    /// Every action the run asked for that names things the show holds,
+    /// in order, including one the show then refused.
+    requested: Vec<CueAction>,
 }
 
 impl Host<'_> {
@@ -356,6 +359,7 @@ impl ScriptHost for Host<'_> {
                 return refuse(self, rejection);
             }
         };
+        self.requested.push(action.clone());
         if !fm_model::cue_action_is_valid(&action) {
             let rejection = Rejection::new(
                 RejectionCode::InvalidCommand,
@@ -407,6 +411,45 @@ pub(crate) fn plan(
     script: u64,
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
+    let (mut host, report) = run(engine, script, target_frame)?;
+    if let Some(failure) = &report.failure {
+        return Err(failure_rejection(script, failure, host.refused.take()));
+    }
+    Ok(CuePlan {
+        show: Box::new(host.show),
+        event: EngineEvent::ScriptRan {
+            script,
+            frame: target_frame.get(),
+            actions: report.actions,
+            instructions: report.instructions,
+            title_texts: host.title_texts,
+            applied: host.runtime.clone(),
+        },
+        runtime: host.runtime,
+        transition: host.transition,
+    })
+}
+
+/// Every show action a [`crate::EngineCommand::RunScript`] planned for
+/// `target_frame` asks for, in order: the run happens on a copy of the show
+/// exactly as [`plan`] runs it, so the list follows the branches the script
+/// takes on the current show. A run that stops early lists the actions it
+/// asked for up to and including the refused one; an unknown script or a
+/// syntax error lists none.
+pub(crate) fn requested_actions(
+    engine: &Engine,
+    script: u64,
+    target_frame: FrameNumber,
+) -> Vec<CueAction> {
+    run(engine, script, target_frame).map_or_else(|_| Vec::new(), |(host, _)| host.requested)
+}
+
+/// Runs script `script` in the sandbox against a copy of the show.
+fn run(
+    engine: &Engine,
+    script: u64,
+    target_frame: FrameNumber,
+) -> Result<(Host<'_>, fm_script::ScriptReport), Rejection> {
     let found = engine
         .show()
         .script(script)
@@ -424,22 +467,8 @@ pub(crate) fn plan(
         takes: 0,
         step: 0,
         refused: None,
+        requested: Vec::new(),
     };
     let report = fm_script::run(&program, &mut host, Limits::default());
-    if let Some(failure) = &report.failure {
-        return Err(failure_rejection(script, failure, host.refused.take()));
-    }
-    Ok(CuePlan {
-        show: Box::new(host.show),
-        event: EngineEvent::ScriptRan {
-            script,
-            frame: target_frame.get(),
-            actions: report.actions,
-            instructions: report.instructions,
-            title_texts: host.title_texts,
-            applied: host.runtime.clone(),
-        },
-        runtime: host.runtime,
-        transition: host.transition,
-    })
+    Ok((host, report))
 }

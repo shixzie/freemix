@@ -3318,7 +3318,19 @@ up to the show's wall-clock frame like a playlist control. On the native
 runtime a cue's record and stream actions start and stop the same recorder
 segments and stream workers as the direct commands. List edits are undoable,
 padlock-guarded project edits; GO and the other controls are journaled
-operator transitions outside the undo history. Studio docks a Cues panel
+operator transitions outside the undo history. A GO never acts with more
+authority than the session that fires it: before anything is applied,
+`fm-control` also requires the permission of every action of the chain the
+GO arms (the fired cue's actions across its waits and every cue its
+auto-follows reach: `select_preview` for preview, `control_audio` for strip
+gain and mute, `edit_project` for title text, `transition` for the rest),
+refusing `permission_denied` with the missing permission named; the cue
+clock then runs those waits and follows on the authority checked when the
+chain was armed, and an edit (or undo/redo) of a list whose cue is waiting
+also needs whatever permission it adds to the armed chain. The same
+classes gate the web tally's GO and `freemix-server` session scopes, and
+Studio disables GO and a cue's fire key with a reason when the session
+lacks one. Studio docks a Cues panel
 (list picker, inline cue and action editor covering every action kind, a big GO key with the standby
 cue, Back, Skip, Stop, Reset, per-cue standby and fire keys, and `G` for
 GO) with English and Spanish hover help; the phone tally page adds GO and
@@ -3347,6 +3359,11 @@ and a run is a journaled operator command whose actions go through the cue
 GO machinery, so each is checked and refused exactly as the matching
 command would be, and the whole run lands on one frame or is refused with a
 typed `script_failed` reason naming the failure kind, line, and column.
+A run never acts with more authority than the session that starts it: the
+authority plans it on a copy of the show first, and the session must also
+hold the permission of every action the planned run asks for (so the
+branches it takes on the current show are covered), or the run is refused
+`permission_denied`, naming the missing permission, before anything runs.
 Studio adds Edit ▸ Scripts… (a list, a name field, a monospace editor that
 marks the first syntax error's line as the operator types and the line a
 refused run stopped at, Save, Discard, Run, Delete, and the last run's
