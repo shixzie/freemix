@@ -1428,6 +1428,139 @@ fn current_client_receives_structured_handshake_rejection() {
     daemon.wait_success();
 }
 
+/// The daemon serves eight raw sessions at once. A ninth raw connection is
+/// refused at once with a retryable `resource_exhausted` handshake rejection
+/// (which fm-client reports as such) and closed, instead of waiting
+/// unaccepted with no answer; once a session leaves, a new one is served.
+/// A session that pipelines more commands than the daemon queues at once is
+/// slowed by backpressure, never dropped: every command is answered in order.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn raw_sessions_beyond_the_bound_are_refused_and_pipelined_commands_answered() {
+    const RAW_SESSIONS: usize = 8;
+    const PIPELINED: usize = 40;
+
+    let directory = TestDirectory::new("raw-session-bound");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let open = |daemon: &Daemon| {
+        let client = daemon.connect();
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client
+    };
+    let mut sessions: Vec<Client> = (0..RAW_SESSIONS)
+        .map(|_| {
+            let mut client = open(&daemon);
+            assert!(!client.handshake(None).resume);
+            client.receive_snapshot();
+            client
+        })
+        .collect();
+
+    let refuse = |daemon: &Daemon| {
+        let mut refused = open(daemon);
+        let mut protocol_client = ProtocolClient::new(ClientConfig::new(
+            "process-test",
+            ClientType::Integration,
+            Role::Operator,
+            "ninth-client",
+            project_id(),
+        ))
+        .unwrap();
+        protocol_client.start_connect().unwrap();
+        let started = Instant::now();
+        refused.send(&WireMessage::HandshakeRequest(
+            protocol_client.transport_connected().unwrap(),
+        ));
+        let response = refused.receive();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the refusal took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                &response,
+                WireMessage::HandshakeResponse(response)
+                    if matches!(
+                        &response.outcome,
+                        HandshakeOutcome::Rejected { error }
+                            if error.code == "resource_exhausted" && error.retryable
+                    )
+            ),
+            "{response:?}"
+        );
+        assert!(matches!(
+            protocol_client.intake(response),
+            Err(ClientError::HandshakeRejected(error))
+                if error.code == "resource_exhausted" && error.retryable
+        ));
+        let mut line = String::new();
+        assert_eq!(refused.reader.read_line(&mut line).unwrap(), 0, "{line}");
+    };
+    refuse(&daemon);
+    // Refusals hold no session slot: a second one is refused the same way.
+    refuse(&daemon);
+
+    // One session leaves; a new connection is served once the daemon has
+    // seen it go.
+    drop(sessions.pop());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let replacement = loop {
+        assert!(Instant::now() < deadline, "no raw session slot freed");
+        let mut client = open(&daemon);
+        client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            build: "process-test".into(),
+            client_type: ClientType::Integration,
+            desired_role: Role::Operator,
+            resume_cursor: None,
+        }));
+        let WireMessage::HandshakeResponse(response) = client.receive() else {
+            panic!("expected a handshake response");
+        };
+        if matches!(response.outcome, HandshakeOutcome::Snapshot { .. }) {
+            client.receive_snapshot();
+            break client;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    sessions.push(replacement);
+
+    // Far more commands than the daemon queues per session, in one write.
+    let pipelining = sessions.last_mut().unwrap();
+    let mut burst = String::new();
+    for index in 0..PIPELINED {
+        burst.push_str(
+            &encode_line(&command(
+                &format!("burst-{index}"),
+                &format!("burst-key-{index}"),
+                CommandPayload::Cut,
+            ))
+            .unwrap(),
+        );
+    }
+    pipelining.writer.write_all(burst.as_bytes()).unwrap();
+    for index in 0..PIPELINED {
+        let result = pipelining.next_result();
+        assert!(
+            matches!(
+                &result,
+                CommandResult::Accepted { id, .. } if *id == format!("burst-{index}")
+            ),
+            "{result:?}"
+        );
+    }
+
+    drop(sessions);
+    daemon.stop();
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn remote_input_rename_is_authorized_replicated_replay_safe_and_survives_restart() {
@@ -5537,9 +5670,7 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
             if fields.first().map(|field| field.code.as_str()) == Some("duplicate_input")
     ));
 
-    // A Studio peer watches the monitor taps. The simulated daemon admits
-    // only two raw peers and leaves a third connection unaccepted, so this
-    // peer is dropped before `snapshot_of` opens another one.
+    // A Studio peer watches the monitor taps.
     let mut studio = daemon.connect();
     studio
         .reader
@@ -5914,9 +6045,6 @@ fn heartbeat_at(server: &ServerIdentity, sequence: u64, revision: u64) -> WireMe
 /// closed (by its own heartbeat timeout). A full kernel buffer on the stalled
 /// side is covered by the session loop's unit tests, because loopback
 /// buffers here grow to tens of megabytes.
-///
-/// The simulated daemon admits two raw peers, so this test opens no third
-/// connection while the stalled peer holds its slot.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn a_non_reading_studio_peer_never_stalls_another_peer() {

@@ -1,9 +1,10 @@
 //! Several control sessions on one native-media daemon: a Studio-like raw
 //! peer, a CLI raw peer, and Web pages through the `--web-listen` gateway
 //! drive one show together, each within its own role, and see each other's
-//! cuts in revision order; the raw and Web session bounds refuse or hold the
-//! client beyond them; and a Studio peer that stops reading delays neither
-//! the other sessions nor Program pacing or the recording.
+//! cuts in revision order; the raw and Web session bounds refuse the client
+//! beyond them at once; a Web tally keeps up with a cut every frame; and a
+//! Studio peer that stops reading delays neither the other sessions nor
+//! Program pacing or the recording.
 //!
 //! The tests need a native GPU adapter and `FFmpeg`/`ffprobe`. Without an
 //! adapter they are skipped unless `FM_REQUIRE_NATIVE_MEDIA=1`; without the
@@ -51,6 +52,8 @@ const READ_POLL: Duration = Duration::from_millis(50);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
 /// The most Web clients the gateway admits at once.
 const WEB_CLIENTS: usize = 16;
+/// The most raw TCP sessions the daemon serves at once.
+const RAW_SESSIONS: usize = 8;
 const FRAME_RATE: u32 = 25;
 
 fn input(value: u128) -> InputId {
@@ -365,6 +368,18 @@ impl Session {
         client_type: ClientType,
         role: Role,
     ) -> (Self, SnapshotMessage) {
+        Self::try_raw(name, address, client_type, role)
+            .unwrap_or_else(|| panic!("{name}: the daemon refused the raw session"))
+    }
+
+    /// [`Self::raw`], or `None` when every raw session slot is taken and the
+    /// daemon refuses the handshake as `resource_exhausted`.
+    fn try_raw(
+        name: &'static str,
+        address: SocketAddr,
+        client_type: ClientType,
+        role: Role,
+    ) -> Option<(Self, SnapshotMessage)> {
         let stream = TcpStream::connect(address).unwrap();
         stream.set_nodelay(true).unwrap();
         stream.set_read_timeout(Some(READ_POLL)).unwrap();
@@ -397,20 +412,22 @@ impl Session {
         stream.set_read_timeout(Some(PROCESS_TIMEOUT)).unwrap();
         let (socket, _) = tungstenite::client::client(browser_upgrade(address), stream).ok()?;
         socket.get_ref().set_read_timeout(Some(READ_POLL)).unwrap();
-        Some(Self::establish(
+        Self::establish(
             name,
             Transport::Web(Box::new(socket)),
             ClientType::Web,
             role,
-        ))
+        )
     }
 
+    /// Handshakes on `transport`; `None` when the daemon refuses the session
+    /// because every slot is taken.
     fn establish(
         name: &'static str,
         transport: Transport,
         client_type: ClientType,
         role: Role,
-    ) -> (Self, SnapshotMessage) {
+    ) -> Option<(Self, SnapshotMessage)> {
         let mut session = Self {
             name,
             transport,
@@ -429,6 +446,12 @@ impl Session {
                 None => {}
             }
         };
+        if let HandshakeOutcome::Rejected { error } = &response.outcome
+            && error.code == "resource_exhausted"
+        {
+            assert!(error.retryable, "{name}: {error:?}");
+            return None;
+        }
         assert_eq!(response.granted_role, role, "{name}");
         assert!(
             matches!(response.outcome, HandshakeOutcome::Snapshot { .. }),
@@ -441,7 +464,7 @@ impl Session {
                 break snapshot;
             }
         };
-        (session, snapshot)
+        Some((session, snapshot))
     }
 
     fn send(&mut self, message: &WireMessage) {
@@ -668,8 +691,8 @@ fn telemetry_field(stderr: &str, field: &str) -> f64 {
 /// page and a Viewer tally on the Web gateway: all four hold their own
 /// sessions on one native daemon, each command is authorized against the
 /// session that sent it, and every session sees every cut, whoever made it,
-/// in revision order. A third raw peer waits for a raw slot and the
-/// seventeenth Web client is refused until one leaves. The recording keeps
+/// in revision order. A ninth raw peer and the seventeenth Web client are
+/// refused at once until a session leaves. The recording keeps
 /// running throughout and the daemon drains every session on shutdown.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -738,26 +761,19 @@ fn studio_cli_and_web_pages_drive_one_native_show_together() {
         assert_eq!(session.observed.thumbnails, 0);
     }
 
-    // Both raw slots are taken: a third raw peer is not served yet.
-    let waiting = TcpStream::connect(daemon.control).unwrap();
-    waiting
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .unwrap();
-    let mut waiting_writer = waiting.try_clone().unwrap();
-    waiting_writer
-        .write_all(
-            encode_line(&Session::hello(ClientType::Cli, Role::Viewer))
-                .unwrap()
-                .as_bytes(),
-        )
-        .unwrap();
-    let mut waiting_reader = BufReader::new(waiting);
-    let mut line = String::new();
-    let early = waiting_reader.read_line(&mut line);
+    // Fill every raw slot: a ninth raw connection is refused at once with a
+    // retryable `resource_exhausted` handshake rejection, never left waiting.
+    let mut raw_viewers = Vec::new();
+    while raw_viewers.len() < RAW_SESSIONS - 2 {
+        raw_viewers
+            .push(Session::raw("raw-viewer", daemon.control, ClientType::Cli, Role::Viewer).0);
+    }
+    let refused_at = Instant::now();
     assert!(
-        early.is_err() && line.is_empty(),
-        "a third raw peer was served: {early:?} {line:?}"
+        Session::try_raw("ninth", daemon.control, ClientType::Cli, Role::Viewer).is_none(),
+        "a ninth raw peer was served"
     );
+    assert!(refused_at.elapsed() < Duration::from_secs(2));
 
     // Fill every Web slot: the next authorized browser is refused with 503.
     let mut viewers = Vec::new();
@@ -784,22 +800,21 @@ fn studio_cli_and_web_pages_drive_one_native_show_together() {
     assert_eq!(snapshot.revision, 13);
     assert_eq!(snapshot.realized_program, program_at(13));
 
-    // The CLI leaves; the waiting raw peer is served with the current show.
+    // The CLI leaves; a new raw peer is served the current show once the
+    // daemon has seen the CLI go.
     drop(cli);
-    waiting_reader
-        .get_ref()
-        .set_read_timeout(Some(PROCESS_TIMEOUT))
-        .unwrap();
-    line.clear();
-    waiting_reader.read_line(&mut line).unwrap();
-    assert!(
-        matches!(
-            decode_line(&line).unwrap(),
-            WireMessage::HandshakeResponse(response)
-                if response.granted_role == Role::Viewer && response.current_revision == 13
-        ),
-        "{line}"
-    );
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    let (_returning, snapshot) = loop {
+        if let Some(session) =
+            Session::try_raw("returning", daemon.control, ClientType::Cli, Role::Viewer)
+        {
+            break session;
+        }
+        assert!(Instant::now() < deadline, "no raw slot freed");
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(snapshot.revision, 13);
+    drop(raw_viewers);
 
     let revision = operator.cut("cut-14");
     for session in [&mut studio, &mut tally, &mut late] {
@@ -895,5 +910,80 @@ fn a_stalled_studio_reader_never_delays_other_sessions_or_program_pacing() {
     assert!(
         f64::from(u32::try_from(frames).unwrap()) >= paced * 0.95,
         "the recording holds {frames} frames of about {paced:.0} paced: {stderr}"
+    );
+}
+
+/// A Viewer tally page follows a CLI that cuts as fast as the native daemon
+/// takes commands (one per frame): it sees every cut, in revision order, and
+/// is never dropped as a slow client. An Operator page that sends a burst of
+/// commands larger than the gateway and session queues is slowed by
+/// backpressure, never dropped, and every command is answered in order.
+#[test]
+fn web_pages_keep_up_with_a_cut_every_frame() {
+    const CUTS: u64 = 100;
+    const BURST: usize = 40;
+
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("web-pace");
+    let project = directory.0.join("show.freemix");
+    let recording = directory.0.join("program.mp4");
+    save_project(&project);
+    let Some(daemon) = DaemonProcess::start(&project, &recording) else {
+        return;
+    };
+
+    let (mut cli, _) = Session::raw("cli", daemon.control, ClientType::Cli, Role::Operator);
+    let (mut tally, _) = Session::web("tally", daemon.web, Role::Viewer);
+    let follower = thread::spawn(move || {
+        tally.sees(CUTS);
+        tally
+    });
+    for cut in 1..=CUTS {
+        assert_eq!(cli.cut(&format!("cut-{cut}")), cut);
+    }
+    let tally = follower
+        .join()
+        .expect("the tally fell behind or was dropped");
+    tally.assert_in_order(CUTS);
+    // The journal is folded into the manifest right after the frame of the
+    // 48th and the 96th cut, not in front of the 65th cut's frame (which
+    // would leave the manifest at revision 64).
+    let manifest = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert_eq!(manifest.position().revision, 96);
+
+    let (mut operator, _) = Session::web("operator", daemon.web, Role::Operator);
+    for index in 0..BURST {
+        operator.send(&WireMessage::Command(CommandMessage {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            id: format!("burst-{index}"),
+            idempotency_key: format!("operator-burst-{index}"),
+            expected_revision: None,
+            deadline_ms: None,
+            payload: CommandPayload::Cut,
+        }));
+    }
+    let mut answered = Vec::new();
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    while answered.len() < BURST {
+        assert!(Instant::now() < deadline, "only {answered:?} were answered");
+        if let Some(WireMessage::CommandResult(CommandResult::Accepted { id, .. })) =
+            operator.receive()
+        {
+            answered.push(id);
+        }
+    }
+    assert_eq!(
+        answered,
+        (0..BURST)
+            .map(|index| format!("burst-{index}"))
+            .collect::<Vec<_>>()
+    );
+
+    let stderr = daemon.stop();
+    assert!(
+        !stderr.contains("closed="),
+        "a session was dropped: {stderr}"
     );
 }

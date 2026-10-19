@@ -4,7 +4,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SyncSender, TryRecvError},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -34,6 +34,11 @@ const HANDSHAKE_POLL: Duration = Duration::from_millis(2);
 /// How long one relay write may block on a peer that stopped reading
 /// before that peer (only) is dropped.
 const RELAY_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+/// How long one relay read waits for the client before the relay writes the
+/// records the scheduler queued meanwhile: the most latency the relay adds to
+/// an outbound record, and how often a relay whose scheduler inbound is full
+/// retries it.
+const RELAY_WRITE_POLL: Duration = Duration::from_millis(5);
 
 /// Accepts gateway connections and serves each on its own thread.
 ///
@@ -164,7 +169,7 @@ pub(super) fn serve_connection(stream: TcpStream, gateway: &Gateway) {
     if websocket.get_ref().set_nonblocking(false).is_err()
         || websocket
             .get_ref()
-            .set_read_timeout(Some(RELAY_POLL))
+            .set_read_timeout(Some(RELAY_WRITE_POLL))
             .is_err()
         || websocket
             .get_ref()
@@ -249,7 +254,18 @@ fn relay(
     peer_cancel: &Arc<AtomicBool>,
     gateway_cancel: &AtomicBool,
 ) {
+    // A message the scheduler has no room for yet. While one waits, the
+    // relay stops reading, so a client that sends faster than its session is
+    // served meets TCP backpressure instead of being disconnected.
+    let mut waiting: Option<WireMessage> = None;
     while !gateway_cancel.load(Ordering::Acquire) && !peer_cancel.load(Ordering::Acquire) {
+        if let Some(message) = waiting.take() {
+            match inbound.try_send(message) {
+                Ok(()) => {}
+                Err(TrySendError::Full(message)) => waiting = Some(message),
+                Err(TrySendError::Disconnected(_)) => return,
+            }
+        }
         loop {
             match outbound.try_recv() {
                 Ok(bytes) => {
@@ -267,14 +283,20 @@ fn relay(
                 Err(TryRecvError::Disconnected) => return,
             }
         }
+        if waiting.is_some() {
+            thread::sleep(RELAY_WRITE_POLL);
+            continue;
+        }
         match websocket.read() {
             Ok(Message::Text(text)) => {
                 let line = text.as_str();
                 let Ok(message) = decode_line(line) else {
                     return;
                 };
-                if inbound.try_send(message).is_err() {
-                    return;
+                match inbound.try_send(message) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(message)) => waiting = Some(message),
+                    Err(TrySendError::Disconnected(_)) => return,
                 }
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => {}
@@ -292,7 +314,8 @@ fn relay(
                         | io::ErrorKind::TimedOut
                 ) =>
             {
-                thread::sleep(RELAY_POLL);
+                // The read already waited its timeout; records the scheduler
+                // queued meanwhile are written on the next iteration.
             }
             Ok(Message::Binary(_) | Message::Frame(_)) | Err(_) => return,
         }

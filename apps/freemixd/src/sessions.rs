@@ -51,10 +51,20 @@ use crate::title_render::TitleAssets;
 use crate::web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
 
 /// The most raw TCP control sessions served at once, by the simulated and
-/// the native daemon alike (Studio and one CLI or automation peer); a further
-/// raw connection waits unaccepted until one leaves. Web peers are bounded
-/// separately by [`MAX_WEB_CLIENTS`].
-const MAX_PEERS: usize = 2;
+/// the native daemon alike (Studio, CLI and automation peers). A further raw
+/// connection is accepted only to be refused: its handshake is answered with
+/// a retryable `resource_exhausted` rejection (see
+/// [`MAX_REFUSING_PEERS`]). Web peers are bounded separately by
+/// [`MAX_WEB_CLIENTS`].
+const MAX_PEERS: usize = 8;
+/// The most raw connections beyond [`MAX_PEERS`] held at once while their
+/// handshake is read and refused, each for at most [`REFUSAL_DEADLINE`]. A
+/// connection beyond this bound too is closed at once, unanswered, so no
+/// client ever waits on an unaccepted connection.
+const MAX_REFUSING_PEERS: usize = 8;
+/// How long a raw connection beyond [`MAX_PEERS`] may take to send the
+/// handshake it is refused.
+const REFUSAL_DEADLINE: Duration = Duration::from_millis(500);
 const INBOUND_CAPACITY: usize = 8;
 const OUTBOUND_CAPACITY: usize = 32;
 /// Outbound slots live events never take, so the reply to the message being
@@ -173,6 +183,9 @@ struct Peer {
     /// Bytes written to the raw socket so far, so a pass can tell whether
     /// the last write made progress.
     written: u64,
+    /// A raw connection beyond [`MAX_PEERS`]: its handshake is refused and
+    /// it never becomes a session.
+    over_capacity: bool,
 }
 
 /// Counts the bytes a raw peer's socket accepts.
@@ -351,6 +364,7 @@ impl Peer {
             held_result: None,
             deferred_live: None,
             written: 0,
+            over_capacity: false,
         })
     }
 
@@ -523,10 +537,16 @@ impl Peer {
     }
 
     fn replace_outbound_for_shutdown(&mut self) {
-        let retained = usize::from(self.outbound.front().is_some_and(|record| {
-            record.channel_sent
-                || matches!(&record.write, OutboundWrite::Raw(write) if write.started())
-        }));
+        // Records already handed to a Web relay (a prefix of the queue) or
+        // partly written to a raw socket are on their way and are kept.
+        let retained = self
+            .outbound
+            .iter()
+            .take_while(|record| {
+                record.channel_sent
+                    || matches!(&record.write, OutboundWrite::Raw(write) if write.started())
+            })
+            .count();
         while self.outbound.len() > retained {
             self.discard_outbound(self.outbound.len() - 1);
         }
@@ -678,20 +698,31 @@ pub(super) fn run(
             }
         }
 
-        if once_peer.is_none() && (!once || peers.is_empty()) && raw_peer_count(&peers) < MAX_PEERS
-        {
+        if once_peer.is_none() && (!once || peers.is_empty()) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if stream.set_nonblocking(true).is_ok() && stream.set_nodelay(true).is_ok() {
-                        let Some(peer) = Peer::new(
+                    let over_capacity = raw_peer_count(&peers) >= MAX_PEERS;
+                    if over_capacity && refusing_peer_count(&peers) >= MAX_REFUSING_PEERS {
+                        // Closed unanswered: the client sees the connection
+                        // end now instead of waiting on an unaccepted one.
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                    } else if stream.set_nonblocking(true).is_ok()
+                        && stream.set_nodelay(true).is_ok()
+                    {
+                        let Some(mut peer) = Peer::new(
                             next_peer_id,
                             Transport::Raw(stream),
-                            principal.clone(),
-                            handshake_timeout,
+                            raw_principal(principal, next_peer_id),
+                            if over_capacity {
+                                handshake_timeout.min(REFUSAL_DEADLINE)
+                            } else {
+                                handshake_timeout
+                            },
                         ) else {
                             close_all(&mut peers, control);
                             return Err("handshake deadline exceeds Instant range".into());
                         };
+                        peer.over_capacity = over_capacity;
                         next_peer_id = next_peer_id.wrapping_add(1);
                         peers.push(peer);
                     }
@@ -742,9 +773,15 @@ pub(super) fn run(
         // the next pass, after every peer was read and written. Throughput
         // stays one command per frame, and no peer's commands delay another
         // peer's heartbeats or records by more than one frame.
-        let mut command_slot = true;
+        // The command turn goes to the first peer with a command ready after
+        // the one that had the last turn, so peers with commands waiting
+        // alternate strictly however many idle peers sit between them.
         let start = dispatch_cursor % peers.len().max(1);
-        dispatch_cursor = start.wrapping_add(1);
+        let command_turn = native
+            .is_some()
+            .then(|| command_turn(&peers, &close, start))
+            .flatten();
+        dispatch_cursor = command_turn.unwrap_or(start).wrapping_add(1);
         for offset in 0..peers.len() {
             let index = (start + offset) % peers.len();
             if close[index] || peers[index].held_result.is_some() {
@@ -760,11 +797,9 @@ pub(super) fn run(
             if native.is_some()
                 && peers[index].phase == Phase::Active
                 && matches!(ready, WireMessage::Command(_))
+                && command_turn != Some(index)
             {
-                if !command_slot {
-                    continue;
-                }
-                command_slot = false;
+                continue;
             }
             let Some(message) = peers[index].inbound.pop_front() else {
                 continue;
@@ -782,6 +817,15 @@ pub(super) fn run(
         }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
+        }
+        // The native command just realized its frame, so the next deadline is
+        // as far off as it gets: fold the journal now rather than in front of
+        // a later command's frame. Every mutation is durable already, so a
+        // failure is only reported.
+        if command_turn.is_some()
+            && let Err(error) = store.checkpoint_if_due(durable)
+        {
+            eprintln!("FREEMIXD_JOURNAL\tv=1\tcheckpoint=deferred\terror={error}");
         }
         let previews = title_previews.take_finished();
         if !previews.is_empty() {
@@ -1062,6 +1106,14 @@ fn read_peer(peer: &mut Peer) -> bool {
     if peer.read_closed {
         return finish_after_read_close(peer);
     }
+    // A peer that sends faster than it is served (a native daemon dispatches
+    // one command per frame across every peer) is not read until its queue
+    // has room, so TCP backpressure slows it instead of the daemon dropping
+    // it. Every message one read decodes is kept, so the queue holds at most
+    // INBOUND_CAPACITY - 1 messages plus one read's worth of lines.
+    if peer.inbound.len() >= INBOUND_CAPACITY {
+        return false;
+    }
     let mut chunk = [0_u8; 8 * 1024];
     let Transport::Raw(stream) = &mut peer.transport else {
         unreachable!("web transport returned above")
@@ -1074,13 +1126,10 @@ fn read_peer(peer: &mut Peer) -> bool {
             finish_after_read_close(peer)
         }
         Ok(read) => match peer.decoder.push(&chunk[..read]) {
-            Ok(messages)
-                if messages.len() <= INBOUND_CAPACITY.saturating_sub(peer.inbound.len()) =>
-            {
+            Ok(messages) => {
                 peer.inbound.extend(messages);
                 false
             }
-            Ok(_) => dropping(peer.id, "inbound_overflow"),
             Err(_) => dropping(peer.id, "undecodable_inbound"),
         },
         Err(error)
@@ -1117,15 +1166,55 @@ fn dropping(peer: u64, reason: &str) -> bool {
     true
 }
 
+/// The peer whose command a native pass dispatches: the first, from
+/// `start` round the peer list, that is active, open, holds no reply, and has
+/// a command at the front of its queue.
+fn command_turn(peers: &[Peer], close: &[bool], start: usize) -> Option<usize> {
+    (0..peers.len())
+        .map(|offset| (start + offset) % peers.len())
+        .find(|&index| {
+            let peer = &peers[index];
+            !close[index]
+                && peer.held_result.is_none()
+                && peer.phase == Phase::Active
+                && matches!(peer.inbound.front(), Some(WireMessage::Command(_)))
+        })
+}
+
 fn web_peer_count(peers: &[Peer]) -> usize {
     peers.iter().filter(|peer| peer.transport.is_web()).count()
 }
 
+/// Raw sessions counted against [`MAX_PEERS`]; connections being refused
+/// are not sessions.
 fn raw_peer_count(peers: &[Peer]) -> usize {
     peers
         .iter()
-        .filter(|peer| matches!(peer.transport, Transport::Raw(_)))
+        .filter(|peer| matches!(peer.transport, Transport::Raw(_)) && !peer.over_capacity)
         .count()
+}
+
+fn refusing_peer_count(peers: &[Peer]) -> usize {
+    peers.iter().filter(|peer| peer.over_capacity).count()
+}
+
+/// The principal one raw peer's session runs as: the daemon's principal
+/// (the development principal), with a session id of its own. Every raw
+/// session is the same local operator, but no two share a session id, as no
+/// two Web sessions do.
+fn raw_principal(principal: &Principal, peer: u64) -> Principal {
+    let Ok(session) = fm_auth::SessionId::new(format!("{}-{peer}", principal.session_id())) else {
+        return principal.clone();
+    };
+    let roles = principal.roles().iter().copied();
+    match principal.kind() {
+        fm_auth::PrincipalKind::Authenticated => {
+            Principal::authenticated(principal.user_id().clone(), session, roles)
+        }
+        fm_auth::PrincipalKind::DevelopmentOnly => {
+            Principal::development(principal.user_id().clone(), session, roles)
+        }
+    }
 }
 
 enum DispatchError {
@@ -1560,6 +1649,29 @@ impl Runtime<'_> {
         }
     }
 
+    /// Answers a raw connection beyond [`MAX_PEERS`] with a retryable
+    /// `resource_exhausted` rejection and closes it once that is written.
+    fn refuse_over_capacity(
+        &self,
+        peer: &mut Peer,
+        hello: &fm_protocol::HandshakeRequest,
+        project_id: fm_types::ProjectId,
+    ) -> Result<(), DispatchError> {
+        let mut response = rejected_handshake_response(
+            self.server,
+            self.control,
+            project_id,
+            hello,
+            "resource_exhausted",
+            &format!(
+                "the daemon already serves {MAX_PEERS} raw control sessions; retry once one leaves"
+            ),
+        );
+        make_retryable(&mut response);
+        peer.close_after(&WireMessage::HandshakeResponse(response))?;
+        Ok(())
+    }
+
     fn handshake(
         &self,
         peer: &mut Peer,
@@ -1575,6 +1687,9 @@ impl Runtime<'_> {
         };
         let project_id = durable.project().id();
         let (hello, outcome) = current_handshake(&request, self.control, project_id);
+        if peer.over_capacity {
+            return self.refuse_over_capacity(peer, &hello, project_id);
+        }
         let handshake = match self.server.handshake(
             &hello,
             &peer.principal,
@@ -1731,21 +1846,58 @@ enum WriteOutcome {
     Failed,
 }
 
-fn write_peer(peer: &mut Peer) -> WriteOutcome {
-    if peer.transport.is_web() {
-        let Some(record) = peer.outbound.front_mut() else {
-            return WriteOutcome::Pending;
-        };
-        let Transport::Web(web) = &mut peer.transport else {
-            unreachable!("web transport checked above")
-        };
-        if record.channel_sent {
-            match web.acknowledgements.try_recv() {
-                Ok(()) => return finish_outbound(peer),
-                Err(TryRecvError::Empty) => return WriteOutcome::Pending,
-                Err(TryRecvError::Disconnected) => return WriteOutcome::Failed,
+/// Serves a Web peer's queue for one pass: retires every record the relay
+/// acknowledged, then hands it every queued record not yet handed over, in
+/// order, until the relay channel is full or the session's outbound rate
+/// window is spent.
+///
+/// Records are pipelined: the relay writes them while the scheduler keeps
+/// queueing, so a Web peer's throughput is the relay's, not one record per
+/// relay poll. Handed-over records stay at the front of the queue (they still
+/// count against its bound) until acknowledged, in order, so the queue never
+/// holds more records in flight than the relay channel and its
+/// acknowledgement channel can take.
+fn write_web_peer(peer: &mut Peer) -> WriteOutcome {
+    let Peer {
+        transport,
+        outbound,
+        session,
+        handshake_written,
+        ..
+    } = peer;
+    let Transport::Web(web) = transport else {
+        unreachable!("only Web peers are written here")
+    };
+    let mut handshake = false;
+    loop {
+        match web.acknowledgements.try_recv() {
+            Ok(()) => {
+                // An acknowledgement always retires the oldest handed-over
+                // record; one for a record never handed over is a relay bug.
+                if !outbound.front().is_some_and(|record| record.channel_sent) {
+                    return WriteOutcome::Failed;
+                }
+                let record = outbound.pop_front().expect("checked above");
+                if record.accounted
+                    && matches!(record.accounting, Accounting::Session)
+                    && session
+                        .as_mut()
+                        .expect("accounted records have sessions")
+                        .outbound_delivered()
+                        .is_err()
+                {
+                    return WriteOutcome::Failed;
+                }
+                if record.handshake_response {
+                    *handshake_written = true;
+                    handshake = true;
+                }
             }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => return WriteOutcome::Failed,
         }
+    }
+    for record in outbound.iter_mut().filter(|record| !record.channel_sent) {
         let OutboundWrite::Web(bytes) = &record.write else {
             unreachable!("web peers only queue web writes")
         };
@@ -1753,26 +1905,36 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
             let Ok(now) = now_millis() else {
                 return WriteOutcome::Failed;
             };
-            match peer
-                .session
+            match session
                 .as_mut()
                 .expect("session accounting has a session")
                 .queue_outbound(bytes.len(), now)
             {
                 Ok(()) => {}
                 // Retryable and never disconnecting: send on a later pass.
-                Err(SessionError::OutboundRateLimited) => return WriteOutcome::Pending,
+                Err(SessionError::OutboundRateLimited) => break,
                 Err(_) => return WriteOutcome::Failed,
             }
             record.accounted = true;
         }
         match web.outbound.try_send(bytes.clone()) {
-            Ok(()) => {
-                record.channel_sent = true;
-                WriteOutcome::Pending
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => WriteOutcome::Failed,
+            Ok(()) => record.channel_sent = true,
+            // The relay has not taken earlier records yet; later passes
+            // hand this one over in order.
+            Err(TrySendError::Full(_)) => break,
+            Err(TrySendError::Disconnected(_)) => return WriteOutcome::Failed,
         }
+    }
+    if handshake {
+        WriteOutcome::HandshakeResponseWritten
+    } else {
+        WriteOutcome::Pending
+    }
+}
+
+fn write_peer(peer: &mut Peer) -> WriteOutcome {
+    if peer.transport.is_web() {
+        write_web_peer(peer)
     } else {
         // Continue any in-flight lossy record before touching the queue; an
         // idle queue starts at most one lossy slot per pass.
@@ -1809,7 +1971,8 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
     }
 }
 
-/// Writes `peer` for one loop pass: a web peer one step, as before; a raw
+/// Writes `peer` for one loop pass: a web peer once (see
+/// [`write_web_peer`]); a raw
 /// peer record after record (queued records first, then the lossy slots,
 /// each started record finished before another starts) until its socket
 /// would block, nothing is left, or [`WRITE_BUDGET_PER_PASS`] is spent.
@@ -2857,5 +3020,189 @@ mod tests {
         assert!(
             super::super::session_heartbeat_active(peers[0].session.as_mut().unwrap()).unwrap()
         );
+    }
+    fn web_peer() -> (
+        Peer,
+        mpsc::Receiver<Vec<u8>>,
+        mpsc::SyncSender<()>,
+        mpsc::Sender<WireMessage>,
+    ) {
+        let (inbound_sender, inbound) = mpsc::channel();
+        let (outbound_sender, outbound) = mpsc::sync_channel(OUTBOUND_CAPACITY);
+        let (acknowledgement_sender, acknowledgements) = mpsc::sync_channel(OUTBOUND_CAPACITY);
+        let mut peer = Peer::new(
+            1,
+            Transport::Web(WebTransport {
+                inbound,
+                outbound: outbound_sender,
+                acknowledgements,
+                cancel: Arc::new(AtomicBool::new(false)),
+                _slot: None,
+            }),
+            Principal::authenticated(
+                UserId::new("user").unwrap(),
+                SessionId::new("session").unwrap(),
+                [Role::Admin],
+            ),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        peer.phase = Phase::Active;
+        peer.session = Some(limited_session(1_000, 1_000, 15_000));
+        (peer, outbound, acknowledgement_sender, inbound_sender)
+    }
+
+    /// Regression: a Web peer was handed one record per pass and the next
+    /// only after the relay acknowledged it, so a Viewer tally received about
+    /// one record per relay poll and was dropped as a slow client while a CLI
+    /// cut every frame. Every queued record is now handed over in one pass,
+    /// in order, and acknowledgements retire them in order.
+    #[test]
+    fn web_records_are_pipelined_and_retired_in_order() {
+        let (mut peer, outbound, acknowledge, _inbound) = web_peer();
+        for index in 0..10 {
+            peer.queue(&filler(index), Accounting::Session).unwrap();
+        }
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        let handed: Vec<WireMessage> = outbound
+            .try_iter()
+            .flat_map(|bytes| LineDecoder::new().push(&bytes).unwrap())
+            .collect();
+        assert_eq!(handed, (0..10).map(filler).collect::<Vec<_>>());
+        // Handed-over records keep their place in the bounded queue until
+        // the relay acknowledges them.
+        assert_eq!(peer.outbound.len(), 10);
+
+        for _ in 0..4 {
+            acknowledge.send(()).unwrap();
+        }
+        peer.queue(&command_result("later"), Accounting::Session)
+            .unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(peer.outbound.len(), 7);
+        assert!(peer.outbound.iter().all(|record| record.channel_sent));
+        assert_eq!(
+            LineDecoder::new()
+                .push(&outbound.try_recv().unwrap())
+                .unwrap(),
+            [command_result("later")]
+        );
+
+        // Shutdown keeps every record already handed to the relay.
+        peer.queue(&filler(99), Accounting::Session).unwrap();
+        peer.replace_outbound_for_shutdown();
+        assert_eq!(peer.outbound.len(), 7);
+        for _ in 0..7 {
+            acknowledge.send(()).unwrap();
+        }
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert!(peer.outbound.is_empty());
+        // An acknowledgement for a record never handed over is a relay bug.
+        acknowledge.send(()).unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Failed));
+    }
+
+    /// Regression: a raw peer that sent more messages than its inbound queue
+    /// holds in one write was closed as `inbound_overflow`, so a Studio or
+    /// CLI peer pipelining commands to a native daemon (one command per
+    /// frame across every peer) was dropped. Everything one read decodes is
+    /// kept, and a full queue is not read until it drains (TCP
+    /// backpressure).
+    #[test]
+    fn a_raw_peer_that_pipelines_is_slowed_not_dropped() {
+        let (mut peer, mut client) = raw_peer();
+        peer.phase = Phase::Active;
+        let mut burst = String::new();
+        for index in 0..(3 * INBOUND_CAPACITY) {
+            burst.push_str(&encode_line(&filler(index)).unwrap());
+        }
+        client.write_all(burst.as_bytes()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while peer.inbound.len() < 3 * INBOUND_CAPACITY {
+            assert!(Instant::now() < deadline, "the burst never arrived");
+            assert!(!read_peer(&mut peer), "a pipelining peer was closed");
+            thread::sleep(Duration::from_millis(5));
+        }
+        // A full queue is not read: what arrives next waits in the socket.
+        client
+            .write_all(encode_line(&filler(1_000)).unwrap().as_bytes())
+            .unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(!read_peer(&mut peer));
+        assert_eq!(peer.inbound.len(), 3 * INBOUND_CAPACITY);
+        peer.inbound.clear();
+        assert!(!read_peer(&mut peer));
+        assert_eq!(peer.inbound.front(), Some(&filler(1_000)));
+    }
+
+    /// Regression: the command turn rotated with the pass, not with the peer
+    /// that took it, so of two peers with commands waiting the one after a
+    /// run of idle peers took a turn for every idle peer (three here) for
+    /// each turn the other took. Turns now alternate strictly, wherever the
+    /// idle peers sit.
+    #[test]
+    fn command_turns_alternate_between_peers_with_commands_waiting() {
+        let command = || {
+            WireMessage::Command(fm_protocol::CommandMessage {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                id: "cut".into(),
+                idempotency_key: "cut".into(),
+                expected_revision: None,
+                deadline_ms: None,
+                payload: CommandPayload::Cut,
+            })
+        };
+        let mut peers: Vec<Peer> = (0..4)
+            .map(|index| {
+                let (mut peer, _client) = raw_peer();
+                peer.id = index;
+                peer.phase = Phase::Active;
+                peer
+            })
+            .collect();
+        for index in [0, 3] {
+            for _ in 0..4 {
+                peers[index].inbound.push_back(command());
+            }
+        }
+        // A heartbeat is no command: its peer never takes the turn.
+        peers[1].inbound.push_back(filler(0));
+        let close = vec![false; peers.len()];
+        let mut cursor = 0;
+        let mut turns = Vec::new();
+        for _ in 0..6 {
+            let turn = command_turn(&peers, &close, cursor % peers.len()).unwrap();
+            peers[turn].inbound.pop_front();
+            turns.push(turn);
+            cursor = turn + 1;
+        }
+        assert_eq!(turns, [0, 3, 0, 3, 0, 3]);
+        // Closed, held, or not yet active peers never take it.
+        peers[0].held_result = Some(HeldResult {
+            message: filler(1),
+            slot: None,
+        });
+        peers[3].phase = Phase::Syncing;
+        assert_eq!(command_turn(&peers, &close, 0), None);
+    }
+
+    /// Every raw session runs as the daemon's principal with a session id
+    /// of its own, as every Web session does.
+    #[test]
+    fn raw_peers_hold_their_own_session_ids() {
+        let daemon = Principal::development(
+            UserId::new("local-operator").unwrap(),
+            SessionId::new("local-session").unwrap(),
+            [Role::Admin],
+        );
+        let first = raw_principal(&daemon, 0);
+        let second = raw_principal(&daemon, 1);
+        assert_ne!(first.session_id(), second.session_id());
+        for principal in [&first, &second] {
+            assert_eq!(principal.user_id(), daemon.user_id());
+            assert_eq!(principal.roles(), daemon.roles());
+            assert_eq!(principal.kind(), daemon.kind());
+        }
+        assert_eq!(first.session_id().as_str(), "local-session-0");
     }
 }

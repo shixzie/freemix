@@ -45,6 +45,12 @@ use crate::{AppFailure, AppResult};
 /// below both journal limits — each command is at most one 64 KiB protocol
 /// line — while amortising the manifest rewrite 64:1 during a show.
 const MAX_MUTATIONS_PER_CHECKPOINT: u64 = 64;
+/// Recorded mutations after which a native daemon folds the journal into the
+/// manifest right after a command's frame was realized
+/// ([`DurableStore::checkpoint_if_due`]), where the manifest rewrite has
+/// the most time before the next frame deadline, instead of in front of the
+/// frame of the command that reaches [`MAX_MUTATIONS_PER_CHECKPOINT`].
+const EARLY_CHECKPOINT_MUTATIONS: u64 = MAX_MUTATIONS_PER_CHECKPOINT * 3 / 4;
 
 /// Bytes of protocol version that open a payload.
 const PROTOCOL_BYTES: usize = 4;
@@ -74,6 +80,16 @@ pub(crate) trait DurableStore {
     /// journal. `project` must hold the revision of the newest recorded
     /// mutation, which is what the journal checkpoint is validated against.
     fn checkpoint(&self, project: &StoredProject) -> AppResult<()>;
+
+    /// Folds the recorded mutations into the manifest ahead of the
+    /// [`MAX_MUTATIONS_PER_CHECKPOINT`] bound once enough of them are pending.
+    /// `project` must hold the newest recorded mutation's revision, as for
+    /// [`Self::checkpoint`]. Nothing depends on it: every recorded mutation is
+    /// already durable in the journal, so a caller only reports a failure and
+    /// the bounded checkpoint in front of a later append tries again.
+    fn checkpoint_if_due(&self, _project: &StoredProject) -> AppResult<()> {
+        Ok(())
+    }
 
     /// Durably records that the show reached `position` without a mutation:
     /// idle frames realized above the newest recorded mutation. `position`
@@ -322,6 +338,13 @@ impl DurableStore for DurableJournal<'_> {
             ))
             .into()),
         }
+    }
+
+    fn checkpoint_if_due(&self, project: &StoredProject) -> AppResult<()> {
+        if self.pending.get() < EARLY_CHECKPOINT_MUTATIONS {
+            return Ok(());
+        }
+        self.checkpoint(project)
     }
 
     fn record_progress(&self, position: ProjectPosition) -> AppResult<()> {

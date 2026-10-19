@@ -102,7 +102,7 @@ This is control-plane peer liveness. It is not service readiness, production
 authentication, media health, HTTP resources, WebSocket event subscriptions,
 or transport-level production rate limits. Native and non-native raw TCP now
 share the bounded single-thread scheduler: an idle Viewer can receive live
-events while an Operator controls the show, and both modes serve two raw
+events while an Operator controls the show, and both modes serve eight raw
 peers and up to 16 Web peers at once (see the item 10 web tally boundary).
 Native-media acceptance is not proven on this Mac. This is
 prerequisite transport infrastructure only; AU-001 daemon and Studio meter
@@ -3615,9 +3615,8 @@ realizes the pacer's next frame, the native scheduler dispatches at most one
 command per loop pass, round-robin across peers, and reads, answers
 heartbeats, and writes every peer between commands; command throughput stays
 one per frame, and no peer's commands hold another's heartbeats or records
-for more than a frame each. A raw connection beyond the two raw slots still
-waits unaccepted until one leaves, and an authorized Web upgrade beyond 16 is
-refused with `503`. Process tests (`apps/freemixd/tests/native_sessions.rs`)
+for more than a frame each. An authorized Web upgrade beyond 16 is refused
+with `503`. Process tests (`apps/freemixd/tests/native_sessions.rs`)
 drive cuts from a Studio-like admin, a CLI operator, and an Operator page
 while a Viewer tally is refused and every session sees every cut in revision
 order; they hold a third raw peer and refuse the seventeenth Web client until
@@ -3625,9 +3624,39 @@ a slot frees; and they show a Studio peer that never reads delaying neither
 the other sessions (round trips under a second) nor the Program (median
 host lateness under half a frame, a recording holding every paced frame).
 Remaining gaps: the windowed program daemon (`--fullscreen-program`,
-`--display-presenter`) still serves no Web gateway, two raw peers remain the
-bound in both modes, and a journaled command's disk sync still lands in front
-of its frame, so a debug build's lateness tail belongs to the disk as before.
+`--display-presenter`) still serves no Web gateway.
+
+Multi-session hardening (no protocol or schema change): both modes now serve
+up to eight raw sessions, and a raw connection beyond them is refused at once
+with a retryable `resource_exhausted` handshake rejection and closed (at most
+eight such refusals are held at once, each for at most 500 ms; beyond that a
+connection is closed unanswered) instead of waiting unaccepted with no
+answer. Every raw session runs as the development principal with a session id
+of its own. Web peers are pipelined: the scheduler hands a Web peer every
+queued record at once and retires them as the relay acknowledges them, and
+the relay polls its socket every 5 ms instead of every 50 ms, so a Viewer
+tally keeps up with a CLI cutting every frame (before, it received about one
+record per relay poll and was dropped as a slow client within seconds) and a
+cut reaches Studio, a CLI, an Operator page, and a tally in about 30 ms
+instead of about 150 ms. A peer that sends faster than it is served meets
+backpressure instead of being dropped: a raw peer is not read while its
+queue is full (it was closed as `inbound_overflow` past eight queued
+messages) and a relay stops reading while the scheduler's inbound channel is
+full (it closed the connection). The native command turn now rotates from
+the peer that last took it, so peers with commands waiting alternate
+strictly. A native daemon folds the journal into the manifest after 48
+recorded mutations, right after a command's frame was realized (the most
+time before the next deadline), instead of in front of the 65th command's
+frame; the 64-mutation bound in front of an append remains as the backstop.
+Measured Program host lateness under ten cuts a second from four sessions
+for 25 s is unchanged by the scheduler (debug and release p50 about 2 ms,
+p95 about 5 ms): its tail belongs to the recorder startup barrier (the first
+frames, before any session exists, are 50–100 ms late), to occasional slow
+frame realizations under host load, and to a journaled command's disk sync,
+which stays in front of its frame because durability must precede the engine
+commit the frame realizes and makes that frame late only when the sync
+straddles a deadline (usually a few milliseconds, at worst about 100 ms on a
+contended disk).
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
