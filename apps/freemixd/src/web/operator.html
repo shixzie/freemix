@@ -29,7 +29,7 @@
   #link[data-phase="live"] { background: var(--preview); }
   #link[data-phase="waiting"], #link[data-phase="connecting"], #link[data-phase="open"] { background: #6a4b00; color: #ffe2a0; }
   #link[data-phase="stopped"] { background: var(--program); }
-  header a { color: #cfe3ff; }
+  header a { display: inline-flex; align-items: center; min-height: 48px; padding: 0 .6rem; color: #cfe3ff; }
   main { flex: 1; display: grid; gap: .75rem; padding: .75rem; align-content: start;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: .75rem; }
@@ -38,7 +38,7 @@
   .why { margin: .4rem 0 0; font-size: .85rem; color: var(--warn); min-height: 0; }
   .why:empty { display: none; }
   .bus { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); }
-  .bus button, .bus .tile { min-height: 64px; text-align: center; word-break: break-word; }
+  .bus button, .bus .tile { min-height: 64px; padding: .25rem .5rem; text-align: center; overflow-wrap: anywhere; }
   .bus .tile { display: flex; align-items: center; justify-content: center; padding: .25rem .5rem;
     border-radius: 10px; border: 1px solid var(--line); background: var(--idle); font-weight: 650; }
   [data-light="program"] { background: var(--program) !important; border-color: #ff8a8a !important; }
@@ -59,14 +59,20 @@
   .choices input:checked + span { background: #f0f0f0; color: #000; font-weight: 700; }
   .choices input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
   .choices input:disabled + span { opacity: .45; }
-  .row { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; border-top: 1px solid #ffffff14; }
-  .row:first-of-type { border-top: 0; }
-  .row { flex-wrap: wrap; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; padding: .35rem 0;
+    border-top: 1px solid #ffffff14; }
+  /* Recorder and destination rows read as one list. */
+  #recorders > .row:first-child, #strips > .row:first-child { border-top: 0; }
   .row .name { flex: 1 1 6rem; min-width: 6rem; overflow-wrap: anywhere; }
   .row .state { flex: 0 1 auto; text-align: right; font-size: .8rem; font-weight: 800; letter-spacing: .06em;
     color: var(--muted); }
   .row .state[data-on="1"] { color: #ff6b7a; }
   .row button { min-width: 6.5rem; margin-left: auto; }
+  /* Why an output failed or cannot run, on its own line under the row. */
+  .row .detail { flex: 1 0 100%; margin: -.2rem 0 0; font-size: .85rem; color: var(--muted); }
+  .row .detail[data-tone="failed"] { color: var(--warn); }
+  .row .detail:empty { display: none; }
+  .row .detail code { white-space: nowrap; }
   #ftb[data-phase="black"], #ftb[data-phase="fading"] { background: #000; border-color: var(--warn); color: var(--warn); }
   button[aria-pressed="true"].mute { background: #5a1010; border-color: #ff6b7a; }
   .badge { font-size: .8rem; font-weight: 800; letter-spacing: .06em; }
@@ -190,7 +196,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.66";
+  const PROTOCOL = "2.67";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -209,7 +215,6 @@
     ["zoom", "transitionZoom"], ["wipe", "transitionWipe"],
   ];
   const DURATIONS_MS = [500, 1000, 1500, 2000, 3000];
-  // Mirrors freemix-web's stream_state_label: realized state and label key.
   // Realized recorder states (`recorder_status`, Protocol 2.66) and label keys.
   const RECORDER_KEY = {
     unavailable: "recorderUnavailable", off: "recorderOff", starting: "recorderStarting",
@@ -227,6 +232,26 @@
   const METER_CLIP_MS = 2000;
   const METER_STALE_MS = 1000;
   const METER_SCALE_DB = [-48, -36, -24, -18, -12, -6, 0, 6];
+  // Machine-readable output failures (Protocol 2.67): `<code>` or
+  // `<code>.<ffmpeg exit status>`, never free text. Wire code -> label key;
+  // the folder codes name a recording folder for a recorder and an output
+  // folder for a stream. Mirrors fm-ui-model's output_failure_msg.
+  const FAILURE_KEY = {
+    connect_failed: "failConnectFailed", connection_refused: "failConnectionRefused",
+    connect_timeout: "failConnectTimeout", network_unreachable: "failNetworkUnreachable",
+    host_not_found: "failHostNotFound", tls_failed: "failTlsFailed",
+    stream_key_rejected: "failStreamKeyRejected", connection_lost: "failConnectionLost",
+    stream_stalled: "failStreamStalled", protocol_error: "failProtocolError",
+    reconnect_exhausted: "failReconnectExhausted", ffmpeg_unavailable: "failFfmpegUnavailable",
+    ffmpeg_exited: "failFfmpegExited", disk_full: "failDiskFull",
+    folder_not_writable: ["failRecordingFolderNotWritable", "failOutputFolderNotWritable"],
+    folder_missing: ["failRecordingFolderMissing", "failOutputFolderMissing"],
+    write_error: "failWriteError", startup_timeout: "failStartupTimeout", fell_behind: "failFellBehind",
+    capture_failed: "failCaptureFailed", internal_error: "failInternalError", unknown: "failUnknown",
+  };
+  // The daemon option that gives each recorder slot its folder.
+  const RECORDER_OPTION = ["--record-program", "--record-program-2"];
+  // Mirrors freemix-web's stream_state_label: realized state and label key.
   const STREAM_KEY = {
     stopped: "streamStopped", starting: "streamStarting", live: "streamLive",
     waiting_to_reconnect: "streamReconnecting", congested: "streamCongested", failed: "streamFailed",
@@ -295,8 +320,10 @@
       recorderOff: "OFF",
       recorderStarting: "STARTING",
       recorderRecording: "REC {time}",
-      recorderFailed: "FAILED ({reason})",
+      recorderFailed: "FAILED",
       recorderStateLabel: "Recorder {slot}: {state}",
+      recorderNotConfiguredReason: "Recorder {slot} has no recording folder",
+      recorderNotConfiguredHint: "No recording folder is set for this slot; start freemixd with {option} to use it.",
       record: "Record",
       stop: "Stop",
       startRecorder: "Start recorder {slot}",
@@ -310,8 +337,7 @@
       streamUnavailable: "Unavailable",
       streamStartRequested: "{state} (start requested)",
       streamStopRequested: "{state} (stop requested)",
-      streamDetail: "{state} — {detail}",
-      streamLastFailure: "{state} — last error: {detail}",
+      streamLastFailure: "Last error: {detail}",
       streamElapsed: "{state} {time}",
       streamBitrate: "{state} · {rate} Mb/s",
       goLive: "Go live",
@@ -368,6 +394,31 @@
       noteMuteChanged: "Mute not applied: {input}'s audio changed first",
       noteMuteChangedInput: "Mute not applied: the input's audio changed first",
       noteMuteGaveUp: "Mute not sent: the show kept changing; press it again",
+      failConnectFailed: "Couldn't connect to the server",
+      failConnectionRefused: "Server refused the connection",
+      failConnectTimeout: "Server didn't answer in time",
+      failNetworkUnreachable: "Network unreachable",
+      failHostNotFound: "Server name not found",
+      failTlsFailed: "Secure connection failed",
+      failStreamKeyRejected: "Server refused the stream key",
+      failConnectionLost: "Connection to the server was lost",
+      failStreamStalled: "Stream stalled",
+      failProtocolError: "Destination doesn't accept this stream",
+      failReconnectExhausted: "Gave up after repeated reconnects",
+      failFfmpegUnavailable: "FFmpeg is missing or unusable",
+      failFfmpegExited: "FFmpeg stopped unexpectedly",
+      failDiskFull: "Disk full",
+      failRecordingFolderNotWritable: "Recording folder not writable",
+      failOutputFolderNotWritable: "Output folder not writable",
+      failRecordingFolderMissing: "Recording folder not found",
+      failOutputFolderMissing: "Output folder not found",
+      failWriteError: "Disk write error",
+      failStartupTimeout: "Didn't start in time",
+      failFellBehind: "Couldn't keep up; frames were dropped",
+      failCaptureFailed: "Program picture capture failed",
+      failInternalError: "Internal error; see the daemon log",
+      failUnknown: "Unknown error; see the daemon log",
+      failWithExitCode: "{reason} (FFmpeg exited with code {code})",
     },
     es: {
       title: "Operador de FreeMix",
@@ -425,8 +476,10 @@
       recorderOff: "APAGADO",
       recorderStarting: "INICIANDO",
       recorderRecording: "REC {time}",
-      recorderFailed: "FALLIDO ({reason})",
+      recorderFailed: "FALLIDO",
       recorderStateLabel: "Grabador {slot}: {state}",
+      recorderNotConfiguredReason: "El grabador {slot} no tiene carpeta de grabación",
+      recorderNotConfiguredHint: "Esta ranura no tiene carpeta de grabación; inicie freemixd con {option} para usarla.",
       record: "Grabar",
       stop: "Detener",
       startRecorder: "Iniciar grabador {slot}",
@@ -440,8 +493,7 @@
       streamUnavailable: "No disponible",
       streamStartRequested: "{state} (inicio pedido)",
       streamStopRequested: "{state} (parada pedida)",
-      streamDetail: "{state} — {detail}",
-      streamLastFailure: "{state} — último error: {detail}",
+      streamLastFailure: "Último error: {detail}",
       streamElapsed: "{state} {time}",
       streamBitrate: "{state} · {rate} Mb/s",
       goLive: "Iniciar",
@@ -498,6 +550,31 @@
       noteMuteChanged: "Silencio no aplicado: el audio de {input} cambió antes",
       noteMuteChangedInput: "Silencio no aplicado: el audio de la entrada cambió antes",
       noteMuteGaveUp: "Silencio no enviado: el show siguió cambiando; púlselo otra vez",
+      failConnectFailed: "No se pudo conectar con el servidor",
+      failConnectionRefused: "El servidor rechazó la conexión",
+      failConnectTimeout: "El servidor no respondió a tiempo",
+      failNetworkUnreachable: "Red inaccesible",
+      failHostNotFound: "No se encontró el nombre del servidor",
+      failTlsFailed: "Falló la conexión segura",
+      failStreamKeyRejected: "El servidor rechazó la clave de transmisión",
+      failConnectionLost: "Se perdió la conexión con el servidor",
+      failStreamStalled: "La transmisión se atascó",
+      failProtocolError: "El destino no acepta esta transmisión",
+      failReconnectExhausted: "Se abandonó tras varios intentos de reconexión",
+      failFfmpegUnavailable: "FFmpeg falta o no se puede usar",
+      failFfmpegExited: "FFmpeg se detuvo inesperadamente",
+      failDiskFull: "Disco lleno",
+      failRecordingFolderNotWritable: "No se puede escribir en la carpeta de grabación",
+      failOutputFolderNotWritable: "No se puede escribir en la carpeta de salida",
+      failRecordingFolderMissing: "No se encuentra la carpeta de grabación",
+      failOutputFolderMissing: "No se encuentra la carpeta de salida",
+      failWriteError: "Error de escritura en disco",
+      failStartupTimeout: "No arrancó a tiempo",
+      failFellBehind: "No pudo seguir el ritmo; se perdieron fotogramas",
+      failCaptureFailed: "Falló la captura de la imagen de Programa",
+      failInternalError: "Error interno; vea el registro del daemon",
+      failUnknown: "Error desconocido; vea el registro del daemon",
+      failWithExitCode: "{reason} (FFmpeg terminó con código {code})",
     },
   };
   const LANGUAGE_KEY = "freemix.web.language";
@@ -698,7 +775,7 @@
         throw new Error("malformed recorder status");
       }
       recorders[Number(parts[0]) - 1] = {
-        state: parts[1], elapsedMs: Number(parts[2]), failure: parts[3] ? decodeURIComponent(parts[3]) : "",
+        state: parts[1], elapsedMs: Number(parts[2]), failure: parts[3],
       };
     }
     return recorders;
@@ -712,7 +789,7 @@
       if (parts.length !== 10 && parts.length !== 13) throw new Error("malformed stream sample");
       samples.set(parts[0], {
         realized: parts[1], uptimeMs: Number(parts[7]), bitrateKbps: Number(parts[8]),
-        failure: parts[9] ? decodeURIComponent(parts[9]) : "",
+        failure: parts[9],
       });
     }
     return samples;
@@ -1266,6 +1343,16 @@
     ui.whyAudio.textContent = sectionReason("audio");
   }
 
+  // The short localized reason for one failure token; "" for none.
+  function failureText(token, recorder) {
+    if (!token) return "";
+    const match = /^([a-z_]+)(?:\.(-?\d+))?$/.exec(token);
+    let key = match && Object.hasOwn(FAILURE_KEY, match[1]) ? FAILURE_KEY[match[1]] : "failUnknown";
+    if (Array.isArray(key)) key = key[recorder ? 0 : 1];
+    const reason = tr(key);
+    return match && match[2] !== undefined ? tr("failWithExitCode", { reason, code: match[2] }) : reason;
+  }
+
   // H:MM:SS of a duration, for recorder and destination running times.
   function clock(ms) {
     const total = Math.max(0, Math.floor(ms / 1000));
@@ -1276,21 +1363,29 @@
 
   // One recorder row: the realized state when the daemon reports it
   // (`recorder_status`), otherwise only the requested state with a note.
+  // `detail` explains a failure or a slot without a folder; `blocked` is why
+  // Record cannot be pressed (Stop always can).
   function recorderText(slot, on) {
     const realized = fresh(telemetry.recordersAt) && telemetry.recorders ? telemetry.recorders[slot - 1] : null;
     if (!realized) {
       return { text: tr(on ? "recorderRequestedOn" : "recorderRequestedOff"),
-        label: tr(on ? "recorderStateOn" : "recorderStateOff", { slot }), tone: on ? "on" : "", reported: false };
+        label: tr(on ? "recorderStateOn" : "recorderStateOff", { slot }), tone: on ? "on" : "", reported: false,
+        detail: "", detailTone: "", blocked: "" };
     }
     const elapsed = realized.state === "recording"
       ? realized.elapsedMs + Date.now() - telemetry.recordersAt : 0;
-    let text = tr(RECORDER_KEY[realized.state], { time: clock(elapsed), reason: realized.failure });
+    let text = tr(RECORDER_KEY[realized.state], { time: clock(elapsed) });
     // Desired and realized differ until the recorder catches up.
     if (on && (realized.state === "off" || realized.state === "failed")) text = tr("streamStartRequested", { state: text });
     else if (!on && (realized.state === "recording" || realized.state === "starting")) text = tr("streamStopRequested", { state: text });
     const tone = realized.state === "recording" ? "on" : realized.state === "failed" ? "failed"
       : realized.state === "starting" ? "starting" : "";
-    return { text, label: tr("recorderStateLabel", { slot, state: text }), tone, reported: true };
+    const unavailable = realized.state === "unavailable";
+    const detail = realized.state === "failed" ? failureText(realized.failure, true)
+      : unavailable ? tr("recorderNotConfiguredHint", { option: RECORDER_OPTION[slot - 1] }) : "";
+    const label = tr("recorderStateLabel", { slot, state: text }) + (detail ? ". " + detail : "");
+    return { text, label, tone, reported: true, detail, detailTone: realized.state === "failed" ? "failed" : "",
+      blocked: unavailable && !on ? tr("recorderNotConfiguredReason", { slot }) : "" };
   }
   // One destination row: the snapshot's desired and realized state, made
   // fresher by its newest `stream_status` sample (running time, bitrate,
@@ -1309,13 +1404,31 @@
     // Desired and realized differ until the destination catches up.
     if (stream.desired && realized === "stopped") text = tr("streamStartRequested", { state: text });
     else if (!stream.desired && realized !== "stopped") text = tr("streamStopRequested", { state: text });
-    const detail = sample ? sample.failure || (realized === "failed" ? stream.detail : "") : stream.detail;
+    let detail = sample ? failureText(sample.failure, false) || (realized === "failed" ? stream.detail : "")
+      : stream.detail;
     // A running destination keeps reporting the failure it recovered from.
     const recovered = realized === "live" || realized === "congested";
-    if (detail) text = tr(recovered ? "streamLastFailure" : "streamDetail", { state: text, detail });
+    if (detail && recovered) detail = tr("streamLastFailure", { detail });
     const tone = realized === "live" ? "on" : realized === "failed" || realized === "unavailable" ? "failed"
       : realized === "starting" || realized === "waiting_to_reconnect" || realized === "congested" ? "starting" : "";
-    return { text, tone };
+    return { text, tone, detail, detailTone: recovered ? "" : "failed" };
+  }
+  function paintDetail(row, text, tone) {
+    const detail = row.querySelector(".detail");
+    if (detail.textContent !== text) {
+      // A command-line option stays on one line so it can be read and
+      // copied whole.
+      const option = RECORDER_OPTION.slice().reverse().find((o) => text.includes(o));
+      if (option) {
+        const at = text.indexOf(option);
+        const code = document.createElement("code");
+        code.textContent = option;
+        detail.replaceChildren(text.slice(0, at), code, text.slice(at + option.length));
+      } else {
+        detail.textContent = text;
+      }
+    }
+    detail.dataset.tone = tone;
   }
 
   // The recorder and destination rows and the meters: everything the lossy
@@ -1327,7 +1440,7 @@
     syncChildren(ui.recorders, live ? ["1", "2"] : [], (slot) => {
       const row = document.createElement("div");
       row.className = "row";
-      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button><p class=\"detail\"></p>";
       row.querySelector("button").addEventListener("click", () => toggleRecorder(Number(slot)));
       return row;
     }, (row, slot) => {
@@ -1340,10 +1453,11 @@
       state.setAttribute("aria-label", shown.label);
       state.dataset.on = shown.tone === "on" ? "1" : "0";
       state.dataset.tone = shown.tone;
+      paintDetail(row, shown.detail, shown.detailTone);
       const button = row.querySelector("button");
       button.textContent = tr(on ? "stop" : "record");
       button.setAttribute("aria-label", tr(on ? "stopRecorder" : "startRecorder", { slot }));
-      setDisabled(button, transitionReason);
+      setDisabled(button, transitionReason || shown.blocked);
     });
     // Only a daemon that reports realized recorder state (native media)
     // tells whether a file is being written.
@@ -1352,7 +1466,7 @@
     syncChildren(ui.streams, streamIds, (id) => {
       const row = document.createElement("div");
       row.className = "row";
-      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button>";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" aria-describedby=\"why-outputs\"></button><p class=\"detail\"></p>";
       row.querySelector("button").addEventListener("click", () => toggleStream(id));
       return row;
     }, (row, id) => {
@@ -1363,6 +1477,7 @@
       if (state.textContent !== shown.text) state.textContent = shown.text;
       state.dataset.on = shown.tone === "on" ? "1" : "0";
       state.dataset.tone = shown.tone;
+      paintDetail(row, shown.detail, shown.detailTone);
       const button = row.querySelector("button");
       button.textContent = tr(stream.desired ? "stop" : "goLive");
       button.setAttribute("aria-label", tr(stream.desired ? "stopStream" : "startStream", { name: stream.name }));
@@ -1479,8 +1594,8 @@
       [["payload", "fade_to_black"], ["active", active ? "1" : "0"], ["duration_frames", String(durationFrames())]]);
   }
   function toggleRecorder(slot) {
-    if (gate("transition")) return;
     const on = show.recordings[slot - 1];
+    if (gate("transition") || recorderText(slot, on).blocked) return;
     sendCommand(tr(on ? "stopRecorder" : "startRecorder", { slot }),
       [["payload", on ? "record_stop" : "record_start"], ["recorder", String(slot)]]);
   }

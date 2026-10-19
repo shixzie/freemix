@@ -145,9 +145,9 @@ use fm_frame::{
 };
 
 use crate::{
-    CongestionObservation, ConnectionObservation, DestinationConfig, Endpoint, FailureStage,
-    OutputError, OutputPacket, OutputProtocol, RenditionId, SendObservation, SinkError, SinkWrite,
-    TransportSink,
+    CongestionObservation, ConnectionObservation, DestinationConfig, Endpoint, FailureCause,
+    FailureStage, OutputError, OutputPacket, OutputProtocol, RenditionId, SendObservation,
+    SinkError, SinkWrite, TransportSink,
 };
 
 /// Raw pairs carry no clock domain of their own; the child's media clock is
@@ -160,37 +160,140 @@ const BYTES_PER_SAMPLE: usize = size_of::<f32>();
 
 /// Causes that must never be retried, matched against the child's redacted
 /// output. Kept narrow on purpose: a false terminal ends the show.
-const TERMINAL_MARKERS: [(&str, FailureStage); 10] = [
-    ("authentication failed", FailureStage::Authentication),
+const TERMINAL_MARKERS: [(&str, FailureStage, FailureCause); 10] = [
+    (
+        "authentication failed",
+        FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
+    ),
     (
         "netconnection.connect.rejected",
         FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
     ),
-    ("netstream.publish.badname", FailureStage::Authentication),
-    ("access denied", FailureStage::Authentication),
-    ("unauthorized", FailureStage::Authentication),
-    ("forbidden", FailureStage::Authentication),
-    ("invalid stream key", FailureStage::Authentication),
-    ("certificate verify failed", FailureStage::Tls),
+    (
+        "netstream.publish.badname",
+        FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
+    ),
+    (
+        "access denied",
+        FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
+    ),
+    (
+        "unauthorized",
+        FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
+    ),
+    (
+        "forbidden",
+        FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
+    ),
+    (
+        "invalid stream key",
+        FailureStage::Authentication,
+        FailureCause::CredentialsRejected,
+    ),
+    (
+        "certificate verify failed",
+        FailureStage::Tls,
+        FailureCause::TlsRejected,
+    ),
     (
         "unable to find a suitable output format",
         FailureStage::Protocol,
+        FailureCause::Unsupported,
     ),
-    ("protocol not found", FailureStage::Protocol),
+    (
+        "protocol not found",
+        FailureStage::Protocol,
+        FailureCause::Unsupported,
+    ),
 ];
 
-/// Recognized transient causes. These only sharpen the reported stage; every
-/// unrecognized cause is retried as a connect failure anyway.
-const RETRYABLE_MARKERS: [(&str, FailureStage); 9] = [
-    ("connection refused", FailureStage::Connect),
-    ("connection reset", FailureStage::Write),
-    ("broken pipe", FailureStage::Write),
-    ("end of file", FailureStage::Write),
-    ("connection timed out", FailureStage::Connect),
-    ("no route to host", FailureStage::Connect),
-    ("network is unreachable", FailureStage::Connect),
-    ("name or service not known", FailureStage::Dns),
-    ("failed to resolve", FailureStage::Dns),
+/// Recognized transient causes. These only sharpen the reported stage and
+/// cause; every unrecognized cause is retried as a connect failure anyway.
+/// The first match wins, so the specific network causes come before the
+/// local-storage and generic I/O ones.
+const RETRYABLE_MARKERS: [(&str, FailureStage, FailureCause); 16] = [
+    (
+        "connection refused",
+        FailureStage::Connect,
+        FailureCause::ConnectionRefused,
+    ),
+    (
+        "connection reset",
+        FailureStage::Write,
+        FailureCause::ConnectionLost,
+    ),
+    (
+        "broken pipe",
+        FailureStage::Write,
+        FailureCause::ConnectionLost,
+    ),
+    (
+        "end of file",
+        FailureStage::Write,
+        FailureCause::ConnectionLost,
+    ),
+    (
+        "connection timed out",
+        FailureStage::Connect,
+        FailureCause::TimedOut,
+    ),
+    (
+        "no route to host",
+        FailureStage::Connect,
+        FailureCause::NetworkUnreachable,
+    ),
+    (
+        "network is unreachable",
+        FailureStage::Connect,
+        FailureCause::NetworkUnreachable,
+    ),
+    (
+        "name or service not known",
+        FailureStage::Dns,
+        FailureCause::NameNotResolved,
+    ),
+    (
+        "failed to resolve",
+        FailureStage::Dns,
+        FailureCause::NameNotResolved,
+    ),
+    (
+        "no space left on device",
+        FailureStage::Write,
+        FailureCause::StorageFull,
+    ),
+    (
+        "disk quota exceeded",
+        FailureStage::Write,
+        FailureCause::StorageFull,
+    ),
+    (
+        "read-only file system",
+        FailureStage::Connect,
+        FailureCause::PermissionDenied,
+    ),
+    (
+        "permission denied",
+        FailureStage::Connect,
+        FailureCause::PermissionDenied,
+    ),
+    (
+        "no such file or directory",
+        FailureStage::Connect,
+        FailureCause::NotFound,
+    ),
+    (
+        "input/output error",
+        FailureStage::Connect,
+        FailureCause::IoError,
+    ),
+    ("i/o error", FailureStage::Connect, FailureCause::IoError),
 ];
 
 /// One already-resolved stream key. Never rendered, including by `Debug`.
@@ -598,7 +701,8 @@ impl FfmpegRtmpSink {
                             None,
                             RtmpConfigError::InvalidSrtStreamId.to_string(),
                             false,
-                        ));
+                        )
+                        .with_cause(FailureCause::Unsupported));
                     }
                     url.push_str("?streamid=");
                     url.push_str(&key.0);
@@ -616,7 +720,8 @@ impl FfmpegRtmpSink {
                     None,
                     format!("{other:?} is not carried by the FFmpeg RTMP transport"),
                     false,
-                ));
+                )
+                .with_cause(FailureCause::Unsupported));
             }
         };
         // The typed error carries no URL text, and neither does this message.
@@ -627,6 +732,7 @@ impl FfmpegRtmpSink {
                 format!("destination rejected: {error:?}"),
                 false,
             )
+            .with_cause(FailureCause::Unsupported)
         })
     }
 
@@ -805,153 +911,210 @@ impl Drop for FfmpegRtmpSink {
 /// A refusal of one packet: the queue discards it and the destination fails.
 fn terminal_packet(message: impl Into<String>) -> SinkError {
     SinkError::rejected_packet(FailureStage::Protocol, None, message)
+        .with_cause(FailureCause::Internal)
 }
 
-/// Matches the child's redacted output against the recognized causes.
-fn classify_text(text: &str) -> Option<(FailureStage, bool)> {
+/// Matches the child's redacted output against the recognized causes:
+/// the stage, whether a retry may help, and the cause.
+fn classify_text(text: &str) -> Option<(FailureStage, bool, FailureCause)> {
     let text = text.to_ascii_lowercase();
-    for (marker, stage) in TERMINAL_MARKERS {
+    for (marker, stage, cause) in TERMINAL_MARKERS {
         if text.contains(marker) {
-            return Some((stage, false));
+            return Some((stage, false, cause));
         }
     }
-    for (marker, stage) in RETRYABLE_MARKERS {
+    for (marker, stage, cause) in RETRYABLE_MARKERS {
         if text.contains(marker) {
-            return Some((stage, true));
+            return Some((stage, true, cause));
         }
     }
     None
 }
 
+// One arm per startup failure, each with its stage, retry, and cause.
+#[allow(clippy::too_many_lines)]
 fn classify_start(error: &StartError) -> SinkError {
-    let (stage, retryable, message) = match &error.kind {
+    let (stage, retryable, cause, message) = match &error.kind {
         // Configuration and tooling: a retry changes nothing.
         StartErrorKind::InvalidLimits(limits) => (
             FailureStage::Protocol,
             false,
+            FailureCause::Unsupported,
             format!("streaming limits rejected: {limits:?}"),
         ),
         StartErrorKind::UnsupportedChannelLayout => (
             FailureStage::Protocol,
             false,
+            FailureCause::Unsupported,
             "FLV carries mono or stereo audio only".to_owned(),
         ),
         StartErrorKind::HlsDirectoryUnusable => (
             FailureStage::Protocol,
             false,
+            FailureCause::PermissionDenied,
             "HLS output directory is unusable".to_owned(),
         ),
         StartErrorKind::LadderNotSupported => (
             FailureStage::Protocol,
             false,
+            FailureCause::Unsupported,
             "a bitrate ladder is carried by a local HLS destination only".to_owned(),
         ),
         StartErrorKind::SrtOptionsNotSupported => (
             FailureStage::Protocol,
             false,
+            FailureCause::Unsupported,
             "SRT latency and passphrase are carried by an SRT destination only".to_owned(),
         ),
         StartErrorKind::InvalidExecutable => (
             FailureStage::Protocol,
             false,
+            FailureCause::ToolUnavailable,
             "configured ffmpeg executable is unusable".to_owned(),
         ),
         StartErrorKind::ToolUnavailable(reason) => (
             FailureStage::Protocol,
             false,
+            FailureCause::ToolUnavailable,
             format!("ffmpeg is unavailable: {reason:?}"),
         ),
         // Local resource pressure: a fresh attempt is worth making.
         StartErrorKind::Randomness => (
             FailureStage::Connect,
             true,
+            FailureCause::Internal,
             "input token randomness failed".to_owned(),
         ),
         StartErrorKind::ThreadSpawn(kind) => (
             FailureStage::Connect,
             true,
-            format!("worker thread spawn failed: {kind:?}"),
+            FailureCause::Internal,
+            format!("worker thread spawn failed: {kind}"),
         ),
         StartErrorKind::Bind { input, kind } => (
             FailureStage::Connect,
             true,
-            format!("{input:?} loopback bind failed: {kind:?}"),
+            FailureCause::Internal,
+            format!("{input:?} loopback bind failed: {kind}"),
         ),
         StartErrorKind::Spawn(kind) => (
             FailureStage::Connect,
             true,
-            format!("ffmpeg spawn failed: {kind:?}"),
+            if *kind == std::io::ErrorKind::NotFound {
+                FailureCause::ToolUnavailable
+            } else {
+                FailureCause::Internal
+            },
+            format!("ffmpeg spawn failed: {kind}"),
         ),
         StartErrorKind::MissingPipe => (
             FailureStage::Connect,
             true,
+            FailureCause::Internal,
             "ffmpeg child exposed no pipes".to_owned(),
         ),
         StartErrorKind::ConnectTimeout { input } => (
             FailureStage::Connect,
             true,
+            FailureCause::Unclassified,
             format!("ffmpeg never requested its {input:?} input"),
         ),
         StartErrorKind::Connect { input, kind } => (
             FailureStage::Connect,
             true,
-            format!("{input:?} input handshake failed: {kind:?}"),
+            FailureCause::Unclassified,
+            format!("{input:?} input handshake failed: {kind}"),
         ),
         StartErrorKind::EarlyExit { status, stderr } => {
-            let (stage, retryable) = classify_text(stderr).unwrap_or((FailureStage::Connect, true));
+            let (stage, retryable, cause) = classify_text(stderr).unwrap_or((
+                FailureStage::Connect,
+                true,
+                FailureCause::Unclassified,
+            ));
             return SinkError::new(
                 stage,
                 status.map(i64::from),
-                "ffmpeg exited during startup",
+                exited_message("ffmpeg exited during startup", *status),
                 retryable,
-            );
+            )
+            .with_cause(cause);
         }
     };
-    SinkError::new(stage, None, message, retryable)
+    SinkError::new(stage, None, message, retryable).with_cause(cause)
+}
+
+/// `what`, with the child's exit status when it has one.
+fn exited_message(what: &str, status: Option<i32>) -> String {
+    match status {
+        Some(status) => format!("{what} with code {status}"),
+        None => what.to_owned(),
+    }
 }
 
 fn classify_failure(failure: &StreamFailure, stderr: &str) -> SinkError {
     // The captured cause outranks the variant: a child killed by the watchdog
     // may still have printed why the destination refused it.
     let observed = classify_text(stderr);
-    if let Some((stage, false)) = observed {
+    if let Some((stage, false, cause)) = observed {
         return SinkError::new(
             stage,
             exit_status(failure),
-            format!("destination refused this session: {failure:?}"),
+            format!("destination refused this session ({})", describe(failure)),
             false,
-        );
+        )
+        .with_cause(cause);
     }
-    let (stage, message) = match failure {
-        StreamFailure::DestinationTimeout => (
-            FailureStage::Connect,
-            "destination never opened within the connect deadline",
-        ),
-        StreamFailure::NoProgress => (FailureStage::Write, "muxed media clock stalled"),
-        StreamFailure::ChildExited { .. } => (FailureStage::Write, "ffmpeg exited"),
-        StreamFailure::Cancelled => (FailureStage::Write, "session was cancelled"),
+    let (stage, cause) = match failure {
+        StreamFailure::DestinationTimeout => (FailureStage::Connect, FailureCause::TimedOut),
+        StreamFailure::NoProgress => (FailureStage::Write, FailureCause::Stalled),
+        StreamFailure::ChildExited { .. }
+        | StreamFailure::Cancelled
+        | StreamFailure::Write { .. }
+        | StreamFailure::DispatcherClosed(_) => (FailureStage::Write, FailureCause::Unclassified),
         StreamFailure::InputTimeout { .. } | StreamFailure::Connect { .. } => {
-            (FailureStage::Connect, "ffmpeg input handshake failed")
+            (FailureStage::Connect, FailureCause::Unclassified)
         }
-        StreamFailure::Write { .. } | StreamFailure::DispatcherClosed(_) => {
-            (FailureStage::Write, "ffmpeg input write failed")
-        }
-        StreamFailure::ProgressRead(_) | StreamFailure::StderrRead(_) => {
-            (FailureStage::Write, "ffmpeg reporting pipe failed")
-        }
-        StreamFailure::WorkerPanicked => (FailureStage::Write, "streaming worker panicked"),
-        StreamFailure::StopTimedOut
+        StreamFailure::ProgressRead(_)
+        | StreamFailure::StderrRead(_)
+        | StreamFailure::WorkerPanicked
+        | StreamFailure::StopTimedOut
         | StreamFailure::KillTimedOut
-        | StreamFailure::CleanupUnconfirmed => {
-            (FailureStage::Write, "previous session did not shut down")
-        }
+        | StreamFailure::CleanupUnconfirmed => (FailureStage::Write, FailureCause::Internal),
     };
-    SinkError::new(
-        observed.map_or(stage, |(observed, _)| observed),
-        exit_status(failure),
-        format!("{message}: {failure:?}"),
-        true,
-    )
+    let (stage, cause) = observed.map_or((stage, cause), |(stage, _, cause)| (stage, cause));
+    SinkError::new(stage, exit_status(failure), describe(failure), true).with_cause(cause)
+}
+
+/// A short operator-log description of a streaming failure: no `Debug`
+/// dumps, no destination text.
+fn describe(failure: &StreamFailure) -> String {
+    match failure {
+        StreamFailure::DestinationTimeout => {
+            "destination never opened within the connect deadline".to_owned()
+        }
+        StreamFailure::NoProgress => "muxed media clock stalled".to_owned(),
+        StreamFailure::ChildExited { status } => exited_message("ffmpeg exited", *status),
+        StreamFailure::Cancelled => "session was cancelled".to_owned(),
+        StreamFailure::InputTimeout { input } => {
+            format!("ffmpeg never requested its {input:?} input")
+        }
+        StreamFailure::Connect { input, kind } => {
+            format!("ffmpeg {input:?} input handshake failed: {kind}")
+        }
+        StreamFailure::Write { input, kind } => {
+            format!("ffmpeg {input:?} input write failed: {kind}")
+        }
+        StreamFailure::DispatcherClosed(input) => {
+            format!("ffmpeg {input:?} input closed")
+        }
+        StreamFailure::ProgressRead(kind) => format!("ffmpeg progress pipe failed: {kind}"),
+        StreamFailure::StderrRead(kind) => format!("ffmpeg error pipe failed: {kind}"),
+        StreamFailure::WorkerPanicked => "streaming worker panicked".to_owned(),
+        StreamFailure::StopTimedOut | StreamFailure::KillTimedOut => {
+            "previous session did not shut down".to_owned()
+        }
+        StreamFailure::CleanupUnconfirmed => "previous session cleanup is unconfirmed".to_owned(),
+    }
 }
 
 fn exit_status(failure: &StreamFailure) -> Option<i64> {
@@ -1064,5 +1227,110 @@ mod tests {
             assert!(!error.message().contains("secret"));
         }
         assert!(StreamKey::for_protocol(OutputProtocol::Srt, "secret-key=1").is_ok());
+    }
+
+    /// `FFmpeg`'s (redacted) stderr sharpens a failure into a cause the daemon
+    /// reports as a stable code; the message keeps no stderr text, so no
+    /// destination, key, or path can travel with it.
+    #[test]
+    fn child_output_classifies_failures_without_carrying_its_text() {
+        let exited = StreamFailure::ChildExited { status: Some(145) };
+        for (stderr, stage, retryable, cause) in [
+            (
+                "[rtmp @ 0x1] Cannot open connection tcp://ingest.example.test:1935\nrtmp://ingest.example.test/live/<stream-key>: Connection refused",
+                FailureStage::Connect,
+                true,
+                FailureCause::ConnectionRefused,
+            ),
+            (
+                "[rtmp @ 0x1] Server error: NetStream.Publish.BadName\nrtmp://h/live/<stream-key>: Operation not permitted",
+                FailureStage::Authentication,
+                false,
+                FailureCause::CredentialsRejected,
+            ),
+            (
+                "rtmp://h/live/<stream-key>: Input/output error",
+                FailureStage::Connect,
+                true,
+                FailureCause::IoError,
+            ),
+            (
+                "Error writing trailer of rtmp://h/live/<stream-key>: I/O error",
+                FailureStage::Connect,
+                true,
+                FailureCause::IoError,
+            ),
+            (
+                "[tcp @ 0x2] Connection to tcp://10.0.0.9:1935 failed: Network is unreachable",
+                FailureStage::Connect,
+                true,
+                FailureCause::NetworkUnreachable,
+            ),
+            (
+                "Failed to resolve hostname nowhere.invalid: Name or service not known",
+                FailureStage::Dns,
+                true,
+                FailureCause::NameNotResolved,
+            ),
+            (
+                "[hls @ 0x3] Failed to open file '/srv/show/live/seg7.ts': Permission denied",
+                FailureStage::Connect,
+                true,
+                FailureCause::PermissionDenied,
+            ),
+            (
+                "[hls @ 0x3] /srv/show/live/seg7.ts: No space left on device",
+                FailureStage::Write,
+                true,
+                FailureCause::StorageFull,
+            ),
+            (
+                "av_interleaved_write_frame(): Broken pipe",
+                FailureStage::Write,
+                true,
+                FailureCause::ConnectionLost,
+            ),
+            ("", FailureStage::Write, true, FailureCause::Unclassified),
+        ] {
+            let error = classify_failure(&exited, stderr);
+            assert_eq!(
+                (error.stage(), error.is_retryable(), error.cause()),
+                (stage, retryable, cause),
+                "{stderr}"
+            );
+            assert_eq!(error.code(), Some(145));
+            for leaked in ["ingest", "<stream-key>", "/srv", "10.0.0.9", "ChildExited"] {
+                assert!(!error.message().contains(leaked), "{}", error.message());
+            }
+        }
+        assert_eq!(
+            classify_failure(&exited, "").message(),
+            "ffmpeg exited with code 145"
+        );
+        assert_eq!(
+            classify_failure(&StreamFailure::NoProgress, "").cause(),
+            FailureCause::Stalled
+        );
+        assert_eq!(
+            classify_failure(&StreamFailure::DestinationTimeout, "").cause(),
+            FailureCause::TimedOut
+        );
+        let early = classify_start(&StartError {
+            kind: StartErrorKind::EarlyExit {
+                status: Some(1),
+                stderr: "rtmps://h/app/<stream-key>: certificate verify failed".to_owned(),
+            },
+            cleanup: CleanupStatus::Complete,
+        });
+        assert_eq!(
+            (early.stage(), early.is_retryable(), early.cause()),
+            (FailureStage::Tls, false, FailureCause::TlsRejected)
+        );
+        assert_eq!(early.message(), "ffmpeg exited during startup with code 1");
+        let missing = classify_start(&StartError {
+            kind: StartErrorKind::Spawn(std::io::ErrorKind::NotFound),
+            cleanup: CleanupStatus::Complete,
+        });
+        assert_eq!(missing.cause(), FailureCause::ToolUnavailable);
     }
 }

@@ -834,7 +834,7 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
     let victim = &client.samples[&VICTIM];
     assert!(victim.failure.is_some(), "{victim:?}");
     assert!(
-        !victim.failure.as_deref().unwrap().contains(&key(VICTIM)),
+        !victim.failure.unwrap().to_string().contains(&key(VICTIM)),
         "{victim:?}"
     );
 

@@ -108,9 +108,51 @@ pub enum FailureStage {
     Protocol,
 }
 
+/// The recognized cause behind a [`SinkError`], sharper than its
+/// [`FailureStage`] when the transport observed one (for example in a child
+/// process's output). Callers turn it into a user-facing reason; it never
+/// carries text.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum FailureCause {
+    /// Nothing sharper than the stage is known.
+    #[default]
+    Unclassified,
+    /// The peer actively refused the connection.
+    ConnectionRefused,
+    /// The peer did not answer within a deadline.
+    TimedOut,
+    /// No route to the peer's network.
+    NetworkUnreachable,
+    /// The peer's name did not resolve.
+    NameNotResolved,
+    /// The TLS handshake or certificate was refused.
+    TlsRejected,
+    /// The peer refused the credentials or the stream key.
+    CredentialsRejected,
+    /// An established connection broke off.
+    ConnectionLost,
+    /// A generic I/O error with no sharper cause.
+    IoError,
+    /// Media stopped flowing.
+    Stalled,
+    /// The protocol, format, or destination settings are not supported.
+    Unsupported,
+    /// The transport's tool (`FFmpeg`) is missing or unusable.
+    ToolUnavailable,
+    /// A local output location refused writes.
+    PermissionDenied,
+    /// A local output location does not exist.
+    NotFound,
+    /// A local output filesystem is full.
+    StorageFull,
+    /// A failure inside this process (threads, randomness, shutdown).
+    Internal,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SinkError {
     stage: FailureStage,
+    cause: FailureCause,
     code: Option<i64>,
     message: String,
     retryable: bool,
@@ -127,11 +169,19 @@ impl SinkError {
     ) -> Self {
         Self {
             stage,
+            cause: FailureCause::Unclassified,
             code,
             message: message.into(),
             retryable,
             rejects_packet: false,
         }
+    }
+
+    /// The same error with a recognized cause.
+    #[must_use]
+    pub const fn with_cause(mut self, cause: FailureCause) -> Self {
+        self.cause = cause;
+        self
     }
 
     /// A non-retryable write failure caused by the packet itself (wrong
@@ -156,6 +206,11 @@ impl SinkError {
     #[must_use]
     pub const fn stage(&self) -> FailureStage {
         self.stage
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> FailureCause {
+        self.cause
     }
 
     #[must_use]
@@ -261,6 +316,7 @@ pub trait TransportSink: Send {
 pub struct FailureRecord {
     pub at_ms: u64,
     pub stage: FailureStage,
+    pub cause: FailureCause,
     pub code: Option<i64>,
     pub message: String,
     pub retryable: bool,
@@ -552,6 +608,7 @@ impl DestinationOutput {
         self.telemetry.record_failure(FailureRecord {
             at_ms: now_ms,
             stage: error.stage,
+            cause: error.cause,
             code: error.code,
             message: error.message,
             retryable,

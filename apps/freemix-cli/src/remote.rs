@@ -699,7 +699,7 @@ fn print_stream_targets(rows: Vec<StreamTargetRow>) {
                     sample.dropped_pairs,
                     sample.reconnects,
                     sample.uptime_ms,
-                    sample.failure.as_deref().unwrap_or("none"),
+                    sample.failure.map_or_else(|| "none".to_owned(), |failure| failure.to_string()),
                 )
             },
         );
@@ -1788,7 +1788,9 @@ impl Remote {
                     sample.bitrate_kbps,
                     sample.reconnects,
                     sample.uptime_ms,
-                    sample.failure.as_deref().unwrap_or("none"),
+                    sample
+                        .failure
+                        .map_or_else(|| "none".to_owned(), |failure| failure.to_string()),
                 );
             }
         }

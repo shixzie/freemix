@@ -29,6 +29,8 @@ use crate::{
     RecordingAction, StreamAction, StudioIntent, StudioUiState, recording_action, stream_action,
     stream_command_pending,
 };
+use fm_protocol::{RecorderRealizedState, RecorderStatusSample};
+use fm_ui_model::i18n::FailedOutput;
 
 /// Height of one output row; rows never change height with their state.
 pub(crate) const OUTPUT_ROW_HEIGHT: f32 = 38.0;
@@ -74,13 +76,38 @@ pub(crate) struct OutputRow {
 }
 
 /// Presents one recorder slot from its replicated desired flag.
-pub(crate) fn recorder_row(l: Locale, has_view: bool, desired: bool, pending: bool) -> OutputRow {
+pub(crate) fn recorder_row(
+    l: Locale,
+    has_view: bool,
+    desired: bool,
+    pending: bool,
+    realized: Option<&RecorderStatusSample>,
+) -> OutputRow {
     if !has_view {
         return OutputRow {
             status: Msg::StatusNoState.en(),
             tone: Tone::Idle,
             detail: l.text(Msg::RowNotSynchronized).to_owned(),
         };
+    }
+    // What the daemon reports realized (Protocol 2.66) explains a slot that
+    // cannot record or failed; otherwise the row follows the desired flag.
+    match realized.map(|sample| (sample.realized, sample.failure)) {
+        Some((RecorderRealizedState::Unavailable, _)) if !desired && !pending => {
+            return OutputRow {
+                status: Msg::RecorderNotConfigured.en(),
+                tone: Tone::Idle,
+                detail: l.text(Msg::RowRecorderNotConfigured).to_owned(),
+            };
+        }
+        Some((RecorderRealizedState::Failed, Some(failure))) if !pending => {
+            return OutputRow {
+                status: Msg::ConnFailed.en(),
+                tone: Tone::Fault,
+                detail: l.output_failure(&failure, FailedOutput::Recorder),
+            };
+        }
+        _ => {}
     }
     let status = crate::panels::recording_status_label(desired);
     if pending {
@@ -152,7 +179,11 @@ pub(crate) fn stream_row(
                 );
             }
             if let Some(failure) = &sample.failure {
-                let _ = write!(text, " · {failure}");
+                let _ = write!(
+                    text,
+                    " · {}",
+                    l.output_failure(failure, FailedOutput::Stream)
+                );
             }
             text
         }
@@ -432,7 +463,13 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
         } else {
             RecordingAction::Start(recorder)
         };
-        let row = recorder_row(l, has_view, desired, pending);
+        let row = recorder_row(
+            l,
+            has_view,
+            desired,
+            pending,
+            state.recorder_realized[index].as_ref(),
+        );
         let allowed = recording_action(state, requested);
         let slot_arg = [("slot", Arg::Plain(slot as u64))];
         let action = l.format(
@@ -462,6 +499,8 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
                 action: &action,
                 reason: if has_view && pending {
                     Msg::ReasonRecordingPending.en()
+                } else if requested.starts() && crate::recorder_unconfigured(state, index) {
+                    Msg::ReasonRecorderNotConfigured.en()
                 } else {
                     unavailable_reason(state, Capability::Transition)
                 },
@@ -723,25 +762,60 @@ mod tests {
 
     #[test]
     fn recorder_rows_never_claim_state_without_a_view() {
-        let unknown = recorder_row(Locale::ENGLISH, false, true, false);
+        let unknown = recorder_row(Locale::ENGLISH, false, true, false, None);
         assert_eq!(unknown.status, "NO STATE");
         assert_eq!(unknown.tone, Tone::Idle);
         assert_eq!(
-            recorder_row(Locale::ENGLISH, true, false, false).status,
+            recorder_row(Locale::ENGLISH, true, false, false, None).status,
             "STOPPED"
         );
         assert_eq!(
-            recorder_row(Locale::ENGLISH, true, false, false).tone,
+            recorder_row(Locale::ENGLISH, true, false, false, None).tone,
             Tone::Idle
         );
-        let recording = recorder_row(Locale::ENGLISH, true, true, false);
+        let recording = recorder_row(Locale::ENGLISH, true, true, false, None);
         assert_eq!(
             (recording.status, recording.tone),
             ("RECORDING", Tone::OnAir)
         );
-        let pending = recorder_row(Locale::ENGLISH, true, true, true);
+        let pending = recorder_row(Locale::ENGLISH, true, true, true, None);
         assert_eq!((pending.status, pending.tone), ("RECORDING", Tone::Pending));
         assert!(pending.detail.starts_with("Command pending"));
+    }
+
+    #[test]
+    fn recorder_rows_show_an_unconfigured_slot_and_a_failure_reason() {
+        let sample = |realized, failure| RecorderStatusSample {
+            recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
+            realized,
+            elapsed_ms: 0,
+            failure,
+        };
+        let unconfigured = sample(RecorderRealizedState::Unavailable, None);
+        let row = recorder_row(Locale::ENGLISH, true, false, false, Some(&unconfigured));
+        assert_eq!((row.status, row.tone), ("NOT CONFIGURED", Tone::Idle));
+        assert_eq!(row.detail, "No recording folder is set for this slot");
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let row = recorder_row(spanish, true, false, false, Some(&unconfigured));
+        assert_eq!(spanish.tr(row.status), "SIN CONFIGURAR");
+
+        let failed = sample(
+            RecorderRealizedState::Failed,
+            Some(fm_protocol::OutputFailureCode::DiskFull.into()),
+        );
+        let row = recorder_row(Locale::ENGLISH, true, true, false, Some(&failed));
+        assert_eq!((row.status, row.tone), ("FAILED", Tone::Fault));
+        assert_eq!(row.detail, "Disk full");
+        let row = recorder_row(spanish, true, true, false, Some(&failed));
+        assert_eq!(row.detail, "Disco lleno");
+
+        // A recording slot keeps the desired-state row.
+        let recording = RecorderStatusSample {
+            elapsed_ms: 5_000,
+            ..sample(RecorderRealizedState::Recording, None)
+        };
+        let row = recorder_row(Locale::ENGLISH, true, true, false, Some(&recording));
+        assert_eq!((row.status, row.tone), ("RECORDING", Tone::OnAir));
     }
 
     #[test]
@@ -825,7 +899,10 @@ mod tests {
             target_duration_ms: 2_000,
             free_bytes: 1,
         });
-        local.failure = Some("io".to_owned());
+        local.failure = Some(
+            fm_protocol::OutputFailure::new(fm_protocol::OutputFailureCode::ConnectionLost)
+                .with_exit_status(Some(1)),
+        );
         let row = stream_row(
             Locale::ENGLISH,
             &stream(true, StreamRealizedState::Live),
@@ -833,7 +910,10 @@ mod tests {
             false,
         );
         assert_eq!((row.status, row.tone), ("CONGESTED", Tone::Pending));
-        assert_eq!(row.detail, "1.5 MB sent · 2 dropped · 6 seg · io");
+        assert_eq!(
+            row.detail,
+            "1.5 MB sent · 2 dropped · 6 seg · Connection to the server was lost (FFmpeg exited with code 1)"
+        );
     }
 
     #[test]

@@ -2907,8 +2907,9 @@ pub struct StreamLocalStatus {
 
 /// One lossy realized stream status sample for one configured target.
 ///
-/// Counters are cumulative since the target's last start. `failure` carries a
-/// sanitized short code and never URL text or key material.
+/// Counters are cumulative since the target's last start. `failure` is a
+/// machine-readable [`crate::OutputFailure`] (Protocol 2.67), never free text,
+/// URL text, or key material.
 ///
 /// `local` carries the latest health of this target's local HLS output when it
 /// has one. Wire encoding: a sample without local health ends at the `failure`
@@ -2932,7 +2933,7 @@ pub struct StreamStatusSample {
     /// Measured outgoing bitrate in kilobits per second over the last
     /// sampling window, `0` when nothing is flowing (Protocol 2.52).
     pub bitrate_kbps: u32,
-    pub failure: Option<String>,
+    pub failure: Option<crate::OutputFailure>,
     pub local: Option<StreamLocalStatus>,
 }
 

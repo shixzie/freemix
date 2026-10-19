@@ -3135,11 +3135,7 @@ fn decode_stream_status_sample(
     let failure = if fields.failure.is_empty() {
         None
     } else {
-        let failure = unescape(fields.failure)?;
-        if failure.len() > super::MAX_STREAM_DETAIL_BYTES {
-            return Err(invalid());
-        }
-        Some(failure)
+        Some(crate::OutputFailure::parse(fields.failure).ok_or_else(invalid)?)
     };
     let local = match fields.local {
         Some((segments, target_duration_ms, free_bytes)) => Some(parse_stream_local_status(
@@ -3161,7 +3157,6 @@ fn decode_stream_status_sample(
         uptime_ms: fields.uptime_ms.parse().map_err(|_| invalid())?,
         bitrate_kbps: fields.bitrate_kbps.parse().map_err(|_| invalid())?,
         failure,
-
         local,
     })
 }

@@ -26,8 +26,9 @@ pub use hls::{
 pub use impairment::{ImpairmentDecision, ImpairmentError, ImpairmentModel, ImpairmentTelemetry};
 pub use output::{
     CongestionObservation, ConnectionObservation, ConnectionTarget, DestinationEnqueue,
-    DestinationState, EnqueueStatus, FailureRecord, FailureStage, NetworkTelemetry, OutputError,
-    OutputPacket, OutputSet, PollEvent, SendObservation, SinkError, SinkWrite, TransportSink,
+    DestinationState, EnqueueStatus, FailureCause, FailureRecord, FailureStage, NetworkTelemetry,
+    OutputError, OutputPacket, OutputSet, PollEvent, SendObservation, SinkError, SinkWrite,
+    TransportSink,
 };
 pub use rendition::{
     AbrLadder, AbrVariant, AudioRendition, ColorDescription, DestinationRenditions, FrameRate,

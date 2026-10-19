@@ -14554,7 +14554,12 @@ fn remote_streams_lists_destinations_with_their_latest_status_sample() {
                     muxed_bytes: 1 << 20,
                     enqueued_pairs: 900,
                     dropped_pairs: 3,
-                    failure: Some("ingest dropped the connection".into()),
+                    failure: Some(
+                        fm_protocol::OutputFailure::new(
+                            fm_protocol::OutputFailureCode::ConnectionLost,
+                        )
+                        .with_exit_status(Some(1)),
+                    ),
                     local: None,
                     bitrate_kbps: 5_800,
                     reconnects: 2,
@@ -14575,7 +14580,7 @@ fn remote_streams_lists_destinations_with_their_latest_status_sample() {
             "url=\"rtmps://ingest.example.test:443/live\", backup_url=none, output=1, ",
             "startup=stopped, video_bitrate_kbps=6000, reconnect=500:10000:none, key=yes, ",
             "ladder_rungs=0, desired=true, state=live, connected=true, kbps=5800, dropped=3, ",
-            "reconnects=2, uptime_ms=12000, last_error=ingest dropped the connection)\n",
+            "reconnects=2, uptime_ms=12000, last_error=connection_lost.1)\n",
             "StreamTarget(id=41, name=\"Local HLS\", protocol=hls, ",
             "url=\"hls:///var/lib/freemix/hls\", backup_url=none, output=1, ",
             "startup=reconcile, video_bitrate_kbps=2500, reconnect=250:2000:40, key=no, ",

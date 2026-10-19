@@ -67,8 +67,8 @@ use fm_persistence::{
 #[cfg(feature = "native-media")]
 use fm_protocol::{
     AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, InputAudioMeters, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, StreamLocalStatus,
-    StreamRealizedState, StreamStatusSample, WireInputId,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, OutputFailure, OutputFailureCode,
+    StreamLocalStatus, StreamRealizedState, StreamStatusSample, WireInputId,
 };
 use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, CommandMessage,
@@ -123,6 +123,8 @@ mod native_streams;
 mod native_system_audio;
 #[cfg(feature = "native-media")]
 mod native_titles;
+#[cfg(feature = "native-media")]
+mod output_failure;
 #[cfg(feature = "native-media")]
 mod pacing_trace;
 // The inventory host and status records are wired into native daemons only;
@@ -2123,6 +2125,8 @@ enum OpenPoll {
 #[derive(Default)]
 struct RecorderCapturePolicy {
     first_failure: Option<String>,
+    /// What peers see of `first_failure` (Protocol 2.67).
+    code: Option<OutputFailure>,
     app_capture_failure: bool,
 }
 
@@ -2628,11 +2632,22 @@ impl NativeProgramRecorder {
     }
 
     fn fail(&mut self, failure: String, app_capture_failure: bool) {
+        if self.capture.first_failure.is_some() {
+            return;
+        }
+        // `FFmpeg`'s redacted stderr tail names the storage cause (a full
+        // disk, a refused folder) the failure variant alone does not.
+        let stderr = self
+            .recorder()
+            .map(|recorder| recorder.telemetry().stderr_tail)
+            .unwrap_or_default();
         if let Some((failure, app_capture_failure)) =
             self.capture.fail(failure, app_capture_failure)
         {
             let notice = recorder_failure_notice(self.slot, failure, app_capture_failure);
+            let code = output_failure::recorder_failure(failure, &stderr);
             eprintln!("{notice}");
+            self.capture.code = Some(code);
             self.cancel_sink();
         }
     }
@@ -3257,7 +3272,10 @@ struct NativeProgramStream {
     /// dedicated worker so the daemon loop never waits on them.
     sink: stream_transport::BackgroundTransport<FfmpegRtmpSink>,
     ledger: StreamPairLedger,
+    /// The latched failure notice for the operator's log, and what peers see
+    /// of it (Protocol 2.67); both are set and cleared together.
     first_failure: Option<String>,
+    first_failure_code: Option<OutputFailure>,
     /// Set when a frame pair was refused with capacity backpressure since the
     /// last status sample; consumed (and cleared) by the sampler.
     enqueue_backpressure: bool,
@@ -4050,6 +4068,7 @@ impl NativeProgramStream {
                 ..StreamPairLedger::default()
             },
             first_failure: None,
+            first_failure_code: None,
             enqueue_backpressure: false,
             started: false,
             meter: StreamLinkMeter::default(),
@@ -4091,6 +4110,7 @@ impl NativeProgramStream {
     fn stop_requested(&mut self, output_set: &mut OutputSet) {
         self.stop_live(output_set);
         self.first_failure = None;
+        self.first_failure_code = None;
     }
 
     /// Whether any transport child this target started was not reaped within
@@ -4139,27 +4159,42 @@ impl NativeProgramStream {
         }
         match output_set.poll(self.destination_id, now_ms, &mut self.sink) {
             Ok(PollEvent::Failed) => {
-                let failure = output_set
+                match output_set
                     .telemetry(self.destination_id)
                     .and_then(|telemetry| telemetry.latest_failure())
-                    .map_or_else(
-                        || "transport:budget_exhausted".to_owned(),
-                        |failure| format!("transport:{:?}:{}", failure.stage, failure.message),
-                    );
-                self.fail(&failure, output_set);
+                    .map(|failure| {
+                        (
+                            format!("transport:{:?}:{}", failure.stage, failure.message),
+                            output_failure::stream_failure(failure),
+                        )
+                    }) {
+                    Some((failure, code)) => self.fail_with(&failure, code, output_set),
+                    None => self.fail("transport:budget_exhausted", output_set),
+                }
             }
             Ok(_) => {}
             Err(error) => self.fail(&format!("transport:{error}"), output_set),
         }
     }
 
-    /// Latches the first failure per target and stops its transport under the
-    /// bounded stop deadline.
+    /// Latches a failure the daemon raised itself (see
+    /// [`output_failure::latched_stream_failure`]).
     fn fail(&mut self, failure: &str, output_set: &mut OutputSet) {
+        self.fail_with(
+            failure,
+            output_failure::latched_stream_failure(failure),
+            output_set,
+        );
+    }
+
+    /// Latches the first failure per target with what peers see of it, and
+    /// stops its transport under the bounded stop deadline.
+    fn fail_with(&mut self, failure: &str, code: OutputFailure, output_set: &mut OutputSet) {
         if self.first_failure.is_some() {
             return;
         }
         self.first_failure = Some(failure.to_owned());
+        self.first_failure_code = Some(code);
         eprintln!(
             "FREEMIXD_STREAM_FAILURE\tv=1\ttarget={}\tdestination={}\tfailure={}",
             self.target,
@@ -4484,12 +4519,13 @@ fn interleaved_audio_bytes(block: &AudioBlock) -> Vec<u8> {
 /// Plain sampling inputs for one configured stream target, extracted so the
 /// status mapping stays testable without a GPU runtime or an `FFmpeg` child.
 #[cfg(feature = "native-media")]
-struct StreamRuntimeSnapshot<'a> {
+struct StreamRuntimeSnapshot {
     target: SwitcherStreamTargetId,
     ledger: StreamPairLedger,
     /// Capacity backpressure observed since the previous sample.
     congested: bool,
-    first_failure: Option<&'a str>,
+    /// What peers see of the latched failure, if any.
+    first_failure: Option<OutputFailure>,
     /// Whether this target was ever asked to run.
     started: bool,
     /// The shared output set's view of this target.
@@ -4665,12 +4701,12 @@ fn stream_status_message(
 }
 
 #[cfg(feature = "native-media")]
-fn native_stream_snapshots<'a>(
-    output_set: &'a OutputSet,
-    streams: &'a mut [NativeProgramStream],
+fn native_stream_snapshots(
+    output_set: &OutputSet,
+    streams: &mut [NativeProgramStream],
     local_output_status: &[Option<StreamLocalStatus>; fm_switcher::MAX_STREAM_COUNT],
     now_ms: u64,
-) -> Vec<StreamRuntimeSnapshot<'a>> {
+) -> Vec<StreamRuntimeSnapshot> {
     streams
         .iter_mut()
         .map(|stream| {
@@ -4690,7 +4726,11 @@ fn native_stream_snapshots<'a>(
                 congested: std::mem::take(&mut stream.enqueue_backpressure),
                 target: stream.target,
                 ledger: stream.ledger,
-                first_failure: stream.first_failure.as_deref(),
+                first_failure: stream.first_failure.as_ref().map(|_| {
+                    stream
+                        .first_failure_code
+                        .unwrap_or(OutputFailure::new(OutputFailureCode::InternalError))
+                }),
                 started: stream.started,
                 state,
                 network: output_set.telemetry(stream.destination_id).cloned(),
@@ -4713,8 +4753,8 @@ fn native_stream_snapshots<'a>(
 /// Output is bounded to [`MAX_STREAM_SAMPLES`] and sorted into the strictly
 /// ascending target order the wire contract requires.
 #[cfg(feature = "native-media")]
-fn stream_status_samples<'a>(
-    runtimes: impl IntoIterator<Item = StreamRuntimeSnapshot<'a>>,
+fn stream_status_samples(
+    runtimes: impl IntoIterator<Item = StreamRuntimeSnapshot>,
 ) -> Vec<StreamStatusSample> {
     let mut samples: Vec<_> = runtimes
         .into_iter()
@@ -4725,22 +4765,6 @@ fn stream_status_samples<'a>(
     samples
 }
 
-/// Shortens a sanitized failure to the wire's detail bound on a character
-/// boundary: a latched transport failure reads
-/// `transport:<stage>:<message>` and can exceed it, and one oversized sample
-/// would otherwise make the whole lossy status record unencodable.
-#[cfg(feature = "native-media")]
-fn clamp_stream_failure(mut failure: String) -> String {
-    if failure.len() > fm_protocol::MAX_STREAM_DETAIL_BYTES {
-        let mut end = fm_protocol::MAX_STREAM_DETAIL_BYTES;
-        while !failure.is_char_boundary(end) {
-            end -= 1;
-        }
-        failure.truncate(end);
-    }
-    failure
-}
-
 /// Maps one target's runtime onto its protocol sample.
 ///
 /// Counters come from the per-target feed ledger; `connected` and muxed bytes
@@ -4749,7 +4773,7 @@ fn clamp_stream_failure(mut failure: String) -> String {
 /// `emit_final_record`. `local` is the cached local HLS output health the
 /// snapshot already filtered to HLS targets.
 #[cfg(feature = "native-media")]
-fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStatusSample> {
+fn stream_status_sample(runtime: StreamRuntimeSnapshot) -> Option<StreamStatusSample> {
     let StreamRuntimeSnapshot {
         target,
         ledger,
@@ -4767,14 +4791,11 @@ fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStat
         return None;
     }
     let network = network.as_ref();
-    let failure = first_failure
-        .map(str::to_owned)
-        .or_else(|| {
-            network
-                .and_then(|telemetry| telemetry.latest_failure())
-                .map(|failure| format!("{:?}:{}", failure.stage, failure.message))
-        })
-        .map(clamp_stream_failure);
+    let failure = first_failure.or_else(|| {
+        network
+            .and_then(|telemetry| telemetry.latest_failure())
+            .map(output_failure::stream_failure)
+    });
     Some(StreamStatusSample {
         target: WireStreamTargetId::new(target.get()),
         realized: realized_stream_state(first_failure.is_some(), congested, state),
@@ -6017,13 +6038,18 @@ impl NativeDaemon {
             self.record_program.is_some(),
             self.record_program_2.is_some(),
         ];
-        let views: [recorder_status::SlotView<'_>; RECORDER_SLOTS] =
+        let views: [recorder_status::SlotView; RECORDER_SLOTS] =
             std::array::from_fn(|slot| match &self.recorders[slot] {
                 ProgramRecording::Off if configured[slot] => recorder_status::SlotView::Off,
                 ProgramRecording::Off => recorder_status::SlotView::Unconfigured,
                 ProgramRecording::Running(recorder) => {
-                    if let Some(failure) = recorder.capture.first_failure.as_deref() {
-                        recorder_status::SlotView::Failed(failure)
+                    if recorder.capture.first_failure.is_some() {
+                        recorder_status::SlotView::Failed(
+                            recorder
+                                .capture
+                                .code
+                                .unwrap_or(OutputFailure::new(OutputFailureCode::Unknown)),
+                        )
                     } else if recorder.is_settling() {
                         recorder_status::SlotView::Settling
                     } else {
@@ -6340,7 +6366,8 @@ impl NativeDaemon {
             };
             if let OpenPoll::Failed(failure) = recorder.poll_open() {
                 self.recorders[slot] = ProgramRecording::Off;
-                self.recorder_status.failed(slot, &failure);
+                self.recorder_status
+                    .failed(slot, output_failure::recorder_failure(&failure, ""));
                 eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
                 continue;
             }
@@ -6366,8 +6393,10 @@ impl NativeDaemon {
             // timeout helper; cancel and report the partial segment.
             recorder.priming = None;
             recorder.request_cancel();
-            self.recorder_status
-                .failed(slot, &format!("startup:{failure}"));
+            let code = recorder.capture.code.unwrap_or_else(|| {
+                output_failure::recorder_failure(&format!("startup:{failure}"), "")
+            });
+            self.recorder_status.failed(slot, code);
             self.retire_running_recording(
                 slot,
                 Some(recorder_failure_notice(
@@ -6401,7 +6430,8 @@ impl NativeDaemon {
             Ok(None) => return,
             Err(error) => {
                 let failure = format!("start:{error}");
-                self.recorder_status.failed(slot, &failure);
+                self.recorder_status
+                    .failed(slot, output_failure::recorder_failure(&failure, ""));
                 eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
                 return;
             }
@@ -6424,7 +6454,8 @@ impl NativeDaemon {
             Err(error) => {
                 self.recorders[slot] = ProgramRecording::Off;
                 let failure = format!("start:{error}");
-                self.recorder_status.failed(slot, &failure);
+                self.recorder_status
+                    .failed(slot, output_failure::recorder_failure(&failure, ""));
                 eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
             }
         }
@@ -6568,7 +6599,8 @@ impl NativeDaemon {
             Err(error) => {
                 self.recorders[slot] = ProgramRecording::Off;
                 let failure = format!("rotate:{error}");
-                self.recorder_status.failed(slot, &failure);
+                self.recorder_status
+                    .failed(slot, output_failure::recorder_failure(&failure, ""));
                 eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
             }
         }
@@ -24432,11 +24464,11 @@ mod tests {
         target: u128,
         ledger: StreamPairLedger,
         congested: bool,
-        first_failure: Option<&str>,
+        first_failure: Option<OutputFailure>,
         started: bool,
         state: Option<DestinationState>,
         network: Option<NetworkTelemetry>,
-    ) -> StreamRuntimeSnapshot<'_> {
+    ) -> StreamRuntimeSnapshot {
         StreamRuntimeSnapshot {
             target: SwitcherStreamTargetId::from_non_zero(
                 NonZeroU128::new(target).expect("test target is nonzero"),
@@ -24454,10 +24486,7 @@ mod tests {
     }
 
     #[cfg(feature = "native-media")]
-    fn local_stream_runtime(
-        target: u128,
-        local: StreamLocalStatus,
-    ) -> StreamRuntimeSnapshot<'static> {
+    fn local_stream_runtime(target: u128, local: StreamLocalStatus) -> StreamRuntimeSnapshot {
         StreamRuntimeSnapshot {
             target: SwitcherStreamTargetId::from_non_zero(
                 NonZeroU128::new(target).expect("test target is nonzero"),
@@ -24477,7 +24506,6 @@ mod tests {
     #[cfg(feature = "native-media")]
     #[test]
     fn stream_status_maps_each_reachable_output_set_state() {
-        let no_failure: Option<String> = None;
         let sample = |congested, state, network| {
             stream_status_sample(stream_runtime(
                 7,
@@ -24487,7 +24515,7 @@ mod tests {
                     ..StreamPairLedger::default()
                 },
                 congested,
-                no_failure.as_deref(),
+                None,
                 true,
                 state,
                 network,
@@ -24554,9 +24582,9 @@ mod tests {
             "a recorded transient failure does not fail the target"
         );
         assert_eq!(
-            waiting_with_failure.failure.as_deref(),
-            Some("Write:muxed media clock stalled"),
-            "transport failures are sanitized stage:message codes"
+            waiting_with_failure.failure,
+            Some(OutputFailure::new(OutputFailureCode::StreamStalled)),
+            "transport failures are machine-readable codes"
         );
         let stopped = sample(false, Some(DestinationState::Stopped), None);
         assert_eq!(stopped.realized, StreamRealizedState::Stopped);
@@ -24565,7 +24593,7 @@ mod tests {
     #[cfg(feature = "native-media")]
     #[test]
     fn latched_failure_is_sticky_over_live_state_and_survives_a_gone_slot() {
-        let latched = Some("enqueue:FormatMismatch".to_owned());
+        let latched = Some(OutputFailure::new(OutputFailureCode::InternalError));
         // The route still streams, but the feed already latched its failure.
         let sample = stream_status_sample(stream_runtime(
             9,
@@ -24574,14 +24602,14 @@ mod tests {
                 ..StreamPairLedger::default()
             },
             false,
-            latched.as_deref(),
+            latched,
             true,
             Some(DestinationState::Live),
             None,
         ))
         .expect("latched runtimes stay on the wire");
         assert_eq!(sample.realized, StreamRealizedState::Failed);
-        assert_eq!(sample.failure.as_deref(), Some("enqueue:FormatMismatch"));
+        assert_eq!(sample.failure, latched);
 
         // A start-time failure leaves nothing running; counters still report.
         let start_failed = stream_status_sample(stream_runtime(
@@ -24591,7 +24619,7 @@ mod tests {
                 ..StreamPairLedger::default()
             },
             false,
-            Some("start:NotFound"),
+            Some(OutputFailure::new(OutputFailureCode::FfmpegUnavailable)),
             true,
             Some(DestinationState::Stopped),
             None,
@@ -24601,7 +24629,10 @@ mod tests {
         assert!(!start_failed.connected);
         assert_eq!(start_failed.muxed_bytes, 0);
         assert_eq!(start_failed.dropped_pairs, 1);
-        assert_eq!(start_failed.failure.as_deref(), Some("start:NotFound"));
+        assert_eq!(
+            start_failed.failure,
+            Some(OutputFailure::new(OutputFailureCode::FfmpegUnavailable))
+        );
     }
 
     #[cfg(feature = "native-media")]
@@ -24621,7 +24652,8 @@ mod tests {
 
         // Mixed set: unsorted input comes out in strictly ascending wire
         // order and inactive targets drop out of the middle.
-        let latched = Some("backend:Some(ChildExited { status: Some(1) })".to_owned());
+        let latched =
+            Some(OutputFailure::new(OutputFailureCode::FfmpegExited).with_exit_status(Some(1)));
         let mixed = stream_status_samples([
             stream_runtime(
                 90,
@@ -24648,7 +24680,7 @@ mod tests {
                 20,
                 StreamPairLedger::default(),
                 false,
-                latched.as_deref(),
+                latched,
                 true,
                 Some(DestinationState::Stopped),
                 None,
@@ -24676,7 +24708,7 @@ mod tests {
                     index + 1,
                     StreamPairLedger::default(),
                     false,
-                    latched.as_deref(),
+                    latched,
                     true,
                     Some(DestinationState::Stopped),
                     None,
@@ -25090,7 +25122,7 @@ mod tests {
     /// Drives one real output set into a recorded transient write failure.
     #[cfg(feature = "native-media")]
     fn driven_failing_output_set() -> OutputSet {
-        use fm_io_network::{FailureStage, SinkError};
+        use fm_io_network::{FailureCause, FailureStage, SinkError};
         let mut set = OutputSet::new();
         set.add_destination(mock_destination(1)).unwrap();
         let id = DestinationId::new(1).unwrap();
@@ -25100,7 +25132,8 @@ mod tests {
                 None,
                 "muxed media clock stalled",
                 true,
-            ))]),
+            )
+            .with_cause(FailureCause::Stalled))]),
             ..MockTransportSink::default()
         };
         set.start(id).unwrap();
@@ -25220,6 +25253,7 @@ mod tests {
             ),
             ledger: StreamPairLedger::default(),
             first_failure: None,
+            first_failure_code: None,
             enqueue_backpressure: false,
             started: false,
             meter: StreamLinkMeter::default(),
@@ -26152,27 +26186,6 @@ mod tests {
                 PathBuf::from("/var/lib/freemix/live"),
                 PathBuf::from("/var/lib/freemix/live-alt"),
             ]
-        );
-    }
-
-    /// A latched transport failure longer than the wire's detail bound is
-    /// shortened on a character boundary instead of making the status record
-    /// unencodable (OR-006).
-    #[cfg(feature = "native-media")]
-    #[test]
-    fn stream_failures_are_clamped_to_the_wire_detail_bound() {
-        let long = "transport:Connect:ffmpeg exited: ChildExited { status: Some(145) }";
-        assert!(long.len() > fm_protocol::MAX_STREAM_DETAIL_BYTES);
-        let clamped = clamp_stream_failure(long.to_owned());
-        assert_eq!(clamped.len(), fm_protocol::MAX_STREAM_DETAIL_BYTES);
-        assert!(long.starts_with(&clamped));
-        let wide = "é".repeat(40);
-        let clamped = clamp_stream_failure(wide.clone());
-        assert!(clamped.len() <= fm_protocol::MAX_STREAM_DETAIL_BYTES);
-        assert!(wide.starts_with(&clamped));
-        assert_eq!(
-            clamp_stream_failure("connect:refused".into()),
-            "connect:refused"
         );
     }
 

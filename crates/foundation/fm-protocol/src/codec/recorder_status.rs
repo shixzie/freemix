@@ -1,14 +1,14 @@
 //! `recorder_status` samples (Protocol 2.66): `recorders` is one
 //! `<slot>:<state>:<elapsed_ms>:<failure>` entry per recorder slot in strict
-//! slot order, `;`-separated, with `failure` escaped like a `stream_status`
-//! failure and empty unless `state` is `failed`.
+//! slot order, `;`-separated, with `failure` an [`crate::OutputFailure`]
+//! token (Protocol 2.67), empty unless `state` is `failed`.
 
 use crate::{
-    CodecError, MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusSample,
-    WireRecorderSlot,
+    CodecError, MAX_RECORDER_STATUS_SAMPLES, OutputFailure, RecorderRealizedState,
+    RecorderStatusSample, WireRecorderSlot,
 };
 
-use super::value::{escape_stream_failure, parse_canonical_u64, unescape};
+use super::value::parse_canonical_u64;
 
 fn invalid(value: impl Into<String>) -> CodecError {
     CodecError::InvalidField {
@@ -38,10 +38,9 @@ pub(super) fn encode_samples(samples: &[RecorderStatusSample]) -> Result<String,
                 sample.recorder,
                 sample.realized.token(),
                 sample.elapsed_ms,
-                match &sample.failure {
-                    Some(failure) => escape_stream_failure(failure)?,
-                    None => String::new(),
-                }
+                sample
+                    .failure
+                    .map_or_else(String::new, |failure| failure.to_string())
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -81,7 +80,7 @@ pub(super) fn decode_samples(value: &str) -> Result<Vec<RecorderStatusSample>, C
                 failure: if failure.is_empty() {
                     None
                 } else {
-                    Some(unescape(failure)?)
+                    Some(OutputFailure::parse(failure).ok_or_else(|| invalid(entry))?)
                 },
             };
             if sample.is_valid() {

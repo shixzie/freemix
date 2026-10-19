@@ -3245,7 +3245,7 @@ mod tests {
                     recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
                     realized: fm_protocol::RecorderRealizedState::Failed,
                     elapsed_ms: 0,
-                    failure: Some("start".into()),
+                    failure: Some(fm_protocol::OutputFailureCode::FolderNotWritable.into()),
                 },
             ],
         }

@@ -48,9 +48,8 @@ use super::title::{
 };
 use super::transition::{encode_favorite, encode_favorites, validate_favorite_slot};
 use super::value::{
-    client_type, durable_events, escape_stream_failure, field_issues, input_ids, input_statuses,
-    output_statuses, recording_statuses, role, runtime_domains, stream_realized_state,
-    stream_statuses, string_list,
+    client_type, durable_events, field_issues, input_ids, input_statuses, output_statuses,
+    recording_statuses, role, runtime_domains, stream_realized_state, stream_statuses, string_list,
 };
 use super::{
     CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_LOCAL_SEGMENTS,
@@ -2780,14 +2779,6 @@ fn encode_stream_status(
                 });
             }
             previous = Some(sample.target.get());
-            if let Some(failure) = &sample.failure
-                && (failure.is_empty() || failure.len() > super::MAX_STREAM_DETAIL_BYTES)
-            {
-                return Err(CodecError::InvalidField {
-                    field: "samples",
-                    value: sample.target.to_string(),
-                });
-            }
             let local = match sample.local {
                 Some(local) => {
                     if local.segments > MAX_STREAM_LOCAL_SEGMENTS
@@ -2819,10 +2810,9 @@ fn encode_stream_status(
                 sample.reconnects,
                 sample.uptime_ms,
                 sample.bitrate_kbps,
-                match &sample.failure {
-                    Some(failure) => escape_stream_failure(failure)?,
-                    None => String::new(),
-                },
+                sample
+                    .failure
+                    .map_or_else(String::new, |failure| failure.to_string()),
                 local,
             ))
         })

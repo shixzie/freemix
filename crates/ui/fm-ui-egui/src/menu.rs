@@ -1255,10 +1255,18 @@ impl StudioShell {
                 reason
             } else if pending {
                 Msg::ReasonRecordingPending.en()
+            } else if !desired && crate::recorder_unconfigured(state, index) {
+                Msg::ReasonRecorderNotConfigured.en()
             } else {
                 Msg::ReasonStateDisallows.en()
             };
-            let row = recorder_row(l, state.view.is_some(), desired, pending);
+            let row = recorder_row(
+                l,
+                state.view.is_some(),
+                desired,
+                pending,
+                state.recorder_realized.get(index).and_then(Option::as_ref),
+            );
             let mut hover = l.format(
                 Msg::RecorderHover,
                 &[("label", Arg::Str(&label)), ("slot", Arg::from(index + 1))],

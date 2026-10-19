@@ -2707,6 +2707,95 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::StreamDiagNoSample,
         t("Aún no hay muestra de transporte"),
     ),
+    // Output failures (Protocol 2.67) and recorder availability.
+    (
+        Msg::FailConnectFailed,
+        t("No se pudo conectar con el servidor"),
+    ),
+    (
+        Msg::FailConnectionRefused,
+        t("El servidor rechazó la conexión"),
+    ),
+    (
+        Msg::FailConnectTimeout,
+        t("El servidor no respondió a tiempo"),
+    ),
+    (Msg::FailNetworkUnreachable, t("Red inaccesible")),
+    (
+        Msg::FailHostNotFound,
+        t("No se encontró el nombre del servidor"),
+    ),
+    (Msg::FailTlsFailed, t("Falló la conexión segura")),
+    (
+        Msg::FailStreamKeyRejected,
+        t("El servidor rechazó la clave de transmisión"),
+    ),
+    (
+        Msg::FailConnectionLost,
+        t("Se perdió la conexión con el servidor"),
+    ),
+    (Msg::FailStreamStalled, t("La transmisión se atascó")),
+    (
+        Msg::FailProtocolError,
+        t("El destino no acepta esta transmisión"),
+    ),
+    (
+        Msg::FailReconnectExhausted,
+        t("Se abandonó tras varios intentos de reconexión"),
+    ),
+    (
+        Msg::FailFfmpegUnavailable,
+        t("FFmpeg falta o no se puede usar"),
+    ),
+    (Msg::FailFfmpegExited, t("FFmpeg se detuvo inesperadamente")),
+    (Msg::FailDiskFull, t("Disco lleno")),
+    (
+        Msg::FailRecordingFolderNotWritable,
+        t("No se puede escribir en la carpeta de grabación"),
+    ),
+    (
+        Msg::FailOutputFolderNotWritable,
+        t("No se puede escribir en la carpeta de salida"),
+    ),
+    (
+        Msg::FailRecordingFolderMissing,
+        t("No se encuentra la carpeta de grabación"),
+    ),
+    (
+        Msg::FailOutputFolderMissing,
+        t("No se encuentra la carpeta de salida"),
+    ),
+    (Msg::FailWriteError, t("Error de escritura en disco")),
+    (Msg::FailStartupTimeout, t("No arrancó a tiempo")),
+    (
+        Msg::FailFellBehind,
+        t("No pudo seguir el ritmo; se perdieron fotogramas"),
+    ),
+    (
+        Msg::FailCaptureFailed,
+        t("Falló la captura de la imagen de Programa"),
+    ),
+    (
+        Msg::FailInternalError,
+        t("Error interno; vea el registro del daemon"),
+    ),
+    (
+        Msg::FailUnknown,
+        t("Error desconocido; vea el registro del daemon"),
+    ),
+    (
+        Msg::FailWithExitCode,
+        t("{reason} (FFmpeg terminó con código {code})"),
+    ),
+    (Msg::RecorderNotConfigured, t("SIN CONFIGURAR")),
+    (
+        Msg::RowRecorderNotConfigured,
+        t("Esta ranura no tiene carpeta de grabación"),
+    ),
+    (
+        Msg::ReasonRecorderNotConfigured,
+        t("este grabador no tiene carpeta de grabación (inicie freemixd con --record-program)"),
+    ),
     // Input fallback name and catalogue refusals.
     (Msg::InputFallbackName, t("Entrada {input}")),
     (Msg::AddRefused, t("Alta rechazada: {advice}")),

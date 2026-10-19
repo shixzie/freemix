@@ -103,7 +103,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.66";
+  const PROTOCOL = "2.67";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -119,6 +119,24 @@
   // the server accepts 1 ms to 24 hours.
   const ARM_DELAYS_S = [10, 30, 60, 120, 300, 600, 1800, 3600];
   const DEFAULT_ARM_DELAY_S = 60;
+
+  // Machine-readable output failures (Protocol 2.67): `<code>` or
+  // `<code>.<ffmpeg exit status>`, never free text. Wire code -> label key;
+  // the folder codes name a recording folder for a recorder and an output
+  // folder for a stream. Mirrors fm-ui-model's output_failure_msg.
+  const FAILURE_KEY = {
+    connect_failed: "failConnectFailed", connection_refused: "failConnectionRefused",
+    connect_timeout: "failConnectTimeout", network_unreachable: "failNetworkUnreachable",
+    host_not_found: "failHostNotFound", tls_failed: "failTlsFailed",
+    stream_key_rejected: "failStreamKeyRejected", connection_lost: "failConnectionLost",
+    stream_stalled: "failStreamStalled", protocol_error: "failProtocolError",
+    reconnect_exhausted: "failReconnectExhausted", ffmpeg_unavailable: "failFfmpegUnavailable",
+    ffmpeg_exited: "failFfmpegExited", disk_full: "failDiskFull",
+    folder_not_writable: ["failRecordingFolderNotWritable", "failOutputFolderNotWritable"],
+    folder_missing: ["failRecordingFolderMissing", "failOutputFolderMissing"],
+    write_error: "failWriteError", startup_timeout: "failStartupTimeout", fell_behind: "failFellBehind",
+    capture_failed: "failCaptureFailed", internal_error: "failInternalError", unknown: "failUnknown",
+  };
 
   // ---- Every user-visible string, one entry per line per language. ----
   // Spanish follows Studio's catalog (fm-ui-model i18n/es.rs): Programa,
@@ -170,6 +188,7 @@
       streamStarting: "{name} STARTING",
       streamReconnecting: "{name} RECONNECTING",
       streamFailed: "{name} FAILED ({reason})",
+      streamUnavailable: "{name} UNAVAILABLE",
       streamUnnamed: "Stream {id}",
       lockProject: "Project locked",
       lockInput: "Input locked",
@@ -191,6 +210,31 @@
       shortcutRejected: "Shortcut rejected: {code}",
       goStale: "GO not sent: the show changed; press GO again",
       goStandbyChanged: "GO not sent: the cue on standby changed",
+      failConnectFailed: "Couldn't connect to the server",
+      failConnectionRefused: "Server refused the connection",
+      failConnectTimeout: "Server didn't answer in time",
+      failNetworkUnreachable: "Network unreachable",
+      failHostNotFound: "Server name not found",
+      failTlsFailed: "Secure connection failed",
+      failStreamKeyRejected: "Server refused the stream key",
+      failConnectionLost: "Connection to the server was lost",
+      failStreamStalled: "Stream stalled",
+      failProtocolError: "Destination doesn't accept this stream",
+      failReconnectExhausted: "Gave up after repeated reconnects",
+      failFfmpegUnavailable: "FFmpeg is missing or unusable",
+      failFfmpegExited: "FFmpeg stopped unexpectedly",
+      failDiskFull: "Disk full",
+      failRecordingFolderNotWritable: "Recording folder not writable",
+      failOutputFolderNotWritable: "Output folder not writable",
+      failRecordingFolderMissing: "Recording folder not found",
+      failOutputFolderMissing: "Output folder not found",
+      failWriteError: "Disk write error",
+      failStartupTimeout: "Didn't start in time",
+      failFellBehind: "Couldn't keep up; frames were dropped",
+      failCaptureFailed: "Program picture capture failed",
+      failInternalError: "Internal error; see the daemon log",
+      failUnknown: "Unknown error; see the daemon log",
+      failWithExitCode: "{reason} (FFmpeg exited with code {code})",
     },
     es: {
       title: "Tally de FreeMix",
@@ -238,6 +282,7 @@
       streamStarting: "{name} INICIANDO",
       streamReconnecting: "{name} RECONECTANDO",
       streamFailed: "{name} FALLIDO ({reason})",
+      streamUnavailable: "{name} NO DISPONIBLE",
       streamUnnamed: "Transmisión {id}",
       lockProject: "Proyecto bloqueado",
       lockInput: "Entrada bloqueada",
@@ -259,6 +304,31 @@
       shortcutRejected: "Atajo rechazado: {code}",
       goStale: "GO no enviado: el show cambió; pulse GO otra vez",
       goStandbyChanged: "GO no enviado: cambió el cue en espera",
+      failConnectFailed: "No se pudo conectar con el servidor",
+      failConnectionRefused: "El servidor rechazó la conexión",
+      failConnectTimeout: "El servidor no respondió a tiempo",
+      failNetworkUnreachable: "Red inaccesible",
+      failHostNotFound: "No se encontró el nombre del servidor",
+      failTlsFailed: "Falló la conexión segura",
+      failStreamKeyRejected: "El servidor rechazó la clave de transmisión",
+      failConnectionLost: "Se perdió la conexión con el servidor",
+      failStreamStalled: "La transmisión se atascó",
+      failProtocolError: "El destino no acepta esta transmisión",
+      failReconnectExhausted: "Se abandonó tras varios intentos de reconexión",
+      failFfmpegUnavailable: "FFmpeg falta o no se puede usar",
+      failFfmpegExited: "FFmpeg se detuvo inesperadamente",
+      failDiskFull: "Disco lleno",
+      failRecordingFolderNotWritable: "No se puede escribir en la carpeta de grabación",
+      failOutputFolderNotWritable: "No se puede escribir en la carpeta de salida",
+      failRecordingFolderMissing: "No se encuentra la carpeta de grabación",
+      failOutputFolderMissing: "No se encuentra la carpeta de salida",
+      failWriteError: "Error de escritura en disco",
+      failStartupTimeout: "No arrancó a tiempo",
+      failFellBehind: "No pudo seguir el ritmo; se perdieron fotogramas",
+      failCaptureFailed: "Falló la captura de la imagen de Programa",
+      failInternalError: "Error interno; vea el registro del daemon",
+      failUnknown: "Error desconocido; vea el registro del daemon",
+      failWithExitCode: "{reason} (FFmpeg terminó con código {code})",
     },
   };
   const LANGUAGE_KEY = "freemix.web.language";
@@ -764,8 +834,7 @@
         telemetry.recorders = required(record, "recorders").split(";").map((item) => {
           const parts = item.split(":");
           if (parts.length !== 4) throw new Error("malformed recorder status");
-          return { slot: parts[0], state: parts[1], elapsedMs: Number(parts[2]),
-            failure: parts[3] ? decodeURIComponent(parts[3]) : "" };
+          return { slot: parts[0], state: parts[1], elapsedMs: Number(parts[2]), failure: parts[3] };
         });
         telemetry.recordersAt = Date.now();
         telemetry.recorderSequence = sequence;
@@ -779,8 +848,7 @@
         telemetry.streams = new Map(required(record, "samples").split(";").map((item) => {
           const parts = item.split(":");
           if (parts.length !== 10 && parts.length !== 13) throw new Error("malformed stream sample");
-          return [parts[0], { realized: parts[1], uptimeMs: Number(parts[7]),
-            failure: parts[9] ? decodeURIComponent(parts[9]) : "" }];
+          return [parts[0], { realized: parts[1], uptimeMs: Number(parts[7]), failure: parts[9] }];
         }));
         telemetry.streamsAt = Date.now();
         telemetry.streamSequence = sequence;
@@ -949,6 +1017,16 @@
     return cues;
   }
 
+  // The short localized reason for one failure token; "" for none.
+  function failureText(token, recorder) {
+    if (!token) return "";
+    const match = /^([a-z_]+)(?:\.(-?\d+))?$/.exec(token);
+    let key = match && Object.hasOwn(FAILURE_KEY, match[1]) ? FAILURE_KEY[match[1]] : "failUnknown";
+    if (Array.isArray(key)) key = key[recorder ? 0 : 1];
+    const reason = tr(key);
+    return match && match[2] !== undefined ? tr("failWithExitCode", { reason, code: match[2] }) : reason;
+  }
+
   // H:MM:SS of a running time.
   function clock(ms) {
     const total = Math.max(0, Math.floor(ms / 1000));
@@ -971,7 +1049,7 @@
         } else if (recorder.state === "starting") {
           chips.push(["starting", tr("recStarting", { slot })]);
         } else if (recorder.state === "failed") {
-          chips.push(["failed", tr("recFailed", { slot, reason: recorder.failure })]);
+          chips.push(["failed", tr("recFailed", { slot, reason: failureText(recorder.failure, true) })]);
         }
       }
     }
@@ -985,8 +1063,10 @@
           chips.push(["starting", tr("streamStarting", { name })]);
         } else if (sample.realized === "waiting_to_reconnect") {
           chips.push(["starting", tr("streamReconnecting", { name })]);
-        } else if (sample.realized === "failed" || sample.realized === "unavailable") {
-          chips.push(["failed", tr("streamFailed", { name, reason: sample.failure || sample.realized })]);
+        } else if (sample.realized === "failed") {
+          chips.push(["failed", tr("streamFailed", { name, reason: failureText(sample.failure || "unknown", false) })]);
+        } else if (sample.realized === "unavailable") {
+          chips.push(["failed", tr("streamUnavailable", { name })]);
         }
       }
     }

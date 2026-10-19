@@ -12,6 +12,7 @@ mod live_lan;
 mod media;
 mod monitor_image;
 mod network_stream;
+mod output_failure;
 mod recorder_status;
 mod scene_layer;
 mod script;
@@ -155,6 +156,7 @@ pub use network_stream::{
     ReconnectPolicy, RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode,
     StreamProtocol, StreamUrl, redact_stream_url, validate_stream_url,
 };
+pub use output_failure::{OutputFailure, OutputFailureCode};
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };

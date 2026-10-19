@@ -1997,7 +1997,10 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
                 muxed_bytes: 0,
                 enqueued_pairs: 0,
                 dropped_pairs: 0,
-                failure: Some("connect:refused".to_owned()),
+                failure: Some(
+                    fm_protocol::OutputFailure::new(fm_protocol::OutputFailureCode::ConnectFailed)
+                        .with_exit_status(Some(145)),
+                ),
                 local: None,
                 bitrate_kbps: 0,
                 reconnects: 5,
@@ -2008,7 +2011,7 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=12\tsamples=7%3Alive%3A1%3A1048576%3A900%3A3%3A2%3A61000%3A4500%3A%3B11%3Awaiting_to_reconnect%3A0%3A0%3A0%3A0%3A5%3A0%3A0%3Aconnect%253Arefused\n"
+        "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=12\tsamples=7%3Alive%3A1%3A1048576%3A900%3A3%3A2%3A61000%3A4500%3A%3B11%3Awaiting_to_reconnect%3A0%3A0%3A0%3A0%3A5%3A0%3A0%3Aconnect_failed.145\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -2142,10 +2145,10 @@ fn stream_local_status_codec_round_trips_with_and_without_local() {
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
-    // A local sample with a sanitized failure keeps the failure field between
-    // the counters and the local field.
+    // A local sample with a failure keeps the failure field between the
+    // counters and the local field.
     let with_failure = StreamStatusSample {
-        failure: Some("connect:refused".to_owned()),
+        failure: Some(fm_protocol::OutputFailureCode::DiskFull.into()),
         local: Some(StreamLocalStatus {
             segments: 0,
             target_duration_ms: 0,
@@ -2161,7 +2164,7 @@ fn stream_local_status_codec_round_trips_with_and_without_local() {
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=17\tsamples=7%3Alive%3A1%3A1048576%3A900%3A3%3A0%3A0%3A0%3Aconnect%253Arefused%3Alocal%3D0%3A0%3A0\n"
+        "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=17\tsamples=7%3Alive%3A1%3A1048576%3A900%3A3%3A0%3A0%3A0%3Adisk_full%3Alocal%3D0%3A0%3A0\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 }
@@ -2300,42 +2303,44 @@ fn encoder_never_emits_a_field_the_decoder_refuses_as_too_long() {
     }
 }
 
-/// A `stream_status` failure code the decoder refuses (empty or longer than
-/// the redacted-detail bound) must be refused by the encoder too: a peer that
-/// receives it drops the whole session, and the publisher discards a record it
-/// cannot encode.
+/// A `stream_status` failure is a machine-readable code (Protocol 2.67): every
+/// code round-trips with and without an exit status, and free text (which
+/// could carry a URL, key, or path) never decodes.
 #[test]
-fn stream_status_failure_bounds_are_enforced_by_the_encoder() {
-    use fm_protocol::{StreamStatusMessage, StreamStatusSample};
+fn stream_status_failures_are_closed_codes() {
+    use fm_protocol::{OutputFailure, OutputFailureCode};
 
-    for failure in [String::new(), "x".repeat(65)] {
-        let message = WireMessage::StreamStatus(StreamStatusMessage {
-            server: server_identity(),
-            sequence: 1,
-            samples: vec![StreamStatusSample {
-                target: WireStreamTargetId::new(NonZeroU128::new(3).unwrap()),
-                realized: StreamRealizedState::Failed,
-                connected: false,
-                muxed_bytes: 0,
-                enqueued_pairs: 0,
-                dropped_pairs: 0,
-                failure: Some(failure),
-                local: None,
-                bitrate_kbps: 0,
-                reconnects: 0,
-                uptime_ms: 0,
-            }],
-        });
-        match encode_line(&message) {
-            Ok(line) => assert_eq!(decode_line(&line), Ok(message)),
-            Err(error) => assert!(matches!(
-                error,
-                CodecError::InvalidField {
-                    field: "samples",
-                    ..
-                }
-            )),
+    let head = "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=1\tsamples=3%3Afailed%3A0%3A0%3A0%3A0%3A0%3A0%3A0%3A";
+    for code in OutputFailureCode::ALL {
+        assert_eq!(OutputFailureCode::from_token(code.token()), Some(code));
+        for exit_status in [None, Some(0), Some(145), Some(-1_073_741_819)] {
+            let failure = OutputFailure::new(code).with_exit_status(exit_status);
+            assert_eq!(OutputFailure::parse(&failure.to_string()), Some(failure));
+            let line = format!("{head}{failure}\n");
+            let Ok(WireMessage::StreamStatus(decoded)) = decode_line(&line) else {
+                panic!("{line}");
+            };
+            assert_eq!(decoded.samples[0].failure, Some(failure));
+            assert_eq!(
+                encode_line(&WireMessage::StreamStatus(decoded)).unwrap(),
+                line
+            );
         }
+    }
+    for refused in [
+        "connect%253Arefused",
+        "Connect%3Affmpeg%20exited%3A%20ChildExited",
+        "rtmp%253A%252F%252Fhost%252Flive%252Fsecret-key",
+        "connect_failed.",
+        "connect_failed.%2B1",
+        "connect_failed.007",
+        "connect_failed.99999999999",
+        "CONNECT_FAILED",
+    ] {
+        assert!(
+            decode_line(&format!("{head}{refused}\n")).is_err(),
+            "{refused}"
+        );
     }
 }
 
@@ -2783,7 +2788,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.66\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.67\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2792,7 +2797,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.66\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.67\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -3117,7 +3122,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.66\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.67\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3127,7 +3132,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.66\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.67\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3311,7 +3316,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.66\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.67\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3359,7 +3364,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 66));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 67));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3413,7 +3418,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.66\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.67\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4196,7 +4201,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.66\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.67\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4236,7 +4241,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 66));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 67));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4308,7 +4313,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.66\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.67\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4607,7 +4612,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 66));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 67));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

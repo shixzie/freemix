@@ -1120,9 +1120,19 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "recorderNote: \"Recorders show the requested state: this daemon does not report whether a file is being written.\"",
         "tr(on ? \"recorderRequestedOn\" : \"recorderRequestedOff\")",
         "recorderRecording: \"REC {time}\"",
-        "recorderFailed: \"FAILED ({reason})\"",
+        "recorderFailed: \"FAILED\"",
         "recorderUnavailable: \"NOT CONFIGURED\"",
-        "streamLastFailure: \"{state} — last error: {detail}\"",
+        "streamLastFailure: \"Last error: {detail}\"",
+        // Failures arrive as codes (Protocol 2.67) and read as short
+        // reasons on their own line; a slot without a folder cannot be
+        // started and says why.
+        "failureText(realized.failure, true)",
+        "failureText(sample.failure, false)",
+        "connect_failed: \"failConnectFailed\"",
+        "failWithExitCode: \"{reason} (FFmpeg exited with code {code})\"",
+        "setDisabled(button, transitionReason || shown.blocked);",
+        "recorderNotConfiguredHint: \"No recording folder is set for this slot; start freemixd with {option} to use it.\"",
+        "const RECORDER_OPTION = [\"--record-program\", \"--record-program-2\"];",
         "ui.recorderNote.hidden = !live || reported;",
     ] {
         assert!(page.contains(wording), "{wording}");
@@ -1709,9 +1719,9 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
             "meterLegend: \"RMS · PICO · RETENCIÓN · CLIP\"",
             "\"RMS · RETENCIÓN · CLIP\"",
         ),
-        ("recorderFailed: \"FALLIDO ({reason})\"", "t(\"FALLIDO\")"),
+        ("recorderFailed: \"FALLIDO\"", "t(\"FALLIDO\")"),
         (
-            "streamLastFailure: \"{state} — último error: {detail}\"",
+            "streamLastFailure: \"Último error: {detail}\"",
             "t(\"Último error: {failure}\")",
         ),
     ];
@@ -1773,6 +1783,60 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
                 "Studio's es catalog lacks {catalog}"
             );
         }
+    }
+}
+
+/// Both pages name every output failure code (Protocol 2.67) and word each
+/// one exactly as Studio does, in English and Spanish: the same reason
+/// reads the same on every client, and no page shows a raw code.
+#[test]
+fn pages_word_every_output_failure_like_studio() {
+    // rustfmt wraps long catalog entries, so compare with all whitespace
+    // removed on both sides.
+    let squash = |text: &str| text.split_whitespace().collect::<String>();
+    let english_catalog = squash(include_str!(
+        "../../../crates/ui/fm-ui-model/src/i18n/messages.rs"
+    ));
+    let spanish_catalog = squash(include_str!(
+        "../../../crates/ui/fm-ui-model/src/i18n/es.rs"
+    ));
+    for (name, page) in [
+        ("operator", include_str!("../src/web/operator.html")),
+        ("tally", include_str!("../src/web/tally.html")),
+    ] {
+        for code in fm_protocol::OutputFailureCode::ALL {
+            assert!(
+                page.contains(&format!("    {}: ", code.token()))
+                    || page.contains(&format!(" {}: ", code.token())),
+                "{name}: FAILURE_KEY lacks {}",
+                code.token()
+            );
+        }
+        let english = strings_table(page, "en");
+        let spanish = strings_table(page, "es");
+        let mut reasons = 0;
+        for ((key, en), (_, es)) in english.iter().zip(&spanish) {
+            let Some(rest) = key.strip_prefix("fail") else {
+                continue;
+            };
+            reasons += 1;
+            let msg = format!("Fail{rest}");
+            assert!(
+                english_catalog.contains(&squash(&format!("{msg} => t({en})"))),
+                "{name}: {key} differs from Studio's English"
+            );
+            assert!(
+                spanish_catalog.contains(&squash(&format!("(Msg::{msg}, t({es})"))),
+                "{name}: {key} differs from Studio's Spanish"
+            );
+        }
+        // One reason per code (two folder codes have a recorder and a
+        // stream wording) plus the exit-code template.
+        assert_eq!(
+            reasons,
+            fm_protocol::OutputFailureCode::ALL.len() + 3,
+            "{name}"
+        );
     }
 }
 

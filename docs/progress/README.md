@@ -453,6 +453,19 @@ scale 2) against the same simulated show, with the Viewer tally, the
 Spanish Operator page, the Audio tablet page, and finally the English
 Operator page all connected at once, each its own session and role.
 
+Readable output failures (2026-10-19, Protocol 2.67): `web-operator-recording-meters.png`
+(refreshed) and `web-operator-output-failures-es.png` are Playwright Chromium
+(headless, 1000x1300, device scale 1) captures of the operator page against a
+native `freemixd serve --native-media --web-listen --record-program …` show
+(640x360 at 30 fps, two solid inputs, a clip, a scene) in English and Spanish.
+Recorder 1 records; recorder 2 reads `NOT CONFIGURED` / `SIN CONFIGURAR` with a
+disabled Record key and the `--record-program-2` hint; the HLS destination is
+live; and the RTMP destination to a closed local port reads `Reconnecting` with
+`Server refused the connection (FFmpeg exited with code 145)` (Spanish:
+`El servidor rechazó la conexión (FFmpeg terminó con código 145)`) instead of
+the former Rust debug text. The stream key is a fake and never shown. The
+meters read silence in this capture.
+
 Round 6: captures of 2026-10-19 at Protocol 2.62, schema 56 (commit
 b9ce83dd). Added: `studio-scripts-failed.png`, `studio-scripts-cue-run.png`,
 and `studio-scripts-waiting.png` (RC-011 project scripts: a failed later

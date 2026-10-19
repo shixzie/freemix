@@ -22,6 +22,7 @@ use crate::{
     RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
     TransitionGate, outputs, transition_availability,
 };
+use fm_ui_model::i18n::FailedOutput;
 
 pub(crate) const STREAMS_NONE_CONFIGURED: &str = Msg::StreamsNoneConfigured.en();
 
@@ -99,7 +100,8 @@ pub(crate) fn stream_row_text(l: Locale, sample: Option<&StreamStatusSample>) ->
     );
     if let Some(failure) = &sample.failure {
         text.push('\n');
-        text.push_str(&l.format(Msg::StreamDiagFailure, &[("failure", Arg::Str(failure))]));
+        let reason = l.output_failure(failure, FailedOutput::Stream);
+        text.push_str(&l.format(Msg::StreamDiagFailure, &[("failure", Arg::Str(&reason))]));
     }
     if let Some(local) = sample.local {
         text.push('\n');

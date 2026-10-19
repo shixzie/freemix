@@ -943,7 +943,7 @@ fn stream_status() -> fm_protocol::StreamStatusMessage {
             muxed_bytes: 12 * 1_024 * 1_024,
             enqueued_pairs: 3,
             dropped_pairs: 17,
-            failure: Some("disk_full".into()),
+            failure: Some(fm_protocol::OutputFailureCode::DiskFull.into()),
             local: None,
             bitrate_kbps: 5_800,
             reconnects: 2,

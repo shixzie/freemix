@@ -29,12 +29,14 @@
 mod es;
 mod format;
 mod messages;
+mod output_failure;
 mod refusal;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub use messages::Msg;
+pub use output_failure::{FailedOutput, output_failure_msg};
 pub use refusal::{
     InputNames, bounds_field_name, command_refusal_text, input_use_advice, input_use_sentence,
     refusal_code_detail, refusal_reason_text, script_failure_msg,

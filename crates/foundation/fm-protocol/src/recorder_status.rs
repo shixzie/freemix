@@ -10,14 +10,13 @@
 //!   `recording`, or `failed`;
 //! - `elapsed_ms` is how long the slot has been recording (across segment
 //!   rotations), and `0` in every other state;
-//! - `failure` is a sanitized short code (at most
-//!   [`crate::MAX_STREAM_DETAIL_BYTES`] bytes, never a path), escaped like a
-//!   `stream_status` failure, present exactly when `state` is `failed`.
+//! - `failure` is an [`OutputFailure`] token (Protocol 2.67), present
+//!   exactly when `state` is `failed`.
 //!
 //! The record never advances or carries a durable revision; the desired
 //! state stays the snapshot's `recordings` roster.
 
-use crate::{ServerIdentity, WireRecorderSlot};
+use crate::{OutputFailure, ServerIdentity, WireRecorderSlot};
 
 /// Realized state of one program recorder slot (Protocol 2.66).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -72,25 +71,18 @@ pub struct RecorderStatusSample {
     /// Milliseconds the slot has been recording; `0` unless `realized` is
     /// [`RecorderRealizedState::Recording`].
     pub elapsed_ms: u64,
-    /// Sanitized short failure code; present exactly when `realized` is
+    /// Why the slot failed; present exactly when `realized` is
     /// [`RecorderRealizedState::Failed`].
-    pub failure: Option<String>,
+    pub failure: Option<OutputFailure>,
 }
 
 impl RecorderStatusSample {
     /// Whether the sample keeps the wire invariants: elapsed time only while
-    /// recording, a nonblank bounded failure exactly when failed.
+    /// recording, a failure exactly when failed.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         let elapsed = self.elapsed_ms == 0 || self.realized == RecorderRealizedState::Recording;
-        let failure = match &self.failure {
-            Some(failure) => {
-                self.realized == RecorderRealizedState::Failed
-                    && !failure.is_empty()
-                    && failure.len() <= crate::MAX_STREAM_DETAIL_BYTES
-            }
-            None => self.realized != RecorderRealizedState::Failed,
-        };
+        let failure = self.failure.is_some() == (self.realized == RecorderRealizedState::Failed);
         elapsed && failure
     }
 }

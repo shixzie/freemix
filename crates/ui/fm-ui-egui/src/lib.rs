@@ -20,9 +20,9 @@
 use egui::{CentralPanel, Event, Frame, Key, Margin, Modifiers, Panel, Stroke, Ui, Vec2};
 use fm_protocol::{
     AudioMetersMessage, CommandPayload, LiveInputSource, ManualTransitionKind,
-    ManualTransitionPosition, MonitorImage, ScenePreviewRequest, StreamStatusMessage,
-    TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId,
+    ManualTransitionPosition, MonitorImage, RecorderRealizedState, RecorderStatusSample,
+    ScenePreviewRequest, StreamStatusMessage, TitlePreviewImage, TitlePreviewRequest,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_protocol::{
     AutoTransitionKind, MediaOperation, OverlayTransitionKind, TransitionFavoriteStatus,
@@ -530,6 +530,10 @@ pub struct StudioUiState {
     pub recording_desired: [bool; RECORDER_SLOT_COUNT],
     /// Whether one recorder slot's record command is still unresolved.
     pub recording_pending: [bool; RECORDER_SLOT_COUNT],
+    /// Each slot's newest realized sample from a daemon that reports one
+    /// (`recorder_status`, Protocol 2.66): whether it is configured, records,
+    /// or failed and why. `None` when the daemon does not report it.
+    pub recorder_realized: [Option<RecorderStatusSample>; RECORDER_SLOT_COUNT],
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Whether a Start all or Stop all command is still unresolved.
@@ -603,6 +607,7 @@ impl StudioUiState {
             stream_status: None,
             recording_desired: [false; RECORDER_SLOT_COUNT],
             recording_pending: [false; RECORDER_SLOT_COUNT],
+            recorder_realized: [None, None],
             stream_pending: Vec::new(),
             stream_group_pending: false,
             reconnect: None,
@@ -689,6 +694,17 @@ impl RecordingAction {
     }
 }
 
+/// Whether the daemon reports recorder slot `slot` (zero-based) as having no
+/// output configured.
+#[must_use]
+pub const fn recorder_unconfigured(state: &StudioUiState, slot: usize) -> bool {
+    slot < RECORDER_SLOT_COUNT
+        && matches!(
+            &state.recorder_realized[slot],
+            Some(sample) if matches!(sample.realized, RecorderRealizedState::Unavailable)
+        )
+}
+
 /// Validates one requested recording action against the session gates and the
 /// addressed slot's authoritative desired flag, returning it only when the
 /// current state permits exactly that action.
@@ -698,10 +714,14 @@ pub const fn recording_action(
     requested: RecordingAction,
 ) -> Option<RecordingAction> {
     let slot = requested.slot_index();
+    // A slot the daemon reports unconfigured has nowhere to record to; it
+    // can still be stopped if a start was requested anyway.
+    let unconfigured = requested.starts() && recorder_unconfigured(state, slot);
     let enabled = state.connection_status.controls_enabled()
         && state.view.is_some()
         && state.can_transition
-        && !state.recording_pending[slot];
+        && !state.recording_pending[slot]
+        && !unconfigured;
     match (enabled, state.recording_desired[slot], requested) {
         (true, false, RecordingAction::Start(_)) | (true, true, RecordingAction::Stop(_)) => {
             Some(requested)
@@ -2915,7 +2935,10 @@ mod tests {
         }
     }
 
-    fn stream_sample(target: u128, failure: Option<&str>) -> StreamStatusSample {
+    fn stream_sample(
+        target: u128,
+        failure: Option<fm_protocol::OutputFailure>,
+    ) -> StreamStatusSample {
         StreamStatusSample {
             target: fm_protocol::WireStreamTargetId::new(NonZeroU128::new(target).unwrap()),
             realized: StreamRealizedState::Live,
@@ -2923,7 +2946,7 @@ mod tests {
             muxed_bytes: 2048,
             enqueued_pairs: 12,
             dropped_pairs: 3,
-            failure: failure.map(str::to_owned),
+            failure,
             local: None,
             bitrate_kbps: 0,
             reconnects: 0,
@@ -3428,10 +3451,20 @@ mod tests {
         let idle = stream_roster_entry(40, "RTMP Primary", true);
         assert_eq!(stream_row_text(en, None), "No transport sample yet");
 
-        let sample = stream_sample(40, Some("auth_rejected"));
+        let sample = stream_sample(
+            40,
+            Some(fm_protocol::OutputFailureCode::StreamKeyRejected.into()),
+        );
         assert_eq!(
             stream_row_text(en, Some(&sample)),
-            "Transport: connected · 2.0 KB sent · 12 queued · 3 dropped\nLast error: auth_rejected"
+            "Transport: connected · 2.0 KB sent · 12 queued · 3 dropped\nLast error: Server refused the stream key"
+        );
+        assert_eq!(
+            stream_row_text(
+                Locale::new(fm_ui_model::i18n::Language::Spanish),
+                Some(&sample)
+            ),
+            "Transporte: conectado · 2,0 KB enviados · 12 en cola · 3 descartados\nÚltimo error: El servidor rechazó la clave de transmisión"
         );
 
         let clean = StreamStatusSample {

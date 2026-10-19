@@ -3762,9 +3762,38 @@ Screenshots against a native daemon recording and streaming a media clip:
 `docs/progress/web-tally-recording.png`.
 Remaining gaps: no per-input meters or audio tally on the pages, the tally
 receives meters it only draws as a thin level (there is no per-session
-opt-out), the simulated daemon sends no meters or realized recorder state,
-and the recorder failure code is terse (the full reason stays in the
-daemon's `FREEMIXD_RECORDER_FAILURE` notice).
+opt-out), and the simulated daemon sends no meters or realized recorder
+state.
+
+Readable output failures (Protocol 2.67, no schema change): a stream
+destination's or recorder's failure now reaches every client as a stable
+code plus, when `FFmpeg` exited, its exit status (`connect_failed.145`), and
+never as `Debug` text (the page used to read `Reconnecting — Connect:ffmpeg
+exited: ChildExited { status: Some(145) }`). `fm-io-network` tags each
+transport error with a `FailureCause` it recognized in the child's redacted
+stderr (`Connection refused`, `Network is unreachable`, `Name or service not
+known`, `NetStream.Publish.BadName` and the other credential markers,
+`certificate verify failed`, `Input/output error`/`I/O error`, `Permission
+denied`, `Read-only file system`, `No space left on device`, `No such file or
+directory`); the new markers only sharpen the cause, so retry behaviour is
+unchanged. `apps/freemixd/src/output_failure.rs` maps transport causes and
+recorder notices (plus the recorder's stderr tail) onto the 22 codes; the
+daemon's own log lines keep the detail. Studio (`fm-ui-model`
+`Locale::output_failure`), the operator page, and the tally page word every
+code identically in English and Spanish ("Couldn't connect to the server
+(FFmpeg exited with code 145)", "Server refused the stream key", "Network
+unreachable", "Disk full", "Recording folder not writable"); a test checks
+the pages against Studio's catalog. The operator page shows the reason on
+its own line under the row (a running destination's as "Last error: …"),
+disables Record on a recorder the daemon reports `NOT CONFIGURED` and names
+the option that configures it (`--record-program` / `--record-program-2`).
+Studio now follows `recorder_status` as well: such a slot reads `NOT
+CONFIGURED` with its Start key disabled and the reason, and a failed slot
+reads `FAILED` with its reason. Smaller page fixes: Preview buttons wrap like
+the Program tiles, the first destination row keeps its divider, and the
+`Tally` link is a full-height touch target. Screenshots:
+`docs/progress/web-operator-recording-meters.png` (refreshed) and
+`docs/progress/web-operator-output-failures-es.png`.
 
 
 The native daemon serves several control sessions and the Web gateway (no

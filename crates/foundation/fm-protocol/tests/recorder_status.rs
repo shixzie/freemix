@@ -1,9 +1,10 @@
-//! Protocol 2.66 `recorder_status`: the exact lossy realized recorder record.
+//! Protocol 2.66 `recorder_status`: the exact lossy realized recorder record,
+//! with Protocol 2.67 machine-readable failures.
 
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, CodecError, ProtocolVersion, RecorderRealizedState,
-    RecorderStatusMessage, RecorderStatusSample, ServerIdentity, WireMessage, WireRecorderSlot,
-    decode_line, encode_line,
+    CURRENT_PROTOCOL_VERSION, CodecError, OutputFailure, OutputFailureCode, ProtocolVersion,
+    RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample, ServerIdentity,
+    WireMessage, WireRecorderSlot, decode_line, encode_line,
 };
 
 const HEAD: &str = "recorder_status\tengine_id=engine-a\tproject_id=project-a\tstate_epoch=7\tlog_id=log-a\tsequence=12";
@@ -21,13 +22,13 @@ fn sample(
     slot: u8,
     realized: RecorderRealizedState,
     elapsed_ms: u64,
-    failure: Option<&str>,
+    failure: Option<OutputFailure>,
 ) -> RecorderStatusSample {
     RecorderStatusSample {
         recorder: WireRecorderSlot::new(slot).unwrap(),
         realized,
         elapsed_ms,
-        failure: failure.map(str::to_owned),
+        failure,
     }
 }
 
@@ -41,7 +42,7 @@ fn message(samples: Vec<RecorderStatusSample>) -> WireMessage {
 
 #[test]
 fn recorder_status_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 66));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 67));
     for (samples, recorders) in [
         (
             vec![
@@ -57,10 +58,21 @@ fn recorder_status_is_exact() {
                     2,
                     RecorderRealizedState::Failed,
                     0,
-                    Some("capture:missing_output"),
+                    Some(OutputFailureCode::DiskFull.into()),
                 ),
             ],
-            "1%3Astarting%3A0%3A%3B2%3Afailed%3A0%3Acapture%253Amissing_output",
+            "1%3Astarting%3A0%3A%3B2%3Afailed%3A0%3Adisk_full",
+        ),
+        (
+            vec![sample(
+                1,
+                RecorderRealizedState::Failed,
+                0,
+                Some(
+                    OutputFailure::new(OutputFailureCode::FfmpegExited).with_exit_status(Some(-9)),
+                ),
+            )],
+            "1%3Afailed%3A0%3Affmpeg_exited.-9",
         ),
         (
             vec![sample(2, RecorderRealizedState::Off, 0, None)],
@@ -97,15 +109,11 @@ fn recorder_status_rejects_out_of_contract_samples() {
             "1".to_owned(),
         ),
         (
-            vec![sample(1, RecorderRealizedState::Recording, 5, Some("x"))],
-            "1".to_owned(),
-        ),
-        (
             vec![sample(
                 1,
-                RecorderRealizedState::Failed,
-                0,
-                Some(&"x".repeat(65)),
+                RecorderRealizedState::Recording,
+                5,
+                Some(OutputFailureCode::Unknown.into()),
             )],
             "1".to_owned(),
         ),
@@ -129,6 +137,24 @@ fn recorder_status_rejects_out_of_contract_samples() {
         ("1%3Aoff%3A0", invalid("1:off:0")),
         ("1%3Aoff%3A5%3A", invalid("1:off:5:")),
         ("1%3Afailed%3A0%3A", invalid("1:failed:0:")),
+        // Only a known code, with at most a canonical decimal exit status.
+        (
+            "1%3Afailed%3A0%3Adisk%20full",
+            invalid("1:failed:0:disk full"),
+        ),
+        ("1%3Afailed%3A0%3Astart", invalid("1:failed:0:start")),
+        (
+            "1%3Afailed%3A0%3Adisk_full.",
+            invalid("1:failed:0:disk_full."),
+        ),
+        (
+            "1%3Afailed%3A0%3Adisk_full.01",
+            invalid("1:failed:0:disk_full.01"),
+        ),
+        (
+            "1%3Afailed%3A0%3Adisk_full.1.2",
+            invalid("1:failed:0:disk_full.1.2"),
+        ),
         ("1%3Aoff%3A0%3A%3B1%3Aoff%3A0%3A", invalid("1:off:0:")),
         (
             "1%3Aoff%3A0%3A%3B2%3Aoff%3A0%3A%3B2%3Aoff%3A0%3A",

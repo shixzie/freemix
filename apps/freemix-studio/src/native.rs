@@ -3009,6 +3009,14 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         if let Some(view) = &view {
             state.audio_meters = runtime.session().latest_audio_meters().cloned();
             state.stream_status = runtime.session().latest_stream_status().cloned();
+            if let Some(status) = runtime.session().latest_recorder_status() {
+                for sample in &status.samples {
+                    let slot = usize::from(sample.recorder.get()) - 1;
+                    if let Some(realized) = state.recorder_realized.get_mut(slot) {
+                        *realized = Some(sample.clone());
+                    }
+                }
+            }
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;

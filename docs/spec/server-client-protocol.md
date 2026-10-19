@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.66 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.67 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2324,6 +2324,39 @@ status and Program meters (RC-014).
   page shows what is recording or streaming (or starting or failed) and a
   slim Program level. Both pages only display this status.
 - 2.65 is refused.
+
+Protocol 2.67 makes stream destination and recorder failures machine-readable
+(OR-006, RC-014).
+
+- The `failure` of a `stream_status` sample and of a `recorder_status` entry
+  is now one output failure token, never free text: `<code>` or
+  `<code>.<exit_status>`, where `exit_status` is `FFmpeg`'s exit status as a
+  canonical decimal `i32` (for example `connect_failed.145`). The codes are
+  `connect_failed`, `connection_refused`, `connect_timeout`,
+  `network_unreachable`, `host_not_found`, `tls_failed`,
+  `stream_key_rejected`, `connection_lost`, `stream_stalled`,
+  `protocol_error`, `reconnect_exhausted`, `ffmpeg_unavailable`,
+  `ffmpeg_exited`, `disk_full`, `folder_not_writable`, `folder_missing`,
+  `write_error`, `startup_timeout`, `fell_behind`, `capture_failed`,
+  `internal_error`, and `unknown`. The token is unescaped (its characters
+  need no escaping); any other value refuses the record.
+- Native `freemixd` classifies a failure from the transport's stage, the
+  cause it recognized in `FFmpeg`'s redacted stderr (for example
+  `Connection refused`, `Network is unreachable`, `NetStream.Publish.BadName`,
+  `Input/output error`, `Permission denied`, `No space left on device`), and
+  the recorder's failure notice. The detailed notice stays in the daemon's
+  `FREEMIXD_STREAM_FAILURE` / `FREEMIXD_RECORDER_FAILURE` log lines; no URL,
+  stream key, passphrase, or path reaches a peer.
+- Clients word each code themselves, in the operator's language: Studio's
+  catalog and the operator and tally pages carry the same English and
+  Spanish reasons (such as "Couldn't connect to the server (FFmpeg exited
+  with code 145)", "Server refused the stream key", "Disk full", "Recording
+  folder not writable"). The CLI prints the token.
+- Studio follows `recorder_status` too: a slot without a folder reads `NOT
+  CONFIGURED` and its Start key is disabled with the reason; a failed slot
+  reads `FAILED` with its reason. The operator page disables Record on such a
+  slot and names the daemon option that configures it.
+- 2.66 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
