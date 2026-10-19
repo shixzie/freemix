@@ -1005,3 +1005,25 @@ mod scenes {
         assert_eq!(shell.animation_title(), Some(input(TITLE)));
     }
 }
+
+#[test]
+fn the_snapping_preference_reaches_the_shown_draft_and_survives_clones() {
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    assert!(shell.timeline_snapping(), "on by default");
+    let state = ready(true, false, 4);
+    shell.set_timeline_snapping(false);
+    shell.open_animation_window(input(TITLE));
+    draw(&context, &mut shell, &state);
+    let binding = shell.animation_binding(input(TITLE)).unwrap();
+    assert!(
+        !binding.document().view().snapping(),
+        "the saved preference applies to a freshly opened draft"
+    );
+    assert!(!shell.animation.scene_timeline.snapping);
+    assert!(!shell.clone().timeline_snapping());
+    shell.set_timeline_snapping(true);
+    draw(&context, &mut shell, &state);
+    let binding = shell.animation_binding(input(TITLE)).unwrap();
+    assert!(binding.document().view().snapping());
+}

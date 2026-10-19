@@ -198,13 +198,28 @@ impl Default for AnimationWindow {
 /// textures start over.
 impl Clone for AnimationWindow {
     fn clone(&self) -> Self {
-        Self {
+        let mut window = Self {
             open: self.open,
             input: self.input,
             scene: self.scene,
             editing_scene: self.editing_scene,
             ..Self::default()
-        }
+        };
+        window.set_snapping(self.snapping());
+        window
+    }
+}
+
+impl AnimationWindow {
+    /// Whether the timelines' drags snap without Shift (the Snapping
+    /// toggle, kept in the console preferences).
+    pub(crate) const fn snapping(&self) -> bool {
+        self.timeline.snapping
+    }
+
+    pub(crate) const fn set_snapping(&mut self, snapping: bool) {
+        self.timeline.snapping = snapping;
+        self.scene_timeline.snapping = snapping;
     }
 }
 
@@ -1276,6 +1291,8 @@ impl StudioShell {
                 .as_ref()
                 .filter(|shown| shown.input == input)
                 .map(|shown| shown.texture.id());
+            // One Snapping toggle for both timelines (a console preference).
+            window.scene_timeline.snapping = window.timeline.snapping;
             window.tracks = Some(draft_body(
                 ui,
                 l,
@@ -1291,6 +1308,7 @@ impl StudioShell {
                 lock,
                 now,
             ));
+            window.timeline.snapping = window.scene_timeline.snapping;
             return;
         }
         let Some(input) = window.input.filter(|_| !titles.is_empty()) else {

@@ -1,7 +1,8 @@
 //! Local console preferences that survive a restart: the UI language, the
-//! top-bar clock, the UI scale and high-contrast theme, and the panel
-//! layout (the docked panels, popped-out windows and their places, tool
-//! windows, and the operator's saved layouts).
+//! top-bar clock, the UI scale and high-contrast theme, the animation
+//! timeline's Snapping toggle, and the panel layout (the docked panels,
+//! popped-out windows and their places, tool windows, and the operator's
+//! saved layouts).
 //!
 //! The file is plain `key = value` text in the platform configuration
 //! directory (`$XDG_CONFIG_HOME/freemix/studio.conf`, else
@@ -23,6 +24,9 @@ pub const PREFERENCES_ENV: &str = "FREEMIX_STUDIO_PREFS";
 
 const FILE_NAME: &str = "studio.conf";
 
+/// The key of the animation timeline's Snapping toggle.
+const SNAPPING_KEY: &str = "animation.snapping";
+
 /// How long the preferences must stay unchanged before they are written,
 /// so dragging a splitter or a window writes the file once, not every
 /// frame.
@@ -39,6 +43,9 @@ pub struct SavedPreferences {
     pub ui_scale_percent: Option<u16>,
     /// Whether the high-contrast theme is on.
     pub high_contrast: Option<bool>,
+    /// Whether the animation timelines snap drags without Shift (their
+    /// Snapping toggle).
+    pub timeline_snapping: Option<bool>,
 }
 
 impl SavedPreferences {
@@ -51,7 +58,14 @@ impl SavedPreferences {
             layout: None,
             ui_scale_percent: None,
             high_contrast: None,
+            timeline_snapping: None,
         }
+    }
+
+    /// The Snapping toggle these preferences select (on by default).
+    #[must_use]
+    pub fn timeline_snapping(&self) -> bool {
+        self.timeline_snapping.unwrap_or(true)
     }
 
     /// The appearance these preferences select, defaults filling the gaps.
@@ -91,6 +105,13 @@ impl SavedPreferences {
                     saved.high_contrast =
                         Appearance::parse_high_contrast(value).or(saved.high_contrast);
                 }
+                SNAPPING_KEY => {
+                    saved.timeline_snapping = match value {
+                        "on" => Some(true),
+                        "off" => Some(false),
+                        _ => saved.timeline_snapping,
+                    };
+                }
                 key => {
                     let mut layout = saved.layout.clone().unwrap_or_default();
                     if layout.apply_preference(key, value) {
@@ -128,6 +149,10 @@ impl SavedPreferences {
             } else {
                 "ui.high_contrast = off\n"
             });
+        }
+        if let Some(snapping) = self.timeline_snapping {
+            text.push_str(SNAPPING_KEY);
+            text.push_str(if snapping { " = on\n" } else { " = off\n" });
         }
         if let Some(layout) = &self.layout {
             for (key, value) in layout.preference_entries() {
@@ -221,6 +246,8 @@ pub struct PreferenceStore {
     known_layout: ConsoleLayout,
     /// The appearance in effect at startup or last saved.
     known_appearance: Appearance,
+    /// The timeline Snapping toggle at startup or last saved.
+    known_snapping: bool,
     /// When the unsaved change was last seen; `None` when the file is up
     /// to date.
     pending: Option<Instant>,
@@ -228,19 +255,21 @@ pub struct PreferenceStore {
 
 impl PreferenceStore {
     /// A store for `path` whose file held `saved` and whose console started
-    /// in `locale` with `layout` and `appearance`; nothing is written until
-    /// one of them changes.
+    /// in `locale` with `layout` and `appearance` (and the Snapping toggle
+    /// `saved` selects); nothing is written until one of them changes.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         path: Option<PathBuf>,
         saved: SavedPreferences,
         locale: Locale,
         layout: ConsoleLayout,
         appearance: Appearance,
     ) -> Self {
+        let known_snapping = saved.timeline_snapping();
         Self {
             path,
             saved,
+            known_snapping,
             known_locale: locale,
             known_layout: layout,
             known_appearance: appearance,
@@ -295,6 +324,17 @@ impl PreferenceStore {
             return Err(error);
         }
         Ok(None)
+    }
+
+    /// Notes the timeline Snapping toggle at `now`: a change is saved with
+    /// the next [`Self::observe_at`] write (the same debounce as the
+    /// layout) or [`Self::flush`].
+    pub fn note_timeline_snapping(&mut self, now: Instant, snapping: bool) {
+        if snapping != self.known_snapping {
+            self.known_snapping = snapping;
+            self.saved.timeline_snapping = Some(snapping);
+            self.pending = Some(now);
+        }
     }
 
     /// Whether a change is waiting to be written.

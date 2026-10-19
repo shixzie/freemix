@@ -2633,3 +2633,78 @@ fn reconnect_requeries_known_capture_devices() {
     );
     server_thread.join().unwrap();
 }
+
+#[test]
+fn the_timeline_snapping_toggle_round_trips_and_saves_debounced() {
+    let off = SavedPreferences {
+        timeline_snapping: Some(false),
+        ..SavedPreferences::default()
+    };
+    let text = off.render();
+    assert!(text.contains("animation.snapping = off\n"), "{text}");
+    assert_eq!(SavedPreferences::parse(&text), off);
+    assert!(!off.timeline_snapping());
+    assert!(
+        SavedPreferences::default().timeline_snapping(),
+        "on by default"
+    );
+    // A bad value keeps the earlier one.
+    assert_eq!(
+        SavedPreferences::parse("animation.snapping = on\nanimation.snapping = maybe\n")
+            .timeline_snapping,
+        Some(true)
+    );
+
+    let directory = scratch_directory("snapping-prefs");
+    let path = directory.join("studio.conf");
+    let file = SavedPreferences::from_locale(Locale::ENGLISH);
+    file.save(&path).unwrap();
+    let layout = ConsoleLayout::default();
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        file,
+        Locale::ENGLISH,
+        layout.clone(),
+        Appearance::default(),
+    );
+    let start = Instant::now();
+    let delay = freemix_studio::SAVE_DELAY;
+    // Unchanged: nothing to write.
+    store.note_timeline_snapping(start, true);
+    assert!(!store.is_pending());
+    // Turned off: written once it has stayed off for the delay.
+    store.note_timeline_snapping(start, false);
+    assert_eq!(
+        store
+            .observe_at(start, Locale::ENGLISH, &layout, Appearance::default())
+            .unwrap(),
+        Some(delay)
+    );
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap().timeline_snapping,
+        None
+    );
+    store.note_timeline_snapping(start + delay, false);
+    assert_eq!(
+        store
+            .observe_at(
+                start + delay,
+                Locale::ENGLISH,
+                &layout,
+                Appearance::default()
+            )
+            .unwrap(),
+        None
+    );
+    let saved = SavedPreferences::load(&path).unwrap();
+    assert_eq!(saved.timeline_snapping, Some(false));
+    assert_eq!(saved.language, Some(Language::English), "the rest is kept");
+    // Back on, saved on exit.
+    store.note_timeline_snapping(start + delay * 2, true);
+    store.flush().unwrap();
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap().timeline_snapping,
+        Some(true)
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}

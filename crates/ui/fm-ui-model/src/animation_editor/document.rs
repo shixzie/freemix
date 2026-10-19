@@ -771,11 +771,20 @@ impl<T: Copy + Ord> AnimDocument<T> {
         }
     }
 
-    /// Swaps in `state`, returning the replaced state.
+    /// Swaps in `state`, returning the replaced state. Only the restored
+    /// selection's keys in the shown phase are selected: an edit undone
+    /// from the other phase must not leave hidden keys selected for a
+    /// Delete or a nudge to reach.
     fn replace_state(&mut self, state: Snapshot<T>) -> Snapshot<T> {
+        let phase = self.phase;
+        let shown = state
+            .selection
+            .iter()
+            .filter(|key| key.track.phase == phase)
+            .collect();
         let current = Snapshot {
             clip: core::mem::replace(&mut self.draft, state.clip),
-            selection: core::mem::replace(&mut self.selection, state.selection),
+            selection: core::mem::replace(&mut self.selection, shown),
         };
         self.anchor = self.selection.iter().next();
         self.dirty = true;

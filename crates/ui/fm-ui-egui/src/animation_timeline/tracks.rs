@@ -15,8 +15,8 @@ use egui::{
 };
 use fm_animation::{AnimationPreset, Easing, KeyRef, KeySelection, SnapKind, TrackKey};
 use fm_ui_model::animation_editor::{
-    AnimDocument, DragKind, DragStart, EditorMode, Modifiers, Pointer, RetimeHandle, TargetKind,
-    TimelineView,
+    AnimDocument, DragKind, DragStart, EditorMode, Modifiers, Pointer, RetimeHandle, StaggerPlan,
+    TargetKind, TimelineView,
 };
 
 use fm_ui_model::i18n::{Arg, Locale, Msg};
@@ -115,7 +115,7 @@ impl TrackGeometry {
 
 /// What a pointer position is over.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Hit<T> {
+pub(super) enum Hit<T> {
     Ruler,
     PhaseEnd,
     Strip(RetimeHandle),
@@ -126,7 +126,7 @@ enum Hit<T> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BarPart {
+pub(super) enum BarPart {
     Start,
     Body,
     End,
@@ -134,12 +134,12 @@ enum BarPart {
 
 /// A row: an element (Simple) or one of its properties (Advanced).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Row<T> {
+pub(super) enum Row<T> {
     Target(T),
     Track(TrackKey<T>),
 }
 
-fn rows<T: Copy + Ord>(document: &AnimDocument<T>) -> Vec<Row<T>> {
+pub(super) fn rows<T: Copy + Ord>(document: &AnimDocument<T>) -> Vec<Row<T>> {
     match document.mode() {
         EditorMode::Advanced => document.rows().into_iter().map(Row::Track).collect(),
         EditorMode::Simple => {
@@ -375,6 +375,9 @@ pub(super) fn draw<T: Copy + Ord>(
             FontId::new(legible(11.0), FontFamily::Proportional),
             muted_color(),
         );
+    }
+    if let Some(plan) = &state.stagger_preview {
+        paint_stagger_preview(&track_painter, document, &geometry, &rows, plan);
     }
     paint_overlays(&track_painter, l, document, &geometry, &response);
 
@@ -640,14 +643,19 @@ fn click<T: Copy + Ord>(
     }
 }
 
-fn hover_text<T: Copy + Ord>(
+pub(super) fn hover_text<T: Copy + Ord>(
     l: Locale,
     document: &AnimDocument<T>,
     rows: &[Row<T>],
     hit: Hit<T>,
 ) -> Option<String> {
+    // The Shift advice follows the Snapping toggle, which Shift inverts.
+    let snapping = document.view().snapping();
+    let pick = |on: Msg, off: Msg| if snapping { on } else { off };
     Some(match hit {
-        Hit::Ruler => l.text(Msg::AnimRulerHover).to_owned(),
+        Hit::Ruler => l
+            .text(pick(Msg::AnimRulerHover, Msg::AnimRulerHoverSnapOff))
+            .to_owned(),
         Hit::PhaseEnd => l.format(
             Msg::AnimPhaseEndHover,
             &[(
@@ -655,7 +663,9 @@ fn hover_text<T: Copy + Ord>(
                 Arg::Str(&crate::l10n::frames(l, document.phase_frames())),
             )],
         ),
-        Hit::Strip(_) => l.text(Msg::AnimStripHover).to_owned(),
+        Hit::Strip(_) => l
+            .text(pick(Msg::AnimStripHover, Msg::AnimStripHoverSnapOff))
+            .to_owned(),
         Hit::Key(key) => {
             let found = document.clip().key(key.track, key.frame)?;
             let info = l.format(
@@ -678,13 +688,18 @@ fn hover_text<T: Copy + Ord>(
                     ("shape", Arg::Str(text::key_shape_name(l, found.easing))),
                 ],
             );
-            format!("{info}\n{}", l.text(Msg::AnimKeyDragHelp))
+            format!(
+                "{info}\n{}",
+                l.text(pick(Msg::AnimKeyDragHelp, Msg::AnimKeyDragHelpSnapOff))
+            )
         }
         Hit::Bar { target, part } => {
             let name = target_name(l, document, target);
             let msg = match part {
                 BarPart::Body => Msg::AnimBarBodyHover,
-                BarPart::End | BarPart::Start => Msg::AnimBarEndHover,
+                BarPart::End | BarPart::Start => {
+                    pick(Msg::AnimBarEndHover, Msg::AnimBarEndHoverSnapOff)
+                }
             };
             l.format(msg, &[("name", Arg::Str(&name))])
         }
@@ -1296,6 +1311,98 @@ fn paint_bar<T: Copy + Ord>(
     }
 }
 
+/// The Stagger menu's Apply ghosted over the rows: each moved element's
+/// keys (Advanced) or bar (Simple) where they would land, and the new phase
+/// end when the phase would grow.
+fn paint_stagger_preview<T: Copy + Ord>(
+    painter: &Painter,
+    document: &AnimDocument<T>,
+    geometry: &TrackGeometry,
+    rows: &[Row<T>],
+    plan: &StaggerPlan<T>,
+) {
+    let view = document.view();
+    let ghost = AMBER.gamma_multiply(0.85);
+    let moved = |target: T| -> Option<i64> {
+        plan.moves
+            .iter()
+            .find(|(moved, delta)| *moved == target && *delta != 0)
+            .map(|(_, delta)| *delta)
+    };
+    // Frames of the plan stay within the phase limit, so they fit.
+    let shifted = |frame: u32, delta: i64| u32::try_from(i64::from(frame) + delta).unwrap_or(frame);
+    for (index, row) in rows.iter().enumerate() {
+        match *row {
+            Row::Track(track) => {
+                let (Some(delta), Some(keys)) = (moved(track.target), document.clip().track(track))
+                else {
+                    continue;
+                };
+                let y = geometry.row_center(index);
+                if let (Some(first), Some(last)) = (keys.keys.first(), keys.keys.last()) {
+                    painter.add(Shape::dashed_line(
+                        &[
+                            pos2(geometry.x_of(view, shifted(first.frame, delta)), y),
+                            pos2(geometry.x_of(view, shifted(last.frame, delta)), y),
+                        ],
+                        Stroke::new(1.0, ghost),
+                        4.0,
+                        3.0,
+                    ));
+                }
+                for key in &keys.keys {
+                    let center = pos2(geometry.x_of(view, shifted(key.frame, delta)), y);
+                    let r = KEY_RADIUS;
+                    painter.add(Shape::closed_line(
+                        vec![
+                            center + vec2(0.0, -r),
+                            center + vec2(r, 0.0),
+                            center + vec2(0.0, r),
+                            center + vec2(-r, 0.0),
+                        ],
+                        Stroke::new(1.5, ghost),
+                    ));
+                }
+            }
+            Row::Target(target) => {
+                let Some(delta) = moved(target) else {
+                    continue;
+                };
+                let Some((_, first, last)) = document
+                    .target_spans()
+                    .into_iter()
+                    .find(|span| span.0 == target)
+                else {
+                    continue;
+                };
+                let row_rect = geometry.row_rect(index);
+                let (start, end) =
+                    bar_span(geometry, view, shifted(first, delta), shifted(last, delta));
+                painter.rect(
+                    Rect::from_min_max(
+                        pos2(start, row_rect.top() + 5.0),
+                        pos2(end, row_rect.bottom() - 5.0),
+                    ),
+                    CornerRadius::same(4),
+                    AMBER.gamma_multiply(0.12),
+                    Stroke::new(1.5, ghost),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+    }
+    if plan.last_frame > u64::from(document.phase_frames()) {
+        let end = u32::try_from(plan.last_frame).unwrap_or(u32::MAX);
+        dashed_line(
+            painter,
+            geometry.x_of(view, end),
+            geometry.rows_top,
+            geometry.rect.bottom(),
+            ghost,
+        );
+    }
+}
+
 /// Box selection, snapping guide, playhead, and a refused-drag message.
 fn paint_overlays<T: Copy + Ord>(
     painter: &Painter,
@@ -1362,7 +1469,11 @@ fn paint_overlays<T: Copy + Ord>(
             painter.text(
                 pos2(geometry.track_left + 6.0, bottom - 4.0),
                 Align2::LEFT_BOTTOM,
-                l.text(Msg::AnimRetimeModifiers),
+                l.text(if view.snapping() {
+                    Msg::AnimRetimeModifiers
+                } else {
+                    Msg::AnimRetimeModifiersSnapOff
+                }),
                 FontId::new(legible(9.5), FontFamily::Proportional),
                 text_dim_color(),
             );

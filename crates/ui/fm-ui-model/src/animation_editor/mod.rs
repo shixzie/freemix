@@ -28,7 +28,8 @@ pub mod interaction;
 pub mod preview;
 
 pub use arrange::{
-    DEFAULT_STAGGER_FRAMES, MAX_STAGGER_FRAMES, StaggerOrder, StaggerPlan, stagger_plan,
+    DEFAULT_STAGGER_FRAMES, MAX_STAGGER_FRAMES, StaggerOrder, StaggerPlan, StaggerSpacing,
+    spread_plan, stagger_plan,
 };
 pub use curve::{
     CURVE_SNAP_X, CURVE_SNAP_Y, CurveControl, CurveHandle, CurvePreset, CurveSnap, CurveTarget,

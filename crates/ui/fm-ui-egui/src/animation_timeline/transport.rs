@@ -156,28 +156,47 @@ pub fn action_spec<T: Copy + Ord>(
             }),
             false,
         ),
-        TimelineAction::PreviousKey => (
-            "◀♦",
-            l.text(Msg::AnimPreviousKeyHover),
-            busy.or_else(|| {
-                document
-                    .previous_key_frame()
-                    .is_none()
-                    .then(|| l.text(Msg::AnimReasonNoPreviousKey))
-            }),
-            false,
-        ),
-        TimelineAction::NextKey => (
-            "♦▶",
-            l.text(Msg::AnimNextKeyHover),
-            busy.or_else(|| {
-                document
-                    .next_key_frame()
-                    .is_none()
-                    .then(|| l.text(Msg::AnimReasonNoNextKey))
-            }),
-            false,
-        ),
+        TimelineAction::PreviousKey => {
+            let rows = document.key_jump_rows(state.active_row);
+            let (hover, reason) = if rows.is_empty() {
+                (Msg::AnimPreviousKeyHover, Msg::AnimReasonNoPreviousKey)
+            } else {
+                (
+                    Msg::AnimPreviousKeyRowsHover,
+                    Msg::AnimReasonNoPreviousKeyRows,
+                )
+            };
+            (
+                "◀♦",
+                l.text(hover),
+                busy.or_else(|| {
+                    document
+                        .previous_key_frame(&rows)
+                        .is_none()
+                        .then(|| l.text(reason))
+                }),
+                false,
+            )
+        }
+        TimelineAction::NextKey => {
+            let rows = document.key_jump_rows(state.active_row);
+            let (hover, reason) = if rows.is_empty() {
+                (Msg::AnimNextKeyHover, Msg::AnimReasonNoNextKey)
+            } else {
+                (Msg::AnimNextKeyRowsHover, Msg::AnimReasonNoNextKeyRows)
+            };
+            (
+                "♦▶",
+                l.text(hover),
+                busy.or_else(|| {
+                    document
+                        .next_key_frame(&rows)
+                        .is_none()
+                        .then(|| l.text(reason))
+                }),
+                false,
+            )
+        }
         TimelineAction::KeyAtPlayhead => (
             l.text(Msg::AnimKeyButton),
             l.text(Msg::AnimKeyHover),
@@ -271,11 +290,9 @@ pub fn perform<T: Copy + Ord>(
         }
         TimelineAction::StepBack => document.step(-step),
         TimelineAction::StepForward => document.step(step),
-        TimelineAction::PreviousKey => {
-            document.jump_to_key(false);
-        }
-        TimelineAction::NextKey => {
-            document.jump_to_key(true);
+        TimelineAction::PreviousKey | TimelineAction::NextKey => {
+            let rows = document.key_jump_rows(state.active_row);
+            document.jump_to_key(action == TimelineAction::NextKey, &rows);
         }
         TimelineAction::KeyAtPlayhead => {
             if document.mode() == EditorMode::Simple {

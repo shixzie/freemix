@@ -994,3 +994,161 @@ fn the_stagger_menu_cascades_elements_in_one_undo_step() {
         Some("the project is locked")
     );
 }
+
+#[test]
+fn the_snap_toggle_follows_the_state_onto_every_document() {
+    // Regression: the toggle lived only in the document's view, so a newly
+    // shown animation (another title, or the scene timeline) snapped again.
+    let mut harness = Harness::new(EditorMode::Advanced);
+    let output = harness.idle();
+    harness.click(output.arrange.snap.unwrap().center());
+    assert!(!harness.state.snapping);
+    harness.document = document();
+    harness.document.set_mode(EditorMode::Advanced);
+    assert!(harness.document.view().snapping(), "a fresh document");
+    harness.idle();
+    assert!(
+        !harness.document.view().snapping(),
+        "the shown document takes the toggle"
+    );
+}
+
+#[test]
+fn shift_advice_follows_the_snap_toggle() {
+    // Regression: with snapping off, the key, ruler, and handle help still
+    // said Shift disables snapping, the opposite of what it does.
+    let mut harness = Harness::new(EditorMode::Advanced);
+    harness.idle();
+    let help = |harness: &Harness| {
+        let rows = tracks::rows(&harness.document);
+        let key = tracks::hover_text(
+            Locale::ENGLISH,
+            &harness.document,
+            &rows,
+            tracks::Hit::Key(fm_animation::KeyRef {
+                track: track(Property::Opacity),
+                frame: 20,
+            }),
+        )
+        .unwrap();
+        let ruler = tracks::hover_text(
+            Locale::ENGLISH,
+            &harness.document,
+            &rows,
+            tracks::Hit::Ruler,
+        )
+        .unwrap();
+        format!("{key}\n{ruler}")
+    };
+    let on = help(&harness);
+    assert!(on.contains("Shift disables snapping"), "{on}");
+    assert!(on.contains("hold Shift to scrub freely"), "{on}");
+    harness.state.snapping = false;
+    harness.idle();
+    let off = help(&harness);
+    assert!(off.contains("snapping is off; hold Shift to snap"), "{off}");
+    assert!(!off.contains("Shift disables snapping"), "{off}");
+    assert!(!off.contains("scrub freely"), "{off}");
+}
+
+#[test]
+fn key_jumps_keep_to_the_selected_row() {
+    let mut harness = Harness::new(EditorMode::Advanced);
+    // Opacity keys 0/20; x keys 0/20 plus one at 10.
+    let mut clip = harness.document.clip().clone();
+    clip.set_key(
+        track(Property::PositionX),
+        Keyframe::new(10, Value::Scalar(-50), Easing::Linear),
+    )
+    .unwrap();
+    harness.document.reset_from_authority(clip, 2);
+    harness
+        .document
+        .set_selection(&fm_animation::KeySelection::from_iter([
+            fm_animation::KeyRef {
+                track: track(Property::Opacity),
+                frame: 0,
+            },
+        ]));
+    harness.document.set_playhead(0);
+    let output = harness.idle();
+    let next = action_spec(
+        TimelineAction::NextKey,
+        &harness.document,
+        &harness.state,
+        Locale::ENGLISH,
+    );
+    assert!(
+        next.action.contains("rows with selected keys"),
+        "{}",
+        next.action
+    );
+    harness.click(Harness::rect_of(&output, TimelineAction::NextKey).center());
+    assert_eq!(harness.document.playhead(), 20, "x's key at 10 is skipped");
+    let next = action_spec(
+        TimelineAction::NextKey,
+        &harness.document,
+        &harness.state,
+        Locale::ENGLISH,
+    );
+    assert_eq!(
+        next.disabled_reason,
+        Some("there is no key after the playhead on the selected or active rows")
+    );
+    // With nothing selected, the active row scopes it; with no active row,
+    // every row does.
+    harness.document.clear_selection();
+    harness.state.active_row = Some(track(Property::PositionX));
+    harness.key(Key::ArrowLeft, egui::Modifiers::COMMAND);
+    assert_eq!(harness.document.playhead(), 10);
+    harness.state.active_row = None;
+    harness.document.set_playhead(20);
+    harness.key(Key::ArrowLeft, egui::Modifiers::COMMAND);
+    assert_eq!(harness.document.playhead(), 10);
+    let previous = action_spec(
+        TimelineAction::PreviousKey,
+        &harness.document,
+        &harness.state,
+        Locale::ENGLISH,
+    );
+    assert!(previous.action.contains("in this phase"));
+}
+
+#[test]
+fn resting_on_apply_previews_the_stagger_and_spread_fills_the_phase() {
+    let mut harness = Harness::new(EditorMode::Simple);
+    two_elements(&mut harness);
+    harness.state.stagger_frames = 8;
+    let output = harness.idle();
+    harness.click(output.arrange.stagger.unwrap().center());
+    let output = harness.idle();
+    let apply = output.arrange.stagger_apply.expect("the menu is open");
+    harness.move_to(apply.center());
+    harness.idle();
+    let plan = harness.state.stagger_preview.clone().expect("a preview");
+    assert_eq!(plan.moves, [(TARGET, 0), (2, 8)]);
+    assert_eq!(plan.last_frame, 28);
+    assert_eq!(span(&harness.document, 2), (0, 20), "nothing moved yet");
+    assert_eq!(harness.document.undo_depth(), 0);
+    // Advanced mode draws the ghost keys too.
+    harness.document.set_mode(EditorMode::Advanced);
+    harness.idle();
+    assert!(harness.state.stagger_preview.is_some());
+    harness.document.set_mode(EditorMode::Simple);
+    // Moving off Apply ends the preview.
+    harness.move_to(Pos2::new(5.0, 700.0));
+    assert!(harness.state.stagger_preview.is_none());
+
+    // Spread: the last element ends on the phase end (50).
+    harness.state.stagger_spread = true;
+    harness.move_to(apply.center());
+    let output = harness.idle();
+    let apply = output.arrange.stagger_apply.expect("the menu stays open");
+    let plan = harness.state.stagger_preview.clone().expect("a preview");
+    assert_eq!(plan.moves, [(TARGET, 0), (2, 30)]);
+    harness.click(apply.center());
+    assert_eq!(span(&harness.document, 2), (30, 50));
+    assert_eq!(harness.document.phase_frames(), 50);
+    assert_eq!(harness.document.undo_depth(), 1);
+    assert!(harness.state.stagger_preview.is_none());
+}

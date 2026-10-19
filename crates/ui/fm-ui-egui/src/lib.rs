@@ -1504,6 +1504,19 @@ impl StudioShell {
         self.layout = layout;
     }
 
+    /// Whether the animation timelines snap drags without Shift (their
+    /// Snapping toggle), a console preference.
+    #[must_use]
+    pub const fn timeline_snapping(&self) -> bool {
+        self.animation.snapping()
+    }
+
+    /// Sets the animation timelines' Snapping toggle, for example to the
+    /// one restored from preferences.
+    pub const fn set_timeline_snapping(&mut self, snapping: bool) {
+        self.animation.set_snapping(snapping);
+    }
+
     /// Returns to the Default layout and default sizes, docking every
     /// panel and tool window back; saved layouts are kept.
     pub(crate) fn reset_layout(&mut self, _context: &egui::Context) {

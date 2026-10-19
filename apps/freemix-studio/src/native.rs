@@ -364,6 +364,7 @@ impl StudioApp {
         let layout = saved.layout.clone().unwrap_or_default();
         shell.set_layout(layout.clone());
         shell.set_appearance(saved.appearance());
+        shell.set_timeline_snapping(saved.timeline_snapping());
         // The first frame already draws at the saved scale.
         creation_context
             .egui_ctx
@@ -593,8 +594,11 @@ impl eframe::App for StudioApp {
 
         // Written once the operator stops changing them (a splitter or a
         // window being dragged changes the layout every frame).
+        let now = Instant::now();
+        self.preferences
+            .note_timeline_snapping(now, self.shell.timeline_snapping());
         match self.preferences.observe_at(
-            Instant::now(),
+            now,
             self.shell.locale(),
             self.shell.layout(),
             self.shell.appearance(),
@@ -610,6 +614,8 @@ impl eframe::App for StudioApp {
 
     fn on_exit(&mut self) {
         // Whatever changed in the last moments is saved too.
+        self.preferences
+            .note_timeline_snapping(Instant::now(), self.shell.timeline_snapping());
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),

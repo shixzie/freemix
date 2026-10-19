@@ -1,9 +1,13 @@
 //! Header controls that arrange the timeline: the snapping toggle and the
-//! Stagger menu, which cascades whole element animations in one undo step.
+//! Stagger menu, which cascades whole element animations in one undo step
+//! (a number of frames apart, or spread to fill the phase). While the
+//! pointer rests on the menu's Apply, the rows show the result ghosted.
 
 use egui::containers::menu::{MenuButton, MenuConfig};
 use egui::{DragValue, PopupCloseBehavior, Rect, RichText, Stroke, Ui, Vec2};
-use fm_ui_model::animation_editor::{AnimDocument, MAX_STAGGER_FRAMES, StaggerOrder};
+use fm_ui_model::animation_editor::{
+    AnimDocument, MAX_STAGGER_FRAMES, StaggerOrder, StaggerSpacing,
+};
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
 use super::AnimationTimelineState;
@@ -32,7 +36,7 @@ pub(super) fn draw<T: Copy + Ord>(
 ) -> ArrangeRects {
     let idle = document.drag().is_none();
     let busy = l.text(Msg::AnimReasonDrag);
-    let snap = snap_toggle(ui, l, document, idle, busy);
+    let snap = snap_toggle(ui, l, document, state, idle, busy);
     let (stagger, stagger_apply) = stagger_menu(ui, l, document, state);
     ArrangeRects {
         snap: Some(snap),
@@ -59,6 +63,7 @@ fn snap_toggle<T: Copy + Ord>(
     ui: &mut Ui,
     l: Locale,
     document: &mut AnimDocument<T>,
+    state: &mut AnimationTimelineState<T>,
     idle: bool,
     busy: &str,
 ) -> Rect {
@@ -72,6 +77,7 @@ fn snap_toggle<T: Copy + Ord>(
         .add_enabled(idle, toggle_button(l.text(Msg::AnimSnap), on))
         .hint_in(l, hover, busy);
     if response.clicked() {
+        state.snapping = !on;
         document.view_mut().set_snapping(!on);
     }
     response.rect
@@ -119,16 +125,37 @@ fn stagger_contents<T: Copy + Ord>(
     state: &mut AnimationTimelineState<T>,
 ) -> Rect {
     ui.set_min_width(240.0);
+    stagger_options(ui, l, state);
+    stagger_apply(ui, l, document, state)
+}
+
+/// The spacing (frames apart, or spread to fill the phase) and the order.
+fn stagger_options<T>(ui: &mut Ui, l: Locale, state: &mut AnimationTimelineState<T>) {
     ui.horizontal(|ui| {
         ui.label(field_label(l.text(Msg::AnimStaggerStep)));
-        ui.add(
+        ui.add_enabled(
+            !state.stagger_spread,
             DragValue::new(&mut state.stagger_frames)
                 .range(0..=MAX_STAGGER_FRAMES)
                 .speed(0.25)
                 .suffix(" fr"),
         )
-        .on_hover_text(l.text(Msg::AnimStaggerStepHover));
+        .hint_in(
+            l,
+            l.text(Msg::AnimStaggerStepHover),
+            l.text(Msg::AnimReasonSpreadSpacing),
+        );
     });
+    if ui
+        .add(toggle_button(
+            l.text(Msg::AnimStaggerSpread),
+            state.stagger_spread,
+        ))
+        .on_hover_text(l.text(Msg::AnimStaggerSpreadHover))
+        .clicked()
+    {
+        state.stagger_spread = !state.stagger_spread;
+    }
     ui.horizontal(|ui| {
         for (order, label, hover) in [
             (
@@ -152,6 +179,15 @@ fn stagger_contents<T: Copy + Ord>(
             }
         }
     });
+}
+
+/// The elements in start order and Apply, whose hover previews the result.
+fn stagger_apply<T: Copy + Ord>(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut AnimDocument<T>,
+    state: &mut AnimationTimelineState<T>,
+) -> Rect {
     let mut names: Vec<String> = document
         .stagger_targets()
         .into_iter()
@@ -168,25 +204,57 @@ fn stagger_contents<T: Copy + Ord>(
     )
     .on_hover_text(l.text(Msg::AnimStaggerOrderHover));
     let reason = stagger_reason(l, document, state);
-    let hover = l.format(
-        Msg::AnimStaggerApplyHover,
-        &[
-            ("count", Arg::from(count)),
-            ("step", Arg::Str(&l10n::frames(l, state.stagger_frames))),
-        ],
-    );
+    let hover = if state.stagger_spread {
+        l.format(
+            Msg::AnimStaggerSpreadApplyHover,
+            &[
+                ("count", Arg::from(count)),
+                (
+                    "length",
+                    Arg::Str(&l10n::frames(l, document.phase_frames())),
+                ),
+            ],
+        )
+    } else {
+        l.format(
+            Msg::AnimStaggerApplyHover,
+            &[
+                ("count", Arg::from(count)),
+                ("step", Arg::Str(&l10n::frames(l, state.stagger_frames))),
+            ],
+        )
+    };
     let apply = ui
         .add_enabled(
             reason.is_none(),
             crate::theme::small_button(l.text(Msg::AnimStaggerApply)),
         )
         .hint_in(l, &hover, reason.unwrap_or(""));
+    let spacing = state.stagger_spacing();
+    if apply.hovered() && reason.is_none() {
+        // A refused plan (a phase past the limit) shows nothing; a click
+        // then says why.
+        state.stagger_preview = document.plan_stagger(spacing, state.stagger_order).ok();
+    }
     if apply.clicked() {
-        match document.stagger(state.stagger_frames, state.stagger_order) {
+        match document.stagger(spacing, state.stagger_order) {
             Ok(()) => state.notice = None,
             Err(error) => state.show_error(&error),
         }
+        state.stagger_preview = None;
         ui.close();
     }
     apply.rect
+}
+
+impl<T> AnimationTimelineState<T> {
+    /// The spacing the Stagger menu would apply.
+    #[must_use]
+    pub const fn stagger_spacing(&self) -> StaggerSpacing {
+        if self.stagger_spread {
+            StaggerSpacing::FillPhase
+        } else {
+            StaggerSpacing::Frames(self.stagger_frames)
+        }
+    }
 }

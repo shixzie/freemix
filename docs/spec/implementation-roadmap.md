@@ -2830,9 +2830,17 @@ starts k steps after the earliest start, each keeping its own timing and
 easing; two or more elements with selected keys scope it, and the phase
 grows to hold the last one) as one undo step that auto-saves through the
 existing `title_animation_set`/`scene_animation_set` edits, so it needs no
-protocol change. A `Snap` toggle turns drag snapping off (Shift then snaps
-instead of freeing), and the transport's previous/next key keys
-(Ctrl+Left/Right) jump the playhead between the phase's keys. Remaining
+protocol change. `Spread to fill phase` spaces the starts evenly instead
+(`spread_plan`) so the last element ends on the phase end, and resting the
+pointer on `Apply stagger` ghosts the result over the rows
+(`AnimDocument::plan_stagger`). A `Snapping` toggle turns drag snapping off
+(Shift then snaps instead of freeing, and the drag help says so); it is a
+console preference saved in `studio.conf` (`animation.snapping`, debounced
+like the layout). The transport's previous/next key keys (Ctrl+Left/Right)
+jump the playhead between the keys of the rows with selected keys, else the
+active Advanced row, else every row of the phase. Undo and redo select only
+restored keys of the shown phase, so an edit undone from the other phase
+leaves no hidden keys for Delete to reach. Remaining
 limitations: Studio imports and exports by typed path (there is no file
 dialog), and a preset applies to one target at a time.
 

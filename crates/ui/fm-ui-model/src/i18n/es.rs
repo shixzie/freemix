@@ -3560,11 +3560,27 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AnimKeyNextKey, t("Ctrl+flecha derecha")),
     (
         Msg::AnimPreviousKeyHover,
-        t("Llevar el cabezal a la clave anterior de esta fase"),
+        t(
+            "Llevar el cabezal a la clave anterior de esta fase. Seleccione claves, o haga clic en una fila en el modo Avanzado, para limitarse a esas filas.",
+        ),
+    ),
+    (
+        Msg::AnimPreviousKeyRowsHover,
+        t(
+            "Llevar el cabezal a la clave anterior de las filas con claves seleccionadas (sin nada seleccionado, la fila activa)",
+        ),
     ),
     (
         Msg::AnimNextKeyHover,
-        t("Llevar el cabezal a la clave siguiente de esta fase"),
+        t(
+            "Llevar el cabezal a la clave siguiente de esta fase. Seleccione claves, o haga clic en una fila en el modo Avanzado, para limitarse a esas filas.",
+        ),
+    ),
+    (
+        Msg::AnimNextKeyRowsHover,
+        t(
+            "Llevar el cabezal a la clave siguiente de las filas con claves seleccionadas (sin nada seleccionado, la fila activa)",
+        ),
     ),
     (
         Msg::AnimReasonNoPreviousKey,
@@ -3573,6 +3589,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AnimReasonNoNextKey,
         t("no hay ninguna clave después del cabezal en esta fase"),
+    ),
+    (
+        Msg::AnimReasonNoPreviousKeyRows,
+        t("no hay ninguna clave antes del cabezal en las filas seleccionadas o activa"),
+    ),
+    (
+        Msg::AnimReasonNoNextKeyRows,
+        t("no hay ninguna clave después del cabezal en las filas seleccionadas o activa"),
     ),
     (Msg::AnimSnap, t("Imán")),
     (
@@ -3629,8 +3653,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AnimStaggerApplyHover,
         plural(
-            "Hacer que {count} elemento empiece {step} después del anterior; cada uno conserva su ritmo y su suavizado, y la fase se alarga si el último terminara después de ella. Un solo paso de deshacer.",
-            "Hacer que {count} elementos empiecen {step} después del anterior; cada uno conserva su ritmo y su suavizado, y la fase se alarga si el último terminara después de ella. Un solo paso de deshacer.",
+            "Hacer que {count} elemento empiece {step} después del anterior; cada uno conserva su ritmo y su suavizado, y la fase se alarga si el último terminara después de ella. Un solo paso de deshacer. Mientras apunta aquí, la línea de tiempo muestra adónde irán las claves.",
+            "Hacer que {count} elementos empiecen {step} después del anterior; cada uno conserva su ritmo y su suavizado, y la fase se alarga si el último terminara después de ella. Un solo paso de deshacer. Mientras apunta aquí, la línea de tiempo muestra adónde irán las claves.",
+        ),
+    ),
+    (Msg::AnimStaggerSpread, t("Repartir hasta llenar la fase")),
+    (
+        Msg::AnimStaggerSpreadHover,
+        t(
+            "En lugar de una separación fija, repartir los inicios por igual para que el último elemento termine justo al final de la fase. Desactívelo para elegir usted la separación.",
+        ),
+    ),
+    (
+        Msg::AnimReasonSpreadSpacing,
+        t("Repartir hasta llenar la fase decide la separación; desactívelo para elegirla"),
+    ),
+    (
+        Msg::AnimStaggerSpreadApplyHover,
+        plural(
+            "Repartir {count} elemento por igual para que el último termine al final de la fase ({length}); cada uno conserva su ritmo y su suavizado, y la fase solo se alarga si alguno terminara después de ella. Un solo paso de deshacer. Mientras apunta aquí, la línea de tiempo muestra adónde irán las claves.",
+            "Repartir {count} elementos por igual para que el último termine al final de la fase ({length}); cada uno conserva su ritmo y su suavizado, y la fase solo se alarga si alguno terminara después de ella. Un solo paso de deshacer. Mientras apunta aquí, la línea de tiempo muestra adónde irán las claves.",
         ),
     ),
     (
@@ -4108,6 +4150,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (
+        Msg::AnimRulerHoverSnapOff,
+        t(
+            "Regla de tiempo: haga clic o arrastre para mover el cabezal (el imán está desactivado; mantenga Mayús para ajustarlo a las claves). Ctrl+rueda amplía, Mayús+rueda desplaza.",
+        ),
+    ),
+    (
         Msg::AnimPhaseEndHover,
         t(
             "Final de la fase ({length}): arrastre para estirar o comprimir todas las claves de esta fase. Mantenga Alt para cambiar la duración sin mover claves.",
@@ -4120,6 +4168,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (
+        Msg::AnimStripHoverSnapOff,
+        t(
+            "Tirador de tiempo: arrastre para estirar o comprimir en proporción las claves seleccionadas. Mantenga Alt para mover solo las claves de este borde; el imán está desactivado, así que Mayús ajusta.",
+        ),
+    ),
+    (
         Msg::AnimKeyInfo,
         t(
             "{target} · clave de {property} en el fotograma {frame}: {value}, suavizado {easing} ({shape}).",
@@ -4129,6 +4183,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AnimKeyDragHelp,
         t(
             "Arrastre para mover las claves seleccionadas (se ajustan a claves, al cabezal y a segundos enteros; Mayús desactiva el ajuste). Ctrl+clic la añade o la quita de la selección; Mayús+clic selecciona un intervalo.",
+        ),
+    ),
+    (
+        Msg::AnimKeyDragHelpSnapOff,
+        t(
+            "Arrastre para mover las claves seleccionadas (el imán está desactivado; mantenga Mayús para ajustarlas a claves, al cabezal y a segundos enteros). Ctrl+clic la añade o la quita de la selección; Mayús+clic selecciona un intervalo.",
         ),
     ),
     (Msg::AnimShapeLinear, t("rombo: lineal")),
@@ -4144,6 +4204,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AnimBarEndHover,
         t(
             "Tirador de duración: arrastre para estirar o comprimir la animación de {name}. Mantenga Alt para mover solo este extremo; Mayús desactiva el ajuste.",
+        ),
+    ),
+    (
+        Msg::AnimBarEndHoverSnapOff,
+        t(
+            "Tirador de duración: arrastre para estirar o comprimir la animación de {name}. Mantenga Alt para mover solo este extremo; el imán está desactivado, así que Mayús ajusta.",
         ),
     ),
     (
@@ -4189,6 +4255,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AnimRetimeModifiers,
         t("Alt: mover un borde · Mayús: sin ajuste · Esc: cancelar"),
+    ),
+    (
+        Msg::AnimRetimeModifiersSnapOff,
+        t("Alt: mover un borde · Mayús: ajustar · Esc: cancelar"),
     ),
     // Colour grading panel (SW-019).
     (Msg::GradeTitle, t("Corrección de color")),

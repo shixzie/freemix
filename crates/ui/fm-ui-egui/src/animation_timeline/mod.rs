@@ -41,7 +41,7 @@ use egui::{CornerRadius, DragValue, Frame, Margin, Rect, Response, RichText, Str
 use fm_animation::{MAX_PHASE_FRAMES, Phase, Property, TrackKey};
 use fm_ui_model::animation_editor::{
     AnimDocument, AnimEditorError, DEFAULT_STAGGER_FRAMES, EditorMode, MAX_FRAMES_PER_PIXEL,
-    MIN_FRAMES_PER_PIXEL, PresetSource, StaggerOrder,
+    MIN_FRAMES_PER_PIXEL, PresetSource, StaggerOrder, StaggerPlan,
 };
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
@@ -168,6 +168,16 @@ pub struct AnimationTimelineState<T> {
     pub stagger_frames: u32,
     /// The Stagger menu's order.
     pub stagger_order: StaggerOrder,
+    /// Whether the Stagger menu spreads the starts to fill the phase
+    /// instead of using [`Self::stagger_frames`].
+    pub stagger_spread: bool,
+    /// Whether drags snap without Shift (the header's Snapping toggle). It
+    /// belongs to the console, not to one animation: the widget applies it
+    /// to whichever document it shows.
+    pub snapping: bool,
+    /// What the Stagger menu's Apply would do, while the pointer rests on
+    /// it this frame; the rows draw it ghosted.
+    pub(crate) stagger_preview: Option<StaggerPlan<T>>,
     pub(crate) notice: Option<Notice>,
     last_time: Option<f64>,
     length_edit: Option<u32>,
@@ -203,6 +213,9 @@ impl<T> Default for AnimationTimelineState<T> {
             library: LibraryEdit::default(),
             stagger_frames: DEFAULT_STAGGER_FRAMES,
             stagger_order: StaggerOrder::TopFirst,
+            stagger_spread: false,
+            snapping: true,
+            stagger_preview: None,
             notice: None,
             last_time: None,
             length_edit: None,
@@ -305,6 +318,8 @@ impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
         } = self;
         let l = locale.unwrap_or_else(|| l10n::locale(ui.ctx()));
         state.locale = l;
+        document.view_mut().set_snapping(state.snapping);
+        state.stagger_preview = None;
         let generation = document.generation();
         let mut actions = Vec::new();
 
