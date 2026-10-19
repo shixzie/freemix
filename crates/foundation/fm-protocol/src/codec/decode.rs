@@ -113,6 +113,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "audio_meters" => WireMessage::AudioMeters(decode_audio_meters(&mut fields)?),
         "stream_status" => WireMessage::StreamStatus(decode_stream_status(&mut fields)?),
         "monitor_frame" => WireMessage::MonitorFrame(decode_monitor_frame(&mut fields)?),
+        "input_thumbnail_subscription" => {
+            WireMessage::InputThumbnailSubscription(crate::InputThumbnailSubscription {
+                enabled: fields.boolean("enabled")?,
+            })
+        }
+        "input_thumbnail" => WireMessage::InputThumbnail(decode_input_thumbnail(&mut fields)?),
         "capability_report" => {
             WireMessage::CapabilityReport(decode_capability_report(&mut fields)?)
         }
@@ -3198,6 +3204,55 @@ fn decode_monitor_frame(fields: &mut Fields) -> Result<MonitorFrameMessage, Code
         height,
         part,
         parts,
+        data,
+    })
+}
+
+fn decode_input_thumbnail(fields: &mut Fields) -> Result<crate::InputThumbnailMessage, CodecError> {
+    let server = decode_server_identity(fields)?;
+    let input = fields.canonical_input("input")?;
+    let sequence = fields.canonical_required("sequence")?;
+    let origin_value = fields.required("origin")?;
+    let origin = match origin_value.as_str() {
+        "simulated" => MonitorFrameOrigin::Simulated,
+        "native" => MonitorFrameOrigin::Native,
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "origin",
+                value: origin_value,
+            });
+        }
+    };
+    let age_ms = fields.canonical_u32("age_ms")?;
+    let dimension = |fields: &mut Fields, name: &'static str| {
+        let value = fields.canonical_u32(name)?;
+        u16::try_from(value).map_err(|_| CodecError::InvalidField {
+            field: name,
+            value: value.to_string(),
+        })
+    };
+    let width = dimension(fields, "width")?;
+    let height = dimension(fields, "height")?;
+    let data_value = fields.required("data")?;
+    let encoded_limit = (crate::MAX_INPUT_THUMBNAIL_BYTES * 4).div_ceil(3);
+    let data = if data_value.len() > encoded_limit {
+        None
+    } else {
+        crate::monitor_image::base64url_decode(&data_value)
+    }
+    .ok_or_else(|| CodecError::InvalidField {
+        field: "data",
+        value: format!("{} characters", data_value.len()),
+    })?;
+    super::validate_input_thumbnail(width, height, data.len())?;
+    Ok(crate::InputThumbnailMessage {
+        server,
+        input,
+        sequence,
+        origin,
+        age_ms,
+        width,
+        height,
         data,
     })
 }

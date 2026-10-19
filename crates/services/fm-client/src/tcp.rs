@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CodecError, CommandPayload, CommandResult,
     DiagnosticsRequest, DiagnosticsResponse, DurableGap, ErrorMessage, EventMessage,
-    HandshakeOutcome, HeartbeatAcknowledgementMessage, LineDecoder, MonitorFrameAssembler,
-    MonitorFrameMessage, MonitorImage, MonitorTap, RuntimeEventMessage, ScenePreviewImage,
-    ScenePreviewRequest, StreamStatusMessage, TitlePreviewAssembler, TitlePreviewFrameMessage,
-    TitlePreviewImage, TitlePreviewRequest, WireMessage, encode_line,
+    HandshakeOutcome, HeartbeatAcknowledgementMessage, InputThumbnailImage, InputThumbnailMessage,
+    LineDecoder, MonitorFrameAssembler, MonitorFrameMessage, MonitorImage, MonitorTap,
+    RuntimeEventMessage, ScenePreviewImage, ScenePreviewRequest, StreamStatusMessage,
+    TitlePreviewAssembler, TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest,
+    WireInputId, WireMessage, decode_input_thumbnail, encode_line,
 };
 
 #[cfg(feature = "std-websocket")]
@@ -388,6 +389,12 @@ pub enum SessionEvent {
     CaptureDevices {
         message: fm_protocol::CaptureDevicesMessage,
     },
+    /// One valid input thumbnail arrived for `input` (Protocol 2.59); the
+    /// decoded image is available from
+    /// [`TcpSession::latest_input_thumbnails`].
+    InputThumbnail {
+        input: WireInputId,
+    },
     /// One valid `title_preview_frame` part arrived for `request_id`. When
     /// `complete` is `true` it finished its group and the decoded image is
     /// available from [`TcpSession::latest_title_preview`].
@@ -500,7 +507,14 @@ pub struct TcpSession {
     latest_title_preview: Option<(TitlePreviewImage, Instant)>,
     scene_preview_assembler: TitlePreviewAssembler,
     latest_scene_preview: Option<(ScenePreviewImage, Instant)>,
+    /// The latest decoded thumbnail per input and when it arrived
+    /// (Protocol 2.59), at most [`MAX_RETAINED_INPUT_THUMBNAILS`].
+    latest_input_thumbnails: BTreeMap<WireInputId, (InputThumbnailImage, Instant)>,
 }
+
+/// Most input thumbnails a session keeps; the oldest-received one makes room
+/// for a new input's.
+pub const MAX_RETAINED_INPUT_THUMBNAILS: usize = 256;
 
 #[derive(Debug)]
 enum Transport {
@@ -617,6 +631,7 @@ impl TcpSession {
             latest_title_preview: None,
             scene_preview_assembler: TitlePreviewAssembler::new(),
             latest_scene_preview: None,
+            latest_input_thumbnails: BTreeMap::new(),
         }
     }
 
@@ -703,6 +718,43 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::ScenePreviewRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// The latest decoded live input thumbnail per input and when it
+    /// arrived (Protocol 2.59). Empty until a subscription is on.
+    #[must_use]
+    pub const fn latest_input_thumbnails(
+        &self,
+    ) -> &BTreeMap<WireInputId, (InputThumbnailImage, Instant)> {
+        &self.latest_input_thumbnails
+    }
+
+    /// Turns this session's live input thumbnail feed on or off (Protocol
+    /// 2.59). Turning it off forgets every thumbnail received. A fresh
+    /// connection starts with the feed off, so a client that wants it
+    /// subscribes again after every (re)connect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_input_thumbnail_subscription(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        if !enabled {
+            self.latest_input_thumbnails.clear();
+        }
+        self.send_wire_wait(
+            &WireMessage::InputThumbnailSubscription(fm_protocol::InputThumbnailSubscription {
+                enabled,
+            }),
+            None,
+        )?;
         self.flush_wire_wait(None)
     }
 
@@ -1114,6 +1166,7 @@ impl TcpSession {
     /// Returns an error when not connected, another diagnostics request is
     /// already pending, the request ID is invalid, `cancelled` returns
     /// `true`, or the request, response wait, or response validation fails.
+    #[allow(clippy::too_many_lines)] // one drain arm per lossy record kind
     pub fn send_diagnostics_cancellable(
         &mut self,
         request_id: impl Into<String>,
@@ -1207,6 +1260,9 @@ impl TcpSession {
                     WireMessage::MonitorFrame(frame) => {
                         self.validate_monitor_frame(&frame)?;
                     }
+                    WireMessage::InputThumbnail(thumbnail) => {
+                        self.validate_input_thumbnail(&thumbnail)?;
+                    }
                     WireMessage::TitlePreviewFrame(frame) => {
                         self.validate_title_preview(&frame)?;
                     }
@@ -1241,6 +1297,7 @@ impl TcpSession {
         Ok(SessionEvent::DurableGap { gap })
     }
 
+    #[allow(clippy::too_many_lines)] // one dispatch arm per wire record
     fn handle_received(
         &mut self,
         message: Option<WireMessage>,
@@ -1293,6 +1350,12 @@ impl TcpSession {
                     complete,
                 })
             }
+            WireMessage::InputThumbnail(thumbnail) => {
+                self.validate_input_thumbnail(&thumbnail)?;
+                Ok(SessionEvent::InputThumbnail {
+                    input: thumbnail.input,
+                })
+            }
             WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, false),
             WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, true),
             WireMessage::DurableGap(gap) => self.durable_gap(gap),
@@ -1335,6 +1398,7 @@ impl TcpSession {
                 Err(TcpSessionError::UnexpectedMessage)
             }
             WireMessage::Command(_)
+            | WireMessage::InputThumbnailSubscription(_)
             | WireMessage::TitlePreviewRequest(_)
             | WireMessage::ScenePreviewRequest(_)
             | WireMessage::Snapshot(_)
@@ -1575,6 +1639,7 @@ impl TcpSession {
         self.latest_title_preview = None;
         self.scene_preview_assembler.reset();
         self.latest_scene_preview = None;
+        self.latest_input_thumbnails.clear();
         self.connection.take();
         self.client.transport_disconnected()
     }
@@ -1680,6 +1745,41 @@ impl TcpSession {
 }
 
 impl TcpSession {
+    /// Validates and decodes one `input_thumbnail`. A thumbnail from another
+    /// server, one whose sequence does not increase for its input, or one
+    /// that does not decode disconnects the session.
+    fn validate_input_thumbnail(
+        &mut self,
+        thumbnail: &InputThumbnailMessage,
+    ) -> Result<(), TcpSessionError> {
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == thumbnail.server);
+        let valid_sequence = self
+            .latest_input_thumbnails
+            .get(&thumbnail.input)
+            .is_none_or(|(image, _)| thumbnail.sequence > image.sequence);
+        let image = decode_input_thumbnail(thumbnail).ok();
+        let (true, true, Some(image)) = (valid_identity, valid_sequence, image) else {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        };
+        if !self.latest_input_thumbnails.contains_key(&image.input)
+            && self.latest_input_thumbnails.len() >= MAX_RETAINED_INPUT_THUMBNAILS
+            && let Some(oldest) = self
+                .latest_input_thumbnails
+                .iter()
+                .min_by_key(|(_, (_, received))| *received)
+                .map(|(input, _)| *input)
+        {
+            self.latest_input_thumbnails.remove(&oldest);
+        }
+        self.latest_input_thumbnails
+            .insert(image.input, (image, Instant::now()));
+        Ok(())
+    }
+
     /// Validates and assembles one `title_preview_frame` part, returning
     /// whether it completed its group. Any violation disconnects the
     /// session.

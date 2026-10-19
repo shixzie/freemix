@@ -40,7 +40,8 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, HeartbeatMessage, MonitorFrameAssembler, MonitorImage,
+    EventPayload, HandshakeRequest, HeartbeatMessage, InputThumbnailMessage,
+    InputThumbnailSubscription, MonitorFrameAssembler, MonitorFrameOrigin, MonitorImage,
     MonitorTap, Role, RuntimeLifecycleEvent, ServerIdentity, WireInputId, WireMessage, decode_line,
     encode_line,
 };
@@ -98,6 +99,11 @@ fn save_project(path: &Path, port: u16) {
 
 /// [`save_project`] with input 2 receiving `config`.
 fn save_project_with(path: &Path, config: NetworkStreamConfig) {
+    save_project_routed(path, config, 2, 1);
+}
+
+/// [`save_project_with`] with inputs `program` and `preview` on the buses.
+fn save_project_routed(path: &Path, config: NetworkStreamConfig, program: u128, preview: u128) {
     let store = ProjectStore::new(path).unwrap();
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
@@ -134,14 +140,14 @@ fn save_project_with(path: &Path, config: NetworkStreamConfig) {
         kind: InputKind::NetworkStream(config),
         required_capabilities: Vec::new(),
     });
-    project.set_main_mix(MainMix::new(input(2), input(1)));
+    project.set_main_mix(MainMix::new(input(program), input(preview)));
     let stored = StoredProject::from_project(
         project,
         RuntimeRouting {
-            desired_program_id: Some(input(2)),
-            realized_program_id: Some(input(2)),
-            desired_preview_id: Some(input(1)),
-            realized_preview_id: Some(input(1)),
+            desired_program_id: Some(input(program)),
+            realized_program_id: Some(input(program)),
+            desired_preview_id: Some(input(preview)),
+            realized_preview_id: Some(input(preview)),
         },
         ProjectPosition::default(),
         Vec::new(),
@@ -773,4 +779,136 @@ fn native_daemon_listens_for_an_rtmp_push_and_an_encrypted_srt_caller() {
         logged.iter().all(|line| !line.contains(SECRET)),
         "a secret reached the log: {logged:?}"
     );
+}
+
+/// Protocol 2.59: a native daemon sends a subscribed Studio session live
+/// thumbnails of its inputs. The network stream sits on Preview (the native
+/// daemon has no Preview tap), so its red thumbnail can only come from the
+/// input's own feed. Nothing arrives before the subscription or after it
+/// ends, and each input's thumbnails stay within the 2 fps cadence.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn native_daemon_sends_live_input_thumbnails_to_a_subscribed_studio() {
+    if !ffmpeg_available() {
+        eprintln!("native input thumbnail integration skipped: FFmpeg unavailable");
+        return;
+    }
+    let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-input-thumbnails.freemix");
+    let mut config = NetworkStreamConfig::new(stream_url(port));
+    config.settings.jitter_buffer_ms = 200;
+    config.settings.timeout_ms = 1_000;
+    config.settings.reconnect.backoff_min_ms = 200;
+    config.settings.reconnect.backoff_max_ms = 1_000;
+    save_project_routed(&project_path, config, 1, 2);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native input thumbnail integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "native-input-thumbnails-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Admin,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        client.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+
+    let sender = Sender::start(port);
+    client.status("live", |status| status.state == NetworkStreamState::Live);
+    // Unsubscribed, the session carries no thumbnails.
+    let quiet = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < quiet {
+        assert!(
+            !matches!(client.receive(), WireMessage::InputThumbnail(_)),
+            "a thumbnail arrived before the subscription"
+        );
+    }
+
+    client.send(&WireMessage::InputThumbnailSubscription(
+        InputThumbnailSubscription { enabled: true },
+    ));
+    let thumbnail = |message: WireMessage| match message {
+        WireMessage::InputThumbnail(thumbnail) => Some(thumbnail),
+        _ => None,
+    };
+    let center = |thumbnail: &InputThumbnailMessage| {
+        let image = fm_protocol::decode_input_thumbnail(thumbnail).unwrap();
+        let width = usize::from(image.width);
+        let at = (usize::from(image.height) / 2 * width + width / 2) * 4;
+        [image.rgba[at], image.rgba[at + 1], image.rgba[at + 2]]
+    };
+    let camera_thumbnail = client.wait_for("the stream's red thumbnail", |_, message| {
+        let thumbnail = thumbnail(message)?;
+        (thumbnail.input == camera()
+            && red({
+                let [r, g, b] = center(&thumbnail);
+                [r, g, b, 255]
+            }))
+        .then_some(thumbnail)
+    });
+    assert_eq!(camera_thumbnail.origin, MonitorFrameOrigin::Native);
+    assert_eq!(
+        (camera_thumbnail.width, camera_thumbnail.height),
+        (160, 90),
+        "320x180 fits 160x90"
+    );
+    assert!(camera_thumbnail.age_ms < 2_000, "{camera_thumbnail:?}");
+    let solid = client.wait_for("the solid's thumbnail", |_, message| {
+        thumbnail(message).filter(|thumbnail| thumbnail.input == WireInputId::from_domain(input(1)))
+    });
+    assert_eq!(center(&solid), [12, 34, 56]);
+
+    // Each input's thumbnails stay within the 2 fps cadence, in order.
+    let window = Instant::now();
+    let mut sequences = Vec::new();
+    while window.elapsed() < Duration::from_secs(3) {
+        if let Some(thumbnail) = thumbnail(client.receive())
+            && thumbnail.input == camera()
+        {
+            sequences.push(thumbnail.sequence);
+        }
+    }
+    assert!(!sequences.is_empty(), "the live stream keeps sending");
+    assert!(
+        sequences.len() <= 8,
+        "{} thumbnails in 3 s",
+        sequences.len()
+    );
+    assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+
+    // Unsubscribed again, thumbnails stop (one already in flight may land).
+    client.send(&WireMessage::InputThumbnailSubscription(
+        InputThumbnailSubscription { enabled: false },
+    ));
+    let settle = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settle {
+        client.receive();
+    }
+    let quiet = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < quiet {
+        assert!(
+            !matches!(client.receive(), WireMessage::InputThumbnail(_)),
+            "a thumbnail arrived after unsubscribing"
+        );
+    }
+    drop(sender);
+    drop(daemon);
 }

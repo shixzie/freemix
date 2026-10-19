@@ -1755,3 +1755,114 @@ fn capture_devices_request_and_reply_round_trip() {
     );
     server_thread.join().unwrap();
 }
+
+fn input_thumbnail(input: u128, sequence: u64, red: u8) -> fm_protocol::InputThumbnailMessage {
+    let pixels: Vec<u8> = (0..4 * 2).flat_map(|_| [red, 20, 30]).collect();
+    fm_protocol::InputThumbnailMessage {
+        server: server(),
+        input: self::input(input),
+        sequence,
+        origin: MonitorFrameOrigin::Native,
+        age_ms: 250,
+        width: 4,
+        height: 2,
+        data: encode_qoi_rgb(4, 2, &pixels, 12, 3).unwrap(),
+    }
+}
+
+/// Protocol 2.59: each input keeps its latest decoded thumbnail; the
+/// subscription goes out on the wire, and turning it off or disconnecting
+/// forgets every thumbnail.
+#[test]
+fn input_thumbnails_keep_the_latest_per_input_and_clear_on_unsubscribe() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        assert_eq!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(fm_protocol::InputThumbnailSubscription {
+                enabled: true
+            })
+        );
+        release_rx.recv().unwrap();
+        peer.send_all(&[
+            WireMessage::InputThumbnail(input_thumbnail(1, 1, 200)),
+            WireMessage::InputThumbnail(input_thumbnail(2, 2, 10)),
+            WireMessage::InputThumbnail(input_thumbnail(1, 3, 90)),
+        ]);
+        assert_eq!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(fm_protocol::InputThumbnailSubscription {
+                enabled: false
+            })
+        );
+    });
+    let mut session = TcpSession::new(client(4));
+    assert!(matches!(
+        session.send_input_thumbnail_subscription(true),
+        Err(TcpSessionError::NotConnected)
+    ));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.send_input_thumbnail_subscription(true).unwrap();
+    release_tx.send(()).unwrap();
+    for expected in [1, 2, 1] {
+        assert_eq!(
+            session.receive().unwrap(),
+            SessionEvent::InputThumbnail {
+                input: input(expected)
+            }
+        );
+    }
+    let thumbnails = session.latest_input_thumbnails();
+    assert_eq!(thumbnails.len(), 2);
+    let (first, _) = &thumbnails[&input(1)];
+    assert_eq!(
+        (first.sequence, first.width, first.height, first.age_ms),
+        (3, 4, 2, 250)
+    );
+    assert_eq!(&first.rgba[..4], &[90, 20, 30, 255]);
+    assert_eq!(first.origin, MonitorFrameOrigin::Native);
+    session.send_input_thumbnail_subscription(false).unwrap();
+    assert!(session.latest_input_thumbnails().is_empty());
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn input_thumbnail_sequence_must_increase_per_input_and_name_this_server() {
+    let (mut session, server_thread) = connect_with_records(vec![
+        WireMessage::InputThumbnail(input_thumbnail(1, 5, 1)),
+        // Another input keeps its own order.
+        WireMessage::InputThumbnail(input_thumbnail(2, 1, 1)),
+        WireMessage::InputThumbnail(input_thumbnail(1, 5, 1)),
+    ]);
+    session.receive().unwrap();
+    session.receive().unwrap();
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(session.latest_input_thumbnails().is_empty());
+    server_thread.join().unwrap();
+
+    let mut foreign = input_thumbnail(1, 1, 1);
+    foreign.server.state_epoch += 1;
+    let (mut session, server_thread) =
+        connect_with_records(vec![WireMessage::InputThumbnail(foreign)]);
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    server_thread.join().unwrap();
+
+    // A stream that does not decode at its size is a violation too.
+    let mut corrupt = input_thumbnail(1, 1, 1);
+    corrupt.width = 3;
+    let (mut session, server_thread) =
+        connect_with_records(vec![WireMessage::InputThumbnail(corrupt)]);
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    server_thread.join().unwrap();
+}

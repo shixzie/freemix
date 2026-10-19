@@ -7,6 +7,7 @@ mod cue;
 mod display_output;
 mod dto;
 mod input_lifecycle;
+mod input_thumbnail;
 mod live_lan;
 mod media;
 mod monitor_image;
@@ -117,6 +118,11 @@ pub use input_lifecycle::{
     InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason, MAX_BATCH_IMPORT_ITEMS,
     MAX_INPUT_CATEGORIES, MAX_INPUT_CATEGORY_NAME_BYTES, MAX_INPUT_SOURCE_BYTES,
     WireGeneratorVideo, WireInputSource,
+};
+pub use input_thumbnail::{
+    InputThumbnailImage, InputThumbnailMessage, InputThumbnailSubscription,
+    MAX_INPUT_THUMBNAIL_BYTES, MAX_INPUT_THUMBNAIL_HEIGHT, MAX_INPUT_THUMBNAIL_WIDTH,
+    decode_input_thumbnail, input_thumbnail_size_valid,
 };
 pub use live_lan::{
     DEFAULT_LIVE_LAN_VIEWERS, LiveLanConfig, LiveLanEntry, LiveLanPin, LiveLanPinError,

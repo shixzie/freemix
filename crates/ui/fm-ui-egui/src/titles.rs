@@ -1992,7 +1992,7 @@ mod tests {
                 .layer_id(egui::LayerId::background())
                 .max_rect(context.viewport_rect()),
         );
-        let intents = shell.draw(&mut ui, state);
+        let intents = StudioShell::without_thumbnail_subscription(shell.draw(&mut ui, state));
         assert!(intents.is_empty(), "{intents:?}");
         painted_text(&context.end_pass())
     }
@@ -2076,5 +2076,50 @@ mod tests {
                 "missing {expected:?} in {spanish:?}"
             );
         }
+    }
+
+    /// Protocol 2.59: the shell turns the input thumbnail feed on once the
+    /// input bank is drawn on a ready session, sends nothing while that
+    /// holds, and turns it off when the session is lost. (This module's
+    /// ready-session fixture is reused; the behaviour lives in the shell.)
+    #[test]
+    fn the_input_bank_subscribes_to_thumbnails_only_while_drawn_and_ready() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let model = model(overlays(), overlays());
+        let ready = ready_state(&model, false, false);
+        let frame = |shell: &mut StudioShell, state: &StudioUiState| {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1600.0, 1000.0),
+                )),
+                ..egui::RawInput::default()
+            });
+            let mut ui = Ui::new(
+                context.clone(),
+                egui::Id::new("fm-ui-egui-thumbnail-subscription-test"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let intents = shell.draw(&mut ui, state);
+            let _ = context.end_pass();
+            intents
+                .into_iter()
+                .filter(|intent| matches!(intent, StudioIntent::InputThumbnails { .. }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            frame(&mut shell, &ready),
+            vec![StudioIntent::InputThumbnails { enabled: true }]
+        );
+        assert_eq!(frame(&mut shell, &ready), Vec::new());
+        let lost = StudioUiState::new(StudioConnectionStatus::Backoff);
+        assert_eq!(
+            frame(&mut shell, &lost),
+            vec![StudioIntent::InputThumbnails { enabled: false }]
+        );
+        assert_eq!(frame(&mut shell, &lost), Vec::new());
     }
 }

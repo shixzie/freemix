@@ -92,6 +92,37 @@ impl LiveSourceFrames {
         Self { frames }
     }
 
+    /// The newest frame of `input` as a straight sRGB picture fitted inside
+    /// `max_width`x`max_height` (an input thumbnail, Protocol 2.59).
+    #[cfg(feature = "native-media")]
+    pub(crate) fn thumbnail(
+        &self,
+        input: InputId,
+        max_width: u16,
+        max_height: u16,
+    ) -> Option<ImageFrame> {
+        let frame = self.frames.get(&input)?;
+        let dimensions = frame.payload().dimensions();
+        let (width, height) = crate::monitor_tap::fit_within(
+            dimensions.width(),
+            dimensions.height(),
+            max_width,
+            max_height,
+        )?;
+        sampled_live_picture(frame, u32::from(width), u32::from(height))
+    }
+
+    #[cfg(not(feature = "native-media"))]
+    #[allow(clippy::unused_self)]
+    pub(crate) const fn thumbnail(
+        &self,
+        _input: InputId,
+        _max_width: u16,
+        _max_height: u16,
+    ) -> Option<ImageFrame> {
+        None
+    }
+
     #[cfg(feature = "native-media")]
     fn holds(&self, input: InputId) -> bool {
         self.frames.contains_key(&input)
@@ -148,10 +179,6 @@ impl SceneSources for LiveSources<'_> {
 /// importer would not accept (unlabeled, not packed RGBA).
 #[cfg(feature = "native-media")]
 fn live_picture(frame: &fm_frame::CpuVideoFrame, width: u32, height: u32) -> Option<ImageFrame> {
-    use fm_types::{
-        AlphaMode, ColorMetadata, ColorPrimaries, MatrixCoefficients, SignalRange, TransferFunction,
-    };
-
     let metadata = frame.metadata()?;
     let image = fm_compositor::image_from_cpu_frame(frame).ok()?;
     let scaled = if (image.width(), image.height()) == (width, height) {
@@ -159,6 +186,64 @@ fn live_picture(frame: &fm_frame::CpuVideoFrame, width: u32, height: u32) -> Opt
     } else {
         fm_video::scale_nearest(&image, width, height).ok()?
     };
+    display_picture(metadata, scaled)
+}
+
+/// [`live_picture`] for a small picture: samples the source nearest-neighbor
+/// straight into a `width`x`height` RGBA8 image, so a thumbnail never copies
+/// the whole source frame.
+#[cfg(feature = "native-media")]
+pub(crate) fn sampled_live_picture(
+    frame: &fm_frame::CpuVideoFrame,
+    width: u32,
+    height: u32,
+) -> Option<ImageFrame> {
+    let metadata = frame.metadata()?;
+    let payload = frame.payload();
+    let bgra = match payload.format() {
+        fm_types::PixelFormat::Rgba8 => false,
+        fm_types::PixelFormat::Bgra8 => true,
+        _ => return None,
+    };
+    let plane = payload.plane(0)?;
+    let dimensions = payload.dimensions();
+    let (source_width, source_height) = (
+        usize::try_from(dimensions.width()).ok()?,
+        usize::try_from(dimensions.height()).ok()?,
+    );
+    let (columns, rows) = (usize::try_from(width).ok()?, usize::try_from(height).ok()?);
+    if columns == 0 || rows == 0 || source_width == 0 || source_height == 0 {
+        return None;
+    }
+    let bytes = plane.bytes();
+    let mut pixels = Vec::with_capacity(columns * rows * 4);
+    for y in 0..rows {
+        let row = (y * source_height / rows) * plane.stride();
+        for x in 0..columns {
+            let offset = row + (x * source_width / columns) * 4;
+            let pixel = bytes.get(offset..offset + 4)?;
+            if bgra {
+                pixels.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            } else {
+                pixels.extend_from_slice(pixel);
+            }
+        }
+    }
+    let image = ImageFrame::new(width, height, columns * 4, pixels).ok()?;
+    display_picture(metadata, image)
+}
+
+/// Converts a sampled picture from its labeled colorimetry to straight sRGB
+/// Rec.709 full range.
+#[cfg(feature = "native-media")]
+fn display_picture(
+    metadata: fm_frame::VideoFrameMetadata,
+    scaled: ImageFrame,
+) -> Option<ImageFrame> {
+    use fm_types::{
+        AlphaMode, ColorMetadata, ColorPrimaries, MatrixCoefficients, SignalRange, TransferFunction,
+    };
+
     let display = ColorMetadata {
         primaries: ColorPrimaries::Bt709,
         transfer: TransferFunction::Srgb,

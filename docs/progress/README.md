@@ -32,12 +32,18 @@ outside the canvas are a shade lighter than the canvas black, and the
 title-safe marks, `SIMULATED`/`STALE` badges, and `FTB` badge sit on the
 canvas.
 
-Input tiles have no per-input thumbnail feed. A tile borrows the Preview or
-Program tap frame only while that frame is current (under one second old) and
-shows exactly that tile's input as the tap's realized source; the picture is
-tagged `PVW TAP` / `PGM TAP` (with `· SIM` for simulated renders). Every other
-tile keeps its dim ordinal and reads `no thumbnail`. When a frame goes stale
-the tile drops back to the ordinal while the monitor well dims it.
+Since Protocol 2.59 every input tile carries its own live thumbnail while the
+input bank is visible: Studio subscribes with `input_thumbnail_subscription`
+and the daemon sends each input with a picture at most 160x90, about one to
+two pictures a second, under a shared bandwidth budget, tagged `FEED` (or
+`FEED · SIM` for simulated renders). In simulated mode, scenes and simulated
+sources are real renders, and network-stream and capture inputs show a
+synthetic tinted card with a sweeping band. A thumbnail older than three
+seconds is dimmed with an amber `STALE {age}` tag. A system-audio input has no
+picture and shows an `audio only` meter placeholder. A Preview or Program tap
+frame still wins over the tile's own thumbnail while it is current and shows
+that tile's input (`PVW TAP` / `PGM TAP`). A tile with neither keeps its dim
+ordinal and reads `no thumbnail`.
 
 Since Protocol 2.36 the transition column also carries a `MORE` key (a menu
 of the other mix kinds: V-Wipe, V-Slide, Fly, Fly Turn, Cube, Cube Zoom,
@@ -397,7 +403,7 @@ the counts and lock chips.
 | `studio-mixer-monitor.png` | The native session's audio mixer maximised (double-click its tab) with `▾ GAIN · BAL · DLY` open (AU-001, Protocol 2.44): solo mode `PFL` lit on the `MON` strip, Field Feed (the only input with audio, a 440 Hz tone over UDP) soloed at -3.0 dB with its lit amber `S`, so `MON` reads `SOLO LISTEN` and meters the pre-fader solo at -21.0 while Master reads -24.0; the group strips Cameras (-6 dB, holding Camera 1 and 2), Talkback (Host Mic and Guest Line), and the parent group All Mics, with Talkback's parent picker reading `In All Mics` and the others `Top level`. These are daemon meters (no synthetic feed). |
 | `studio-spanish-refusal.png` | 1920x1080 `--lang es --role admin`, simulated daemon: after right-clicking Camera 1 Wide, `Quitar…`, and `QUITAR`, the typed refusal toast `ERROR · Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la escena 100. Quite esa capa de la escena primero.`, now entirely in Spanish (the earlier capture quoted the daemon's English detail). |
 | `studio-fullscreen-outputs.png` | 1920x1080 `--role admin` against a native daemon started with `--diagnostic-display-inventory` listing two displays (DELL U2720Q, HDR, three modes; Venue LED Wall 1920x1080@50): Output › `Fullscreen outputs…` (OR-011, Protocol 2.42) with `2 displays connected` and `Refresh displays`; Output 1 `STANDBY`, `Waiting: the display is not connected`, targeting `name:Projector (not connected)` with Program bus / Current mode / Fit inside / Off (SDR); Output 2 `ACTIVE`, `On Venue LED Wall at 1920×1080 @ 50 Hz; SDR`, showing Program Output with Fill; each slot with `Save and apply`, `Discard changes`, and `Clear`. |
-| `studio-workspace-docked.png` | 1920x1080 `--role admin`, round 5 (Protocol 2.52, schema 49): the full docked Default workspace on a show with five stream destinations and two cue lists, after `GO` fired cues 1 and 2 of "Evening Run" from the Cues tab (cue 1 previewed Camera 1 Wide and started REC 2; cue 2 faded it to Program and started YouTube Main and Twitch Backup) and Venue SRT Feed was started by hand: the red `REC` and amber `LIVE` top-bar badges (desired but not reported live), Recording & streams with `1 / 2 RECORDING`, `5 TARGETS`, `START ALL` / `STOP ALL` / a disabled `ADD…` (the show is full), and the per-row `RETRY` / `EDIT…` / remove keys; the side group on `CUES` with the green `GO` key, `Standby: Host intro`, the `PLAYED` / `LIVE` / `STANDBY` row chips, and the amber `TX —` lamp. |
+| `studio-workspace-docked.png` | 1920x1080 `--role admin`, Protocol 2.59: the full docked Default workspace on the "Evening Broadcast" show (Main Scene on Program, Camera 2 Close on Preview, two recording slots, Local HLS Ladder and RTMP Backup streams), with live input bank thumbnails. Camera 1 Wide, Guest Remote, and Lower Third show their own `FEED · SIM` pictures; Host Laptop (an RTSP network stream) shows the simulated daemon's synthetic stream card; Camera 2 Close and Main Scene keep their `PVW TAP · SIM` / `PGM TAP · SIM` tap frames; Desktop Audio (system audio) shows the `audio only` meter placeholder; the side group on `OVERLAYS`. Replaces the round 5 capture of cue lists and five destinations. |
 | `studio-cues.png` | The Cues panel popped out (900x720 window capture) on the same session (RC-017): the list picker with `New list` / `Delete list`, the full-width `GO` key, `Standby: Host intro`, `Step back` / `Skip` / `Stop` / `Reset`, the editable list name, and eight cue rows: Pre-show standby `PLAYED`, Show open `LIVE` (red border) opened with its three actions (Take Preview with Fade 30 frames, Stream YouTube Main On, Stream Twitch Backup On) and `Add action`, Host intro `STANDBY` (green border), Guest interview with `Follow` ticked, and per-row standby (`●`), go-this-cue (`▶`), move, remove, and action-count keys. |
 | `studio-streams-five.png` | The Recording & streams panel popped out (820x610 window capture, OR-006) with five destinations, each one compact row with its `RETRY` / `EDIT…` / remove (`✕`) keys inside the row left of `START`/`STOP`: YouTube Main (RTMPS with backup), Twitch Backup (RTMP), and Venue SRT Feed (SRT) started and amber `NOT LIVE` with amber-outlined `STOP` keys and enabled `RETRY`; Facebook Live (RTMPS) and Local HLS Archive `OFF` with `START`, `EDIT…`, and remove enabled. `EDIT…` and remove are disabled on running destinations (remove also while a cue names the destination); `ADD…` is disabled at five destinations. In a narrow dock the three keys fold into one `···` menu key (`RETRY`, `EDIT…`, `Remove destination…`). Recaptured after the layout fixes (no cue lists in that show). |
 | `studio-stream-status-hover.png` | The same window hovering YouTube Main's status chip: the status tooltip with `Desired on · realized not live`, `State: NOT LIVE`, the destination and backup URLs, `Output: Program Output · target 6,000 kb/s`, `Stream key: stored (never shown)`, and `No transport sample yet` (the simulated daemon sends no stream samples, so the bitrate / dropped / reconnects / uptime line is absent). |
@@ -426,7 +432,7 @@ Review notes from these captures (problems seen, not fixed here):
 
 - Recording & streams at the Default layout fits only about three and a
   half destination rows; with five destinations the rest (and the HLS row)
-  sit below a scroll (`studio-workspace-docked.png`). The `1 / 2 RECORDING`
+  sit below a scroll (the round 5 `studio-workspace-docked.png`). The `1 / 2 RECORDING`
   and `5 TARGETS` header counts run into the panel's right edge / scroll
   bar. (Fixed since: rows are 38 px with the keys inside, so all five fit
   at the Default layout, and the counts keep a right gutter.)
@@ -505,8 +511,8 @@ Review notes from these captures (problems seen, not fixed here):
   or disappears (`studio-network-stream-form.png`).
 - The amber `RECONNECTING n` tile badge sits over the tile's `no thumbnail`
   caption, leaving `no` peeking out at its left (`studio-network-stream-tile.png`,
-  `studio-capture-signal-lost.png`). Live network and capture tiles have no
-  thumbnail either.
+  `studio-capture-signal-lost.png`; captured before Protocol 2.59 live input
+  thumbnails).
 - Mixer detail rows on labelled strips (Host Mic, Guest Line) sit about 3 px
   higher than on the other strips (`studio-mixer-monitor.png`). At the
   Default layout the fifth input strip is a clipped sliver under the pinned
@@ -1204,4 +1210,34 @@ it (`studio-cues.png`); close the actions and dock it back. Click the `+`
 tile (`studio-add-input-solid.png`), then `NETWORK STREAM`, type the name
 and `rtsp://operator:demo-pass@10.0.0.42:554/stream1`
 (`studio-add-input-network.png`), `CANCEL`, and capture the console with the
-pointer parked on the status bar (`studio-workspace-docked.png`).
+pointer parked on the status bar (the round 5 `studio-workspace-docked.png`,
+since replaced; see below).
+
+`studio-workspace-docked.png` was recaptured at Protocol 2.59 for live input
+bank thumbnails on a smaller show built from the CLI demo, with a fresh
+`studio.conf`, a 1920x1080 window, and the pointer parked on the status bar
+about four seconds after the window appeared:
+
+```sh
+freemix-cli demo demo.freemix program.ppm
+freemix-cli project-rename demo.freemix "Evening Broadcast"
+freemix-cli rename demo.freemix 1 "Camera 1 Wide"
+freemix-cli rename demo.freemix 2 "Camera 2 Close"
+freemix-cli input-add-stream demo.freemix 3 "Host Laptop" "rtsp://10.0.0.42:554/stream1"
+freemix-cli input-add demo.freemix 4 "Guest Remote"
+freemix-cli simulated-solid-input-add demo.freemix 5 "Lower Third" 20 60 140 255
+freemix-cli input-add-system-audio demo.freemix 6 "Desktop Audio" pulse "@DEFAULT_MONITOR@"
+freemix-cli scene-input-add demo.freemix 7 100 "Main Scene"
+freemix-cli scene-layer-add demo.freemix 100 1 0 "Wide Shot"
+freemix-cli scene-layer-add demo.freemix 100 4 1 "Guest PiP"
+freemix-cli scene-layer-geometry demo.freemix 100 0 0 0 1920 1080 0
+freemix-cli scene-layer-geometry demo.freemix 100 1 1360 740 480 270 0
+freemix-cli audio-bus-add demo.freemix 1 "Program Bus"
+freemix-cli output-add demo.freemix 1 100 1 "Program Output"
+freemix-cli stream-add demo.freemix 1 1 hls:///tmp/fmshots/hls "Local HLS Ladder" \
+    --startup reconcile-desired-state --rung 2500:1280x720 --rung 6000:1920x1080
+freemix-cli stream-add demo.freemix 2 1 rtmp://live.example.com/app demo-stream-key-not-real "RTMP Backup"
+freemix-cli preview demo.freemix 7
+freemix-cli cut demo.freemix
+freemix-cli preview demo.freemix 2
+```

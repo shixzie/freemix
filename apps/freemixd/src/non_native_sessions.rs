@@ -30,6 +30,7 @@ use super::{
     reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
     requested_daemon_shutdown, server_identity, shutdown_message, structured_session_error,
 };
+use crate::input_thumbnails::{ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
 use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
@@ -128,6 +129,9 @@ struct Peer {
     audio_meters: bool,
     stream_status: bool,
     monitor_frames: bool,
+    /// The peer's input thumbnail feed while it is subscribed (Protocol
+    /// 2.59).
+    thumbnails: Option<ThumbnailOutbox>,
     lossy: LossyRecords,
     /// A reply the peer is owed but cannot be queued yet: an accepted
     /// `RecordStart` acknowledgement held until the native runtime has
@@ -206,10 +210,13 @@ enum LossySlot {
     /// The latest exact title or scene preview (`title_preview_frame` or
     /// `scene_preview_frame` parts).
     TitlePreview,
+    /// The input thumbnail being written (Protocol 2.59); the next one waits
+    /// in the peer's [`ThumbnailOutbox`] until this slot is empty.
+    Thumbnail,
 }
 
 impl LossySlot {
-    const COUNT: usize = 5;
+    const COUNT: usize = 6;
 
     const fn index(self) -> usize {
         match self {
@@ -218,6 +225,7 @@ impl LossySlot {
             Self::PreviewFrame => 2,
             Self::ProgramFrame => 3,
             Self::TitlePreview => 4,
+            Self::Thumbnail => 5,
         }
     }
 
@@ -262,10 +270,19 @@ impl LossyRecords {
         self.slots.iter().any(LatestRecord::started)
     }
 
+    fn slot_is_empty(&self, slot: LossySlot) -> bool {
+        self.slots[slot.index()].is_empty()
+    }
+
     fn discard_unstarted(&mut self) {
         for slot in &mut self.slots {
             slot.discard_unstarted();
         }
+    }
+
+    /// Drops one slot's records that have not started writing.
+    fn discard_slot(&mut self, slot: LossySlot) {
+        self.slots[slot.index()].discard_unstarted();
     }
 
     fn write_once(&mut self, writer: &mut impl Write) -> std::io::Result<()> {
@@ -309,6 +326,7 @@ impl Peer {
             audio_meters: false,
             stream_status: false,
             monitor_frames: false,
+            thumbnails: None,
             lossy: LossyRecords::default(),
             held_result: None,
             deferred_live: None,
@@ -460,6 +478,30 @@ impl Peer {
         self.monitor_frames && self.phase == Phase::Active
     }
 
+    fn wants_thumbnails(&self) -> bool {
+        self.thumbnails.is_some() && self.phase == Phase::Active
+    }
+
+    /// Queues one input's newest thumbnail for a subscribed peer.
+    fn offer_thumbnail(&mut self, input: fm_types::InputId, bytes: &[u8]) {
+        if self.phase == Phase::Active
+            && let Some(outbox) = self.thumbnails.as_mut()
+        {
+            outbox.offer(input, bytes.to_vec());
+        }
+    }
+
+    /// Moves the next admitted thumbnail into the lossy slot once the
+    /// previous one was fully written.
+    fn feed_thumbnail(&mut self, now: Instant) {
+        if self.phase != Phase::Active || !self.lossy.slot_is_empty(LossySlot::Thumbnail) {
+            return;
+        }
+        if let Some(bytes) = self.thumbnails.as_mut().and_then(|outbox| outbox.next(now)) {
+            self.lossy.replace(LossySlot::Thumbnail, bytes);
+        }
+    }
+
     fn replace_outbound_for_shutdown(&mut self) {
         let retained = usize::from(self.outbound.front().is_some_and(|record| {
             record.channel_sent
@@ -544,6 +586,7 @@ pub(super) fn run(
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
         media_clock: std::cell::RefCell::new(crate::media_clock::MediaClock::default()),
         grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
+        thumbnail_refresh: std::cell::RefCell::new(false),
     };
     let mut native = native;
     // Only the native pacer realizes frames between commands, so only it has
@@ -553,6 +596,9 @@ pub(super) fn run(
         .then(|| crate::NativeProgress::new(durable));
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
+    // Input thumbnails render off this loop too (Protocol 2.59).
+    let mut thumbnails = ThumbnailWorker::spawn(authority.clone())?;
+    let mut thumbnail_grades = crate::grading::GradeCache::default();
     let mut simulated_monitor = if native.is_none() {
         Some(SimulatedMonitorWorker::spawn(
             authority.clone(),
@@ -803,6 +849,27 @@ pub(super) fn run(
                 publish_monitor_frame(&mut peers, tap, &bytes);
             }
         }
+        let thumbnail_demand = peers.iter().any(Peer::wants_thumbnails);
+        let thumbnail_refresh = runtime.thumbnail_refresh.replace(false);
+        let now = Instant::now();
+        let records = thumbnails.poll(thumbnail_demand, thumbnail_refresh, now, |worker| {
+            let control = control.borrow();
+            thumbnail_work(
+                worker,
+                &control,
+                &mut thumbnail_grades,
+                durable.project(),
+                native.as_deref().map(NativeDaemon::live_source_frames),
+            )
+        });
+        for (input, bytes) in records {
+            for peer in &mut peers {
+                peer.offer_thumbnail(input, &bytes);
+            }
+        }
+        for peer in &mut peers {
+            peer.feed_thumbnail(now);
+        }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
@@ -855,6 +922,31 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
+    }
+}
+
+/// The work one thumbnail step renders from: the realized revision's
+/// project (shared per revision), its compiled grades, the poses of the
+/// Scene inputs on air, and a native daemon's newest source frames.
+fn thumbnail_work(
+    worker: &mut ThumbnailWorker,
+    control: &fm_control::ControlService<fm_auth::Policy>,
+    grades: &mut crate::grading::GradeCache,
+    project: &fm_model::Project,
+    live: Option<crate::scene_preview::LiveSourceFrames>,
+) -> ThumbnailWork {
+    let revision = control.snapshot().snapshot.revision;
+    ThumbnailWork {
+        revision,
+        frame: control.frame_cursor(),
+        project: worker.project_at(revision, project),
+        grades: grades.at(control),
+        scenes: control
+            .scenes_on_air()
+            .into_iter()
+            .map(|scene| (scene.input, scene.frame.sample))
+            .collect(),
+        live,
     }
 }
 
@@ -1035,6 +1127,9 @@ struct Runtime<'a> {
     media_clock: std::cell::RefCell<crate::media_clock::MediaClock>,
     /// Compiled grades per engine revision for exact scene previews.
     grade_cache: std::cell::RefCell<crate::grading::GradeCache>,
+    /// A peer subscribed to input thumbnails since the last poll, so every
+    /// thumbnail is rendered and sent again at once (Protocol 2.59).
+    thumbnail_refresh: std::cell::RefCell<bool>,
 }
 
 impl Runtime<'_> {
@@ -1170,6 +1265,23 @@ impl Runtime<'_> {
                     }),
                 };
                 peer.reply(response)?;
+                Ok(())
+            }
+            // The input thumbnail feed (Protocol 2.59) goes to the peers
+            // monitor frames go to; others are told it is unavailable.
+            WireMessage::InputThumbnailSubscription(subscription) => {
+                if !peer.monitor_frames {
+                    peer.reply(error_message(
+                        "input_thumbnails_unavailable",
+                        "input thumbnails go only to raw Studio sessions with view_status",
+                    ))?;
+                } else if !subscription.enabled {
+                    peer.thumbnails = None;
+                    peer.lossy.discard_slot(LossySlot::Thumbnail);
+                } else if peer.thumbnails.is_none() {
+                    peer.thumbnails = Some(ThumbnailOutbox::new(Instant::now()));
+                    *self.thumbnail_refresh.borrow_mut() = true;
+                }
                 Ok(())
             }
             message @ (WireMessage::TitlePreviewRequest(_)

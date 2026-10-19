@@ -6149,11 +6149,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.58.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 58));
+    // The previous protocol is refused; the current one is 2.59.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 59));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 57),
+        protocol: ProtocolVersion::new(2, 58),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6169,7 +6169,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 58)
+        ProtocolVersion::new(2, 59)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8137,4 +8137,78 @@ fn scripts_run_through_the_daemon_and_persist_with_the_project() {
             (2, "Twice", "cut 1\ncut 2\n")
         ]
     );
+}
+
+/// Protocol 2.59: a simulated daemon sends a subscribed Studio session a
+/// thumbnail of every simulated input, fitted inside 160x90; an Integration
+/// session is told the feed is unavailable.
+#[test]
+fn simulated_studio_peer_receives_input_thumbnails_once_subscribed() {
+    use fm_protocol::{InputThumbnailSubscription, MonitorFrameOrigin, decode_input_thumbnail};
+
+    let directory = TestDirectory::new("simulated-input-thumbnails");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut integration = daemon.connect();
+    integration.handshake(None);
+    integration.receive_snapshot();
+    integration.send(&WireMessage::InputThumbnailSubscription(
+        InputThumbnailSubscription { enabled: true },
+    ));
+    receive_within(
+        &mut integration,
+        Duration::from_secs(5),
+        "the unavailable error",
+        |message| match message {
+            WireMessage::Error(error) => {
+                assert_eq!(error.error.code, "input_thumbnails_unavailable");
+                Some(())
+            }
+            WireMessage::InputThumbnail(_) => panic!("an Integration peer got a thumbnail"),
+            _ => None,
+        },
+    );
+    drop(integration);
+
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        studio.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    studio.receive_snapshot();
+    studio.send(&WireMessage::InputThumbnailSubscription(
+        InputThumbnailSubscription { enabled: true },
+    ));
+    let mut seen = std::collections::BTreeMap::new();
+    while seen.len() < 3 {
+        let thumbnail = receive_within(
+            &mut studio,
+            Duration::from_secs(10),
+            "input thumbnails",
+            |message| match message {
+                WireMessage::InputThumbnail(thumbnail) => Some(thumbnail),
+                _ => None,
+            },
+        );
+        assert_eq!(thumbnail.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!((thumbnail.width, thumbnail.height), (160, 90));
+        let image = decode_input_thumbnail(&thumbnail).unwrap();
+        seen.insert(thumbnail.input, image);
+    }
+    assert_eq!(&seen[&input(1)].rgba[..4], &[12, 34, 56, 255]);
+    assert_eq!(&seen[&input(3)].rgba[..4], &[210, 90, 30, 255]);
 }

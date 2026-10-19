@@ -166,7 +166,7 @@ pub fn choose_handshake_outcome(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WireInputId(NonZeroU128);
 
 impl WireInputId {
@@ -3117,4 +3117,8 @@ pub enum WireMessage {
     CaptureDevicesRequest(crate::CaptureDevicesRequest),
     /// Answers a [`crate::CaptureDevicesRequest`] (Protocol 2.47).
     CaptureDevices(crate::CaptureDevicesMessage),
+    /// Turns this session's input thumbnail feed on or off (Protocol 2.59).
+    InputThumbnailSubscription(crate::InputThumbnailSubscription),
+    /// One lossy live input bank thumbnail (Protocol 2.59).
+    InputThumbnail(crate::InputThumbnailMessage),
 }

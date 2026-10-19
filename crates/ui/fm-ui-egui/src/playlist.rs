@@ -2310,7 +2310,7 @@ mod tests {
                 .layer_id(egui::LayerId::background())
                 .max_rect(context.viewport_rect()),
         );
-        let intents = shell.draw(&mut ui, state);
+        let intents = StudioShell::without_thumbnail_subscription(shell.draw(&mut ui, state));
         assert!(intents.is_empty(), "{intents:?}");
         painted_text(&context.end_pass())
     }
@@ -2348,7 +2348,7 @@ mod tests {
                 .layer_id(egui::LayerId::background())
                 .max_rect(context.viewport_rect()),
         );
-        let intents = shell.draw(&mut ui, state);
+        let intents = StudioShell::without_thumbnail_subscription(shell.draw(&mut ui, state));
         let _ = context.end_pass();
         intents
     }

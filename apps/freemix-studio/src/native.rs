@@ -175,6 +175,15 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
         // every later one.
         (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)
         | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices) => true,
+        // The thumbnail feed is latest-wins: the newer on/off replaces one
+        // still queued.
+        (
+            StudioIntent::InputThumbnails { enabled: current },
+            StudioIntent::InputThumbnails { enabled: incoming },
+        ) => {
+            *current = incoming;
+            true
+        }
         // Exact previews (title or scene) are latest-wins: a newer request
         // replaces a queued one.
         (
@@ -1173,7 +1182,8 @@ fn run_worker(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
                 | StudioIntent::RequestDisplayInventory
-                | StudioIntent::RequestCaptureDevices),
+                | StudioIntent::RequestCaptureDevices
+                | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
@@ -1198,6 +1208,7 @@ fn run_worker(
                     SessionEvent::Event { .. }
                     | SessionEvent::RuntimeEvent { .. }
                     | SessionEvent::AudioMeters { .. }
+                    | SessionEvent::InputThumbnail { .. }
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. },
@@ -1256,7 +1267,8 @@ fn run_worker(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
                 | StudioIntent::RequestDisplayInventory
-                | StudioIntent::RequestCaptureDevices),
+                | StudioIntent::RequestCaptureDevices
+                | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
@@ -1317,6 +1329,16 @@ fn handle_preview_request(
         }
         return true;
     }
+    // The live input thumbnail feed (Protocol 2.59) is switched the same
+    // way; while recovering the choice is kept for the next connect.
+    if let StudioIntent::InputThumbnails { enabled } = request {
+        if recovery.active() {
+            runtime.set_input_thumbnails_later(enabled);
+        } else {
+            runtime.set_input_thumbnails(enabled);
+        }
+        return true;
+    }
     // The capture devices (IN-001, Protocol 2.47) are asked for the same way.
     if matches!(request, StudioIntent::RequestCaptureDevices) {
         if recovery.active() {
@@ -1359,7 +1381,8 @@ fn handle_worker_intent(
         request @ (StudioIntent::TitlePreview(_)
         | StudioIntent::ScenePreview(_)
         | StudioIntent::RequestDisplayInventory
-        | StudioIntent::RequestCaptureDevices) => {
+        | StudioIntent::RequestCaptureDevices
+        | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
         intent => intent,
@@ -1654,6 +1677,7 @@ fn handle_heartbeat_timeout(
                         })?;
                     let publish = match &event {
                         SessionEvent::AudioMeters { .. }
+                        | SessionEvent::InputThumbnail { .. }
                         | SessionEvent::RuntimeEvent { .. }
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
@@ -2199,6 +2223,7 @@ fn receive_command_event(
         if matches!(
             event,
             SessionEvent::AudioMeters { .. }
+                | SessionEvent::InputThumbnail { .. }
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
@@ -2685,6 +2710,9 @@ fn intent_payload(
         StudioIntent::RequestCaptureDevices => {
             return Err("A capture devices request is not a command".to_owned());
         }
+        StudioIntent::InputThumbnails { .. } => {
+            return Err("An input thumbnail subscription is not a command".to_owned());
+        }
         StudioIntent::SetDisplayOutput { slot, config } => {
             CommandPayload::SetDisplayOutput { slot, config }
         }
@@ -2959,6 +2987,10 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 .latest_monitor_frame(tap)
                 .map(|(image, received_at)| (image.clone(), received_at));
         }
+        // Live input thumbnails (Protocol 2.59): shared pixels, no copy.
+        state
+            .input_thumbnails
+            .clone_from(runtime.session().latest_input_thumbnails());
     }
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);

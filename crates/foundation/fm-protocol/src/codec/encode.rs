@@ -87,6 +87,11 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::AudioMeters(message) => encode_audio_meters(&mut record, message)?,
         WireMessage::StreamStatus(message) => encode_stream_status(&mut record, message)?,
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
+        WireMessage::InputThumbnailSubscription(message) => {
+            record.kind("input_thumbnail_subscription");
+            record.field_str("enabled", if message.enabled { "1" } else { "0" })?;
+        }
+        WireMessage::InputThumbnail(message) => encode_input_thumbnail(&mut record, message)?,
         WireMessage::CapabilityReport(message) => encode_capability_report(&mut record, message)?,
         WireMessage::DiagnosticsRequest(message) => {
             encode_diagnostics_request(&mut record, message)?;
@@ -2831,6 +2836,25 @@ fn encode_monitor_frame(
     record.field("height", message.height)?;
     record.field("part", message.part)?;
     record.field("parts", message.parts)?;
+    record.field_string(
+        "data",
+        crate::monitor_image::base64url_encode(&message.data),
+    )
+}
+
+fn encode_input_thumbnail(
+    record: &mut Record,
+    message: &crate::InputThumbnailMessage,
+) -> Result<(), CodecError> {
+    super::validate_input_thumbnail(message.width, message.height, message.data.len())?;
+    record.kind("input_thumbnail");
+    encode_server_identity(record, &message.server)?;
+    record.field("input", message.input)?;
+    record.field("sequence", message.sequence)?;
+    record.field_str("origin", message.origin.as_str())?;
+    record.field("age_ms", message.age_ms)?;
+    record.field("width", message.width)?;
+    record.field("height", message.height)?;
     record.field_string(
         "data",
         crate::monitor_image::base64url_encode(&message.data),

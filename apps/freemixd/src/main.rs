@@ -100,6 +100,7 @@ mod cue_clock;
 mod disk;
 mod grading;
 mod hls_server;
+mod input_thumbnails;
 mod journal;
 mod latest_record;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]

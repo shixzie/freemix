@@ -1000,8 +1000,20 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ThumbnailNone,
-        t("Miniatura: ninguna (solo se reciben fotogramas de las tomas de Previo y Programa)"),
+        t("Miniatura: ninguna (esta entrada aún no tiene imagen)"),
     ),
+    (
+        Msg::ThumbnailFeed,
+        t("Miniatura: señal propia en vivo de esta entrada (una imagen por segundo, aprox.)"),
+    ),
+    (
+        Msg::ThumbnailFeedStale,
+        t("Miniatura: señal propia de esta entrada, desactualizada desde hace {age}"),
+    ),
+    (Msg::ThumbFeed, t("SEÑAL")),
+    (Msg::ThumbFeedSim, t("SEÑAL · SIM")),
+    (Msg::ThumbStale, t("OBSOLETA {age}")),
+    (Msg::ThumbAudioOnly, t("solo audio")),
     (
         Msg::ThumbnailProgram,
         t("Miniatura: fotograma actual de la toma de Programa"),

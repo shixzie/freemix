@@ -50,6 +50,7 @@ pub mod hover_audit;
 mod input_bank;
 mod input_catalogue;
 mod input_lifecycle;
+mod input_thumbnail_ui;
 mod l10n;
 mod live_lan;
 mod media_transport;
@@ -224,6 +225,10 @@ pub enum StudioIntent {
     /// Asks the server for its capture devices (IN-001, Protocol 2.47);
     /// the reply updates [`fm_ui_model::ClientView::capture_inventory`].
     RequestCaptureDevices,
+    /// Turns the live input thumbnail feed on while the input bank is
+    /// shown and off when it is not (Protocol 2.59); the thumbnails arrive
+    /// in [`StudioUiState::input_thumbnails`].
+    InputThumbnails { enabled: bool },
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -533,6 +538,12 @@ pub struct StudioUiState {
     /// Latest decoded encoded-fallback monitor frame per
     /// [`MonitorTap::index`] and when the client completed it.
     pub monitor_images: [Option<(MonitorImage, std::time::Instant)>; 2],
+    /// Latest decoded live input thumbnail per input and when the client
+    /// received it (Protocol 2.59), while the bank is subscribed.
+    pub input_thumbnails: std::collections::BTreeMap<
+        fm_protocol::WireInputId,
+        (fm_protocol::InputThumbnailImage, std::time::Instant),
+    >,
     /// Live input adds and removes sent by this client and not yet resolved,
     /// in send order.
     pub catalogue_pending: Vec<CatalogueRequest>,
@@ -595,6 +606,7 @@ impl StudioUiState {
             stream_group_pending: false,
             reconnect: None,
             monitor_images: [None, None],
+            input_thumbnails: std::collections::BTreeMap::new(),
             catalogue_pending: Vec::new(),
             catalogue_refusal: None,
             command_refusals: Vec::new(),
@@ -1398,6 +1410,13 @@ pub struct StudioShell {
     toasts: toasts::ToastQueue,
     meters: meter_ballistics::MeterBallistics,
     monitor_textures: monitors::MonitorTextures,
+    /// Uploaded live input thumbnails (Protocol 2.59).
+    thumbnail_textures: input_thumbnail_ui::ThumbnailTextures,
+    /// Whether the input bank was drawn this frame, so the shell keeps the
+    /// thumbnail feed on exactly while it is shown.
+    input_bank_drawn: bool,
+    /// The thumbnail feed state last asked of the host.
+    input_thumbnails_requested: bool,
     /// Canvas shape of the latest monitor frame, kept while frames lapse.
     canvas: (u16, u16),
     /// The open Add input dialog.
@@ -1701,10 +1720,15 @@ impl StudioShell {
     /// Uploads the monitor images and keeps their stale lamps ageing.
     fn sync_monitor_images(&mut self, context: &egui::Context, state: &StudioUiState) {
         self.monitor_textures.sync(context, &state.monitor_images);
+        self.thumbnail_textures
+            .sync(context, &state.input_thumbnails);
         self.canvas = monitors::canvas_shape(&state.monitor_images, self.canvas);
         if state.monitor_images.iter().any(Option::is_some) {
             // Frames age into STALE without any new state arriving.
             context.request_repaint_after(monitors::MONITOR_REPAINT_INTERVAL);
+        }
+        if !self.thumbnail_textures.is_empty() {
+            context.request_repaint_after(input_thumbnail_ui::THUMBNAIL_REPAINT_INTERVAL);
         }
     }
 
@@ -1722,6 +1746,7 @@ impl StudioShell {
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
         self.reconcile_local_state(state);
+        self.input_bank_drawn = false;
         let manual_transition_controls = manual_transition_availability(
             ManualTransitionGate::from_state(state),
             state.view.as_ref().is_some_and(|view| {
@@ -1801,7 +1826,35 @@ impl StudioShell {
         self.draw_tool_windows(ui.ctx(), state, &mut intents);
         self.draw_layout_name_dialog(ui.ctx());
         self.track_catalogue_intents(ui.ctx(), state, &intents);
+        self.follow_input_bank_visibility(state, &mut intents);
         theme::paint_focus_ring(ui.ctx());
+        intents
+    }
+
+    /// Keeps the live input thumbnail feed on exactly while the input bank
+    /// is drawn on a ready connection (Protocol 2.59). The host re-asks after
+    /// every reconnect, so only changes are sent.
+    fn follow_input_bank_visibility(
+        &mut self,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let wanted = self.input_bank_drawn
+            && state.connection_status == StudioConnectionStatus::Ready
+            && state.view.is_some();
+        if wanted != self.input_thumbnails_requested {
+            self.input_thumbnails_requested = wanted;
+            intents.push(StudioIntent::InputThumbnails { enabled: wanted });
+        }
+    }
+
+    /// Drops the input-bank thumbnail subscription intent from one frame's
+    /// intents, for panel tests that assert a frame sends no commands.
+    #[cfg(test)]
+    pub(crate) fn without_thumbnail_subscription(
+        mut intents: Vec<StudioIntent>,
+    ) -> Vec<StudioIntent> {
+        intents.retain(|intent| !matches!(intent, StudioIntent::InputThumbnails { .. }));
         intents
     }
 
@@ -1892,6 +1945,9 @@ impl Default for StudioShell {
             toasts: toasts::ToastQueue::default(),
             meters: meter_ballistics::MeterBallistics::default(),
             monitor_textures: monitors::MonitorTextures::default(),
+            thumbnail_textures: input_thumbnail_ui::ThumbnailTextures::default(),
+            input_bank_drawn: false,
+            input_thumbnails_requested: false,
             canvas: monitors::DEFAULT_CANVAS,
             add_input: None,
             remove_input: None,

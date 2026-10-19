@@ -153,6 +153,23 @@ fn decode_rgba(value: &str) -> Option<[u8; 4]> {
     Some([channel(0)?, channel(1)?, channel(2)?, channel(3)?])
 }
 
+/// Enforces the `input_thumbnail` bounds shared by the encoder and decoder
+/// (Protocol 2.59).
+fn validate_input_thumbnail(width: u16, height: u16, data_len: usize) -> Result<(), CodecError> {
+    let invalid =
+        |field: &'static str, value: String| Err(CodecError::InvalidField { field, value });
+    if !(1..=crate::MAX_INPUT_THUMBNAIL_WIDTH).contains(&width) {
+        return invalid("width", width.to_string());
+    }
+    if !(1..=crate::MAX_INPUT_THUMBNAIL_HEIGHT).contains(&height) {
+        return invalid("height", height.to_string());
+    }
+    if !(1..=crate::MAX_INPUT_THUMBNAIL_BYTES).contains(&data_len) {
+        return invalid("data", format!("{data_len} bytes"));
+    }
+    Ok(())
+}
+
 /// Enforces the `monitor_frame` bounds shared by the encoder and decoder.
 fn validate_monitor_frame(
     width: u16,

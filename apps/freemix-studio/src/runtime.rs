@@ -114,6 +114,10 @@ pub struct StudioRuntime {
     /// Whether the UI has asked for the capture devices (IN-001); once it
     /// has (or they are known), every (re)connect asks for them again.
     capture_devices_wanted: bool,
+    /// Whether the UI shows the input bank and so wants the live input
+    /// thumbnail feed (Protocol 2.59); every (re)connect subscribes again
+    /// while it does.
+    input_thumbnails_wanted: bool,
     /// The latest answer per display-output slot to this session's set or
     /// clear, carried the same way.
     display_output_answers: [Option<DisplayOutputAnswer>; fm_protocol::MAX_DISPLAY_OUTPUTS],
@@ -172,6 +176,7 @@ impl StudioRuntime {
             animation_refusal: None,
             display_inventory_wanted: false,
             capture_devices_wanted: false,
+            input_thumbnails_wanted: false,
             display_output_answers: [const { None }; fm_protocol::MAX_DISPLAY_OUTPUTS],
         })
     }
@@ -265,6 +270,34 @@ impl StudioRuntime {
                 .session
                 .send_capture_devices_request(fm_protocol::CaptureDevicesRequest { request_id })
                 .is_ok()
+    }
+
+    /// Turns the live input thumbnail feed on or off (Protocol 2.59) and
+    /// remembers the choice, so a (re)connect subscribes again while it is
+    /// on. Returns whether the request went out; one that cannot be sent now
+    /// is sent by the next (re)connect.
+    pub(crate) fn set_input_thumbnails(&mut self, enabled: bool) -> bool {
+        self.input_thumbnails_wanted = enabled;
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_input_thumbnail_subscription(enabled)
+                .is_ok()
+    }
+
+    /// Remembers the thumbnail feed choice without sending it (the session
+    /// is recovering); the next (re)connect subscribes when it is on.
+    pub(crate) const fn set_input_thumbnails_later(&mut self, enabled: bool) {
+        self.input_thumbnails_wanted = enabled;
+    }
+
+    /// Subscribes to the input thumbnail feed again after a (re)connect when
+    /// the UI wants it: a fresh connection starts unsubscribed.
+    fn resubscribe_input_thumbnails(&mut self) {
+        if self.input_thumbnails_wanted {
+            self.set_input_thumbnails(true);
+        }
     }
 
     /// Records that the server refused or dropped preview `request_id`.
@@ -421,6 +454,7 @@ impl StudioRuntime {
         };
         self.requery_display_inventory();
         self.requery_capture_devices();
+        self.resubscribe_input_thumbnails();
         Ok(event)
     }
 

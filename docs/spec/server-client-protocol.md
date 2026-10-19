@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.58 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.59 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1838,6 +1838,48 @@ stored in the project and run on the authority.
 - Durability: the project gains required
   `"scripts": [{"id", "name", "source"}]` after `"live_lan"` (schema 54).
 - 2.57 is refused.
+
+Protocol 2.59 adds live input bank thumbnails: a small, periodic picture of
+every input, sent only to sessions that ask for it.
+
+- `input_thumbnail_subscription` carries only `enabled=1|0`. It is not a
+  command: it has no envelope, idempotency key, or revision, and nothing
+  answers it on success. Only the peers that may receive `monitor_frame`
+  (active non-Web Studio peers permitted to view status) may subscribe;
+  any other peer gets `error` with code `input_thumbnails_unavailable`.
+  Studio subscribes while its input bank is drawn and unsubscribes when it
+  is hidden, and subscribes again after a reconnect. A subscription lasts
+  only for its connection.
+- `input_thumbnail` carries server identity, `input`, a strictly increasing
+  `sequence` (one counter shared by all inputs), `origin=simulated|native`,
+  `age_ms` (how long the picture has been unchanged, `u32`), `width` (1–160)
+  and `height` (1–90), and `data`: one standard QOI stream (three channels,
+  sRGB, exact end marker) of at most 40 KiB raw bytes as canonical unpadded
+  base64url, so a record always fits one line. A client treats a foreign
+  server identity, a sequence that does not increase for that input, or a
+  stream that fails strict QOI decoding at the stated size as a protocol
+  violation and disconnects. Clients keep only the latest decoded picture
+  per input (at most 256 inputs) and clear them on unsubscribe and
+  disconnect.
+- The record is lossy, latest-wins, never durable, never resumable, and
+  never projected into snapshots. The daemon renders thumbnails on a
+  dedicated worker thread, never on the session loop: each input with a
+  picture is fitted inside 160x90 (falling back to 128x72 if the QOI stream
+  would exceed the byte cap), graded with its input grade, re-rendered at
+  most every 500 ms, and sent when it changed or every 2 s as a keepalive,
+  plus once for every input when a peer subscribes. Each subscribed peer
+  has a latest-wins slot per input and a 256 KiB/s token bucket (one line
+  of burst); pending inputs are sent round-robin, so a slow peer gets
+  fewer, newer pictures and never delays Program, monitor frames, or
+  control replies.
+- What a thumbnail depicts: a native daemon samples every live source it
+  holds (network streams, capture devices, media files, titles, and
+  simulated sources) from its latest CPU frame (`origin=native`). A
+  simulated daemon (`origin=simulated`) renders simulated inputs and
+  scenes, and shows network-stream and capture inputs as a synthetic
+  tinted card with a moving band. Inputs with no picture, such as system
+  audio, get no thumbnail.
+- 2.58 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

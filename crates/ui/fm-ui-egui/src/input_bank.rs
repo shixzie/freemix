@@ -114,8 +114,9 @@ pub(crate) fn neighbour_move_lock_reason(
 
 /// Picks the monitor tap whose current frame shows exactly `input`, if any.
 ///
-/// The client receives no per-input thumbnails, only the Preview and Program
-/// tap frames. A tile borrows a tap's frame only when that frame is fresh,
+/// A tap frame is larger and more frequent than the input's own thumbnail
+/// (Protocol 2.59), so a tile shows it in preference to the thumbnail. A
+/// tile borrows a tap's frame only when that frame is fresh,
 /// shows this input, and this input is the tap's realized source, so a tile
 /// never shows another source's picture. Program wins when both match.
 pub(crate) fn thumbnail_tap(
@@ -228,6 +229,8 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
     ) {
         let l = self.locale;
+        // The live thumbnail feed follows the bank's visibility.
+        self.input_bank_drawn = true;
         let count = state.view.as_ref().map(|view| view.inputs.len());
         let locks = edit_lock_summary(state);
         section_header(ui, l.text(Msg::InputBank), |ui| {
@@ -408,6 +411,30 @@ impl StudioShell {
             .view
             .as_ref()
             .and_then(|view| view.system_audio_input(input));
+        // The input's own live thumbnail (Protocol 2.59) when no tap frame
+        // shows it; a live source's picture that stopped changing is stale.
+        let wire = WireInputId::from_domain(input);
+        let own_thumbnail = if thumbnail.is_none() {
+            self.thumbnail_textures.tile(
+                wire,
+                &state.input_thumbnails,
+                std::time::Instant::now(),
+                stream.is_some() || capture.is_some(),
+            )
+        } else {
+            None
+        };
+        // A system audio input has no picture: its meters stand in for one.
+        let audio_placeholder = if system_audio.is_some() {
+            AudioPlaceholder::Meters(
+                state
+                    .audio_meters
+                    .as_ref()
+                    .and_then(|meters| meters.inputs.iter().find(|meters| meters.input == wire)),
+            )
+        } else {
+            AudioPlaceholder::None
+        };
         // A status badge sits where the `no thumbnail` caption goes, so the
         // caption gives way to it.
         let status_badge = stream.is_some_and(|entry| {
@@ -426,6 +453,8 @@ impl StudioShell {
                     name,
                     tally,
                     thumbnail,
+                    own_thumbnail,
+                    audio_placeholder,
                     lifecycle: tile.lifecycle,
                     enabled,
                     locked: tile.locked,
@@ -471,10 +500,16 @@ impl StudioShell {
         } else {
             String::new()
         };
-        let source = l.text(thumbnail.map_or(Msg::ThumbnailNone, |(tap, _)| match tap {
-            MonitorTap::Program => Msg::ThumbnailProgram,
-            MonitorTap::Preview => Msg::ThumbnailPreview,
-        }));
+        let source = match (thumbnail, own_thumbnail) {
+            (Some((tap, _)), _) => l
+                .text(match tap {
+                    MonitorTap::Program => Msg::ThumbnailProgram,
+                    MonitorTap::Preview => Msg::ThumbnailPreview,
+                })
+                .to_owned(),
+            (None, Some(own)) => crate::input_thumbnail_ui::thumbnail_hover(l, own),
+            (None, None) => l.text(Msg::ThumbnailNone).to_owned(),
+        };
         let mut status = tile_status_line(l, name, tile.lifecycle, tile.categories);
         if let Some(entry) = stream {
             status.push_str(" · ");
@@ -1175,6 +1210,16 @@ struct TileContext<'a> {
     grade_reason: Option<&'static str>,
 }
 
+/// What a tile with no picture paints instead of its ordinal.
+#[derive(Clone, Copy)]
+enum AudioPlaceholder<'a> {
+    /// Not an audio-only input: the dim ordinal.
+    None,
+    /// A system audio input: a meter placeholder from its meters, if any
+    /// arrived.
+    Meters(Option<&'a fm_protocol::InputAudioMeters>),
+}
+
 /// Per-frame facts that change how one tile is painted.
 #[allow(clippy::struct_excessive_bools)] // independent interaction states
 #[derive(Clone, Copy)]
@@ -1183,6 +1228,10 @@ struct TilePaint<'a> {
     name: &'a str,
     tally: crate::TallyState,
     thumbnail: Option<(MonitorTap, MonitorPicture)>,
+    /// The input's own live thumbnail when no tap frame shows it.
+    own_thumbnail: Option<crate::input_thumbnail_ui::TileThumbnail>,
+    /// Whether a system audio input's meters stand in for a picture.
+    audio_placeholder: AudioPlaceholder<'a>,
     lifecycle: InputLifecycleStatus,
     enabled: bool,
     locked: bool,
@@ -1200,6 +1249,8 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         name,
         tally,
         thumbnail,
+        own_thumbnail,
+        audio_placeholder,
         lifecycle,
         enabled,
         locked,
@@ -1252,6 +1303,44 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Color32::from_black_alpha(190),
         );
         painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
+    } else if let Some(own) = own_thumbnail {
+        painter.image(
+            own.texture,
+            letterbox(thumb, own.width, own.height),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        if own.stale() {
+            // An out-of-date picture is dimmed, like a stale monitor well.
+            painter.rect_filled(thumb, CornerRadius::same(4), Color32::from_black_alpha(140));
+        }
+        let tag = painter.layout_no_wrap(
+            crate::input_thumbnail_ui::thumbnail_tag(l10n::locale(ui.ctx()), own),
+            FontId::new(9.0, FontFamily::Proportional),
+            text_color(),
+        );
+        let tag_rect = Rect::from_min_size(
+            pos2(thumb.min.x + 6.0, thumb.max.y - tag.size().y - 9.0),
+            tag.size() + Vec2::new(8.0, 4.0),
+        );
+        painter.rect_filled(
+            tag_rect,
+            CornerRadius::same(3),
+            if own.stale() {
+                crate::theme::faded(AMBER, 0.85)
+            } else {
+                Color32::from_black_alpha(190)
+            },
+        );
+        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
+    } else if let AudioPlaceholder::Meters(meters) = audio_placeholder {
+        crate::input_thumbnail_ui::paint_audio_placeholder(
+            &painter,
+            thumb,
+            l10n::locale(ui.ctx()),
+            meters,
+            !status_badge,
+        );
     } else {
         // Large dim ordinal, like a multiview label on an empty source.
         painter.text(
