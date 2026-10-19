@@ -177,7 +177,7 @@ pub enum DestinationKind {
     Rtmps,
     /// `srt://`, muxed as MPEG-TS.
     Srt,
-    /// `hls:///absolute/path`, muxed as MPEG-TS segments plus a playlist in
+    /// `hls:///absolute/path`, muxed as MPEG-TS (or fragmented-MP4) segments plus a playlist in
     /// that local directory. A local destination has no peer and no secret.
     Hls,
 }
@@ -767,6 +767,33 @@ pub struct StreamConfig {
     /// Caller-mode SRT options, `Some` only for an `srt://` destination;
     /// `None` there uses libsrt's defaults without encryption.
     pub srt: Option<SrtOptions>,
+    /// The segment container of an HLS destination; other transports
+    /// ignore it.
+    pub hls_segments: HlsSegmentFormat,
+}
+
+/// The container an HLS destination's segments are muxed into.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HlsSegmentFormat {
+    /// `segment-<n>.ts` MPEG-TS segments, playable by every HLS client.
+    #[default]
+    MpegTs,
+    /// Fragmented-MP4 (CMAF) `segment-<n>.m4s` segments after one
+    /// `init.mp4` initialization segment (`init_<v>.mp4` per ladder
+    /// variant), which browsers can also append to a Media Source
+    /// Extensions buffer without remuxing.
+    Fmp4,
+}
+
+impl HlsSegmentFormat {
+    /// The media segment file extension.
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::MpegTs => "ts",
+            Self::Fmp4 => "m4s",
+        }
+    }
 }
 
 impl StreamConfig {
@@ -781,6 +808,7 @@ impl StreamConfig {
             encoder: EncoderSettings::default(),
             ladder: None,
             srt: None,
+            hls_segments: HlsSegmentFormat::MpegTs,
         }
     }
 }
@@ -3298,6 +3326,7 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
             &config.destination.url,
             config.encoder.keyframe_interval_seconds,
             ladder.rungs().len(),
+            config.hls_segments,
         ));
     } else {
         values.extend(single_rendition_encoder_args(config.encoder, gop));
@@ -3313,6 +3342,7 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
             config.destination.kind(),
             &config.destination.url,
             config.encoder.keyframe_interval_seconds,
+            config.hls_segments,
         ));
     }
     values.into_iter().map(OsString::from).collect()
@@ -3441,11 +3471,12 @@ const fn muxer_format(kind: DestinationKind) -> &'static str {
 }
 
 /// The segmenter settings every HLS output shares: the muxer, the segment
-/// duration, the bounded playlist window, and the segment flags. Only the
+/// duration, the bounded playlist window, the segment flags, and for
+/// fragmented MP4 the segment type and initialization segment name. Only the
 /// segment filename and the playlists differ between one rendition and a
 /// ladder.
-fn hls_segmenter_args(keyframe_interval_seconds: u32) -> Vec<String> {
-    vec![
+fn hls_segmenter_args(keyframe_interval_seconds: u32, segments: HlsSegmentFormat) -> Vec<String> {
+    let mut values = vec![
         "-y".to_owned(),
         "-f".to_owned(),
         muxer_format(DestinationKind::Hls).to_owned(),
@@ -3455,7 +3486,18 @@ fn hls_segmenter_args(keyframe_interval_seconds: u32) -> Vec<String> {
         "6".to_owned(),
         "-hls_flags".to_owned(),
         "delete_segments+independent_segments+temp_file".to_owned(),
-    ]
+    ];
+    if segments == HlsSegmentFormat::Fmp4 {
+        // A ladder's segmenter suffixes the name per variant (`init_<v>.mp4`)
+        // inside each variant directory.
+        values.extend([
+            "-hls_segment_type".to_owned(),
+            "fmp4".to_owned(),
+            "-hls_fmp4_init_filename".to_owned(),
+            "init.mp4".to_owned(),
+        ]);
+    }
+    values
 }
 
 /// The single-rendition output-side argument tail, from the first
@@ -3465,17 +3507,22 @@ fn hls_segmenter_args(keyframe_interval_seconds: u32) -> Vec<String> {
 /// `keyframe_interval_seconds` is the encoder's keyframe interval, which an
 /// HLS destination uses as its segment duration so every segment starts on a
 /// keyframe; other transports ignore it.
-fn output_args(kind: DestinationKind, url: &str, keyframe_interval_seconds: u32) -> Vec<String> {
+fn output_args(
+    kind: DestinationKind,
+    url: &str,
+    keyframe_interval_seconds: u32,
+    segments: HlsSegmentFormat,
+) -> Vec<String> {
     let mut values = Vec::new();
     if kind == DestinationKind::Hls {
         // The destination URL names the directory; the segment template and
         // the playlist both live inside it, and the playlist is the output
         // file the child writes.
         let directory = url.strip_prefix(HLS_SCHEME).unwrap_or(url);
-        values.extend(hls_segmenter_args(keyframe_interval_seconds));
+        values.extend(hls_segmenter_args(keyframe_interval_seconds, segments));
         values.extend([
             "-hls_segment_filename".to_owned(),
-            format!("{directory}/segment-%05d.ts"),
+            format!("{directory}/segment-%05d.{}", segments.extension()),
             format!("{directory}/index.m3u8"),
         ]);
         return values;
@@ -3497,16 +3544,21 @@ fn output_args(kind: DestinationKind, url: &str, keyframe_interval_seconds: u32)
 /// The HLS ladder output tail: the shared segmenter settings, the per-variant
 /// `%v` segment template, the master playlist name, the explicit
 /// stream-to-variant map, and the per-variant output URL.
-fn ladder_output_args(url: &str, keyframe_interval_seconds: u32, rung_count: usize) -> Vec<String> {
+fn ladder_output_args(
+    url: &str,
+    keyframe_interval_seconds: u32,
+    rung_count: usize,
+    segments: HlsSegmentFormat,
+) -> Vec<String> {
     let directory = url.strip_prefix(HLS_SCHEME).unwrap_or(url);
     let var_stream_map = (0..rung_count)
         .map(|index| format!("v:{index},a:{index}"))
         .collect::<Vec<_>>()
         .join(" ");
-    let mut values = hls_segmenter_args(keyframe_interval_seconds);
+    let mut values = hls_segmenter_args(keyframe_interval_seconds, segments);
     values.extend([
         "-hls_segment_filename".to_owned(),
-        format!("{directory}/%v/segment-%05d.ts"),
+        format!("{directory}/%v/segment-%05d.{}", segments.extension()),
         "-master_pl_name".to_owned(),
         "index.m3u8".to_owned(),
         "-var_stream_map".to_owned(),
@@ -4146,9 +4198,12 @@ mod tests {
             "/srv/freemix/output/hls/index.m3u8",
         ]
         .map(str::to_owned);
-        assert_eq!(output_args(DestinationKind::Hls, HLS_URL, 2), expected);
+        assert_eq!(
+            output_args(DestinationKind::Hls, HLS_URL, 2, HlsSegmentFormat::MpegTs),
+            expected
+        );
         // The encoder's keyframe interval is passed through, not baked in.
-        let longer = output_args(DestinationKind::Hls, HLS_URL, 5);
+        let longer = output_args(DestinationKind::Hls, HLS_URL, 5, HlsSegmentFormat::MpegTs);
         let interval = longer
             .windows(2)
             .find(|window| window[0] == "-hls_time")
@@ -4174,6 +4229,40 @@ mod tests {
         let expected_text = expected.iter().map(String::as_str).collect::<Vec<_>>();
         assert_eq!(&text[text.len() - expected_text.len()..], expected_text);
         assert!(!text.contains(&"-flvflags"), "{text:?}");
+    }
+
+    #[test]
+    fn fmp4_hls_tails_name_an_init_segment_and_m4s_segments() {
+        assert_eq!(
+            output_args(DestinationKind::Hls, HLS_URL, 1, HlsSegmentFormat::Fmp4),
+            [
+                "-y",
+                "-f",
+                "hls",
+                "-hls_time",
+                "1",
+                "-hls_list_size",
+                "6",
+                "-hls_flags",
+                "delete_segments+independent_segments+temp_file",
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                "init.mp4",
+                "-hls_segment_filename",
+                "/srv/freemix/output/hls/segment-%05d.m4s",
+                "/srv/freemix/output/hls/index.m3u8",
+            ]
+            .map(str::to_owned)
+        );
+        let ladder = ladder_output_args(HLS_URL, 2, 2, HlsSegmentFormat::Fmp4);
+        assert!(ladder.contains(&"/srv/freemix/output/hls/%v/segment-%05d.m4s".to_owned()));
+        assert!(
+            ladder
+                .windows(2)
+                .any(|pair| pair == ["-hls_segment_type", "fmp4"])
+        );
+        assert_eq!(HlsSegmentFormat::default(), HlsSegmentFormat::MpegTs);
     }
 
     fn ladder_rung(video_bitrate_kbps: u32, width: u32, height: u32) -> HlsLadderRung {
@@ -4400,7 +4489,7 @@ mod tests {
             "[0:v]split=3[v0][v1][v2];[v0]scale=320:180[s0];\
              [v1]scale=640:360[s1];[v2]scale=1280:720[s2]"
         );
-        let tail = ladder_output_args(HLS_URL, 2, three.rungs().len());
+        let tail = ladder_output_args(HLS_URL, 2, three.rungs().len(), HlsSegmentFormat::MpegTs);
         let var_stream_map = tail
             .windows(2)
             .find(|window| window[0] == "-var_stream_map")
@@ -4457,7 +4546,12 @@ mod tests {
     #[test]
     fn non_hls_output_tails_stay_byte_identical() {
         assert_eq!(
-            output_args(DestinationKind::Rtmp, "rtmp://host/app/key12345", 2),
+            output_args(
+                DestinationKind::Rtmp,
+                "rtmp://host/app/key12345",
+                2,
+                HlsSegmentFormat::Fmp4
+            ),
             [
                 "-flvflags",
                 "no_duration_filesize",
@@ -4468,7 +4562,12 @@ mod tests {
             .map(str::to_owned)
         );
         assert_eq!(
-            output_args(DestinationKind::Rtmps, "rtmps://host/app/key12345", 2),
+            output_args(
+                DestinationKind::Rtmps,
+                "rtmps://host/app/key12345",
+                2,
+                HlsSegmentFormat::Fmp4
+            ),
             [
                 "-flvflags",
                 "no_duration_filesize",
@@ -4479,7 +4578,12 @@ mod tests {
             .map(str::to_owned)
         );
         assert_eq!(
-            output_args(DestinationKind::Srt, "srt://host?streamid=abcd1234", 2),
+            output_args(
+                DestinationKind::Srt,
+                "srt://host?streamid=abcd1234",
+                2,
+                HlsSegmentFormat::Fmp4
+            ),
             ["-f", "mpegts", "srt://host?streamid=abcd1234"].map(str::to_owned)
         );
     }

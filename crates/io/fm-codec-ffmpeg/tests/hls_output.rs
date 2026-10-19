@@ -29,8 +29,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use fm_codec_ffmpeg::stream::{
-    CleanupStatus, HlsLadder, HlsLadderRung, PairedFrame, RecordFormat, StartErrorKind,
-    StopOutcome, StreamConfig, StreamDestination, Streamer,
+    CleanupStatus, HlsLadder, HlsLadderRung, HlsSegmentFormat, PairedFrame, RecordFormat,
+    StartErrorKind, StopOutcome, StreamConfig, StreamDestination, Streamer,
 };
 use fm_frame::{
     AudioBlock, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
@@ -372,6 +372,57 @@ fn local_hls_output_writes_a_playable_playlist_and_segments() {
     assert!(
         !publisher_alive(&directory_text),
         "an ffmpeg publisher survived stop"
+    );
+}
+
+/// Fragmented-MP4 segments: one `init.mp4` the playlist maps, `.m4s`
+/// media segments, and the init segment followed by a media segment probes
+/// as H.264 video with AAC audio (what a Media Source Extensions player
+/// appends).
+#[test]
+fn fmp4_hls_output_writes_an_init_segment_and_media_segments() {
+    let _guard = serialize();
+    if !tools_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let directory = root.path().join("hls");
+    let directory_text = directory.to_str().unwrap().to_owned();
+    let destination = StreamDestination::parse(&format!("hls://{directory_text}")).unwrap();
+    let format = format(320, 240);
+    let mut config = StreamConfig::new(format.clone(), destination);
+    config.encoder.keyframe_interval_seconds = KEYFRAME_INTERVAL_SECONDS;
+    config.hls_segments = HlsSegmentFormat::Fmp4;
+    let mut streamer = Streamer::start(config).unwrap();
+    produce(&mut streamer, &format, MEDIA_FRAMES);
+    let report = streamer.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.telemetry.failure, None, "{report:?}");
+
+    let playlist = std::fs::read_to_string(directory.join("index.m3u8")).unwrap();
+    assert!(
+        playlist.contains("#EXT-X-MAP:URI=\"init.mp4\""),
+        "{playlist}"
+    );
+    let segments = playlist
+        .lines()
+        .filter(|line| {
+            line.starts_with("segment-")
+                && Path::new(line)
+                    .extension()
+                    .is_some_and(|extension| extension == "m4s")
+        })
+        .collect::<Vec<_>>();
+    assert!(segments.len() >= 2, "{playlist}");
+    let mut joined = std::fs::read(directory.join("init.mp4")).unwrap();
+    joined.extend(std::fs::read(directory.join(segments[0])).unwrap());
+    let probed = root.path().join("joined.mp4");
+    std::fs::write(&probed, joined).unwrap();
+    let codecs = probe_codecs(&probed);
+    assert!(
+        codecs.contains(&("video".to_owned(), "h264".to_owned()))
+            && codecs.contains(&("audio".to_owned(), "aac".to_owned())),
+        "{codecs:?}"
     );
 }
 

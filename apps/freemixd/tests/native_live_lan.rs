@@ -2,10 +2,12 @@
 
 //! Process-level `LiveLAN` (OR-017, Protocol 2.57): a native daemon started
 //! with `--live-lan-listen` serves a viewer page and, once a client enables
-//! `LiveLAN`, a low-latency HLS stream of Program or of one chosen project
-//! output behind an optional PIN. The test fetches the page, opens a viewer
-//! session with the PIN, downloads the playlist and a segment over HTTP,
-//! decodes the segment to check which output it shows, and follows the
+//! `LiveLAN`, a low-latency fragmented-MP4 HLS stream of Program or of one
+//! chosen project output behind an optional PIN. The test fetches the page,
+//! opens a viewer session with the PIN, downloads the playlist, the
+//! initialization segment, and media segments over HTTP, probes them as the
+//! fragmented MP4 a Media Source Extensions player appends, decodes them to
+//! check which output they show, and follows the
 //! `live_lan_status` runtime events (state, URL, viewer count). The PIN
 //! never appears on the wire, in the daemon's logs, or in any HTTP reply.
 //!
@@ -468,9 +470,12 @@ fn open_session(address: SocketAddr, pin: &str) -> (String, Option<String>) {
     (head, cookie)
 }
 
-/// Fetches the playlist until it lists a segment, then that segment.
+/// Fetches the playlist until it lists two segments, then the
+/// initialization segment it maps and those two, as a Media Source
+/// Extensions player would: the init segment followed by the media
+/// segments, as one fragmented MP4.
 fn fetch_segment(client: &mut Client, viewer: SocketAddr, cookie: &str) -> Vec<u8> {
-    let segment = client.wait_for("a published segment", |_| {
+    let segments = client.wait_for("two published segments", |_| {
         let (head, body) = get(viewer, "/live/index.m3u8", Some(cookie));
         if !head.starts_with("HTTP/1.1 200") {
             return None;
@@ -478,20 +483,63 @@ fn fetch_segment(client: &mut Client, viewer: SocketAddr, cookie: &str) -> Vec<u
         assert!(head.contains("application/vnd.apple.mpegurl"), "{head}");
         let playlist = String::from_utf8(body).unwrap();
         assert!(playlist.starts_with("#EXTM3U"), "{playlist}");
-        playlist
+        assert!(
+            playlist.contains("#EXT-X-MAP:URI=\"init.mp4\""),
+            "{playlist}"
+        );
+        let segments = playlist
             .lines()
-            .rfind(|line| is_segment(line))
+            .filter(|line| is_segment(line))
             .map(str::to_owned)
+            .collect::<Vec<_>>();
+        (segments.len() >= 2).then(|| segments[segments.len() - 2..].to_vec())
     });
-    let (head, body) = get(viewer, &format!("/live/{segment}"), Some(cookie));
+    let (head, mut media) = get(viewer, "/live/init.mp4", Some(cookie));
     assert!(head.starts_with("HTTP/1.1 200"), "{head}");
-    assert!(head.contains("video/mp2t"), "{head}");
-    body
+    assert!(head.contains("Content-Type: video/mp4"), "{head}");
+    assert_eq!(&media[4..8], b"ftyp", "the init segment is an MP4");
+    for segment in segments {
+        let (head, body) = get(viewer, &format!("/live/{segment}"), Some(cookie));
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(head.contains("Content-Type: video/mp4"), "{head}");
+        assert!(
+            body.windows(4).any(|window| window == b"moof"),
+            "a media segment is a movie fragment"
+        );
+        media.extend(body);
+    }
+    media
 }
 
-/// The average colour of a segment's first decoded frame.
+/// The streams `ffprobe` finds in fragmented MP4 `media`, as
+/// `codec_type:codec_name` lines.
+fn probe_streams(directory: &Path, media: &[u8]) -> String {
+    let path = directory.join("probe.mp4");
+    std::fs::write(&path, media).unwrap();
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name",
+            "-of",
+            "csv=p=0:nk=1",
+        ])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// The average colour of the first decoded frame of fragmented MP4 `media`
+/// (an init segment followed by media segments).
 fn segment_color(directory: &Path, segment: &[u8]) -> [u8; 3] {
-    let path = directory.join("segment.ts");
+    let path = directory.join("segment.mp4");
     std::fs::write(&path, segment).unwrap();
     let output = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
@@ -596,6 +644,15 @@ fn native_daemon_serves_live_lan_viewers_over_http() {
     assert!(head.contains("HttpOnly"), "{head}");
     let cookie = cookie.expect("a session cookie");
     let segment = fetch_segment(&mut client, viewer, &cookie);
+    let streams = probe_streams(directory.path(), &segment);
+    assert!(
+        streams.contains("h264,video") || streams.contains("video,h264"),
+        "{streams}"
+    );
+    assert!(
+        streams.contains("aac,audio") || streams.contains("audio,aac"),
+        "{streams}"
+    );
     let color = segment_color(directory.path(), &segment);
     assert!(close_to(color, BLUE), "Program is blue, got {color:?}");
 
@@ -695,7 +752,8 @@ fn native_daemon_serves_live_lan_viewers_over_http() {
     }
 }
 
-/// The newest segment the playlist lists, if it is published.
+/// The init segment and the newest segment the playlist lists, if they are
+/// published.
 fn fetch_segment_once(viewer: SocketAddr, cookie: &str) -> Option<Vec<u8>> {
     let (head, body) = get(viewer, "/live/index.m3u8", Some(cookie));
     if !head.starts_with("HTTP/1.1 200") {
@@ -703,15 +761,20 @@ fn fetch_segment_once(viewer: SocketAddr, cookie: &str) -> Option<Vec<u8>> {
     }
     let playlist = String::from_utf8(body).ok()?;
     let segment = playlist.lines().rfind(|line| is_segment(line))?;
+    let (head, mut media) = get(viewer, "/live/init.mp4", Some(cookie));
+    if !head.starts_with("HTTP/1.1 200") {
+        return None;
+    }
     let (head, body) = get(viewer, &format!("/live/{segment}"), Some(cookie));
-    head.starts_with("HTTP/1.1 200").then_some(body)
+    media.extend(body);
+    head.starts_with("HTTP/1.1 200").then_some(media)
 }
 
-/// Whether a playlist line names a published `segment-<digits>.ts`.
+/// Whether a playlist line names a published `segment-<digits>.m4s`.
 fn is_segment(line: &str) -> bool {
     line.strip_prefix("segment-")
         .and_then(|rest| rest.rsplit_once('.'))
         .is_some_and(|(digits, extension)| {
-            extension == "ts" && digits.bytes().all(|byte| byte.is_ascii_digit())
+            extension == "m4s" && digits.bytes().all(|byte| byte.is_ascii_digit())
         })
 }

@@ -2216,15 +2216,26 @@ a stream key) edited by the padlocked, undoable `live_lan_set` command from
 Studio's Output › LiveLAN viewers… window and the CLI's `live-lan-set` /
 `remote-live-lan-set` (`live-lan` / `remote-live-lan` print it, never the
 PIN). Native `freemixd` with `--live-lan-listen <addr:port>` (any address,
-LAN included) serves a viewer page, PIN-gated cookie sessions with
-per-address rate limiting and the viewer limit, and a one-second-segment
-H.264/AAC HLS stream of the chosen source encoded off the render loop into a
+LAN included) serves a viewer page, PIN-gated cookie sessions with the
+viewer limit, and a one-second-segment H.264/AAC HLS stream of fragmented-MP4
+(CMAF) segments of the chosen source, encoded off the render loop into a
 private temporary directory; it reports `live_lan_status` (state, viewer
-URL, viewers, egress kbps). The page plays HLS natively only (Safari, iOS,
-Chrome or Edge on Android): there is no bundled MSE player for desktop
-Chrome or Firefox, no TLS, no per-viewer bandwidth breakdown, no measured
-latency class, and the supervised Studio daemon does not start a listener.
-`OR-017` therefore remains planned.
+URL, viewers, egress kbps). The page hands the playlist to browsers that play
+HLS themselves (Safari, iOS, Android, recent Chromium) and otherwise plays it
+through its own small Media Source Extensions player (desktop Firefox, and
+Chrome or Edge without native HLS): it fetches the playlist, `init.mp4`,
+and the media segments with the session cookie, starts near the live edge,
+follows it, skips
+missing segments, and joins again when its session ends (a source change or
+an encoder restart ends the sessions served the old stream). Playback of
+both paths was confirmed in headless Chromium, the MSE path by forcing it;
+Firefox, Safari, and mobile browsers were not exercised. The PIN is compared
+in constant time including its length; wrong PINs lock an IPv4 address or
+IPv6 `/64` out for a minute after each run of five, doubling per further run
+up to an hour (with `Retry-After`). On Linux, a new daemon removes temporary
+directories left by daemons that are gone. There is no TLS, no per-viewer
+bandwidth breakdown, no measured latency class, and the supervised Studio
+daemon does not start a listener. `OR-017` therefore remains planned.
 
 Current implementation boundary for item 4: native `freemixd` runs two
 independently configured program recorder destinations with per-slot project

@@ -7,23 +7,36 @@
 //! publishes what may be served through a [`LiveLanHandle`] and reads back
 //! the viewer count and the bytes served.
 //!
+//! The stream is HLS with fragmented-MP4 (CMAF) segments: a browser that
+//! plays HLS itself (Safari, iOS, Android, recent Chromium) is handed the
+//! playlist, and every other browser with Media Source Extensions (desktop
+//! Firefox; Chrome or Edge without HLS of their own) plays it through the
+//! page's own small player, which fetches the playlist, the `init.mp4`
+//! initialization segment, and the media segments and appends them to a
+//! `SourceBuffer`.
+//!
 //! Access is a session: the page posts the optional PIN to
 //! `POST /v1/live/session`, and a correct PIN (or none, when no PIN is set)
-//! returns an `HttpOnly` session cookie that the playlist and segment
-//! requests must carry. A viewer is a session that fetched media within the
-//! last [`VIEWER_WINDOW`]; a new session is refused while the configured
-//! maximum is watching; a page joining again with its live session keeps
-//! it. Wrong PINs are rate-limited per IPv4 address or IPv6 `/64`. Disabling
-//! `LiveLAN` or changing its PIN or source ends every session at once.
+//! returns an `HttpOnly` session cookie that the playlist, initialization
+//! segment, and media segment requests must carry. A viewer is a session
+//! that fetched media within the last [`VIEWER_WINDOW`]; a new session is
+//! refused while the configured maximum is watching; a page joining again
+//! with its live session keeps it. Wrong PINs are rate-limited per IPv4
+//! address or IPv6 `/64`: each run of [`MAX_PIN_FAILURES`] locks the
+//! address out, for [`BASE_LOCKOUT`] at first and twice as long after each
+//! further run, up to [`MAX_LOCKOUT`]. Disabling `LiveLAN` or changing its
+//! PIN or source ends every session at once, and an encoder that starts
+//! again ends the sessions it served.
 //!
 //! Every bound is fixed: at most [`MAX_CONNECTIONS`] connections are served
 //! at once (each on its own short-lived thread), a request must arrive
 //! within [`REQUEST_DEADLINE`], a request head is at most
 //! [`MAX_REQUEST_BYTES`], a body at most [`MAX_BODY_BYTES`], a served file
 //! at most [`MAX_FILE_BYTES`], and the session and failure tables are
-//! capped. The PIN is compared in constant time and never logged, echoed,
-//! or rendered by `Debug`. A request path is never joined to a directory:
-//! only `index.m3u8` and `segment-<digits>.ts` leaves are served.
+//! capped. The PIN is compared in constant time, whatever its length, and
+//! is never logged, echoed, or rendered by `Debug`. A request path is never
+//! joined to a directory: only the `index.m3u8`, `init.mp4`, and
+//! `segment-<digits>.m4s` leaves are served.
 
 use std::{
     collections::HashMap,
@@ -54,10 +67,21 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const VIEWER_WINDOW: Duration = Duration::from_secs(10);
 /// A session idle this long is forgotten.
 pub const SESSION_IDLE: Duration = Duration::from_secs(60);
-/// Wrong PINs one address may send per [`FAILURE_WINDOW`].
+/// Wrong PINs one address may send per [`FAILURE_WINDOW`] before it is
+/// locked out.
 pub const MAX_PIN_FAILURES: u8 = 5;
 /// How long a run of wrong PINs is remembered.
 pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+/// The first lockout; each further one doubles, up to [`MAX_LOCKOUT`].
+pub const BASE_LOCKOUT: Duration = Duration::from_secs(60);
+/// The longest lockout.
+pub const MAX_LOCKOUT: Duration = Duration::from_hours(1);
+/// How long after its last lockout (or wrong PIN) an address's lockouts are
+/// remembered, so the next lockout escalates; then it starts afresh.
+pub const LOCKOUT_MEMORY: Duration = MAX_LOCKOUT;
+/// Bytes every PIN comparison walks at least: more than any valid PIN, so
+/// how long a comparison takes says nothing about the PIN's length.
+const PIN_COMPARE_BYTES: usize = MAX_BODY_BYTES;
 /// Sessions remembered at most, active or idle.
 const MAX_SESSIONS: usize = 128;
 /// Addresses whose wrong PINs are remembered at most.
@@ -74,8 +98,9 @@ const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
 const COPY_CHUNK_BYTES: usize = 16 * 1024;
 const PLAYLIST_LEAF: &str = "index.m3u8";
+const INIT_LEAF: &str = "init.mp4";
 const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
-const SEGMENT_CONTENT_TYPE: &str = "video/mp2t";
+const SEGMENT_CONTENT_TYPE: &str = "video/mp4";
 
 /// The viewer page.
 const PAGE: &str = include_str!("web/live_lan.html");
@@ -114,8 +139,9 @@ enum Refusal {
     Off,
     /// The PIN is wrong, or the request carries no live session.
     Unauthorized,
-    /// Too many wrong PINs from this address.
-    RateLimited,
+    /// Too many wrong PINs from this address: locked out for this many more
+    /// seconds.
+    RateLimited(u64),
     /// The configured maximum is watching.
     Full,
 }
@@ -125,7 +151,7 @@ impl Refusal {
         match self {
             Self::Off => (503, "Service Unavailable", "off"),
             Self::Unauthorized => (401, "Unauthorized", "pin"),
-            Self::RateLimited => (429, "Too Many Requests", "wait"),
+            Self::RateLimited(_) => (429, "Too Many Requests", "wait"),
             Self::Full => (503, "Service Unavailable", "full"),
         }
     }
@@ -136,6 +162,11 @@ struct AccessState {
     access: Option<LiveLanAccess>,
     /// The encoder's output directory, once it publishes.
     media: Option<PathBuf>,
+    /// The last directory published, kept while nothing is.
+    published: Option<PathBuf>,
+    /// Counts the directories published: a session served media of one
+    /// stream is ended when another starts.
+    stream: u64,
     /// Session token to when it last fetched media (or was created).
     sessions: HashMap<String, Session>,
     /// Wrong PINs per [`throttle_key`].
@@ -160,20 +191,56 @@ struct Session {
     last_seen: Instant,
     /// Whether the session has fetched media and so counts as a viewer.
     watching: bool,
+    /// The [`AccessState::stream`] the session was served media of.
+    stream: Option<u64>,
 }
 
+/// Wrong PINs from one [`throttle_key`].
 #[derive(Clone, Copy)]
 struct Failures {
+    /// Wrong PINs in the current run, since the last lockout.
     count: u8,
+    /// When the current run began.
     since: Instant,
+    /// Lockouts so far: the next one lasts `BASE_LOCKOUT * 2^lockouts`.
+    lockouts: u32,
+    /// The end of the current (or last) lockout.
+    locked_until: Option<Instant>,
+    /// The last wrong PIN.
+    last: Instant,
+}
+
+impl Failures {
+    /// Whether this record still matters at `now`: a lockout is running, a
+    /// run is in progress, or an earlier lockout still escalates the next.
+    fn remembered(&self, now: Instant) -> bool {
+        let quiet_since = self
+            .locked_until
+            .map_or(self.last, |until| until.max(self.last));
+        (self.count > 0 && now.duration_since(self.since) < FAILURE_WINDOW)
+            || now < quiet_since
+            || (self.lockouts > 0 && now.duration_since(quiet_since) < LOCKOUT_MEMORY)
+    }
+
+    /// Seconds left of a running lockout, rounded up.
+    fn locked_for(&self, now: Instant) -> Option<u64> {
+        let left = self.locked_until?.checked_duration_since(now)?;
+        (!left.is_zero()).then(|| left.as_secs() + u64::from(left.subsec_nanos() > 0))
+    }
+}
+
+/// How long the lockout after `earlier` lockouts lasts.
+fn lockout(earlier: u32) -> Duration {
+    BASE_LOCKOUT
+        .checked_mul(1_u32.checked_shl(earlier).unwrap_or(u32::MAX))
+        .map_or(MAX_LOCKOUT, |lockout| lockout.min(MAX_LOCKOUT))
 }
 
 impl AccessState {
     fn prune(&mut self, now: Instant) {
         self.sessions
             .retain(|_, session| now.duration_since(session.last_seen) < SESSION_IDLE);
-        self.failures
-            .retain(|_, failures| now.duration_since(failures.since) < FAILURE_WINDOW);
+        self.failures.retain(|_, failures| failures.remembered(now));
     }
 
     fn viewers(&self, now: Instant) -> usize {
@@ -185,26 +252,38 @@ impl AccessState {
             .count()
     }
 
-    fn rate_limited(&self, address: IpAddr) -> bool {
+    /// Seconds left of `address`'s lockout, if it is locked out.
+    fn locked_for(&self, address: IpAddr, now: Instant) -> Option<u64> {
         self.failures
             .get(&throttle_key(address))
-            .is_some_and(|failures| failures.count >= MAX_PIN_FAILURES)
+            .and_then(|failures| failures.locked_for(now))
     }
 
+    /// Counts a wrong PIN from `address`; the last of a run of
+    /// [`MAX_PIN_FAILURES`] locks it out, each lockout twice as long as the
+    /// one before (up to [`MAX_LOCKOUT`]).
     fn record_failure(&mut self, address: IpAddr, now: Instant) {
         let address = throttle_key(address);
-        if let Some(failures) = self.failures.get_mut(&address) {
-            failures.count = failures.count.saturating_add(1);
+        if !self.failures.contains_key(&address) && self.failures.len() >= MAX_FAILURE_ADDRESSES {
             return;
         }
-        if self.failures.len() < MAX_FAILURE_ADDRESSES {
-            self.failures.insert(
-                address,
-                Failures {
-                    count: 1,
-                    since: now,
-                },
-            );
+        let failures = self.failures.entry(address).or_insert(Failures {
+            count: 0,
+            since: now,
+            lockouts: 0,
+            locked_until: None,
+            last: now,
+        });
+        if failures.count == 0 || now.duration_since(failures.since) >= FAILURE_WINDOW {
+            failures.count = 0;
+            failures.since = now;
+        }
+        failures.count = failures.count.saturating_add(1);
+        failures.last = now;
+        if failures.count >= MAX_PIN_FAILURES {
+            failures.locked_until = Some(now + lockout(failures.lockouts));
+            failures.lockouts = failures.lockouts.saturating_add(1);
+            failures.count = 0;
         }
     }
 
@@ -223,13 +302,15 @@ impl AccessState {
         let Some(access) = &self.access else {
             return Err(Refusal::Off);
         };
+        if let Some(seconds) = self.locked_for(address, now) {
+            return Err(Refusal::RateLimited(seconds));
+        }
         // A full failure table fails closed for addresses it cannot track.
-        if self.rate_limited(address)
-            || (access.pin.is_some()
-                && self.failures.len() >= MAX_FAILURE_ADDRESSES
-                && !self.failures.contains_key(&throttle_key(address)))
+        if access.pin.is_some()
+            && self.failures.len() >= MAX_FAILURE_ADDRESSES
+            && !self.failures.contains_key(&throttle_key(address))
         {
-            return Err(Refusal::RateLimited);
+            return Err(Refusal::RateLimited(FAILURE_WINDOW.as_secs()));
         }
         if let Some(expected) = &access.pin
             && !constant_time_eq(expected.as_bytes(), pin.as_bytes())
@@ -270,6 +351,7 @@ impl AccessState {
             Session {
                 last_seen: now,
                 watching: false,
+                stream: None,
             },
         );
         Ok(token)
@@ -284,16 +366,26 @@ impl AccessState {
         };
         let maximum = usize::from(access.max_viewers);
         let viewers = self.viewers(now);
-        let Some(session) = token.and_then(|token| self.sessions.get_mut(token)) else {
+        let Some((token, session)) =
+            token.and_then(|token| self.sessions.get_mut(token).map(|session| (token, session)))
+        else {
             return Err(Refusal::Unauthorized);
         };
+        // Served media of an encoder that has since started again: the
+        // page must join again and start the new stream from its beginning.
+        if self.media.is_some() && session.stream.is_some_and(|stream| stream != self.stream) {
+            self.sessions.remove(token);
+            return Err(Refusal::Unauthorized);
+        }
         let counted = session.watching && now.duration_since(session.last_seen) < VIEWER_WINDOW;
         if !counted && viewers >= maximum {
             return Err(Refusal::Full);
         }
         session.last_seen = now;
         session.watching = true;
-        self.media.clone().ok_or(Refusal::Off)
+        let media = self.media.clone().ok_or(Refusal::Off)?;
+        session.stream = Some(self.stream);
+        Ok(media)
     }
 }
 
@@ -339,9 +431,19 @@ impl LiveLanHandle {
     }
 
     /// Sets the directory the encoder publishes into; `None` while nothing
-    /// is published.
+    /// is published. Publishing another directory than the last (an encoder
+    /// started again, whose stream starts over) ends every session that was
+    /// served media of the last, so each of those viewers joins again and
+    /// starts the new stream from its beginning.
     pub fn set_media(&self, media: Option<PathBuf>) {
-        self.shared.lock().media = media;
+        let mut state = self.shared.lock();
+        if let Some(directory) = &media
+            && state.published.as_ref() != Some(directory)
+        {
+            state.stream = state.stream.wrapping_add(1);
+            state.published = Some(directory.clone());
+        }
+        state.media = media;
     }
 
     /// Ends every session, so each viewer joins again and reloads the
@@ -684,20 +786,34 @@ fn form_pin(body: &[u8]) -> Option<&str> {
     pin.bytes().all(|byte| byte.is_ascii_digit()).then_some(pin)
 }
 
-/// The content type of a servable media leaf: the playlist or one
-/// `segment-<digits>.ts`.
+/// The content type of a servable media leaf: the playlist, the
+/// initialization segment, or one `segment-<digits>.m4s`.
 fn media_content_type(leaf: &str) -> Option<&'static str> {
     if leaf == PLAYLIST_LEAF {
         return Some(PLAYLIST_CONTENT_TYPE);
     }
-    let digits = leaf.strip_prefix("segment-")?.strip_suffix(".ts")?;
+    if leaf == INIT_LEAF {
+        return Some(SEGMENT_CONTENT_TYPE);
+    }
+    let digits = leaf.strip_prefix("segment-")?.strip_suffix(".m4s")?;
     ((5..=10).contains(&digits.len()) && digits.bytes().all(|byte| byte.is_ascii_digit()))
         .then_some(SEGMENT_CONTENT_TYPE)
 }
 
 fn refuse(stream: &mut TcpStream, refusal: Refusal, deadline: Instant) {
     let (status, reason, body) = refusal.status();
-    let _ = write_simple(stream, (status, reason), body, deadline);
+    let Refusal::RateLimited(seconds) = refusal else {
+        let _ = write_simple(stream, (status, reason), body, deadline);
+        return;
+    };
+    let head = encode_head(
+        status,
+        reason,
+        Some("text/plain; charset=utf-8"),
+        body.len() as u64,
+        &format!("Retry-After: {seconds}\r\n"),
+    );
+    let _ = write_all(stream, &head, deadline) && write_all(stream, body.as_bytes(), deadline);
 }
 
 fn serve_media(
@@ -752,9 +868,10 @@ fn open_servable_file(path: &Path) -> Option<(File, u64)> {
 }
 
 /// Headers the viewer page carries: it runs only its own inline script and
-/// plays only this listener's media.
+/// plays only this listener's media, directly or through a Media Source
+/// Extensions `blob:` URL of its own.
 const PAGE_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-src \
-                            'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self'; \
+                            'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; \
                             connect-src 'self'; form-action 'none'; frame-ancestors 'none'\r\n\
                             X-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n";
 
@@ -812,16 +929,20 @@ fn write_all(stream: &mut TcpStream, bytes: &[u8], deadline: Instant) -> bool {
     true
 }
 
-/// Compares two secrets without an early exit on the first differing byte.
+/// Compares a secret with a candidate in time that depends only on the
+/// candidate's length: no early exit on a differing byte or on a length
+/// mismatch. Both are walked, zero-padded, over at least
+/// [`PIN_COMPARE_BYTES`] (longer than any valid PIN), and the length
+/// difference is folded into the result rather than branched on.
 fn constant_time_eq(expected: &[u8], actual: &[u8]) -> bool {
-    if expected.len() != actual.len() {
-        return false;
+    let walked = actual.len().max(PIN_COMPARE_BYTES);
+    let mut difference = expected.len() ^ actual.len();
+    for index in 0..walked {
+        let expected = expected.get(index).copied().unwrap_or(0);
+        let actual = actual.get(index).copied().unwrap_or(0);
+        difference |= usize::from(std::hint::black_box(expected ^ actual));
     }
-    let mut difference = 0_u8;
-    for (expected, actual) in expected.iter().zip(actual) {
-        difference |= expected ^ actual;
-    }
-    difference == 0
+    std::hint::black_box(difference) == 0
 }
 
 /// A fresh random session token, or `None` when the system has no
@@ -913,7 +1034,8 @@ mod tests {
     fn sessions_gate_media_by_pin_capacity_and_rate_limit() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("index.m3u8"), "#EXTM3U\n").unwrap();
-        fs::write(directory.path().join("segment-00000.ts"), [0x47_u8; 376]).unwrap();
+        fs::write(directory.path().join("init.mp4"), [0x01_u8; 24]).unwrap();
+        fs::write(directory.path().join("segment-00000.m4s"), [0x47_u8; 376]).unwrap();
         let server = LiveLanServer::start("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = server.address();
         let handle = server.handle();
@@ -923,6 +1045,8 @@ mod tests {
         assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
         assert!(page.contains("Content-Security-Policy"));
         assert!(page.contains("/v1/live/session"));
+        // The page may play a Media Source Extensions `blob:` URL, and only that.
+        assert!(page.contains("media-src 'self' blob:;"), "{page}");
         assert!(post_pin(address, "").starts_with("HTTP/1.1 503"));
 
         handle.set_access(Some(LiveLanAccess::new(Some("4321"), 1)));
@@ -939,16 +1063,26 @@ mod tests {
         let playlist = get(address, "/live/index.m3u8", Some(&session));
         assert!(playlist.starts_with("HTTP/1.1 200 OK"), "{playlist}");
         assert!(playlist.contains(PLAYLIST_CONTENT_TYPE) && playlist.ends_with("#EXTM3U\n"));
-        let segment = get(address, "/live/segment-00000.ts", Some(&session));
-        assert!(segment.contains(SEGMENT_CONTENT_TYPE), "{segment}");
+        // The initialization segment is media like any other: it needs the
+        // session, and its bytes count.
+        assert!(get(address, "/live/init.mp4", None).starts_with("HTTP/1.1 401"));
+        let init = get(address, "/live/init.mp4", Some(&session));
+        assert!(init.starts_with("HTTP/1.1 200 OK"), "{init}");
+        assert!(init.contains("Content-Type: video/mp4"), "{init}");
+        let segment = get(address, "/live/segment-00000.m4s", Some(&session));
+        assert!(segment.contains("Content-Type: video/mp4"), "{segment}");
         assert_eq!(handle.viewers(), 1);
-        assert_eq!(handle.egress_bytes(), 8 + 376);
-        // Nothing outside the two leaf shapes is served.
+        assert_eq!(handle.egress_bytes(), 8 + 24 + 376);
+        // Nothing outside the three leaf shapes is served.
         for path in [
             "/live/../index.m3u8",
-            "/live/segment-1.ts",
-            "/live/other.ts",
+            "/live/segment-1.m4s",
+            "/live/segment-00000.ts",
+            "/live/other.m4s",
+            "/live/init.mp4/x",
+            "/live/init_0.mp4",
             "/index.m3u8",
+            "/init.mp4",
         ] {
             assert!(
                 get(address, path, Some(&session)).starts_with("HTTP/1.1 404"),
@@ -967,7 +1101,9 @@ mod tests {
         for _ in 1..MAX_PIN_FAILURES {
             assert!(post_pin(address, "0000").starts_with("HTTP/1.1 401"));
         }
-        assert!(post_pin(address, "4321").starts_with("HTTP/1.1 429"));
+        let locked = post_pin(address, "4321");
+        assert!(locked.starts_with("HTTP/1.1 429"), "{locked}");
+        assert!(locked.contains("Retry-After: 60\r\n"), "{locked}");
 
         // A new PIN ends every session and forgets the failures.
         handle.set_access(Some(LiveLanAccess::new(Some("8765"), 2)));
@@ -1085,7 +1221,7 @@ mod tests {
         }
         assert_eq!(
             state.open(ipv6(1000), "4321", None, now),
-            Err(Refusal::RateLimited)
+            Err(Refusal::RateLimited(BASE_LOCKOUT.as_secs()))
         );
         // Another /64 is unaffected.
         let other = IpAddr::from([0x2001, 0xdb8, 0, 1, 0, 0, 0, 1]);
@@ -1099,7 +1235,7 @@ mod tests {
         }
         assert_eq!(
             state.open(IpAddr::from([192, 0, 2, 1]), "4321", None, now),
-            Err(Refusal::RateLimited)
+            Err(Refusal::RateLimited(BASE_LOCKOUT.as_secs()))
         );
         assert!(state.open(mapped(2), "4321", None, now).is_ok());
     }
@@ -1126,6 +1262,40 @@ mod tests {
         }
         assert_eq!(state.sessions.len(), MAX_SESSIONS);
         assert!(state.admit(Some(&viewer), later).is_ok());
+    }
+
+    /// An encoder that starts again publishes into another directory: every
+    /// session served media of the last one ends, so each of those viewers
+    /// starts the new stream from its beginning. Publishing the same
+    /// directory again keeps them.
+    #[test]
+    fn publishing_another_directory_ends_the_sessions_it_served() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for directory in [&first, &second] {
+            fs::write(directory.path().join("index.m3u8"), "#EXTM3U\n").unwrap();
+        }
+        let server = LiveLanServer::start("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = server.address();
+        let handle = server.handle();
+        handle.set_access(Some(LiveLanAccess::new(None, 2)));
+        handle.set_media(Some(first.path().to_path_buf()));
+        let session = cookie(&post_pin(address, ""));
+        assert!(get(address, "/live/index.m3u8", Some(&session)).starts_with("HTTP/1.1 200"));
+        handle.set_media(None);
+        handle.set_media(Some(first.path().to_path_buf()));
+        assert!(get(address, "/live/index.m3u8", Some(&session)).starts_with("HTTP/1.1 200"));
+        handle.set_media(None);
+        // A session that joins while nothing is published, and asks for
+        // media meanwhile, plays the next stream.
+        let waiting = cookie(&post_pin(address, ""));
+        assert!(get(address, "/live/index.m3u8", Some(&waiting)).starts_with("HTTP/1.1 503"));
+        handle.set_media(Some(second.path().to_path_buf()));
+        assert!(get(address, "/live/index.m3u8", Some(&session)).starts_with("HTTP/1.1 401"));
+        assert!(get(address, "/live/index.m3u8", Some(&waiting)).starts_with("HTTP/1.1 200"));
+        let again = cookie(&post_pin(address, ""));
+        assert!(get(address, "/live/index.m3u8", Some(&again)).starts_with("HTTP/1.1 200"));
+        server.shutdown().unwrap();
     }
 
     /// A page that joins again (after a playback error, or a reload) while
@@ -1163,10 +1333,14 @@ mod tests {
         assert_eq!(form_pin(b"pin=4%32"), None);
         assert_eq!(form_pin(b"code=1234"), None);
         assert_eq!(
-            media_content_type("segment-00012.ts"),
+            media_content_type("segment-00012.m4s"),
             Some(SEGMENT_CONTENT_TYPE)
         );
-        assert_eq!(media_content_type("segment-0012.ts"), None);
+        assert_eq!(media_content_type("init.mp4"), Some(SEGMENT_CONTENT_TYPE));
+        assert_eq!(media_content_type("segment-0012.m4s"), None);
+        assert_eq!(media_content_type("segment-00012.ts"), None);
+        assert_eq!(media_content_type("segment-00012.m4s.part"), None);
+        assert_eq!(media_content_type("Init.mp4"), None);
         assert_eq!(
             media_content_type("index.m3u8"),
             Some(PLAYLIST_CONTENT_TYPE)
@@ -1179,5 +1353,126 @@ mod tests {
             viewer_url("[fd00::1]:8090".parse().unwrap()),
             "http://[fd00::1]:8090/"
         );
+    }
+
+    /// Each run of wrong PINs locks an address out for twice as long as the
+    /// run before, up to the cap; a quiet address is forgotten in time; a
+    /// right PIN is refused while locked out.
+    #[test]
+    fn wrong_pin_lockouts_escalate_and_are_capped() {
+        let start = Instant::now();
+        let mut state = AccessState {
+            access: Some(LiveLanAccess::new(Some("4321"), 4)),
+            ..AccessState::default()
+        };
+        let peer = IpAddr::from([192, 0, 2, 7]);
+        let mut now = start;
+        let mut expected = BASE_LOCKOUT;
+        for run in 0..10 {
+            for attempt in 0..MAX_PIN_FAILURES {
+                assert_eq!(
+                    state.open(peer, "0000", None, now),
+                    Err(Refusal::Unauthorized),
+                    "run {run}, attempt {attempt}"
+                );
+            }
+            assert_eq!(
+                state.open(peer, "4321", None, now),
+                Err(Refusal::RateLimited(expected.as_secs())),
+                "run {run}"
+            );
+            // Still locked just before the end, free at the end.
+            let almost = (now + expected)
+                .checked_sub(Duration::from_millis(500))
+                .unwrap();
+            assert_eq!(
+                state.open(peer, "4321", None, almost),
+                Err(Refusal::RateLimited(1)),
+                "run {run}"
+            );
+            now += expected;
+            expected = (expected * 2).min(MAX_LOCKOUT);
+        }
+        assert_eq!(expected, MAX_LOCKOUT);
+        assert_eq!(lockout(0), BASE_LOCKOUT);
+        assert_eq!(lockout(1), BASE_LOCKOUT * 2);
+        assert_eq!(lockout(40), MAX_LOCKOUT);
+        assert_eq!(lockout(u32::MAX), MAX_LOCKOUT);
+        // Free again after the last lockout: a right PIN opens a session.
+        assert!(state.open(peer, "4321", None, now).is_ok());
+        // Fewer than a run of wrong PINs locks nothing, and a run spread
+        // wider than the failure window never adds up.
+        for _ in 1..MAX_PIN_FAILURES {
+            let _ = state.open(peer, "0000", None, now);
+            now += FAILURE_WINDOW;
+        }
+        assert!(state.open(peer, "4321", None, now).is_ok());
+        // After a long quiet spell the address starts afresh at the base.
+        now += LOCKOUT_MEMORY + FAILURE_WINDOW;
+        state.prune(now);
+        assert!(state.failures.is_empty());
+        for _ in 0..MAX_PIN_FAILURES {
+            let _ = state.open(peer, "0000", None, now);
+        }
+        assert_eq!(
+            state.open(peer, "4321", None, now),
+            Err(Refusal::RateLimited(BASE_LOCKOUT.as_secs()))
+        );
+        // A lockout keys on the IPv6 /64 as before: another host of the
+        // network is locked out too, another network is not.
+        let ipv6 =
+            |network: u16, host: u16| IpAddr::from([0x2001, 0xdb8, 0, network, 0, 0, 0, host]);
+        for host in 0..u16::from(MAX_PIN_FAILURES) {
+            let _ = state.open(ipv6(0, host), "0000", None, now);
+        }
+        assert!(matches!(
+            state.open(ipv6(0, 999), "4321", None, now),
+            Err(Refusal::RateLimited(_))
+        ));
+        assert!(state.open(ipv6(1, 1), "4321", None, now).is_ok());
+    }
+
+    /// The comparison is right whatever the lengths, and a candidate
+    /// shorter or longer than the PIN is refused like any other.
+    #[test]
+    fn pin_comparison_folds_in_the_length() {
+        assert!(constant_time_eq(b"4321", b"4321"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"4321", b"432"));
+        assert!(!constant_time_eq(b"4321", b"43210"));
+        // Zero padding never makes a prefix match.
+        assert!(!constant_time_eq(b"4321", b"4321\0"));
+        assert!(!constant_time_eq(b"4321\0", b"4321"));
+        assert!(!constant_time_eq(b"4321", b""));
+        assert!(!constant_time_eq(b"", b"0"));
+        let long = [b'7'; PIN_COMPARE_BYTES + 8];
+        assert!(constant_time_eq(&long, &long));
+        assert!(!constant_time_eq(b"7777", &long));
+    }
+
+    /// The page plays HLS natively where the browser can, and otherwise
+    /// through its own Media Source Extensions player that fetches the
+    /// playlist, the initialization segment, and the media segments with
+    /// the session cookie.
+    #[test]
+    fn the_page_carries_a_native_and_an_mse_player() {
+        for needle in [
+            "application/vnd.apple.mpegurl",
+            "MediaSource",
+            "ManagedMediaSource",
+            "addSourceBuffer",
+            "EXT-X-MAP",
+            "EXT-X-MEDIA-SEQUENCE",
+            "avcC",
+            "credentials: \"same-origin\"",
+            "/live/index.m3u8",
+            "Retry-After",
+        ] {
+            assert!(PAGE.contains(needle), "the page lacks {needle}");
+        }
+        // Nothing outside this listener is loaded.
+        for absent in ["http://", "https://", "<script src", "<link"] {
+            assert!(!PAGE.contains(absent), "the page carries {absent}");
+        }
     }
 }

@@ -3,8 +3,8 @@
 //! While `LiveLAN` is enabled and `--live-lan-listen` runs, one bounded
 //! `FFmpeg` streamer encodes the chosen source (Program, or one project
 //! output, with the audio that output hears) into a short local HLS
-//! playlist in a daemon-owned directory, which [`crate::live_lan`] serves
-//! to viewers. The render loop never waits on it: the encoder starts and
+//! playlist of fragmented-MP4 segments in a daemon-owned directory, which
+//! [`crate::live_lan`] serves to viewers. The render loop never waits on it: the encoder starts and
 //! stops on worker threads, and each frame costs one readback and one
 //! nonblocking enqueue. A change of source restarts the encoder into a new
 //! directory; a change of PIN or viewer limit only changes who may watch.
@@ -14,12 +14,18 @@
 //! failure is logged as `FREEMIXD_LIVELAN_FAILURE` (never with the PIN,
 //! which this module only hands to the listener) and the encoder retries
 //! after [`RETRY_DELAY`].
+//!
+//! Each daemon's directories live under one
+//! `freemixd-live-lan-<pid>-<random>` directory in the temporary directory,
+//! removed on shutdown. One left behind by a daemon that did not shut down
+//! (killed, crashed) is removed when the next daemon starts, on Linux, once
+//! its process is gone (see [`remove_stale_roots`]).
 
 use std::{
     fmt::Write as _,
     fs,
     num::NonZeroU32,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
     time::{Duration, Instant},
@@ -27,7 +33,9 @@ use std::{
 
 use fm_codec_ffmpeg::{
     record::{PairedFrame, RecordFormat},
-    stream::{EncoderSettings, StreamConfig, StreamDestination, StreamState, Streamer},
+    stream::{
+        EncoderSettings, HlsSegmentFormat, StreamConfig, StreamDestination, StreamState, Streamer,
+    },
 };
 use fm_frame::AudioBlock;
 use fm_gpu::NativeTexture;
@@ -49,6 +57,79 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// looked up again, so a network change (or a network that came up after
 /// the daemon started) shows the address that works now.
 const URL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// The name of every daemon's directory root starts with this, followed by
+/// `<pid>-<16 hex digits>`.
+const ROOT_PREFIX: &str = "freemixd-live-lan-";
+#[cfg(any(target_os = "linux", test))]
+const ROOT_SUFFIX_DIGITS: usize = 16;
+
+/// The process id in a `freemixd-live-lan-<pid>-<16 hex digits>` name.
+#[cfg(any(target_os = "linux", test))]
+fn root_pid(name: &str) -> Option<u32> {
+    let (pid, suffix) = name.strip_prefix(ROOT_PREFIX)?.split_once('-')?;
+    let well_formed = !pid.is_empty()
+        && pid.len() <= 10
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && suffix.len() == ROOT_SUFFIX_DIGITS
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    well_formed.then(|| pid.parse().ok()).flatten()
+}
+
+/// Removes the directory roots in `parent` that daemons which are gone left
+/// behind: a `freemixd-live-lan-<pid>-<random>` directory (never a link or
+/// anything else) owned by this user whose process no longer runs. Returns
+/// how many were removed. Only Linux can tell a running process (by
+/// `/proc/<pid>`) and who this user is; elsewhere nothing is removed.
+pub(crate) fn remove_stale_roots(parent: &Path) -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let Some(user) = effective_uid() else {
+            return 0;
+        };
+        let own = std::process::id();
+        let Ok(entries) = fs::read_dir(parent) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name.to_str().and_then(root_pid) else {
+                continue;
+            };
+            if pid == own || Path::new("/proc").join(pid.to_string()).exists() {
+                continue;
+            }
+            let path = entry.path();
+            // Not followed: a link (or anything but a directory) is left be.
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_dir()
+                && metadata.uid() == user
+                && fs::remove_dir_all(&path).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        removed
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = parent;
+        0
+    }
+}
+
+/// This process's effective user id, from `/proc/self/status`.
+#[cfg(target_os = "linux")]
+fn effective_uid() -> Option<u32> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find_map(|line| line.strip_prefix("Uid:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
 
 enum Encoder {
     Idle,
@@ -98,8 +179,9 @@ impl NativeLiveLan {
             let _ = write!(text, "{byte:02x}");
             text
         });
-        let root =
-            std::env::temp_dir().join(format!("freemixd-live-lan-{}-{suffix}", std::process::id()));
+        let parent = std::env::temp_dir();
+        remove_stale_roots(&parent);
+        let root = parent.join(format!("{ROOT_PREFIX}{}-{suffix}", std::process::id()));
         let url = viewer_url(handle.address());
         Self {
             handle,
@@ -262,6 +344,9 @@ impl NativeLiveLan {
             audio_bitrate_kbps: AUDIO_BITRATE_KBPS,
             keyframe_interval_seconds: SEGMENT_SECONDS,
         };
+        // Fragmented MP4, which browsers without HLS of their own play
+        // through Media Source Extensions.
+        config.hls_segments = HlsSegmentFormat::Fmp4;
         let (sender, started) = mpsc::sync_channel(1);
         let abandoned = directory.clone();
         let spawned = thread::Builder::new()
@@ -476,5 +561,75 @@ mod tests {
         assert_eq!(live_lan.status(true).url, viewer_url(server.address()));
         drop(live_lan);
         server.shutdown().unwrap();
+    }
+
+    #[test]
+    fn root_names_are_strict() {
+        assert_eq!(
+            root_pid("freemixd-live-lan-1234-0123456789abcdef"),
+            Some(1234)
+        );
+        for name in [
+            "freemixd-live-lan-1234-0123456789abcde",
+            "freemixd-live-lan-1234-0123456789ABCDEF",
+            "freemixd-live-lan--0123456789abcdef",
+            "freemixd-live-lan-12a4-0123456789abcdef",
+            "freemixd-live-lan-99999999999-0123456789abcdef",
+            "freemixd-live-lan-1234-0123456789abcdef-x",
+            "other-1234-0123456789abcdef",
+        ] {
+            assert_eq!(root_pid(name), None, "{name}");
+        }
+    }
+
+    /// Roots left by daemons that are gone are removed; this process's own,
+    /// links, files, other names, and other directories are left alone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_roots_of_dead_daemons_are_removed() {
+        let parent = tempfile::tempdir().unwrap();
+        let parent = parent.path();
+        // No process has an id this large (pid_max is at most 2^22).
+        let dead = |suffix: &str| parent.join(format!("{ROOT_PREFIX}4000000000-{suffix}"));
+        let stale = dead("00000000000000aa");
+        fs::create_dir_all(stale.join("1")).unwrap();
+        fs::write(stale.join("1").join("segment-00000.m4s"), b"media").unwrap();
+        let own = parent.join(format!(
+            "{ROOT_PREFIX}{}-00000000000000bb",
+            std::process::id()
+        ));
+        fs::create_dir(&own).unwrap();
+        // A link named like a dead daemon's root, and the directory it names.
+        let target = parent.join("kept");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("file"), b"kept").unwrap();
+        let link = dead("00000000000000cc");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let file = dead("00000000000000dd");
+        fs::write(&file, b"not a directory").unwrap();
+        let unrelated = parent.join(format!("{ROOT_PREFIX}4000000000-short"));
+        fs::create_dir(&unrelated).unwrap();
+        // A root whose daemon still runs: this test's parent process is
+        // alive (pid 1 always is).
+        let running = parent.join(format!("{ROOT_PREFIX}1-00000000000000ee"));
+        fs::create_dir(&running).unwrap();
+
+        assert_eq!(remove_stale_roots(parent), 1);
+        assert!(!stale.exists());
+        assert!(own.is_dir());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(target.join("file")).unwrap(), b"kept");
+        assert!(file.is_file());
+        assert!(unrelated.is_dir());
+        assert!(running.is_dir());
+        // Nothing more to remove.
+        assert_eq!(remove_stale_roots(parent), 0);
+        assert_eq!(remove_stale_roots(&parent.join("missing")), 0);
+        assert!(effective_uid().is_some());
     }
 }
