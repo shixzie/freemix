@@ -124,14 +124,32 @@ impl LiveSourceFrames {
     }
 
     #[cfg(feature = "native-media")]
-    fn holds(&self, input: InputId) -> bool {
+    pub(crate) fn holds(&self, input: InputId) -> bool {
         self.frames.contains_key(&input)
     }
 
     #[cfg(not(feature = "native-media"))]
     #[allow(clippy::unused_self)]
-    const fn holds(&self, _input: InputId) -> bool {
+    pub(crate) const fn holds(&self, _input: InputId) -> bool {
         false
+    }
+
+    /// The newest frame of `input` sampled nearest-neighbor straight to
+    /// `width`x`height` as a straight sRGB picture (a Scene thumbnail leaf).
+    #[cfg(feature = "native-media")]
+    pub(crate) fn sampled(&self, input: InputId, width: u32, height: u32) -> Option<ImageFrame> {
+        sampled_live_picture(self.frames.get(&input)?, width, height)
+    }
+
+    #[cfg(not(feature = "native-media"))]
+    #[allow(clippy::unused_self)]
+    pub(crate) const fn sampled(
+        &self,
+        _input: InputId,
+        _width: u32,
+        _height: u32,
+    ) -> Option<ImageFrame> {
+        None
     }
 
     #[cfg(feature = "native-media")]

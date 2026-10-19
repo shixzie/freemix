@@ -1890,8 +1890,10 @@ every input, sent only to sessions that ask for it.
   server identity, a sequence that does not increase for that input, or a
   stream that fails strict QOI decoding at the stated size as a protocol
   violation and disconnects. Clients keep only the latest decoded picture
-  per input (at most 256 inputs) and clear them on unsubscribe and
-  disconnect.
+  per input (at most 256 inputs), only for inputs the replicated project
+  still has, and clear them on unsubscribe and disconnect; a valid record
+  still in flight after unsubscribing, or for an input just removed, is
+  dropped rather than treated as a violation.
 - The record is lossy, latest-wins, never durable, never resumable, and
   never projected into snapshots. The daemon renders thumbnails on a
   dedicated worker thread, never on the session loop: each input with a
@@ -1905,11 +1907,15 @@ every input, sent only to sessions that ask for it.
   control replies.
 - What a thumbnail depicts: a native daemon samples every live source it
   holds (network streams, capture devices, media files, titles, and
-  simulated sources) from its latest CPU frame (`origin=native`). A
-  simulated daemon (`origin=simulated`) renders simulated inputs and
-  scenes, and shows network-stream and capture inputs as a synthetic
-  tinted card with a moving band. Inputs with no picture, such as system
-  audio, get no thumbnail.
+  simulated sources) from its latest CPU frame, and composes its Scene
+  inputs at the thumbnail size from those same frames as an exact scene
+  preview does (`origin=native`). A simulated daemon (`origin=simulated`)
+  renders simulated inputs, titles, and scenes as its monitor tap does,
+  shows network-stream and capture inputs as a synthetic tinted card with
+  a moving band, and media inputs as a card whose bottom bar follows the
+  playhead. A picture with transparency is shown over black, as Program
+  shows it alone. Inputs with no picture, such as system audio, get no
+  thumbnail (and are tried again at most every 500 ms).
 - 2.58 is refused.
 
 Command results are ordered before any event bearing the same accepted revision

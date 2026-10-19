@@ -1828,9 +1828,27 @@ fn input_thumbnails_keep_the_latest_per_input_and_clear_on_unsubscribe() {
     server_thread.join().unwrap();
 }
 
+/// Connects a session subscribed to input thumbnails, then has the server
+/// send `records`.
+fn connect_subscribed_with_records(records: Vec<WireMessage>) -> (TcpSession, JoinHandle<()>) {
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        assert!(matches!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(_)
+        ));
+        peer.send_all(&records);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.send_input_thumbnail_subscription(true).unwrap();
+    (session, server_thread)
+}
+
 #[test]
 fn input_thumbnail_sequence_must_increase_per_input_and_name_this_server() {
-    let (mut session, server_thread) = connect_with_records(vec![
+    let (mut session, server_thread) = connect_subscribed_with_records(vec![
         WireMessage::InputThumbnail(input_thumbnail(1, 5, 1)),
         // Another input keeps its own order.
         WireMessage::InputThumbnail(input_thumbnail(2, 1, 1)),
@@ -1864,5 +1882,102 @@ fn input_thumbnail_sequence_must_increase_per_input_and_name_this_server() {
         session.receive(),
         Err(TcpSessionError::UnexpectedMessage)
     ));
+    server_thread.join().unwrap();
+}
+
+/// Protocol 2.59: a thumbnail still in flight when the feed is turned off is
+/// dropped (and is no violation), so no picture outlives the subscription.
+#[test]
+fn input_thumbnails_in_flight_after_unsubscribing_are_dropped() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        assert!(matches!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(_)
+        ));
+        assert!(matches!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(_)
+        ));
+        release_rx.recv().unwrap();
+        // Rendered before the server read the unsubscription.
+        peer.send_all(&[
+            WireMessage::InputThumbnail(input_thumbnail(1, 7, 1)),
+            WireMessage::Event(event(5)),
+        ]);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.send_input_thumbnail_subscription(true).unwrap();
+    session.send_input_thumbnail_subscription(false).unwrap();
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        session.receive().unwrap(),
+        SessionEvent::InputThumbnail { input: input(1) }
+    );
+    assert!(session.latest_input_thumbnails().is_empty());
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::Event { .. }
+    ));
+    assert!(session.connection().is_some());
+    server_thread.join().unwrap();
+}
+
+/// Protocol 2.59: a removed input's thumbnail is forgotten with it, and one
+/// arriving for an input the project no longer has is not kept, so removed
+/// inputs neither hold pictures (and Studio textures) nor crowd live ones
+/// out of the retained set.
+#[test]
+fn input_thumbnails_of_removed_inputs_are_forgotten() {
+    let event_at = |revision: u64, payload: EventPayload| {
+        let mut message = event(revision);
+        message.payload = payload;
+        WireMessage::Event(message)
+    };
+    let (mut session, server_thread) = connect_subscribed_with_records(vec![
+        event_at(
+            5,
+            EventPayload::InputAdded {
+                input: input(9),
+                name: "Bars".into(),
+                network_stream: None,
+                capture: None,
+                system_audio: None,
+            },
+        ),
+        WireMessage::InputThumbnail(input_thumbnail(9, 1, 1)),
+        WireMessage::InputThumbnail(input_thumbnail(1, 2, 1)),
+        event_at(6, EventPayload::InputRemoved { input: input(9) }),
+        // Still queued for input 9 when it was removed.
+        WireMessage::InputThumbnail(input_thumbnail(9, 3, 1)),
+    ]);
+    session.receive().unwrap();
+    session.receive().unwrap();
+    session.receive().unwrap();
+    assert_eq!(
+        session
+            .latest_input_thumbnails()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [input(1), input(9)]
+    );
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::Event { .. }
+    ));
+    assert_eq!(
+        session
+            .latest_input_thumbnails()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [input(1)]
+    );
+    session.receive().unwrap();
+    assert_eq!(session.latest_input_thumbnails().len(), 1);
     server_thread.join().unwrap();
 }

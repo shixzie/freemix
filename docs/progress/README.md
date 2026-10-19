@@ -36,9 +36,12 @@ Since Protocol 2.59 every input tile carries its own live thumbnail while the
 input bank is visible: Studio subscribes with `input_thumbnail_subscription`
 and the daemon sends each input with a picture at most 160x90, about one to
 two pictures a second, under a shared bandwidth budget, tagged `FEED` (or
-`FEED · SIM` for simulated renders). In simulated mode, scenes and simulated
-sources are real renders, and network-stream and capture inputs show a
-synthetic tinted card with a sweeping band. A thumbnail older than three
+`FEED · SIM` for simulated renders). In simulated mode, scenes, titles, and
+simulated sources are real renders, network-stream and capture inputs show a
+synthetic tinted card with a sweeping band, and media inputs a card whose
+bottom bar follows the playhead. A native daemon samples each source's newest
+frame and composes its Scene inputs from those frames; a picture with
+transparency shows over black, as Program shows it alone. A thumbnail older than three
 seconds is dimmed with an amber `STALE {age}` tag. A system-audio input has no
 picture and shows an `audio only` meter placeholder. A Preview or Program tap
 frame still wins over the tile's own thumbnail while it is current and shows

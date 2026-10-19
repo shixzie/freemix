@@ -22,13 +22,19 @@
 //! - A native daemon thumbnails the newest CPU frame of every source its
 //!   media pipeline holds (network streams, captures, media files, stills,
 //!   titles, simulated generators), sampled nearest-neighbor straight to the
-//!   thumbnail size and converted to sRGB, then graded with the input grade.
-//! - A simulated daemon renders simulated inputs and Scene inputs through
-//!   the CPU reference (as its monitor tap does), and synthesizes a moving
-//!   test pattern for network stream and capture inputs, which have no real
-//!   source there; those records say `origin=simulated`.
-//! - System audio, media files on a simulated daemon, titles on a simulated
-//!   daemon, and anything else without a picture get no thumbnail.
+//!   thumbnail size and converted to sRGB, then graded with the input grade
+//!   and shown over black (as Program shows a source with transparency).
+//!   Its Scene inputs are composed at the thumbnail size by the CPU
+//!   reference compositor from those same sampled frames, as an exact scene
+//!   preview composes them.
+//! - A simulated daemon renders simulated inputs, title inputs, and Scene
+//!   inputs through the CPU reference (as its monitor tap does), and
+//!   synthesizes a moving test pattern for network stream and capture
+//!   inputs and a card with the playhead's position for media inputs, which
+//!   have no real source there; those records say `origin=simulated`.
+//! - System audio, and anything else without a picture, gets no thumbnail.
+//!   An input without a picture is tried again at most every
+//!   [`THUMBNAIL_INTERVAL`], like one with a picture.
 //!
 //! Each subscribed peer drains its thumbnails through a [`ThumbnailOutbox`]:
 //! one pending record per input (a newer one replaces an unsent one), served
@@ -43,7 +49,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use fm_engine::CompiledProjectGrades;
-use fm_model::{InputKind, Project};
+use fm_model::{Input, InputKind, Project};
 use fm_protocol::{
     InputThumbnailMessage, MAX_INPUT_THUMBNAIL_BYTES, MAX_INPUT_THUMBNAIL_HEIGHT,
     MAX_INPUT_THUMBNAIL_WIDTH, MAX_LINE_BYTES, MonitorFrameOrigin, ServerIdentity, WireInputId,
@@ -55,7 +61,8 @@ use fm_types::InputId;
 
 use crate::monitor_tap::fit_within;
 use crate::scene_preview::LiveSourceFrames;
-use crate::scene_render;
+use crate::scene_render::{self, SceneSources};
+use crate::title_render::{self, TitleAssets, TitleTime};
 
 /// Shortest gap between two renders of one input (at most 2 fps).
 pub(crate) const THUMBNAIL_INTERVAL: Duration = Duration::from_millis(500);
@@ -83,6 +90,11 @@ pub(crate) struct ThumbnailWork {
     pub(crate) grades: Arc<CompiledProjectGrades>,
     /// The animation pose of every Scene input on air; others hold.
     pub(crate) scenes: Vec<(InputId, AnimSample)>,
+    /// The animation pose of every title on air; others hold.
+    pub(crate) titles: Vec<(InputId, AnimSample)>,
+    /// Each media input's playhead and the end of its playable range, as
+    /// the engine holds them (a simulated daemon draws them).
+    pub(crate) media: Vec<(InputId, u64, u64)>,
     /// A native daemon's newest source frames; `None` on a simulated one.
     pub(crate) live: Option<LiveSourceFrames>,
 }
@@ -100,21 +112,33 @@ struct Entry {
 /// Renders and paces thumbnails; see the module documentation.
 pub(crate) struct ThumbnailRenderer {
     server: ServerIdentity,
+    /// The title templates, fonts, and images title inputs draw with.
+    titles: Arc<TitleAssets>,
     /// The simulated pipeline at the fitted thumbnail size, per revision.
     pipeline: Option<(u64, Option<SimulatedPipeline>)>,
     entries: BTreeMap<InputId, Entry>,
+    /// When each input was last tried, with or without a picture, so an
+    /// input without one is not tried again on every worker step.
+    tried: BTreeMap<InputId, Instant>,
     sequence: u64,
     epoch: Instant,
+    /// Pictures attempted, observed by tests to prove pacing.
+    #[cfg(test)]
+    attempts: u64,
 }
 
 impl ThumbnailRenderer {
-    pub(crate) fn new(server: ServerIdentity, epoch: Instant) -> Self {
+    pub(crate) fn new(server: ServerIdentity, epoch: Instant, titles: Arc<TitleAssets>) -> Self {
         Self {
             server,
+            titles,
             pipeline: None,
             entries: BTreeMap::new(),
+            tried: BTreeMap::new(),
             sequence: 0,
             epoch,
+            #[cfg(test)]
+            attempts: 0,
         }
     }
 
@@ -128,11 +152,11 @@ impl ThumbnailRenderer {
         refresh: bool,
         emit: &mut dyn FnMut(InputId, Vec<u8>),
     ) {
-        if work.live.is_none()
-            && self
-                .pipeline
-                .as_ref()
-                .is_none_or(|(revision, _)| *revision != work.revision)
+        // Scene inputs compose on this grid on either daemon.
+        if self
+            .pipeline
+            .as_ref()
+            .is_none_or(|(revision, _)| *revision != work.revision)
         {
             let dimensions = work.project.settings().video.dimensions;
             let pipeline = fit_within(
@@ -148,14 +172,19 @@ impl ThumbnailRenderer {
         }
         for input in work.project.inputs() {
             let due = refresh
-                || self.entries.get(&input.id).is_none_or(|entry| {
-                    now.saturating_duration_since(entry.rendered_at) >= THUMBNAIL_INTERVAL
+                || self.tried.get(&input.id).is_none_or(|tried| {
+                    now.saturating_duration_since(*tried) >= THUMBNAIL_INTERVAL
                 });
             if !due {
                 continue;
             }
+            self.tried.insert(input.id, now);
+            #[cfg(test)]
+            {
+                self.attempts += 1;
+            }
             let Some((width, height, qoi)) = self
-                .picture(input.id, &input.kind, work, now)
+                .picture(input, work, now)
                 .and_then(|picture| encode_thumbnail(&picture))
             else {
                 self.entries.remove(&input.id);
@@ -192,13 +221,15 @@ impl ThumbnailRenderer {
             }
         }
         let project = &work.project;
-        self.entries
-            .retain(|input, _| project.inputs().iter().any(|known| known.id == *input));
+        let known = |input: &InputId| project.inputs().iter().any(|known| known.id == *input);
+        self.entries.retain(|input, _| known(input));
+        self.tried.retain(|input, _| known(input));
     }
 
     /// Forgets every rendered picture (nobody is subscribed any more).
     pub(crate) fn idle(&mut self) {
         self.entries.clear();
+        self.tried.clear();
         self.pipeline = None;
     }
 
@@ -227,51 +258,160 @@ impl ThumbnailRenderer {
         Some(line.into_bytes())
     }
 
-    /// The picture of one input, graded with its input grade, or `None`
-    /// when it has none on this daemon.
-    fn picture(
-        &self,
-        input: InputId,
-        kind: &InputKind,
-        work: &ThumbnailWork,
-        now: Instant,
-    ) -> Option<ImageFrame> {
-        let picture = if let Some(live) = &work.live {
-            live.thumbnail(input, MAX_INPUT_THUMBNAIL_WIDTH, MAX_INPUT_THUMBNAIL_HEIGHT)?
-        } else {
-            let pipeline = self.pipeline.as_ref()?.1.as_ref()?;
-            match kind {
-                InputKind::Simulated(_) => pipeline.render_source(input, work.frame).ok()?,
-                InputKind::Scene { .. } => {
-                    let pose = work
-                        .scenes
-                        .iter()
-                        .find(|(scene, _)| *scene == input)
-                        .map_or(AnimSample::Hold, |(_, pose)| *pose);
-                    // The scene renderer applies the Scene input's own grade.
-                    return scene_render::render_scene(
-                        &work.project,
-                        input,
-                        pipeline,
-                        work.frame,
-                        pose,
-                        &work.grades,
-                    );
+    /// The picture of one input, graded with its input grade and shown over
+    /// black (straight colour, opaque), or `None` when it has none on this
+    /// daemon.
+    fn picture(&self, input: &Input, work: &ThumbnailWork, now: Instant) -> Option<ImageFrame> {
+        let id = input.id;
+        let pipeline = self
+            .pipeline
+            .as_ref()
+            .and_then(|(_, pipeline)| pipeline.as_ref());
+        if let InputKind::Scene { scene_id, .. } = &input.kind {
+            let pipeline = pipeline?;
+            let scene = work
+                .project
+                .scenes()
+                .iter()
+                .find(|scene| scene.id == *scene_id)?;
+            let live;
+            let sources: &dyn SceneSources = match &work.live {
+                None => pipeline,
+                Some(frames) => {
+                    live = SampledSources {
+                        live: frames,
+                        simulated: pipeline,
+                    };
+                    &live
                 }
-                InputKind::NetworkStream(_) | InputKind::Device { .. } => synthetic_picture(
-                    input,
-                    pipeline.width(),
-                    pipeline.height(),
-                    now.saturating_duration_since(self.epoch),
-                )?,
+            };
+            // The scene renderer applies the Scene input's own grade; its
+            // premultiplied colour is the picture over black.
+            return scene_render::render_scene_model(
+                &work.project,
+                scene,
+                sources,
+                (pipeline.width(), pipeline.height()),
+                work.frame,
+                pose_of(&work.scenes, id),
+                Some(&work.grades),
+                Some(id),
+            )
+            .map(|composed| opaque(&composed));
+        }
+        let picture = if let Some(live) = &work.live {
+            live.thumbnail(id, MAX_INPUT_THUMBNAIL_WIDTH, MAX_INPUT_THUMBNAIL_HEIGHT)?
+        } else {
+            let pipeline = pipeline?;
+            let (width, height) = (pipeline.width(), pipeline.height());
+            match &input.kind {
+                InputKind::Simulated(_) => pipeline.render_source(id, work.frame).ok()?,
+                InputKind::Title(title) => {
+                    // As the monitor tap draws a title: its pose on air (or
+                    // Hold), keyed, then over black.
+                    let keyed = title_render::render_title_at(
+                        &self.titles,
+                        id,
+                        title,
+                        TitleTime::now(
+                            work.frame,
+                            work.project.settings().frame_rate,
+                            None,
+                            pose_of(&work.titles, id),
+                        ),
+                        width,
+                        height,
+                    )?;
+                    title_render::flatten_over_black(&keyed)?
+                }
+                InputKind::NetworkStream(_) | InputKind::Device { .. } => {
+                    synthetic_picture(id, width, height, now.saturating_duration_since(self.epoch))?
+                }
+                InputKind::Media { .. } => {
+                    let playhead = work
+                        .media
+                        .iter()
+                        .find(|(media, _, _)| *media == id)
+                        .map(|(_, position, end)| (*position, *end));
+                    synthetic_media_picture(id, width, height, playhead)?
+                }
                 _ => return None,
             }
         };
-        match work.grades.input(input) {
-            Some(grade) => fm_compositor::apply_grade(&picture, grade).ok(),
-            None => Some(picture),
+        let graded = match work.grades.input(id) {
+            Some(grade) => fm_compositor::apply_grade(&picture, grade).ok()?,
+            None => picture,
+        };
+        Some(over_black(&graded))
+    }
+}
+
+/// The animation pose of `input` in `poses`, or Hold.
+fn pose_of(poses: &[(InputId, AnimSample)], input: InputId) -> AnimSample {
+    poses
+        .iter()
+        .find(|(candidate, _)| *candidate == input)
+        .map_or(AnimSample::Hold, |(_, pose)| *pose)
+}
+
+/// A native daemon's Scene thumbnail leaves: each source's newest frame
+/// sampled straight onto the grid (never copied whole), and the simulated
+/// pipeline for a simulated input the snapshot lacks.
+struct SampledSources<'a> {
+    live: &'a LiveSourceFrames,
+    simulated: &'a SimulatedPipeline,
+}
+
+impl SceneSources for SampledSources<'_> {
+    fn draws(&self, input: &Input) -> bool {
+        self.live.holds(input.id) || self.simulated.draws(input)
+    }
+
+    fn leaf(
+        &self,
+        input: &Input,
+        frame_number: u64,
+        width: u32,
+        height: u32,
+    ) -> Option<ImageFrame> {
+        if self.live.holds(input.id) {
+            self.live.sampled(input.id, width, height)
+        } else {
+            self.simulated.leaf(input, frame_number, width, height)
         }
     }
+}
+
+/// A premultiplied picture as the opaque picture it shows over black.
+fn opaque(picture: &ImageFrame) -> ImageFrame {
+    let mut pixels = picture.pixels().to_vec();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel[3] = u8::MAX;
+    }
+    ImageFrame::new(picture.width(), picture.height(), picture.stride(), pixels)
+        .unwrap_or_else(|_| picture.clone())
+}
+
+/// A straight-alpha picture composited over black: each colour channel
+/// scaled by its alpha (rounded), alpha opaque. A thumbnail carries no
+/// alpha, so a source with transparency (a title, a still with a
+/// transparent background) shows as Program shows it alone, not as the
+/// undefined straight colour under its transparent pixels.
+pub(crate) fn over_black(picture: &ImageFrame) -> ImageFrame {
+    let mut pixels = picture.pixels().to_vec();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let alpha = u16::from(pixel[3]);
+        if alpha == 255 {
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            let scaled = (u16::from(*channel) * alpha + 127) / 255;
+            *channel = u8::try_from(scaled).unwrap_or(u8::MAX);
+        }
+        pixel[3] = u8::MAX;
+    }
+    ImageFrame::new(picture.width(), picture.height(), picture.stride(), pixels)
+        .unwrap_or_else(|_| picture.clone())
 }
 
 /// A simulated daemon's stand-in picture for a live source it cannot
@@ -307,6 +447,46 @@ fn synthetic_picture(
                 [230, 230, 230]
             } else {
                 tint.map(|channel| channel / shade)
+            };
+            pixels.extend_from_slice(&[red, green, blue, 255]);
+        }
+    }
+    ImageFrame::new(width, height, columns * 4, pixels).ok()
+}
+
+/// A simulated daemon's stand-in picture for a media input it cannot
+/// decode: a dark tinted card with a progress bar along the bottom showing
+/// the playhead within the playable range (empty when unknown), so it moves
+/// exactly while the engine plays the clip.
+fn synthetic_media_picture(
+    input: InputId,
+    width: u32,
+    height: u32,
+    playhead: Option<(u64, u64)>,
+) -> Option<ImageFrame> {
+    let shift = u8::try_from(input.get().get() % 5).ok()? * 6;
+    let tint = [52_u8, 40, 72].map(|channel| channel.saturating_add(shift));
+    let columns = usize::try_from(width).ok()?;
+    let rows = usize::try_from(height).ok()?;
+    let filled = playhead.map_or(0, |(position, end)| {
+        if end == 0 {
+            return 0;
+        }
+        let fraction = u128::from(position.min(end)) * u128::from(width) / u128::from(end);
+        usize::try_from(fraction).unwrap_or(columns)
+    });
+    let bar = (rows / 12).max(2);
+    let mut pixels = Vec::with_capacity(columns * rows * 4);
+    for y in 0..rows {
+        for x in 0..columns {
+            let [red, green, blue] = if y + bar >= rows {
+                if x < filled {
+                    [220, 180, 60]
+                } else {
+                    [24, 24, 28]
+                }
+            } else {
+                tint
             };
             pixels.extend_from_slice(&[red, green, blue, 255]);
         }
@@ -472,7 +652,7 @@ impl ThumbnailWorker {
     /// # Errors
     ///
     /// Returns the operating system error when the thread cannot start.
-    pub(crate) fn spawn(server: ServerIdentity) -> std::io::Result<Self> {
+    pub(crate) fn spawn(server: ServerIdentity, titles: Arc<TitleAssets>) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             slot: Mutex::new(Slot {
                 work: None,
@@ -484,7 +664,7 @@ impl ThumbnailWorker {
             wake: Condvar::new(),
         });
         let worker_shared = Arc::clone(&shared);
-        let mut renderer = ThumbnailRenderer::new(server, Instant::now());
+        let mut renderer = ThumbnailRenderer::new(server, Instant::now(), titles);
         let worker = thread::Builder::new()
             .name("freemixd-thumbnails".to_owned())
             .spawn(move || run_worker(&worker_shared, &mut renderer))?;
@@ -679,6 +859,8 @@ mod tests {
             project: Arc::new(project),
             grades: Arc::default(),
             scenes: Vec::new(),
+            titles: Vec::new(),
+            media: Vec::new(),
             live: None,
         }
     }
@@ -704,7 +886,7 @@ mod tests {
     #[test]
     fn renders_fitted_thumbnails_paced_and_kept_alive() {
         let start = Instant::now();
-        let mut renderer = ThumbnailRenderer::new(server(), start);
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
         let work = work(project(vec![solid(1, 200), solid(2, 50)]), 1);
 
         let first = step(&mut renderer, &work, start, false);
@@ -757,7 +939,7 @@ mod tests {
     #[test]
     fn a_changed_picture_is_sent_at_the_next_interval_with_age_zero() {
         let start = Instant::now();
-        let mut renderer = ThumbnailRenderer::new(server(), start);
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
         step(
             &mut renderer,
             &work(project(vec![solid(1, 200)]), 1),
@@ -789,7 +971,7 @@ mod tests {
     #[test]
     fn simulated_live_sources_get_a_moving_synthetic_picture_and_audio_none() {
         let start = Instant::now();
-        let mut renderer = ThumbnailRenderer::new(server(), start);
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
         let stream = input(
             3,
             InputKind::NetworkStream(fm_types::network_stream::NetworkStreamConfig::new(
@@ -907,7 +1089,7 @@ mod tests {
 
     #[test]
     fn worker_renders_off_the_loop_and_stops_without_demand() {
-        let mut worker = ThumbnailWorker::spawn(server()).unwrap();
+        let mut worker = ThumbnailWorker::spawn(server(), Arc::default()).unwrap();
         let project = project(vec![solid(1, 200)]);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut records = Vec::new();
@@ -918,6 +1100,8 @@ mod tests {
                 project: worker.project_at(1, &project),
                 grades: Arc::default(),
                 scenes: Vec::new(),
+                titles: Vec::new(),
+                media: Vec::new(),
                 live: None,
             });
             thread::sleep(Duration::from_millis(5));
@@ -929,5 +1113,379 @@ mod tests {
             worker.poll(false, false, Instant::now(), |_| unreachable!()),
             Vec::new()
         );
+    }
+
+    /// An input without a picture (system audio here) is tried at most once
+    /// per interval, not on every worker step.
+    #[test]
+    fn pictureless_inputs_are_tried_once_per_interval() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let audio = input(
+            4,
+            InputKind::SystemAudio(fm_types::system_audio::SystemAudioConfig::new(
+                fm_types::system_audio::SystemAudioBackend::Pulse,
+                "default.monitor",
+            )),
+        );
+        let work = work(project(vec![audio]), 1);
+        for millis in (0..500).step_by(50) {
+            let sent = step(
+                &mut renderer,
+                &work,
+                start + Duration::from_millis(millis),
+                false,
+            );
+            assert_eq!(sent, Vec::new());
+        }
+        assert_eq!(renderer.attempts, 1);
+        step(
+            &mut renderer,
+            &work,
+            start + Duration::from_millis(500),
+            false,
+        );
+        assert_eq!(renderer.attempts, 2);
+    }
+
+    /// A thumbnail has no alpha: a straight-alpha picture shows over black,
+    /// as Program shows it, never as the colour under transparent pixels.
+    #[test]
+    fn straight_alpha_pictures_show_over_black() {
+        let picture = ImageFrame::new(
+            3,
+            1,
+            12,
+            vec![255, 255, 255, 0, 200, 100, 50, 128, 9, 8, 7, 255],
+        )
+        .unwrap();
+        assert_eq!(
+            over_black(&picture).pixels(),
+            &[0, 0, 0, 255, 100, 50, 25, 255, 9, 8, 7, 255]
+        );
+    }
+
+    const TITLE_URI: &str = "asset://titles/bar.fmtitle";
+
+    /// A 1920x1080 transparent title template with one rectangle at
+    /// (300, 150) sized 600x300 in `colour`.
+    fn title_assets(colour: [u8; 3]) -> Arc<TitleAssets> {
+        use fm_titles::{
+            Bounds, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
+            Style, TemplateId, TitleTemplate,
+        };
+        let field = FieldId::new(NonZeroU128::new(1).unwrap());
+        let template = TitleTemplate {
+            id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+            name: "Bar".into(),
+            width: 1_920,
+            height: 1_080,
+            background: Color::TRANSPARENT,
+            fields: vec![FieldDefinition {
+                id: field,
+                name: "Bar".into(),
+                default: FieldValue::Color(Color::new(colour[0], colour[1], colour[2], 255)),
+            }],
+            elements: vec![Element {
+                id: ElementId::new(NonZeroU128::new(1).unwrap()),
+                name: "Bar".into(),
+                bounds: Bounds {
+                    x: 300,
+                    y: 150,
+                    width: 600,
+                    height: 300,
+                },
+                z_index: 0,
+                visible: true,
+                style: Style::default(),
+                color_field: Some(field),
+                kind: ElementKind::Rectangle,
+            }],
+            animation: fm_titles::TitleAnimation::default(),
+        };
+        let mut assets = TitleAssets::default();
+        assets.insert(
+            TITLE_URI,
+            title_render::LoadedTitleTemplate::new(template, fm_titles::AssetCatalog::new()),
+        );
+        Arc::new(assets)
+    }
+
+    fn pixel(message: &InputThumbnailMessage, x: usize, y: usize) -> [u8; 4] {
+        let image = decode_input_thumbnail(message).unwrap();
+        let offset = (y * usize::from(image.width) + x) * 4;
+        image.rgba[offset..offset + 4].try_into().unwrap()
+    }
+
+    /// A simulated daemon draws a title input as its monitor tap does: the
+    /// template over black at the thumbnail size.
+    #[test]
+    fn simulated_titles_get_their_rendered_picture() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, title_assets([200, 40, 20]));
+        let title = input(
+            5,
+            InputKind::Title(fm_model::TitleInput {
+                template_uri: TITLE_URI.into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+        );
+        let sent = step(&mut renderer, &work(project(vec![title]), 1), start, false);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!((sent[0].1.width, sent[0].1.height), (160, 90));
+        // The bar covers (25..75, 12..38) of the 160x90 grid.
+        assert_eq!(pixel(&sent[0].1, 50, 25), [200, 40, 20, 255]);
+        assert_eq!(pixel(&sent[0].1, 5, 5), [0, 0, 0, 255]);
+        assert_eq!(pixel(&sent[0].1, 120, 70), [0, 0, 0, 255]);
+    }
+
+    /// A simulated daemon draws a media input as a card whose bottom bar
+    /// follows the engine's playhead.
+    #[test]
+    fn simulated_media_cards_follow_the_playhead() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let clip = input(
+            6,
+            InputKind::Media {
+                asset_uri: "asset://media/clip.mov".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+        );
+        let mut paused = work(project(vec![clip]), 1);
+        paused.media = vec![(input_id(6), 0, 100)];
+        let first = step(&mut renderer, &paused, start, false);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].1.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!(pixel(&first[0].1, 10, 89), [24, 24, 28, 255]);
+        // Still paused: nothing changes, so nothing is sent before the
+        // keepalive.
+        let unchanged = step(
+            &mut renderer,
+            &paused,
+            start + Duration::from_millis(500),
+            false,
+        );
+        assert_eq!(unchanged, Vec::new());
+        let mut halfway = paused;
+        halfway.media = vec![(input_id(6), 50, 100)];
+        let moved = step(
+            &mut renderer,
+            &halfway,
+            start + Duration::from_millis(1_000),
+            false,
+        );
+        assert_eq!(moved.len(), 1);
+        assert_eq!(pixel(&moved[0].1, 10, 89), [220, 180, 60, 255]);
+        assert_eq!(pixel(&moved[0].1, 100, 89), [24, 24, 28, 255]);
+    }
+}
+
+/// A native daemon's thumbnails come from the media pipeline's newest
+/// source frames.
+#[cfg(all(test, feature = "native-media"))]
+mod native_tests {
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU128;
+
+    use fm_frame::{
+        AlphaMode, ChromaLocation, ClockDomainId, ColorMetadata, ColorPrimaries, CpuVideoFrame,
+        CpuVideoPayload, CpuVideoPlane, MatrixCoefficients, MediaTimestamp, MediaTiming,
+        NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, PixelFormat, SequenceNumber,
+        SignalRange, TimeBase, TransferFunction, VideoDimensions, VideoFrameMetadata,
+    };
+    use fm_model::{Layer, LayerGeometry, Rotation, SourceRef};
+    use fm_protocol::{LineDecoder, decode_input_thumbnail};
+
+    use super::*;
+
+    fn input_id(value: u128) -> InputId {
+        InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    /// One labeled straight-alpha sRGB 320x180 BGRA frame, every pixel
+    /// `bgra`.
+    fn frame(bgra: [u8; 4]) -> Arc<CpuVideoFrame> {
+        let timing = MediaTiming::new(
+            OriginalTimestamp::new(
+                MediaTimestamp::new(0),
+                TimeBase::new(1, 1_000_000_000).unwrap(),
+            ),
+            NormalizedTimestamp::from_nanos(0),
+            NormalizedDuration::from_nanos(40_000_000).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+            SequenceNumber::new(0),
+        )
+        .unwrap();
+        let payload = CpuVideoPayload::new(
+            PixelFormat::Bgra8,
+            VideoDimensions::new(320, 180).unwrap(),
+            vec![CpuVideoPlane::new(320 * 4, bgra.repeat(320 * 180)).unwrap()],
+        )
+        .unwrap();
+        Arc::new(
+            CpuVideoFrame::new(timing, payload)
+                .with_metadata(VideoFrameMetadata::new(
+                    ColorMetadata {
+                        primaries: ColorPrimaries::Bt709,
+                        transfer: TransferFunction::Srgb,
+                        matrix: MatrixCoefficients::Identity,
+                        range: SignalRange::Full,
+                        chroma_location: ChromaLocation::Center,
+                    },
+                    Some(AlphaMode::Straight),
+                ))
+                .unwrap(),
+        )
+    }
+
+    /// A 1920x1080 project: input 2 a media clip, input 3 a title, and
+    /// Scene input 11 showing scene 1 (the clip over the left half on an
+    /// opaque grey background).
+    fn project() -> Project {
+        let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
+        let mut project = Project::new(
+            fm_types::ProjectId::new(NonZeroU128::new(42).unwrap()),
+            "Native thumbnails",
+            fm_model::ProjectSettings {
+                frame_rate,
+                video: fm_types::VideoFormat {
+                    dimensions: fm_types::VideoDimensions::new(1920, 1080).unwrap(),
+                    frame_rate,
+                    pixel_format: fm_types::PixelFormat::Rgba8,
+                    scan: fm_types::ScanMode::Progressive,
+                    color: fm_types::ColorMetadata::default(),
+                },
+                audio: fm_types::AudioFormat {
+                    sample_rate: fm_types::SampleRate::new(48_000).unwrap(),
+                    sample_format: fm_types::SampleFormat::I16,
+                    channels: fm_types::ChannelLayout::stereo(),
+                },
+            },
+        );
+        project.add_input(Input {
+            id: input_id(2),
+            name: "Clip".into(),
+            kind: InputKind::Media {
+                asset_uri: "asset://media/clip.mov".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+            required_capabilities: Vec::new(),
+        });
+        project.add_input(Input {
+            id: input_id(3),
+            name: "Lower third".into(),
+            kind: InputKind::Title(fm_model::TitleInput {
+                template_uri: "asset://titles/lower-third.fmtitle".into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+            required_capabilities: Vec::new(),
+        });
+        let scene = fm_types::SceneId::new(NonZeroU128::new(1).unwrap());
+        project.add_scene(fm_model::Scene {
+            id: scene,
+            name: "Scene".into(),
+            background: fm_model::Rgba8::new(60, 60, 60, 255),
+            layers: vec![Layer {
+                id: fm_model::LayerId::new(1).unwrap(),
+                name: "Clip".into(),
+                source: SourceRef::Input(input_id(2)),
+                enabled: true,
+                geometry: LayerGeometry::new(0, 0, 960, 1080, Rotation::Deg0),
+                crop: None,
+                mask: None,
+                key: None,
+                effects: Vec::new(),
+                opacity: 255,
+                z_order: 1,
+            }],
+            animation: fm_model::SceneAnimation::default(),
+        });
+        project.add_input(Input {
+            id: input_id(11),
+            name: "Scene".into(),
+            kind: InputKind::Scene {
+                scene_id: scene,
+                audio_source: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        project
+    }
+
+    fn thumbnails(
+        frames: BTreeMap<InputId, Arc<CpuVideoFrame>>,
+    ) -> BTreeMap<InputId, fm_protocol::InputThumbnailImage> {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(
+            ServerIdentity {
+                engine_id: "engine".to_owned(),
+                project_id: "42".to_owned(),
+                state_epoch: 1,
+                log_id: "log".to_owned(),
+            },
+            start,
+            Arc::default(),
+        );
+        let work = ThumbnailWork {
+            revision: 1,
+            frame: 0,
+            project: Arc::new(project()),
+            grades: Arc::default(),
+            scenes: Vec::new(),
+            titles: Vec::new(),
+            media: Vec::new(),
+            live: Some(LiveSourceFrames::from_frames(frames)),
+        };
+        let mut out = BTreeMap::new();
+        renderer.step(&work, start, false, &mut |input, bytes| {
+            let messages = LineDecoder::new().push(&bytes).unwrap();
+            let [WireMessage::InputThumbnail(message)] = messages.as_slice() else {
+                panic!("one input_thumbnail record");
+            };
+            assert_eq!(message.origin, MonitorFrameOrigin::Native);
+            out.insert(input, decode_input_thumbnail(message).unwrap());
+        });
+        out
+    }
+
+    fn pixel(image: &fm_protocol::InputThumbnailImage, x: usize, y: usize) -> [u8; 4] {
+        let offset = (y * usize::from(image.width) + x) * 4;
+        image.rgba[offset..offset + 4].try_into().unwrap()
+    }
+
+    /// A native title (or a still with transparency) shows over black: its
+    /// transparent pixels are black whatever straight colour they carry, and
+    /// a half-transparent pixel is its colour scaled by its alpha.
+    #[test]
+    fn native_transparent_sources_show_over_black() {
+        let mut frames = BTreeMap::new();
+        // BGRA: white, fully transparent.
+        frames.insert(input_id(3), frame([255, 255, 255, 0]));
+        // BGRA: (r 200, g 100, b 50) at alpha 128.
+        frames.insert(input_id(2), frame([50, 100, 200, 128]));
+        let images = thumbnails(frames);
+        assert_eq!(pixel(&images[&input_id(3)], 10, 10), [0, 0, 0, 255]);
+        assert_eq!(pixel(&images[&input_id(2)], 10, 10), [100, 50, 25, 255]);
+    }
+
+    /// A native daemon thumbnails its Scene inputs: the scene composed at
+    /// the thumbnail size from the sources' newest frames.
+    #[test]
+    fn native_scene_inputs_compose_from_live_frames() {
+        let mut frames = BTreeMap::new();
+        // BGRA: opaque (r 10, g 200, b 30).
+        frames.insert(input_id(2), frame([30, 200, 10, 255]));
+        let images = thumbnails(frames);
+        let scene = &images[&input_id(11)];
+        assert_eq!((scene.width, scene.height), (160, 90));
+        assert_eq!(pixel(scene, 10, 45), [10, 200, 30, 255]);
+        assert_eq!(pixel(scene, 150, 45), [60, 60, 60, 255]);
+
+        // Without the clip's frame the scene cannot be composed honestly.
+        assert!(!thumbnails(BTreeMap::new()).contains_key(&input_id(11)));
     }
 }

@@ -597,7 +597,7 @@ pub(super) fn run(
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     // Input thumbnails render off this loop too (Protocol 2.59).
-    let mut thumbnails = ThumbnailWorker::spawn(authority.clone())?;
+    let mut thumbnails = ThumbnailWorker::spawn(authority.clone(), Arc::clone(titles))?;
     let mut thumbnail_grades = crate::grading::GradeCache::default();
     let mut simulated_monitor = if native.is_none() {
         Some(SimulatedMonitorWorker::spawn(
@@ -927,7 +927,8 @@ pub(super) fn run(
 
 /// The work one thumbnail step renders from: the realized revision's
 /// project (shared per revision), its compiled grades, the poses of the
-/// Scene inputs on air, and a native daemon's newest source frames.
+/// Scene inputs and titles on air, the media playheads, and a native
+/// daemon's newest source frames.
 fn thumbnail_work(
     worker: &mut ThumbnailWorker,
     control: &fm_control::ControlService<fm_auth::Policy>,
@@ -945,6 +946,16 @@ fn thumbnail_work(
             .scenes_on_air()
             .into_iter()
             .map(|scene| (scene.input, scene.frame.sample))
+            .collect(),
+        titles: control
+            .titles_on_air()
+            .into_iter()
+            .map(|title| (title.input, title.frame.sample))
+            .collect(),
+        media: control
+            .media_statuses()
+            .into_iter()
+            .map(|media| (media.input, media.position, media.playable_end))
             .collect(),
         live,
     }
