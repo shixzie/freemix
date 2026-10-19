@@ -1648,7 +1648,10 @@ local audio output device at its own level and mute, independent of Program.
   bytes of printable ASCII without spaces, not starting with `-`, or empty
   for none) chooses the device. It is an undoable, padlock-guarded project
   edit authorized as an audio operation; choosing a device again, even the
-  current one, reopens it, so a failed device is retried.
+  current one, reopens it, so a failed device is retried. Choosing the
+  current device again changes nothing durable and records no undo entry.
+  Only choosing the device again reopens a failed device: a later sample
+  rate or channel change of the bus does not.
 - `payload=audio_monitor_level` (`gain_millidb` -96000..=24000, `muted`
   `0|1`) moves the headphone feed's level. It is a live audio operation:
   never recorded, never undone, never padlock-guarded. It changes neither
@@ -1660,7 +1663,11 @@ local audio output device at its own level and mute, independent of Program.
 - `audio_meters` `monitor` becomes
   `<master|solo>~<off|playing|failed>~<channels>`: `off` while no device is
   chosen or no audio is rendered, `playing` while the bus reaches the
-  device, `failed` once the device could not be opened or stopped playing.
+  device, `failed` once the device could not be opened, stopped playing, or
+  stopped reading (a write blocked for 3 s). The failure's cause and a
+  bounded, redacted tail of the device child's standard error are logged
+  by `freemixd` as one `FREEMIXD_MONITOR_OUTPUT_FAILURE` record; the wire
+  carries only the state.
 - Durability: the project gains a required `audio_monitor_output` object
   (`device` string or `null`, `gain_milli_db`, `muted`), meter-only at
   unity by default (schema 50).

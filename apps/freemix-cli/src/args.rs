@@ -1502,6 +1502,9 @@ pub enum Command {
 pub enum ArgsError {
     MissingCommand,
     MissingValue(&'static str),
+    /// A secret option was followed by something that looks like another
+    /// option (`--...`); the value is never echoed.
+    SecretLooksLikeOption(&'static str),
     BlankValue(&'static str),
     /// HLS writes into one local directory and has no failover endpoint.
     BackupNotAllowed,
@@ -1560,6 +1563,11 @@ impl core::fmt::Display for ArgsError {
         match self {
             Self::MissingCommand => formatter.write_str("a command is required"),
             Self::MissingValue(field) => write!(formatter, "missing value for {field}"),
+            Self::SecretLooksLikeOption(option) => write!(
+                formatter,
+                "missing value for {option}: it is followed by another option, and a secret \
+                 value cannot start with `--`"
+            ),
             Self::BlankValue(field) => write!(formatter, "{field} must not be blank"),
             Self::BackupNotAllowed => {
                 formatter.write_str("hls:// stream destinations do not support --backup")
@@ -2235,7 +2243,10 @@ fn parse_stream(
                 if !srt {
                     return Err(ArgsError::SrtOptionNotAllowed("--srt-passphrase"));
                 }
-                srt_passphrase = Some(nonblank(&mut arguments, "SRT passphrase")?);
+                srt_passphrase = Some(secret(
+                    "--srt-passphrase",
+                    nonblank(&mut arguments, "SRT passphrase")?,
+                )?);
             }
             "--backup" => {
                 if hls {
@@ -2407,7 +2418,10 @@ fn parse_remote_stream_set(
                         conflicts: "--clear-stream-key",
                     });
                 }
-                options.stream_key = SecretEdit::Set(nonblank(&mut arguments, "stream key")?);
+                options.stream_key = SecretEdit::Set(secret(
+                    "--stream-key",
+                    nonblank(&mut arguments, "stream key")?,
+                )?);
             }
             "--clear-stream-key" => {
                 if matches!(options.stream_key, SecretEdit::Set(_)) {
@@ -2431,8 +2445,10 @@ fn parse_remote_stream_set(
                         conflicts: "--clear-srt-passphrase",
                     });
                 }
-                options.srt_passphrase =
-                    SecretEdit::Set(nonblank(&mut arguments, "SRT passphrase")?);
+                options.srt_passphrase = SecretEdit::Set(secret(
+                    "--srt-passphrase",
+                    nonblank(&mut arguments, "SRT passphrase")?,
+                )?);
             }
             "--clear-srt-passphrase" => {
                 if matches!(options.srt_passphrase, SecretEdit::Set(_)) {
@@ -5222,7 +5238,10 @@ fn network_stream_options(
                         conflicts: "--clear-stream-id",
                     });
                 }
-                options.stream_id = SecretEdit::Set(required(&mut arguments, "stream ID")?);
+                options.stream_id = SecretEdit::Set(secret(
+                    "--stream-id",
+                    required(&mut arguments, "stream ID")?,
+                )?);
             }
             "--clear-stream-id" if allow_url => {
                 if matches!(options.stream_id, SecretEdit::Set(_)) {
@@ -5240,7 +5259,10 @@ fn network_stream_options(
                         conflicts: "--clear-stream-key",
                     });
                 }
-                options.stream_key = SecretEdit::Set(required(&mut arguments, "stream key")?);
+                options.stream_key = SecretEdit::Set(secret(
+                    "--stream-key",
+                    required(&mut arguments, "stream key")?,
+                )?);
             }
             "--clear-stream-key" if allow_url => {
                 if matches!(options.stream_key, SecretEdit::Set(_)) {
@@ -5258,7 +5280,10 @@ fn network_stream_options(
                         conflicts: "--clear-passphrase",
                     });
                 }
-                options.passphrase = SecretEdit::Set(required(&mut arguments, "passphrase")?);
+                options.passphrase = SecretEdit::Set(secret(
+                    "--passphrase",
+                    required(&mut arguments, "passphrase")?,
+                )?);
             }
             "--clear-passphrase" if allow_url => {
                 if matches!(options.passphrase, SecretEdit::Set(_)) {
@@ -6394,6 +6419,19 @@ fn required(
     field: &'static str,
 ) -> Result<String, ArgsError> {
     arguments.next().ok_or(ArgsError::MissingValue(field))
+}
+
+/// The value of secret `option` (a stream key, passphrase, or stream ID).
+/// A value that looks like an option (`--...`) means the secret was left
+/// out: `--srt-passphrase --srt-latency-ms 200` must not store
+/// `--srt-latency-ms` as the passphrase and then misread `200`. The error
+/// names only the option, never the value.
+fn secret(option: &'static str, value: String) -> Result<String, ArgsError> {
+    if value.starts_with("--") {
+        Err(ArgsError::SecretLooksLikeOption(option))
+    } else {
+        Ok(value)
+    }
 }
 
 fn nonblank(

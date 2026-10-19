@@ -25,7 +25,8 @@
 //!   configuration. They are project edits: refused while the project
 //!   padlock (and, for a strip, the input's padlock) is engaged, and undoable
 //!   with the exact previous label, membership, name, parent, mode, or
-//!   device.
+//!   device. Choosing the current monitor device again only retries it on
+//!   the media plane and records no undo entry.
 //! - [`EngineAudioMixerEdit::SetGroupLevel`] moves a group fader or mute,
 //!   [`EngineAudioMixerEdit::SetGroupSolo`] solos a group, and
 //!   [`EngineAudioMixerEdit::SetMonitorLevel`] moves the monitor output level
@@ -412,9 +413,12 @@ pub(crate) fn inverse(
         EngineAudioMixerEdit::SetSoloMode { .. } => Some(EngineAudioMixerEdit::SetSoloMode {
             mode: state.audio_solo_mode(),
         }),
-        EngineAudioMixerEdit::SetMonitorDevice { .. } => {
-            Some(EngineAudioMixerEdit::SetMonitorDevice {
-                device: state.audio_monitor().device.clone(),
+        // Choosing the current device again only retries it (the media plane
+        // reopens it); the project is unchanged, so nothing is recorded.
+        EngineAudioMixerEdit::SetMonitorDevice { device } => {
+            let current = &state.audio_monitor().device;
+            (current != device).then(|| EngineAudioMixerEdit::SetMonitorDevice {
+                device: current.clone(),
             })
         }
         EngineAudioMixerEdit::SetGroupLevel { .. }

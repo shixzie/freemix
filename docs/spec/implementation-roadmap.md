@@ -3004,14 +3004,21 @@ arrive with Protocol 2.48 below.
 Protocol 2.53 (schema 50) makes the monitor bus audible on headphones
 (`AU-001`). The project's monitor output names a local ALSA output device
 (or none, meter-only) and its own level and mute; the device is a
-padlocked, undoable project edit (choosing it again reopens it) and the
+padlocked, undoable project edit (choosing it again reopens it without an
+undo entry) and the
 level a live audio operation, both replicated in the snapshot. `freemixd`
 plays the rendered monitor bus (Master, or the PFL/AFL solo) through an
 `FFmpeg` child reading interleaved `f32le` PCM on its standard input and
 writing `-f alsa <device>`; the render loop interleaves each block with the
 level ramped linearly across it, clamps it to full scale, and hands it to a
-writer thread through a bounded queue, so a slow or stalled device drops
-blocks instead of stalling Program. Program, recordings, streams, and the
+writer thread through a two-block queue that replaces its oldest block, so
+a slow or stalled device drops blocks instead of stalling Program. Latency
+never accumulates: the writer drops blocks older than 100 ms and, after a
+write blocked on a full input pipe (as after `FFmpeg` starts, or once a slow
+device clock fills it), skips blocks until the pipe backlog is about 40 ms.
+A device that stops reading for 3 s is failed and its child killed; the
+failure is logged with a bounded, redacted tail of the child's standard
+error, and only choosing the device again reopens it. Program, recordings, streams, and the
 monitor meters never see the headphone level. `audio_meters` reports the
 device as off, playing, or failed. Studio's monitor strip adds a device
 field (Enter plays, an empty field stops, Enter on a failed device retries),
@@ -3024,8 +3031,9 @@ card through the real `FFmpeg`, and plays the real ALSA `null` device where
 ALSA is available. Remaining gaps: the device is opened only through ALSA,
 so macOS and Windows report it failed; there is no device enumeration (the
 operator types the ALSA name); the monitor output carries the Master
-channel layout without its own channel mapping or downmix; device latency
-is whatever ALSA and `FFmpeg` buffer; the automix/talkback `MonitorBus`
+channel layout without its own channel mapping or downmix; the ALSA buffer
+`FFmpeg` sizes and its internal queues add fixed device latency, and
+draining a backlog assumes the 64 KiB Linux pipe and leaves a short gap; the automix/talkback `MonitorBus`
 (`AU-008`) is not yet the source; and `AU-001` remains planned until its
 capability profiles are certified.
 

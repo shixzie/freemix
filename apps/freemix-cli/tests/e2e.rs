@@ -5528,11 +5528,99 @@ fn author_srt_stream_destination(context: &ContractContext) {
         "{stderr}"
     );
     assert!(!stderr.contains(CLI_SRT_PASSPHRASE));
+    assert_secret_options_need_a_value(context);
     assert_success(&invoke_bounded(&[
         "stream-remove",
         context.project_path(),
         "41",
     ]));
+}
+
+/// A secret option followed by one of the command's own options means the
+/// secret was left out: it is refused instead of storing the option name as
+/// the secret, and the error never repeats any secret.
+fn assert_secret_options_need_a_value(context: &ContractContext) {
+    let before = fs::read_to_string(context.project.join("project.json")).unwrap();
+    let output = invoke_bounded(&[
+        "stream-update",
+        context.project_path(),
+        "41",
+        "30",
+        "srt://relay.example.test:9710",
+        STREAM_KEY,
+        "SRT relay",
+        "--srt-passphrase",
+        "--srt-latency-ms",
+        "400",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing value for --srt-passphrase")
+            && stderr.contains("a secret value cannot start with `--`"),
+        "{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(context.project.join("project.json")).unwrap(),
+        before,
+        "a refused secret changes nothing"
+    );
+    for (arguments, option) in [
+        (
+            [
+                "remote-stream-set",
+                "127.0.0.1:9",
+                "41",
+                "--stream-key",
+                "--srt-passphrase",
+                CLI_SRT_PASSPHRASE,
+            ],
+            "--stream-key",
+        ),
+        (
+            [
+                "remote-stream-set",
+                "127.0.0.1:9",
+                "41",
+                "--srt-passphrase",
+                "--stream-key",
+                STREAM_KEY,
+            ],
+            "--srt-passphrase",
+        ),
+        (
+            [
+                "input-stream-set",
+                context.project_path(),
+                "1",
+                "--passphrase",
+                "--stream-key",
+                STREAM_KEY,
+            ],
+            "--passphrase",
+        ),
+        (
+            [
+                "input-stream-set",
+                context.project_path(),
+                "1",
+                "--stream-key",
+                "--passphrase",
+                CLI_SRT_PASSPHRASE,
+            ],
+            "--stream-key",
+        ),
+    ] {
+        let output = invoke_bounded(&arguments);
+        assert!(!output.status.success(), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("missing value for {option}:")),
+            "{arguments:?}: {stderr}"
+        );
+        assert!(!stderr.contains(CLI_SRT_PASSPHRASE), "{stderr}");
+        assert!(!stderr.contains(STREAM_KEY), "{stderr}");
+    }
 }
 
 /// Authors one `hls:///absolute/dir` destination on the existing output and

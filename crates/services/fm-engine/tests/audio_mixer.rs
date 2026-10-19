@@ -793,6 +793,33 @@ fn the_monitor_device_is_an_undoable_padlocked_edit_and_its_level_is_live() {
         engine.show().audio_monitor().device.as_deref(),
         Some("hw:CARD=Headset,DEV=0")
     );
+    engine.tick().unwrap();
+
+    // Choosing the current device again retries it on the media plane but
+    // records nothing: one undo still restores the device before it.
+    let recorded = engine.undo_entries().len();
+    accept(&mut engine, "retry", device(Some("hw:CARD=Headset,DEV=0")));
+    assert_eq!(
+        engine.undo_entries().len(),
+        recorded,
+        "a retry is not an edit"
+    );
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![EngineAudioMixerUpdate::MonitorDevice(Some(
+            "hw:CARD=Headset,DEV=0".into()
+        ))]
+    );
+    undo(&mut engine, "undo-after-retry");
+    assert_eq!(engine.show().audio_monitor().device, None);
+    // A retry keeps the redo history too.
+    accept(&mut engine, "retry-none", device(None));
+    redo(&mut engine, "redo-after-retry");
+    assert_eq!(
+        engine.show().audio_monitor().device.as_deref(),
+        Some("hw:CARD=Headset,DEV=0")
+    );
 
     // An unusable device or level is refused and changes nothing.
     for (key, command, field) in [
