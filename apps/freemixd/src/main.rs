@@ -21474,7 +21474,6 @@ mod tests {
         .unwrap()
     }
 
-    #[cfg(feature = "native-media")]
     fn media_test_project(asset_uri: &str) -> StoredProject {
         let baseline = test_project();
         let mut project = Project::new(
