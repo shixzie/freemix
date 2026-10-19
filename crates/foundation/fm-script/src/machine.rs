@@ -774,7 +774,11 @@ fn build_action(
                 input,
                 field,
                 add: verb == Verb::TitleAdd,
-                value: arguments.integer("a number")?,
+                value: arguments.integer(if verb == Verb::TitleAdd {
+                    "an amount to add"
+                } else {
+                    "a value to set"
+                })?,
             }
         }
         Verb::TitleOff => ScriptAction::TitleOff(arguments.input()?),

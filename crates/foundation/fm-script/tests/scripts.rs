@@ -348,6 +348,27 @@ fn runtime_errors_stop_the_run_where_they_happen() {
     assert_eq!(actions, 1);
 }
 
+/// The data update verbs name the argument they miss: the value to set, or
+/// the amount to add.
+#[test]
+fn title_number_verbs_name_their_value_argument() {
+    for (source, message) in [
+        (
+            "title_number 1, 2, \"7\"",
+            "title_number needs a value to set as a number, not a string",
+        ),
+        (
+            "title_add 1, 2, true",
+            "title_add needs an amount to add as a number, not true or false",
+        ),
+        ("title_add 1, \"2\", 1", "title_add needs a field number"),
+    ] {
+        let (kind, _, found, actions) = failure(source, Limits::default());
+        assert_eq!((kind, actions), (FailureKind::Runtime, 0), "{source}");
+        assert!(found.contains(message), "{source}: {found}");
+    }
+}
+
 #[test]
 fn every_budget_is_enforced() {
     // An endless loop exhausts the instruction budget, never the host.

@@ -504,7 +504,7 @@ impl ScriptHost for Host<'_, '_> {
                 RejectionCode::InvalidCommand,
                 "an argument is out of range (a duration of 1 to 3600 frames, an overlay \
                  channel of 1 to 8, a gain in range, title text of at most 128 bytes, or a \
-                 nonzero title number step of at most 999999999999)",
+                 title number of at most 999999999999 either way (a step of it nonzero))",
             );
             return refuse(self, rejection);
         }

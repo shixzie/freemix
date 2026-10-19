@@ -808,3 +808,30 @@ fn a_restored_run_due_beyond_its_waits_is_refused() {
             if due_frame == u64::MAX / 2
     ));
 }
+
+/// A data update's value out of range is refused naming what the bound is
+/// for: a value to set as well as a step.
+#[test]
+fn an_out_of_range_title_number_is_refused_for_what_it_is() {
+    let mut engine = engine();
+    for (script, source) in [
+        (1, "title_number 1, 1, 1000000000000"),
+        (2, "title_add 1, 1, -1000000000000"),
+        (3, "title_add 1, 1, 0"),
+    ] {
+        accepted(&submit(
+            &mut engine,
+            &format!("set-{script}"),
+            set(script, source),
+        ));
+        let (code, _, message) =
+            refusal(&submit(&mut engine, &format!("run-{script}"), run(script)));
+        assert_eq!(code, RejectionCode::InvalidCommand, "{source}: {message}");
+        assert!(
+            message.contains(
+                "a title number of at most 999999999999 either way (a step of it nonzero)"
+            ),
+            "{source}: {message}"
+        );
+    }
+}

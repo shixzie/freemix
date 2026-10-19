@@ -659,6 +659,16 @@ impl ActionKind {
     }
 }
 
+/// A step of nothing is no update (the authority refuses it), so a step
+/// left at zero becomes one. Zero stays while the value is still `editing`
+/// (focused or dragged): the arrow keys step it through zero on their way
+/// to a negative step.
+const fn settle_step(add: bool, value: &mut i64, editing: bool) {
+    if add && *value == 0 && !editing {
+        *value = 1;
+    }
+}
+
 /// Whether a title field of this value can take a number update: a number
 /// or a text field (Protocol 2.65).
 const fn number_field(value: &TitleFieldValue) -> bool {
@@ -1782,6 +1792,12 @@ fn number<T: egui::emath::Numeric>(
     let response = ui
         .add_enabled(enabled, DragValue::new(value).range(range).suffix(suffix))
         .hint(hover, reason);
+    number_change(&response)
+}
+
+/// The edit a numeric field's `response` asks for: a commit when its drag
+/// ends or it loses focus, a draft while it is dragged or typed in.
+fn number_change(response: &egui::Response) -> Option<Change> {
     if response.drag_stopped() || response.lost_focus() {
         Some(Change::Commit)
     } else if response.changed() {
@@ -2023,18 +2039,14 @@ fn draw_params(
                     .response
                     .hint(hover, edit.unwrap_or(""));
             });
-            let number_change = number(
-                ui,
-                value,
-                -MAX_CUE_TITLE_NUMBER..=MAX_CUE_TITLE_NUMBER,
-                (l.text(Msg::CueParamNumberHover), ""),
-                enabled,
-            );
-            // A step of nothing is no update: the authority refuses it.
-            if *add && *value == 0 {
-                *value = 1;
-            }
-            number_change.or(change)
+            let response = ui
+                .add_enabled(
+                    edit.is_none(),
+                    DragValue::new(value).range(-MAX_CUE_TITLE_NUMBER..=MAX_CUE_TITLE_NUMBER),
+                )
+                .hint(l.text(Msg::CueParamNumberHover), edit.unwrap_or(""));
+            settle_step(*add, value, response.has_focus() || response.dragged());
+            number_change(&response).or(change)
         }
         WireCueAction::TitleOff { input } => pick(ui, "title", input, &titles),
         WireCueAction::FadeToBlack {
@@ -2735,6 +2747,26 @@ mod tests {
                 assert_eq!(press(state, &status, "1:30", key), None);
             }
         }
+    }
+
+    /// The regression: a zero step was forced back to one on every frame,
+    /// so the arrow keys (and an assistive decrement) could never step a
+    /// value of one down through zero to a negative step.
+    #[test]
+    fn a_step_crosses_zero_while_drafted_and_commits_nonzero() {
+        let mut value = 0;
+        // Arrow down from 1 while focused: 0 holds, so the next press
+        // reaches -1.
+        settle_step(true, &mut value, true);
+        assert_eq!(value, 0);
+        // Left at zero (focus gone, or Set to switched to Step by), the
+        // step is one.
+        settle_step(true, &mut value, false);
+        assert_eq!(value, 1);
+        // Setting to zero is a real update.
+        let mut value = 0;
+        settle_step(false, &mut value, false);
+        assert_eq!(value, 0);
     }
 
     #[test]
