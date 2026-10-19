@@ -503,6 +503,16 @@ impl StudioApp {
                 break;
             };
             let action = match action {
+                // A cue key acts on the Cues panel's list, gated like the
+                // panel's own key (RC-017).
+                OscAction::Cue(key) => {
+                    if let Some(intent) = self.shell.cue_key_intent(&self.state, key) {
+                        self.enqueue_intent(intent);
+                    } else {
+                        self.osc_rejected = self.osc_rejected.saturating_add(1);
+                    }
+                    continue;
+                }
                 OscAction::SelectPreview(number) => ExternalStudioAction::SelectPreview(number),
                 OscAction::Cut => ExternalStudioAction::Cut,
                 OscAction::Fade => ExternalStudioAction::Fade,

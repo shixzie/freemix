@@ -1,6 +1,6 @@
 //! The console's key chords and its complete key map (RC-018).
 //!
-//! The window and output keys are Ctrl+Shift chords (Cmd+Shift on macOS)
+//! The window, output, and cue keys are Ctrl+Shift chords (Cmd+Shift on macOS)
 //! matched exactly, so a chord never also fires a neighbour that differs
 //! only by Shift or Alt. The unit tests list every key the console and its
 //! keyboard-owning panels handle, in the order their handlers read them,
@@ -11,8 +11,8 @@
 use egui::{Event, Key, Modifiers, Ui};
 
 use crate::{
-    RecordingAction, StreamGroupAction, StudioIntent, StudioShell, StudioUiState, recording_action,
-    stream_group_action,
+    CueIntent, CueKey, RecordingAction, ShortcutGroup, StreamGroupAction, StudioIntent,
+    StudioShell, StudioUiState, recording_action, stream_group_action,
 };
 
 /// Key text of the Scripts window chord.
@@ -25,6 +25,14 @@ pub(crate) const RECORD_SHORTCUT: &str = "Ctrl+Shift+R";
 pub(crate) const START_STREAMS_SHORTCUT: &str = "Ctrl+Shift+O";
 /// Key text of the stop-all-streams chord.
 pub(crate) const STOP_STREAMS_SHORTCUT: &str = "Ctrl+Shift+K";
+/// Key text of the Cues panel's Arm GO chord.
+pub(crate) const CUE_ARM_SHORTCUT: &str = "Ctrl+Shift+M";
+/// Key text of the Cues panel's Disarm chord.
+pub(crate) const CUE_DISARM_SHORTCUT: &str = "Ctrl+Shift+D";
+/// Key text of the Cues panel's Stop chord.
+pub(crate) const CUE_STOP_SHORTCUT: &str = "Ctrl+Shift+X";
+/// Key text of the Cues panel's Reset chord.
+pub(crate) const CUE_RESET_SHORTCUT: &str = "Ctrl+Shift+E";
 
 /// A Ctrl+Shift chord handled by the console.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,16 +47,28 @@ pub(crate) enum Chord {
     StartStreams,
     /// Stops every running stream destination.
     StopStreams,
+    /// Arms a GO of the Cues panel's standby cue (RC-017).
+    CueArm,
+    /// Drops the Cues panel's armed GO.
+    CueDisarm,
+    /// Stops the Cues panel's list.
+    CueStop,
+    /// Resets the Cues panel's list.
+    CueReset,
 }
 
 impl Chord {
     /// Every chord.
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Scripts,
         Self::LiveLan,
         Self::Record,
         Self::StartStreams,
         Self::StopStreams,
+        Self::CueArm,
+        Self::CueDisarm,
+        Self::CueStop,
+        Self::CueReset,
     ];
 
     /// The letter held with Ctrl+Shift.
@@ -59,6 +79,10 @@ impl Chord {
             Self::Record => Key::R,
             Self::StartStreams => Key::O,
             Self::StopStreams => Key::K,
+            Self::CueArm => Key::M,
+            Self::CueDisarm => Key::D,
+            Self::CueStop => Key::X,
+            Self::CueReset => Key::E,
         }
     }
 
@@ -70,12 +94,26 @@ impl Chord {
             Self::Record => RECORD_SHORTCUT,
             Self::StartStreams => START_STREAMS_SHORTCUT,
             Self::StopStreams => STOP_STREAMS_SHORTCUT,
+            Self::CueArm => CUE_ARM_SHORTCUT,
+            Self::CueDisarm => CUE_DISARM_SHORTCUT,
+            Self::CueStop => CUE_STOP_SHORTCUT,
+            Self::CueReset => CUE_RESET_SHORTCUT,
         }
     }
 
-    /// Whether the chord opens a window (else it drives an output).
+    /// The keyboard reference group that lists the chord.
+    pub(crate) const fn group(self) -> ShortcutGroup {
+        match self {
+            Self::Scripts | Self::LiveLan => ShortcutGroup::Windows,
+            Self::Record | Self::StartStreams | Self::StopStreams => ShortcutGroup::Output,
+            Self::CueArm | Self::CueDisarm | Self::CueStop | Self::CueReset => ShortcutGroup::Cues,
+        }
+    }
+
+    /// Whether the chord opens a window (else it drives an output or the
+    /// Cues panel's list).
     const fn opens_window(self) -> bool {
-        matches!(self, Self::Scripts | Self::LiveLan)
+        matches!(self.group(), ShortcutGroup::Windows)
     }
 }
 
@@ -141,11 +179,17 @@ impl StudioShell {
     }
 }
 
-/// The output chords' intents: REC 1 start or stop (whichever its desired
-/// state calls for) and start or stop every stream destination, each only
-/// when the state permits it, as the matching keys do. A chord whose action
-/// is unavailable is swallowed. Nothing acts while a text field has focus.
-pub(crate) fn output_chord_intents(ui: &mut Ui, state: &StudioUiState) -> Vec<StudioIntent> {
+/// The output and cue chords' intents: REC 1 start or stop (whichever its
+/// desired state calls for), start or stop every stream destination, and
+/// the Cues panel's Arm GO, Disarm, Stop, and Reset (`cue_key` resolves
+/// those with the panel keys' gates), each only when the state permits it,
+/// as the matching keys do. A chord whose action is unavailable is
+/// swallowed. Nothing acts while a text field has focus.
+pub(crate) fn output_chord_intents(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    cue_key: &dyn Fn(CueKey) -> Option<CueIntent>,
+) -> Vec<StudioIntent> {
     if ui.ctx().egui_wants_keyboard_input() {
         return Vec::new();
     }
@@ -165,6 +209,10 @@ pub(crate) fn output_chord_intents(ui: &mut Ui, state: &StudioUiState) -> Vec<St
                 .map(StudioIntent::StreamGroup),
             Chord::StopStreams => stream_group_action(state, StreamGroupAction::StopAll)
                 .map(StudioIntent::StreamGroup),
+            Chord::CueArm => cue_key(CueKey::Arm).map(StudioIntent::Cue),
+            Chord::CueDisarm => cue_key(CueKey::Disarm).map(StudioIntent::Cue),
+            Chord::CueStop => cue_key(CueKey::Stop).map(StudioIntent::Cue),
+            Chord::CueReset => cue_key(CueKey::Reset).map(StudioIntent::Cue),
             Chord::Scripts | Chord::LiveLan => None,
         })
         .collect()
@@ -175,7 +223,8 @@ mod tests {
     use egui::{Event, Key, Modifiers};
 
     use super::{
-        Chord, LIVE_LAN_SHORTCUT, RECORD_SHORTCUT, SCRIPTS_SHORTCUT, START_STREAMS_SHORTCUT,
+        CUE_ARM_SHORTCUT, CUE_DISARM_SHORTCUT, CUE_RESET_SHORTCUT, CUE_STOP_SHORTCUT, Chord,
+        LIVE_LAN_SHORTCUT, RECORD_SHORTCUT, SCRIPTS_SHORTCUT, START_STREAMS_SHORTCUT,
         STOP_STREAMS_SHORTCUT, chord,
     };
     use crate::{
@@ -328,6 +377,8 @@ mod tests {
         binding(Console, NONE, Key::Escape, Exact, "Esc"),
         binding(Console, NONE, Key::C, Exact, "C"),
         binding(Console, NONE, Key::G, Exact, "G"),
+        binding(Console, NONE, Key::Comma, Exact, ","),
+        binding(Console, NONE, Key::Period, Exact, "."),
         binding(Console, NONE, Key::F, Exact, "F"),
         binding(Console, NONE, Key::F5, Exact, "F5 – F8"),
         binding(Console, NONE, Key::F6, Exact, "F5 – F8"),
@@ -346,6 +397,10 @@ mod tests {
         binding(Console, CMD_SHIFT, Key::R, Exact, RECORD_SHORTCUT),
         binding(Console, CMD_SHIFT, Key::O, Exact, START_STREAMS_SHORTCUT),
         binding(Console, CMD_SHIFT, Key::K, Exact, STOP_STREAMS_SHORTCUT),
+        binding(Console, CMD_SHIFT, Key::M, Exact, CUE_ARM_SHORTCUT),
+        binding(Console, CMD_SHIFT, Key::D, Exact, CUE_DISARM_SHORTCUT),
+        binding(Console, CMD_SHIFT, Key::X, Exact, CUE_STOP_SHORTCUT),
+        binding(Console, CMD_SHIFT, Key::E, Exact, CUE_RESET_SHORTCUT),
         binding(ColorPanel, CMD_SHIFT, Key::Z, Logical, "Ctrl+Shift+Z"),
         binding(ColorPanel, CMD, Key::Y, Logical, "Ctrl+Y"),
         binding(ColorPanel, CMD, Key::Z, Logical, "Ctrl+Z"),
@@ -485,18 +540,17 @@ mod tests {
                 entry.keys
             );
         }
-        // The window and output chords are listed in their own groups.
+        // The window, output, and cue chords are listed in their own groups.
         for chord in Chord::ALL {
             let entry = STUDIO_SHORTCUTS
                 .iter()
                 .find(|entry| entry.keys == chord.keys())
                 .unwrap_or_else(|| panic!("{chord:?} is not in the reference"));
-            let group = if chord.opens_window() {
-                ShortcutGroup::Windows
-            } else {
-                ShortcutGroup::Output
-            };
-            assert_eq!(entry.group, group, "{chord:?}");
+            assert_eq!(entry.group, chord.group(), "{chord:?}");
+            assert_eq!(
+                chord.opens_window(),
+                chord.group() == ShortcutGroup::Windows
+            );
         }
     }
 
@@ -625,6 +679,59 @@ mod tests {
         );
         assert!(!shell.scripts.open);
         assert!(!shell.live_lan.open);
+    }
+
+    /// RC-017: `,` and `.` step the Cues panel's standby and the cue chords
+    /// arm, disarm, stop, and reset its list, as the panel's keys do.
+    #[test]
+    fn cue_keys_drive_the_cue_panels_list() {
+        use fm_protocol::CueOperation;
+        // List 1 has cue 20 on standby, armed.
+        let state = crate::hover_audit::cue_ran_script_fixture();
+        let mut shell = StudioShell::default();
+        let presses = [
+            (Key::Comma, Modifiers::NONE),
+            (Key::Period, Modifiers::NONE),
+            (Key::M, press(true, true, false)),
+            (Key::D, press(true, true, false)),
+            (Key::X, press(true, true, false)),
+            (Key::E, press(true, true, false)),
+        ];
+        let operations: Vec<CueOperation> = run_keys(&mut shell, &state, &presses, false)
+            .into_iter()
+            .map(|intent| match intent {
+                StudioIntent::Cue(crate::CueIntent::Control { list: 1, operation }) => operation,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            operations,
+            vec![
+                CueOperation::Back,
+                CueOperation::Skip,
+                CueOperation::Arm {
+                    cue: None,
+                    in_ms: 60_000,
+                },
+                CueOperation::Disarm,
+                CueOperation::Stop,
+                CueOperation::Reset,
+            ]
+        );
+        assert_eq!(
+            shell.cue_key_intent(&state, crate::CueKey::ArmIn(5_000)),
+            Some(StudioIntent::Cue(crate::CueIntent::Control {
+                list: 1,
+                operation: CueOperation::Arm {
+                    cue: None,
+                    in_ms: 5_000,
+                },
+            }))
+        );
+        // Without the transition permission no cue key acts.
+        let viewer = state.clone().with_switcher_permissions(true, false);
+        assert_eq!(run_keys(&mut shell, &viewer, &presses, false), Vec::new());
+        assert_eq!(shell.cue_key_intent(&viewer, crate::CueKey::Stop), None);
     }
 
     #[test]

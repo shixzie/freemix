@@ -5,7 +5,10 @@
 //! name, the Back, Skip, Stop, and Reset keys, and every cue with its run
 //! state (live, standby, waiting, played, or stopped by a refused action).
 //! GO, standby (a row's standby key), and fire-now (a row's fire key) need the
-//! transition permission; `G` presses GO from anywhere in the console.
+//! transition permission; `G` presses GO from anywhere in the console, `,`
+//! and `.` Step back and Skip, and Ctrl+Shift chords Arm GO, Disarm, Stop,
+//! and Reset. Studio's loopback OSC `/freemix/cue/...` messages press the
+//! same keys ([`CueKey`]), with the same gates.
 //!
 //! Arm GO (Protocol 2.64) arms the cue on standby to fire by itself after a
 //! delay typed beside it (seconds, `MM:SS`, or `HH:MM:SS`, up to 24 hours),
@@ -40,6 +43,7 @@ use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
 
 use crate::edit_history::stinger_edit_lock_reason;
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::keymap;
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::playlist::{countdown_timecode, estimated_frame, key_button};
@@ -267,6 +271,69 @@ pub fn go_key_list(
     chain_block(state, scripts, list, standby)
         .is_none()
         .then_some(list.id)
+}
+
+/// A cue control an external binding can press: a console key, or a
+/// Studio OSC message (`/freemix/cue/...`). Each acts on the Cues panel's
+/// shown list exactly as the matching panel key would.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueKey {
+    /// GO: fires the cue on standby.
+    Go,
+    /// Moves standby to the previous cue (the panel's Step back).
+    Previous,
+    /// Moves standby past its cue without firing it (the panel's Skip).
+    Next,
+    /// Drops a waiting cue's remaining actions and the armed GO.
+    Stop,
+    /// Clears the run state and puts the first cue on standby.
+    Reset,
+    /// Arms a GO of the standby cue after the panel's "Fire in" delay.
+    Arm,
+    /// Arms a GO of the standby cue after this many milliseconds
+    /// (`1..=`[`MAX_CUE_ARM_MS`]): an OSC message's own delay.
+    ArmIn(u32),
+    /// Drops the armed GO.
+    Disarm,
+}
+
+/// The intent `key` sends for `list`, with the panel keys' gates: every
+/// key needs [`control_block`] clear; GO and arming also need a cue on
+/// standby whose chain the session may fire ([`go_key_list`]); arming
+/// needs a valid delay (`typed_delay` is the panel's "Fire in" text) and
+/// Disarm an armed GO. `None` when the panel's key would be disabled.
+#[must_use]
+pub fn key_intent(
+    state: &StudioUiState,
+    scripts: &[ScriptStatus],
+    list: &CueListStatus,
+    typed_delay: &str,
+    key: CueKey,
+) -> Option<CueIntent> {
+    if control_block(state).is_some() {
+        return None;
+    }
+    let can_go = || go_key_list(state, scripts, list).is_some();
+    let operation = match key {
+        CueKey::Go => can_go().then_some(CueOperation::Go { cue: None })?,
+        CueKey::Previous => CueOperation::Back,
+        CueKey::Next => CueOperation::Skip,
+        CueKey::Stop => CueOperation::Stop,
+        CueKey::Reset => CueOperation::Reset,
+        CueKey::Arm => CueOperation::Arm {
+            cue: None,
+            in_ms: parse_arm_delay(typed_delay).filter(|_| can_go())?,
+        },
+        CueKey::ArmIn(in_ms) => CueOperation::Arm {
+            cue: None,
+            in_ms: Some(in_ms).filter(|in_ms| (1..=MAX_CUE_ARM_MS).contains(in_ms) && can_go())?,
+        },
+        CueKey::Disarm => list.state.armed.map(|_| CueOperation::Disarm)?,
+    };
+    Some(CueIntent::Control {
+        list: list.id,
+        operation,
+    })
 }
 
 /// The milliseconds an operator's arm delay names: whole seconds as
@@ -666,11 +733,19 @@ impl CuePanel {
             .or_else(|| lists.first())
     }
 
-    /// The list `G` fires: the shown list while it has a cue on standby
-    /// whose chain the session may fire ([`go_key_list`]).
-    pub(crate) fn go_list(&self, state: &StudioUiState) -> Option<u64> {
+    /// The intent an external binding's `key` (a console key or an OSC
+    /// message) sends for the shown list ([`key_intent`]), arming with the
+    /// "Fire in" field's delay. `G` fires the shown list while it has a
+    /// cue on standby whose chain the session may fire ([`go_key_list`]).
+    pub(crate) fn key_intent(&self, state: &StudioUiState, key: CueKey) -> Option<CueIntent> {
         let project = state.project_state.as_ref()?;
-        go_key_list(state, project.scripts(), self.shown(project)?)
+        key_intent(
+            state,
+            project.scripts(),
+            self.shown(project)?,
+            self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
+            key,
+        )
     }
 
     /// Shows list `list` (for tests and fixtures).
@@ -729,7 +804,10 @@ impl CuePanel {
             let arm = go_block.or_else(|| delay.is_none().then_some(Msg::CueReasonArmDelay.en()));
             if ui
                 .add_enabled(arm.is_none(), key_button(l.text(Msg::CueArm), None, 72.0))
-                .hint(l.text(Msg::CueArmHover), arm.unwrap_or(""))
+                .hint(
+                    &l10n::with_key(l, l.text(Msg::CueArmHover), keymap::CUE_ARM_SHORTCUT),
+                    arm.unwrap_or(""),
+                )
                 .clicked()
                 && let Some(in_ms) = delay
             {
@@ -749,7 +827,10 @@ impl CuePanel {
                     disarm.is_none(),
                     key_button(l.text(Msg::CueDisarm), None, 64.0),
                 )
-                .hint(l.text(Msg::CueDisarmHover), disarm.unwrap_or(""))
+                .hint(
+                    &l10n::with_key(l, l.text(Msg::CueDisarmHover), keymap::CUE_DISARM_SHORTCUT),
+                    disarm.unwrap_or(""),
+                )
                 .clicked()
             {
                 intents.push(StudioIntent::Cue(CueIntent::Control {
@@ -936,15 +1017,26 @@ impl CuePanel {
         );
         ui.horizontal(|ui| {
             let operations = [
-                (Msg::CueBack, Msg::CueBackHover, CueOperation::Back),
-                (Msg::CueSkip, Msg::CueSkipHover, CueOperation::Skip),
-                (Msg::PlaylistStop, Msg::CueStopHover, CueOperation::Stop),
-                (Msg::CueReset, Msg::CueResetHover, CueOperation::Reset),
+                (Msg::CueBack, Msg::CueBackHover, CueOperation::Back, ","),
+                (Msg::CueSkip, Msg::CueSkipHover, CueOperation::Skip, "."),
+                (
+                    Msg::PlaylistStop,
+                    Msg::CueStopHover,
+                    CueOperation::Stop,
+                    keymap::CUE_STOP_SHORTCUT,
+                ),
+                (
+                    Msg::CueReset,
+                    Msg::CueResetHover,
+                    CueOperation::Reset,
+                    keymap::CUE_RESET_SHORTCUT,
+                ),
             ];
-            for (label, hover, operation) in operations {
+            for (label, hover, operation, key) in operations {
+                let hover = l10n::with_key(l, l.text(hover), key);
                 if ui
                     .add_enabled(control.is_none(), key_button(l.text(label), None, 64.0))
-                    .hint(l.text(hover), control.unwrap_or(""))
+                    .hint(&hover, control.unwrap_or(""))
                     .clicked()
                 {
                     intents.push(StudioIntent::Cue(CueIntent::Control {
@@ -2565,6 +2657,84 @@ mod tests {
         assert_eq!(go_key_list(&operator, &muting, &status), Some(7));
         status.state.standby = None;
         assert_eq!(go_key_list(&operator, &muting, &status), None);
+    }
+
+    /// The cue keys and OSC messages (GO, standby previous/next, Stop,
+    /// Reset, Arm GO, Disarm) are gated exactly like the panel's keys.
+    #[test]
+    fn cue_keys_are_gated_like_the_panel_keys() {
+        let mut status = list(
+            7,
+            CueRunStatus {
+                standby: Some(10),
+                ..CueRunStatus::default()
+            },
+        );
+        let ready = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(crate::tests::recording_view([false, false]))
+            .with_switcher_permissions(false, true);
+        let control = |operation| Some(CueIntent::Control { list: 7, operation });
+        let press = |state: &StudioUiState, status: &CueListStatus, typed: &str, key| {
+            key_intent(state, &[], status, typed, key)
+        };
+        for (key, operation) in [
+            (CueKey::Go, CueOperation::Go { cue: None }),
+            (CueKey::Previous, CueOperation::Back),
+            (CueKey::Next, CueOperation::Skip),
+            (CueKey::Stop, CueOperation::Stop),
+            (CueKey::Reset, CueOperation::Reset),
+            (
+                CueKey::Arm,
+                CueOperation::Arm {
+                    cue: None,
+                    in_ms: 90_000,
+                },
+            ),
+            (
+                CueKey::ArmIn(1),
+                CueOperation::Arm {
+                    cue: None,
+                    in_ms: 1,
+                },
+            ),
+        ] {
+            assert_eq!(press(&ready, &status, "1:30", key), control(operation));
+        }
+        // Arming needs a valid delay; Disarm needs an armed GO.
+        assert_eq!(press(&ready, &status, "", CueKey::Arm), None);
+        assert_eq!(press(&ready, &status, "1:30", CueKey::ArmIn(0)), None);
+        assert_eq!(
+            press(&ready, &status, "1:30", CueKey::ArmIn(MAX_CUE_ARM_MS + 1)),
+            None
+        );
+        assert_eq!(press(&ready, &status, "1:30", CueKey::Disarm), None);
+        status.state.armed = Some(fm_protocol::CueArmedStatus {
+            cue: 10,
+            due_frame: 90,
+        });
+        assert_eq!(
+            press(&ready, &status, "1:30", CueKey::Disarm),
+            control(CueOperation::Disarm)
+        );
+        // GO and arming need a cue on standby; the standby keys do not.
+        status.state.standby = None;
+        assert_eq!(press(&ready, &status, "1:30", CueKey::Go), None);
+        assert_eq!(press(&ready, &status, "1:30", CueKey::Arm), None);
+        assert_eq!(
+            press(&ready, &status, "1:30", CueKey::Previous),
+            control(CueOperation::Back)
+        );
+        // Nothing acts without the transition permission or a view.
+        let viewer = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(crate::tests::recording_view([false, false]))
+            .with_switcher_permissions(true, false);
+        let blind =
+            StudioUiState::new(StudioConnectionStatus::Ready).with_switcher_permissions(true, true);
+        for state in [&viewer, &blind] {
+            for key in [CueKey::Previous, CueKey::Stop, CueKey::Disarm] {
+                assert_eq!(press(state, &status, "1:30", key), None);
+            }
+        }
     }
 
     #[test]

@@ -6549,6 +6549,32 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ShortcutCueGo,
         t("GO: disparar el cue en espera de la lista del panel Cues"),
     ),
+    (
+        Msg::ShortcutCuePrevious,
+        t("Mover la espera del panel Cues al cue anterior"),
+    ),
+    (
+        Msg::ShortcutCueNext,
+        t("Mover la espera del panel Cues al cue siguiente sin dispararlo"),
+    ),
+    (
+        Msg::ShortcutCueArm,
+        t("Armar GO: disparar el cue en espera del panel Cues tras su retardo «Disparar en»"),
+    ),
+    (
+        Msg::ShortcutCueDisarm,
+        t("Desarmar el GO armado del panel Cues"),
+    ),
+    (
+        Msg::ShortcutCueStop,
+        t(
+            "Detener la lista del panel Cues: descartar las acciones del cue que espera y el GO armado",
+        ),
+    ),
+    (
+        Msg::ShortcutCueReset,
+        t("Reiniciar la lista del panel Cues y poner su primer cue en espera"),
+    ),
     (Msg::CueGo, t("GO")),
     (
         Msg::CueGoHover,

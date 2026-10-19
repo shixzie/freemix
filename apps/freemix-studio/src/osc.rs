@@ -11,6 +11,8 @@ use std::{
     time::Duration,
 };
 
+use fm_ui_egui::CueKey;
+
 const DATAGRAM_CAPACITY: usize = 128;
 const ACTION_CAPACITY: usize = 16;
 const READ_TIMEOUT: Duration = Duration::from_millis(25);
@@ -35,6 +37,10 @@ pub(crate) enum OscAction {
     SetManualTransitionPosition(fm_protocol::ManualTransitionPosition),
     CommitManualTransition,
     CancelManualTransition,
+    /// `/freemix/cue/<go|previous|next|stop|reset|arm|disarm>`: a key of
+    /// the Cues panel's shown list (RC-017). `/freemix/cue/arm` uses the
+    /// panel's "Fire in" delay, or its one `i` argument in milliseconds.
+    Cue(fm_ui_egui::CueKey),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -196,6 +202,17 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
             .map(OscAction::SetManualTransitionPosition)
             .ok_or(());
     }
+    if address == "/freemix/cue/arm" && types == ",i" {
+        let argument: [u8; 4] = datagram
+            .get(end..)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(())?;
+        return u32::try_from(i32::from_be_bytes(argument))
+            .ok()
+            .filter(|in_ms| (1..=fm_protocol::MAX_CUE_ARM_MS).contains(in_ms))
+            .map(|in_ms| OscAction::Cue(CueKey::ArmIn(in_ms)))
+            .ok_or(());
+    }
     if types != "," || end != datagram.len() {
         return Err(());
     }
@@ -223,6 +240,13 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
         "/freemix/switcher/ftb/black" => Ok(OscAction::FadeToBlack { active: true }),
         "/freemix/switcher/manual/commit" => Ok(OscAction::CommitManualTransition),
         "/freemix/switcher/manual/cancel" => Ok(OscAction::CancelManualTransition),
+        "/freemix/cue/go" => Ok(OscAction::Cue(CueKey::Go)),
+        "/freemix/cue/previous" => Ok(OscAction::Cue(CueKey::Previous)),
+        "/freemix/cue/next" => Ok(OscAction::Cue(CueKey::Next)),
+        "/freemix/cue/stop" => Ok(OscAction::Cue(CueKey::Stop)),
+        "/freemix/cue/reset" => Ok(OscAction::Cue(CueKey::Reset)),
+        "/freemix/cue/arm" => Ok(OscAction::Cue(CueKey::Arm)),
+        "/freemix/cue/disarm" => Ok(OscAction::Cue(CueKey::Disarm)),
         _ => Err(()),
     }
 }
@@ -242,7 +266,7 @@ fn padded_string(datagram: &[u8], start: usize) -> Result<(&str, usize), ()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DATAGRAM_CAPACITY, OscAction, decode};
+    use super::{CueKey, DATAGRAM_CAPACITY, OscAction, decode};
 
     #[test]
     fn osc_decoder_accepts_only_the_exact_action_contract() {
@@ -280,6 +304,47 @@ mod tests {
         for (address, action) in cases {
             assert_eq!(decode(&message(address)), Ok(action));
         }
+    }
+
+    /// RC-017: the Cues panel's keys, and `arm`'s optional delay.
+    #[test]
+    fn osc_decoder_accepts_the_cue_keys() {
+        for (address, key) in [
+            ("/freemix/cue/go", CueKey::Go),
+            ("/freemix/cue/previous", CueKey::Previous),
+            ("/freemix/cue/next", CueKey::Next),
+            ("/freemix/cue/stop", CueKey::Stop),
+            ("/freemix/cue/reset", CueKey::Reset),
+            ("/freemix/cue/arm", CueKey::Arm),
+            ("/freemix/cue/disarm", CueKey::Disarm),
+        ] {
+            assert_eq!(decode(&message(address)), Ok(OscAction::Cue(key)));
+        }
+        assert_eq!(
+            decode(&with_types(
+                "/freemix/cue/arm",
+                ",i",
+                &30_000_i32.to_be_bytes()
+            )),
+            Ok(OscAction::Cue(CueKey::ArmIn(30_000)))
+        );
+        let longest = i32::try_from(fm_protocol::MAX_CUE_ARM_MS).unwrap();
+        for datagram in [
+            with_types("/freemix/cue/arm", ",i", &0_i32.to_be_bytes()),
+            with_types("/freemix/cue/arm", ",i", &(-5_i32).to_be_bytes()),
+            with_types("/freemix/cue/arm", ",i", &(longest + 1).to_be_bytes()),
+            with_types("/freemix/cue/arm", ",f", &[0, 0, 0, 0]),
+            with_types("/freemix/cue/arm", ",i", &[0, 0, 1]),
+            with_types("/freemix/cue/go", ",i", &[0, 0, 0, 1]),
+            message("/freemix/cue/GO"),
+            message("/freemix/cue"),
+        ] {
+            assert_eq!(decode(&datagram), Err(()));
+        }
+    }
+
+    #[test]
+    fn osc_decoder_bounds_manual_transitions_and_rejects_the_rest() {
         assert_eq!(
             decode(&message("/freemix/switcher/manual/start/cube_zoom")),
             Ok(OscAction::StartManualTransition(

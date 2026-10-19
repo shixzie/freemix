@@ -84,7 +84,7 @@ mod transitions;
 mod workspace;
 
 pub use cues::{
-    ActionKind as CueActionKind, CueIntent, CueRole, control_block as cue_control_block,
+    ActionKind as CueActionKind, CueIntent, CueKey, CueRole, control_block as cue_control_block,
     edit_block as cue_edit_block, go_intent as cue_go_intent,
     list_edit_block as cue_list_edit_block, new_cue_id, new_list_id as new_cue_list_id,
 };
@@ -1003,7 +1003,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 29] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 35] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -1100,7 +1100,43 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 29] = [
         action: Msg::ShortcutCueGo.en(),
         key: Some(Key::G),
     },
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: ",",
+        action: Msg::ShortcutCuePrevious.en(),
+        key: Some(Key::Comma),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: ".",
+        action: Msg::ShortcutCueNext.en(),
+        key: Some(Key::Period),
+    },
     // Handled by [`keymap::output_chord_intents`].
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: keymap::CUE_ARM_SHORTCUT,
+        action: Msg::ShortcutCueArm.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: keymap::CUE_DISARM_SHORTCUT,
+        action: Msg::ShortcutCueDisarm.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: keymap::CUE_STOP_SHORTCUT,
+        action: Msg::ShortcutCueStop.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Cues,
+        keys: keymap::CUE_RESET_SHORTCUT,
+        action: Msg::ShortcutCueReset.en(),
+        key: None,
+    },
     ShortcutEntry {
         group: ShortcutGroup::Output,
         keys: keymap::RECORD_SHORTCUT,
@@ -1235,7 +1271,7 @@ fn studio_shortcuts(
     t_bar: TBarKeys,
     (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
     (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
-    cue_go_list: Option<u64>,
+    cue_key: &dyn Fn(CueKey) -> Option<CueIntent>,
 ) -> Vec<StudioIntent> {
     if ui.ctx().egui_wants_keyboard_input() {
         return Vec::new();
@@ -1280,15 +1316,18 @@ fn studio_shortcuts(
                     intents.push(StudioIntent::Cut);
                     false
                 }
-                // GO on the Cues panel's list (RC-017).
-                Key::G if transition_available => {
-                    let Some(list) = cue_go_list else {
+                // GO and standby previous/next on the Cues panel's list
+                // (RC-017), gated like the panel's keys.
+                Key::G | Key::Comma | Key::Period if transition_available => {
+                    let cue = match key {
+                        Key::G => CueKey::Go,
+                        Key::Comma => CueKey::Previous,
+                        _ => CueKey::Next,
+                    };
+                    let Some(intent) = cue_key(cue) else {
                         return true;
                     };
-                    intents.push(StudioIntent::Cue(CueIntent::Control {
-                        list,
-                        operation: fm_protocol::CueOperation::Go { cue: None },
-                    }));
+                    intents.push(StudioIntent::Cue(intent));
                     false
                 }
                 Key::F if transition_available => {
@@ -1653,14 +1692,24 @@ impl StudioShell {
                 self.transition_duration_frames,
                 self.fade_to_black_duration_frames,
             ),
-            self.cues.go_list(state),
+            &|key| self.cues.key_intent(state, key),
         );
         intents.extend(edit_history::history_shortcuts(
             ui,
             edit_history_availability(state),
         ));
-        intents.extend(keymap::output_chord_intents(ui, state));
+        intents.extend(keymap::output_chord_intents(ui, state, &|key| {
+            self.cues.key_intent(state, key)
+        }));
         intents
+    }
+
+    /// The intent an external control's cue `key` sends (Studio's OSC
+    /// `/freemix/cue/...` messages): the Cues panel's shown list, gated
+    /// exactly like the panel's keys. `None` when that key is disabled.
+    #[must_use]
+    pub fn cue_key_intent(&self, state: &StudioUiState, key: CueKey) -> Option<StudioIntent> {
+        self.cues.key_intent(state, key).map(StudioIntent::Cue)
     }
 
     /// `?` or F1 opens the keyboard reference, and closes it again, unless
@@ -2179,7 +2228,7 @@ mod tests {
                 },
                 (&inputs, &TransitionFavoriteStatus::defaults()),
                 (duration, fade_to_black_duration),
-                None,
+                &|_| None,
             );
             let remaining = context.input(|input| input.events.clone());
             drop(ui);
@@ -2443,7 +2492,12 @@ mod tests {
                 },
                 (&inputs, &favorites),
                 (30, 30),
-                Some(1),
+                &|_| {
+                    Some(CueIntent::Control {
+                        list: 1,
+                        operation: fm_protocol::CueOperation::Skip,
+                    })
+                },
             );
             drop(ui);
             let _ = context.end_pass();

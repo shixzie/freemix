@@ -804,7 +804,8 @@ chords, scopes, persistence, MIDI/controller runtime, conflict handling, or
 shortcut acceptance evidence. When configured, native Studio also accepts the
 bounded loopback OSC action contract, including zero-argument manual commit and
 cancel and automatic AlphaFade, Slide, Zoom, and Wipe actions, with the same
-current view, permission, and manual-transition gates;
+current view, permission, and manual-transition gates, and the Cues
+panel's `/freemix/cue/...` keys (see `RC-017`);
 malformed, rejected, and overflow counts are visible to
 the operator. `fm-automation` now also carries a bounded shortcut template layer
 beside the existing chords, scopes, and conflict detection. Each template pairs
@@ -3401,9 +3402,31 @@ The web tally page (Operator role) arms the cue it shows on standby with a
 "Fire in" picker (10 s to 1 h), Arm GO, and Disarm beside GO, gated like
 GO, and its cue line shows the armed cue with an approximate countdown,
 in English and Spanish.
-Remaining gaps: lists are not bound to an input button, MIDI, or a
-keyboard shortcut other than `G`, and nothing previews a cue's effect
-before GO; the data update writes literal values only: no external data
+External cue controls (Studio-local; no protocol or schema change):
+every key of the Cues panel's transport is bindable. The keyboard has `G`
+for GO, `,` for Step back (standby to the previous cue), `.` for Skip
+(standby to the next cue without firing it), and exact Ctrl+Shift chords
+(Cmd+Shift on macOS) M for Arm GO with the panel's "Fire in" delay, D for
+Disarm, X for Stop, and E for Reset. They are listed in the keyboard
+reference under Cue list, named in each panel key's English and Spanish
+hover help, and covered by the key map's conflict test. Studio's loopback
+OSC contract (`--osc-listen`) adds `/freemix/cue/go`, `previous`, `next`,
+`stop`, `reset`, `disarm`, and `arm` (the "Fire in" delay, or one `i`
+argument of 1 ms to 24 hours). Keys and messages act on the list the Cues
+panel shows and are gated exactly like the panel key (GO and arming also
+need the armed chain's permissions); an OSC cue message whose key is
+unavailable counts as rejected. A Stream Deck, X-keys, or MIDI surface can
+drive cues through an OSC bridge such as Bitfocus Companion. Studio does
+not read MIDI itself: `fm-automation`'s MIDI parser and control map have
+no device transport, and no MIDI device crate is in the dependency graph.
+`xtask deps check` only polices workspace layering, so a crate such as
+`midir` would pass it, but it needs ALSA development headers on Linux
+and is `RC-005`'s dependency decision to make.
+Remaining gaps: lists are not bound to an input button, and Studio has no
+direct MIDI, HID, or X-keys input (only OSC, through a bridge); the cue
+bindings are fixed, with no rebinding or learn UI, and act only on the
+list the Cues panel shows (no per-list or per-cue key or OSC address);
+nothing previews a cue's effect before GO; the data update writes literal values only: no external data
 source (`GX-004`) or row binding feeds it, and it updates text and number
 fields, not colors or images; an armed GO takes a relative delay only
 (Studio, the CLI, and the web tally convert nothing from a wall-clock
