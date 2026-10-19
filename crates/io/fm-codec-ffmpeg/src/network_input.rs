@@ -96,14 +96,20 @@
 //! Credentials in the stream URL, the RTMP stream key, and the SRT
 //! passphrase never leave the receiver: the last error is scrubbed of every
 //! secret and bounded, and [`NetworkInputConfig`]'s `Debug` output redacts
-//! them. They are passed to the child on its command line, as `ffmpeg`
-//! requires.
+//! them. The SRT passphrase never reaches the child's command line, which
+//! every local user can read in `/proc/<pid>/cmdline`: an encrypted SRT
+//! child reads its input through `ffmpeg`'s `concat` demuxer from a
+//! one-entry script the receiver writes into its stdin and closes (the
+//! stream URL plus each SRT option, the passphrase among them, as `option`
+//! lines). That child may open only `pipe` and `srt`. Credentials in the URL
+//! and the RTMP stream key are still passed on the command line, as
+//! `ffmpeg` requires.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -619,6 +625,13 @@ impl Plan {
         (self.bounds.target_frames / 2).max(2)
     }
 
+    /// The `concat` script the child reads from its stdin, `Some` only for
+    /// an encrypted SRT stream ([`srt_script`]).
+    fn script(&self) -> Option<String> {
+        let stream = self.stream.as_ref()?;
+        srt_script(self, &child_url(&stream.connect_url()))
+    }
+
     /// Whether the child waits for its peer (an RTMP or SRT listener, or an
     /// SRT rendezvous).
     fn listens(&self) -> bool {
@@ -945,7 +958,7 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
         "level+info",
         "-nostats",
         "-analyzeduration",
-        "1000000",
+        ANALYZE_MICROS,
     ]
     .iter()
     .map(ToString::to_string)
@@ -954,17 +967,35 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
         return device_arguments(plan, device, args, audio_port);
     }
     let protocol = plan.protocol.unwrap_or(StreamProtocol::Udp);
-    protocol_arguments(plan, protocol, &mut args, micros);
     let url = plan
         .stream
         .as_ref()
         .map_or_else(|| config.url.clone(), NetworkStreamConfig::connect_url);
-    args.extend([
-        "-protocol_whitelist".into(),
-        protocol_whitelist(protocol).into(),
-        "-i".into(),
-        child_url(&url),
-    ]);
+    if plan.script().is_some() {
+        // Every SRT option travels in the script: given here, it would
+        // apply to the script's own input and be refused as unused.
+        args.extend([
+            "-f".into(),
+            "concat".into(),
+            // The script names a network URL, which `safe` mode refuses.
+            "-safe".into(),
+            "0".into(),
+            // The entry inherits this list: `pipe` reads the script, `srt`
+            // is the stream itself.
+            "-protocol_whitelist".into(),
+            "pipe,srt".into(),
+            "-i".into(),
+            SCRIPT_INPUT.into(),
+        ]);
+    } else {
+        protocol_arguments(plan, protocol, &mut args, micros);
+        args.extend([
+            "-protocol_whitelist".into(),
+            protocol_whitelist(protocol).into(),
+            "-i".into(),
+            child_url(&url),
+        ]);
+    }
     let rate = config.frame_rate;
     args.extend([
         "-map".into(),
@@ -1071,28 +1102,69 @@ fn protocol_arguments(
 }
 
 fn srt_arguments(plan: &Plan, args: &mut Vec<String>, micros: String) {
+    for (name, value) in srt_options(plan, micros) {
+        args.extend([format!("-{name}"), value]);
+    }
+}
+
+/// The SRT protocol options, as name and value pairs.
+fn srt_options(plan: &Plan, micros: String) -> Vec<(&'static str, String)> {
     let config = &plan.config;
     let settings = &config.settings;
-    args.extend([
-        "-mode".into(),
-        settings.mode.token().into(),
-        "-latency".into(),
-        (u64::from(settings.latency_ms) * 1_000).to_string(),
-    ]);
+    let mut options = vec![
+        ("mode", settings.mode.token().to_owned()),
+        (
+            "latency",
+            (u64::from(settings.latency_ms) * 1_000).to_string(),
+        ),
+    ];
     if let Some(passphrase) = &config.passphrase {
-        args.extend([
-            "-passphrase".into(),
-            passphrase.clone(),
-            "-pbkeylen".into(),
-            settings.key_length.bytes().to_string(),
+        options.extend([
+            ("passphrase", passphrase.clone()),
+            ("pbkeylen", settings.key_length.bytes().to_string()),
         ]);
     }
     if settings.mode == StreamMode::Listener {
         let listen = u64::try_from(LISTEN_CYCLE.as_micros()).unwrap_or(u64::MAX);
-        args.extend(["-listen_timeout".into(), listen.to_string()]);
+        options.push(("listen_timeout", listen.to_string()));
     }
-    args.extend(["-timeout".into(), micros]);
+    options.push(("timeout", micros));
+    options
 }
+
+/// The input of an encrypted SRT stream: `ffmpeg`'s `concat` demuxer
+/// reading a one-entry script from the child's stdin (`pipe:0`), so the
+/// passphrase never reaches argv, which every local user can read in
+/// `/proc/<pid>/cmdline`. Each `option` line is applied to the entry's own
+/// input exactly as the same option before `-i` would be.
+fn srt_script(plan: &Plan, url: &str) -> Option<String> {
+    if plan.protocol != Some(StreamProtocol::Srt) || plan.config.passphrase.is_none() {
+        return None;
+    }
+    let micros = (u64::from(plan.config.settings.timeout_ms) * 1_000).to_string();
+    // The entry is probed on its own, with the receiver's probe window.
+    let mut script = format!(
+        "ffconcat version 1.0\nfile {}\noption analyzeduration {ANALYZE_MICROS}\n",
+        concat_quote(url)
+    );
+    for (name, value) in srt_options(plan, micros) {
+        let _ = writeln!(script, "option {name} {}", concat_quote(&value));
+    }
+    Some(script)
+}
+
+/// `value` as one `ffconcat` token: single-quoted, each inner quote closed,
+/// escaped, and reopened. Validated URLs and passphrases hold no newline.
+fn concat_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Where the child reads its `concat` script, and the name it echoes in its
+/// messages in place of the stream URL.
+const SCRIPT_INPUT: &str = "pipe:0";
+
+/// The probe window of a stream's input, in microseconds.
+const ANALYZE_MICROS: &str = "1000000";
 
 /// The `pan` filter that picks the configured stereo pair of the source
 /// (empty for a downmix). A pair the source lacks is silent.
@@ -1112,7 +1184,8 @@ fn pair_filter(config: &NetworkInputConfig) -> String {
 /// list, which for HTTP still admits `rtp`, `udp`, `httpproxy`, and `data`:
 /// a served session description, playlist, or redirect could then open
 /// local ports or other protocols. `file`, `concat`, `pipe`, and the rest
-/// are never on any list.
+/// are never on any list (an encrypted SRT stream's own child reads its
+/// script through `pipe`, and its stream through `srt` only).
 const fn protocol_whitelist(protocol: StreamProtocol) -> &'static str {
     match protocol {
         StreamProtocol::Rtsp => "rtsp,rtsps,rtp,srtp,udp,tcp,tls",
@@ -1330,7 +1403,11 @@ fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     let mut command = Command::new(&plan.executable);
     command
         .args(arguments(plan, audio_port))
-        .stdin(Stdio::null())
+        .stdin(if plan.script().is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear();
@@ -1507,6 +1584,21 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
             return Ended::Dropped { delivered: false };
         }
     };
+    if let Some(script) = plan.script() {
+        // The script is far smaller than `PIPE_BUF`, so the write is atomic
+        // and cannot block; closing stdin ends the script. A child that did
+        // not get it whole must not run on without its passphrase.
+        let written = child.stdin.take().map_or_else(
+            || Err(io::ErrorKind::BrokenPipe.into()),
+            |mut stdin| stdin.write_all(script.as_bytes()),
+        );
+        if let Err(error) = written {
+            let _ = child.kill();
+            let _ = child.wait();
+            shared.lock().last_error = Some(format!("ffmpeg stdin: {:?}", error.kind()));
+            return Ended::Dropped { delivered: false };
+        }
+    }
     let started = Instant::now();
     let mut readers = Vec::with_capacity(3);
     if let Some(stdout) = child.stdout.take() {
@@ -1845,7 +1937,13 @@ fn lowercase_scheme_echo(text: &str, plan: &Plan) -> String {
         return text.replace(&child_url(&plan.config.url), &plan.config.url);
     };
     let connect = stream.connect_url();
-    text.replace(&child_url(&connect), &connect)
+    let text = text.replace(&child_url(&connect), &connect);
+    // A scripted child names its input by the script's pipe instead.
+    if plan.script().is_some() {
+        text.replace(SCRIPT_INPUT, &connect)
+    } else {
+        text
+    }
 }
 
 /// One packet of the frame CRC listing.
@@ -2397,21 +2495,82 @@ mod tests {
         stream.settings.key_length = fm_types::network_stream::SrtKeyLength::Aes256;
         stream.passphrase = Some("0123456789abc".into());
         stream.stream_id = Some("cam1".into());
-        let joined = args(&stream_plan(&stream), None).join(" ");
+        // Unencrypted: every option on the command line.
+        let mut plain = stream.clone();
+        plain.passphrase = None;
+        let joined = args(&stream_plan(&plain), None).join(" ");
         assert!(
             joined.contains(
-                "-mode listener -latency 250000 -passphrase 0123456789abc -pbkeylen 32 \
-                 -listen_timeout 30000000 -timeout 5000000 \
+                "-mode listener -latency 250000 -listen_timeout 30000000 -timeout 5000000 \
                  -protocol_whitelist srt -i srt://0.0.0.0:9000?streamid=cam1"
             ),
             "{joined}"
         );
+        assert!(stream_plan(&plain).script().is_none());
         stream.settings.mode = StreamMode::Caller;
-        stream.passphrase = None;
-        let joined = args(&stream_plan(&stream), None).join(" ");
+        let caller = args(&stream_plan(&stream), None).join(" ");
+        assert!(caller.contains("-f concat -safe 0 -protocol_whitelist pipe,srt -i pipe:0"));
+        plain.settings.mode = StreamMode::Caller;
+        let joined = args(&stream_plan(&plain), None).join(" ");
         assert!(joined.contains("-mode caller -latency 250000 -timeout"));
         assert!(!joined.contains("passphrase"));
-        assert!(!stream_plan(&stream).listens());
+        assert!(!stream_plan(&plain).listens());
+    }
+
+    #[test]
+    fn an_encrypted_srt_passphrase_travels_in_the_stdin_script_not_argv() {
+        const PASSPHRASE: &str = "it's a pass phrase";
+        let mut stream = NetworkStreamConfig::new("SRT://0.0.0.0:9000");
+        stream.settings.mode = StreamMode::Listener;
+        stream.settings.latency_ms = 250;
+        stream.settings.key_length = fm_types::network_stream::SrtKeyLength::Aes256;
+        stream.passphrase = Some(PASSPHRASE.into());
+        stream.stream_id = Some("cam1".into());
+        let plan = stream_plan(&stream);
+        let argv = args(&plan, Some(4000));
+        // Neither the passphrase nor any SRT option is on the command line.
+        assert!(argv.iter().all(|arg| !arg.contains(PASSPHRASE)), "{argv:?}");
+        assert!(argv.iter().all(|arg| !arg.contains("pass")), "{argv:?}");
+        assert!(!argv.iter().any(|arg| arg == "-mode" || arg == "-latency"));
+        let input = argv.iter().position(|arg| arg == "-i").unwrap();
+        assert_eq!(
+            argv[input - 6..=input + 1],
+            [
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-protocol_whitelist",
+                "pipe,srt",
+                "-i",
+                "pipe:0"
+            ]
+        );
+        assert_eq!(
+            plan.script().unwrap(),
+            "ffconcat version 1.0\n\
+             file 'srt://0.0.0.0:9000?streamid=cam1'\n\
+             option analyzeduration 1000000\n\
+             option mode 'listener'\n\
+             option latency '250000'\n\
+             option passphrase 'it'\\''s a pass phrase'\n\
+             option pbkeylen '32'\n\
+             option listen_timeout '30000000'\n\
+             option timeout '5000000'\n"
+        );
+        // The child's echo of its scripted input reads as the stream, whose
+        // secrets are then scrubbed.
+        assert_eq!(
+            lowercase_scheme_echo("Error opening input file pipe:0.", &plan),
+            "Error opening input file SRT://0.0.0.0:9000?streamid=cam1."
+        );
+        // Debug output never renders it either.
+        assert!(!format!("{:?}", plan.config).contains(PASSPHRASE));
+        assert!(
+            !plan
+                .scrub(&format!("bad passphrase {PASSPHRASE}"))
+                .contains(PASSPHRASE)
+        );
     }
 
     #[test]

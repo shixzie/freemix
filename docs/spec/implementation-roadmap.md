@@ -1968,9 +1968,13 @@ Protocol 2.54 (schema 51) adds SRT caller options. An `srt://` destination
 persists a latency (20–8000 ms, default 120) and an optional AES passphrase
 (10–79 printable bytes). The passphrase is a `SecretEdit` like the stream
 key, stored only in the bundle and reported only as `has_passphrase`. The
-native output publishes MPEG-TS with `-mode caller -latency` and, when set,
-`-passphrase`, under the destination's own reconnect policy, and masks the
-passphrase in worker diagnostics. Studio's destination dialog adds the
+native output publishes MPEG-TS with `-mode caller -latency` under the
+destination's own reconnect policy, and masks the passphrase in worker
+diagnostics. On Unix the passphrase never reaches the child's command line
+(world-readable in `/proc/<pid>/cmdline`): the child runs with
+`-fpre /dev/stdin` and reads one `passphrase=...` line the streamer writes
+into its stdin and closes; a child whose stdin cannot be written is killed
+before it connects. On Windows it is still passed as `-passphrase`. Studio's destination dialog adds the
 latency, an Encrypt checkbox, and a masked passphrase field;
 `stream-add`/`stream-update` take `--srt-latency-ms` and `--srt-passphrase`,
 and `remote-stream-set` also takes `--clear-srt-passphrase`. A native
@@ -1983,7 +1987,8 @@ journal replay, and in the saved project. A native process test covers
 this; before the fix it came back last.
 
 Remaining gaps:
-- the SRT passphrase reaches the `ffmpeg` child's command line;
+- on Windows the SRT passphrase still reaches the `ffmpeg` child's
+  command line, and on every platform the RTMP key and SRT stream ID do;
 - there is no SRT listener or rendezvous output, and no SRT link
   statistics for destinations;
 - a running destination must be stopped before it can be edited;
@@ -2013,12 +2018,16 @@ inputs never listen on one UDP port (`listen_port_in_use`). The passphrase
 is stored only in the project and is `***` on every other surface (events,
 snapshot, status errors, CLI, logs). Verified over loopback with `ffmpeg`
 SRT callers and listeners, encrypted with a matching and a wrong
-passphrase, and a native `freemixd` receiving an encrypted caller.
+passphrase, and a native `freemixd` receiving an encrypted caller. The
+passphrase never reaches the `ffmpeg` child's command line: an encrypted SRT
+child reads its input through the `concat` demuxer from a one-entry script
+on its stdin (`-f concat -safe 0 -protocol_whitelist pipe,srt -i pipe:0`)
+that carries the URL and every SRT option, and the loopback tests assert
+that no receiver argv in `/proc` holds it.
 Remaining gaps: SRT link statistics (RTT, loss, retransmits) are not
 reported, since the `ffmpeg` CLI does not expose them (status keeps
 bitrate, buffer, dropped and late frames, and reconnects); `fm-io-srt` is
-still unused; the passphrase reaches the `ffmpeg` child's command line; no
-SRT listener or rendezvous output; tests skip without `libsrt` unless
+still unused; no SRT listener or rendezvous output; tests skip without `libsrt` unless
 `FM_REQUIRE_FFMPEG_SRT=1`; not verified on Windows or macOS or at UHD, so
 `IN-017` remains planned.
 

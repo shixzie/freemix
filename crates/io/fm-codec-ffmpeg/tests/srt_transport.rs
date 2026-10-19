@@ -29,8 +29,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use fm_codec_ffmpeg::stream::{
-    CleanupStatus, DestinationKind, PairedFrame, RecordFormat, StopOutcome, StreamConfig,
-    StreamDestination, StreamLimits, Streamer,
+    CleanupStatus, DestinationKind, PairedFrame, RecordFormat, SrtOptions, StopOutcome,
+    StreamConfig, StreamDestination, StreamLimits, Streamer,
 };
 use fm_frame::{
     AudioBlock, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
@@ -377,6 +377,93 @@ fn live_srt_stream_reaches_a_real_listener_as_nonempty_mpegts() {
     assert!(
         counted(audio, "nb_read_packets") > 0.0,
         "no audio packets were captured: {probed}"
+    );
+    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+}
+
+/// The argv of every running publisher child for `key` (see
+/// [`publisher_alive`]), NUL separators shown as spaces.
+fn publisher_argv(key: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+        .map(|cmdline| String::from_utf8_lossy(&cmdline).replace('\0', " "))
+        .filter(|text| text.contains(key) && text.contains("rawvideo"))
+        .collect()
+}
+
+/// An encrypted destination reaches an encrypted listener, which refuses
+/// any caller without the same passphrase, while the passphrase never
+/// appears in the publisher's argv (world-readable in `/proc/<pid>/cmdline`),
+/// its `Debug`, or its stop report.
+#[test]
+#[cfg(unix)]
+fn an_encrypted_srt_stream_keeps_its_passphrase_out_of_the_child_argv() {
+    const PASSPHRASE: &str = "argv-hidden-passphrase-77";
+    let _guard = serialize();
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let captured_path = directory.path().join("encrypted.ts");
+    let key = unique_key("enc");
+    let port = free_port();
+    let mut receiver = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+        .arg(format!(
+            "srt://127.0.0.1:{port}?mode=listener&passphrase={PASSPHRASE}"
+        ))
+        .args(["-c", "copy", "-y"])
+        .arg(&captured_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_for_udp_bind(port, Instant::now() + Duration::from_secs(10)),
+        "SRT receiver never bound its UDP port"
+    );
+
+    let format = format(320, 180);
+    let mut config = StreamConfig::new(format.clone(), srt_destination(port, &key));
+    config.srt = Some(SrtOptions::new(120, Some(PASSPHRASE)).unwrap());
+    assert!(!format!("{config:?}").contains(PASSPHRASE));
+    let mut streamer = match Streamer::start(config) {
+        Ok(streamer) => streamer,
+        Err(error) => {
+            let _ = receiver.kill();
+            let _ = receiver.wait();
+            panic!("sink never started: {error:?}");
+        }
+    };
+    let argv = publisher_argv(&key);
+    if cfg!(target_os = "linux") {
+        assert_eq!(argv.len(), 1, "one publisher child: {argv:?}");
+    }
+    for cmdline in &argv {
+        assert!(!cmdline.contains(PASSPHRASE), "argv leaks the passphrase");
+        assert!(cmdline.contains("-fpre /dev/stdin"), "{cmdline}");
+    }
+
+    produce(&mut streamer, &format, 90);
+    assert!(!format!("{:?}", streamer.telemetry()).contains(PASSPHRASE));
+    let report = streamer.stop();
+    assert!(!format!("{report:?}").contains(PASSPHRASE));
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.telemetry.failure, None, "{report:?}");
+    assert!(report.telemetry.connected, "{report:?}");
+    assert!(report.telemetry.muxed_bytes > 0, "{report:?}");
+
+    reap(&mut receiver, Instant::now() + Duration::from_secs(20));
+    let bytes = std::fs::read(&captured_path).unwrap_or_default();
+    assert!(
+        bytes.len() > 4 * TS_PACKET_BYTES && bytes[0] == 0x47,
+        "the encrypted listener captured only {} bytes",
+        bytes.len()
     );
     assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
 }

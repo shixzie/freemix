@@ -242,6 +242,29 @@ fn loud_frames_over(receiver: &NetworkReceiver, span: Duration) -> usize {
     observed.loud_frames
 }
 
+/// Asserts that the receiver's encrypted SRT child (the only process whose
+/// argv names the `pipe,srt` whitelist) is running and that `secret` is not
+/// in its argv, which any local user can read in `/proc/<pid>/cmdline`. The
+/// test's own `ffmpeg` peer carries the passphrase in its URL, so it is
+/// told apart by that whitelist.
+#[cfg(target_os = "linux")]
+fn assert_child_argv_free_of(secret: &str) {
+    let children = std::fs::read_dir("/proc")
+        .expect("read /proc")
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+        .map(|cmdline| String::from_utf8_lossy(&cmdline).replace('\0', " "))
+        .filter(|cmdline| cmdline.contains("-protocol_whitelist pipe,srt -i pipe:0"))
+        .collect::<Vec<_>>();
+    assert!(!children.is_empty(), "the receiver's child is running");
+    for cmdline in children {
+        assert!(!cmdline.contains(secret), "argv leaks the passphrase");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn assert_child_argv_free_of(_secret: &str) {}
+
 fn assert_no_secret(status: &NetworkStreamStatus, secrets: &[&str]) {
     if let Some(error) = &status.last_error {
         for secret in secrets {
@@ -372,6 +395,7 @@ fn an_srt_listener_with_a_passphrase_hears_the_chosen_pair_of_eight_channels() {
     };
     let _caller = Peer::start(eight, &["-f", "mpegts", &caller_url(port)]);
     expect_live(&receiver, &mut observed, "srt listener");
+    assert_child_argv_free_of(PASSPHRASE);
     assert_eq!(receiver.status().source_channels, 8);
     assert!(
         loud_frames_over(&receiver, Duration::from_secs(2)) > 10,
@@ -438,6 +462,7 @@ fn an_srt_caller_pulls_from_an_encrypted_ffmpeg_listener() {
     let receiver = receiver(&config);
     let mut observed = Observed::default();
     expect_live(&receiver, &mut observed, "srt caller");
+    assert_child_argv_free_of(PASSPHRASE);
     assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
     assert!(!format!("{receiver:?}").contains(PASSPHRASE));
 }

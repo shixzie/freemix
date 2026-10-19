@@ -34,9 +34,16 @@
 //! (`hidepid=2`, a PID namespace, or a dedicated unprivileged user) and lies
 //! outside this crate's isolation boundary, exactly as for the recorder's
 //! loopback input tokens. An SRT destination's optional encryption
-//! passphrase ([`SrtOptions`]) is handled exactly like the key: it travels
-//! to the child as its own `-passphrase` argument (never in the URL), its
-//! `Debug` is masked, and it is scrubbed out of captured stderr.
+//! passphrase ([`SrtOptions`]) is kept out of argv altogether on Unix: the
+//! child is started with `-fpre /dev/stdin`, the streamer writes the one line
+//! `passphrase=...` into the child's stdin and closes it, and `ffmpeg`
+//! applies it as an output option exactly like `-passphrase` (verified with
+//! `ffmpeg` 6.1 against an encrypted libsrt listener, which refuses a wrong
+//! passphrase). The secret never touches the disk, and a child whose stdin
+//! cannot be written is killed before it could connect unencrypted. Elsewhere
+//! (Windows, which does not show a process's command line to other users) it
+//! travels as its own `-passphrase` argument. Either way it is never in the
+//! URL, its `Debug` is masked, and it is scrubbed out of captured stderr.
 //!
 //! # Loss is explicit, and the media clock is not allowed to drift
 //!
@@ -723,6 +730,9 @@ impl SrtOptions {
     }
 
     /// The caller-mode protocol options placed before the output URL.
+    ///
+    /// On Unix the passphrase is never among them: the child reads it from
+    /// a preset on its stdin ([`Self::preset`]), so it stays out of argv.
     fn args(&self) -> Vec<String> {
         let mut values = vec![
             "-mode".to_owned(),
@@ -732,11 +742,34 @@ impl SrtOptions {
             (u64::from(self.latency_ms) * 1_000).to_string(),
         ];
         if let Some(passphrase) = &self.passphrase {
-            values.extend(["-passphrase".to_owned(), passphrase.clone()]);
+            if cfg!(unix) {
+                // `-fpre` reads `key=value` lines and applies each as if it
+                // were given as an output option, so libsrt's `passphrase`
+                // reaches the output protocol exactly like `-passphrase`.
+                values.extend(["-fpre".to_owned(), PRESET_FROM_STDIN.to_owned()]);
+            } else {
+                // Without `/dev/stdin` to read a preset from, the passphrase
+                // travels in argv, which Windows does not show other users.
+                values.extend(["-passphrase".to_owned(), passphrase.clone()]);
+            }
         }
         values
     }
+
+    /// The preset the child reads from its stdin, `Some` only when the
+    /// passphrase is kept out of argv. The passphrase is printable ASCII
+    /// without whitespace, so it is one `key=value` line as `-fpre` parses it.
+    fn preset(&self) -> Option<String> {
+        self.passphrase
+            .as_ref()
+            .filter(|_| cfg!(unix))
+            .map(|passphrase| format!("passphrase={passphrase}\n"))
+    }
 }
+
+/// Where the child reads its output preset: the pipe the streamer writes the
+/// SRT passphrase into and then closes, so nothing secret touches the disk.
+const PRESET_FROM_STDIN: &str = "/dev/stdin";
 
 impl fmt::Debug for SrtOptions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1751,7 +1784,12 @@ impl Streamer {
             redactor,
         ));
         let (monitor_sender, monitor) = spawn_monitor_waiter()?;
-        let child = match command(&executable, &args).spawn() {
+        let preset = config
+            .srt
+            .as_ref()
+            .filter(|_| config.destination.kind() == DestinationKind::Srt)
+            .and_then(SrtOptions::preset);
+        let child = match command(&executable, &args, preset.is_some()).spawn() {
             Ok(child) => Arc::new(Mutex::new(child)),
             Err(error) => {
                 drop(monitor_sender);
@@ -1759,6 +1797,16 @@ impl Streamer {
                 return Err(StartError::complete(spawn_error(&error)));
             }
         };
+        if let Some(preset) = preset
+            && let Err(kind) = deliver_preset(&child, &preset)
+        {
+            // A child that never read its preset must not run on: it would
+            // connect without the passphrase.
+            drop(monitor_sender);
+            let _ = monitor.join();
+            let cleanup = terminate_without_monitor(&child, config.limits.kill_timeout);
+            return Err(StartError { kind, cleanup });
+        }
         if monitor_sender
             .send((Arc::clone(&child), Arc::clone(&shared)))
             .is_err()
@@ -3223,11 +3271,33 @@ fn spawn_error(error: &io::Error) -> StartErrorKind {
     }
 }
 
-fn command(executable: &OsStr, args: &[OsString]) -> Command {
+/// Writes `preset` into the child's stdin and closes it, so the child's
+/// `-fpre /dev/stdin` reads it to its end. The preset is far smaller than
+/// `PIPE_BUF`, so the write is atomic and cannot block on a live child.
+fn deliver_preset(child: &Mutex<Child>, preset: &str) -> Result<(), StartErrorKind> {
+    let stdin = child
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .stdin
+        .take();
+    let Some(mut stdin) = stdin else {
+        return Err(StartErrorKind::MissingPipe);
+    };
+    stdin
+        .write_all(preset.as_bytes())
+        .and_then(|()| stdin.flush())
+        .map_err(|error| StartErrorKind::Spawn(error.kind()))
+}
+
+fn command(executable: &OsStr, args: &[OsString], preset: bool) -> Command {
     let mut command = Command::new(executable);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if preset {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear();
@@ -3812,6 +3882,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn srt_options_precede_the_url_and_never_render_the_passphrase() {
         const PASSPHRASE: &str = "Srt-Secret-Passphrase-42";
         let inputs = Inputs {
@@ -3837,12 +3908,20 @@ mod tests {
                 "caller",
                 "-latency",
                 "250000",
-                "-passphrase",
-                PASSPHRASE,
+                "-fpre",
+                "/dev/stdin",
                 "-f",
                 "mpegts",
                 "srt://127.0.0.1:9000?streamid=abcd1234",
             ]
+        );
+        // The passphrase reaches the child only through its stdin, never
+        // through argv (world-readable in `/proc/<pid>/cmdline`).
+        assert!(text.iter().all(|argument| !argument.contains(PASSPHRASE)));
+        assert!(!text.iter().any(|argument| argument == "-passphrase"));
+        assert_eq!(
+            srt.srt.as_ref().unwrap().preset(),
+            Some(format!("passphrase={PASSPHRASE}\n"))
         );
         // Unencrypted: the latency only.
         srt.srt = Some(SrtOptions::new(120, None).unwrap());

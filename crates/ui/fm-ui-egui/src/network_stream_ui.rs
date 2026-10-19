@@ -56,8 +56,9 @@ pub(crate) struct StreamReveal {
     pub(crate) passphrase: bool,
 }
 
-/// The stream form of the Add input dialog.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The stream form of the Add input dialog. `Debug` masks the typed stream
+/// key and passphrase.
+#[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct NetworkStreamDraft {
     pub(crate) url: String,
     pub(crate) settings: NetworkStreamSettings,
@@ -71,6 +72,23 @@ pub(crate) struct NetworkStreamDraft {
     pub(crate) stream_id: String,
     pub(crate) advanced: StreamAdvanced,
     pub(crate) reveal: StreamReveal,
+}
+
+impl std::fmt::Debug for NetworkStreamDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mask = |secret: &str| if secret.is_empty() { "" } else { "***" };
+        formatter
+            .debug_struct("NetworkStreamDraft")
+            .field("url", &self.url)
+            .field("settings", &self.settings)
+            .field("give_up_after", &self.give_up_after)
+            .field("stream_key", &mask(&self.stream_key))
+            .field("passphrase", &mask(&self.passphrase))
+            .field("stream_id", &self.stream_id)
+            .field("advanced", &self.advanced)
+            .field("reveal", &self.reveal)
+            .finish()
+    }
 }
 
 /// The stream form field a validation problem belongs to, so the problem
@@ -1054,6 +1072,20 @@ mod tests {
     use fm_ui_model::i18n::Language;
 
     use super::*;
+
+    #[test]
+    fn the_draft_debug_masks_the_typed_secrets() {
+        let draft = NetworkStreamDraft {
+            url: "srt://enc.test:9000".into(),
+            stream_key: "sk_typed_key".into(),
+            passphrase: "typed-passphrase-1".into(),
+            ..NetworkStreamDraft::default()
+        };
+        let debug = format!("{draft:?}");
+        assert!(!debug.contains("sk_typed_key"), "{debug}");
+        assert!(!debug.contains("typed-passphrase-1"), "{debug}");
+        assert!(debug.contains("passphrase: \"***\""), "{debug}");
+    }
 
     #[test]
     fn the_form_validates_like_the_daemon() {
