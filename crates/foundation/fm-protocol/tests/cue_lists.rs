@@ -1,5 +1,6 @@
 //! Protocol 2.51 operator cue lists (RC-017; media actions, millisecond
-//! delays, and the run's media transports since 2.51): the list edit, GO, standby,
+//! delays, and the run's media transports since 2.51; the run's script steps
+//! since 2.61): the list edit, GO, standby,
 //! and clock commands, the `cue_list_changed`, `cue_list_removed`, and
 //! `cue_run_changed` events, the snapshot's `cue_list_states` count, and the
 //! `cue_list_state` follow-on record — exactly, and strictly.
@@ -9,16 +10,17 @@ use core::num::NonZeroU128;
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload,
     CueListSpec, CueListStateMessage, CueListStatus, CueMediaTransport, CueOperation,
-    CuePendingStatus, CueRunChange, CueRunStatus, CueTitleText, EditHistoryStatus, EngineIdentity,
-    EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
-    InputAudioStripStatus, MAX_CUE_ACTIONS, MAX_CUES, ManualTransitionStatus, MediaTime,
-    MediaTransportState, OverlayStatus, PlaylistRunState, ProtocolVersion, RecordingStatus,
-    StreamRealizedState, StreamStatus, TransitionFavoriteEffect, WireCue, WireCueAction,
-    WireCueMediaOperation, WireInputId, WireMessage, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line, encode_line,
+    CuePendingStatus, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText, EditHistoryStatus,
+    EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
+    InputAudioStripStatus, MAX_CUE_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUES,
+    ManualTransitionStatus, MediaTime, MediaTransportState, OverlayStatus, PlaylistRunState,
+    ProtocolVersion, RecordingStatus, StreamRealizedState, StreamStatus, TransitionFavoriteEffect,
+    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireMessage, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, decode_line,
+    encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.60\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.61\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -181,7 +183,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 60));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 61));
 }
 
 #[test]
@@ -295,6 +297,109 @@ fn cue_commands_are_strict() {
     assert_eq!(encode(long), Err(CodecError::TooManyItems("cues")));
 }
 
+/// A bare run event of list 3 on frame 1000 carrying `scripts`.
+fn script_run_event(scripts: Vec<CueScriptRun>) -> WireMessage {
+    event(EventPayload::CueRunChanged(Box::new(CueRunChange {
+        list: 3,
+        frame: 1_000,
+        state: CueRunStatus::default(),
+        fired: vec![1],
+        program: input(3),
+        preview: input(4),
+        manual_transition: ManualTransitionStatus::Inactive,
+        fade_to_black: FadeToBlackState {
+            target_active: false,
+            position: FadeToBlackPosition::LIVE,
+        },
+        overlays: OverlayStatus::empty_channels(),
+        input_audio_strips: vec![InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
+            input: input(3),
+            gain_millidb: 0,
+            balance_basis_points: 0,
+            muted: false,
+            soloed: false,
+            follow_video: true,
+            delay_samples: 0,
+        }],
+        streams: Vec::new(),
+        recordings: [1, 2]
+            .map(|slot| RecordingStatus {
+                recorder: WireRecorderSlot::new(slot).unwrap(),
+                desired_active: false,
+            })
+            .to_vec(),
+        playlist: PlaylistRunState::Stopped,
+        titles: Vec::new(),
+        media: Vec::new(),
+        scripts,
+    })))
+}
+
+/// Protocol 2.61: `cue_run_changed` ends with `scripts`, every script step
+/// the run ran in order as `<script>.<actions>.<instructions>` joined by
+/// `/`, at most one per script step a list may hold; a malformed, zero, or
+/// oversized entry, or one too many, is refused both ways.
+#[test]
+fn cue_run_scripts_are_exact_and_bounded() {
+    let run = |script, actions, instructions| CueScriptRun {
+        script,
+        actions,
+        instructions,
+    };
+    let scripts = vec![run(2, 3, 17), run(5, 0, 1), run(2, 3, 17)];
+    let line = round_trip(&script_run_event(scripts));
+    assert!(
+        line.contains("\tmedia=\tscripts=2.3.17%2F5.0.1%2F2.3.17\tundo_depth="),
+        "{line}"
+    );
+    let largest = run(u64::MAX, u32::MAX, u32::MAX);
+    let line = round_trip(&script_run_event(vec![largest; MAX_CUE_LIST_SCRIPT_STEPS]));
+    let full =
+        ["18446744073709551615.4294967295.4294967295"; MAX_CUE_LIST_SCRIPT_STEPS].join("%2F");
+    assert!(line.contains(&format!("\tscripts={full}\t")), "{line}");
+
+    assert_eq!(
+        encode_line(&script_run_event(vec![
+            run(1, 1, 1);
+            MAX_CUE_LIST_SCRIPT_STEPS + 1
+        ])),
+        Err(CodecError::TooManyItems("scripts"))
+    );
+    assert!(encode_line(&script_run_event(vec![run(0, 1, 1)])).is_err());
+
+    let line = encode_line(&script_run_event(vec![run(2, 3, 17)])).unwrap();
+    assert!(line.contains("\tscripts=2.3.17\t"), "{line}");
+    let nine = ["1.1.1"; MAX_CUE_LIST_SCRIPT_STEPS + 1].join("%2F");
+    assert_eq!(
+        decode_line(&line.replace("\tscripts=2.3.17\t", &format!("\tscripts={nine}\t"))),
+        Err(CodecError::TooManyItems("scripts"))
+    );
+    for bad in [
+        "0.1.1",
+        "02.3.17",
+        "2.03.17",
+        "2.3.017",
+        "2.4294967296.1",
+        "2.1.4294967296",
+        "18446744073709551616.1.1",
+        "2.3",
+        "2.3.17.1",
+        "2..17",
+        "-2.3.17",
+        "2.3.17%2F",
+        "%2F2.3.17",
+        "2.3.17%2F%2F5.0.1",
+        "x.3.17",
+    ] {
+        let broken = line.replace("\tscripts=2.3.17\t", &format!("\tscripts={bad}\t"));
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    let missing = line.replace("\tscripts=2.3.17\t", "\t");
+    assert!(decode_line(&missing).is_err(), "{missing}");
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // every cue event and the snapshot record in one pass
 fn cue_events_and_the_snapshot_record_round_trip_exactly() {
@@ -369,6 +474,7 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
                 denominator: 1,
             },
         }],
+        scripts: Vec::new(),
     };
     let line = round_trip(&event(EventPayload::CueRunChanged(Box::new(
         change.clone(),
@@ -388,10 +494,8 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
     let mut bare = change;
     bare.media.clear();
     let line = round_trip(&event(EventPayload::CueRunChanged(Box::new(bare))));
-    assert!(
-        line.contains("\tmedia=\t") || line.contains("\tmedia=\n"),
-        "{line}"
-    );
+    assert!(line.contains("\tmedia=\t"), "{line}");
+    assert!(line.contains("\tmedia=\tscripts=\tundo_depth="), "{line}");
 
     round_trip(&WireMessage::CueListState(CueListStateMessage {
         revision: 12,

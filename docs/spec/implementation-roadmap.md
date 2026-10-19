@@ -3392,7 +3392,10 @@ waits); the budget is counted in instructions, not wall-clock time; and a
 refused action's own typed reason is folded into `script_failed` (its code
 and message are kept). A cue can run a script as one step (Protocol 2.60,
 schema 55; see `RC-017` above for its frame, failure, recursion, removal,
-and authority semantics). `RC-011` remains planned.
+and authority semantics); its `cue_run_changed` names each script step it
+ran with that run's action and instruction counts (Protocol 2.61), which
+Studio's Edit > Scripts window and `freemix-cli go` report as the script's
+last run. `RC-011` remains planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

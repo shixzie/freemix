@@ -2377,6 +2377,8 @@ messages! {
     ScriptSyntaxError => t("Syntax error at line {line}, column {column}: {message}"),
     ScriptLastRun => t("Last run: {actions} actions in {instructions} instructions, on frame {frame}"),
     ScriptLastFailure => t("The last run stopped with {failure} at line {line}, column {column}."),
+    ScriptLastRunByCue => t("Last run by cue list {list}: {actions} actions in {instructions} instructions, on frame {frame}"),
+    ScriptLastRunHover => t("What this script's last run did: a run from any console, or a script step of a cue list. A run that stopped is shown only to the console that asked for it, until the script runs again"),
     ScriptReference => t("Statements: let NAME = VALUE · if … elif … else … end · repeat N … end · while … end · stop. Actions: preview, cut, transition EFFECT, FRAMES, stinger, overlay CHANNEL, INPUT, overlay_off, title_on, title_text, title_off, ftb, ftb_off, playlist_start, playlist_stop, gain, mute, unmute, record_start, record_stop, stream_start, stream_stop, play, pause, seek, restart. program and preview hold the input numbers on air; an input is its number (1 is the first) or its name in quotes; # starts a comment."),
     ScriptReasonUnsaved => t("save the script first"),
     ScriptReasonUnchanged => t("the script is unchanged"),

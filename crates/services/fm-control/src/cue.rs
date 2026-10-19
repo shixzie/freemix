@@ -342,27 +342,32 @@ pub fn cue_list_changed(engine: &Engine, list: u64) -> EventPayload {
         })
 }
 
+/// What an accepted live operation or advance did, as its engine event
+/// reports it.
+pub struct CueRun<'a> {
+    pub list: u64,
+    pub frame: u64,
+    pub fired: &'a [u64],
+    pub title_texts: &'a [(InputId, FieldId, String)],
+    pub applied: &'a [EngineCommand],
+    /// The script steps the frame ran, in order (Protocol 2.61).
+    pub scripts: &'a [fm_engine::CueScriptRun],
+}
+
 /// The event of an accepted live operation or advance.
-pub fn cue_run_changed(
-    engine: &Engine,
-    list: u64,
-    frame: u64,
-    fired: &[u64],
-    title_texts: &[(InputId, FieldId, String)],
-    applied: &[EngineCommand],
-) -> EventPayload {
+pub fn cue_run_changed(engine: &Engine, run: &CueRun<'_>) -> EventPayload {
     let state = engine
         .show()
-        .cue_list(list)
+        .cue_list(run.list)
         .map(|list| wire_state(&list.state))
         .unwrap_or_default();
-    let titles = title_texts_of(engine, title_texts);
+    let titles = title_texts_of(engine, run.title_texts);
     let switcher = engine.show().desired_switcher();
     EventPayload::CueRunChanged(Box::new(CueRunChange {
-        list,
-        frame,
+        list: run.list,
+        frame: run.frame,
         state,
-        fired: fired.to_vec(),
+        fired: run.fired.to_vec(),
         program: WireInputId::from_domain(switcher.program()),
         preview: WireInputId::from_domain(switcher.preview()),
         manual_transition: crate::protocol_manual_status(engine.desired_manual_transition()),
@@ -373,7 +378,16 @@ pub fn cue_run_changed(
         recordings: recordings(engine),
         playlist: crate::playlist::wire_run_state(engine),
         titles,
-        media: media_transports(engine, applied),
+        media: media_transports(engine, run.applied),
+        scripts: run
+            .scripts
+            .iter()
+            .map(|ran| fm_protocol::CueScriptRun {
+                script: ran.script,
+                actions: ran.actions,
+                instructions: ran.instructions,
+            })
+            .collect(),
     }))
 }
 

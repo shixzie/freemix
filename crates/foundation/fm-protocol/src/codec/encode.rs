@@ -2209,6 +2209,7 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             )?;
             record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
             record.field_string("media", super::cue::encode_media(&change.media)?)?;
+            record.field_string("scripts", super::cue::encode_scripts(&change.scripts)?)?;
         }
         EventPayload::ScriptChanged(status) => {
             record.field("event", "script_changed")?;

@@ -6402,6 +6402,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("La última ejecución se detuvo con {failure} en la línea {line}, columna {column}."),
     ),
     (
+        Msg::ScriptLastRunByCue,
+        t(
+            "Última ejecución por la lista de cues {list}: {actions} acciones en {instructions} instrucciones, en el fotograma {frame}",
+        ),
+    ),
+    (
+        Msg::ScriptLastRunHover,
+        t(
+            "Lo que hizo la última ejecución de este script: una ejecución desde cualquier consola o un paso de script de una lista de cues. Una ejecución detenida solo se muestra en la consola que la pidió, hasta que el script vuelva a ejecutarse",
+        ),
+    ),
+    (
         Msg::ScriptReference,
         t(
             "Instrucciones: let NOMBRE = VALOR · if … elif … else … end · repeat N … end · while … end · stop. Acciones: preview, cut, transition EFECTO, FOTOGRAMAS, stinger, overlay CANAL, ENTRADA, overlay_off, title_on, title_text, title_off, ftb, ftb_off, playlist_start, playlist_stop, gain, mute, unmute, record_start, record_stop, stream_start, stream_stop, play, pause, seek, restart. program y preview contienen los números de las entradas en el aire; una entrada es su número (1 es la primera) o su nombre entre comillas; # empieza un comentario.",

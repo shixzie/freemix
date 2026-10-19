@@ -3217,6 +3217,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             playlist: fm_protocol::PlaylistRunState::Stopped,
             titles: Vec::new(),
             media: Vec::new(),
+            scripts: Vec::new(),
         },
     };
     model
@@ -3236,6 +3237,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             frame: 40,
             actions: 2,
             instructions: 5,
+            cue_list: None,
         })
     );
     assert_eq!(
@@ -3267,6 +3269,157 @@ fn scripts_replicate_from_snapshot_records_and_events() {
         )),
         Err(ModelError::InvalidScript(1))
     );
+}
+
+/// Protocol 2.61: each script step a `cue_run_changed` reports becomes
+/// that script's last run, attributed to the list, without touching the
+/// other scripts' runs; a run naming a script the project lacks, or more
+/// steps than a list holds, is refused; removing a script forgets its run.
+#[test]
+#[allow(clippy::too_many_lines)] // one replication walk
+fn a_cue_run_records_the_last_run_of_each_script_it_ran() {
+    use fm_protocol::{
+        CueListSpec, CueListStatus, CueScriptRun, MAX_CUE_LIST_SCRIPT_STEPS, ScriptSpec,
+        ScriptStatus, WireCue, WireCueAction,
+    };
+
+    let project_id = project(10);
+    let identity = engine("engine-a", 1, "log-a");
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 7)).unwrap();
+    let mut revision = 7;
+    let mut apply = |model: &mut ClientModel, change: DurableChange| {
+        let applied = model.apply_event(event(project_id, identity.clone(), revision + 1, change));
+        if applied.is_ok() {
+            revision += 1;
+        }
+        applied
+    };
+    for id in [1, 2, 3] {
+        apply(
+            &mut model,
+            DurableChange::ScriptChanged(Box::new(ScriptStatus {
+                id,
+                spec: ScriptSpec {
+                    name: format!("Script {id}"),
+                    source: "cut 2".into(),
+                },
+            })),
+        )
+        .unwrap();
+    }
+    let step = |script| WireCueAction::RunScript { script };
+    apply(
+        &mut model,
+        DurableChange::CueListChanged(Box::new(CueListStatus {
+            id: 4,
+            spec: CueListSpec {
+                name: "Show".into(),
+                cues: vec![WireCue {
+                    id: 1,
+                    name: "Open".into(),
+                    auto_follow: false,
+                    actions: vec![step(1), step(2), step(1)],
+                }],
+            },
+            state: fm_protocol::CueRunStatus::default(),
+        })),
+    )
+    .unwrap();
+    let direct = ScriptRunUpdate {
+        script: 3,
+        frame: 30,
+        actions: 1,
+        instructions: 2,
+        effects: CueRunUpdate {
+            list: 0,
+            frame: 30,
+            state: fm_protocol::CueRunStatus::default(),
+            fired: Vec::new(),
+            selection: BusSelection::new(input(2), input(1)),
+            manual_transition: ManualTransitionStatus::Inactive,
+            fade_to_black: fade_to_black(false, 0),
+            overlays: overlays(),
+            input_audio_strips: input_audio_strips(),
+            streams: Vec::new(),
+            recordings: recordings(),
+            playlist: fm_protocol::PlaylistRunState::Stopped,
+            titles: Vec::new(),
+            media: Vec::new(),
+            scripts: Vec::new(),
+        },
+    };
+    apply(
+        &mut model,
+        DurableChange::ScriptRan(Box::new(direct.clone())),
+    )
+    .unwrap();
+
+    let run = |script, actions, instructions| CueScriptRun {
+        script,
+        actions,
+        instructions,
+    };
+    let cue_run = |scripts| CueRunUpdate {
+        list: 4,
+        fired: vec![1],
+        state: fm_protocol::CueRunStatus {
+            live: Some(1),
+            played: vec![1],
+            ..fm_protocol::CueRunStatus::default()
+        },
+        scripts,
+        ..direct.effects.clone()
+    };
+    let before = model.state().unwrap().clone();
+    assert_eq!(
+        apply(
+            &mut model,
+            DurableChange::CueRunChanged(Box::new(cue_run(vec![run(1, 1, 2), run(9, 1, 2)])))
+        ),
+        Err(ModelError::InvalidScript(9))
+    );
+    assert_eq!(
+        apply(
+            &mut model,
+            DurableChange::CueRunChanged(Box::new(cue_run(vec![
+                run(1, 1, 2);
+                MAX_CUE_LIST_SCRIPT_STEPS + 1
+            ])))
+        ),
+        Err(ModelError::InvalidCueList(4))
+    );
+    assert_eq!(model.state().unwrap(), &before);
+
+    let mut update = cue_run(vec![run(1, 1, 2), run(2, 3, 9), run(1, 4, 11)]);
+    update.frame = 50;
+    apply(&mut model, DurableChange::CueRunChanged(Box::new(update))).unwrap();
+    let state = model.state().unwrap();
+    let by_cue = |script, actions, instructions| ScriptRunReport {
+        script,
+        frame: 50,
+        actions,
+        instructions,
+        cue_list: Some(4),
+    };
+    // The later step of script 1 is its last run.
+    assert_eq!(state.script_run(1), Some(by_cue(1, 4, 11)));
+    assert_eq!(state.script_run(2), Some(by_cue(2, 3, 9)));
+    assert_eq!(
+        state.script_run(3),
+        Some(ScriptRunReport {
+            script: 3,
+            frame: 30,
+            actions: 1,
+            instructions: 2,
+            cue_list: None,
+        })
+    );
+    assert_eq!(state.last_script_run(), Some(by_cue(1, 4, 11)));
+
+    apply(&mut model, DurableChange::ScriptRemoved { script: 3 }).unwrap();
+    assert_eq!(model.state().unwrap().script_run(3), None);
+    assert_eq!(model.state().unwrap().script_run(1), Some(by_cue(1, 4, 11)));
 }
 
 /// Regression (RC-011): a `script_changed` adding a script past the project

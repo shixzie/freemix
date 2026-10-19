@@ -3268,6 +3268,7 @@ mod cue_lists {
                     playlist: PlaylistRunState::Stopped,
                     titles: Vec::new(),
                     media: Vec::new(),
+                    scripts: Vec::new(),
                 })),
             ))
             .unwrap();
@@ -3290,6 +3291,83 @@ mod cue_lists {
             .apply_event(event(7, EventPayload::CueListRemoved { list: 1 }))
             .unwrap();
         assert!(client.model().state().unwrap().cue_list(1).is_none());
+    }
+
+    /// Protocol 2.61: each script step a `cue_run_changed` names becomes
+    /// that script's last run; naming a script the project lacks forces a
+    /// snapshot.
+    #[test]
+    fn a_cue_run_records_the_scripts_it_ran() {
+        use fm_protocol::{CueScriptRun, ScriptSpec, ScriptStatus};
+
+        let run = |scripts| {
+            EventPayload::CueRunChanged(Box::new(CueRunChange {
+                list: 1,
+                frame: 9,
+                state: CueRunStatus {
+                    live: Some(10),
+                    played: vec![10],
+                    ..CueRunStatus::default()
+                },
+                fired: vec![10],
+                program: input(2),
+                preview: input(1),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: live_fade_to_black(),
+                overlays: fm_protocol::OverlayStatus::empty_channels(),
+                input_audio_strips: input_audio_strips(),
+                streams: Vec::new(),
+                recordings: recordings(),
+                playlist: PlaylistRunState::Stopped,
+                titles: Vec::new(),
+                media: Vec::new(),
+                scripts,
+            }))
+        };
+        let ran = |script| CueScriptRun {
+            script,
+            actions: 2,
+            instructions: 5,
+        };
+        let prepared = || {
+            let mut client = ready_client(4);
+            client
+                .apply_event(event(
+                    5,
+                    EventPayload::ScriptChanged(Box::new(ScriptStatus {
+                        id: 3,
+                        spec: ScriptSpec {
+                            name: "Opening".into(),
+                            source: "preview 2\ncut".into(),
+                        },
+                    })),
+                ))
+                .unwrap();
+            let mut runs = list(1, 2);
+            runs.spec.cues[0]
+                .actions
+                .push(WireCueAction::RunScript { script: 3 });
+            client
+                .apply_event(event(6, EventPayload::CueListChanged(Box::new(runs))))
+                .unwrap();
+            client
+        };
+
+        let mut client = prepared();
+        client.apply_event(event(7, run(vec![ran(3)]))).unwrap();
+        assert_eq!(
+            client.model().state().unwrap().script_run(3),
+            Some(fm_ui_model::ScriptRunReport {
+                script: 3,
+                frame: 9,
+                actions: 2,
+                instructions: 5,
+                cue_list: Some(1),
+            })
+        );
+
+        let mut client = prepared();
+        assert!(client.apply_event(event(7, run(vec![ran(9)]))).is_err());
     }
 
     #[test]
@@ -3328,6 +3406,7 @@ mod cue_lists {
                         playlist: PlaylistRunState::Stopped,
                         titles: Vec::new(),
                         media: Vec::new(),
+                        scripts: Vec::new(),
                     })),
                 ))
                 .is_err()

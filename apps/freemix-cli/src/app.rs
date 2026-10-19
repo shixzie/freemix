@@ -2458,7 +2458,7 @@ fn cue(
 ) -> AppResult<()> {
     let mut project = load_engine(path)?;
     let command = fm_control::cue_engine_command(payload);
-    let result = execute(&mut project.engine, command, 1, key, expected_revision)?;
+    let mut result = execute(&mut project.engine, command, 1, key, expected_revision)?;
     if result.replayed {
         if let Some(rejection) = result.rejection {
             return Err(rejection.into());
@@ -2467,11 +2467,16 @@ fn cue(
         return Ok(());
     }
     if result.rejection.is_none() {
-        run_cue_clock(&mut project.engine)?;
+        let advanced = run_cue_clock(&mut project.engine)?;
+        result.cue_scripts.extend(advanced);
     }
     save_engine(path, &project)?;
     if let Some(rejection) = result.rejection {
         return Err(rejection.into());
+    }
+    // Each script step the GO and its waits ran (Protocol 2.61).
+    for ran in result.cue_scripts {
+        ran.print();
     }
     print_status(&project);
     Ok(())
@@ -2564,8 +2569,10 @@ fn script(
     Ok(())
 }
 
-/// Runs every waiting cue to its end on the simulated clock.
-fn run_cue_clock(engine: &mut Engine) -> AppResult<()> {
+/// Runs every waiting cue to its end on the simulated clock, returning the
+/// script steps the advances ran.
+fn run_cue_clock(engine: &mut Engine) -> AppResult<Vec<CueScriptRan>> {
+    let mut cue_scripts = Vec::new();
     while let Some((list, due)) = engine.cue_advance_frame() {
         while engine.frame_cursor().get() < due {
             engine.tick()?;
@@ -2580,6 +2587,7 @@ fn run_cue_clock(engine: &mut Engine) -> AppResult<()> {
         if let Some(rejection) = advance.rejection {
             return Err(rejection.into());
         }
+        cue_scripts.extend(advance.cue_scripts);
     }
     for _ in 0..=fm_model::MAX_CUE_TRANSITION_FRAMES {
         if engine.realized_switcher() == engine.show().desired_switcher() {
@@ -2587,7 +2595,7 @@ fn run_cue_clock(engine: &mut Engine) -> AppResult<()> {
         }
         engine.tick()?;
     }
-    Ok(())
+    Ok(cue_scripts)
 }
 
 fn execute(
@@ -2618,6 +2626,20 @@ fn execute(
             } => Some((*frame, *actions, *instructions)),
             _ => None,
         });
+    let cue_scripts = outcome
+        .events
+        .iter()
+        .flat_map(|event| match &event.payload {
+            fm_engine::EngineEvent::CueListChanged { frame, scripts, .. } => scripts
+                .iter()
+                .map(|run| CueScriptRan {
+                    frame: *frame,
+                    run: *run,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
     let rejection = outcome.receipt.rejected().map(|rejected| {
         AppFailure(crate::remote::refusal_text(
             rejected.rejection.code.as_str(),
@@ -2634,6 +2656,7 @@ fn execute(
         replayed: outcome.replayed,
         rejection,
         script_ran,
+        cue_scripts,
     })
 }
 
@@ -6262,6 +6285,27 @@ struct ExecuteResult {
     rejection: Option<AppFailure>,
     /// An accepted script run's frame, actions, and instructions.
     script_ran: Option<(u64, u32, u32)>,
+    /// Every script step an accepted cue operation or advance ran, in
+    /// order, with its frame (Protocol 2.61).
+    cue_scripts: Vec<CueScriptRan>,
+}
+
+/// A script step a cue ran: its frame and what the run did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CueScriptRan {
+    frame: u64,
+    run: fm_engine::CueScriptRun,
+}
+
+impl CueScriptRan {
+    fn print(self) {
+        remote::print_script_ran(
+            self.run.script,
+            self.frame,
+            self.run.actions,
+            self.run.instructions,
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

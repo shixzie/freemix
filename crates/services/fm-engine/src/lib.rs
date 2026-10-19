@@ -25,7 +25,7 @@ pub use audio_mixer::{
 };
 pub use cue::{EngineCueListDefinition, EngineCueOperation, cue_due};
 pub use engine::{
-    Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
+    CueScriptRun, Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
     EngineFadeToBlackState, EngineManualTransitionKind, EngineManualTransitionPosition,
     EngineManualTransitionState, EnginePrepareOutcome, EngineRestoreState, EngineSnapshot,
     EngineStreamControl, EngineStreamStatus, EngineTitleAir, FrameResult,

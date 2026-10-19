@@ -1408,7 +1408,11 @@ fn title_design() -> fm_ui_model::title_animation::TitleDesign {
 
 /// A ready session over [`model`]; `operator` grants every permission.
 fn ready(operator: bool, variant: Variant) -> StudioUiState {
-    let model = model(variant);
+    ready_over(&model(variant), operator)
+}
+
+/// A ready session over `model`; `operator` grants every permission.
+fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
         .with_view(model.view().unwrap())
         .with_switcher_permissions(operator, operator)
@@ -2024,9 +2028,19 @@ fn scenes(language: Language) -> Vec<Scene> {
                     failure: fm_protocol::ScriptFailureKind::Refused,
                     line: 3,
                     column: 1,
+                    since: None,
                 });
             },
             ready(true, Variant::default()),
+        ),
+        // Protocol 2.61: the last run a cue's script step made.
+        (
+            "dialog/scripts-ran-by-cue",
+            &|shell| {
+                shell.scripts.open = true;
+                shell.scripts.select(&audit_scripts(), Some(1));
+            },
+            cue_ran_script_fixture(),
         ),
         (
             "dialog/scripts-new",
@@ -2162,6 +2176,50 @@ fn dock_scenes(locale: Locale) -> Vec<Scene> {
     animation.animation.sync(&egui::Context::default(), &state);
     scenes.push(Scene::console("dock/animation-window", animation, state));
     scenes
+}
+
+/// The audit's show once cue list 1 ("Show open") ran script 1 ("Opening")
+/// as a step on frame 120, reported as 3 actions in 7 instructions
+/// (Protocol 2.61), for an operator.
+pub(crate) fn cue_ran_script_fixture() -> StudioUiState {
+    let mut model = model(Variant::default());
+    let state = model.state().unwrap().clone();
+    let switcher = state.switcher();
+    let update = fm_ui_model::CueRunUpdate {
+        list: 1,
+        frame: 120,
+        state: state.cue_lists()[0].state.clone(),
+        fired: Vec::new(),
+        selection: switcher.desired,
+        manual_transition: switcher.desired_manual_transition,
+        fade_to_black: switcher.desired_fade_to_black,
+        overlays: state.desired_overlays().to_vec(),
+        input_audio_strips: state.input_audio_strips().to_vec(),
+        streams: state.streams().to_vec(),
+        recordings: state.recordings().to_vec(),
+        playlist: state
+            .playlist()
+            .map_or(PlaylistRunState::Stopped, |playlist| playlist.state),
+        titles: Vec::new(),
+        media: Vec::new(),
+        scripts: vec![fm_protocol::CueScriptRun {
+            script: 1,
+            actions: 3,
+            instructions: 7,
+        }],
+    };
+    let cursor = model.reconnect_cursor().unwrap().clone();
+    model
+        .apply_event(fm_ui_model::DurableProjectEvent {
+            cursor: fm_ui_model::ProjectCursor {
+                revision: cursor.revision.checked_next().unwrap(),
+                ..cursor
+            },
+            change: fm_ui_model::DurableChange::CueRunChanged(Box::new(update)),
+            edit_history: state.edit_history(),
+        })
+        .unwrap();
+    ready_over(&model, true)
 }
 
 /// The audit's show for an operator, for the input bank's layout tests.

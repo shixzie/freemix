@@ -54,18 +54,22 @@ impl ScriptRunUpdate {
                 playlist: change.playlist,
                 titles: change.titles,
                 media: change.media,
+                scripts: Vec::new(),
             },
         }
     }
 }
 
-/// The last accepted run any client made, as replicated.
+/// The last accepted run of a script, as replicated: one any client made,
+/// or one a cue's script step made (Protocol 2.61).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScriptRunReport {
     pub script: u64,
     pub frame: u64,
     pub actions: u32,
     pub instructions: u32,
+    /// The cue list whose script step ran it; `None` for a direct run.
+    pub cue_list: Option<u64>,
 }
 
 /// Checks a whole script against the wire bounds.
@@ -93,13 +97,23 @@ pub(crate) fn validate_run(
 
 /// Applies a validated run update.
 pub(crate) fn apply_run(state: &mut ProjectState, update: ScriptRunUpdate) {
-    state.last_script_run = Some(ScriptRunReport {
-        script: update.script,
-        frame: update.frame,
-        actions: update.actions,
-        instructions: update.instructions,
-    });
+    record_run(
+        state,
+        ScriptRunReport {
+            script: update.script,
+            frame: update.frame,
+            actions: update.actions,
+            instructions: update.instructions,
+            cue_list: None,
+        },
+    );
     crate::cue_lists::apply_effects(state, update.effects);
+}
+
+/// Records `run` as its script's last run and the latest of all.
+pub(crate) fn record_run(state: &mut ProjectState, run: ScriptRunReport) {
+    state.script_runs.retain(|found| found.script != run.script);
+    state.script_runs.push(run);
 }
 
 /// Inserts or replaces a whole script, keeping project order (new scripts

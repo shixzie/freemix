@@ -7800,6 +7800,69 @@ mod scripts {
         ));
         assert_eq!(control.snapshot().snapshot.script_states, 0);
     }
+
+    /// Protocol 2.61: a cue's `cue_run_changed` names every script step it
+    /// ran with the counts a direct `script_ran` of the same script on the
+    /// same show publishes.
+    #[test]
+    fn a_cue_run_publishes_the_scripts_it_ran() {
+        let mut direct = service(16, 16);
+        let mut cues = service(16, 16);
+        for control in [&mut direct, &mut cues] {
+            submit(control, Role::Admin, "set", set(1, "preview 3\ncut"));
+            control.tick(&server_identity()).unwrap();
+        }
+        let ran = submit(
+            &mut direct,
+            Role::Operator,
+            "run",
+            CommandPayload::RunScript { script: 1 },
+        );
+        let EventPayload::ScriptRan(ran) = &ran.output.events[0].payload else {
+            panic!("expected script_ran: {:?}", ran.output.events);
+        };
+
+        let list = CommandPayload::SetCueList {
+            list: 4,
+            spec: Box::new(fm_protocol::CueListSpec {
+                name: "Show".into(),
+                cues: vec![fm_protocol::WireCue {
+                    id: 1,
+                    name: "Open".into(),
+                    auto_follow: false,
+                    actions: vec![fm_protocol::WireCueAction::RunScript { script: 1 }],
+                }],
+            }),
+        };
+        submit(&mut cues, Role::Admin, "list", list);
+        cues.tick(&server_identity()).unwrap();
+        let go = submit(
+            &mut cues,
+            Role::Admin,
+            "go",
+            CommandPayload::CueControl {
+                list: 4,
+                operation: fm_protocol::CueOperation::Go { cue: None },
+            },
+        );
+        let EventPayload::CueRunChanged(change) = &go.output.events[0].payload else {
+            panic!("expected cue_run_changed: {:?}", go.output.events);
+        };
+        assert_eq!(
+            change.scripts,
+            vec![fm_protocol::CueScriptRun {
+                script: 1,
+                actions: ran.actions,
+                instructions: ran.instructions,
+            }]
+        );
+        assert_eq!(ran.actions, 2);
+        let line = encode_line(&WireMessage::Event(go.output.events[0].clone())).unwrap();
+        assert!(
+            line.contains(&format!("\tscripts=1.2.{}\t", ran.instructions)),
+            "{line}"
+        );
+    }
 }
 
 mod automation_authority;

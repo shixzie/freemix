@@ -1106,8 +1106,9 @@ pub struct ProjectState {
     scripts: Vec<fm_protocol::ScriptStatus>,
     /// `script_state` records the snapshot announced that have not arrived.
     script_states_pending: u16,
-    /// The last accepted script run since this snapshot.
-    last_script_run: Option<ScriptRunReport>,
+    /// The last accepted run of each script since this snapshot, direct
+    /// or by a cue's script step (Protocol 2.61), the latest last.
+    script_runs: Vec<ScriptRunReport>,
     /// Every input's non-default lifecycle (Protocol 2.38).
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -1292,10 +1293,21 @@ impl ProjectState {
         self.script_states_pending == 0
     }
 
-    /// Returns the last accepted script run replicated since the snapshot.
+    /// Returns the last accepted script run replicated since the snapshot,
+    /// direct or by a cue's script step.
     #[must_use]
-    pub const fn last_script_run(&self) -> Option<ScriptRunReport> {
-        self.last_script_run
+    pub fn last_script_run(&self) -> Option<ScriptRunReport> {
+        self.script_runs.last().copied()
+    }
+
+    /// Returns the last accepted run of script `script` replicated since
+    /// the snapshot, direct or by a cue's script step (Protocol 2.61).
+    #[must_use]
+    pub fn script_run(&self, script: u64) -> Option<ScriptRunReport> {
+        self.script_runs
+            .iter()
+            .find(|run| run.script == script)
+            .copied()
     }
 
     /// Returns the replicated project grading. Complete only once
@@ -2698,7 +2710,7 @@ impl ClientModel {
             cue_list_states_pending: snapshot.cue_list_states,
             scripts: Vec::new(),
             script_states_pending: snapshot.script_states,
-            last_script_run: None,
+            script_runs: Vec::new(),
             input_lifecycle,
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
@@ -4608,6 +4620,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::ScriptChanged(script) => scripts::apply_script(state, *script),
         DurableChange::ScriptRemoved { script } => {
             state.scripts.retain(|candidate| candidate.id != script);
+            state.script_runs.retain(|run| run.script != script);
         }
         DurableChange::ScriptRan(update) => scripts::apply_run(state, *update),
         DurableChange::GradeChanged(change) => state.grading.apply(change),

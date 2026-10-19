@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.60 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.61 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1989,6 +1989,35 @@ Protocol 2.60 lets a cue run a project script (RC-011, RC-017).
   and Spanish hover help.
 - Scripts cannot `wait`: a script's actions always land on one frame.
 - 2.59 is refused.
+
+Protocol 2.61 reports the scripts a cue ran (RC-011, RC-017).
+
+- `event=cue_run_changed` ends with `scripts` (after `media`, before the
+  edit history fields): every `run_script` step the run's frame ran, in the
+  order it ran, as a `/`-separated list (empty for none) of
+  `<script>.<actions>.<instructions>`, each canonical decimal, `script`
+  nonzero and `actions` and `instructions` 32-bit, the counts a
+  `script_ran` of the same script on the same show reports. A GO's event
+  names the steps up to the cue's first wait; an advance's event names the
+  steps it ran. A script two steps run appears twice. There are at most 8
+  entries (`MAX_CUE_LIST_SCRIPT_STEPS`); one more, an empty entry, script
+  `0`, a non-canonical or out-of-range number, or an entry with other than
+  three parts is malformed, and the field is required. Encoding refuses the
+  same. An advance whose step failed (the list's `fault`) names no
+  scripts, since nothing of its frame applies; a refused GO publishes
+  nothing. A non-script run names none: `scripts=`.
+- Example: `...\tmedia=\tscripts=3.2.9%2F5.4.17\tundo_depth=0...`.
+- Each entry is that script's last run: Studio's Edit > Scripts window
+  reports it under the script ("Last run by cue list <name>: ..."), with
+  English and Spanish hover help, and a later run supersedes where an
+  earlier run from this console stopped. A client keeps one last run per
+  script (direct or by a cue) and forgets it when the script is removed.
+  `freemix-cli go` (local and remote) prints a
+  `ScriptRan(script=, frame=, actions=, instructions=)` line per step
+  before the status line; locally that includes the steps the simulated
+  clock then runs, remotely only the GO's own frame.
+- No `script_ran` event is sent for a script a cue runs (as in 2.60).
+- 2.60 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

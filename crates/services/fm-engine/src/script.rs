@@ -403,6 +403,7 @@ impl ScriptHost for Host<'_, '_> {
             runtime: &mut *self.frame.runtime,
             transition: &mut *self.frame.transition,
             title_texts: &mut *self.frame.title_texts,
+            scripts: None,
             takes: self.frame.takes,
         };
         let applied =
@@ -467,6 +468,7 @@ pub(crate) fn run_on(
             runtime: &mut *frame.runtime,
             transition: &mut *frame.transition,
             title_texts: &mut *frame.title_texts,
+            scripts: None,
             takes: frame.takes,
         },
         step: 0,
@@ -501,6 +503,7 @@ fn run_alone(
             runtime: &mut runtime,
             transition: &mut transition,
             title_texts: &mut title_texts,
+            scripts: None,
             takes: 0,
         },
     )?;

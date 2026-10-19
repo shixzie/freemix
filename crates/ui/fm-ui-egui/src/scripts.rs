@@ -9,7 +9,9 @@
 //! script: every action lands on one frame, or none does. A run that stops
 //! early is refused with the line and column it stopped at, which the
 //! window marks in the editor; an accepted run reports how many actions and
-//! instructions it used.
+//! instructions it used. A cue's script step that ran the script reports the
+//! same, naming its cue list (Protocol 2.61), and supersedes an earlier
+//! stop.
 //!
 //! The draft follows the replicated script while it is unchanged, so an
 //! edit, undo, or redo from another console shows at once; an edited draft
@@ -19,6 +21,8 @@ use egui::{Button, RichText, ScrollArea, TextEdit, Ui};
 use fm_protocol::{
     MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, RefusalReason, ScriptFailureKind, ScriptStatus,
 };
+
+use fm_ui_model::ScriptRunReport;
 
 use crate::gating::Hint;
 use crate::l10n::{self, Arg, Msg};
@@ -54,6 +58,42 @@ pub(crate) struct RunFailure {
     pub(crate) failure: ScriptFailureKind,
     pub(crate) line: u32,
     pub(crate) column: u32,
+    /// The script's replicated last run when the refusal arrived: a later
+    /// accepted run (from any console or a cue) supersedes the stop.
+    pub(crate) since: Option<ScriptRunReport>,
+}
+
+/// What the window reports about a script's last run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LastRun {
+    /// A run this console asked for stopped here.
+    Stopped(RunFailure),
+    /// The last accepted run, direct or by a cue's script step.
+    Ran(ScriptRunReport),
+}
+
+/// The replicated last accepted run of `script`.
+fn replicated_run(state: &StudioUiState, script: u64) -> Option<ScriptRunReport> {
+    state
+        .project_state
+        .as_ref()
+        .and_then(|project| project.script_run(script))
+}
+
+/// What the window reports about `script`'s last run: where a run this
+/// console asked for stopped, unless an accepted run came since, else the
+/// last accepted run.
+pub(crate) fn last_run(
+    window: &ScriptsWindow,
+    state: &StudioUiState,
+    script: u64,
+) -> Option<LastRun> {
+    let ran = replicated_run(state, script);
+    window
+        .failure
+        .filter(|failure| failure.script == script && failure.since == ran)
+        .map(LastRun::Stopped)
+        .or_else(|| ran.map(LastRun::Ran))
 }
 
 /// The window's open state and the draft being edited.
@@ -175,8 +215,20 @@ impl ScriptsWindow {
                     failure: *failure,
                     line: *line,
                     column: *column,
+                    since: replicated_run(state, script),
                 });
             }
+        }
+    }
+
+    /// Drops a stop that a later accepted run of its script superseded
+    /// (Protocol 2.61: a cue's script step counts), so the editor no longer
+    /// marks its line.
+    pub(crate) fn forget_superseded_failure(&mut self, state: &StudioUiState) {
+        if let Some(failure) = self.failure
+            && replicated_run(state, failure.script) != failure.since
+        {
+            self.failure = None;
         }
     }
 }
@@ -274,6 +326,7 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
     ) {
         self.scripts.observe_refusals(state);
+        self.scripts.forget_superseded_failure(state);
         if !self.scripts.open {
             return;
         }
@@ -496,38 +549,51 @@ fn draw_editor(
     });
 
     // The last run of this script: where it stopped, or what it did.
-    if let Some(failure) = window.failure.filter(|failure| failure.script == script) {
-        ui.label(
-            RichText::new(l.format(
-                Msg::ScriptLastFailure,
-                &[
-                    (
-                        "failure",
-                        Arg::Str(l.text(fm_ui_model::i18n::script_failure_msg(failure.failure))),
-                    ),
-                    ("line", Arg::Plain(u64::from(failure.line))),
-                    ("column", Arg::Plain(u64::from(failure.column))),
-                ],
-            ))
-            .color(ERROR),
-        );
-    } else if let Some(ran) = state
-        .project_state
-        .as_ref()
-        .and_then(fm_ui_model::ProjectState::last_script_run)
-        .filter(|ran| ran.script == script)
-    {
-        ui.label(
-            RichText::new(l.format(
-                Msg::ScriptLastRun,
-                &[
-                    ("actions", Arg::Count(u64::from(ran.actions))),
-                    ("instructions", Arg::Count(u64::from(ran.instructions))),
-                    ("frame", Arg::Plain(ran.frame)),
-                ],
-            ))
-            .color(muted_color()),
-        );
+    match last_run(window, state, script) {
+        Some(LastRun::Stopped(failure)) => {
+            ui.label(
+                RichText::new(l.format(
+                    Msg::ScriptLastFailure,
+                    &[
+                        (
+                            "failure",
+                            Arg::Str(
+                                l.text(fm_ui_model::i18n::script_failure_msg(failure.failure)),
+                            ),
+                        ),
+                        ("line", Arg::Plain(u64::from(failure.line))),
+                        ("column", Arg::Plain(u64::from(failure.column))),
+                    ],
+                ))
+                .color(ERROR),
+            )
+            .on_hover_text(l.text(Msg::ScriptLastRunHover));
+        }
+        Some(LastRun::Ran(ran)) => {
+            let counts = [
+                ("actions", Arg::Count(u64::from(ran.actions))),
+                ("instructions", Arg::Count(u64::from(ran.instructions))),
+                ("frame", Arg::Plain(ran.frame)),
+            ];
+            let text = match ran.cue_list {
+                None => l.format(Msg::ScriptLastRun, &counts),
+                Some(list) => {
+                    let name = state
+                        .project_state
+                        .as_ref()
+                        .and_then(|project| {
+                            project.cue_lists().iter().find(|found| found.id == list)
+                        })
+                        .map_or_else(|| list.to_string(), |found| found.spec.name.clone());
+                    let mut args = counts.to_vec();
+                    args.push(("list", Arg::Str(&name)));
+                    l.format(Msg::ScriptLastRunByCue, &args)
+                }
+            };
+            ui.label(RichText::new(text).color(muted_color()))
+                .on_hover_text(l.text(Msg::ScriptLastRunHover));
+        }
+        None => {}
     }
 }
 
@@ -608,6 +674,7 @@ mod tests {
             failure: ScriptFailureKind::Refused,
             line: 2,
             column: 1,
+            since: None,
         });
         window.source = "preview 2\ncut 2".into();
         assert!(window.dirty());
@@ -624,6 +691,7 @@ mod tests {
             failure: ScriptFailureKind::Refused,
             line: 2,
             column: 1,
+            since: None,
         });
         scripts[0].spec.source = "cut 3".into();
         window.follow(&scripts);
@@ -636,10 +704,76 @@ mod tests {
             failure: ScriptFailureKind::Refused,
             line: 1,
             column: 1,
+            since: None,
         });
         scripts.push(script(2, "cut 1"));
         window.follow(&scripts);
         assert!(window.failure.is_some());
+    }
+
+    /// Protocol 2.61: a cue's script step updates the window's report of
+    /// that script's last run, naming the list, and supersedes where an
+    /// earlier run from this console stopped; other scripts are untouched.
+    #[test]
+    fn a_cue_script_step_updates_the_last_run_report() {
+        let state = crate::hover_audit::cue_ran_script_fixture();
+        let ran = ScriptRunReport {
+            script: 1,
+            frame: 120,
+            actions: 3,
+            instructions: 7,
+            cue_list: Some(1),
+        };
+        let mut window = ScriptsWindow::default();
+        window.follow(replicated(&state));
+        assert_eq!(last_run(&window, &state, 1), Some(LastRun::Ran(ran)));
+        assert_eq!(last_run(&window, &state, 2), None);
+
+        // A stop noted before the cue ran the script is superseded; a stop
+        // of another script is kept.
+        let stopped = RunFailure {
+            script: 1,
+            failure: ScriptFailureKind::Refused,
+            line: 2,
+            column: 1,
+            since: None,
+        };
+        window.failure = Some(stopped);
+        assert_eq!(last_run(&window, &state, 1), Some(LastRun::Ran(ran)));
+        window.forget_superseded_failure(&state);
+        assert_eq!(window.failure, None);
+        let other = RunFailure {
+            script: 2,
+            ..stopped
+        };
+        window.failure = Some(other);
+        window.forget_superseded_failure(&state);
+        assert_eq!(last_run(&window, &state, 2), Some(LastRun::Stopped(other)));
+        // A stop noted after the cue run stands until the next run.
+        let latest = RunFailure {
+            since: Some(ran),
+            ..stopped
+        };
+        window.failure = Some(latest);
+        window.forget_superseded_failure(&state);
+        assert_eq!(last_run(&window, &state, 1), Some(LastRun::Stopped(latest)));
+
+        // The report names the list in both languages.
+        for locale in [
+            l10n::Locale::ENGLISH,
+            l10n::Locale::new(fm_ui_model::i18n::Language::Spanish),
+        ] {
+            let text = locale.format(
+                Msg::ScriptLastRunByCue,
+                &[
+                    ("actions", Arg::Count(3)),
+                    ("instructions", Arg::Count(7)),
+                    ("frame", Arg::Plain(120)),
+                    ("list", Arg::Str("Show open")),
+                ],
+            );
+            assert!(text.contains("Show open") && text.contains("120"), "{text}");
+        }
     }
 
     #[test]
@@ -653,6 +787,7 @@ mod tests {
             failure: ScriptFailureKind::Refused,
             line: 2,
             column: 1,
+            since: None,
         });
         assert_eq!(marked_line(&window), Some(2));
         window.source = "preview 2\nif program = 1\nend".into();
@@ -709,6 +844,7 @@ mod tests {
                 failure: ScriptFailureKind::Refused,
                 line: 2,
                 column: 1,
+                since: None,
             })
         );
     }

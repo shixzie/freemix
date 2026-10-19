@@ -21,7 +21,9 @@
 //! * `fired` is `.`-separated cue ids; `titles` is a `/`-separated list of
 //!   `<input>.<field revision>.<field>.<text hex>`; `media` (Protocol
 //!   2.51) is a `/`-separated list of
-//!   `<input>.<transport state>.<position>.<time numerator>.<time denominator>`.
+//!   `<input>.<transport state>.<position>.<time numerator>.<time denominator>`;
+//!   `scripts` (Protocol 2.61) is a `/`-separated list (empty for none) of
+//!   at most 8 `<script>.<actions>.<instructions>`, `script` nonzero.
 //!
 //! Names and texts are lowercase hex of their UTF-8 bytes, so no separator
 //! can occur inside them. Every number is canonical decimal.
@@ -30,11 +32,12 @@ use core::num::NonZeroU128;
 
 use crate::{
     CodecError, CueListSpec, CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus,
-    CueRunStatus, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
-    MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES,
-    MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, MediaTime,
-    MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation,
-    WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId, WireTitleFieldId,
+    CueRunStatus, CueScriptRun, CueTitleText, MAX_CUE_ACTIONS, MAX_CUE_DELAY_MS,
+    MAX_CUE_LIST_ACTIONS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS,
+    MAX_CUE_NAME_BYTES, MAX_CUE_TEXT_BYTES, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
+    MAX_CUES, MediaTime, MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction,
+    WireCueMediaOperation, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId,
+    WireTitleFieldId,
 };
 
 use super::media::{FieldSource, Push};
@@ -688,6 +691,52 @@ pub(super) fn decode_media(value: &str) -> Result<Vec<CueMediaTransport>, CodecE
                         },
                         denominator: parse_u128(denominator).ok_or_else(bad)?.get(),
                     },
+                }),
+                _ => Err(bad()),
+            }
+        })
+        .collect()
+}
+
+/// Encodes the script steps of a run (Protocol 2.61).
+pub(super) fn encode_scripts(scripts: &[CueScriptRun]) -> Result<String, CodecError> {
+    if scripts.len() > MAX_CUE_LIST_SCRIPT_STEPS {
+        return Err(CodecError::TooManyItems("scripts"));
+    }
+    scripts
+        .iter()
+        .map(|run| {
+            if run.script == 0 {
+                return Err(invalid("scripts", "0"));
+            }
+            Ok(format!(
+                "{}.{}.{}",
+                run.script, run.actions, run.instructions
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|items| items.join("/"))
+}
+
+/// Decodes the script steps of a run.
+pub(super) fn decode_scripts(value: &str) -> Result<Vec<CueScriptRun>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split('/').count() > MAX_CUE_LIST_SCRIPT_STEPS {
+        return Err(CodecError::TooManyItems("scripts"));
+    }
+    value
+        .split('/')
+        .map(|item| {
+            let bad = || invalid("scripts", item);
+            match item.split('.').collect::<Vec<_>>().as_slice() {
+                [script, actions, instructions] => Ok(CueScriptRun {
+                    script: parse_canonical_u64(script)
+                        .filter(|script| *script != 0)
+                        .ok_or_else(bad)?,
+                    actions: parse_u32(actions).ok_or_else(bad)?,
+                    instructions: parse_u32(instructions).ok_or_else(bad)?,
                 }),
                 _ => Err(bad()),
             }

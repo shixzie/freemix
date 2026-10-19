@@ -2462,6 +2462,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             playlist: decode_playlist_state(fields.required("playlist")?)?,
             titles: super::cue::decode_titles(&fields.required("titles")?)?,
             media: super::cue::decode_media(&fields.required("media")?)?,
+            scripts: super::cue::decode_scripts(&fields.required("scripts")?)?,
         })),
         "script_changed" => {
             EventPayload::ScriptChanged(Box::new(super::script::decode_status(fields)?))

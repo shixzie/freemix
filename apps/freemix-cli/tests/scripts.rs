@@ -193,8 +193,9 @@ fn script_edits_respect_their_bounds() {
 }
 
 /// RC-011/RC-017 (Protocol 2.60): a cue runs a project script as one step
-/// after its wait; a script a cue runs cannot be removed, and a cue whose
-/// script fails is refused with the script's typed reason.
+/// after its wait and prints what it did (Protocol 2.61); a script a cue
+/// runs cannot be removed, and a cue whose script fails is refused with the
+/// script's typed reason.
 #[test]
 fn a_cue_runs_a_script_and_holds_it() {
     let root = Root::new("cue");
@@ -222,8 +223,24 @@ fn a_cue_runs_a_script_and_holds_it() {
     assert!(listed.contains("actions=wait.2,run_script.3)"), "{listed}");
 
     // The wait holds two frames, then the script takes input 2 and keys
-    // input 1, exactly as running it directly does.
+    // input 1, exactly as running it directly does; the GO prints what the
+    // step did (Protocol 2.61), the counts a direct run on the same show
+    // prints.
+    let direct = root.0.join("direct.freemix");
+    let direct = direct.to_str().unwrap();
+    succeed(&["new", direct]);
+    succeed(&["script-set", direct, "3", "Opening", &source]);
+    let ran = succeed(&["script-run", direct, "3"]);
+    let counts = |output: &str| {
+        let line = output
+            .lines()
+            .find(|line| line.starts_with("ScriptRan(script=3, frame="))
+            .unwrap_or_else(|| panic!("no ScriptRan line: {output}"));
+        line[line.find(", actions=").unwrap()..].to_owned()
+    };
     let status = succeed(&["go", &project, "7"]);
+    assert_eq!(counts(&status), counts(&ran), "{status}");
+    assert_eq!(counts(&ran), ", actions=3, instructions=11)", "{ran}");
     assert!(
         status.contains("Program(desired=2, realized=2)"),
         "{status}"

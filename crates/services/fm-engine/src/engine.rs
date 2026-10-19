@@ -717,7 +717,9 @@ pub enum EngineEvent {
     /// the runtime actions the frame's cue actions realize, in order (a
     /// record, stream, or media command appears as itself), so a runtime
     /// that realizes more than the show (recorders, stream workers) acts on
-    /// exactly what the cue did. `edit` marks a
+    /// exactly what the cue did. `scripts` lists every script step the
+    /// frame ran, in order (at most [`fm_model::MAX_CUE_LIST_SCRIPT_STEPS`]).
+    /// `edit` marks a
     /// definition edit (or its undo or redo) rather than a live operation.
     CueListChanged {
         list: u64,
@@ -727,6 +729,7 @@ pub enum EngineEvent {
         fired: Vec<u64>,
         title_texts: Vec<(InputId, FieldId, String)>,
         applied: Vec<EngineCommand>,
+        scripts: Vec<CueScriptRun>,
     },
     /// A script was created, replaced, or removed (or the edit undone or
     /// redone) (RC-011); it is read from [`ShowState::script`].
@@ -744,6 +747,17 @@ pub enum EngineEvent {
         title_texts: Vec<(InputId, FieldId, String)>,
         applied: Vec<EngineCommand>,
     },
+}
+
+/// What one script step of a cue frame did (RC-011/RC-017): the counts a
+/// [`EngineEvent::ScriptRan`] of the same script on the same show reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CueScriptRun {
+    pub script: u64,
+    /// Actions the run performed.
+    pub actions: u32,
+    /// Instructions the run used.
+    pub instructions: u32,
 }
 
 /// A group or recovery operation on the stream destinations (OR-006).
@@ -1476,6 +1490,7 @@ impl Engine {
         let mut runtime = Vec::new();
         let mut transition = None;
         let mut title_texts = Vec::new();
+        let mut scripts = Vec::new();
         let applied = self.apply_cue_actions(
             &mut show,
             &firing.actions,
@@ -1484,6 +1499,7 @@ impl Engine {
                 runtime: &mut runtime,
                 transition: &mut transition,
                 title_texts: &mut title_texts,
+                scripts: Some(&mut scripts),
                 takes: 0,
             },
         );
@@ -1503,6 +1519,7 @@ impl Engine {
                 runtime.clear();
                 transition = None;
                 title_texts.clear();
+                scripts.clear();
                 let list = self
                     .show()
                     .cue_list(list_id)
@@ -1530,10 +1547,44 @@ impl Engine {
                 fired,
                 title_texts,
                 applied: runtime.clone(),
+                scripts,
             },
             runtime,
             transition,
         })
+    }
+
+    /// Runs a cue's script step on `show` (schema 55), collecting what its
+    /// actions realize and what it did into `frame`; its own actions come
+    /// back through [`Self::apply_cue_actions`], never another script.
+    fn run_script_step(
+        &self,
+        script: u64,
+        target_frame: FrameNumber,
+        show: &mut ShowState,
+        frame: &mut CueFrame<'_>,
+    ) -> Result<(), Rejection> {
+        let mut nested = CueFrame {
+            runtime: &mut *frame.runtime,
+            transition: &mut *frame.transition,
+            title_texts: &mut *frame.title_texts,
+            scripts: None,
+            takes: frame.takes,
+        };
+        let outcome = crate::script::run_on(self, script, target_frame, show, &mut nested)?;
+        frame.takes = nested.takes;
+        let ran = CueScriptRun {
+            script,
+            actions: outcome.report.actions,
+            instructions: outcome.report.instructions,
+        };
+        if let Some(rejection) = outcome.failure(script) {
+            return Err(rejection);
+        }
+        if let Some(scripts) = frame.scripts.as_deref_mut() {
+            record_script_step(scripts, ran)?;
+        }
+        Ok(())
     }
 
     /// Applies fired cue actions in order to `show`, collecting their runtime
@@ -1552,6 +1603,7 @@ impl Engine {
             runtime,
             transition,
             title_texts,
+            scripts,
             takes,
         } = frame;
         for fired in actions {
@@ -1559,18 +1611,16 @@ impl Engine {
             // A script step runs the script on this frame's show (schema 55);
             // its own actions come back through here, never another script.
             if let fm_model::CueAction::RunScript { script } = &fired.action {
-                let mut nested = CueFrame {
+                let mut step = CueFrame {
                     runtime,
                     transition,
                     title_texts,
+                    scripts: scripts.as_deref_mut(),
                     takes: *takes,
                 };
-                let outcome = crate::script::run_on(self, *script, target_frame, show, &mut nested)
+                self.run_script_step(*script, target_frame, show, &mut step)
                     .map_err(refuse)?;
-                *takes = nested.takes;
-                if let Some(rejection) = outcome.failure(*script) {
-                    return Err(refuse(rejection));
-                }
+                *takes = step.takes;
                 continue;
             }
             if let fm_model::CueAction::TitleText { input, field, text } = &fired.action {
@@ -2510,6 +2560,28 @@ fn check_frame_title_texts(title_texts: &[(InputId, FieldId, String)]) -> Result
     Ok(())
 }
 
+/// Records a cue frame's script step for its event. A frame runs one
+/// list's steps, each at most once, so the list's script step bound holds
+/// and the event can carry every step; the check keeps that true by
+/// construction.
+fn record_script_step(scripts: &mut Vec<CueScriptRun>, ran: CueScriptRun) -> Result<(), Rejection> {
+    if scripts.len() >= fm_model::MAX_CUE_LIST_SCRIPT_STEPS {
+        return Err(Rejection::new(
+            RejectionCode::ResourceExhausted,
+            format!(
+                "the actions run more than {} scripts on one frame",
+                fm_model::MAX_CUE_LIST_SCRIPT_STEPS
+            ),
+        )
+        .with_reason(RefusalReason::bounds(
+            "script_steps",
+            fm_model::MAX_CUE_LIST_SCRIPT_STEPS as u64,
+        )));
+    }
+    scripts.push(ran);
+    Ok(())
+}
+
 /// What the actions applied so far on one frame collected: their runtime
 /// actions, the Program transition they start, the title texts they set,
 /// and how many took Program.
@@ -2517,6 +2589,9 @@ pub(crate) struct CueFrame<'a> {
     pub(crate) runtime: &'a mut Vec<EngineCommand>,
     pub(crate) transition: &'a mut Option<TransitionKind>,
     pub(crate) title_texts: &'a mut Vec<(InputId, FieldId, String)>,
+    /// The script steps run so far, in order; `None` inside a script,
+    /// whose actions never run a script.
+    pub(crate) scripts: Option<&'a mut Vec<CueScriptRun>>,
     pub(crate) takes: usize,
 }
 
@@ -2573,6 +2648,7 @@ impl EngineMutation {
                 fired: Vec::new(),
                 title_texts: Vec::new(),
                 applied: Vec::new(),
+                scripts: Vec::new(),
             });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,

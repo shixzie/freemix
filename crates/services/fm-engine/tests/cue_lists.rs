@@ -8,8 +8,8 @@ use core::num::NonZeroU128;
 use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdempotencyKey, RefusalReason, RejectionCode};
 use fm_engine::{
-    EditLockScope, Engine, EngineCommand, EngineCommandOutcome, EngineCueListDefinition,
-    EngineCueOperation, EngineEvent, FrameResult, ShowState,
+    CueScriptRun, EditLockScope, Engine, EngineCommand, EngineCommandOutcome,
+    EngineCueListDefinition, EngineCueOperation, EngineEvent, FrameResult, ShowState,
 };
 use fm_model::{
     Cue, CueAction, CueMediaOperation, MediaPlaybackSettings, StingerSlotNumber, TransitionEffect,
@@ -882,4 +882,130 @@ fn a_cue_frame_sets_at_most_one_runs_worth_of_title_text() {
         "{message}"
     );
     assert_eq!(engine.revision(), revision);
+}
+
+/// The script steps a cue event reports, in the order they ran.
+fn cue_scripts(outcome: &EngineCommandOutcome) -> Vec<CueScriptRun> {
+    match &outcome.events[0].payload {
+        EngineEvent::CueListChanged { scripts, .. } => scripts.clone(),
+        other => panic!("expected a cue event: {other:?}"),
+    }
+}
+
+/// What a direct script run reports.
+fn direct_run(engine: &mut Engine, key: &str, script: u64) -> CueScriptRun {
+    let outcome = submit(engine, key, EngineCommand::RunScript { script });
+    accepted(&outcome);
+    match &outcome.events[0].payload {
+        EngineEvent::ScriptRan {
+            script,
+            actions,
+            instructions,
+            ..
+        } => CueScriptRun {
+            script: *script,
+            actions: *actions,
+            instructions: *instructions,
+        },
+        other => panic!("expected a script run: {other:?}"),
+    }
+}
+
+/// Protocol 2.61: a cue event reports every script step its frame ran, in
+/// order, with the counts a direct `script_run` of the same script on the
+/// same show reports: a GO's steps see the earlier steps' actions, and a
+/// deferred step is reported by the advance that runs it. A deferred step
+/// that fails reports nothing, since nothing of its frame is kept.
+#[test]
+fn a_cue_run_reports_each_script_step_as_a_direct_run_would() {
+    let scripts = [
+        (5, "if preview == 2\n  mute 3\n  unmute 3\nend\nmute 1\n"),
+        (6, "repeat 2\n  preview 2\nend\n"),
+    ];
+    let mut cues = engine();
+    let mut direct = engine();
+    for (script, source) in scripts {
+        for engine in [&mut cues, &mut direct] {
+            accepted(&submit(
+                engine,
+                &format!("script-{script}"),
+                set_script(script, source),
+            ));
+        }
+    }
+    let step = |script| CueAction::RunScript { script };
+    accepted(&submit(
+        &mut cues,
+        "set",
+        set(
+            1,
+            vec![
+                cue(
+                    1,
+                    vec![
+                        step(5),
+                        step(6),
+                        step(5),
+                        CueAction::Wait { frames: 2 },
+                        step(5),
+                    ],
+                    false,
+                ),
+                cue(2, vec![CueAction::Wait { frames: 1 }, step(6)], false),
+            ],
+        ),
+    ));
+
+    let go = submit(&mut cues, "go", control(1, GO));
+    let go_frame = accepted(&go);
+    let expected = vec![
+        direct_run(&mut direct, "run-1", 5),
+        direct_run(&mut direct, "run-2", 6),
+        direct_run(&mut direct, "run-3", 5),
+    ];
+    // The first run saw Preview on 4 and the third on 2, which script 6
+    // put there on the same frame, so their counts differ.
+    assert_ne!(expected[0], expected[2]);
+    assert_eq!(cue_scripts(&go), expected);
+
+    while cues.frame_cursor().get() < go_frame + 2 {
+        cues.tick().unwrap();
+    }
+    let advance = submit(
+        &mut cues,
+        "advance",
+        EngineCommand::CueAdvance {
+            list: 1,
+            frame: go_frame + 2,
+        },
+    );
+    accepted(&advance);
+    assert_eq!(
+        cue_scripts(&advance),
+        vec![direct_run(&mut direct, "run-4", 5)]
+    );
+
+    // Cue 2's deferred step fails once script 6 names an input the show
+    // does not hold.
+    accepted(&submit(&mut cues, "broken", set_script(6, "preview 9\n")));
+    let second = submit(&mut cues, "go-2", control(1, GO));
+    let second_frame = accepted(&second);
+    assert_eq!(cue_scripts(&second), Vec::new());
+    while cues.frame_cursor().get() < second_frame + 1 {
+        cues.tick().unwrap();
+    }
+    let failed = submit(
+        &mut cues,
+        "advance-2",
+        EngineCommand::CueAdvance {
+            list: 1,
+            frame: second_frame + 1,
+        },
+    );
+    accepted(&failed);
+    assert_eq!(cue_scripts(&failed), Vec::new());
+    assert_eq!(
+        cues.show().cue_list(1).unwrap().state.fault,
+        Some(fm_model::CueFault { cue: 2, action: 1 })
+    );
 }

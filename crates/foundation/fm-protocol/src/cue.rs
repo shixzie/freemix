@@ -16,7 +16,7 @@
 //! order. `cue_list_changed` carries a whole list after an edit,
 //! `cue_list_removed` a removed list, and `cue_run_changed` the run state
 //! after a live operation together with every desired state its actions
-//! changed.
+//! changed and, since Protocol 2.61, what each script step it ran did.
 
 use crate::{
     FadeToBlackState, InputAudioStripStatus, ManualTransitionStatus, MediaTime,
@@ -252,6 +252,22 @@ pub struct CueRunChange {
     /// The transport of every media input the fired actions addressed,
     /// once they have run, ascending by input (Protocol 2.51).
     pub media: Vec<CueMediaTransport>,
+    /// Every script step that ran on `frame`, in the order it ran
+    /// (Protocol 2.61): at most [`MAX_CUE_LIST_SCRIPT_STEPS`], a script that
+    /// two steps run appearing twice.
+    pub scripts: Vec<CueScriptRun>,
+}
+
+/// What one script step of a cue run did (Protocol 2.61): the counts a
+/// `script_ran` of the same script on the same show reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CueScriptRun {
+    /// The project script the step ran (nonzero).
+    pub script: u64,
+    /// Actions the run performed.
+    pub actions: u32,
+    /// Instructions the run used.
+    pub instructions: u32,
 }
 
 /// A media input's transport after a cue's media actions (Protocol 2.51):

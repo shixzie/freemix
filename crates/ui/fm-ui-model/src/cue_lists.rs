@@ -4,11 +4,13 @@
 //! A snapshot announces one `cue_list_state` per list; `cue_list_changed`
 //! and `cue_list_removed` replace or drop a whole list after an edit, and
 //! `cue_run_changed` carries a live operation's run state together with
-//! every desired state its fired actions may have changed.
+//! every desired state its fired actions may have changed and what each
+//! script step it ran did (Protocol 2.61), which becomes that script's
+//! last run.
 
 use fm_protocol::{
-    CueListStatus, CueMediaTransport, CueRunChange, CueRunStatus, CueTitleText, FadeToBlackState,
-    PlaylistRunState, RecordingStatus, TitleFieldValue, WireCueAction,
+    CueListStatus, CueMediaTransport, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText,
+    FadeToBlackState, PlaylistRunState, RecordingStatus, TitleFieldValue, WireCueAction,
 };
 use fm_types::InputId;
 
@@ -36,6 +38,9 @@ pub struct CueRunUpdate {
     pub titles: Vec<CueTitleText>,
     /// The transports the fired media actions left (Protocol 2.51).
     pub media: Vec<CueMediaTransport>,
+    /// Every script step the run ran, in order (Protocol 2.61); empty for
+    /// a direct script run's effects.
+    pub scripts: Vec<CueScriptRun>,
 }
 
 impl CueRunUpdate {
@@ -55,6 +60,7 @@ impl CueRunUpdate {
             playlist: change.playlist,
             titles: change.titles,
             media: change.media,
+            scripts: change.scripts,
         }
     }
 }
@@ -107,8 +113,17 @@ pub(crate) fn validate_run(update: &CueRunUpdate, state: &ProjectState) -> Resul
         .iter()
         .find(|list| list.id == update.list)
         .ok_or(ModelError::InvalidCueList(update.list))?;
-    if !state_is_valid(list, &update.state) {
+    if !state_is_valid(list, &update.state)
+        || update.scripts.len() > fm_protocol::MAX_CUE_LIST_SCRIPT_STEPS
+    {
         return Err(ModelError::InvalidCueList(update.list));
+    }
+    if let Some(run) = update
+        .scripts
+        .iter()
+        .find(|run| state.script(run.script).is_none())
+    {
+        return Err(ModelError::InvalidScript(run.script));
     }
     validate_effects(update, state)
 }
@@ -141,9 +156,21 @@ pub(crate) fn validate_effects(
 }
 
 /// Applies a validated run update.
-pub(crate) fn apply_run(state: &mut ProjectState, update: CueRunUpdate) {
+pub(crate) fn apply_run(state: &mut ProjectState, mut update: CueRunUpdate) {
     let list = update.list;
     let run = update.state.clone();
+    for ran in core::mem::take(&mut update.scripts) {
+        crate::scripts::record_run(
+            state,
+            crate::ScriptRunReport {
+                script: ran.script,
+                frame: update.frame,
+                actions: ran.actions,
+                instructions: ran.instructions,
+                cue_list: Some(list),
+            },
+        );
+    }
     apply_effects(state, update);
     if let Some(found) = state.cue_lists.iter_mut().find(|found| found.id == list) {
         found.state = run;

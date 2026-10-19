@@ -6149,11 +6149,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.60.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 60));
+    // The previous protocol is refused; the current one is 2.61.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 61));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 59),
+        protocol: ProtocolVersion::new(2, 60),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -6169,7 +6169,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 60)
+        ProtocolVersion::new(2, 61)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8211,4 +8211,116 @@ fn simulated_studio_peer_receives_input_thumbnails_once_subscribed() {
     }
     assert_eq!(&seen[&input(1)].rgba[..4], &[12, 34, 56, 255]);
     assert_eq!(&seen[&input(3)].rgba[..4], &[210, 90, 30, 255]);
+}
+
+/// RC-011/RC-017, Protocol 2.61, end to end through the daemon: a cue's
+/// `cue_run_changed` names every script step it ran, the GO's on the GO's
+/// event and a deferred one on the clock's advance, with the counts a
+/// direct `script_ran` of the same script reports.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cue_runs_report_the_scripts_they_ran_through_the_daemon() {
+    use fm_protocol::{
+        CueListSpec, CueOperation, CueScriptRun, ScriptSpec, WireCue, WireCueAction,
+    };
+
+    let set = |script: u64, source: &str| CommandPayload::SetScript {
+        script,
+        spec: Box::new(ScriptSpec {
+            name: format!("Script {script}"),
+            source: source.into(),
+        }),
+    };
+    let run_event =
+        |client: &mut Client, revision: u64| match durable_event_at(client, revision).payload {
+            EventPayload::CueRunChanged(change) => *change,
+            other => panic!("expected cue_run_changed at {revision}, got {other:?}"),
+        };
+    let directory = TestDirectory::new("cue-scripts");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+
+    admin.send(&command("set-1", "set-1-key", set(1, "preview 2\ncut\n")));
+    assert_eq!(accepted_revision(&mut admin, "set-1"), 1);
+    admin.send(&command(
+        "set-2",
+        "set-2-key",
+        set(
+            2,
+            "let n = 0\nwhile n < 3\n  let n = n + 1\nend\npreview 1\ncut\n",
+        ),
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-2"), 2);
+    admin.send(&command(
+        "set-cues",
+        "set-cues-key",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(CueListSpec {
+                name: "Show".into(),
+                cues: vec![WireCue {
+                    id: 10,
+                    name: "Open".into(),
+                    auto_follow: false,
+                    actions: vec![
+                        WireCueAction::RunScript { script: 1 },
+                        WireCueAction::Wait { frames: 5 },
+                        WireCueAction::RunScript { script: 2 },
+                    ],
+                }],
+            }),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-cues"), 3);
+
+    admin.send(&command(
+        "go",
+        "go-key",
+        CommandPayload::CueControl {
+            list: 7,
+            operation: CueOperation::Go { cue: None },
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "go"), 4);
+    let go = run_event(&mut admin, 4);
+    assert_eq!(go.program, input(2));
+    let advance = run_event(&mut admin, 5);
+    assert_eq!((advance.frame, advance.program), (go.frame + 5, input(1)));
+
+    // Direct runs of the same scripts on the same shows report the same
+    // counts.
+    let mut direct = |id: &str, script: u64, revision: u64| {
+        admin.send(&command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::RunScript { script },
+        ));
+        assert_eq!(accepted_revision(&mut admin, id), revision);
+        match durable_event_at(&mut admin, revision).payload {
+            EventPayload::ScriptRan(change) => CueScriptRun {
+                script: change.script,
+                actions: change.actions,
+                instructions: change.instructions,
+            },
+            other => panic!("expected script_ran, got {other:?}"),
+        }
+    };
+    let first = direct("run-1", 1, 6);
+    let second = direct("run-2", 2, 7);
+    assert_eq!(go.scripts, vec![first]);
+    assert_eq!(advance.scripts, vec![second]);
+    assert_eq!((first.actions, second.actions), (2, 2));
+    assert!(second.instructions > first.instructions, "{second:?}");
+    drop(admin);
+    daemon.stop();
 }

@@ -1608,6 +1608,18 @@ impl Remote {
                         )
                         .into());
                     }
+                    // Each script step the cue operation ran (Protocol 2.61).
+                    if matches_revision && let EventPayload::CueRunChanged(change) = &event.payload
+                    {
+                        for ran in &change.scripts {
+                            print_script_ran(
+                                ran.script,
+                                change.frame,
+                                ran.actions,
+                                ran.instructions,
+                            );
+                        }
+                    }
                     self.client.intake(WireMessage::Event(event))?;
                     durable |= matches_revision;
                 }
