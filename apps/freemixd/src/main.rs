@@ -22793,6 +22793,178 @@ mod tests {
         due
     }
 
+    /// The bug this guards: on the simulated runtime the media clock
+    /// rendered idle frames past a waiting cue's due frame. A cue that rolls
+    /// a clip and then waits ("play, wait, take") anchors its wait to the
+    /// frame before its GO, while the media clock anchors to the frame after
+    /// it, so the media clock always ran ahead: the cue's advance named the
+    /// next frame on every pass, wall time never reached it, and the cut
+    /// never came while the clip played. The media clock now stops before a
+    /// waiting cue's frame, as it does before a playlist boundary, so the
+    /// cue clock fires the cue on exactly its due frame.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn the_media_clock_never_renders_past_a_waiting_cue_frame() {
+        use fm_protocol::{
+            CueListSpec, CueOperation, TransitionFavoriteEffect, WireCue, WireCueAction,
+            WireCueMediaOperation,
+        };
+        use playlist_clock::Pacing;
+
+        let baseline = test_project();
+        let mut project = baseline.project().clone();
+        project.add_input(Input {
+            id: test_input_id(3),
+            name: "Clip".into(),
+            kind: InputKind::Media {
+                asset_uri: "asset://clip.mov".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+            required_capabilities: Vec::new(),
+        });
+        let durable = StoredProject::from_project(
+            project,
+            baseline.runtime_routing(),
+            ProjectPosition::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut control = test_control(&durable);
+        attach_synthetic_media(&mut control, durable.project()).unwrap();
+        let server = test_server(&control);
+        let rate = durable.project().settings().frame_rate;
+        let frame = Duration::from_millis(40);
+        let mut cues = cue_clock::CueClock::default();
+        let mut media = media_clock::MediaClock::default();
+        let start = Instant::now();
+        // One idle pass before the GO, as the session loop runs.
+        assert_eq!(
+            cues.next(&mut control, Pacing::Wall { now: start, rate }, true, 0)
+                .unwrap(),
+            None
+        );
+        media.poll(&mut control, &server, rate, start).unwrap();
+
+        let spec = CueListSpec {
+            name: "Show".into(),
+            cues: vec![WireCue {
+                id: 10,
+                name: "Roll".into(),
+                auto_follow: false,
+                actions: vec![
+                    WireCueAction::Media {
+                        input: fm_protocol::WireInputId::from_domain(test_input_id(3)),
+                        operation: WireCueMediaOperation::Play,
+                    },
+                    WireCueAction::Wait { frames: 10 },
+                    WireCueAction::Take {
+                        input: Some(fm_protocol::WireInputId::from_domain(test_input_id(2))),
+                        effect: TransitionFavoriteEffect::Cut,
+                        duration_frames: 0,
+                    },
+                ],
+            }],
+        };
+        for command in [
+            test_command(
+                "set-cues",
+                "set-cues-key",
+                CommandPayload::SetCueList {
+                    list: 7,
+                    spec: Box::new(spec),
+                },
+            ),
+            test_command(
+                "go",
+                "go-key",
+                CommandPayload::CueControl {
+                    list: 7,
+                    operation: CueOperation::Go { cue: None },
+                },
+            ),
+        ] {
+            let id = command.id.clone();
+            // As the session loop executes a command: realizing its frames.
+            let mut durable = durable.clone();
+            let delivery = execute_durable_command(
+                &mut control,
+                &CountingSaver::default(),
+                &mut durable,
+                &operator(),
+                &server,
+                &command,
+                0,
+            )
+            .unwrap();
+            assert!(
+                delivery.submission.is_accepted(),
+                "{id}: {:?}",
+                delivery.submission.output.result
+            );
+        }
+        assert!(control.media_advancing(), "the clip rolls");
+        let (_, due) = control.cue_advance_frame().expect("the cue waits");
+
+        let mut fired = None;
+        for pass in 1..=50 {
+            let at = start + frame * pass;
+            if let Some(advance) = cues
+                .next(&mut control, Pacing::Wall { now: at, rate }, true, 0)
+                .unwrap()
+            {
+                fired = Some(advance);
+                break;
+            }
+            media.poll(&mut control, &server, rate, at).unwrap();
+            assert!(
+                control.frame_cursor() < due,
+                "pass {pass}: the media clock rendered frame {due}, the cue's"
+            );
+        }
+        let advance = fired.expect("the cue fired while the clip played");
+        assert_eq!((advance.list, advance.frame), (7, due), "on its frame");
+        let ran = control.submit(&operator(), advance.command(), 0).unwrap();
+        assert!(ran.is_accepted(), "{:?}", ran.output.result);
+    }
+
+    /// A client's playlist control on the simulated runtime first catches
+    /// the engine up to the playlist's wall-clock frame; it must stop before
+    /// a waiting cue's frame as the cue clock's own catch-up does, or the
+    /// cue's advance comes late, on whatever frame the control left.
+    #[test]
+    fn a_playlist_catch_up_never_renders_a_waiting_cue_frame() {
+        use playlist_clock::{Pacing, PlaylistClock};
+
+        let durable = test_project();
+        let mut control = test_control(&durable);
+        let server = test_server(&control);
+        let rate = durable.project().settings().frame_rate;
+        for command in playlist_commands(500, fm_protocol::PlaylistStart::Now) {
+            assert!(
+                control
+                    .submit(&operator(), command, 0)
+                    .unwrap()
+                    .is_accepted()
+            );
+        }
+        control.tick(&server).unwrap();
+        let start = Instant::now();
+        let mut clock = PlaylistClock::default();
+        assert_eq!(
+            clock
+                .next(&mut control, Pacing::Wall { now: start, rate }, true, 0)
+                .unwrap(),
+            None
+        );
+        let due = go_waiting_cue(&mut control, 5);
+        let boundary = control.playlist_advance_frame().unwrap();
+        assert!(boundary > due + 20, "boundary {boundary}, cue due {due}");
+        let later = start + Duration::from_millis(40) * u32::try_from(due + 10).unwrap();
+        clock.catch_up(&mut control, &server, rate, later).unwrap();
+        assert_eq!(control.frame_cursor(), due - 1, "caught up to the cue");
+        assert_eq!(control.cue_advance_frame(), Some((7, due)), "not late");
+    }
+
     /// A journal that fails every record while `available` is false, as a
     /// failing or full show disk does, and keeps what it recorded.
     struct FlakyJournal {

@@ -10,8 +10,10 @@
 //! wall time has reached, so a playing clip's position, end, loop and end
 //! trigger land on time without a client sending commands.
 //!
-//! It never renders onto a pending playlist boundary: the playlist clock's
-//! journaled `playlist_advance` still takes the next entry on its frame.
+//! It never renders onto a pending playlist boundary or a waiting cue's
+//! frame: the playlist clock's journaled `playlist_advance` still takes the
+//! next entry on its frame, and the cue clock's `cue_advance` runs the cue
+//! on its own.
 //! Journal replay renders the same idle frames before the next recorded
 //! command (`replay_idle_frames`), exactly as it does for the native pacer.
 //!
@@ -49,7 +51,8 @@ pub(super) struct MediaClock {
 impl MediaClock {
     /// Simulated runtime only: renders the idle frames wall time has reached
     /// since the anchor while any media transport advances, at most one
-    /// second of frames per pass and never onto a pending playlist boundary.
+    /// second of frames per pass and never onto a pending playlist boundary
+    /// or a waiting cue's frame.
     /// A clock that fell further behind (a stalled loop) re-anchors instead
     /// of rendering the backlog in a burst.
     ///
@@ -78,6 +81,15 @@ impl MediaClock {
         let mut target = wall;
         if let Some(boundary) = control.playlist_advance_frame() {
             target = target.min(boundary.saturating_sub(1));
+        }
+        // Nor onto a waiting cue's frame. The cue clock anchors its wait to
+        // the frame before the command that started it, this clock to the
+        // cursor after it (a cue that rolls a clip and then waits), so this
+        // clock can run frames ahead of it: rendering on would pass the
+        // cue's frame first, and its advance would chase the cursor for as
+        // long as media plays.
+        if let Some((_, due)) = control.cue_advance_frame() {
+            target = target.min(due.saturating_sub(1));
         }
         while control.frame_cursor() < target && control.media_advancing() {
             control.tick(server)?;

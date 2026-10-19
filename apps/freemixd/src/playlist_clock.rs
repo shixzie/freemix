@@ -254,8 +254,9 @@ impl PlaylistClock {
     /// transition frames), so a long-running entry paused near its start;
     /// Next, Previous, Jump, and Stop were timed the same way.
     ///
-    /// Never ticks onto the pending boundary, so the clock's own advance
-    /// still takes the next entry on its frame. Journal replay ticks the
+    /// Never ticks onto the pending boundary or a waiting cue's frame, so
+    /// the clocks' own advances still take the next entry and run the cue
+    /// on their frames. Journal replay ticks the
     /// same idle frames before the command (see `replay_idle_frames`).
     ///
     /// # Errors
@@ -271,9 +272,14 @@ impl PlaylistClock {
         let Some(boundary) = control.playlist_advance_frame() else {
             return Ok(());
         };
-        let target = self
+        let mut target = self
             .observed_frame(control.frame_cursor(), rate, now)
             .min(boundary.saturating_sub(1));
+        // Nor onto a waiting cue's frame, which only the cue clock's advance
+        // may run (as the cue clock's own catch-up holds).
+        if let Some((_, due)) = control.cue_advance_frame() {
+            target = target.min(due.saturating_sub(1));
+        }
         while control.frame_cursor() < target {
             control.tick(server)?;
         }
