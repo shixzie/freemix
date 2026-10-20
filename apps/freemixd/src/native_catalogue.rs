@@ -601,12 +601,141 @@ impl NativeDaemon {
         Ok(())
     }
 
+    /// Opens every media list's next item ahead of need (IN-006): the item
+    /// Auto Next or Next steps to from the active one ([`next_list_item`]),
+    /// when it is another file (an item of the file already open re-cues
+    /// in place) that is not a still image. A closed list prefetches
+    /// nothing; a list that no longer has a next item drops its standby.
+    pub(crate) fn sync_media_list_prefetch(&mut self, project: &Project) {
+        let mut wanted = BTreeSet::new();
+        for input in project.inputs() {
+            let (Some(list), Some(settings)) = (
+                project.media_list(input.id),
+                project.media_playback(input.id),
+            ) else {
+                continue;
+            };
+            if project.input_lifecycle(input.id).closed {
+                continue;
+            }
+            let Some(next) = next_list_item(list) else {
+                continue;
+            };
+            let current = match &input.kind {
+                InputKind::Media { asset_uri, .. } => Some(asset_uri.as_str()),
+                _ => None,
+            };
+            if current == Some(next.asset_uri.as_str()) {
+                continue;
+            }
+            let Some(path) = self.asset_path(&next.asset_uri) else {
+                continue;
+            };
+            wanted.insert(input.id);
+            let mut settings = *settings;
+            settings.trim_in = next.mark_in;
+            settings.trim_out = next.mark_out;
+            settings.start_frame = next.mark_in;
+            if self.files.prefetched_path(input.id) != Some(path.as_path()) && is_still(&path) {
+                wanted.remove(&input.id);
+                continue;
+            }
+            let assets_root = self.assets_root.clone();
+            self.files.prefetch(input.id, path, &settings, || {
+                Adapter::new(FfmpegConfig {
+                    allowed_root: Some(assets_root),
+                    ..FfmpegConfig::default()
+                })
+                .ok()
+            });
+        }
+        self.files
+            .retain_prefetched(|input| wanted.contains(&input));
+    }
+
+    /// Switches every media list whose accepted command moved it to the
+    /// item its standby opened (IN-006) before the command's frame is
+    /// projected: the input's worker takes the cued player, the engine
+    /// opens the transport on it (playing when the list plays), and the
+    /// catalogue records the new file, so [`Self::sync_input_catalogue`]
+    /// does not open it again. The switch frame then presents the new
+    /// item's in mark instead of holding the item before while the file
+    /// opens. A standby still opening leaves the switch to the catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the new worker cannot start or the engine refuses the
+    /// source.
+    pub(crate) fn adopt_prefetched_media(
+        &mut self,
+        control: &mut ControlService<Policy>,
+    ) -> AppResult<()> {
+        let candidates = self.files.prefetched_inputs();
+        for input in candidates {
+            let Some(asset_uri) = control.media_asset(input).map(str::to_owned) else {
+                continue;
+            };
+            let Some(NativeSourceKey::Media(current)) = self.catalogue.get(&input) else {
+                continue;
+            };
+            if *current == asset_uri || control.input_lifecycle(input).closed {
+                continue;
+            }
+            let (Some(path), Some(settings)) =
+                (self.asset_path(&asset_uri), control.media_settings(input))
+            else {
+                continue;
+            };
+            let Some(prefetched) = self.files.take_prefetched(input, &path, &settings) else {
+                continue;
+            };
+            let source = prefetched.source.clone();
+            self.files
+                .adopt(input, path.clone(), prefetched)
+                .map_err(AppFailure)?;
+            self.stills.retain(|still| still.input != input);
+            control
+                .set_media_source(input, Some(source))
+                .map_err(|error| AppFailure(format!("media input {input} cannot open: {error}")))?;
+            let mut resolved = self.resolved_sources.as_ref().clone();
+            resolved.retain(|source| source.input() != input);
+            resolved.push(NativeResolvedSource::LocalVideo { input, path });
+            self.resolved_sources = Arc::new(resolved);
+            self.catalogue
+                .insert(input, NativeSourceKey::Media(asset_uri));
+            self.invalidate_projection();
+            eprintln!("FREEMIXD_MEDIA\tv=1\tinput={input}\tprefetched=1");
+        }
+        Ok(())
+    }
+
     /// The bundle path of media asset `asset_uri`, if it names one.
     fn asset_path(&self, asset_uri: &str) -> Option<PathBuf> {
         fm_model::validate_media_asset_uri(asset_uri).ok()?;
         let key = asset_uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)?;
         Some(self.assets_root.join(key))
     }
+}
+
+/// The item a media list steps to from its active one by Auto Next (and,
+/// short of the list's end, by Next): the next in play order, else under
+/// Loop the first of the next cycle's order, else under Auto First the
+/// first; `None` at the end of a list that does neither.
+pub(crate) fn next_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    let order = list.play_order();
+    let position = list.position().unwrap_or(0);
+    let id = if position + 1 < order.len() {
+        order[position + 1]
+    } else if list.options.loop_list {
+        let mut next = list.clone();
+        next.cycle = next.cycle.wrapping_add(1);
+        *next.play_order().first()?
+    } else if list.options.auto_first {
+        *order.first()?
+    } else {
+        return None;
+    };
+    list.item(id)
 }
 
 /// Whether the file at `path` starts like a still image (one read of its
@@ -867,5 +996,30 @@ mod tests {
         // Removing one makes room for another in the same command.
         let swapped = project(&[(1, silent.clone()), (3, silent)]);
         assert!(full.refusal(&current, &swapped).is_none());
+    }
+
+    /// The prefetched item is the one Auto Next steps to: the next in play
+    /// order, then the next cycle's first under Loop, the first under Auto
+    /// First, and nothing at the end of a list that does neither.
+    #[test]
+    fn the_next_list_item_follows_auto_next() {
+        let items = (1..=3)
+            .map(|id| fm_model::MediaListItem::new(id, format!("asset://{id}.mkv")))
+            .collect();
+        let mut list =
+            fm_model::MediaList::new(items, fm_model::MediaListOptions::default()).unwrap();
+        let next = |list: &fm_model::MediaList| next_list_item(list).map(|item| item.id);
+        assert_eq!(next(&list), Some(2));
+        list.active = 3;
+        assert_eq!(next(&list), None);
+        list.options.auto_first = true;
+        assert_eq!(next(&list), Some(1));
+        list.options.loop_list = true;
+        list.options.shuffle_seed = Some(7);
+        let final_item = *list.play_order().last().unwrap();
+        list.active = final_item;
+        let mut wrapped = list.clone();
+        wrapped.cycle += 1;
+        assert_eq!(next(&list), Some(wrapped.play_order()[0]));
     }
 }

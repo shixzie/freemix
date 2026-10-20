@@ -32,8 +32,9 @@ highest-value remaining items, ranked:
    boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
-   Studio); it still lacks next-item prefetch, per-item thumbnails,
-   transitions between items, and Windows/macOS evidence. (The slideshow,
+   Studio), and the native daemon prefetches each list's next item so Auto
+   Next and Next switch files gaplessly; it still lacks per-item
+   thumbnails, transitions between items, and Windows/macOS evidence. (The slideshow,
    `IN-009`, is now wired end to end; see its boundary below.)
 6. **The remaining keyer refinements (`SW-008`).** Key/fill (luma or
    alpha), clip, choke, edge softness, and despill now run natively, persist,
@@ -3644,13 +3645,20 @@ plays it when the list was playing. Both daemons journal an Auto Next
 `advance` when the active item ends, so replay is frame-exact; host paths
 are imported into the bundle; snapshots carry `media_list_state` records
 (Protocol 2.74, schema 64).
-The native daemon holds the previous item's last picture until the next
-file's decoder presents (a few frames on the development box: the item
-swap is not gapless), since items are not prefetched. Studio adds lists (pasted paths and M3U
+The native daemon prefetches every open list's next item (the one Auto
+Next steps to, when it is another file): a background thread opens the
+file, decodes its in-mark picture and first audio block, and the window
+after them. A step to that item (Auto Next or Next) switches the input's
+worker to the cued player before the step's frame is projected, so that
+frame already shows the new item's in mark (`native_media_lists` records
+Program and proves both switches hold and skip no frame). A step to an
+item that was not prefetched (Previous, First, a jump, or a standby still
+opening) still holds the previous item's last picture until the file
+opens. Studio adds lists (pasted paths and M3U
 playlists with relative entries and `#EXTINF` titles) and shows a list card in the Media
 tab with search, drag reorder, per-item marks, the active item, Previous and
-Next, and the options. Gaps: no next-item prefetch (so no gapless cut
-between files), no transitions between items, no per-item thumbnails (the
+Next, and the options. Gaps: only the next item is prefetched, no
+transitions between items, no per-item thumbnails (the
 input thumbnail follows the active item), no CLI or vMix API verbs, no
 cross-input GO bank, and Linux-only native evidence. The generic
 `page_navigate` step and the cue `page` action do not drive a list yet: a

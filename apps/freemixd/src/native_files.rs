@@ -46,6 +46,13 @@
 //! absent as a layer, while its audio reaches the Master through its strip
 //! like any clip's. The shared picture is ingested once, not per frame.
 //!
+//! A media list (IN-006) keeps a standby of its next item: the file opened,
+//! indexed, and cued at the item's in mark on its own thread
+//! ([`NativeMediaFiles::prefetch`]). When the list steps to that item the
+//! input's worker is replaced by one that plays the cued player
+//! ([`NativeMediaFiles::adopt`]) before the step's frame is projected, so
+//! the switch frame presents the new item instead of holding the last one.
+//!
 //! A closed input (IN-026) is not opened at startup and releases its decoder
 //! when it closes; while closed it shows no picture (transparent black, so
 //! black on its own and absent as a layer) and no sound, as the simulated
@@ -61,7 +68,7 @@ use std::num::NonZeroU32;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -195,6 +202,70 @@ pub(crate) struct NativeMediaFiles {
     /// The codec adapter workers open their files through; `None` until a
     /// daemon without media files at startup adds one.
     adapter: Option<Adapter>,
+    /// Each media list's next item, opened and cued ahead of need
+    /// (IN-006), by list input.
+    standbys: BTreeMap<InputId, Standby>,
+}
+
+/// A media list's next item file, opened, indexed, and cued on its own
+/// thread ahead of need (IN-006): its in-mark picture and first audio
+/// block are decoded and the window after it too, so the list switches to
+/// it on the switch frame instead of holding the item before while the
+/// file opens.
+struct Standby {
+    path: PathBuf,
+    /// The source frame it is cued at (the item's in mark).
+    cue: u64,
+    config: FilePlaybackConfig,
+    result: mpsc::Receiver<Result<Prefetched, EngineMediaFault>>,
+}
+
+/// A file a [`Standby`] opened and cued.
+pub(crate) struct Prefetched {
+    player: FilePlayer,
+    config: FilePlaybackConfig,
+    growing: bool,
+    /// What the engine opens the transport on.
+    pub(crate) source: EngineMediaSource,
+}
+
+/// Opens `path` and decodes what playing it from `cue` presents first (the
+/// picture, which must be `dimensions`, and the first audio block), then
+/// the video window after it, so a worker that takes the player presents
+/// its first tick from memory.
+fn open_cued(
+    adapter: &Adapter,
+    path: &std::path::Path,
+    config: FilePlaybackConfig,
+    cue: u64,
+    dimensions: (u32, u32),
+) -> Result<Prefetched, EngineMediaFault> {
+    let growing = config.growing.is_some();
+    let mut player = adapter
+        .open_playback(path, config)
+        .map_err(|error| engine_fault(&error))?;
+    let last = player.controller().playable_end().get().saturating_sub(1);
+    let controller = player.controller_mut();
+    controller
+        .seek(FrameIndex::new(cue.min(last)))
+        .map_err(|_| EngineMediaFault::Unsupported)?;
+    controller.play();
+    let first = player.tick().map_err(|error| engine_fault(&error))?;
+    let fits = first.video.as_ref().is_some_and(|picture| {
+        let size = picture.payload().dimensions();
+        (size.width(), size.height()) == dimensions
+            && fm_color::validate_native_import(picture).is_ok()
+    });
+    if !fits {
+        return Err(EngineMediaFault::Unsupported);
+    }
+    player.prefetch().map_err(|error| engine_fault(&error))?;
+    Ok(Prefetched {
+        source: engine_source(&player, growing),
+        player,
+        config,
+        growing,
+    })
 }
 
 /// How one worker starts.
@@ -513,6 +584,7 @@ impl NativeMediaFiles {
                 dimensions,
                 wait: SourceWait::new(MAX_MEDIA_FRAME_WAIT),
                 adapter: Some(adapter.clone()),
+                standbys: BTreeMap::new(),
             },
             seeds,
         ))
@@ -535,6 +607,7 @@ impl NativeMediaFiles {
                 dimensions,
                 wait: SourceWait::new(MAX_MEDIA_FRAME_WAIT),
                 adapter: None,
+                standbys: BTreeMap::new(),
             },
             Vec::new(),
         )
@@ -609,6 +682,149 @@ impl NativeMediaFiles {
         };
         self.workers.insert(input, worker);
         Ok(seed)
+    }
+
+    /// Opens media list input `input`'s next item, the file at `path`
+    /// played with `settings` (the item's marks), on its own thread, cued
+    /// at its in mark (IN-006); see [`Standby`]. A standby already opening
+    /// or open for the same file, cue, and playback configuration is kept;
+    /// one for another item is dropped. `adapter` makes the codec adapter
+    /// when none exists yet; without one nothing is prefetched.
+    pub(crate) fn prefetch(
+        &mut self,
+        input: InputId,
+        path: PathBuf,
+        settings: &MediaPlaybackSettings,
+        adapter: impl FnOnce() -> Option<Adapter>,
+    ) {
+        let config = playback_config(settings, self.rate, self.clock_domain, self.dimensions);
+        let cue = settings.start_frame.max(settings.trim_in);
+        if self.standbys.get(&input).is_some_and(|standby| {
+            standby.path == path && standby.cue == cue && standby.config == config
+        }) {
+            return;
+        }
+        self.standbys.remove(&input);
+        if self.adapter.is_none() {
+            self.adapter = adapter();
+        }
+        let Some(adapter) = self.adapter.clone() else {
+            return;
+        };
+        let (sender, result) = mpsc::sync_channel(1);
+        let dimensions = self.dimensions;
+        let opening = path.clone();
+        let spawned = thread::Builder::new()
+            .name(format!("freemix-media-next-{input}"))
+            .spawn(move || {
+                let opened = catch_unwind(AssertUnwindSafe(|| {
+                    open_cued(&adapter, &opening, config, cue, dimensions)
+                }))
+                .unwrap_or(Err(EngineMediaFault::DecodeFailed));
+                let _ = sender.send(opened);
+            });
+        if spawned.is_ok() {
+            self.standbys.insert(
+                input,
+                Standby {
+                    path,
+                    cue,
+                    config,
+                    result,
+                },
+            );
+        }
+    }
+
+    /// Drops the standby of every media list input `keep` does not name.
+    pub(crate) fn retain_prefetched(&mut self, keep: impl Fn(InputId) -> bool) {
+        self.standbys.retain(|input, _| keep(*input));
+    }
+
+    /// Takes media list input `input`'s standby when it opened the file at
+    /// `path`, cued for `settings`, and is ready. One still opening stays
+    /// (and the caller opens the file the slow way); one that failed is
+    /// dropped, and the file faults when the slow way opens it.
+    pub(crate) fn take_prefetched(
+        &mut self,
+        input: InputId,
+        path: &std::path::Path,
+        settings: &MediaPlaybackSettings,
+    ) -> Option<Prefetched> {
+        let config = playback_config(settings, self.rate, self.clock_domain, self.dimensions);
+        let cue = settings.start_frame.max(settings.trim_in);
+        let standby = self.standbys.get(&input)?;
+        if standby.path != path || standby.cue != cue || standby.config != config {
+            return None;
+        }
+        match standby.result.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => None,
+            Ok(Ok(prefetched)) => {
+                self.standbys.remove(&input);
+                Some(prefetched)
+            }
+            Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                self.standbys.remove(&input);
+                None
+            }
+        }
+    }
+
+    /// Every media list input with a standby.
+    pub(crate) fn prefetched_inputs(&self) -> Vec<InputId> {
+        self.standbys.keys().copied().collect()
+    }
+
+    /// The file media list input `input`'s standby opens, if it has one.
+    pub(crate) fn prefetched_path(&self, input: InputId) -> Option<&std::path::Path> {
+        self.standbys
+            .get(&input)
+            .map(|standby| standby.path.as_path())
+    }
+
+    /// Replaces media-file input `input`'s worker with one that plays
+    /// `prefetched` (a media list's next item, IN-006) from the next tick:
+    /// the old worker retires as [`Self::remove`] retires it, and the new
+    /// one presents the projected ticks of the transport the caller opens
+    /// on [`Prefetched::source`].
+    ///
+    /// # Errors
+    ///
+    /// Names an input whose worker cannot be started.
+    pub(crate) fn adopt(
+        &mut self,
+        input: InputId,
+        path: PathBuf,
+        prefetched: Prefetched,
+    ) -> Result<(), String> {
+        let Prefetched {
+            player,
+            config,
+            growing,
+            ..
+        } = prefetched;
+        self.standbys.remove(&input);
+        self.remove(input);
+        let adapter = self
+            .adapter
+            .clone()
+            .ok_or_else(|| format!("native media input {input} has no codec adapter"))?;
+        let worker = spawn_worker(
+            adapter,
+            input,
+            path,
+            config,
+            WorkerStart {
+                player: Some(player),
+                reports: Vec::new(),
+                closed: false,
+                open_live: false,
+            },
+            growing,
+            (self.rate, self.clock_domain, self.dimensions),
+        )?;
+        self.workers.insert(input, worker);
+        Ok(())
     }
 
     /// Removes media-file input `input` (an input removed, or given another

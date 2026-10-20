@@ -11042,6 +11042,8 @@ fn serve_inner(
         if let Some(pages) = journal.documents() {
             native.documents.observe(project.project(), pages);
         }
+        #[cfg(feature = "native-media")]
+        native.sync_media_list_prefetch(project.project());
     }
     // Every authored local HLS output is a configured show destination, so it
     // fails closed before serving exactly like the configured recording
@@ -13616,6 +13618,10 @@ fn execute_native_authority_command(
             now,
             vet,
             |control, server| {
+                // A media list stepped to the item its standby opened
+                // switches on this very frame (IN-006).
+                #[cfg(feature = "native-media")]
+                native.adopt_prefetched_media(control)?;
                 native
                     .wait_and_tick(control, server, process_shutdown)?
                     .map_or_else(|| Ok(control.tick_for_shutdown(server)?.runtime_events), Ok)
@@ -13651,6 +13657,8 @@ fn execute_native_authority_command(
     }
     #[cfg(feature = "native-media")]
     native.sync_input_catalogue(control, durable.project())?;
+    #[cfg(feature = "native-media")]
+    native.sync_media_list_prefetch(durable.project());
     // Destination edits (OR-006) rebuild only the edited destination.
     #[cfg(feature = "native-media")]
     native.sync_stream_targets(durable.project(), durable.position().frames_rendered)?;

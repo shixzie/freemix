@@ -1800,6 +1800,23 @@ impl<A: AuthorizationHook> ControlService<A> {
             .map(|shown| Arc::clone(&shown.scene))
     }
 
+    /// The asset media input `input` plays now (a media list's active
+    /// item's file, IN-006); `None` for an input that is not a media input.
+    #[must_use]
+    pub fn media_asset(&self, input: InputId) -> Option<&str> {
+        match self.engine.show().input_source(input) {
+            Some(fm_model::InputSourceSpec::Media { asset_uri }) => Some(asset_uri),
+            _ => None,
+        }
+    }
+
+    /// Media input `input`'s playback settings as the show holds them (a
+    /// media list's active item's marks as its trim, IN-006).
+    #[must_use]
+    pub fn media_settings(&self, input: InputId) -> Option<fm_model::MediaPlaybackSettings> {
+        self.engine.show().media_settings(input).copied()
+    }
+
     /// Whether media input `input` plays from an open source (see
     /// [`Engine::media_source_open`]).
     #[must_use]
