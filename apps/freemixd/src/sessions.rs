@@ -673,6 +673,7 @@ pub(super) fn run(
         titles,
         title_previews: &title_previews,
         system_audio_devices: &system_audio_devices,
+        web_access: web.map(WebGateway::access),
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
@@ -718,12 +719,7 @@ pub(super) fn run(
                     // to MAX_WEB_CLIENTS; this check only keeps that bound
                     // local to the scheduler too.
                     WebEvent::Connected(connection) if web_peer_count(&peers) < MAX_WEB_CLIENTS => {
-                        let web_principal = Principal::authenticated(
-                            fm_auth::UserId::new("web-token").expect("stable web user is valid"),
-                            fm_auth::SessionId::new(format!("web-{next_peer_id}"))
-                                .expect("scheduler web session id is valid"),
-                            [fm_auth::Role::Admin],
-                        );
+                        let web_principal = web_principal(&connection.identity, next_peer_id);
                         let transport = Transport::Web(WebTransport {
                             inbound: connection.inbound,
                             outbound: connection.outbound,
@@ -1331,6 +1327,25 @@ fn command_turn(peers: &[Peer], close: &[bool], start: usize) -> Option<usize> {
         })
 }
 
+/// The principal of a Web session: the operator's `FREEMIXD_WEB_TOKEN`
+/// holds every role, a paired device only the roles of its pairing.
+fn web_principal(identity: &crate::web::WebIdentity, peer_id: u64) -> Principal {
+    let session = fm_auth::SessionId::new(format!("web-{peer_id}"))
+        .expect("scheduler web session id is valid");
+    match identity {
+        crate::web::WebIdentity::StaticToken => Principal::authenticated(
+            fm_auth::UserId::new("web-token").expect("stable web user is valid"),
+            session,
+            [fm_auth::Role::Admin],
+        ),
+        crate::web::WebIdentity::Device { id, role } => Principal::authenticated(
+            fm_auth::UserId::new(id.as_str()).expect("device ids are valid user ids"),
+            session,
+            role.granted_roles().iter().copied(),
+        ),
+    }
+}
+
 fn web_peer_count(peers: &[Peer]) -> usize {
     peers.iter().filter(|peer| peer.transport.is_web()).count()
 }
@@ -1420,6 +1435,8 @@ struct Runtime<'a> {
     title_previews: &'a crate::title_preview::TitlePreviewWorker,
     /// Lists system audio devices off this loop (Protocol 2.68).
     system_audio_devices: &'a crate::system_audio_devices::SystemAudioDevices,
+    /// The web gateway's pairing and devices (Protocol 2.70), when it runs.
+    web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
@@ -1715,6 +1732,44 @@ impl Runtime<'_> {
                         inventory,
                     },
                 ))?;
+                Ok(())
+            }
+            // Web device pairing (RC-007, Protocol 2.70): only a raw
+            // control session holding manage_users may manage it, never a
+            // session relayed by the gateway itself.
+            WireMessage::WebAccessRequest(request) => {
+                let session = peer.session.as_mut().expect("active peers have sessions");
+                let (refusal, gateway) = if peer.transport.is_web() {
+                    (Some(fm_protocol::WebAccessRefusal::WebSession), None)
+                } else {
+                    match session.admit_web_access(now_millis().map_err(|_| ())?) {
+                        Err(SessionError::Authorization(_)) => {
+                            (Some(fm_protocol::WebAccessRefusal::PermissionDenied), None)
+                        }
+                        Err(error) => {
+                            let current_revision =
+                                Some(self.control.borrow().diagnostics().current_revision);
+                            peer.reply(WireMessage::Error(ErrorMessage {
+                                request_id: Some(request.request_id),
+                                current_revision,
+                                error: structured_session_error(&error),
+                            }))?;
+                            return Ok(());
+                        }
+                        Ok(()) => match self.web_access {
+                            None => (Some(fm_protocol::WebAccessRefusal::Unavailable), None),
+                            Some(access) => {
+                                let (refusal, status) = access.handle(&request.action);
+                                (refusal, Some(status))
+                            }
+                        },
+                    }
+                };
+                peer.reply(WireMessage::WebAccess(fm_protocol::WebAccessMessage {
+                    request_id: request.request_id,
+                    refusal,
+                    gateway,
+                }))?;
                 Ok(())
             }
             // The server's system audio devices (AU-011, Protocol 2.68) are

@@ -60,6 +60,13 @@ fm-types = { path = "../../crates/foundation/fm-types" }
 fm-video = { path = "../../crates/media/fm-video" }
 fs4 = "0.13"
 getrandom = "0.3"
+# Web gateway TLS (RC-007): rustls on the `ring` provider (no aws-lc-rs, so no
+# CMake/NASM toolchain), rcgen for the self-signed certificate, and ring's
+# SHA-256 for certificate fingerprints and device-token digests.
+rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "ring", "pem"] }
+ring = "0.17.14"
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
 winit = { version = "0.30.13", optional = true, features = ["rwh_06"] }
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 

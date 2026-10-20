@@ -9089,6 +9089,8 @@ enum Command {
         project: PathBuf,
         listen: SocketAddr,
         web_listen: Option<SocketAddr>,
+        /// The gateway's TLS, state directory, and host names (RC-007).
+        web: web::WebSettings,
         status_listen: Option<SocketAddr>,
         hls_listen: Option<SocketAddr>,
         /// The `LiveLAN` viewer listener (OR-017); any address, LAN included.
@@ -9212,6 +9214,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut listen = DEFAULT_LISTEN.parse()?;
             let mut listen_set = false;
             let mut web_listen: Option<SocketAddr> = None;
+            let mut web = web::WebSettings::default();
             let mut status_listen: Option<SocketAddr> = None;
             let mut hls_listen: Option<SocketAddr> = None;
             let mut live_lan_listen: Option<SocketAddr> = None;
@@ -9240,6 +9243,12 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
             while let Some(option) = arguments.next() {
+                if web
+                    .take_option(&option, &mut arguments)
+                    .map_err(|error| AppFailure(error.to_string()))?
+                {
+                    continue;
+                }
                 if let Some(value) = option.strip_prefix("--record-program=") {
                     if record_program.is_some() {
                         return Err(AppFailure("duplicate option `--record-program`".into()).into());
@@ -9978,12 +9987,9 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 )
                 .into());
             }
-            if let Some(address) = web_listen {
-                if !address.ip().is_loopback() {
-                    return Err(
-                        AppFailure("--web-listen must use a loopback address".into()).into(),
-                    );
-                }
+            web.validate(web_listen)
+                .map_err(|error| AppFailure(error.to_string()))?;
+            if web_listen.is_some() {
                 if once {
                     return Err(
                         AppFailure("--web-listen cannot be combined with --once".into()).into(),
@@ -10048,6 +10054,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 project,
                 listen,
                 web_listen,
+                web,
                 status_listen,
                 hls_listen,
                 live_lan_listen,
@@ -10215,6 +10222,7 @@ fn run(command: Command) -> AppResult<()> {
             project,
             listen,
             web_listen,
+            web,
             status_listen,
             hls_listen,
             live_lan_listen,
@@ -10277,6 +10285,7 @@ fn run(command: Command) -> AppResult<()> {
                 ServeListeners {
                     listen,
                     web_listen,
+                    web,
                     status_listen,
                     hls_listen,
                     live_lan_listen,
@@ -10420,10 +10429,12 @@ struct ProgramServeSetup {
 
 /// The daemon's bound sockets: control, optional web gateway, optional status,
 /// and optional HLS.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ServeListeners {
     listen: SocketAddr,
     web_listen: Option<SocketAddr>,
+    /// The gateway's TLS, state directory, and host names.
+    web: web::WebSettings,
     status_listen: Option<SocketAddr>,
     hls_listen: Option<SocketAddr>,
     live_lan_listen: Option<SocketAddr>,
@@ -10456,6 +10467,7 @@ fn serve_program_worker(
         ServeListeners {
             listen,
             web_listen: None,
+            web: web::WebSettings::default(),
             status_listen: None,
             hls_listen: None,
             live_lan_listen: None,
@@ -10682,6 +10694,7 @@ fn serve_inner(
     let ServeListeners {
         listen,
         web_listen,
+        web: web_settings,
         status_listen,
         hls_listen,
         live_lan_listen,
@@ -10693,10 +10706,10 @@ fn serve_inner(
         ))
         .into());
     }
-    if let Some(address) = web_listen {
-        if !address.ip().is_loopback() {
-            return Err(AppFailure("--web-listen must use a loopback address".into()).into());
-        }
+    web_settings
+        .validate(web_listen)
+        .map_err(|error| AppFailure(error.to_string()))?;
+    if web_listen.is_some() {
         if once {
             return Err(AppFailure("--web-listen cannot be combined with --once".into()).into());
         }
@@ -10956,7 +10969,7 @@ fn serve_inner(
     let web_gateway = if let Some(address) = web_listen {
         let web_listener = TcpListener::bind(address)?;
         web_listener.set_nonblocking(true)?;
-        Some(web::WebGateway::bind(web_listener)?)
+        Some(web::WebGateway::bind(web_listener, &web_settings)?)
     } else {
         None
     };
@@ -11035,6 +11048,9 @@ fn serve_inner(
     std::io::stdout().flush()?;
     if let Some(web) = web_gateway.as_ref() {
         println!("FREEMIXD_WEB_READY\tv=1\taddress={}", web.address());
+        if let Some(record) = web.tls_record() {
+            println!("{record}");
+        }
         std::io::stdout().flush()?;
         web.start_accepting();
     }
@@ -15592,7 +15608,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--live-lan-listen 0.0.0.0:8090] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0 [--web-tls | --web-tls-cert PEM --web-tls-key PEM] [--web-state-dir DIR] [--web-host NAME]] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--live-lan-listen 0.0.0.0:8090] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>]] [--display-presenter | --display-presenter-if-available] [--diagnostic-display-inventory FILE] [--diagnostic-capture-inventory FILE]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -15609,7 +15625,7 @@ Fullscreen display selection is a zero-based index ordered by desktop position, 
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
 The daemon, simulated or native, serves up to eight raw `--listen` control sessions at once (a further connection's handshake is refused as retryable `resource_exhausted`) next to the Web clients; each session keeps its own role, heartbeat, subscriptions, rate limits, and outbound queue.\n\
---web-listen enables the loopback-only `/v1/control` WebSocket listener (up to 16 clients at once, each its own session, plus the /tally and /operator pages) and requires FREEMIXD_WEB_TOKEN; it works with or without --native-media and is unavailable with --fullscreen-program.\n\
+--web-listen enables the `/v1/control` WebSocket gateway (up to 16 clients at once, each its own session, plus the /tally and /operator pages and /v1/pair device pairing); it works with or without --native-media and is unavailable with --fullscreen-program. Plain HTTP is loopback-only: a LAN or 0.0.0.0 address needs --web-tls (a self-signed certificate generated once in the web state directory; FREEMIXD_WEB_TLS prints its SHA-256 fingerprint) or --web-tls-cert PEM --web-tls-key PEM. --web-state-dir DIR holds the certificate and the paired devices (default: $XDG_STATE_HOME/freemix/web or ~/.local/state/freemix/web; ~/Library/Application Support/FreeMix/web on macOS; %LOCALAPPDATA%\\FreeMix\\web on Windows). --web-host NAME (repeatable) adds a DNS name phones may use; the first one names the pairing URL, and requests for any other name than an IP address, localhost, or a --web-host are refused (DNS-rebinding defence). Devices pair from Studio's Web access window; FREEMIXD_WEB_TOKEN, when set, is a 32..=256-byte operator token with every role.\n\
 --status-listen enables the loopback-only operator status listener serving /healthz, /readyz, and the token-guarded /v1/support-bundle; it requires FREEMIXD_STATUS_TOKEN and is unavailable with --fullscreen-program.\n\
 --hls-listen enables the loopback-only HLS listener for local hls:// stream destinations. It serves GET /v1/hls/<target>/index.m3u8 and GET /v1/hls/<target>/segment-NNNNN.ts, plus the same shapes under rung directories 0..=7 for a multi-bitrate ladder, and requires both --native-media and FREEMIXD_HLS_TOKEN; TLS, LAN binding, Web Controller roles, and per-viewer capacity remain future work.\n\
 Native mode continues across client disconnects; close the Program window or press Escape for bounded shutdown."
@@ -16243,6 +16259,7 @@ mod tests {
                 project: "show.freemix".into(),
                 listen: "127.0.0.1:9123".parse().unwrap(),
                 web_listen: None,
+                web: web::WebSettings::default(),
                 status_listen: None,
                 hls_listen: None,
                 live_lan_listen: None,
