@@ -1382,6 +1382,7 @@ fn supervised(directory: &TestDirectory, executable: &Path) -> SupervisedConfig 
         daemon_executable: executable.to_owned(),
         listen: "127.0.0.1:0".parse().unwrap(),
         web_listen: None,
+        web: freemix_studio::SupervisedWeb::default(),
     }
 }
 
@@ -1669,7 +1670,7 @@ fn arguments_preserve_supervised_and_existing_configuration_distinction() {
     };
     assert!(matches!(
         supervised.connection,
-        ConnectionConfig::Supervised(SupervisedConfig { project_bundle, daemon_executable, listen, web_listen: None })
+        ConnectionConfig::Supervised(SupervisedConfig { project_bundle, daemon_executable, listen, web_listen: None, .. })
             if project_bundle == Path::new("show.freemix")
                 && daemon_executable == Path::new("/opt/freemixd")
                 && listen == "127.0.0.1:0".parse().unwrap()
@@ -1735,6 +1736,51 @@ fn web_listen_asks_the_supervised_daemon_for_lan_pages() {
         .is_err()
     );
     assert!(freemix_studio::HELP.contains("--web-listen <ADDR>"));
+
+    // The operator's own certificate and the mDNS name ride along.
+    let Command::Open(own) = parse_args(
+        [
+            "--project",
+            "show.freemix",
+            "--web-listen",
+            "0.0.0.0:8443",
+            "--web-tls-cert",
+            "own.pem",
+            "--web-tls-key",
+            "own-key.pem",
+            "--web-mdns-name",
+            "studio-a",
+        ]
+        .map(str::to_owned),
+    )
+    .unwrap() else {
+        panic!("expected open command");
+    };
+    let ConnectionConfig::Supervised(SupervisedConfig { web, .. }) = own.connection else {
+        panic!("expected a supervised daemon");
+    };
+    assert_eq!(
+        web.tls_files,
+        Some((PathBuf::from("own.pem"), PathBuf::from("own-key.pem")))
+    );
+    assert_eq!(web.mdns_name.as_deref(), Some("studio-a"));
+    assert!(!web.no_mdns);
+    for refused in [
+        &["--web-tls-cert", "own.pem"][..],
+        &["--web-tls-key", "own-key.pem"][..],
+        &["--web-mdns-name", "a", "--no-web-mdns"][..],
+    ] {
+        let mut arguments = vec!["--project", "show.freemix", "--web-listen", "0.0.0.0:8443"];
+        arguments.extend(refused);
+        assert!(
+            parse_args(arguments.iter().map(|argument| (*argument).to_owned())).is_err(),
+            "{refused:?}"
+        );
+    }
+    // Without the gateway they mean nothing.
+    let error =
+        parse_args(["--project", "show.freemix", "--no-web-mdns"].map(str::to_owned)).unwrap_err();
+    assert!(error.to_string().contains("--web-listen"), "{error}");
 }
 
 #[test]

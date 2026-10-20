@@ -12,7 +12,7 @@ use std::{
     fs,
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,10 +22,10 @@ use fm_auth::{
 };
 use fm_protocol::{
     WEB_PAIRING_LIFETIME_MS, WebAccessAction, WebAccessRefusal, WebDeviceEntry, WebDeviceRole,
-    WebGatewayStatus, WebPairing,
+    WebGatewayStatus, WebPairing, WebTrust,
 };
 
-use super::{AppResult, base64url, tls};
+use super::{AppResult, base64url, tls, tls::TlsState};
 
 /// The paired devices in the state directory.
 pub(super) const DEVICES_FILE: &str = "web-devices.txt";
@@ -76,10 +76,21 @@ struct State {
     seen_written: std::collections::BTreeMap<String, u64>,
 }
 
+/// Where phones reach the gateway; follows the LAN addresses.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Reach {
+    /// The origin a phone opens, such as `https://192.168.1.20:8443`.
+    pub(crate) url: String,
+    /// Other origins that reach it (the mDNS name, other addresses).
+    pub(crate) urls: Vec<String>,
+    /// The advertised `<label>.local`, if any.
+    pub(crate) mdns: Option<String>,
+}
+
 /// Shared by every gateway connection thread and the session scheduler.
 pub(crate) struct WebAccess {
-    url: String,
-    fingerprint: Option<String>,
+    reach: Mutex<Reach>,
+    tls: Option<Arc<TlsState>>,
     static_token: Option<Vec<u8>>,
     store: Option<PathBuf>,
     state: Mutex<State>,
@@ -89,8 +100,8 @@ impl std::fmt::Debug for WebAccess {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("WebAccess")
-            .field("url", &self.url)
-            .field("fingerprint", &self.fingerprint)
+            .field("reach", &self.reach())
+            .field("tls", &self.tls)
             .finish_non_exhaustive()
     }
 }
@@ -103,7 +114,7 @@ impl WebAccess {
     /// An unreadable or malformed device file.
     pub(crate) fn open(
         url: String,
-        fingerprint: Option<String>,
+        tls: Option<Arc<TlsState>>,
         static_token: Option<Vec<u8>>,
         state_dir: Option<&Path>,
     ) -> AppResult<Self> {
@@ -113,8 +124,11 @@ impl WebAccess {
             _ => Vec::new(),
         };
         Ok(Self {
-            url,
-            fingerprint,
+            reach: Mutex::new(Reach {
+                url,
+                ..Reach::default()
+            }),
+            tls,
             static_token,
             store,
             state: Mutex::new(State {
@@ -131,12 +145,25 @@ impl WebAccess {
         })
     }
 
-    pub(crate) fn url(&self) -> &str {
-        &self.url
+    /// Where phones reach the gateway now.
+    pub(crate) fn reach(&self) -> Reach {
+        self.reach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    pub(crate) fn fingerprint(&self) -> Option<&str> {
-        self.fingerprint.as_deref()
+    pub(crate) fn set_reach(&self, reach: Reach) {
+        *self.reach.lock().unwrap_or_else(PoisonError::into_inner) = reach;
+    }
+
+    pub(crate) fn url(&self) -> String {
+        self.reach().url
+    }
+
+    /// The served certificate, with TLS.
+    pub(crate) fn tls(&self) -> Option<&Arc<TlsState>> {
+        self.tls.as_ref()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -315,10 +342,21 @@ impl WebAccess {
             })
             .collect();
         devices.sort_by(|left, right| left.id.cmp(&right.id));
+        let Reach { url, urls, mdns } = self.reach();
+        let tls = self.tls.as_deref();
+        let host = url_host(&url);
         WebGatewayStatus {
-            url: self.url.clone(),
-            tls: self.fingerprint.is_some(),
-            fingerprint: self.fingerprint.clone(),
+            tls: tls.is_some(),
+            fingerprint: tls.map(TlsState::fingerprint),
+            trust: tls.map_or(WebTrust::Plain, TlsState::trust),
+            ca_fingerprint: tls
+                .and_then(TlsState::ca)
+                .map(|ca| ca.fingerprint().to_owned()),
+            cert_not_after_ms: tls.map(TlsState::not_after_ms),
+            cert_problem: tls.and_then(|tls| tls.problem(host, now)),
+            url,
+            urls,
+            mdns,
             pairing,
             devices,
         }
@@ -333,6 +371,17 @@ impl WebAccess {
         }
         tls::write_private(path, encode_devices(registry.devices()).as_bytes())
     }
+}
+
+/// The host of an origin such as `https://[fd00::1]:8443`.
+fn url_host(url: &str) -> &str {
+    let authority = url.split_once("://").map_or(url, |(_, rest)| rest);
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split_once(']').map_or(rest, |(host, _)| host);
+    }
+    authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host)
 }
 
 const fn device_role(role: WebDeviceRole) -> DeviceRole {

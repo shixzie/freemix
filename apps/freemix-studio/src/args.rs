@@ -22,7 +22,15 @@ Connection options:
   --listen <ADDR>        Supervised daemon listen address [default: 127.0.0.1:0]
   --web-listen <ADDR>    Let phones and tablets pair with the supervised daemon's
                          web pages at this address (for example 0.0.0.0:8443),
-                         over TLS with a self-signed certificate
+                         over TLS with a certificate from this computer's
+                         FreeMix certificate authority (install it on each
+                         phone from Output > Web access)
+  --web-tls-cert <PEM>   Serve your own certificate chain instead (for example
+                         from mkcert); reloaded when the file changes
+  --web-tls-key <PEM>    The key of --web-tls-cert (readable by you only)
+  --web-mdns-name <NAME> Advertise the pages as NAME.local over mDNS
+                         [default: freemix-<computer name>]
+  --no-web-mdns          Advertise nothing over mDNS
   --connect <ADDR>       Connect to an existing daemon
   --project-id <ID>      Expected full nonzero u128 project ID in existing mode
 
@@ -127,9 +135,24 @@ pub struct SupervisedConfig {
     pub daemon_executable: PathBuf,
     pub listen: SocketAddr,
     /// `--web-listen`: the supervised daemon also serves the phone and
-    /// tablet pages here over TLS with its own self-signed certificate
+    /// tablet pages here over TLS with a certificate from its local CA
     /// (RC-007); devices pair from Output > Web access.
     pub web_listen: Option<SocketAddr>,
+    /// The gateway's own certificate and mDNS name, with `web_listen`.
+    pub web: SupervisedWeb,
+}
+
+/// `--web-tls-cert`/`--web-tls-key` and the mDNS options, passed to the
+/// supervised daemon with `--web-listen`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SupervisedWeb {
+    /// The operator's certificate chain and key; the daemon's local CA
+    /// issues the certificate without them.
+    pub tls_files: Option<(PathBuf, PathBuf)>,
+    /// `--web-mdns-name`: the advertised `.local` label.
+    pub mdns_name: Option<String>,
+    /// `--no-web-mdns`.
+    pub no_mdns: bool,
 }
 
 impl SupervisedConfig {
@@ -140,6 +163,7 @@ impl SupervisedConfig {
             daemon_executable: PathBuf::from(DEFAULT_DAEMON),
             listen: default_listen(),
             web_listen: None,
+            web: SupervisedWeb::default(),
         }
     }
 }
@@ -157,7 +181,10 @@ pub enum ArgsError {
     MissingRequired(&'static str),
     DuplicateOption(&'static str),
     BlankValue(&'static str),
-    InvalidAddress { option: &'static str, value: String },
+    InvalidAddress {
+        option: &'static str,
+        value: String,
+    },
     InvalidProjectId(String),
     InvalidRestartCount(String),
     InvalidRole(String),
@@ -171,6 +198,12 @@ pub enum ArgsError {
     OscUnavailableInDiagnose,
     WebConnectConflicting,
     InvalidWebConnect(SocketAddr),
+    /// A web gateway option without `--web-listen`.
+    WebListenOnly(&'static str),
+    /// `--web-tls-cert` and `--web-tls-key` go together.
+    WebTlsIncomplete,
+    /// `--web-mdns-name` with `--no-web-mdns`.
+    WebMdnsConflicting,
     UnknownArgument(String),
 }
 
@@ -228,6 +261,15 @@ impl fmt::Display for ArgsError {
                 formatter,
                 "WebSocket address must be loopback with a nonzero port, got {address}"
             ),
+            Self::WebListenOnly(option) => {
+                write!(formatter, "option {option} is only valid with --web-listen")
+            }
+            Self::WebTlsIncomplete => {
+                formatter.write_str("--web-tls-cert and --web-tls-key must be given together")
+            }
+            Self::WebMdnsConflicting => {
+                formatter.write_str("--web-mdns-name cannot be used with --no-web-mdns")
+            }
             Self::UnknownArgument(argument) => write!(formatter, "unknown argument `{argument}`"),
         }
     }
@@ -262,6 +304,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
     let mut diagnose = None;
     let mut web_connect = None;
     let mut web_listen = None;
+    let mut web_tls_cert = None;
+    let mut web_tls_key = None;
+    let mut web_mdns_name = None;
+    let mut no_web_mdns = None;
     let mut language = None;
     let mut hour_cycle = None;
     let mut arguments = arguments.into_iter();
@@ -318,6 +364,22 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
                 let address = socket_address("--web-listen", &value)?;
                 set_once(&mut web_listen, address, "--web-listen")?;
             }
+            "--web-tls-cert" => set_once(
+                &mut web_tls_cert,
+                PathBuf::from(nonblank(&mut arguments, "--web-tls-cert")?),
+                "--web-tls-cert",
+            )?,
+            "--web-tls-key" => set_once(
+                &mut web_tls_key,
+                PathBuf::from(nonblank(&mut arguments, "--web-tls-key")?),
+                "--web-tls-key",
+            )?,
+            "--web-mdns-name" => set_once(
+                &mut web_mdns_name,
+                nonblank(&mut arguments, "--web-mdns-name")?,
+                "--web-mdns-name",
+            )?,
+            "--no-web-mdns" => set_once(&mut no_web_mdns, (), "--no-web-mdns")?,
             "--web-connect" => {
                 let value = required(&mut arguments, "--web-connect")?;
                 let address = socket_address("--web-connect", &value)?;
@@ -353,10 +415,36 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
     } else {
         connection_config(project, daemon, listen, connect, project_id)?
     };
+    if web_listen.is_none() {
+        for (option, given) in [
+            ("--web-tls-cert", web_tls_cert.is_some()),
+            ("--web-tls-key", web_tls_key.is_some()),
+            ("--web-mdns-name", web_mdns_name.is_some()),
+            ("--no-web-mdns", no_web_mdns.is_some()),
+        ] {
+            if given {
+                return Err(ArgsError::WebListenOnly(option));
+            }
+        }
+    }
+    let tls_files = match (web_tls_cert, web_tls_key) {
+        (Some(cert), Some(key)) => Some((cert, key)),
+        (None, None) => None,
+        _ => return Err(ArgsError::WebTlsIncomplete),
+    };
+    if web_mdns_name.is_some() && no_web_mdns.is_some() {
+        return Err(ArgsError::WebMdnsConflicting);
+    }
+    let web = SupervisedWeb {
+        tls_files,
+        mdns_name: web_mdns_name,
+        no_mdns: no_web_mdns.is_some(),
+    };
     let connection = match (connection, web_listen) {
         (ConnectionConfig::Supervised(supervised), web_listen) => {
             ConnectionConfig::Supervised(SupervisedConfig {
                 web_listen,
+                web,
                 ..supervised
             })
         }
@@ -425,6 +513,7 @@ fn connection_config(
                 daemon_executable: daemon.unwrap_or_else(|| PathBuf::from(DEFAULT_DAEMON)),
                 listen,
                 web_listen: None,
+                web: SupervisedWeb::default(),
             }))
         }
         (None, Some(address)) => {

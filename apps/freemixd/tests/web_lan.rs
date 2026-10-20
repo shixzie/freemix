@@ -181,18 +181,19 @@ impl Daemon {
 
     /// [`Self::start`] with `extra` daemon options.
     fn start_with(directory: &Path, project: &Path, run: &str, extra: &[&str]) -> Self {
+        let mut options = vec!["--web-tls"];
+        options.extend(extra);
+        Self::launch(directory, project, run, &options)
+    }
+
+    /// A gateway on every interface with `options` choosing its TLS.
+    fn launch(directory: &Path, project: &Path, run: &str, extra: &[&str]) -> Self {
         let stdout_path = directory.join(format!("{run}.stdout"));
         let stderr_path = directory.join(format!("{run}.stderr"));
         let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
             .arg("serve")
             .arg(project)
-            .args([
-                "--listen",
-                "127.0.0.1:0",
-                "--web-listen",
-                "0.0.0.0:0",
-                "--web-tls",
-            ])
+            .args(["--listen", "127.0.0.1:0", "--web-listen", "0.0.0.0:0"])
             .arg("--web-state-dir")
             .arg(directory.join("web-state"))
             .args(extra)
@@ -733,4 +734,337 @@ fn the_windowed_program_daemon_serves_the_gateway() {
         !daemon.output().contains(&token),
         "a token reached the logs"
     );
+}
+
+/// The TLS readiness record's `name=value` field.
+fn readiness_field(daemon: &Daemon, name: &str) -> Option<String> {
+    let stdout = fs::read_to_string(&daemon.stdout_path).unwrap();
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("FREEMIXD_WEB_TLS\t"))?
+        .to_owned();
+    line.split('\t')
+        .find_map(|field| field.strip_prefix(&format!("{name}=")).map(str::to_owned))
+}
+
+/// A client trusting exactly the roots in `roots` (DER), as a phone that
+/// installed them does, checking the name like a browser.
+fn root_client(roots: &[Vec<u8>]) -> std::sync::Arc<rustls::ClientConfig> {
+    let mut store = rustls::RootCertStore::empty();
+    for root in roots {
+        store
+            .add(rustls::pki_types::CertificateDer::from(root.clone()))
+            .unwrap();
+    }
+    std::sync::Arc::new(
+        rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(store)
+        .with_no_client_auth(),
+    )
+}
+
+/// RC-007 trust: `--web-tls` issues the gateway's leaf from a per-install
+/// local root that phones download from `/freemix-ca.crt` and install once;
+/// a client trusting only that root (no fingerprint pin) then reaches the
+/// gateway with full certificate and name checks. The root and leaf survive
+/// restarts, key files stay private, and no key reaches the logs.
+#[test]
+fn a_phone_that_installs_the_local_root_trusts_the_gateway() {
+    let directory = TestDirectory::new("local-ca");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let mut daemon = Daemon::start_with(&directory.0, &project, "first", &["--no-web-mdns"]);
+    assert_eq!(
+        readiness_field(&daemon, "trust").as_deref(),
+        Some("local_ca")
+    );
+    let ca_fingerprint = readiness_field(&daemon, "ca_fingerprint").unwrap();
+    assert!(fm_protocol::valid_web_fingerprint(&ca_fingerprint));
+    assert_ne!(ca_fingerprint, daemon.fingerprint);
+
+    // The root downloads without a credential, as DER, from the pinned
+    // gateway (the phone has not installed it yet).
+    let host = daemon.web.to_string();
+    let (status, headers, root) = web_tls::https(
+        daemon.web,
+        &format!("GET /freemix-ca.crt HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        TIMEOUT,
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(headers.contains(&("content-type".into(), "application/x-x509-ca-cert".into())));
+    assert_eq!(web_tls::fingerprint(&root), ca_fingerprint);
+
+    // The console sees the same trust.
+    let mut console = Console::connect(daemon.control, Role::Admin);
+    let gateway = console.web_access(WebAccessAction::Status).gateway.unwrap();
+    assert_eq!(gateway.trust, fm_protocol::WebTrust::LocalCa);
+    assert_eq!(
+        gateway.ca_fingerprint.as_deref(),
+        Some(ca_fingerprint.as_str())
+    );
+    assert_eq!(
+        gateway.ca_link(),
+        Some(format!("{}/freemix-ca.crt", daemon.url))
+    );
+    assert!(gateway.cert_not_after_ms.is_some());
+    assert_eq!(gateway.cert_problem, None, "the leaf names the URL host");
+    assert_eq!(gateway.mdns, None, "--no-web-mdns advertises nothing");
+
+    // A phone that trusts only the root opens the start page, which offers
+    // the root; another root is refused.
+    let trusted = root_client(std::slice::from_ref(&root));
+    let mut stream = web_tls::connect_with(daemon.web, TIMEOUT, &trusted).unwrap();
+    stream
+        .write_all(format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut page = String::new();
+    stream.read_to_string(&mut page).unwrap();
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    assert!(page.contains("href=\"/freemix-ca.crt\""), "{page}");
+    let stranger = rcgen::CertificateParams::new(Vec::<String>::new())
+        .unwrap()
+        .self_signed(&rcgen::KeyPair::generate().unwrap())
+        .unwrap();
+    let untrusted = root_client(&[stranger.der().to_vec()]);
+    let mut refused = web_tls::connect_with(daemon.web, TIMEOUT, &untrusted).unwrap();
+    assert!(
+        refused.write_all(b"GET / HTTP/1.1\r\n\r\n").is_err()
+            || refused.read(&mut [0; 16]).is_err(),
+        "another root must not vouch for the gateway"
+    );
+
+    // Key material is private and never printed.
+    let state = directory.0.join("web-state");
+    #[cfg(unix)]
+    for file in [
+        "web-ca-key.pem",
+        "web-ca-cert.pem",
+        "web-tls-key.pem",
+        "web-tls-cert.pem",
+    ] {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(state.join(file)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{file}: {mode:o}");
+    }
+    let leaf = daemon.fingerprint.clone();
+    daemon.stop();
+    assert!(!daemon.output().contains("PRIVATE KEY"));
+
+    // A restart keeps the root phones installed and the leaf.
+    let again = Daemon::start_with(&directory.0, &project, "second", &["--no-web-mdns"]);
+    assert_eq!(
+        readiness_field(&again, "ca_fingerprint").as_deref(),
+        Some(ca_fingerprint.as_str())
+    );
+    assert_eq!(again.fingerprint, leaf);
+}
+
+/// An mkcert-like certificate for `names`, signed by a fresh root.
+fn operator_certificate(names: &[&str]) -> (String, String) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let certificate = params.self_signed(&key).unwrap();
+    (certificate.pem(), key.serialize_pem())
+}
+
+fn write_key(path: &Path, pem: &str) {
+    fs::write(path, pem).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+/// Polls the console until `done` holds for the gateway status.
+fn await_status(
+    console: &mut Console,
+    done: impl Fn(&fm_protocol::WebGatewayStatus) -> bool,
+) -> fm_protocol::WebGatewayStatus {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = console.web_access(WebAccessAction::Status).gateway.unwrap();
+        if done(&status) {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status never settled: {status:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// RC-007 trust: the operator's own certificate and key are validated
+/// before use, reloaded when the files change (no restart), kept when a
+/// replacement is broken, and refused when the key is readable by others.
+#[test]
+fn the_operators_certificate_is_validated_and_hot_reloaded() {
+    let directory = TestDirectory::new("operator-cert");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let cert = directory.0.join("studio.pem");
+    let key = directory.0.join("studio-key.pem");
+    let (first_cert, first_key) = operator_certificate(&["127.0.0.1", "localhost"]);
+    fs::write(&cert, &first_cert).unwrap();
+    write_key(&key, &first_key);
+    let (cert_arg, key_arg) = (cert.to_str().unwrap(), key.to_str().unwrap());
+    let options = [
+        "--web-tls-cert",
+        cert_arg,
+        "--web-tls-key",
+        key_arg,
+        "--no-web-mdns",
+    ];
+    let daemon = Daemon::launch(&directory.0, &project, "operator", &options);
+    assert_eq!(
+        readiness_field(&daemon, "trust").as_deref(),
+        Some("operator")
+    );
+    assert_eq!(readiness_field(&daemon, "ca_fingerprint"), None);
+    let mut console = Console::connect(daemon.control, Role::Admin);
+    let status = console.web_access(WebAccessAction::Status).gateway.unwrap();
+    assert_eq!(status.trust, fm_protocol::WebTrust::Operator);
+    assert_eq!(status.ca_fingerprint, None);
+    assert_eq!(
+        status.fingerprint.as_deref(),
+        Some(daemon.fingerprint.as_str())
+    );
+    // There is no local root to download.
+    let host = daemon.web.to_string();
+    let (status_line, _, _) = https(
+        &daemon,
+        &format!("GET /freemix-ca.crt HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+    );
+    assert_eq!(status_line, "HTTP/1.1 404 Not Found");
+
+    // New files are served without a restart.
+    let (second_cert, second_key) = operator_certificate(&["127.0.0.1", "localhost", "cam.lan"]);
+    write_key(&key, &second_key);
+    fs::write(&cert, &second_cert).unwrap();
+    let second = web_tls::fingerprint(
+        rustls::pki_types::pem::PemObject::from_pem_slice(second_cert.as_bytes())
+            .map(|der: rustls::pki_types::CertificateDer<'static>| der.to_vec())
+            .unwrap()
+            .as_slice(),
+    );
+    let status = await_status(&mut console, |status| {
+        status.fingerprint.as_deref() == Some(second.as_str())
+    });
+    assert_eq!(status.trust, fm_protocol::WebTrust::Operator);
+    web_tls::pin(daemon.web, &second);
+    let (status_line, _, _) = https(
+        &daemon,
+        &format!("HEAD /tally HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+    );
+    assert_eq!(status_line, "HTTP/1.1 200 OK");
+
+    // A broken replacement keeps the served certificate and is reported.
+    fs::write(
+        &cert,
+        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    let status = await_status(&mut console, |status| {
+        status.cert_problem == Some(fm_protocol::WebCertProblem::ReloadFailed)
+    });
+    assert_eq!(status.fingerprint.as_deref(), Some(second.as_str()));
+    let (status_line, _, _) = https(
+        &daemon,
+        &format!("HEAD /tally HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+    );
+    assert_eq!(status_line, "HTTP/1.1 200 OK");
+    let output = daemon.output();
+    assert!(
+        output.contains("FREEMIXD_WEB_TLS_RELOAD\tv=1\tstate=ok"),
+        "{output}"
+    );
+    assert!(
+        output.contains("FREEMIXD_WEB_TLS_RELOAD\tv=1\tstate=failed"),
+        "{output}"
+    );
+    assert!(!output.contains("PRIVATE KEY"), "{output}");
+    drop(daemon);
+
+    // A key other users can read is refused before anything is served.
+    fs::write(&cert, &first_cert).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
+            .arg("serve")
+            .arg(&project)
+            .args(["--listen", "127.0.0.1:0", "--web-listen", "0.0.0.0:0"])
+            .args(options)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("other users"), "{stderr}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("FREEMIXD_WEB_READY"));
+    }
+}
+
+/// RC-007 reach: on a LAN address the gateway advertises its `.local`
+/// name over mDNS / DNS-SD and serves requests that name it; the console
+/// lists it with the other origins. Where multicast is unavailable (some
+/// sandboxes) the daemon says so and serves by address alone.
+#[test]
+fn the_gateway_advertises_its_mdns_name() {
+    let directory = TestDirectory::new("mdns");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let label = format!("freemix-test-{}", std::process::id());
+    let daemon = Daemon::start_with(&directory.0, &project, "mdns", &["--web-mdns-name", &label]);
+    let host = format!("{label}.local");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let advertised = loop {
+        let output = daemon.output();
+        if output.contains(&format!(
+            "FREEMIXD_WEB_MDNS\tv=1\tstate=advertised\thost={host}"
+        )) {
+            break true;
+        }
+        if output.contains("FREEMIXD_WEB_MDNS\tv=1\tstate=unavailable") {
+            break false;
+        }
+        assert!(Instant::now() < deadline, "no mDNS record: {output}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut console = Console::connect(daemon.control, Role::Admin);
+    let status = console.web_access(WebAccessAction::Status).gateway.unwrap();
+    let origin = format!("https://{host}:{}", daemon.web.port());
+    let (status_line, _, _) = https(
+        &daemon,
+        &format!(
+            "HEAD / HTTP/1.1\r\nHost: {host}:{}\r\n\r\n",
+            daemon.web.port()
+        ),
+    );
+    if advertised {
+        assert_eq!(status.mdns.as_deref(), Some(host.as_str()));
+        assert_eq!(status.mdns_url(), Some(origin.as_str()));
+        assert_eq!(
+            readiness_field(&daemon, "mdns").as_deref(),
+            Some(host.as_str())
+        );
+        assert_eq!(status_line, "HTTP/1.1 200 OK");
+    } else {
+        eprintln!("mDNS unavailable here: checked the fallback");
+        assert_eq!(status.mdns, None);
+        assert!(!status.urls.contains(&origin));
+        assert_eq!(status_line, "HTTP/1.1 421 Misdirected Request");
+    }
 }

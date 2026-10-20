@@ -1,5 +1,5 @@
-//! The gateway's command-line settings: TLS, the state directory, and the
-//! extra host names the gateway answers to.
+//! The gateway's command-line settings: TLS, the state directory, the
+//! extra host names the gateway answers to, and its mDNS name.
 
 use std::{
     net::{IpAddr, SocketAddr},
@@ -17,16 +17,16 @@ pub(crate) enum WebTls {
     /// Plain HTTP and `ws://`: loopback addresses only.
     #[default]
     Off,
-    /// A self-signed certificate generated once and kept in the state
-    /// directory (`--web-tls`).
-    SelfSigned,
+    /// A leaf issued by the per-install local CA kept in the state
+    /// directory (`--web-tls`), whose root phones install once.
+    LocalCa,
     /// The operator's own certificate chain and key (`--web-tls-cert`,
     /// `--web-tls-key`).
     Files { cert: PathBuf, key: PathBuf },
 }
 
-/// `--web-tls`, `--web-tls-cert`, `--web-tls-key`, `--web-state-dir`, and
-/// `--web-host`.
+/// `--web-tls`, `--web-tls-cert`, `--web-tls-key`, `--web-state-dir`,
+/// `--web-host`, `--web-mdns-name`, and `--no-web-mdns`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WebSettings {
     pub(crate) tls: WebTls,
@@ -34,7 +34,12 @@ pub(crate) struct WebSettings {
     /// Extra DNS names (or addresses) phones may use to reach the gateway.
     /// The first one, when given, names the pairing URL.
     pub(crate) hosts: Vec<String>,
-    self_signed: bool,
+    /// `--web-mdns-name`: the `.local` label to advertise instead of the
+    /// one derived from the computer's name.
+    pub(crate) mdns_name: Option<String>,
+    /// `--no-web-mdns`: advertise nothing over mDNS.
+    pub(crate) no_mdns: bool,
+    local_ca: bool,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
 }
@@ -65,10 +70,30 @@ impl WebSettings {
         };
         match name {
             "--web-tls" if inline.is_none() => {
-                if self.self_signed {
+                if self.local_ca {
                     return Err("duplicate option `--web-tls`".into());
                 }
-                self.self_signed = true;
+                self.local_ca = true;
+            }
+            "--no-web-mdns" if inline.is_none() => {
+                if self.no_mdns {
+                    return Err("duplicate option `--no-web-mdns`".into());
+                }
+                self.no_mdns = true;
+            }
+            "--web-mdns-name" => {
+                if self.mdns_name.is_some() {
+                    return Err("duplicate option `--web-mdns-name`".into());
+                }
+                let name = value(name)?.to_ascii_lowercase();
+                let label = name.strip_suffix(".local").unwrap_or(&name).to_owned();
+                if !super::mdns::valid_label(&label) {
+                    return Err(format!(
+                        "invalid --web-mdns-name `{name}`: one label of letters, digits, and hyphens"
+                    )
+                    .into());
+                }
+                self.mdns_name = Some(label);
             }
             "--web-tls-cert" => {
                 if self.cert.is_some() {
@@ -102,8 +127,8 @@ impl WebSettings {
             }
             _ => return Ok(false),
         }
-        self.tls = match (self.self_signed, &self.cert, &self.key) {
-            (true, None, None) => WebTls::SelfSigned,
+        self.tls = match (self.local_ca, &self.cert, &self.key) {
+            (true, None, None) => WebTls::LocalCa,
             (false, Some(cert), Some(key)) => WebTls::Files {
                 cert: cert.clone(),
                 key: key.clone(),
@@ -125,7 +150,7 @@ impl WebSettings {
     /// Conflicting or incomplete TLS options, web options without
     /// `--web-listen`, or a non-loopback address without TLS.
     pub(crate) fn validate(&self, web_listen: Option<SocketAddr>) -> AppResult<()> {
-        if self.self_signed && (self.cert.is_some() || self.key.is_some()) {
+        if self.local_ca && (self.cert.is_some() || self.key.is_some()) {
             return Err("--web-tls cannot be combined with --web-tls-cert/--web-tls-key".into());
         }
         if self.cert.is_some() != self.key.is_some() {
@@ -143,7 +168,22 @@ impl WebSettings {
                     .into(),
             );
         }
+        if self.mdns_name.is_some() && self.no_mdns {
+            return Err("--web-mdns-name cannot be combined with --no-web-mdns".into());
+        }
+        if self.mdns_name.is_some() && address.ip().is_loopback() {
+            return Err(
+                "--web-mdns-name needs a LAN --web-listen address (mDNS is never advertised on loopback)"
+                    .into(),
+            );
+        }
         Ok(())
+    }
+
+    /// Whether the gateway at `address` advertises itself over mDNS: on a
+    /// LAN address, unless `--no-web-mdns`.
+    pub(crate) fn advertises(&self, address: SocketAddr) -> bool {
+        !self.no_mdns && !address.ip().is_loopback()
     }
 
     /// The directory holding the generated certificate and the paired
@@ -228,7 +268,7 @@ mod tests {
             assert!(error.contains("requires TLS"), "{address}: {error}");
         }
         let tls = parse(&["--web-tls"]).unwrap();
-        assert_eq!(tls.tls, WebTls::SelfSigned);
+        assert_eq!(tls.tls, WebTls::LocalCa);
         assert!(tls.validate(Some("0.0.0.0:0".parse().unwrap())).is_ok());
     }
 
@@ -246,6 +286,30 @@ mod tests {
         // Web options mean nothing without the gateway.
         assert!(parse(&["--web-tls"]).unwrap().validate(None).is_err());
         assert!(parse(&[]).unwrap().validate(None).is_ok());
+    }
+
+    #[test]
+    fn mdns_names_are_one_label_on_a_lan_address() {
+        let address = "0.0.0.0:8443".parse().unwrap();
+        let lan = Some(address);
+        let named = parse(&["--web-tls", "--web-mdns-name", "Studio-A.local"]).unwrap();
+        assert_eq!(named.mdns_name.as_deref(), Some("studio-a"));
+        assert!(named.validate(lan).is_ok());
+        assert!(named.advertises(address));
+        assert!(
+            named
+                .validate(Some("127.0.0.1:0".parse().unwrap()))
+                .is_err()
+        );
+        for bad in ["a.b", "-x", "evil host", ""] {
+            assert!(parse(&["--web-mdns-name", bad]).is_err(), "{bad:?}");
+        }
+        let quiet = parse(&["--web-tls", "--no-web-mdns"]).unwrap();
+        assert!(quiet.validate(lan).is_ok());
+        assert!(!quiet.advertises(address));
+        let both = parse(&["--web-tls", "--no-web-mdns", "--web-mdns-name", "x"]).unwrap();
+        assert!(both.validate(lan).is_err());
+        assert!(!WebSettings::default().advertises("127.0.0.1:1".parse().unwrap()));
     }
 
     #[test]

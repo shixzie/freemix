@@ -366,6 +366,23 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
         );
         return;
     }
+    if request.path == page::INDEX_PATH || request.path == fm_protocol::WEB_CA_PATH {
+        let ca = gateway.access.tls().and_then(|tls| tls.ca());
+        let body = request.method == "GET";
+        let response = match (request.method.as_str(), request.path.as_str(), ca) {
+            ("GET" | "HEAD", page::INDEX_PATH, _) => page::page_response(
+                request.header("host"),
+                tls,
+                &page::index_page(ca.is_some()),
+                body,
+            ),
+            ("GET" | "HEAD", _, Some(ca)) => page::ca_response(ca.der().as_ref(), body),
+            ("GET" | "HEAD", _, None) => http::empty_response("404 Not Found", ""),
+            _ => http::empty_response("405 Method Not Allowed", "Allow: GET, HEAD\r\n"),
+        };
+        respond(&mut stream, &response);
+        return;
+    }
     if let Some(page) = page::page_for(&request.path) {
         let response = match request.method.as_str() {
             "GET" => page::page_response(request.header("host"), tls, page, true),

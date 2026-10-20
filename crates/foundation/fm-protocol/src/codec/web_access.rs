@@ -3,10 +3,10 @@
 use core::fmt::Write as _;
 
 use crate::{
-    CodecError, MAX_WEB_DEVICES, MAX_WEB_LINK_CODE_BYTES, MAX_WEB_URL_BYTES,
+    CodecError, MAX_WEB_DEVICES, MAX_WEB_LINK_CODE_BYTES, MAX_WEB_URL_BYTES, MAX_WEB_URLS,
     MIN_WEB_LINK_CODE_BYTES, WEB_PAIRING_CODE_DIGITS, WEB_PAIRING_LIFETIME_MS, WebAccessAction,
-    WebAccessRefusal, WebDeviceEntry, WebDeviceRole, WebGatewayStatus, WebPairing,
-    valid_web_device_id, valid_web_device_name, valid_web_fingerprint,
+    WebAccessRefusal, WebCertProblem, WebDeviceEntry, WebDeviceRole, WebGatewayStatus, WebPairing,
+    WebTrust, valid_web_device_id, valid_web_device_name, valid_web_fingerprint,
 };
 
 use super::media::{FieldSource, Push};
@@ -14,6 +14,10 @@ use super::value::parse_canonical_u64;
 
 const DEVICES: &str = "devices";
 const PAIRING: &str = "pairing";
+const URLS: &str = "urls";
+const MDNS: &str = "mdns";
+/// The longest advertised `.local` host name, in bytes.
+const MAX_MDNS_BYTES: usize = 69;
 
 fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
     CodecError::InvalidField {
@@ -95,6 +99,76 @@ fn check_url(url: &str) -> Result<(), CodecError> {
     }
 }
 
+fn check_urls(main: &str, urls: &[String]) -> Result<(), CodecError> {
+    if urls.len() > MAX_WEB_URLS {
+        return Err(CodecError::TooManyItems(URLS));
+    }
+    for (index, url) in urls.iter().enumerate() {
+        check_url(url).map_err(|_| invalid(URLS, url.clone()))?;
+        if url.contains(',') || url == main || urls[..index].contains(url) {
+            return Err(invalid(URLS, url.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// `<label>.local`, one lowercase DNS label of `[a-z0-9-]`.
+fn check_mdns(name: &str) -> Result<(), CodecError> {
+    let valid = name.len() <= MAX_MDNS_BYTES
+        && name.strip_suffix(".local").is_some_and(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(MDNS, name))
+    }
+}
+
+/// The certificate fields agree with `tls` and `trust`.
+fn check_trust(gateway: &WebGatewayStatus) -> Result<(), CodecError> {
+    let tls_matches = gateway.tls == (gateway.trust != WebTrust::Plain);
+    if !tls_matches {
+        return Err(invalid("trust", gateway.trust.token()));
+    }
+    match (&gateway.fingerprint, gateway.tls) {
+        (Some(fingerprint), true) if valid_web_fingerprint(fingerprint) => {}
+        (None, false) => {}
+        (fingerprint, _) => {
+            return Err(invalid(
+                "fingerprint",
+                fingerprint.clone().unwrap_or_default(),
+            ));
+        }
+    }
+    match (&gateway.ca_fingerprint, gateway.trust) {
+        (Some(fingerprint), WebTrust::LocalCa) if valid_web_fingerprint(fingerprint) => {}
+        (None, WebTrust::Plain | WebTrust::Operator) => {}
+        (fingerprint, _) => {
+            return Err(invalid(
+                "ca_fingerprint",
+                fingerprint.clone().unwrap_or_default(),
+            ));
+        }
+    }
+    if gateway.cert_not_after_ms.is_some() != gateway.tls {
+        return Err(invalid("cert_not_after_ms", "-"));
+    }
+    if gateway.cert_problem.is_some() && !gateway.tls {
+        return Err(invalid(
+            "cert_problem",
+            gateway.cert_problem.map_or("", WebCertProblem::token),
+        ));
+    }
+    Ok(())
+}
+
 fn check_pairing(pairing: &WebPairing) -> Result<(), CodecError> {
     let code_ok = pairing.code.len() == WEB_PAIRING_CODE_DIGITS
         && pairing.code.bytes().all(|byte| byte.is_ascii_digit());
@@ -132,21 +206,30 @@ pub(super) fn encode_gateway(
     push: &mut Push<'_>,
 ) -> Result<(), CodecError> {
     check_url(&gateway.url)?;
-    match (&gateway.fingerprint, gateway.tls) {
-        (Some(fingerprint), true) if valid_web_fingerprint(fingerprint) => {}
-        (None, false) => {}
-        (fingerprint, _) => {
-            return Err(invalid(
-                "fingerprint",
-                fingerprint.clone().unwrap_or_default(),
-            ));
-        }
+    check_trust(gateway)?;
+    check_urls(&gateway.url, &gateway.urls)?;
+    if let Some(name) = &gateway.mdns {
+        check_mdns(name)?;
     }
     check_devices(&gateway.devices)?;
     push("url", gateway.url.clone())?;
     push("tls", if gateway.tls { "1" } else { "0" }.to_owned())?;
     if let Some(fingerprint) = &gateway.fingerprint {
         push("fingerprint", fingerprint.clone())?;
+    }
+    push("trust", gateway.trust.token().to_owned())?;
+    if let Some(fingerprint) = &gateway.ca_fingerprint {
+        push("ca_fingerprint", fingerprint.clone())?;
+    }
+    if let Some(not_after) = gateway.cert_not_after_ms {
+        push("cert_not_after_ms", not_after.to_string())?;
+    }
+    if let Some(problem) = gateway.cert_problem {
+        push("cert_problem", problem.token().to_owned())?;
+    }
+    push(URLS, gateway.urls.join(","))?;
+    if let Some(name) = &gateway.mdns {
+        push(MDNS, name.clone())?;
     }
     if let Some(pairing) = &gateway.pairing {
         check_pairing(pairing)?;
@@ -197,6 +280,26 @@ pub(super) fn decode_gateway(fields: &mut dyn FieldSource) -> Result<WebGatewayS
     } else {
         None
     };
+    let trust_token = fields.required("trust")?;
+    let trust = WebTrust::from_token(&trust_token).ok_or_else(|| invalid("trust", trust_token))?;
+    let ca_fingerprint = fields.optional("ca_fingerprint");
+    let cert_not_after_ms = fields
+        .optional("cert_not_after_ms")
+        .map(|value| canonical("cert_not_after_ms", &value))
+        .transpose()?;
+    let cert_problem = fields
+        .optional("cert_problem")
+        .map(|token| {
+            WebCertProblem::from_token(&token).ok_or_else(|| invalid("cert_problem", token))
+        })
+        .transpose()?;
+    let urls_text = fields.required(URLS)?;
+    let urls: Vec<String> = if urls_text.is_empty() {
+        Vec::new()
+    } else {
+        urls_text.split(',').map(str::to_owned).collect()
+    };
+    let mdns = fields.optional(MDNS);
     let pairing = fields
         .optional(PAIRING)
         .map(|text| decode_pairing(&text))
@@ -218,13 +321,25 @@ pub(super) fn decode_gateway(fields: &mut dyn FieldSource) -> Result<WebGatewayS
         rest = after;
     }
     check_devices(&devices)?;
-    Ok(WebGatewayStatus {
+    let status = WebGatewayStatus {
         url,
         tls,
         fingerprint,
+        trust,
+        ca_fingerprint,
+        cert_not_after_ms,
+        cert_problem,
+        urls,
+        mdns,
         pairing,
         devices,
-    })
+    };
+    check_trust(&status)?;
+    check_urls(&status.url, &status.urls)?;
+    if let Some(name) = &status.mdns {
+        check_mdns(name)?;
+    }
+    Ok(status)
 }
 
 fn decode_pairing(text: &str) -> Result<WebPairing, CodecError> {

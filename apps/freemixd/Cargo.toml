@@ -60,9 +60,19 @@ fm-video = { path = "../../crates/media/fm-video" }
 fs4 = "0.13"
 getrandom = "0.3"
 # Web gateway TLS (RC-007): rustls on the `ring` provider (no aws-lc-rs, so no
-# CMake/NASM toolchain), rcgen for the self-signed certificate, and ring's
-# SHA-256 for certificate fingerprints and device-token digests.
-rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "ring", "pem"] }
+# CMake/NASM toolchain), rcgen for the local root and the leaves it issues
+# (its `x509-parser` feature reloads the root to sign with), x509-parser to
+# validate certificates before they are served, and ring's SHA-256 for
+# certificate fingerprints and device-token digests.
+rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
+x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
+# Web gateway reach (RC-007): a pure-Rust mDNS / DNS-SD responder (no async
+# runtime) advertising `_freemix._tcp` and `_https._tcp`, the LAN addresses
+# the certificate names, and the host name the default mDNS name derives
+# from.
+mdns-sd = { version = "0.21.6", default-features = false }
+if-addrs = "0.15.0"
+gethostname = "1.1.0"
 ring = "0.17.14"
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 time = { version = "0.3", default-features = false, features = ["std"] }

@@ -12,7 +12,17 @@
 //! * The answer carries an optional `refusal` and `gateway` (`0|1`). With a
 //!   gateway it also carries `url` (the page origin a phone opens), `tls`
 //!   (`0|1`), `fingerprint` (only with TLS: the SHA-256 of the certificate
-//!   as 32 colon-separated uppercase hex pairs), an optional `pairing`
+//!   as 32 colon-separated uppercase hex pairs), `trust` (Protocol 2.87:
+//!   `plain`, `local_ca`, or `operator`; `plain` exactly without TLS),
+//!   `ca_fingerprint` (only with `local_ca`: the SHA-256 of the daemon's
+//!   own root certificate, which phones install from [`WEB_CA_PATH`]),
+//!   `cert_not_after_ms` (only with TLS: when the served certificate
+//!   expires, Unix milliseconds), an optional `cert_problem`
+//!   (`reload_failed`, `host_mismatch`, or `expiring`), `urls` (a
+//!   comma-separated list, possibly empty, of the other origins that reach
+//!   the gateway, such as its mDNS name and other LAN addresses), an
+//!   optional `mdns` (the `.local` host name advertised over DNS-SD as
+//!   `_freemix._tcp` and `_https._tcp`), an optional `pairing`
 //!   (`<code>~<link code>~<role>~<expires_in_ms>`: the six-digit code to
 //!   type and the long one-use code a QR link carries), and `devices`: a
 //!   comma-separated list, strictly ascending by id, of
@@ -37,6 +47,74 @@ pub const MIN_WEB_LINK_CODE_BYTES: usize = 16;
 pub const MAX_WEB_LINK_CODE_BYTES: usize = 64;
 /// How long a pairing code stays valid.
 pub const WEB_PAIRING_LIFETIME_MS: u32 = 120_000;
+/// The most other origins a gateway lists besides its main URL.
+pub const MAX_WEB_URLS: usize = 8;
+/// Where the gateway serves its local root certificate (DER) for phones to
+/// install, without authentication: the certificate is public.
+pub const WEB_CA_PATH: &str = "/freemix-ca.crt";
+
+/// How phones come to trust the gateway's certificate (Protocol 2.87).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WebTrust {
+    /// Plain HTTP on loopback: nothing to trust.
+    Plain,
+    /// A leaf issued by the daemon's own per-install root certificate,
+    /// which a phone installs once; the leaf fingerprint stays the
+    /// fallback check.
+    LocalCa,
+    /// The operator's own certificate and key (`--web-tls-cert`,
+    /// `--web-tls-key`), for example from mkcert or a company CA.
+    Operator,
+}
+
+impl WebTrust {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::LocalCa => "local_ca",
+            Self::Operator => "operator",
+        }
+    }
+
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        [Self::Plain, Self::LocalCa, Self::Operator]
+            .into_iter()
+            .find(|trust| trust.token() == token)
+    }
+}
+
+/// What is wrong with the served certificate, if anything (Protocol 2.87).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WebCertProblem {
+    /// The operator's certificate files changed but did not validate; the
+    /// gateway keeps serving the previous certificate.
+    ReloadFailed,
+    /// The certificate does not name the host in the gateway URL, so
+    /// browsers will warn.
+    HostMismatch,
+    /// The certificate expires within 30 days.
+    Expiring,
+}
+
+impl WebCertProblem {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::ReloadFailed => "reload_failed",
+            Self::HostMismatch => "host_mismatch",
+            Self::Expiring => "expiring",
+        }
+    }
+
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        [Self::ReloadFailed, Self::HostMismatch, Self::Expiring]
+            .into_iter()
+            .find(|problem| problem.token() == token)
+    }
+}
 
 /// The role a paired web device is granted.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -192,6 +270,21 @@ pub struct WebGatewayStatus {
     pub tls: bool,
     /// SHA-256 of the certificate, `AB:CD:...`; present exactly with TLS.
     pub fingerprint: Option<String>,
+    /// How phones trust the certificate; [`WebTrust::Plain`] exactly
+    /// without TLS.
+    pub trust: WebTrust,
+    /// SHA-256 of the local root certificate; present exactly with
+    /// [`WebTrust::LocalCa`].
+    pub ca_fingerprint: Option<String>,
+    /// When the served certificate expires (Unix milliseconds); present
+    /// exactly with TLS.
+    pub cert_not_after_ms: Option<u64>,
+    pub cert_problem: Option<WebCertProblem>,
+    /// Other origins that reach the gateway (the mDNS name, other LAN
+    /// addresses), distinct and never the main `url`.
+    pub urls: Vec<String>,
+    /// The `.local` host name advertised over mDNS / DNS-SD, if any.
+    pub mdns: Option<String>,
     pub pairing: Option<WebPairing>,
     /// Strictly ascending by id.
     pub devices: Vec<WebDeviceEntry>,
@@ -215,6 +308,24 @@ impl WebGatewayStatus {
             link.extend(fingerprint.chars().filter(|character| *character != ':'));
         }
         Some(link)
+    }
+
+    /// Where a phone downloads the local root certificate, with
+    /// [`WebTrust::LocalCa`].
+    #[must_use]
+    pub fn ca_link(&self) -> Option<String> {
+        (self.trust == WebTrust::LocalCa).then(|| format!("{}{WEB_CA_PATH}", self.url))
+    }
+
+    /// The `https://<name>.local[:port]` origin advertised over mDNS, if
+    /// the gateway advertises one.
+    #[must_use]
+    pub fn mdns_url(&self) -> Option<&str> {
+        let name = self.mdns.as_deref()?;
+        self.urls.iter().map(String::as_str).find(|url| {
+            url.split_once("://")
+                .is_some_and(|(_, rest)| rest == name || rest.starts_with(&format!("{name}:")))
+        })
     }
 }
 

@@ -7,15 +7,23 @@
 //! six-digit code to type, and the phone receives its own token from the
 //! gateway. The paired devices are listed with a Revoke key each.
 //!
+//! Trust and reach (Protocol 2.87): the window names how phones trust the
+//! certificate (this computer's `FreeMix` certificate authority, the
+//! operator's own certificate, or none on loopback), warns about a
+//! certificate problem, lists every address that reaches the pages (the
+//! advertised mDNS `.local` name first) with a QR code for the chosen one,
+//! and, with the `FreeMix` authority, offers its certificate for download
+//! with a QR code, its fingerprint, and install steps for iOS and Android.
+//!
 //! The window never holds a device token: the daemon answers
 //! `web_access_request` with the gateway status only. While the window is
 //! open it asks for that status about once a second, so a device that
 //! pairs, or a code that expires, shows up without a click.
 
-use egui::{Button, Color32, ComboBox, RichText, Sense, Ui, Vec2};
+use egui::{Button, Color32, ComboBox, RichText, ScrollArea, Sense, Ui, Vec2};
 use fm_protocol::{
-    WebAccessAction, WebAccessMessage, WebAccessRefusal, WebDeviceEntry, WebDeviceRole,
-    WebGatewayStatus,
+    WebAccessAction, WebAccessMessage, WebAccessRefusal, WebCertProblem, WebDeviceEntry,
+    WebDeviceRole, WebGatewayStatus, WebTrust,
 };
 use qrcodegen::{QrCode, QrCodeEcc};
 
@@ -34,6 +42,8 @@ pub(crate) const POLL_SECONDS: f64 = 1.0;
 const QR_SIDE: f32 = 208.0;
 /// Light modules around the code, as the QR specification asks.
 const QR_QUIET_ZONE: i32 = 4;
+/// The smaller QR codes of the address and certificate cards, in points.
+const SMALL_QR_SIDE: f32 = 160.0;
 
 /// The window's open state, the role the next pairing grants, and when it
 /// last asked for the status.
@@ -43,6 +53,11 @@ pub(crate) struct WebAccessWindow {
     pub(crate) role: WebDeviceRole,
     /// The egui time of the latest status poll, in milliseconds.
     last_poll_ms: Option<u64>,
+    /// The address the reach card shows as a QR code (the mDNS one, else
+    /// the main one, when none was picked or the picked one is gone).
+    pub(crate) reach: Option<String>,
+    /// Whether the certificate install card is expanded.
+    pub(crate) install_open: bool,
 }
 
 impl Default for WebAccessWindow {
@@ -51,6 +66,8 @@ impl Default for WebAccessWindow {
             open: false,
             role: WebDeviceRole::Operator,
             last_poll_ms: None,
+            reach: None,
+            install_open: false,
         }
     }
 }
@@ -85,6 +102,51 @@ pub(crate) const fn refusal_message(refusal: WebAccessRefusal) -> Msg {
         WebAccessRefusal::TooManyDevices => Msg::WebAccessRefusedTooMany,
         WebAccessRefusal::StorageFailed => Msg::WebAccessRefusedStorage,
     }
+}
+
+/// The trust's label in the gateway card.
+#[must_use]
+pub(crate) const fn trust_message(trust: WebTrust) -> Msg {
+    match trust {
+        WebTrust::Plain => Msg::WebAccessTrustPlain,
+        WebTrust::LocalCa => Msg::WebAccessTrustLocalCa,
+        WebTrust::Operator => Msg::WebAccessTrustOperator,
+    }
+}
+
+/// The catalog message explaining a certificate problem.
+#[must_use]
+pub(crate) const fn problem_message(problem: WebCertProblem) -> Msg {
+    match problem {
+        WebCertProblem::ReloadFailed => Msg::WebAccessProblemReloadFailed,
+        WebCertProblem::HostMismatch => Msg::WebAccessProblemHostMismatch,
+        WebCertProblem::Expiring => Msg::WebAccessProblemExpiring,
+    }
+}
+
+/// Every address that reaches the pages: the advertised mDNS one first,
+/// then the main one, then the others.
+#[must_use]
+pub(crate) fn reach_urls(gateway: &WebGatewayStatus) -> Vec<&str> {
+    let mut urls: Vec<&str> = Vec::with_capacity(gateway.urls.len() + 1);
+    urls.extend(gateway.mdns_url());
+    urls.push(gateway.url.as_str());
+    for url in &gateway.urls {
+        if !urls.contains(&url.as_str()) {
+            urls.push(url);
+        }
+    }
+    urls
+}
+
+/// The address the reach card shows: the picked one while it is listed,
+/// else the first of [`reach_urls`].
+#[must_use]
+pub(crate) fn chosen_url<'a>(picked: Option<&str>, gateway: &'a WebGatewayStatus) -> &'a str {
+    let urls = reach_urls(gateway);
+    picked
+        .and_then(|picked| urls.iter().copied().find(|url| *url == picked))
+        .unwrap_or(urls[0])
 }
 
 /// The role's label in the role picker and the device table.
@@ -222,11 +284,27 @@ fn draw_contents(
     }
     let gateway = answer.and_then(|answer| answer.gateway.as_ref());
     let blocked = web_access_block_reason(state);
-    draw_gateway(ui, l, gateway);
-    ui.add_space(6.0);
-    draw_pairing(ui, l, state, window, gateway, blocked, intents);
-    ui.add_space(6.0);
-    draw_devices(ui, l, state, gateway, blocked, intents);
+    // Trust and reach make the window taller than small screens.
+    let height = (ui.ctx().content_rect().height() * 0.8).max(320.0);
+    ScrollArea::vertical()
+        .id_salt("studio-web-access-scroll")
+        .max_height(height)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            draw_gateway(ui, l, gateway);
+            ui.add_space(6.0);
+            draw_pairing(ui, l, state, window, gateway, blocked, intents);
+            if let Some(gateway) = gateway.filter(|gateway| gateway.tls) {
+                ui.add_space(6.0);
+                draw_reach(ui, l, window, gateway);
+                if gateway.trust == WebTrust::LocalCa {
+                    ui.add_space(6.0);
+                    draw_install(ui, l, window, gateway);
+                }
+            }
+            ui.add_space(6.0);
+            draw_devices(ui, l, state, gateway, blocked, intents);
+        });
 }
 
 fn draw_gateway(ui: &mut Ui, l: Locale, gateway: Option<&WebGatewayStatus>) {
@@ -283,6 +361,154 @@ fn draw_gateway(ui: &mut Ui, l: Locale, gateway: Option<&WebGatewayStatus>) {
             {
                 ui.ctx().copy_text(fingerprint.clone());
             }
+        }
+        ui.horizontal(|ui| {
+            ui.label(l.text(Msg::WebAccessTrust));
+            let tone = match gateway.trust {
+                WebTrust::LocalCa | WebTrust::Operator => Tone::Ready,
+                WebTrust::Plain => Tone::Pending,
+            };
+            status_chip(ui, l.text(trust_message(gateway.trust)), tone, 260.0)
+                .on_hover_text(l.text(Msg::WebAccessTrustHover));
+        });
+        if let Some(not_after) = gateway.cert_not_after_ms {
+            let days = i64::try_from(not_after / 86_400_000).unwrap_or(i64::MAX);
+            ui.label(
+                RichText::new(l.format(
+                    Msg::WebAccessValidUntil,
+                    &[("date", Arg::Str(&l.date(days)))],
+                ))
+                .color(muted_color()),
+            )
+            .on_hover_text(l.text(Msg::WebAccessValidUntilHover));
+        }
+        if let Some(problem) = gateway.cert_problem {
+            ui.label(RichText::new(l.text(problem_message(problem))).color(AMBER))
+                .on_hover_text(l.text(Msg::WebAccessProblemHover));
+        }
+    });
+}
+
+/// Every address that reaches the pages, with a QR code of the chosen one.
+fn draw_reach(ui: &mut Ui, l: Locale, window: &mut WebAccessWindow, gateway: &WebGatewayStatus) {
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.label(section_label(l.text(Msg::WebAccessReach)))
+            .on_hover_text(l.text(Msg::WebAccessReachHover));
+        if let Some(name) = &gateway.mdns {
+            ui.label(l.format(Msg::WebAccessMdns, &[("name", Arg::Str(name))]))
+                .on_hover_text(l.text(Msg::WebAccessMdnsHover));
+        }
+        let chosen = chosen_url(window.reach.as_deref(), gateway).to_owned();
+        ui.horizontal(|ui| {
+            draw_qr_sized(ui, &chosen, SMALL_QR_SIDE)
+                .on_hover_text(l.format(Msg::WebAccessOpenQrHover, &[("url", Arg::Str(&chosen))]));
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                for url in reach_urls(gateway) {
+                    if ui
+                        .selectable_label(
+                            url == chosen,
+                            RichText::new(url)
+                                .monospace()
+                                .size(crate::theme::legible(11.0)),
+                        )
+                        .on_hover_text(
+                            l.format(Msg::WebAccessReachOptionHover, &[("url", Arg::Str(url))]),
+                        )
+                        .clicked()
+                    {
+                        window.reach = Some(url.to_owned());
+                    }
+                }
+                if ui
+                    .button(l.text(Msg::WebAccessCopyChosen))
+                    .on_hover_text(
+                        l.format(Msg::WebAccessCopyChosenHover, &[("url", Arg::Str(&chosen))]),
+                    )
+                    .clicked()
+                {
+                    ui.ctx().copy_text(chosen.clone());
+                }
+            });
+        });
+    });
+}
+
+/// The `FreeMix` certificate authority: download QR code, fingerprint, and
+/// install steps.
+fn draw_install(ui: &mut Ui, l: Locale, window: &mut WebAccessWindow, gateway: &WebGatewayStatus) {
+    let Some(link) = gateway.ca_link() else {
+        return;
+    };
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        let label = if window.install_open {
+            Msg::WebAccessInstallHide
+        } else {
+            Msg::WebAccessInstall
+        };
+        if ui
+            .button(l.text(label))
+            .on_hover_text(l.text(Msg::WebAccessInstallHover))
+            .clicked()
+        {
+            window.install_open = !window.install_open;
+        }
+        if !window.install_open {
+            return;
+        }
+        ui.label(
+            RichText::new(l.text(Msg::WebAccessInstallIntro))
+                .size(crate::theme::legible(11.0))
+                .color(muted_color()),
+        );
+        ui.horizontal(|ui| {
+            draw_qr_sized(ui, &link, SMALL_QR_SIDE)
+                .on_hover_text(l.text(Msg::WebAccessInstallQrHover));
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(&link)
+                        .monospace()
+                        .size(crate::theme::legible(11.0)),
+                );
+                if ui
+                    .button(l.text(Msg::WebAccessCopyCaLink))
+                    .on_hover_text(l.text(Msg::WebAccessCopyCaLinkHover))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(link.clone());
+                }
+                if let Some(fingerprint) = &gateway.ca_fingerprint {
+                    ui.label(section_label(l.text(Msg::WebAccessCaFingerprint)));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(fingerprint)
+                                .monospace()
+                                .size(crate::theme::legible(10.0)),
+                        )
+                        .wrap(),
+                    )
+                    .on_hover_text(l.text(Msg::WebAccessCaFingerprintHover));
+                    if ui
+                        .button(l.text(Msg::WebAccessCopyCaFingerprint))
+                        .on_hover_text(l.text(Msg::WebAccessCopyCaFingerprintHover))
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(fingerprint.clone());
+                    }
+                }
+            });
+        });
+        for steps in [
+            Msg::WebAccessInstallIos,
+            Msg::WebAccessInstallAndroid,
+            Msg::WebAccessInstallComputer,
+        ] {
+            ui.add(egui::Label::new(l.text(steps)).wrap());
         }
     });
 }
@@ -391,13 +617,18 @@ fn draw_pairing(
 /// Paints `text` as a QR code, dark modules on white with a quiet zone,
 /// whatever the console theme; an unencodable text paints a blank square.
 fn draw_qr(ui: &mut Ui, text: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(QR_SIDE), Sense::hover());
+    draw_qr_sized(ui, text, QR_SIDE)
+}
+
+/// [`draw_qr`] at `extent` points.
+fn draw_qr_sized(ui: &mut Ui, text: &str, extent: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(extent), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::WHITE);
     if let Ok(code) = QrCode::encode_text(text, QrCodeEcc::Medium) {
         let size = code.size();
         #[allow(clippy::cast_precision_loss)] // at most 177 + 8 modules
-        let module = QR_SIDE / (size + 2 * QR_QUIET_ZONE) as f32;
+        let module = extent / (size + 2 * QR_QUIET_ZONE) as f32;
         for y in 0..size {
             for x in 0..size {
                 if code.get_module(x, y) {
@@ -500,9 +731,57 @@ fn draw_device(
 
 #[cfg(test)]
 mod tests {
-    use super::{WebAccessWindow, grouped_code, refusal_message};
-    use fm_protocol::WebAccessRefusal;
+    use super::{
+        WebAccessWindow, chosen_url, grouped_code, problem_message, reach_urls, refusal_message,
+        trust_message,
+    };
+    use fm_protocol::{WebAccessRefusal, WebCertProblem, WebTrust};
     use fm_ui_model::i18n::Msg;
+
+    #[test]
+    fn the_mdns_address_leads_and_a_picked_one_sticks_while_listed() {
+        let gateway = crate::hover_audit::web_access_answer().gateway.unwrap();
+        assert_eq!(
+            reach_urls(&gateway),
+            [
+                "https://freemix-studio.local:8443",
+                "https://192.168.1.20:8443",
+                "https://10.0.0.9:8443"
+            ]
+        );
+        assert_eq!(
+            chosen_url(None, &gateway),
+            "https://freemix-studio.local:8443"
+        );
+        assert_eq!(
+            chosen_url(Some("https://10.0.0.9:8443"), &gateway),
+            "https://10.0.0.9:8443"
+        );
+        assert_eq!(
+            chosen_url(Some("https://gone:1"), &gateway),
+            "https://freemix-studio.local:8443"
+        );
+        let mut plain = gateway.clone();
+        plain.mdns = None;
+        plain.urls.clear();
+        assert_eq!(reach_urls(&plain), ["https://192.168.1.20:8443"]);
+    }
+
+    #[test]
+    fn trust_and_problems_are_worded() {
+        assert_eq!(
+            trust_message(WebTrust::LocalCa).en(),
+            "FreeMix certificate authority"
+        );
+        assert_eq!(
+            trust_message(WebTrust::Operator).en(),
+            "Your own certificate"
+        );
+        assert_eq!(
+            problem_message(WebCertProblem::HostMismatch),
+            Msg::WebAccessProblemHostMismatch
+        );
+    }
 
     #[test]
     fn codes_read_in_two_groups() {

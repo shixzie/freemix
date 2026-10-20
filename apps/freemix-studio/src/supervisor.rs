@@ -170,6 +170,51 @@ impl Error for SupervisorError {
     }
 }
 
+/// `freemixd serve` for `config`.
+fn daemon_command(config: &SupervisedConfig) -> Command {
+    let mut command = Command::new(&config.daemon_executable);
+    command
+    .arg("serve")
+    .arg(&config.project_bundle)
+    .arg("--listen")
+    .arg(config.listen.to_string())
+        // Open the project's fullscreen display outputs (OR-011) when
+        // the daemon build has a presenter; otherwise, or without a
+        // window system or GPU, it serves as before and the slots wait
+        // with `no-presenter`.
+        .arg("--display-presenter-if-available")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    // Phones and tablets pair with the web pages over TLS (RC-007):
+    // the operator's own certificate, else one from the daemon's local
+    // CA, kept in its state directory so phones that installed the CA
+    // keep trusting it across restarts. The windowed daemon serves the
+    // gateway next to its presenter.
+    if let Some(address) = config.web_listen {
+        command.arg("--web-listen").arg(address.to_string());
+        let web = &config.web;
+        match &web.tls_files {
+            Some((cert, key)) => {
+                command
+                    .arg("--web-tls-cert")
+                    .arg(cert)
+                    .arg("--web-tls-key")
+                    .arg(key);
+            }
+            None => {
+                command.arg("--web-tls");
+            }
+        }
+        if let Some(name) = &web.mdns_name {
+            command.arg("--web-mdns-name").arg(name);
+        }
+        if web.no_mdns {
+            command.arg("--no-web-mdns");
+        }
+    }
+    command
+}
+
 /// Owns a freemixd child and its readiness stdout for the Studio lifetime.
 #[derive(Debug)]
 pub struct DaemonSupervisor {
@@ -342,29 +387,7 @@ impl DaemonSupervisor {
 
     /// The supervised `freemixd serve` invocation.
     fn daemon_command(&self) -> Command {
-        let mut command = Command::new(&self.config.daemon_executable);
-        command
-            .arg("serve")
-            .arg(&self.config.project_bundle)
-            .arg("--listen")
-            .arg(self.config.listen.to_string())
-            // Open the project's fullscreen display outputs (OR-011) when
-            // the daemon build has a presenter; otherwise, or without a
-            // window system or GPU, it serves as before and the slots wait
-            // with `no-presenter`.
-            .arg("--display-presenter-if-available")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        // Phones and tablets pair with the web pages over TLS (RC-007);
-        // the daemon keeps its self-signed certificate in its state
-        // directory, so the fingerprint survives restarts.
-        if let Some(address) = self.config.web_listen {
-            command
-                .arg("--web-listen")
-                .arg(address.to_string())
-                .arg("--web-tls");
-        }
-        command
+        daemon_command(&self.config)
     }
 
     fn spawn_cancellable(
@@ -655,4 +678,61 @@ fn process_group_is_gone(error: &io::Error) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::daemon_command;
+    use crate::{SupervisedConfig, SupervisedWeb};
+
+    fn arguments(config: &SupervisedConfig) -> Vec<String> {
+        daemon_command(config)
+            .get_args()
+            .map(OsStr::to_string_lossy)
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn the_web_gateway_options_reach_the_windowed_daemon() {
+        let mut config = SupervisedConfig::new("show.freemix");
+        let plain = arguments(&config);
+        assert!(plain.contains(&"--display-presenter-if-available".to_owned()));
+        assert!(!plain.iter().any(|argument| argument.starts_with("--web")));
+
+        config.web_listen = Some("0.0.0.0:8443".parse().unwrap());
+        let local_ca = arguments(&config);
+        assert!(local_ca.contains(&"--display-presenter-if-available".to_owned()));
+        assert!(local_ca.ends_with(&[
+            "--web-listen".into(),
+            "0.0.0.0:8443".into(),
+            "--web-tls".into()
+        ]));
+
+        config.web = SupervisedWeb {
+            tls_files: Some(("own.pem".into(), "own-key.pem".into())),
+            mdns_name: Some("studio-a".into()),
+            no_mdns: false,
+        };
+        let own = arguments(&config);
+        assert!(!own.contains(&"--web-tls".to_owned()));
+        assert!(own.ends_with(&[
+            "--web-listen".into(),
+            "0.0.0.0:8443".into(),
+            "--web-tls-cert".into(),
+            "own.pem".into(),
+            "--web-tls-key".into(),
+            "own-key.pem".into(),
+            "--web-mdns-name".into(),
+            "studio-a".into(),
+        ]));
+
+        config.web = SupervisedWeb {
+            no_mdns: true,
+            ..SupervisedWeb::default()
+        };
+        assert!(arguments(&config).ends_with(&["--web-tls".into(), "--no-web-mdns".into()]));
+    }
 }

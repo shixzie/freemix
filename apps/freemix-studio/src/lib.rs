@@ -14,7 +14,7 @@ mod titles;
 
 pub use args::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, HELP, StudioConfig,
-    SupervisedConfig, UiPreferences, parse_args,
+    SupervisedConfig, SupervisedWeb, UiPreferences, parse_args,
 };
 pub use native::{launch_native, studio_intent_payload};
 pub use prefs::{PREFERENCES_ENV, PreferenceStore, SAVE_DELAY, SavedPreferences, preferences_path};

@@ -8255,6 +8255,147 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::WebAccessCopyFingerprint, t("Copiar huella")),
+    (Msg::WebAccessTrust, t("Confianza")),
+    (
+        Msg::WebAccessTrustLocalCa,
+        t("Autoridad de certificación de FreeMix"),
+    ),
+    (Msg::WebAccessTrustOperator, t("Su propio certificado")),
+    (
+        Msg::WebAccessTrustPlain,
+        t("Ninguna: HTTP sin cifrar solo en este equipo"),
+    ),
+    (
+        Msg::WebAccessTrustHover,
+        t(
+            "Cómo llegan los teléfonos a confiar en las páginas: instale una vez el certificado de FreeMix de este equipo en cada teléfono, o sirva su propio certificado (--web-tls-cert); la huella sigue siendo la comprobación de reserva",
+        ),
+    ),
+    (
+        Msg::WebAccessValidUntil,
+        t("Certificado válido hasta el {date}"),
+    ),
+    (
+        Msg::WebAccessValidUntilHover,
+        t(
+            "La fecha de caducidad del certificado servido; la autoridad de FreeMix lo renueva por sí sola",
+        ),
+    ),
+    (
+        Msg::WebAccessProblemReloadFailed,
+        t(
+            "Sus nuevos archivos de certificado no superaron la validación; se sigue sirviendo el certificado anterior (vea el registro del daemon)",
+        ),
+    ),
+    (
+        Msg::WebAccessProblemHostMismatch,
+        t(
+            "El certificado no nombra la dirección de la página, así que los teléfonos mostrarán una advertencia",
+        ),
+    ),
+    (
+        Msg::WebAccessProblemExpiring,
+        t("El certificado caduca en menos de 30 días; sustitúyalo"),
+    ),
+    (
+        Msg::WebAccessProblemHover,
+        t("Un problema del certificado servido que los teléfonos notarán"),
+    ),
+    (Msg::WebAccessReach, t("Abrir en un teléfono")),
+    (
+        Msg::WebAccessReachHover,
+        t(
+            "Todas las direcciones que llegan a las páginas desde esta red; elija una para mostrarla como código QR",
+        ),
+    ),
+    (
+        Msg::WebAccessReachOptionHover,
+        t("Mostrar {url} como código QR"),
+    ),
+    (Msg::WebAccessMdns, t("Anunciado en la red como {name}")),
+    (
+        Msg::WebAccessMdnsHover,
+        t(
+            "Los teléfonos y equipos de esta red encuentran las páginas con este nombre (mDNS / Bonjour); algunos teléfonos Android necesitan una dirección",
+        ),
+    ),
+    (
+        Msg::WebAccessOpenQrHover,
+        t("Escanee con la cámara del teléfono para abrir {url}"),
+    ),
+    (Msg::WebAccessCopyChosen, t("Copiar la dirección elegida")),
+    (
+        Msg::WebAccessCopyChosenHover,
+        t("Copia {url} al portapapeles"),
+    ),
+    (
+        Msg::WebAccessInstall,
+        t("Instalar el certificado de FreeMix en los teléfonos…"),
+    ),
+    (
+        Msg::WebAccessInstallHide,
+        t("Ocultar los pasos de instalación del certificado"),
+    ),
+    (
+        Msg::WebAccessInstallHover,
+        t(
+            "Muestra cómo hacer que cada teléfono confíe en las páginas de este equipo, para que se abran sin advertencia",
+        ),
+    ),
+    (
+        Msg::WebAccessInstallIntro,
+        t(
+            "Instale una vez el certificado de FreeMix de este equipo en cada teléfono o tableta; así sus páginas se abren sin advertencia. Escanee el código o abra la dirección en el teléfono (acepte la advertencia esa única vez) y siga los pasos para el teléfono.",
+        ),
+    ),
+    (
+        Msg::WebAccessInstallQrHover,
+        t("Escanee con la cámara del teléfono para descargar el certificado de FreeMix"),
+    ),
+    (
+        Msg::WebAccessCopyCaLink,
+        t("Copiar dirección del certificado"),
+    ),
+    (
+        Msg::WebAccessCopyCaLinkHover,
+        t("Copia la dirección de descarga del certificado para enviarla a un teléfono"),
+    ),
+    (
+        Msg::WebAccessCaFingerprint,
+        t("Huella del certificado de FreeMix (SHA-256)"),
+    ),
+    (
+        Msg::WebAccessCaFingerprintHover,
+        t(
+            "El teléfono muestra esta huella en los detalles del certificado; compárela antes de confiar en él",
+        ),
+    ),
+    (
+        Msg::WebAccessCopyCaFingerprint,
+        t("Copiar huella del certificado"),
+    ),
+    (
+        Msg::WebAccessCopyCaFingerprintHover,
+        t("Copia la huella del certificado de FreeMix al portapapeles"),
+    ),
+    (
+        Msg::WebAccessInstallIos,
+        t(
+            "iPhone y iPad: abra la descarga y luego Ajustes > Perfil descargado > Instalar; después, Ajustes > General > Información > Ajustes de confianza de certificados y active la confianza total para el certificado de FreeMix.",
+        ),
+    ),
+    (
+        Msg::WebAccessInstallAndroid,
+        t(
+            "Android: Ajustes > Seguridad > Cifrado y credenciales > Instalar un certificado > Certificado de CA, y elija el archivo descargado.",
+        ),
+    ),
+    (
+        Msg::WebAccessInstallComputer,
+        t(
+            "Equipos: abra el archivo descargado y añádalo a los certificados raíz de confianza (Acceso a Llaveros en macOS, Certificados en Windows).",
+        ),
+    ),
     (
         Msg::WebAccessCopyFingerprintHover,
         t("Copia la huella del certificado al portapapeles"),

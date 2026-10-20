@@ -1899,6 +1899,19 @@ pub(crate) fn web_access_answer() -> fm_protocol::WebAccessMessage {
                  88:02:F6:3B:CA:19:E5:70:4D:A2:6B:31:DE:8C:05:97"
                     .replace(' ', ""),
             ),
+            trust: fm_protocol::WebTrust::LocalCa,
+            ca_fingerprint: Some(
+                "C4:1E:07:9B:52:A8:3D:F0:16:6C:E9:24:B7:5A:08:D3:\
+                 71:FE:2B:94:0C:65:A1:3E:D8:47:B2:19:6F:E0:53:8A"
+                    .replace(' ', ""),
+            ),
+            cert_not_after_ms: Some(1_826_000_000_000),
+            cert_problem: None,
+            urls: vec![
+                "https://freemix-studio.local:8443".into(),
+                "https://10.0.0.9:8443".into(),
+            ],
+            mdns: Some("freemix-studio.local".into()),
             pairing: Some(WebPairing {
                 code: "042137".into(),
                 link_code: "q8Zr2pVfK3mN9xTb7LwYc4".into(),
@@ -2850,6 +2863,33 @@ fn scenes(language: Language) -> Vec<Scene> {
             with_web_access(ready(true, Variant::default()), Some(web_access_answer())),
         ),
         (
+            "dialog/web-access-install",
+            &|shell| {
+                shell.web_access.open = true;
+                shell.web_access.install_open = true;
+                shell.web_access.reach = Some("https://10.0.0.9:8443".into());
+            },
+            with_web_access(ready(true, Variant::default()), Some(web_access_answer())),
+        ),
+        (
+            "dialog/web-access-operator-certificate",
+            &|shell| shell.web_access.open = true,
+            with_web_access(
+                ready(true, Variant::default()),
+                Some({
+                    let mut answer = web_access_answer();
+                    if let Some(gateway) = answer.gateway.as_mut() {
+                        gateway.trust = fm_protocol::WebTrust::Operator;
+                        gateway.ca_fingerprint = None;
+                        gateway.cert_problem = Some(fm_protocol::WebCertProblem::ReloadFailed);
+                        gateway.mdns = None;
+                        gateway.urls.clear();
+                    }
+                    answer
+                }),
+            ),
+        ),
+        (
             "dialog/web-access-plain",
             &|shell| shell.web_access.open = true,
             with_web_access(
@@ -2861,6 +2901,12 @@ fn scenes(language: Language) -> Vec<Scene> {
                         url: "http://127.0.0.1:8443".into(),
                         tls: false,
                         fingerprint: None,
+                        trust: fm_protocol::WebTrust::Plain,
+                        ca_fingerprint: None,
+                        cert_not_after_ms: None,
+                        cert_problem: None,
+                        urls: Vec::new(),
+                        mdns: None,
                         pairing: None,
                         devices: Vec::new(),
                     }),
