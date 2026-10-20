@@ -730,6 +730,83 @@ fn runtime_realization_after_a_mid_transition_snapshot_holds_until_completion() 
     assert!(!switcher.bus_change_in_flight());
 }
 
+/// The desired states kept for realizations are pruned as revisions
+/// complete, so a long show does not grow them with every revision; the
+/// in-flight bus change keeps its own (and the one before it) until it
+/// completes, and a late realization of a pruned revision stands for the
+/// newest realized one.
+#[test]
+fn runtime_realization_prunes_completed_desired_states() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 7)).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let before = BusSelection::new(input(1), input(2));
+    let target = BusSelection::new(input(2), input(1));
+    let mut sequence = 0;
+    let mut realize = |model: &mut ClientModel, revision| {
+        sequence += 1;
+        model
+            .apply_runtime_realization(realization(
+                project_id,
+                identity.clone(),
+                revision,
+                5,
+                sequence,
+            ))
+            .unwrap();
+    };
+
+    // Commands realized as they are accepted keep one desired state.
+    for revision in 8..=200 {
+        model
+            .apply_event(event(
+                project_id,
+                identity.clone(),
+                revision,
+                desired(before),
+            ))
+            .unwrap();
+        realize(&mut model, revision);
+        assert!(model.desired_by_revision.len() <= 2, "revision {revision}");
+    }
+
+    // A timed transition at 201 runs while later commands realize on its
+    // frames: it and the revision before it stay.
+    model
+        .apply_event(event(project_id, identity.clone(), 201, desired(target)))
+        .unwrap();
+    for revision in 202..=400 {
+        model
+            .apply_event(event(
+                project_id,
+                identity.clone(),
+                revision,
+                desired(target),
+            ))
+            .unwrap();
+        realize(&mut model, revision);
+        assert_eq!(model.state().unwrap().switcher().realized, before);
+    }
+    assert!(model.desired_by_revision.contains_key(&Revision::new(200)));
+    assert!(model.desired_by_revision.contains_key(&Revision::new(201)));
+    realize(&mut model, 201);
+    let switcher = model.state().unwrap().switcher();
+    assert_eq!(switcher.realized, target);
+    assert!(!switcher.bus_change_in_flight());
+    assert!(model.desired_by_revision.len() <= 2);
+
+    // A late realization of a pruned revision stands for the newest.
+    realize(&mut model, 150);
+    assert_eq!(model.state().unwrap().switcher().realized, target);
+    assert_eq!(
+        model.apply_runtime_realization(realization(project_id, identity.clone(), 401, 5, 999)),
+        Err(ModelError::UnknownDurableRevision {
+            revision: Revision::new(401),
+        })
+    );
+}
+
 #[test]
 fn runtime_realization_ordering_is_scoped_to_generation() {
     let project_id = project(10);

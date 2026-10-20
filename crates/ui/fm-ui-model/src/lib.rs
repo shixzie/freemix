@@ -2656,6 +2656,11 @@ pub struct ClientModel {
     /// realization can be looked up for since the engine identity last
     /// changed.
     snapshot_revision: Option<Revision>,
+    /// The oldest desired state still retained once older ones were
+    /// pruned (see [`ClientModel::prune_desired`]): a realization of an
+    /// older revision stands for the newest realized one, as one predating
+    /// the snapshot does.
+    pruned_before: Option<Revision>,
     /// A Program/Preview change accepted but not realized yet while later
     /// commands are realized on its frames (Protocol 2.86): the realized
     /// buses stay where they are until it completes.
@@ -2694,6 +2699,7 @@ impl ClientModel {
             last_runtime_realization: None,
             realized_revision: None,
             snapshot_revision: None,
+            pruned_before: None,
             bus_hold: None,
             pending: Vec::new(),
             last_rejection: None,
@@ -3195,6 +3201,7 @@ impl ClientModel {
 
         if identity_changed {
             self.desired_by_revision.clear();
+            self.pruned_before = None;
             self.last_runtime_realization = None;
             self.realized_revision = None;
         }
@@ -4082,11 +4089,15 @@ impl ClientModel {
         // A transition running when the snapshot was taken may complete
         // with a revision older than every retained desired state: it
         // stands for the snapshot's, whose desired state holds its target.
+        // So may one whose desired state was pruned as completed.
         let known = self.desired_by_revision.contains_key(&realization.revision);
         let predates_snapshot = self
             .snapshot_revision
             .is_some_and(|snapshot| realization.revision < snapshot);
-        if !known && !predates_snapshot {
+        let pruned = self
+            .pruned_before
+            .is_some_and(|oldest| realization.revision < oldest);
+        if !known && !predates_snapshot && !pruned {
             return Err(ModelError::UnknownDurableRevision {
                 revision: realization.revision,
             });
@@ -4098,7 +4109,9 @@ impl ClientModel {
         let floor = if known {
             realization.revision
         } else {
-            self.snapshot_revision.unwrap_or(realization.revision)
+            self.snapshot_revision
+                .max(self.pruned_before)
+                .unwrap_or(realization.revision)
         };
         let revision = self
             .realized_revision
@@ -4126,7 +4139,33 @@ impl ClientModel {
         self.realized_revision = Some(revision);
         self.bus_hold = bus_hold;
         self.last_runtime_realization = Some(realization);
+        self.prune_desired();
         Ok(RuntimeRealizationApplied::Applied)
+    }
+
+    /// Drops the desired states no realization can need any more, so a
+    /// long show does not grow them with every revision. A realization
+    /// looks up the newest realized revision (and scans the revisions after
+    /// it for an unrealized bus change, each against the one before), and
+    /// the in-flight bus change completes with its own revision, compared
+    /// with the one before it. Every older state belongs to a revision that
+    /// completed: a late realization of one stands for the newest realized
+    /// revision, as its desired state already holds what it did.
+    fn prune_desired(&mut self) {
+        let Some(realized) = self.realized_revision else {
+            return;
+        };
+        let held = self
+            .bus_hold
+            .and_then(|hold| hold.revision.get().checked_sub(1))
+            .map(Revision::new);
+        let oldest = held.map_or(realized, |held| held.min(realized));
+        if self.pruned_before.is_some_and(|pruned| pruned >= oldest) {
+            return;
+        }
+        self.desired_by_revision
+            .retain(|revision, _| *revision >= oldest);
+        self.pruned_before = Some(oldest);
     }
 
     /// The bus hold after `revision` is realized (`known` when its desired
