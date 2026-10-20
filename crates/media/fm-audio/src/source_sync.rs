@@ -36,6 +36,15 @@
 //! an overrun drops audio so the fill returns to the target, with declick
 //! ramps at the cut.
 //!
+//! Hard resync: with a resync threshold set
+//! ([`SourceSyncConfig::with_resync_threshold_samples`]), a pull that finds
+//! both the smoothed and the current fill more than the threshold above the
+//! target (drift beyond the correction range, or a burst the loop cannot
+//! absorb) fades out over one declick ramp, skips the read position forward
+//! to the target fill, and fades back in. It is counted in
+//! [`SourceSyncTelemetry::resyncs`]. The low side needs no threshold: a fill
+//! that cannot cover a pull is an underrun.
+//!
 //! All storage is allocated in [`SourceSync::new`]; `push`, `pull`, and
 //! `telemetry` never allocate.
 
@@ -86,6 +95,8 @@ pub enum SourceSyncError {
     },
     PushTooLarge(usize),
     PullTooLarge(usize),
+    /// A resync threshold of zero samples.
+    InvalidResyncThreshold,
     NonFiniteSample {
         channel: usize,
         sample: usize,
@@ -136,6 +147,9 @@ impl fmt::Display for SourceSyncError {
                 formatter,
                 "pull of {samples} samples exceeds {MAX_SOURCE_SYNC_PULL_SAMPLES}"
             ),
+            Self::InvalidResyncThreshold => {
+                formatter.write_str("resync threshold must be at least one sample")
+            }
             Self::NonFiniteSample { channel, sample } => {
                 write!(
                     formatter,
@@ -202,6 +216,23 @@ impl DriftControlConfig {
             fill_smoothing_seconds,
             max_slew_ppm_per_second,
         })
+    }
+
+    /// The live-source preset (AU-004): ±1000 ppm range, a slow 0.01 Hz
+    /// critically damped loop, 0.5 s fill smoothing, and at most 100 ppm/s
+    /// of ratio change. The narrow loop keeps delivery jitter out of the
+    /// ratio (no audible pitch wobble) while a ±1000 ppm drift still
+    /// settles within a few minutes; [`crate::LiveSourceClock`] adds a
+    /// time-weighted fill observation in front of it.
+    #[must_use]
+    pub const fn live() -> Self {
+        Self {
+            max_correction_ppm: 1_000.0,
+            loop_bandwidth_hz: 0.01,
+            damping: 1.0,
+            fill_smoothing_seconds: 0.5,
+            max_slew_ppm_per_second: 100.0,
+        }
     }
 
     /// A fixed nominal ratio: no correction is ever applied.
@@ -451,6 +482,7 @@ pub struct SourceSyncConfig {
     capacity_samples: usize,
     drift_control: DriftControlConfig,
     discontinuity: DiscontinuityPolicy,
+    resync_threshold_samples: Option<usize>,
 }
 
 impl SourceSyncConfig {
@@ -470,7 +502,22 @@ impl SourceSyncConfig {
                 ..DriftControlConfig::disabled()
             },
             discontinuity: DiscontinuityPolicy::for_rate(input_rate),
+            resync_threshold_samples: None,
         }
+    }
+
+    /// Enables the read-side hard resync: a fill more than `samples` above
+    /// the target (smoothed and current) is skipped back to the target.
+    /// `None` (the default) never resyncs on the read side.
+    #[must_use]
+    pub const fn with_resync_threshold_samples(mut self, samples: Option<usize>) -> Self {
+        self.resync_threshold_samples = samples;
+        self
+    }
+
+    #[must_use]
+    pub const fn resync_threshold_samples(&self) -> Option<usize> {
+        self.resync_threshold_samples
     }
 
     #[must_use]
@@ -622,6 +669,10 @@ pub struct SourceSyncTelemetry {
     pub splices: u64,
     /// Flushes plus explicit [`SourceSync::reset`] calls.
     pub resets: u64,
+    /// Read-side hard resyncs (fill beyond the resync threshold).
+    pub resyncs: u64,
+    /// Input samples skipped by read-side hard resyncs.
+    pub resync_dropped_samples: u64,
 }
 
 /// Bounded, preallocated per-source converter into the engine clock.
@@ -674,6 +725,9 @@ impl SourceSync {
                 minimum: minimum_capacity,
             });
         }
+        if config.resync_threshold_samples == Some(0) {
+            return Err(SourceSyncError::InvalidResyncThreshold);
+        }
         if config.discontinuity.declick_samples > MAX_DECLICK_SAMPLES {
             return Err(SourceSyncError::DeclickTooLong(
                 config.discontinuity.declick_samples,
@@ -712,6 +766,8 @@ impl SourceSync {
             discontinuities: 0,
             splices: 0,
             resets: 0,
+            resyncs: 0,
+            resync_dropped_samples: 0,
         };
         Ok(Self {
             controller: DriftController::new(
@@ -817,6 +873,23 @@ impl SourceSync {
     ///
     /// Returns a typed output-shape or size error; on error no state changes.
     pub fn pull(&mut self, output: &mut [&mut [f32]]) -> Result<PullReport, SourceSyncError> {
+        self.pull_observed(output, None)
+    }
+
+    /// As [`Self::pull`], but the drift loop is fed `observed_fill` (input
+    /// samples, comparable with the target) instead of the fill sampled at
+    /// this request. A caller that knows when audio arrived passes a
+    /// time-weighted fill, which does not alias against bursty delivery
+    /// (see [`crate::LiveSourceClock`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::pull`].
+    pub fn pull_observed(
+        &mut self,
+        output: &mut [&mut [f32]],
+        observed_fill: Option<f64>,
+    ) -> Result<PullReport, SourceSyncError> {
         let requested = validate_output(output, self.config.channels)?;
         if requested == 0 {
             return Ok(PullReport {
@@ -854,19 +927,15 @@ impl SourceSync {
             self.controller.reseed_fill();
         }
 
+        let start = self.resync(output, requested);
         // The loop regulates the fill seen by each request, before rendering,
         // which is also the quantity the priming threshold uses.
         let fill_at_request = self.buffer_fill();
-        let renderable = self.renderable(requested);
-        let consumed_before = self.read_index;
-        self.render(output, renderable, renderable < requested);
+        let renderable = start + self.renderable(requested - start);
+        self.render(output, start, renderable, renderable < requested);
         for plane in output.iter_mut() {
             plane[renderable..].fill(0.0);
         }
-        self.telemetry.consumed_input_samples = self
-            .telemetry
-            .consumed_input_samples
-            .saturating_add(as_u64(self.read_index - consumed_before));
         self.telemetry.rendered_output_samples = self
             .telemetry
             .rendered_output_samples
@@ -886,7 +955,13 @@ impl SourceSync {
                 .saturating_add(as_u64(silent));
         } else {
             let elapsed = usize_to_f64(requested) / f64::from(self.config.output_rate.hertz());
-            let ppb = self.controller.update(fill_at_request, elapsed);
+            let observed = if start > 0 {
+                // Just resynced: the observation predates the skip.
+                fill_at_request
+            } else {
+                observed_fill.unwrap_or(fill_at_request)
+            };
+            let ppb = self.controller.update(observed, elapsed);
             self.step = self.step_for(ppb);
         }
         Ok(PullReport {
@@ -896,19 +971,61 @@ impl SourceSync {
         })
     }
 
-    /// Converts `renderable` samples into the head of each output plane,
-    /// applying any pending fade-in and, if `fade_out`, a closing fade-out.
-    fn render(&mut self, output: &mut [&mut [f32]], renderable: usize, fade_out: bool) {
+    /// Read-side hard resync: when both the smoothed and the current fill
+    /// exceed the target by more than the threshold, renders one declick
+    /// ramp fading out, skips the read position forward to the target fill,
+    /// and arms a fade-in. Returns the output samples already rendered.
+    fn resync(&mut self, output: &mut [&mut [f32]], requested: usize) -> usize {
+        let Some(threshold) = self.config.resync_threshold_samples else {
+            return 0;
+        };
+        let target = usize_to_f64(self.config.target_fill_samples);
+        let limit = target + usize_to_f64(threshold);
+        let smoothed_over = self
+            .controller
+            .smoothed_fill()
+            .is_some_and(|smoothed| smoothed > limit);
+        if !smoothed_over || self.buffer_fill() <= limit {
+            return 0;
+        }
+        let lead = self
+            .renderable(self.config.discontinuity.declick_samples.min(requested))
+            .min(requested);
+        self.render(output, 0, lead, true);
+        let ahead = self.len - self.read_index;
+        let partial = usize::from(self.frac > 0);
+        let skip = ahead
+            .saturating_sub(self.config.target_fill_samples)
+            .saturating_sub(partial);
+        self.read_index += skip;
+        self.fade_in_done = 0;
+        self.controller.reseed_fill();
+        self.telemetry.resyncs = self.telemetry.resyncs.saturating_add(1);
+        self.telemetry.resync_dropped_samples = self
+            .telemetry
+            .resync_dropped_samples
+            .saturating_add(as_u64(skip));
+        lead
+    }
+
+    /// Converts output samples `start..end` into each output plane, applying
+    /// any pending fade-in and, if `fade_out`, a closing fade-out.
+    fn render(&mut self, output: &mut [&mut [f32]], start: usize, end: usize, fade_out: bool) {
         let declick = self.config.discontinuity.declick_samples;
-        let fade_out = if fade_out { declick.min(renderable) } else { 0 };
-        for index in 0..renderable {
+        let fade_out = if fade_out {
+            declick.min(end - start)
+        } else {
+            0
+        };
+        let consumed_before = self.read_index;
+        for index in start..end {
             let mut gain = 1.0_f32;
             if self.fade_in_done < declick {
                 self.fade_in_done += 1;
                 gain = ramp_gain(self.fade_in_done, declick);
             }
-            if index >= renderable - fade_out {
-                gain *= ramp_gain(renderable - index, fade_out);
+            if index >= end - fade_out {
+                gain *= ramp_gain(end - index, fade_out);
             }
             self.kernel
                 .coefficients_into(self.frac, self.denominator, &mut self.coefficients);
@@ -925,6 +1042,10 @@ impl SourceSync {
             self.read_index += usize::try_from(advanced / self.denominator).unwrap_or(usize::MAX);
             self.frac = advanced % self.denominator;
         }
+        self.telemetry.consumed_input_samples = self
+            .telemetry
+            .consumed_input_samples
+            .saturating_add(as_u64(self.read_index - consumed_before));
     }
 
     fn step_for(&self, correction_ppb: i64) -> u64 {

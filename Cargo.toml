@@ -124,6 +124,11 @@ opt-level = 2
 [profile.dev.package.fm-compositor]
 opt-level = 2
 
+# Live sources resample every captured sample through a 72-tap sinc kernel
+# (AU-004); unoptimized, a debug daemon spends milliseconds per frame on it.
+[profile.dev.package.fm-audio]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 16

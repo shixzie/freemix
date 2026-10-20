@@ -16,6 +16,7 @@ mod clock_recalibration;
 mod dsp;
 mod embedded_audio;
 mod gain_smoother;
+mod live_source;
 mod monitor;
 mod multichannel;
 mod resampler;
@@ -51,6 +52,10 @@ pub use embedded_audio::{
 pub use gain_smoother::{
     GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry,
     MAX_GAIN_SMOOTHER_RAMP_SAMPLES,
+};
+pub use live_source::{
+    AV_SMOOTHING_SECONDS, AV_TOLERANCE_FRAMES, LivePull, LiveSourceClock, LiveSourceConfig,
+    LiveSourceTelemetry, MIN_LIVE_LATENCY_FRAMES, MIN_LIVE_TARGET_SAMPLES, PictureAction,
 };
 pub use monitor::{
     MAX_MONITOR_AUX_BUSES, MAX_MONITOR_CHANNELS, MAX_MONITOR_LEVEL_DB, MAX_MONITOR_STRIPS,
