@@ -586,25 +586,38 @@ pub(crate) fn draw_screen_capture_form(
     ui.label(section_label(l.text(Msg::ScCrop)));
     // Four equal columns, each edge's name over its field, so the row
     // never wraps whatever the language.
-    ui.columns(4, |columns| {
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing().item_spacing.x;
+        let width = ((ui.available_width() - 3.0 * spacing) / 4.0 - 0.5).floor();
+        let height = ui.spacing().interact_size.y;
         let crop = &mut draft.config.crop;
-        for (ui, (label, value)) in columns.iter_mut().zip([
+        for (label, value) in [
             (Msg::ScCropLeft, &mut crop.left),
             (Msg::ScCropTop, &mut crop.top),
             (Msg::ScCropRight, &mut crop.right),
             (Msg::ScCropBottom, &mut crop.bottom),
-        ]) {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.add(
-                egui::Label::new(RichText::new(l.text(label)).size(crate::theme::legible(10.5)))
-                    .truncate(),
+        ] {
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, 2.0 * height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(l.text(label)).size(crate::theme::legible(10.5)),
+                        )
+                        .truncate(),
+                    );
+                    ui.add_sized(
+                        Vec2::new(width, height),
+                        egui::DragValue::new(value)
+                            .range(0..=MAX_SCREEN_CAPTURE_CROP)
+                            .speed(1.0),
+                    )
+                    .on_hover_text(l.text(Msg::ScCropHover));
+                },
             );
-            ui.add(
-                egui::DragValue::new(value)
-                    .range(0..=MAX_SCREEN_CAPTURE_CROP)
-                    .speed(1.0),
-            )
-            .on_hover_text(l.text(Msg::ScCropHover));
         }
     });
     ui.add_space(4.0);
@@ -704,54 +717,72 @@ const OPTION_COLUMNS: f32 = 3.0;
 /// The height of a one-line option key.
 const OPTION_KEY_HEIGHT: f32 = 28.0;
 
+/// The font of an option key's label.
+fn option_font() -> egui::FontId {
+    egui::FontId::proportional(crate::theme::legible(11.5))
+}
+
 /// The key size that puts an option row's keys on one line in three
-/// columns: a long label wraps onto a second line inside its key, and every
-/// key of the row takes the tallest one's height. `None` when a single word
-/// of `labels` would not fit a column (the row then wraps keys of their
-/// natural width).
+/// columns, with each label as [`option_label`] breaks it, every key of
+/// the row as tall as the tallest. `None` when a label cannot fit a column
+/// even on two lines (the row then wraps keys of their natural width).
 fn option_key_size(ui: &Ui, labels: &[&str]) -> Option<Vec2> {
     // Every option row is laid out in three columns, so the keys of the
     // two- and three-key rows line up.
     let count = OPTION_COLUMNS;
     // A point to spare so rounding never pushes the last key to a new line.
     let width = ((ui.available_width() - OPTION_KEY_SPACING * (count - 1.0)) / count - 1.0).floor();
+    let text_width = option_text_width(ui, width);
     let padding = ui.spacing().button_padding;
-    let text_width = width - 2.0 * padding.x - 4.0;
-    let font = egui::FontId::proportional(crate::theme::legible(11.5));
-    let (widest_word, tallest) = ui.fonts_mut(|fonts| {
-        labels
-            .iter()
-            .fold((0.0_f32, 0.0_f32), |(word, tall), label| {
-                let widest_word = label
-                    .split_whitespace()
-                    .map(|word| {
-                        fonts
-                            .layout_no_wrap(word.to_owned(), font.clone(), egui::Color32::WHITE)
-                            .size()
-                            .x
-                    })
-                    .fold(0.0_f32, f32::max);
-                let height = fonts
-                    .layout(
-                        (*label).to_owned(),
-                        font.clone(),
-                        egui::Color32::WHITE,
-                        text_width.max(1.0),
-                    )
-                    .size()
-                    .y;
-                (word.max(widest_word), tall.max(height))
-            })
-    });
-    (widest_word <= text_width).then(|| {
-        Vec2::new(
-            width,
-            (tallest + 2.0 * padding.y + 6.0).max(OPTION_KEY_HEIGHT),
-        )
-    })
+    let mut tallest = 0.0_f32;
+    for label in labels {
+        let label = option_label(ui, label, text_width)?;
+        let size = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(label, option_font(), egui::Color32::WHITE)
+                .size()
+        });
+        tallest = tallest.max(size.y);
+    }
+    Some(Vec2::new(
+        width,
+        (tallest + 2.0 * padding.y + 6.0).max(OPTION_KEY_HEIGHT),
+    ))
 }
 
-/// Adds a kind key of `size` (wrapping its label), or of its natural size.
+/// The width a label has inside an option key `width` wide.
+fn option_text_width(ui: &Ui, width: f32) -> f32 {
+    width - 2.0 * ui.spacing().button_padding.x - 1.0
+}
+
+/// `label` as it reads in an option key with `width` for text: on one line
+/// when it fits, else on the two most even lines that fit; `None` when
+/// neither does.
+fn option_label(ui: &Ui, label: &str, width: f32) -> Option<String> {
+    let measure = |text: &str| {
+        ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(text.to_owned(), option_font(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if measure(label) <= width {
+        return Some(label.to_owned());
+    }
+    let words: Vec<&str> = label.split_whitespace().collect();
+    (1..words.len())
+        .map(|split| {
+            let (first, second) = (words[..split].join(" "), words[split..].join(" "));
+            (measure(&first).max(measure(&second)), first, second)
+        })
+        .filter(|(widest, ..)| *widest <= width)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, first, second)| format!("{first}\n{second}"))
+}
+
+/// Adds a kind key of `size` (its label broken to fit), or of its natural
+/// size.
 fn add_option_key(
     ui: &mut Ui,
     enabled: bool,
@@ -759,13 +790,12 @@ fn add_option_key(
     selected: bool,
     size: Option<Vec2>,
 ) -> egui::Response {
-    let key = kind_key(label, selected);
-    match size {
-        Some(size) => {
-            ui.add_enabled_ui(enabled, |ui| ui.add_sized(size, key.wrap()))
-                .inner
-        }
-        None => ui.add_enabled(enabled, key),
+    let fitted = size.and_then(|size| {
+        option_label(ui, label, option_text_width(ui, size.x)).map(|label| (size, label))
+    });
+    match fitted {
+        Some((size, label)) => ui.add_enabled(enabled, kind_key(&label, selected).min_size(size)),
+        None => ui.add_enabled(enabled, kind_key(label, selected)),
     }
 }
 
@@ -975,6 +1005,55 @@ mod tests {
     use fm_ui_model::i18n::Language;
 
     use super::*;
+
+    /// The form's width after a few passes at the Add input dialog's
+    /// content width, in `language`, with a window followed by its rule.
+    fn form_width(language: Language) -> f32 {
+        const WIDTH: f32 = 454.0;
+        let context = egui::Context::default();
+        let state = StudioUiState::new(crate::StudioConnectionStatus::Ready);
+        let mut draft = ScreenCaptureDraft::default();
+        draft.choose_window(&window(7, "Slides", "Keynote deck"));
+        draft.config.audio = ScreenCaptureAudio::Application;
+        let mut width = 0.0;
+        for _ in 0..4 {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    Vec2::new(1920.0, 1080.0),
+                )),
+                ..egui::RawInput::default()
+            });
+            let mut ui = Ui::new(
+                context.clone(),
+                egui::Id::new("screen-capture-form-width"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(egui::Rect::from_min_size(
+                        egui::pos2(10.0, 10.0),
+                        Vec2::new(WIDTH, 2000.0),
+                    )),
+            );
+            let _ = draw_screen_capture_form(
+                &mut ui,
+                Locale::new(language),
+                &state,
+                "test",
+                &mut draft,
+            );
+            width = ui.min_rect().width();
+            let _ = context.end_pass();
+        }
+        width
+    }
+
+    #[test]
+    fn the_form_stays_inside_the_dialog_in_every_language() {
+        for language in [Language::English, Language::Spanish] {
+            let width = form_width(language);
+            assert!(width <= 454.0, "{language:?}: {width}");
+        }
+    }
 
     fn window(id: u64, app: &str, title: &str) -> WindowInfo {
         WindowInfo {
