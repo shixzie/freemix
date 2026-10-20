@@ -1033,3 +1033,66 @@ fn keys_and_effects_export_as_freemix_cli_commands() {
         "freemix-cli scene-layer-key show.freemix 100 3 luma 10 240 5 on"
     );
 }
+
+/// SW-008: an auto key from the layer's input picture is one undo step and
+/// one live `SetKey` that keeps the layer's matte refinement; applying the
+/// same result again changes nothing, and Undo puts the old key back.
+#[test]
+fn an_auto_key_is_one_step_and_one_set_key() {
+    use fm_ui_model::auto_key::{AutoKeyPicture, AutoKeySample, auto_key};
+    let mut keyed = layout();
+    let refinement = fm_protocol::WireKeyRefinement {
+        clip_black: 8,
+        clip_white: 250,
+        choke: 1,
+        edge_softness: 2,
+        despill: fm_protocol::WireKeyDespill::Off,
+    };
+    keyed.layers[1].key = Some(WireLayerKey::Luma(WireLumaKey {
+        low: 16,
+        high: 255,
+        softness: 8,
+        invert: false,
+        refinement,
+    }));
+    let mut document = SceneLayoutDocument::new(scene(), &keyed);
+    let mut rgba = Vec::new();
+    for index in 0..16 * 9 {
+        let pixel = if index % 16 < 4 {
+            [200, 160, 130, 255]
+        } else {
+            [30, 190, 60, 255]
+        };
+        rgba.extend_from_slice(&pixel);
+    }
+    let picture = AutoKeyPicture::new(16, 9, &rgba).unwrap();
+    let auto = auto_key(picture, AutoKeySample::Dominant).unwrap();
+    assert!(document.apply_auto_key(layer_id(2), &auto));
+    assert_eq!(document.undo_label(), Some(EditLabel::AutoKey));
+    let expected = WireLayerKey::Chroma(WireChromaKey {
+        red: 30,
+        green: 190,
+        blue: 60,
+        similarity: auto.similarity,
+        smoothness: auto.smoothness,
+        spill: auto.spill,
+        refinement: fm_protocol::WireKeyRefinement {
+            despill: auto.despill,
+            ..refinement
+        },
+    });
+    let sent = document.take_live_edits();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].layer, layer_id(2));
+    assert_eq!(
+        sent[0].operation,
+        SceneLayerOperation::SetKey(Some(expected))
+    );
+    assert!(!document.apply_auto_key(layer_id(2), &auto));
+    assert!(!document.apply_auto_key(layer_id(99), &auto));
+    assert!(document.undo());
+    assert_eq!(
+        document.layer(layer_id(2)).unwrap().key,
+        keyed.layers[1].key
+    );
+}

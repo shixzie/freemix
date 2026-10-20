@@ -158,6 +158,8 @@ pub enum EditLabel {
     Key,
     /// The chroma key colour was picked.
     KeyColour,
+    /// An auto key (SW-008) set a whole chroma key from the input's picture.
+    AutoKey,
     /// An effect was added, removed, or moved.
     Effects,
 }
@@ -1055,6 +1057,37 @@ impl SceneLayoutDocument {
             return false;
         }
         self.edit_selected(EditLabel::Key, |layer| layer.key = key)
+    }
+
+    /// Gives layer `id` the chroma key `auto` derived from its input's
+    /// picture (SW-008) as one step ([`EditLabel::AutoKey`]): the layer's
+    /// clip, choke, and edge softness are kept and the colour, similarity,
+    /// smoothness, spill, and despill are the auto key's. Sent live it is
+    /// one `scene_layer_key_set`, so the show's undo takes it back whole.
+    /// Returns whether anything changed.
+    pub fn apply_auto_key(
+        &mut self,
+        id: WireSceneLayerId,
+        auto: &crate::auto_key::AutoKey,
+    ) -> bool {
+        let Some(previous) = self.layer(id).map(|layer| layer.key) else {
+            return false;
+        };
+        let key = auto.layer_key(previous);
+        if !key.is_valid() || previous == Some(key) {
+            return false;
+        }
+        let own_step = self.transaction.is_none();
+        if own_step {
+            self.begin(EditLabel::AutoKey);
+        }
+        if let Some(layer) = self.layers.iter_mut().find(|layer| layer.id == id) {
+            layer.key = Some(key);
+        }
+        if own_step {
+            self.commit();
+        }
+        true
     }
 
     /// Sets the key colour of every selected layer with a chroma key,

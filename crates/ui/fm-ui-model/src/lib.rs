@@ -43,6 +43,7 @@ pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 
 pub mod animation_editor;
 mod animation_presets;
+pub mod auto_key;
 pub mod cue_lists;
 pub mod grade_editor;
 mod grading;
