@@ -289,7 +289,7 @@ fn the_state_record_and_event_carry_the_whole_list() {
     );
 }
 
-/// A `set` carries an optional `active` item (Protocol 2.77), one of its
+/// A `set` carries an optional `active` item (Protocol 2.79), one of its
 /// items: an undone edit that dropped the active item is journaled with it,
 /// so a replay restores which item was active.
 #[test]

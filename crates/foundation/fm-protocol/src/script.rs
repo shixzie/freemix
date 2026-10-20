@@ -11,7 +11,7 @@
 //!
 //! | Message | Wire | Fields |
 //! |---|---|---|
-//! | [`crate::CommandPayload::SetScript`] | `script_set` | `script` (nonzero), `name`, `source` (lowercase hex of its UTF-8 bytes), optional `position` (2.77, below `MAX_SCRIPTS`) |
+//! | [`crate::CommandPayload::SetScript`] | `script_set` | `script` (nonzero), `name`, `source` (lowercase hex of its UTF-8 bytes), optional `position` (2.79, below `MAX_SCRIPTS`) |
 //! | [`crate::CommandPayload::RemoveScript`] | `script_remove` | `script` |
 //! | [`crate::CommandPayload::RunScript`] | `script_run` | `script` |
 //! | [`crate::CommandPayload::StopScript`] | `script_stop` | optional `run` (Protocol 2.62; `run` since 2.69) |

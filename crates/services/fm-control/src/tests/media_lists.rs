@@ -339,7 +339,7 @@ fn dropped_active() -> ControlService {
 }
 
 /// An undone `set` that dropped the active item is journaled with that
-/// item as `active` (Protocol 2.77): the journal line, decoded and replayed
+/// item as `active` (Protocol 2.79): the journal line, decoded and replayed
 /// on a restored authority, restores which item was active.
 #[test]
 fn an_undone_set_is_journaled_with_the_item_it_dropped_as_active() {

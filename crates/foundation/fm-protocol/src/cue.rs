@@ -5,7 +5,7 @@
 //! name and a bounded list of [`WireCueAction`]s; the authority keeps the
 //! standby pointer and run state ([`CueRunStatus`]). List edits
 //! (`cue_list_set`, `cue_list_remove`) are undoable project edits (since
-//! Protocol 2.77 `cue_list_set` carries an optional `position` below
+//! Protocol 2.79 `cue_list_set` carries an optional `position` below
 //! [`MAX_CUE_LISTS`], so an undone removal returns to its place); GO,
 //! standby moves, stop, and reset (`cue_go`, `cue_standby`, `cue_back`,
 //! `cue_skip`, `cue_stop`, `cue_reset`) are live operations. A GO runs the

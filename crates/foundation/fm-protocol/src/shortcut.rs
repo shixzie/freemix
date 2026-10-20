@@ -12,7 +12,7 @@
 //!
 //! | Message | Wire | Fields |
 //! |---|---|---|
-//! | [`crate::CommandPayload::SetShortcut`] | `shortcut_set` | `shortcut` (nonzero), `name`, `enabled`, `key`, `osc`, `action`, optional `position` (2.77, below `MAX_SHORTCUTS`) |
+//! | [`crate::CommandPayload::SetShortcut`] | `shortcut_set` | `shortcut` (nonzero), `name`, `enabled`, `key`, `osc`, `action`, optional `position` (2.79, below `MAX_SHORTCUTS`) |
 //! | [`crate::CommandPayload::RemoveShortcut`] | `shortcut_remove` | `shortcut` |
 //! | [`crate::CommandPayload::FireShortcut`] | `shortcut_fire` | `shortcut` |
 //! | [`crate::EventPayload::ShortcutChanged`] | `shortcut_changed` | the whole shortcut |

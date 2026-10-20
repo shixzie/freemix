@@ -14,7 +14,7 @@
 //!
 //! The `media_list` command carries `input` and `operation`
 //! (`create|set|navigate|advance`). `create` adds `name`, `items`, and the
-//! options; `set` the items and options and (2.77) an optional `active`
+//! options; `set` the items and options and (2.79) an optional `active`
 //! item, one of its items; `navigate` a `navigation` token
 //! (`next|previous|first|last|goto|item`) with `index` for `goto` (a
 //! play-order position) and `item` (an item id); `advance` the `from` item.

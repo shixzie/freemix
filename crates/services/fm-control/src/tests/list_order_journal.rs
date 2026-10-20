@@ -1,6 +1,6 @@
 //! An accepted undo is journaled as the wire payload of the edit it
 //! resolves to. Undoing the removal of a shortcut, script, or cue list
-//! journals its old `position` (Protocol 2.77), so the journal line,
+//! journals its old `position` (Protocol 2.79), so the journal line,
 //! decoded and replayed on a restored authority, puts it back in place
 //! rather than at the end of the list.
 

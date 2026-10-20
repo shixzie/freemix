@@ -115,7 +115,7 @@ pub(super) fn parse_canonical_u64(value: &str) -> Option<u64> {
 }
 
 /// Checks an optional `position` field: an index below `bound` in an
-/// authored project list (shortcuts, scripts, cue lists; Protocol 2.77).
+/// authored project list (shortcuts, scripts, cue lists; Protocol 2.79).
 pub(super) fn check_list_position(position: u8, bound: usize) -> Result<u8, CodecError> {
     if usize::from(position) < bound {
         Ok(position)

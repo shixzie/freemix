@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.78 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.79 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2959,6 +2959,28 @@ captured on the server.
   `input-screen-capture-status`, their `remote-` forms, and
   `remote-screen-capture-targets`.
 - 2.77 is refused.
+
+Protocol 2.79 lets an undo journal the exact place and active item it
+restores. An accepted undo is journaled as the wire payload of the edit it
+resolves to, so these fields make a journal replay land where the live undo
+did. No schema change: list order and the active item were already saved.
+
+- `shortcut_set`, `script_set`, and `cue_list_set` gain an optional
+  `position`: a canonical index below `MAX_SHORTCUTS` (64), `MAX_SCRIPTS`
+  (16), or `MAX_CUE_LISTS` (8), like `stream_target_set`'s. It places a
+  new entry at that index of the project's list, or moves an existing one
+  there, clamped to the end; absent, an existing entry stays where it is
+  and a new one is appended. Undoing a removal carries the old index, so
+  the entry returns to its place instead of the end of the list. A
+  `position` on any other payload, out of bounds, or non-canonical is
+  refused.
+- The `media_list` `set` operation gains an optional `active` item id,
+  which must name one of its items; that item becomes active (cued,
+  stopped; re-cued in place when the input already plays its file).
+  Absent, the active item stays when it is kept, else the first item in
+  play order is cued. Undoing a `set` that dropped the active item
+  carries it, so the list returns to that item.
+- 2.78 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
