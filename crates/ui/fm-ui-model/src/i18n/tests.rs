@@ -300,12 +300,37 @@ fn every_animation_editor_refusal_has_a_message() {
     assert_eq!(Msg::anim_editor_error("anim-editor-something-new"), None);
 }
 
+/// On macOS the command chords take Cmd, and their key text says so.
+#[test]
+fn key_combinations_say_cmd_on_macos() {
+    assert_eq!(Locale::ENGLISH.keys_on("Ctrl+Shift+S", true), "Cmd+Shift+S");
+    assert_eq!(ES.keys_on("Ctrl+Shift+S", true), "Cmd+Mayús+S");
+    assert_eq!(
+        Locale::ENGLISH.keys_on("Ctrl+= · Ctrl+-", true),
+        "Cmd+= · Cmd+-"
+    );
+    assert_eq!(Locale::ENGLISH.keys_on("F5 – F8", true), "F5 – F8");
+    // Only the whole word `Ctrl` changes.
+    assert_eq!(Locale::ENGLISH.keys_on("Ctrlx", true), "Ctrlx");
+    assert_eq!(
+        Locale::ENGLISH.keys("Ctrl+Z"),
+        if cfg!(target_os = "macos") {
+            "Cmd+Z"
+        } else {
+            "Ctrl+Z"
+        }
+    );
+}
+
 #[test]
 fn key_combinations_use_the_keyboard_names_of_the_language() {
-    assert_eq!(Locale::ENGLISH.keys("Ctrl+Shift+A"), "Ctrl+Shift+A");
-    assert_eq!(ES.keys("Ctrl+Shift+A"), "Ctrl+Mayús+A");
-    assert_eq!(ES.keys("Ctrl+Shift+Z"), "Ctrl+Mayús+Z");
-    assert_eq!(ES.keys("Ctrl+= · Ctrl+-"), "Ctrl+= · Ctrl+-");
+    assert_eq!(
+        Locale::ENGLISH.keys_on("Ctrl+Shift+A", false),
+        "Ctrl+Shift+A"
+    );
+    assert_eq!(ES.keys_on("Ctrl+Shift+A", false), "Ctrl+Mayús+A");
+    assert_eq!(ES.keys_on("Ctrl+Shift+Z", false), "Ctrl+Mayús+Z");
+    assert_eq!(ES.keys_on("Ctrl+= · Ctrl+-", false), "Ctrl+= · Ctrl+-");
     assert_eq!(ES.keys("Shift+Enter"), "Mayús+Intro");
     assert_eq!(ES.keys("Esc"), "Esc");
     // A whole catalog text is translated first.

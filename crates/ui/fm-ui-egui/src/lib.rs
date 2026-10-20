@@ -1312,7 +1312,22 @@ fn studio_shortcuts(
     }
     ui.input_mut(|input| {
         let mut intents = Vec::new();
+        // `,` and `.` count by the character they type, so a layout that
+        // needs Shift for them (AZERTY's `.`) reaches them too.
+        let mut steps = keymap::cue_steps(&input.events).into_iter();
         input.events.retain(|event| {
+            if let Some(step) = steps.next().flatten() {
+                // Standby previous/next on the Cues panel's list (RC-017),
+                // gated like the panel's keys; a held key acts once.
+                let Event::Key { repeat: false, .. } = event else {
+                    return true;
+                };
+                let Some(intent) = cue_key(step).filter(|_| transition_available) else {
+                    return true;
+                };
+                intents.push(StudioIntent::Cue(intent));
+                return false;
+            }
             let Event::Key {
                 key,
                 pressed: true,
@@ -1344,15 +1359,10 @@ fn studio_shortcuts(
                     intents.push(StudioIntent::Cut);
                     false
                 }
-                // GO and standby previous/next on the Cues panel's list
-                // (RC-017), gated like the panel's keys.
-                Key::G | Key::Comma | Key::Period if transition_available => {
-                    let cue = match key {
-                        Key::G => CueKey::Go,
-                        Key::Comma => CueKey::Previous,
-                        _ => CueKey::Next,
-                    };
-                    let Some(intent) = cue_key(cue) else {
+                // GO on the Cues panel's list (RC-017), gated like the
+                // panel's keys.
+                Key::G if transition_available => {
+                    let Some(intent) = cue_key(CueKey::Go) else {
                         return true;
                     };
                     intents.push(StudioIntent::Cue(intent));
@@ -1745,11 +1755,8 @@ impl StudioShell {
     /// every connection state, unlike the console keys.
     fn toggle_help_on_key(&mut self, ui: &mut Ui) {
         let context = ui.ctx().clone();
-        let other_owner = self.show_about
-            || self.show_preferences
-            || self.add_input.is_some()
-            || self.remove_input.is_some()
-            || self.layout_dialog_open()
+        let other_owner = self.show_preferences
+            || self.modal_dialog_open()
             || (!self.show_shortcuts && egui::Popup::is_any_open(&context));
         if other_owner || context.egui_wants_keyboard_input() {
             return;
@@ -1790,16 +1797,10 @@ impl StudioShell {
     /// and an open menu or popup closes on Esc, so Esc must not also cancel a
     /// live manual transition, nor may console keys act behind them.
     fn console_keys_blocked(&self, context: &egui::Context) -> bool {
-        self.show_shortcuts
-            || self.show_about
-            || self.show_preferences
-            || self.add_input.is_some()
-            || self.remove_input.is_some()
-            || self.lifecycle.dialog_open()
+        self.window_keys_blocked()
             || self.color_owns_keyboard()
             || self.animation_owns_keyboard()
             || self.designer_owns_keyboard()
-            || self.layout_dialog_open()
             || egui::Popup::is_any_open(context)
     }
 

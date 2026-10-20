@@ -17,6 +17,10 @@ use fm_ui_egui::CueKey;
 const DATAGRAM_CAPACITY: usize = 128;
 const ACTION_CAPACITY: usize = 16;
 const READ_TIMEOUT: Duration = Duration::from_millis(25);
+/// The first pause after a receive error; each further error in a row
+/// doubles it, up to [`MAX_ERROR_BACKOFF`].
+const MIN_ERROR_BACKOFF: Duration = Duration::from_millis(10);
+const MAX_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OscAction {
@@ -58,6 +62,18 @@ struct SharedCounters {
     rejected: AtomicU64,
     overflow: AtomicU64,
     failed: AtomicU64,
+    /// Whether the worker still receives; cleared however it exits.
+    listening: AtomicBool,
+}
+
+/// Clears [`SharedCounters::listening`] when the worker exits, even by a
+/// panic, so a dead listener shows instead of silently ignoring OSC.
+struct ListeningGuard<'a>(&'a AtomicBool);
+
+impl Drop for ListeningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 pub(crate) struct OscReceiver {
@@ -82,6 +98,7 @@ impl OscReceiver {
         let wake_socket = socket.try_clone()?;
         let (action_sender, actions) = mpsc::sync_channel(ACTION_CAPACITY);
         let counters = Arc::new(SharedCounters::default());
+        counters.listening.store(true, Ordering::Release);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_counters = Arc::clone(&counters);
         let worker_cancel = Arc::clone(&cancel);
@@ -89,8 +106,10 @@ impl OscReceiver {
         let worker = thread::Builder::new()
             .name("freemix-osc".to_owned())
             .spawn(move || {
+                let _listening = ListeningGuard(&worker_counters.listening);
                 receive_loop(
-                    &socket,
+                    &mut |datagram| socket.recv_from(datagram),
+                    &mut thread::sleep,
                     &action_sender,
                     &worker_counters,
                     &worker_cancel,
@@ -132,6 +151,13 @@ impl OscReceiver {
         }
     }
 
+    /// Whether the listener still receives OSC. A receive error only
+    /// pauses it; it stops for good only if its worker exits, which the
+    /// operator must see.
+    pub(crate) fn is_listening(&self) -> bool {
+        self.counters.listening.load(Ordering::Acquire)
+    }
+
     pub(crate) fn shutdown(mut self) -> thread::Result<()> {
         self.stop()
     }
@@ -163,17 +189,27 @@ fn validate_listen_address(address: SocketAddr) -> io::Result<()> {
     }
 }
 
+/// Reads one datagram into the buffer: its length and sender.
+type ReceiveFn<'a> = dyn FnMut(&mut [u8]) -> io::Result<(usize, SocketAddr)> + 'a;
+
+/// Receives datagrams until `cancel` is set or the UI drops its queue.
+/// An interrupted receive retries at once; any other error is counted,
+/// logged once per run of errors, and retried after a growing `pause`, so
+/// a transient socket fault never kills the listener.
 fn receive_loop(
-    socket: &UdpSocket,
+    receive: &mut ReceiveFn<'_>,
+    pause: &mut dyn FnMut(Duration),
     actions: &SyncSender<OscAction>,
     counters: &SharedCounters,
     cancel: &AtomicBool,
     repaint: &egui::Context,
 ) {
     let mut datagram = [0_u8; DATAGRAM_CAPACITY];
+    let mut backoff: Option<Duration> = None;
     while !cancel.load(Ordering::Acquire) {
-        match socket.recv_from(&mut datagram) {
+        match receive(&mut datagram) {
             Ok((length, sender)) => {
+                backoff = None;
                 if cancel.load(Ordering::Acquire) {
                     break;
                 }
@@ -197,10 +233,21 @@ fn receive_loop(
                 if matches!(
                     error.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
-            Err(_) => {
+                ) =>
+            {
+                backoff = None;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => {
                 counters.failed.fetch_add(1, Ordering::Relaxed);
-                break;
+                let delay = backoff.map_or(MIN_ERROR_BACKOFF, |previous| {
+                    previous.saturating_mul(2).min(MAX_ERROR_BACKOFF)
+                });
+                if backoff.is_none() {
+                    eprintln!("freemix-studio: OSC receive failed, retrying: {error}");
+                }
+                backoff = Some(delay);
+                pause(delay);
             }
         }
     }
@@ -297,7 +344,96 @@ mod tests {
 
     use eframe::egui;
 
-    use super::{CueKey, DATAGRAM_CAPACITY, OscAction, OscReceiver, decode};
+    use super::{
+        CueKey, DATAGRAM_CAPACITY, ListeningGuard, MAX_ERROR_BACKOFF, MIN_ERROR_BACKOFF, OscAction,
+        OscReceiver, SharedCounters, decode, receive_loop,
+    };
+
+    /// An interrupted receive retries at once and other errors back off
+    /// and retry: neither stops the listener, which still decodes the next
+    /// datagram. A good datagram resets the backoff.
+    #[test]
+    fn receive_errors_back_off_and_never_stop_the_listener() {
+        use std::{
+            io,
+            net::SocketAddr,
+            sync::{atomic::AtomicBool, mpsc},
+        };
+        let loopback: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let cut = message("/freemix/switcher/cut");
+        let fade = message("/freemix/switcher/fade");
+        let errors = |kind| Err::<Vec<u8>, _>(io::Error::from(kind));
+        let mut script = vec![
+            errors(io::ErrorKind::Interrupted),
+            errors(io::ErrorKind::ConnectionRefused),
+            errors(io::ErrorKind::Other),
+            Ok(cut),
+            errors(io::ErrorKind::Interrupted),
+            errors(io::ErrorKind::ConnectionReset),
+            Ok(fade),
+        ];
+        script.extend((0..12).map(|_| errors(io::ErrorKind::Other)));
+        script.reverse();
+        let counters = SharedCounters::default();
+        let cancel = AtomicBool::new(false);
+        let (sender, actions) = mpsc::sync_channel(4);
+        let mut pauses = Vec::new();
+        receive_loop(
+            &mut |datagram| {
+                let Some(next) = script.pop() else {
+                    cancel.store(true, Ordering::Release);
+                    return Err(io::ErrorKind::TimedOut.into());
+                };
+                let bytes = next?;
+                datagram[..bytes.len()].copy_from_slice(&bytes);
+                Ok((bytes.len(), loopback))
+            },
+            &mut |delay| pauses.push(delay),
+            &sender,
+            &counters,
+            &cancel,
+            &egui::Context::default(),
+        );
+        assert_eq!(
+            actions.try_iter().collect::<Vec<_>>(),
+            [OscAction::Cut, OscAction::Fade]
+        );
+        // Interrupted receives are neither counted nor paused for.
+        assert_eq!(counters.failed.load(Ordering::Relaxed), 15);
+        let ms = |ms| Duration::from_millis(ms);
+        let mut expected = vec![ms(10), ms(20), ms(10)];
+        expected.extend([10, 20, 40, 80, 160, 320, 640].map(ms));
+        expected.extend([MAX_ERROR_BACKOFF; 5]);
+        assert_eq!(pauses, expected);
+        assert_eq!(pauses[0], MIN_ERROR_BACKOFF);
+    }
+
+    /// A worker that exits, even by a panic, clears the listening flag the
+    /// console shows.
+    #[test]
+    fn a_dead_listener_is_reported() {
+        let repaint = egui::Context::default();
+        let address = UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let receiver = OscReceiver::bind(address, repaint).unwrap();
+        assert!(receiver.is_listening());
+        let counters = Arc::clone(&receiver.counters);
+        receiver.shutdown().unwrap();
+        assert!(!counters.listening.load(Ordering::Acquire));
+
+        let counters = Arc::new(SharedCounters::default());
+        counters.listening.store(true, Ordering::Release);
+        let worker = Arc::clone(&counters);
+        let panicked = std::thread::spawn(move || {
+            let _listening = ListeningGuard(&worker.listening);
+            panic!("worker fault");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(!counters.listening.load(Ordering::Acquire));
+    }
 
     /// A queued action wakes the UI: an idle console (no monitor timers, no
     /// state traffic) must not hold an OSC GO until something else repaints.

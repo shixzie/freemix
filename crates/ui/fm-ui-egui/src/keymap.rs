@@ -126,6 +126,55 @@ pub(crate) fn chord(key: Key, modifiers: Modifiers) -> Option<Chord> {
     Chord::ALL.into_iter().find(|chord| chord.key() == key)
 }
 
+/// The cue step a press of `key` names: `,` steps the Cues panel's standby
+/// back and `.` forward (RC-017), whatever keys the layout types them with.
+///
+/// egui-winit reports a press as its logical key (the character the layout
+/// produced, Shift applied), falling back to the physical key when that
+/// character has no [`Key`]; the [`Event::Text`] it typed follows in the
+/// same frame. So AZERTY's Shift+`;` arrives as [`Key::Period`] with Shift
+/// and the text `.`, while US Shift+`.` (`>`, which has no [`Key`]) arrives
+/// as the physical [`Key::Period`] with Shift and the text `>`. A press
+/// counts when its `typed` text is the punctuation itself, or, without
+/// typed text, when no modifier is held. Ctrl, Alt, and Cmd never count.
+pub(crate) fn cue_step_key(key: Key, modifiers: Modifiers, typed: Option<&str>) -> Option<CueKey> {
+    let (step, punctuation) = match key {
+        Key::Comma => (CueKey::Previous, ","),
+        Key::Period => (CueKey::Next, "."),
+        _ => return None,
+    };
+    if modifiers.ctrl || modifiers.alt || modifiers.command || modifiers.mac_cmd {
+        return None;
+    }
+    let produced = typed.map_or(!modifiers.shift, |typed| typed == punctuation);
+    produced.then_some(step)
+}
+
+/// The cue step of each of `events` (see [`cue_step_key`]): `Some` only
+/// for a press of `,` or `.`, read with the text the press typed.
+pub(crate) fn cue_steps(events: &[Event]) -> Vec<Option<CueKey>> {
+    events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            let typed = match events.get(index + 1) {
+                Some(Event::Text(text)) => Some(text.as_str()),
+                _ => None,
+            };
+            cue_step_key(*key, *modifiers, typed)
+        })
+        .collect()
+}
+
 /// Removes this frame's presses of the chords `wanted` accepts from the
 /// input, so nothing else reads them, and returns the new (non-repeat)
 /// presses in order.
@@ -156,16 +205,28 @@ fn take_chords(ui: &mut Ui, wanted: impl Fn(Chord) -> bool) -> Vec<Chord> {
 }
 
 impl StudioShell {
+    /// Whether a modal dialog other than the keyboard reference and
+    /// Preferences (whose own keys close them) is open: About, Add or
+    /// Remove input, an input-lifecycle dialog, or the layout-name dialog.
+    /// No console key or chord acts behind one.
+    pub(crate) const fn modal_dialog_open(&self) -> bool {
+        self.show_about
+            || self.add_input.is_some()
+            || self.remove_input.is_some()
+            || self.lifecycle.dialog_open()
+            || self.layout_dialog_open()
+    }
+
+    /// Whether any dialog blocks the window keys (Ctrl+G, Ctrl+Shift+A/L/S/N):
+    /// the same modal gate the console keys and cue chords obey.
+    pub(crate) const fn window_keys_blocked(&self) -> bool {
+        self.show_shortcuts || self.show_preferences || self.modal_dialog_open()
+    }
+
     /// Ctrl+Shift+S and Ctrl+Shift+N open or close the Scripts and `LiveLAN`
     /// windows unless a text field or a dialog owns the keyboard.
     pub(crate) fn toggle_chord_windows(&mut self, ui: &mut Ui, state: &StudioUiState) {
-        if ui.ctx().egui_wants_keyboard_input()
-            || self.show_shortcuts
-            || self.show_about
-            || self.show_preferences
-            || self.add_input.is_some()
-            || self.remove_input.is_some()
-        {
+        if ui.ctx().egui_wants_keyboard_input() || self.window_keys_blocked() {
             return;
         }
         for chord in take_chords(ui, Chord::opens_window) {
@@ -225,7 +286,7 @@ mod tests {
     use super::{
         CUE_ARM_SHORTCUT, CUE_DISARM_SHORTCUT, CUE_RESET_SHORTCUT, CUE_STOP_SHORTCUT, Chord,
         LIVE_LAN_SHORTCUT, RECORD_SHORTCUT, SCRIPTS_SHORTCUT, START_STREAMS_SHORTCUT,
-        STOP_STREAMS_SHORTCUT, chord,
+        STOP_STREAMS_SHORTCUT, chord, cue_step_key,
     };
     use crate::{
         RecordingAction, STUDIO_SHORTCUTS, ShortcutGroup, StreamGroupAction,
@@ -605,7 +666,7 @@ mod tests {
         typing: bool,
     ) -> Vec<StudioIntent> {
         let context = egui::Context::default();
-        let events = keys
+        let events: Vec<Event> = keys
             .iter()
             .flat_map(|&(key, modifiers)| {
                 [true, false].map(|pressed| Event::Key {
@@ -617,6 +678,17 @@ mod tests {
                 })
             })
             .collect();
+        run_frame(&context, shell, state, events, typing)
+    }
+
+    /// Runs one frame of `events` on `context`, as [`run_keys`] does.
+    fn run_frame(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+        events: Vec<Event>,
+        typing: bool,
+    ) -> Vec<StudioIntent> {
         context.begin_pass(egui::RawInput {
             events,
             ..Default::default()
@@ -807,6 +879,142 @@ mod tests {
                 fm_protocol::CueOperation::Stop,
             ]
         );
+    }
+
+    #[test]
+    fn cue_steps_follow_the_typed_character() {
+        use crate::CueKey::{Next, Previous};
+        let shift = Modifiers::SHIFT;
+        // US layout: bare `,` and `.`, with or without their text.
+        assert_eq!(cue_step_key(Key::Comma, NONE, None), Some(Previous));
+        assert_eq!(cue_step_key(Key::Period, NONE, None), Some(Next));
+        assert_eq!(cue_step_key(Key::Comma, NONE, Some(",")), Some(Previous));
+        assert_eq!(cue_step_key(Key::Period, NONE, Some(".")), Some(Next));
+        // AZERTY: `.` is Shift+`;`; its logical key is Period, typing `.`.
+        assert_eq!(cue_step_key(Key::Period, shift, Some(".")), Some(Next));
+        // US Shift+`.` types `>` (no egui key, so the physical Period).
+        assert_eq!(cue_step_key(Key::Period, shift, Some(">")), None);
+        assert_eq!(cue_step_key(Key::Comma, shift, Some("<")), None);
+        assert_eq!(cue_step_key(Key::Period, shift, None), None);
+        // A layout whose key at the physical `.` types something else.
+        assert_eq!(cue_step_key(Key::Period, NONE, Some(":")), None);
+        // Ctrl, Alt, and Cmd never step.
+        for held in [CMD, Modifiers::CTRL, Modifiers::ALT, Modifiers::MAC_CMD] {
+            assert_eq!(cue_step_key(Key::Period, held, Some(".")), None);
+            assert_eq!(cue_step_key(Key::Comma, held, None), None);
+        }
+        assert_eq!(cue_step_key(Key::G, NONE, Some(".")), None);
+    }
+
+    /// AZERTY's Shift+`;` types `.` and steps the standby on, once while
+    /// held; US Shift+`.` (`>`) does not, nor does a press while a text
+    /// field has focus.
+    #[test]
+    fn a_shifted_period_steps_the_cue_list_on_layouts_that_need_shift() {
+        use fm_protocol::CueOperation;
+        let state = crate::hover_audit::cue_ran_script_fixture();
+        let mut shell = StudioShell::default();
+        let press = |physical: Key, text: &str, pressed: bool| {
+            let key = Event::Key {
+                key: Key::Period,
+                physical_key: Some(physical),
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            };
+            if pressed {
+                vec![key, Event::Text(text.to_owned())]
+            } else {
+                vec![key]
+            }
+        };
+        let operations = |intents: Vec<StudioIntent>| -> Vec<CueOperation> {
+            intents
+                .into_iter()
+                .map(|intent| match intent {
+                    StudioIntent::Cue(crate::CueIntent::Control { list: 1, operation }) => {
+                        operation
+                    }
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect()
+        };
+        let context = egui::Context::default();
+        let mut sent = Vec::new();
+        // Held for three frames: one press, two OS repeats, then released.
+        for _ in 0..3 {
+            sent.extend(run_frame(
+                &context,
+                &mut shell,
+                &state,
+                press(Key::Comma, ".", true),
+                false,
+            ));
+        }
+        sent.extend(run_frame(
+            &context,
+            &mut shell,
+            &state,
+            press(Key::Comma, ".", false),
+            false,
+        ));
+        assert_eq!(operations(sent), [CueOperation::Skip]);
+        // US Shift+`.` types `>`.
+        let intents = run_frame(
+            &context,
+            &mut shell,
+            &state,
+            press(Key::Period, ">", true),
+            false,
+        );
+        assert_eq!(intents, Vec::new());
+        // A focused text field takes the `.`.
+        let typing = egui::Context::default();
+        let intents = run_frame(
+            &typing,
+            &mut shell,
+            &state,
+            press(Key::Comma, ".", true),
+            true,
+        );
+        assert_eq!(intents, Vec::new());
+    }
+
+    /// The window chords obey the modal gate the cue and output chords do:
+    /// nothing acts behind an input-lifecycle dialog or the layout-name
+    /// dialog, even before its text field takes focus.
+    #[test]
+    fn no_key_acts_behind_a_modal_dialog() {
+        type Open = fn(&mut StudioShell);
+        let state = output_state();
+        let presses: Vec<(Key, Modifiers)> = BINDINGS
+            .iter()
+            .filter(|binding| matches!(binding.scope, KeyScope::Global | KeyScope::Console))
+            .map(|binding| (binding.key, own_press(*binding)))
+            .collect();
+        let dialogs: [(&str, Open); 2] = [
+            ("lifecycle", |shell| {
+                shell.open_replace_source(
+                    fm_types::InputId::new(core::num::NonZeroU128::new(2).unwrap()),
+                    "Camera 2",
+                );
+            }),
+            ("layout name", |shell| shell.open_layout_name_dialog(None)),
+        ];
+        for (dialog, open) in dialogs {
+            let mut shell = StudioShell::default();
+            open(&mut shell);
+            assert!(shell.modal_dialog_open(), "{dialog}");
+            let intents = run_keys(&mut shell, &state, &presses, false);
+            assert_eq!(intents, Vec::new(), "{dialog}");
+            assert!(!shell.show_shortcuts, "{dialog}");
+            assert!(!shell.show_preferences, "{dialog}");
+            assert!(!shell.scripts.open, "{dialog}");
+            assert!(!shell.live_lan.open, "{dialog}");
+            assert!(!shell.color.open, "{dialog}");
+            assert!(!shell.animation.open, "{dialog}");
+            assert!(!shell.designer.open, "{dialog}");
+        }
     }
 
     #[test]

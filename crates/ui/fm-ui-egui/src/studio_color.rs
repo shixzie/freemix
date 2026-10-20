@@ -680,13 +680,7 @@ impl StudioShell {
     /// dialog owns the keyboard.
     pub(crate) fn toggle_color_on_key(&mut self, ui: &mut Ui) {
         let context = ui.ctx().clone();
-        if context.egui_wants_keyboard_input()
-            || self.show_shortcuts
-            || self.show_about
-            || self.show_preferences
-            || self.add_input.is_some()
-            || self.remove_input.is_some()
-        {
+        if context.egui_wants_keyboard_input() || self.window_keys_blocked() {
             return;
         }
         if ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::G)) {

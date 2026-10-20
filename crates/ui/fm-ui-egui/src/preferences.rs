@@ -261,10 +261,7 @@ impl StudioShell {
         if context.egui_wants_keyboard_input() {
             return;
         }
-        let other_dialog = self.show_shortcuts
-            || self.show_about
-            || self.add_input.is_some()
-            || self.remove_input.is_some();
+        let other_dialog = self.show_shortcuts || self.modal_dialog_open();
         let pressed: Vec<PreferenceKey> = ui.input_mut(|input| {
             let mut pressed = Vec::new();
             input.events.retain(|event| match event {

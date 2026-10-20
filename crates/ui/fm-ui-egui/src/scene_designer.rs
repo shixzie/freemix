@@ -517,11 +517,7 @@ impl StudioShell {
     pub(crate) fn toggle_designer_on_key(&mut self, ui: &mut Ui) {
         let context = ui.ctx().clone();
         if (context.egui_wants_keyboard_input() && !self.designer.canvas_focused)
-            || self.show_shortcuts
-            || self.show_about
-            || self.show_preferences
-            || self.add_input.is_some()
-            || self.remove_input.is_some()
+            || self.window_keys_blocked()
         {
             return;
         }

@@ -37,7 +37,7 @@ use fm_ui_model::title_editor::{TitleAccess, title_payload};
 use fm_protocol::{AudioMeterChannel, AudioMetersMessage};
 
 use crate::animation;
-use crate::osc::{OscAction, OscReceiver};
+use crate::osc::{OscAction, OscCounters, OscReceiver};
 use crate::{
     ControlTransport, LifecycleState, PreferenceStore, SavedPreferences, StudioConfig,
     StudioRuntime, preferences_path,
@@ -560,16 +560,28 @@ impl StudioApp {
         if let Some(osc) = &self.osc {
             let counters = osc.counters();
             let rejected = counters.rejected.saturating_add(self.osc_rejected);
-            if counters.failed > 0 {
-                self.osc_notice = Some("OSC receive failed".to_owned());
-            } else if counters.malformed > 0 || rejected > 0 || counters.overflow > 0 {
-                self.osc_notice = Some(format!(
-                    "OSC malformed={} rejected={} overflow={}",
-                    counters.malformed, rejected, counters.overflow
-                ));
+            if let Some(notice) = osc_notice(counters, rejected, osc.is_listening()) {
+                self.osc_notice = Some(notice);
             }
             self.state.external_notice = self.osc_notice.clone();
         }
+    }
+}
+
+/// The OSC line of the console's external notice: a stopped listener
+/// first, then receive errors it retried, then dropped datagrams.
+fn osc_notice(counters: OscCounters, rejected: u64, listening: bool) -> Option<String> {
+    if !listening {
+        Some("OSC listener stopped".to_owned())
+    } else if counters.failed > 0 {
+        Some(format!("OSC receive errors={} (retrying)", counters.failed))
+    } else if counters.malformed > 0 || rejected > 0 || counters.overflow > 0 {
+        Some(format!(
+            "OSC malformed={} rejected={} overflow={}",
+            counters.malformed, rejected, counters.overflow
+        ))
+    } else {
+        None
     }
 }
 
@@ -6558,6 +6570,42 @@ mod tests {
                 None,
             ),
             Ok(CommandPayload::SetTransitionFavorite { slot: 4, favorite })
+        );
+    }
+
+    /// A stopped OSC listener shows, ahead of the error and drop counts.
+    #[test]
+    fn osc_notice_shows_a_stopped_listener() {
+        let quiet = OscCounters::default();
+        assert_eq!(super::osc_notice(quiet, 0, true), None);
+        assert_eq!(
+            super::osc_notice(quiet, 0, false).as_deref(),
+            Some("OSC listener stopped")
+        );
+        let failed = OscCounters {
+            failed: 3,
+            malformed: 1,
+            ..OscCounters::default()
+        };
+        assert_eq!(
+            super::osc_notice(failed, 0, true).as_deref(),
+            Some("OSC receive errors=3 (retrying)")
+        );
+        assert_eq!(
+            super::osc_notice(failed, 0, false).as_deref(),
+            Some("OSC listener stopped")
+        );
+        assert_eq!(
+            super::osc_notice(
+                OscCounters {
+                    overflow: 2,
+                    ..quiet
+                },
+                1,
+                true
+            )
+            .as_deref(),
+            Some("OSC malformed=0 rejected=1 overflow=2")
         );
     }
 

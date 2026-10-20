@@ -246,11 +246,23 @@ impl Locale {
     /// text such as [`Msg::KeyClick`] is translated first; then each key
     /// name word (`Shift`, `Enter`, `Space`, …) is replaced, so separators
     /// and single-character keys (`+`, `-`, `=`, `·`) pass through.
+    ///
+    /// On macOS, where the console's command chords take Cmd, `Ctrl` reads
+    /// `Cmd`: plain text, which needs no symbol glyph the console fonts
+    /// might lack.
     #[must_use]
     pub fn keys(self, combo: &str) -> String {
+        self.keys_on(combo, cfg!(target_os = "macos"))
+    }
+
+    /// [`Self::keys`] on macOS (`mac`, where `Ctrl` reads `Cmd`) or on
+    /// another platform.
+    pub(crate) fn keys_on(self, combo: &str, mac: bool) -> String {
         let combo = self.tr(combo);
+        let platform: &[(&str, &str)] = if mac { &[("Ctrl", "Cmd")] } else { &[] };
         let names: &[(&str, &str)] = match self.language {
-            Language::English => return combo.to_owned(),
+            Language::English if platform.is_empty() => return combo.to_owned(),
+            Language::English => &[],
             Language::Spanish => &[
                 ("Shift", "Mayús"),
                 ("Enter", "Intro"),
@@ -267,8 +279,9 @@ impl Locale {
         let mut out = String::with_capacity(combo.len() + 4);
         let mut word = String::new();
         let flush = |word: &mut String, out: &mut String| {
-            let name = names
+            let name = platform
                 .iter()
+                .chain(names)
                 .find(|(english, _)| *english == word.as_str())
                 .map_or(word.as_str(), |(_, local)| local);
             out.push_str(name);
