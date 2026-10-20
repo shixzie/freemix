@@ -2811,6 +2811,68 @@ drift-correcting resampler and keeps its pictures following that audio.
   remote-diagnostics` prints one `SourceSync(...)` line per source.
 - 2.74 is refused.
 
+Protocol 2.73 adds paged inputs (IN-014, schema 63): a document input shows
+a PDF or a presentation one page at a time. Navigation is generic, so a
+later paged source can share it.
+
+- A document input is created through the existing import paths: an
+  `input_lifecycle` `import` (or source replacement) whose `uri` names a
+  `.pdf`, `.pptx`, `.odp`, or `.key` file, as an `asset://` URI or an
+  importable host path the daemon copies into the bundle. On the wire it is
+  a `media` source with that URI; in `project.json` it is
+  `{"type": "document", "asset_uri", "page"}` with both fields required and
+  `page` zero-based. At most 16 document inputs exist at once
+  (`too_many_document_inputs`).
+- A paged input's status is `input`, `paged_kind` (`document`), `page`
+  (zero-based), `count` (`0` while unknown), `state`
+  (`loading|converting|ready|unavailable|failed`), and optional
+  percent-encoded `title` (at most 128 bytes) and `message` (at most 160
+  bytes), both without control characters. The same fields ride the snapshot's `paged_state`
+  follow-on records (announced by the snapshot's required `paged_states`,
+  at most 64, sent last, after every `shortcut_state`, in ascending input
+  order), the durable `paged_changed` event, and the runtime event
+  `event=paged` sent when the server learns the page count or the state
+  changes. A client replaces an input's whole status on every record.
+- `paged_input` (`input`, `action=next|previous|first|last|goto`, and
+  `page` exactly when `action=goto`) is an operator control (the
+  `transition` class), journaled but not undoable, and not padlocked. It
+  resolves against the page count, clamping at both ends; a page that does
+  not move is still accepted. A non-document input is refused
+  `invalid_command` (field `input`, `not_paged_input`); a document whose
+  count is not known yet is refused retryable `unavailable` (field `input`,
+  `pages_unknown`). Pages are counted from 1 to 10,000. Realization is
+  reported in the `media` domain. The page
+  is saved with the project and restored on restart.
+- The page count, title, and notes come from the asset's bytes only (a PDF
+  is parsed by the pure-Rust renderer; a presentation package's XML is
+  read, counting hidden slides), so journal replay resolves every page step
+  where it first landed. A presentation renders through a PDF conversion by
+  LibreOffice when the server has it (headless, on its own thread, in a
+  private profile directory, with a timeout; `FREEMIX_SOFFICE` names the
+  binary; one that is not a program, such as an empty value, disables
+  conversion); without it the input reads `unavailable` with
+  `message` saying to install LibreOffice or export to PDF, while its page
+  count and notes still work. Keynote files are never converted: the
+  message says to export to PDF.
+- `paged_page_request` (`request_id`, `input`, `page`, `thumbnail=0|1`)
+  asks for one page's presenter notes or a three-channel QOI thumbnail of
+  at most 128x72. The server answers once with `paged_page`: the same
+  `request_id`, `input`, and `page`, then `content=notes` and `notes`
+  (at most 8 KiB, line breaks kept), `content=thumbnail` with
+  `width`, `height`, and base64url `data`, or `content=unavailable`.
+  Answers are not durable and not projected into snapshots; they are
+  rendered off the session loop, and at most 32 requests per connection
+  wait for an answer (the oldest is dropped unanswered; a client asks again
+  for what it still shows).
+- Studio's Media tab lists every document input below the media transports:
+  state, title, the server's message, Previous and Next keys, the page
+  counter, a strip of thumbnails around the current page (a click goes to
+  that page), and the current page's presenter notes. The CLI adds
+  `input-page`, `input-pages`, and `remote-input-page`, and
+  `project-import-media` and `input-import-batch` create document inputs
+  for documents.
+- 2.72 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision
