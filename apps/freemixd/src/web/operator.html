@@ -78,6 +78,13 @@
   .badge { font-size: .8rem; font-weight: 800; letter-spacing: .06em; }
   form { display: grid; gap: .75rem; max-width: 26rem; }
   label.field { display: grid; gap: .25rem; }
+  #pair, #setup { display: grid; gap: .6rem; max-width: 28rem; }
+  #pair h2 { margin: 0; }
+  #pair p { margin: 0; }
+  #pair-fingerprint { font-size: .85rem; overflow-wrap: anywhere; color: var(--warn); }
+  #pair-error { color: var(--warn); font-weight: 600; }
+  #token-option { margin-top: .9rem; }
+  #token-option summary { min-height: 48px; padding: .75rem 0; cursor: pointer; }
   label.field input, label.field select { min-height: 48px; padding: 0 .6rem; border-radius: 10px;
     border: 1px solid var(--line); background: #111; }
   #status { padding: .5rem .75rem; padding-bottom: max(.5rem, env(safe-area-inset-bottom)); font-size: .9rem;
@@ -113,14 +120,30 @@
   <span id="link" role="status" data-phase="idle">OFFLINE</span>
   <span class="spacer"></span>
   <button type="button" id="reconnect" hidden data-i18n="reconnectNow">Reconnect now</button>
-  <button type="button" id="signout" data-i18n="changeToken">Change token</button>
+  <button type="button" id="signout" hidden>Forget token</button>
   <button type="button" id="language" lang="es" data-i18n="otherLanguage" data-i18n-label="otherLanguageLabel" aria-label="Ver en español">Español</button>
   <a href="/tally">Tally</a>
 </header>
 <main id="surface" aria-labelledby="title">
   <section id="setup-panel" class="wide" hidden aria-labelledby="setup-heading">
     <h2 id="setup-heading" data-i18n="connect">Connect</h2>
-    <form id="setup" autocomplete="off">
+    <form id="pair" hidden autocomplete="off" novalidate>
+      <h2 data-i18n="pairHeading">Pair this device</h2>
+      <p id="pair-hint" data-i18n="pairHint">In FreeMix Studio, open Web access and start pairing, then type the six-digit code it shows.</p>
+      <p id="pair-link-hint" hidden data-i18n="pairLinkHint">Opened from a FreeMix Studio pairing link: check the name and press Pair.</p>
+      <p id="pair-fingerprint" hidden></p>
+      <label id="pair-code-field" class="field"><span data-i18n="pairCode">Pairing code</span>
+        <input id="pair-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" spellcheck="false">
+      </label>
+      <label class="field"><span data-i18n="deviceName">Device name</span>
+        <input id="device-name" maxlength="48" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="submit" id="pair-submit" data-i18n="pair">Pair</button>
+      <p id="pair-error" role="alert" hidden></p>
+    </form>
+    <details id="token-option" hidden>
+      <summary data-i18n="useToken">Use an access token instead</summary>
+      <form id="setup" autocomplete="off">
       <label class="field"><span data-i18n="token">Access token</span>
         <input id="token" type="password" required minlength="32" maxlength="256" autocomplete="off">
       </label>
@@ -133,6 +156,7 @@
       </label>
       <button type="submit" data-i18n="connect">Connect</button>
     </form>
+    </details>
   </section>
 
   <section class="wide" aria-labelledby="program-heading">
@@ -268,10 +292,37 @@
       title: "FreeMix Operator",
       notConnected: "Not connected",
       reconnectNow: "Reconnect now",
-      changeToken: "Change token",
       otherLanguage: "Español",
       otherLanguageLabel: "Ver en español",
       connect: "Connect",
+      pairHeading: "Pair this device",
+      pairHint: "In FreeMix Studio, open Web access and start pairing, then type the six-digit code it shows.",
+      pairLinkHint: "Opened from a FreeMix Studio pairing link: check the name and press Pair.",
+      pairFingerprint: "Check that your browser's certificate fingerprint (SHA-256) is {fingerprint}",
+      pairCode: "Pairing code",
+      deviceName: "Device name",
+      pair: "Pair",
+      pairBusy: "Pairing…",
+      useToken: "Use an access token instead",
+      pairErrorFormat: "Type the six digits of the pairing code",
+      pairErrorInvalid: "Wrong code. Check it and try again; after five wrong codes the operator must start pairing again",
+      pairErrorExpired: "This pairing code has expired or was already used. Ask the operator to start pairing again in FreeMix Studio",
+      pairErrorRateLimited: "Too many attempts; try again in {seconds} s",
+      pairErrorForbidden: "The server refused this page's request; open the address FreeMix Studio shows",
+      pairErrorBadRequest: "The server could not read the pairing request",
+      pairErrorUnavailable: "Pairing is not available on this server",
+      pairErrorNetwork: "Could not reach the server; check the network and try again",
+      pairErrorUnknown: "Pairing failed (HTTP {status})",
+      pairRevoked: "This device is no longer paired; pair it again",
+      tokenRejected: "The server did not accept this access token",
+      unpairDevice: "Unpair this device",
+      forgetToken: "Forget token",
+      unpairConfirm: "Forget this device's pairing? You will need a new code from FreeMix Studio to connect again.",
+      deviceIphone: "iPhone",
+      deviceIpad: "iPad",
+      deviceAndroidPhone: "Android phone",
+      deviceAndroidTablet: "Android tablet",
+      deviceBrowser: "Web browser",
       token: "Access token",
       role: "Role",
       roleOperatorChoice: "Operator (switch, record, stream, audio)",
@@ -366,7 +417,7 @@
       alreadyOnPreview: "Already on Preview",
       notInShow: "No longer in the show",
       noAudioStrip: "Waiting for this input's audio state",
-      statusIdle: "Enter the daemon's web access token to connect",
+      statusIdle: "Pair this device or enter the daemon's web access token to connect",
       statusConnecting: "Connecting",
       statusReconnecting: "Reconnecting (attempt {attempt})",
       statusLive: "Live as {role}",
@@ -424,10 +475,37 @@
       title: "Operador de FreeMix",
       notConnected: "Sin conexión",
       reconnectNow: "Reconectar ahora",
-      changeToken: "Cambiar token",
       otherLanguage: "English",
       otherLanguageLabel: "View in English",
       connect: "Conectar",
+      pairHeading: "Emparejar este dispositivo",
+      pairHint: "En FreeMix Studio, abra Acceso web e inicie el emparejamiento; después escriba el código de seis dígitos que muestra.",
+      pairLinkHint: "Abierto desde un enlace de emparejamiento de FreeMix Studio: compruebe el nombre y pulse Emparejar.",
+      pairFingerprint: "Compruebe que la huella del certificado (SHA-256) en su navegador es {fingerprint}",
+      pairCode: "Código de emparejamiento",
+      deviceName: "Nombre del dispositivo",
+      pair: "Emparejar",
+      pairBusy: "Emparejando…",
+      useToken: "Usar un token de acceso",
+      pairErrorFormat: "Escriba los seis dígitos del código de emparejamiento",
+      pairErrorInvalid: "Código incorrecto. Compruébelo e inténtelo de nuevo; tras cinco códigos incorrectos el operador debe volver a iniciar el emparejamiento",
+      pairErrorExpired: "Este código ha caducado o ya se usó. Pida al operador que vuelva a iniciar el emparejamiento en FreeMix Studio",
+      pairErrorRateLimited: "Demasiados intentos; vuelva a intentarlo en {seconds} s",
+      pairErrorForbidden: "El servidor rechazó la petición de esta página; abra la dirección que muestra FreeMix Studio",
+      pairErrorBadRequest: "El servidor no pudo leer la petición de emparejamiento",
+      pairErrorUnavailable: "El emparejamiento no está disponible en este servidor",
+      pairErrorNetwork: "No se pudo contactar con el servidor; compruebe la red e inténtelo de nuevo",
+      pairErrorUnknown: "El emparejamiento falló (HTTP {status})",
+      pairRevoked: "Este dispositivo ya no está emparejado; vuelva a emparejarlo",
+      tokenRejected: "El servidor no aceptó este token de acceso",
+      unpairDevice: "Desemparejar este dispositivo",
+      forgetToken: "Olvidar token",
+      unpairConfirm: "¿Olvidar el emparejamiento de este dispositivo? Necesitará un código nuevo de FreeMix Studio para volver a conectar.",
+      deviceIphone: "iPhone",
+      deviceIpad: "iPad",
+      deviceAndroidPhone: "Teléfono Android",
+      deviceAndroidTablet: "Tableta Android",
+      deviceBrowser: "Navegador web",
       token: "Token de acceso",
       role: "Rol",
       roleOperatorChoice: "Operador (conmutar, grabar, transmitir, audio)",
@@ -522,7 +600,7 @@
       alreadyOnPreview: "Ya está en Previo",
       notInShow: "Ya no está en el show",
       noAudioStrip: "Esperando el estado de audio de esta entrada",
-      statusIdle: "Introduzca el token de acceso web del daemon para conectar",
+      statusIdle: "Empareje este dispositivo o introduzca el token de acceso web del daemon para conectar",
       statusConnecting: "Conectando",
       statusReconnecting: "Reconectando (intento {attempt})",
       statusLive: "En vivo como {role}",
@@ -583,6 +661,9 @@
   const ui = {
     link: $("link"), status: $("status"), title: $("title"), reconnect: $("reconnect"), signout: $("signout"),
     setupPanel: $("setup-panel"), setup: $("setup"), token: $("token"), role: $("role"),
+    pair: $("pair"), pairHint: $("pair-hint"), pairLinkHint: $("pair-link-hint"), pairFingerprint: $("pair-fingerprint"),
+    pairCodeField: $("pair-code-field"), pairCode: $("pair-code"), deviceName: $("device-name"),
+    pairSubmit: $("pair-submit"), pairError: $("pair-error"), tokenOption: $("token-option"),
     programBus: $("program-bus"), previewBus: $("preview-bus"),
     cut: $("cut"), auto: $("auto"), autoKind: $("auto-kind"), ftb: $("ftb"), ftbState: $("ftb-state"),
     kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
@@ -594,10 +675,18 @@
 
   const store = window.sessionStorage;
   const params = new URLSearchParams(location.hash.slice(1));
-  if (params.has("token")) store.setItem("freemix.operator.token", params.get("token"));
+  const TOKEN_KEY = "freemix.operator.token";
+  // A FreeMix Studio pairing link carries a one-use code and the server
+  // certificate's fingerprint in the fragment, which is never sent to the
+  // server; both leave the address bar below at once.
+  let pairLink = /^[A-Za-z0-9_-]{16,64}$/.test(params.get("pair") || "") ? params.get("pair") : "";
+  let pairFingerprint = formatFingerprint(params.get("fp"));
   if (params.has("role")) store.setItem("freemix.operator.role", params.get("role"));
-  // Never leave the token in the address bar or history.
+  // Never leave a pairing code in the address bar or history.
   history.replaceState(null, "", location.pathname + location.search);
+  // A pairing link opened in a tab already showing this page changes only
+  // the fragment; reload so it is read like a fresh visit.
+  window.addEventListener("hashchange", () => location.reload());
 
   // ---- Language: `#lang=`, else a saved choice (shared with /tally),
   // else the browser's preferred languages, else English. ----
@@ -817,9 +906,190 @@
     };
   }
 
+  // ---- Credentials: a paired device's token (localStorage, shared by
+  // /tally and /operator, so a phone pairs once) or a typed access token
+  // (sessionStorage, this tab only). Neither ever appears in a URL. ----
+  const DEVICE_KEY = "freemix.web.device";
+  const DEVICE_ROLES = ["viewer", "audio", "operator"];
+  function deviceStores() {
+    const stores = [];
+    try { stores.push(window.localStorage); } catch (error) { /* unavailable */ }
+    stores.push(window.sessionStorage);
+    return stores;
+  }
+  function pairedDevice() {
+    for (const place of deviceStores()) {
+      try {
+        const value = JSON.parse(place.getItem(DEVICE_KEY) || "null");
+        if (value && typeof value.token === "string" && value.token && DEVICE_ROLES.includes(value.role)) return value;
+      } catch (error) { /* unreadable: ignore */ }
+    }
+    return null;
+  }
+  function savePairedDevice(device) {
+    for (const place of deviceStores()) {
+      try { place.setItem(DEVICE_KEY, JSON.stringify(device)); return; } catch (error) { /* try the next */ }
+    }
+  }
+  function forgetPairedDevice() {
+    for (const place of deviceStores()) try { place.removeItem(DEVICE_KEY); } catch (error) { /* gone */ }
+  }
+  // 64 hex digits from a pairing link, shown as the AB:CD:... form browsers use.
+  function formatFingerprint(text) {
+    return /^[0-9a-fA-F]{64}$/.test(text || "") ? text.toUpperCase().match(/../g).join(":") : "";
+  }
+  function defaultDeviceName() {
+    const agent = navigator.userAgent || "";
+    if (/iPhone/.test(agent)) return tr("deviceIphone");
+    if (/iPad/.test(agent) || (/Macintosh/.test(agent) && navigator.maxTouchPoints > 1)) return tr("deviceIpad");
+    if (/Android/.test(agent)) return tr(/Mobile/.test(agent) ? "deviceAndroidPhone" : "deviceAndroidTablet");
+    return tr("deviceBrowser");
+  }
+
+  const pairing = { busy: false, retryUntil: 0, error: null, nameEdited: false };
+  function pairError(key, values) { pairing.error = key ? { key, values } : null; }
+  const PAIR_ERRORS = {
+    400: "pairErrorBadRequest", 401: "pairErrorInvalid", 403: "pairErrorForbidden",
+    410: "pairErrorExpired", 429: "pairErrorRateLimited", 503: "pairErrorUnavailable",
+  };
+
+  async function submitPairing(event) {
+    event.preventDefault();
+    if (pairing.busy || Date.now() < pairing.retryUntil) return;
+    const code = pairLink || ui.pairCode.value.trim();
+    if (!pairLink && !/^[0-9]{6}$/.test(code)) { pairError("pairErrorFormat"); renderPairing(); ui.pairCode.focus(); return; }
+    const name = ui.deviceName.value.trim() || defaultDeviceName();
+    pairing.busy = true;
+    pairError(null);
+    renderPairing();
+    let status = 0;
+    let answer = null;
+    try {
+      const response = await fetch("/v1/pair", {
+        method: "POST", credentials: "omit", cache: "no-store", redirect: "error",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ code, name }).toString(),
+      });
+      status = response.status;
+      try { answer = await response.json(); } catch (error) { answer = null; }
+    } catch (error) {
+      status = 0;
+    }
+    pairing.busy = false;
+    if (status === 200 && answer && typeof answer.token === "string" && answer.token
+      && DEVICE_ROLES.includes(answer.role)) {
+      savePairedDevice({
+        token: answer.token, role: answer.role,
+        device: typeof answer.device === "string" ? answer.device : "",
+        name: typeof answer.name === "string" ? answer.name : name,
+      });
+      pairLink = "";
+      pairFingerprint = "";
+      ui.pairCode.value = "";
+      whoamiChecked = false;
+      link.attempt = 0;
+      link.everLive = false;
+      connect();
+      return;
+    }
+    if (status === 429) {
+      const wait = answer && Number.isFinite(answer.retry_after_s) ? Math.max(1, answer.retry_after_s) : 60;
+      pairing.retryUntil = Date.now() + wait * 1000;
+      pairError("pairErrorRateLimited");
+    } else if (status === 0) {
+      pairError("pairErrorNetwork");
+    } else if (PAIR_ERRORS[status]) {
+      pairError(PAIR_ERRORS[status]);
+    } else {
+      pairError("pairErrorUnknown", { status });
+    }
+    // A dead or wrong link falls back to typing the code.
+    if (pairLink && (status === 401 || status === 410)) { pairLink = ""; pairFingerprint = ""; }
+    renderPairing();
+  }
+
+  // When a stored credential cannot get in, ask the gateway once per
+  // failure streak whether it is still valid; a revoked device or a wrong
+  // token goes back to the pairing screen instead of retrying forever.
+  let whoamiChecked = false;
+  async function checkCredential() {
+    if (whoamiChecked) return;
+    const device = pairedDevice();
+    const presented = device ? device.token : typedToken();
+    if (!presented) return;
+    whoamiChecked = true;
+    let status = 0;
+    try {
+      status = (await fetch("/v1/whoami", {
+        credentials: "omit", cache: "no-store", redirect: "error",
+        headers: { Authorization: "Bearer " + presented },
+      })).status;
+    } catch (error) {
+      return;
+    }
+    if (status !== 401 || token() !== presented) return;
+    if (device) { forgetPairedDevice(); pairError("pairRevoked"); }
+    else { store.removeItem(TOKEN_KEY); pairError("tokenRejected"); }
+    toIdle();
+  }
+
+  function toIdle() {
+    const socket = link.socket;
+    link.socket = null;
+    link.phase = "idle";
+    link.attempt = 0;
+    link.everLive = false;
+    if (socket) try { socket.close(); } catch (error) { /* closed */ }
+    render();
+  }
+
+  function signOut() {
+    if (pairedDevice()) {
+      if (!window.confirm(tr("unpairConfirm"))) return;
+      forgetPairedDevice();
+    } else {
+      store.removeItem(TOKEN_KEY);
+    }
+    pairError(null);
+    whoamiChecked = false;
+    toIdle();
+    ui.pairCode.focus();
+  }
+
+  function renderPairing() {
+    const asking = link.phase === "idle" || link.phase === "stopped";
+    ui.pair.hidden = !asking;
+    ui.tokenOption.hidden = !asking;
+    ui.signout.hidden = !token();
+    ui.signout.textContent = tr(pairedDevice() ? "unpairDevice" : "forgetToken");
+    if (!asking) return;
+    ui.pairHint.hidden = Boolean(pairLink);
+    ui.pairLinkHint.hidden = !pairLink;
+    ui.pairCodeField.hidden = Boolean(pairLink);
+    ui.pairFingerprint.hidden = !pairFingerprint;
+    ui.pairFingerprint.textContent = pairFingerprint ? tr("pairFingerprint", { fingerprint: pairFingerprint }) : "";
+    if (!pairing.nameEdited && document.activeElement !== ui.deviceName) ui.deviceName.value = defaultDeviceName();
+    const waitMs = pairing.retryUntil - Date.now();
+    ui.pairSubmit.disabled = pairing.busy || waitMs > 0;
+    ui.pairSubmit.textContent = tr(pairing.busy ? "pairBusy" : "pair");
+    let message = "";
+    if (pairing.error) {
+      const values = Object.assign({}, pairing.error.values);
+      if (pairing.error.key === "pairErrorRateLimited") values.seconds = Math.max(0, Math.ceil(waitMs / 1000));
+      message = tr(pairing.error.key, values);
+    }
+    ui.pairError.hidden = !message;
+    ui.pairError.textContent = message;
+  }
+
   // ---- Connection driver: mirrors freemix-web's TallyLink. ----
-  function token() { return store.getItem("freemix.operator.token") || ""; }
+  function typedToken() { return store.getItem(TOKEN_KEY) || ""; }
+  function token() { const device = pairedDevice(); return device ? device.token : typedToken(); }
+  // A paired device asks for the role it was paired with; the role choice
+  // applies to a typed access token only.
   function role() {
+    const device = pairedDevice();
+    if (device) return device.role;
     const chosen = store.getItem("freemix.operator.role");
     return chosen === "viewer" || chosen === "audio" ? chosen : "operator";
   }
@@ -888,6 +1158,7 @@
     muteRetries = [];
     if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
     link.attempt += 1;
+    if (!link.everLive || link.attempt >= 3) checkCredential();
     const delay = Math.min(INITIAL_BACKOFF_MS * 2 ** Math.min(link.attempt - 1, 20), MAX_BACKOFF_MS);
     link.retryAt = Date.now() + delay;
     link.phase = "waiting";
@@ -981,6 +1252,7 @@
         trackDesired(link.revision);
         link.phase = "live";
         link.everLive = true;
+        whoamiChecked = false;
         link.attempt = 0;
         link.syncDeadline = 0;
         link.nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
@@ -1254,6 +1526,7 @@
     ui.title.textContent = live && show.name ? show.name : tr("title");
     ui.reconnect.hidden = link.phase !== "waiting";
     ui.setupPanel.hidden = link.phase !== "idle" && link.phase !== "stopped";
+    renderPairing();
     ui.status.textContent = statusText() + (lastNote && Date.now() - lastNoteAt < 8000 ? " · " + lastNote : "");
 
     const ids = live ? show.inputs.map((input) => input.id) : [];
@@ -1664,13 +1937,10 @@
   ui.ftb.addEventListener("click", fadeToBlack);
   ui.language.addEventListener("click", toggleLanguage);
   ui.reconnect.addEventListener("click", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
-  ui.signout.addEventListener("click", () => {
-    store.removeItem("freemix.operator.token");
-    stop();
-    link.phase = "idle";
-    render();
-    ui.token.focus();
-  });
+  ui.signout.addEventListener("click", signOut);
+  ui.pair.addEventListener("submit", submitPairing);
+  ui.deviceName.addEventListener("input", () => { pairing.nameEdited = true; });
+  setInterval(() => { if (pairing.retryUntil > Date.now() || pairing.error) renderPairing(); }, 500);
   document.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     if (event.target instanceof HTMLInputElement && event.target.type !== "radio") return;
@@ -1689,7 +1959,9 @@
   window.addEventListener("online", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
   ui.setup.addEventListener("submit", (event) => {
     event.preventDefault();
-    store.setItem("freemix.operator.token", ui.token.value);
+    store.setItem(TOKEN_KEY, ui.token.value);
+    pairError(null);
+    whoamiChecked = false;
     store.setItem("freemix.operator.role", ui.role.value);
     ui.token.value = "";
     link.attempt = 0;
