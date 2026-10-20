@@ -1865,9 +1865,13 @@ impl StudioShell {
     /// The intent an external control's cue `key` sends (Studio's OSC
     /// `/freemix/cue/...` messages): the Cues panel's shown list, gated
     /// exactly like the panel's keys. `None` when that key is disabled.
+    /// A GO or arm carries this console's selected input, as the panel's
+    /// does (RC-004): it is sent outside [`Self::draw`], which binds it.
     #[must_use]
     pub fn cue_key_intent(&self, state: &StudioUiState, key: CueKey) -> Option<StudioIntent> {
-        self.cues.key_intent(state, key).map(StudioIntent::Cue)
+        let mut intent = StudioIntent::Cue(self.cues.key_intent(state, key)?);
+        selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
+        Some(intent)
     }
 
     /// `?` or F1 opens the keyboard reference, and closes it again, unless

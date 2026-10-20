@@ -1105,13 +1105,17 @@ impl StudioShell {
     /// The intent an OSC `/freemix/user/<name>` message sends: the fire of
     /// the shortcut with that OSC name, under the same gates as its key.
     /// `None` (after announcing why, for a known name) when it cannot fire.
+    /// The fire carries this console's selected input, as a key's does
+    /// (RC-004): it is sent outside [`StudioShell::draw`], which binds it.
     pub fn user_shortcut_osc_intent(
         &mut self,
         state: &StudioUiState,
         name: &str,
     ) -> Option<StudioIntent> {
         let shortcut = by_osc(replicated(state), name)?.id;
-        self.user_shortcut_intent(state, shortcut)
+        let mut intent = self.user_shortcut_intent(state, shortcut)?;
+        crate::selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
+        Some(intent)
     }
 }
 

@@ -300,6 +300,20 @@ fn an_osc_name_fires_its_shortcut_under_the_same_gates() {
     );
     assert_eq!(shell.user_shortcut_osc_intent(&state, "unknown"), None);
     assert_eq!(toasts(&shell), Vec::<String>::new());
+    // RC-004: an OSC fire carries the console's selection, as a key does.
+    let selected = fm_types::InputId::new(core::num::NonZeroU128::new(3).unwrap());
+    shell.selected_input = Some(selected);
+    assert_eq!(
+        shell.user_shortcut_osc_intent(&state, "open"),
+        Some(StudioIntent::Shortcut(ShortcutIntent::Fire {
+            shortcut: 2,
+            targets: fm_protocol::WireTargetBindings {
+                selected: Some(fm_protocol::WireInputId::from_domain(selected)),
+                ..fm_protocol::WireTargetBindings::default()
+            },
+        }))
+    );
+    shell.selected_input = None;
     let viewer = shortcuts_fixture(false);
     assert_eq!(shell.user_shortcut_osc_intent(&viewer, "open"), None);
     assert_eq!(toasts(&shell).len(), 1);

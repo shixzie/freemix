@@ -804,6 +804,25 @@ mod tests {
                 },
             }))
         );
+        // RC-004: an external GO or arm carries the console's selection,
+        // as the panel's does.
+        let selected = fm_types::InputId::new(core::num::NonZeroU128::new(3).unwrap());
+        shell.selected_input = Some(selected);
+        assert_eq!(
+            shell.cue_key_intent(&state, crate::CueKey::ArmIn(5_000)),
+            Some(StudioIntent::Cue(crate::CueIntent::Control {
+                list: 1,
+                operation: CueOperation::Arm {
+                    cue: None,
+                    in_ms: 5_000,
+                    targets: fm_protocol::WireTargetBindings {
+                        selected: Some(fm_protocol::WireInputId::from_domain(selected)),
+                        ..fm_protocol::WireTargetBindings::default()
+                    }
+                },
+            }))
+        );
+        shell.selected_input = None;
         // Without the transition permission no cue key acts.
         let viewer = state.clone().with_switcher_permissions(true, false);
         assert_eq!(run_keys(&mut shell, &viewer, &presses, false), Vec::new());
