@@ -2587,7 +2587,21 @@ decoded like any other stream input. Up to eight source audio channels are
 downmixed or one stereo pair (1-2, 3-4, 5-6, 7-8) is picked; status reports
 the source channel count. A listener reports `listening` while it waits and
 listens again when its caller leaves, without counting reconnects; two
-inputs never listen on one UDP port (`listen_port_in_use`). The passphrase
+inputs never listen on one UDP port (`listen_port_in_use`). The listener's
+port belongs to `libsrt` inside its `ffmpeg` child, so the receiver reports
+`connecting` until the child answers an SRT induction handshake on it (the
+listener answers that statelessly with a cookie), and only then
+`listening`; a rendezvous reports `listening` as its child starts. The
+child's `libsrt` listener closes its listening socket once it accepts a
+caller, and a second child cannot take over the UDP port while the first
+holds it (`SO_REUSEADDR`/`SO_REUSEPORT` would split or steal the live
+session's datagrams), so the port stays closed from a session's end until
+the next child binds it, about 0.1 s. That gap is not closed: an SRT
+caller retransmits its handshake until its connect timeout (3 s by
+default), so it delays a caller rather than refusing it (a loopback test
+starts the next caller the moment the previous one leaves, once and
+without retrying, and it goes live), and closing it would take a receiver-owned UDP relay that
+demultiplexes SRT sessions by peer address without speaking SRT. The passphrase
 is stored only in the project and is `***` on every other surface (events,
 snapshot, status errors, CLI, logs). Verified over loopback with `ffmpeg`
 SRT callers and listeners, encrypted with a matching and a wrong
@@ -2619,11 +2633,25 @@ Studio's Add input stream form gains mode keys and the key field with
 hover help; `freemix-cli` gains `--mode` and `--stream-key`. Verified over
 loopback with an `ffmpeg` publisher pushing to the listener (right and
 wrong key, relisten) and an `ffmpeg` RTMP server for the caller, and a
-native `freemixd` taking a push onto Program. Remaining gaps: no `rtmps`
+native `freemixd` taking a push onto Program. The listening port is the
+receiver's own: `ffmpeg -listen 1` accepts one connection and then closes
+its listening socket, and a pre-spawned next child could not bind the port
+the current one holds, so a child-owned port refused every publisher from
+an accept (a session's end, or a refused wrong-key publisher) until the
+next child bound it. The receiver instead binds the configured address once
+for its whole life, reports `listening` from that bind (`connecting`
+before it, and a port it cannot bind reconnects with the backoff policy),
+and relays each accepted publisher byte for byte to its own child, an
+`ffmpeg -listen 1` on a fresh loopback port. A relayed publisher must
+deliver its first picture within the timeout plus a 5 s grace. Verified by
+loopback tests in which a connection made the moment `listening` is
+reported is accepted, and a publisher that pushes once, without retrying,
+the moment a wrong-key publisher is refused (or while it is still being
+refused) goes live. Remaining gaps: no `rtmps`
 listener (no TLS certificate handling); the key reaches the `ffmpeg`
-child's command line; the listener's `listening` state is reported as its
-child starts, slightly before the port is bound; only one publisher per
-input; not verified on Windows or macOS, so `IN-016` remains planned.
+child's command line; only one publisher per input (a second publisher's
+connection waits in the listen backlog until the first leaves); not
+verified on Windows or macOS, so `IN-016` remains planned.
 
 Current implementation boundary for network stream inputs (`IN-015`): a
 `network_stream` input kind (schema 43, at most 16 per show) holds an RTSP,
