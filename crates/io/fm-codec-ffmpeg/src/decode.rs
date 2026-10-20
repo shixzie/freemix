@@ -2803,7 +2803,9 @@ mod tests {
             ffprobe: crate::Executable::Explicit(executable),
             allowed_root: Some(directory.path().to_owned()),
             limits: crate::Limits {
-                frame_metadata_timeout: Duration::from_millis(50),
+                // Generous enough for the retried probe to start and answer
+                // on a loaded host; the first probe sleeps far past it.
+                frame_metadata_timeout: Duration::from_secs(2),
                 kill_timeout: Duration::from_millis(50),
                 ..crate::Limits::default()
             },

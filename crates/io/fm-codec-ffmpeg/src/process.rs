@@ -477,7 +477,8 @@ mod tests {
                 );
             }
             "frames" if scenario == "metadata-timeout-once" && frame_attempt == 0 => {
-                std::thread::sleep(Duration::from_millis(250));
+                // Far past the test's timeout; the caller kills this probe.
+                std::thread::sleep(Duration::from_secs(30));
             }
             "frames" => write_audio_frame_metadata(&args, interval),
             "decode" if scenario == "anchor-retry" => {
