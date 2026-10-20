@@ -2624,6 +2624,10 @@ pub struct ClientModel {
         ),
     >,
     last_runtime_realization: Option<RuntimeRealization>,
+    /// The newest durable revision a runtime realization has stood for
+    /// (Protocol 2.88): an older revision realized after it (a timed
+    /// transition completing on the frame loop) does not regress it.
+    realized_revision: Option<Revision>,
     pending: Vec<PendingCommand>,
     last_rejection: Option<RejectedCommand>,
     sync_status: SyncStatus,
@@ -2656,6 +2660,7 @@ impl ClientModel {
             applied_events: HashMap::new(),
             desired_by_revision: HashMap::new(),
             last_runtime_realization: None,
+            realized_revision: None,
             pending: Vec::new(),
             last_rejection: None,
             sync_status: SyncStatus::AwaitingSnapshot,
@@ -3157,6 +3162,7 @@ impl ClientModel {
         if identity_changed {
             self.desired_by_revision.clear();
             self.last_runtime_realization = None;
+            self.realized_revision = None;
         }
         self.desired_by_revision.insert(
             snapshot.cursor.revision,
@@ -4030,13 +4036,24 @@ impl ClientModel {
                 },
             }
         }
+        if !self.desired_by_revision.contains_key(&realization.revision) {
+            return Err(ModelError::UnknownDurableRevision {
+                revision: realization.revision,
+            });
+        }
+        // A timed transition completes on the native frame loop after
+        // later commands were realized on its frames (Protocol 2.88): its
+        // realization then stands for the newest realized revision, whose
+        // desired state already holds the transition's target.
+        let revision = self
+            .realized_revision
+            .filter(|newest| *newest > realization.revision)
+            .unwrap_or(realization.revision);
         let (desired, _, _, desired_overlays) = self
             .desired_by_revision
-            .get(&realization.revision)
-            .cloned()
-            .ok_or(ModelError::UnknownDurableRevision {
-                revision: realization.revision,
-            })?;
+            .get(&revision)
+            .ok_or(ModelError::UnknownDurableRevision { revision })?
+            .clone();
         let realized_manual_transition = realization.manual_transition;
         let realized_fade_to_black = realization.fade_to_black;
         let state = self.state.as_ref().ok_or(ModelError::StateUnavailable)?;
@@ -4048,6 +4065,7 @@ impl ClientModel {
         state.switcher.realized_fade_to_black = realized_fade_to_black;
         state.realized_overlays = desired_overlays;
         state.switcher.runtime_generation = Some(realization.generation);
+        self.realized_revision = Some(revision);
         self.last_runtime_realization = Some(realization);
         Ok(RuntimeRealizationApplied::Applied)
     }

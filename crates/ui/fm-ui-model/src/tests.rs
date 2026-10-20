@@ -592,8 +592,12 @@ fn runtime_realization_leaves_durable_and_command_tracking_unchanged() {
     assert_eq!(model.pending_commands(), pending);
 }
 
+/// A retained revision realized after a newer one is a timed transition
+/// completing on the native frame loop after later commands were realized
+/// on its frames (Protocol 2.88): it stands for the newest realized
+/// revision, whose desired state already holds the transition's target.
 #[test]
-fn runtime_realization_can_use_current_or_retained_desired_revision() {
+fn runtime_realization_of_a_retained_revision_keeps_the_newest_realized_desired_state() {
     let project_id = project(10);
     let mut model = ClientModel::new(project_id);
     model.install_snapshot(snapshot(project_id, 7)).unwrap();
@@ -613,12 +617,22 @@ fn runtime_realization_can_use_current_or_retained_desired_revision() {
     assert_eq!(model.state().unwrap().switcher().realized, current);
 
     model
-        .apply_runtime_realization(realization(project_id, identity, 8, 6, 2))
+        .apply_runtime_realization(realization(project_id, identity.clone(), 8, 6, 2))
         .unwrap();
     let switcher = model.state().unwrap().switcher();
-    assert_eq!(switcher.realized, retained);
+    assert_eq!(switcher.realized, current);
     assert_eq!(switcher.runtime_generation, Some(6));
     assert_eq!(model.reconnect_cursor().unwrap().revision, Revision::new(9));
+
+    // A newer revision realized afterwards is its own desired state.
+    let newest = BusSelection::new(input(1), input(2));
+    model
+        .apply_event(event(project_id, identity.clone(), 10, desired(newest)))
+        .unwrap();
+    model
+        .apply_runtime_realization(realization(project_id, identity, 10, 6, 3))
+        .unwrap();
+    assert_eq!(model.state().unwrap().switcher().realized, newest);
 }
 
 #[test]
