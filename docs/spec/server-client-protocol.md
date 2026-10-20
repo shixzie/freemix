@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.84 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.85 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3178,11 +3178,15 @@ xdg-desktop-portal (IN-011, schema 72).
   drawn and offered, else 1, and `persist_mode` 2 with the input's restore
   token from interface version 4), `Start`, and `OpenPipeWireRemote`; the
   `PipeWire` stream is read as shared-memory `BGRx`, `RGBx`, `xRGB`, or
-  `xBGR` pictures (DMA-BUF is not offered), cropped after capture,
+  `xBGR` pictures (or their alpha forms, alpha ignored; DMA-BUF is not
+  offered), cropped after capture,
   letterboxed into the program picture, and capped at the capture rate. A
   desktop without the embedded pointer captures without it and says so in
   `last_error`. Other builds report a Wayland session without XWayland
   `unsupported` with that advice.
+- A portal capture is silent: an input asking for `audio=system` or
+  `audio=app` there reports `audio=unsupported` with an `audio_error`
+  (pair it with a system audio input, `AU-011`, for desktop sound).
 - Durability (schema 72): the project gains required
   `"screen_capture_restore_tokens"` after `"title_timelines"`: a list,
   strictly ascending by input, of `{"input", "token"}` (1 to 256 printable
