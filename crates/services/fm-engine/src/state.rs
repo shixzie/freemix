@@ -1721,10 +1721,10 @@ impl ShowState {
         &mut self,
         lists: BTreeMap<InputId, fm_model::MediaList>,
     ) -> Result<(), ShowError> {
-        if lists.len() > fm_model::MAX_MEDIA_LISTS {
-            return Err(ShowError::InvalidMediaList(
-                *lists.keys().next().expect("more lists than the limit"),
-            ));
+        if lists.len() > fm_model::MAX_MEDIA_LISTS
+            && let Some(input) = lists.keys().next()
+        {
+            return Err(ShowError::InvalidMediaList(*input));
         }
         for (input, list) in &lists {
             let plays_active = matches!(

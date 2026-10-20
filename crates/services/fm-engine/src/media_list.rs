@@ -189,6 +189,7 @@ fn activation(state: &ShowState, input: InputId, item: &MediaListItem, play: boo
 /// Refuses an unknown input, an input that is not a list (or, for create,
 /// one that already exists), invalid items, an unknown item, and a stale or
 /// final advance.
+#[allow(clippy::too_many_lines)] // one arm per operation
 pub(crate) fn plan(
     state: &ShowState,
     command: &EngineMediaListCommand,
@@ -242,43 +243,43 @@ pub(crate) fn plan(
             fm_model::validate_media_list_items(items).map_err(|error| list_rejection(&error))?;
             list.items.clone_from(items);
             list.options = *options;
-            let kept = list.item(current.active).cloned();
-            match kept {
-                Some(item) => {
-                    let before = current.active_item();
-                    let retrim = before.is_none_or(|before| {
-                        before.mark_in != item.mark_in || before.mark_out != item.mark_out
-                    });
-                    let moved = before.is_none_or(|before| before.asset_uri != item.asset_uri);
-                    Ok(MediaListPlan {
-                        input,
-                        activation: moved.then(|| activation(state, input, &item, false)),
-                        list,
-                        retrim: retrim && !moved,
-                    })
-                }
-                None => {
-                    let first = list.play_order()[0];
-                    list.active = first;
-                    let item = list.item(first).expect("in play order").clone();
-                    Ok(MediaListPlan {
-                        input,
-                        activation: Some(activation(state, input, &item, false)),
-                        list,
-                        retrim: false,
-                    })
-                }
+            if let Some(item) = list.item(current.active).cloned() {
+                let before = current.active_item();
+                let retrim = before.is_none_or(|before| {
+                    before.mark_in != item.mark_in || before.mark_out != item.mark_out
+                });
+                let moved = before.is_none_or(|before| before.asset_uri != item.asset_uri);
+                Ok(MediaListPlan {
+                    input,
+                    activation: moved.then(|| activation(state, input, &item, false)),
+                    list,
+                    retrim: retrim && !moved,
+                })
+            } else {
+                let first = list.play_order()[0];
+                list.active = first;
+                let item = list.item(first).expect("in play order").clone();
+                Ok(MediaListPlan {
+                    input,
+                    activation: Some(activation(state, input, &item, false)),
+                    list,
+                    retrim: false,
+                })
             }
         }
         EngineMediaListOperation::Navigate(navigation) => {
-            let target = navigate(&mut list, *navigation).ok_or_else(|| {
-                rejection(
-                    RejectionCode::NotFound,
-                    "item",
-                    "unknown_item",
-                    format!("media list {input} has no such item"),
-                )
-            })?;
+            let target = match navigate(&mut list, *navigation) {
+                Step::To(id) => Some(id),
+                Step::Stay => None,
+                Step::Unknown => {
+                    return Err(rejection(
+                        RejectionCode::NotFound,
+                        "item",
+                        "unknown_item",
+                        format!("media list {input} has no such item"),
+                    ));
+                }
+            };
             let activation = target.map(|id| {
                 let item = list.item(id).expect("navigation lands on an item").clone();
                 list.active = id;
@@ -335,34 +336,45 @@ pub(crate) fn plan(
     }
 }
 
-/// Applies `navigation` to `list`'s cycle; returns the item to activate
-/// (`Some(None)` when the list stays where it is) or `None` for an unknown
-/// item.
-fn navigate(list: &mut MediaList, navigation: EngineMediaListNavigation) -> Option<Option<u32>> {
+/// Where a navigation lands.
+enum Step {
+    /// The item to activate.
+    To(u32),
+    /// The list stays where it is (Next at the end, Previous at the start,
+    /// without loop).
+    Stay,
+    /// The navigation names an unknown item.
+    Unknown,
+}
+
+/// Applies `navigation` to `list`'s cycle.
+fn navigate(list: &mut MediaList, navigation: EngineMediaListNavigation) -> Step {
     let order = list.play_order();
-    let last = order.len() - 1;
+    let end = order.len() - 1;
     let position = list.position().unwrap_or(0);
-    let target = match navigation {
-        EngineMediaListNavigation::Next if position < last => order[position + 1],
+    Step::To(match navigation {
+        EngineMediaListNavigation::Next if position < end => order[position + 1],
         EngineMediaListNavigation::Next if list.options.loop_list => {
             list.cycle = list.cycle.wrapping_add(1);
             list.play_order()[0]
         }
-        EngineMediaListNavigation::Next => return Some(None),
         EngineMediaListNavigation::Previous if position > 0 => order[position - 1],
-        EngineMediaListNavigation::Previous if list.options.loop_list => order[last],
-        EngineMediaListNavigation::Previous => return Some(None),
+        EngineMediaListNavigation::Previous if list.options.loop_list => order[end],
+        EngineMediaListNavigation::Next | EngineMediaListNavigation::Previous => {
+            return Step::Stay;
+        }
         EngineMediaListNavigation::First => order[0],
-        EngineMediaListNavigation::Last => order[last],
+        EngineMediaListNavigation::Last => order[end],
         EngineMediaListNavigation::Goto(n) => {
-            order[usize::try_from(n).unwrap_or(usize::MAX).min(last)]
+            order[usize::try_from(n).unwrap_or(usize::MAX).min(end)]
         }
         EngineMediaListNavigation::Item(id) => {
-            list.item(id)?;
+            if list.item(id).is_none() {
+                return Step::Unknown;
+            }
             id
         }
-    };
-    Some(Some(target))
+    })
 }
 
 /// The settings that play `item`: `settings` with the item's marks as its
@@ -421,9 +433,8 @@ pub(crate) fn transport_operations(plan: &MediaListPlan) -> Vec<crate::EngineMed
                 vec![trim, crate::EngineMediaOperation::Stop]
             }
         }
-        Some(_) => Vec::new(),
         None if plan.retrim => vec![trim],
-        None => Vec::new(),
+        Some(_) | None => Vec::new(),
     }
 }
 

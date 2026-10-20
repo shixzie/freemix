@@ -141,6 +141,10 @@ pub fn wire_payload(command: &EngineMediaListCommand) -> CommandPayload {
 }
 
 /// The wire form of one list's status.
+///
+/// # Panics
+///
+/// Never: a list's position is bounded by its at most 256 items.
 #[must_use]
 pub fn wire_status(status: &EngineMediaListStatus) -> MediaListStatus {
     MediaListStatus {

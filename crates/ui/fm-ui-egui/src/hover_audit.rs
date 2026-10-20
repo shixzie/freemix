@@ -442,7 +442,7 @@ fn model(variant: Variant) -> ClientModel {
         script_states: 2,
         shortcut_states: 3,
         still_states: 0,
-        media_list_states: 0,
+        media_list_states: 1,
         input_categories: vec![
             fm_protocol::InputCategoryStatus {
                 id: 1,
@@ -694,6 +694,38 @@ fn model(variant: Variant) -> ClientModel {
             })
             .unwrap();
     }
+    // IN-006: the Guest input is a shuffled media list on its second item,
+    // so the Media tab shows the list card with every row key.
+    let item = |id: u32, uri: &str, title: Option<&str>| fm_protocol::MediaListItemSpec {
+        id,
+        uri: uri.into(),
+        title: title.map(Into::into),
+        mark_in: 0,
+        mark_out: None,
+    };
+    model
+        .apply_media_list_state(fm_protocol::MediaListStateMessage {
+            revision: 10,
+            status: fm_protocol::MediaListStatus {
+                input: wire(4),
+                items: vec![
+                    item(1, "asset://media/opener.mov", Some("Opener")),
+                    item(2, "asset://media/guest.mov", None),
+                    item(3, "asset://media/bed.wav", None),
+                ],
+                options: fm_protocol::MediaListOptionsSpec {
+                    auto_next: true,
+                    auto_first: false,
+                    loop_list: true,
+                    shuffle_seed: Some(7),
+                },
+                active: 2,
+                cycle: 0,
+                order: vec![3, 2, 1],
+                position: 1,
+            },
+        })
+        .unwrap();
     model
 }
 
@@ -1989,7 +2021,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         state
     }));
     let operator = ready(true, Variant::default());
-    let dialogs: [(&str, Configure); 16] = [
+    let dialogs: [(&str, Configure); 17] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
         ("about", &|shell| shell.show_about = true),
         ("preferences", &|shell| shell.show_preferences = true),
@@ -2081,6 +2113,14 @@ fn scenes(language: Language) -> Vec<Scene> {
             if let Some(draft) = shell.lifecycle.replace.as_mut() {
                 draft.kind = crate::input_lifecycle::SourceKind::Media;
                 draft.text = "/media/opener.mov".into();
+            }
+        }),
+        // IN-006: Add input → Media list with typed files.
+        ("add-input-media-list", &|shell| {
+            shell.open_add_input(&operator);
+            if let Some(draft) = shell.add_input.as_mut() {
+                draft.kind = crate::input_catalogue::NewInputKind::MediaList;
+                draft.media_list.text = "/media/a.mov\n/media/b.wav".into();
             }
         }),
         ("import-files", &|shell| shell.open_import(&operator)),

@@ -109,6 +109,9 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             draw_bar(ui, l, state, (input, &name), status, rate, intents);
+            if let Some(list) = project.media_list(input) {
+                crate::media_list_ui::draw_list(ui, l, state, input, list, intents);
+            }
         });
         ui.add_space(6.0);
     }

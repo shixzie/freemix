@@ -1326,7 +1326,6 @@ impl Engine {
     }
 
     /// Whether any media transport changes on the next frame absent new
-
     /// commands: one is playing or waiting, a synthetic source is still
     /// growing, or a command or fault is still to be realized.
     #[must_use]

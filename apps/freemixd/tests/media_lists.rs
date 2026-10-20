@@ -346,7 +346,7 @@ fn a_media_list_auto_advances_in_wall_time_persists_and_replays() {
     let daemon = Daemon::start(&project);
     let (mut client, snapshot, states) = Client::connect(&daemon);
     assert_eq!(snapshot.media_list_states, 0);
-    assert!(states.is_empty());
+    assert_eq!(states.len(), 0);
 
     let created = client.command(&CommandPayload::MediaList {
         input: wire(LIST),

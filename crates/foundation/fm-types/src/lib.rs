@@ -7,6 +7,7 @@ pub mod display;
 mod fade_to_black;
 mod id;
 pub mod live_lan;
+pub mod media_list_files;
 mod memory;
 pub mod network_stream;
 pub mod paged;

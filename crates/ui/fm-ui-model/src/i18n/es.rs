@@ -6258,6 +6258,133 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::MediaLanguageGerman, t("Alemán")),
     (Msg::MediaLanguageItalian, t("Italiano")),
     (Msg::MediaLanguagePortuguese, t("Portugués")),
+    (Msg::KindMediaListKey, t("Lista de medios")),
+    (
+        Msg::KindMediaListHover,
+        t(
+            "Una entrada de lista de medios: reproduce archivos de vídeo y audio uno tras otro, en orden o al azar",
+        ),
+    ),
+    (Msg::NameMediaList, t("Lista de medios")),
+    (Msg::MlFiles, t("Archivos")),
+    (
+        Msg::MlFilesHover,
+        t(
+            "Un archivo de vídeo o audio por línea, o una lista M3U (.m3u, .m3u8) cuyos archivos se añaden en su orden con sus títulos #EXTINF; rutas en el ordenador del servidor",
+        ),
+    ),
+    (Msg::MlFilesCount, t("Elementos: {count}")),
+    (Msg::MlAutoNext, t("Siguiente automático")),
+    (
+        Msg::MlAutoNextHover,
+        t("Cuando un elemento termina, el siguiente se reproduce enseguida"),
+    ),
+    (Msg::MlAutoFirst, t("Volver al primero")),
+    (
+        Msg::MlAutoFirstHover,
+        t("Cuando termina el último elemento, prepara el primero, detenido"),
+    ),
+    (Msg::MlLoop, t("Repetir la lista")),
+    (
+        Msg::MlLoopHover,
+        t("Tras el último elemento, vuelve a reproducir la lista desde el primero"),
+    ),
+    (Msg::MlShuffle, t("Aleatorio")),
+    (
+        Msg::MlShuffleHover,
+        t(
+            "Reproduce los elementos en orden aleatorio; cada vuelta de una lista repetida se baraja de nuevo, igual en cada reproducción del registro",
+        ),
+    ),
+    (Msg::MlReshuffle, t("Barajar de nuevo")),
+    (
+        Msg::MlReshuffleHover,
+        t("Elige otro orden aleatorio para esta lista"),
+    ),
+    (Msg::MlReasonNoItems, t("añada al menos un archivo")),
+    (
+        Msg::MlReasonNotMedia,
+        t("una línea no es un archivo de vídeo o audio ni una lista M3U"),
+    ),
+    (
+        Msg::MlReasonPlaylistUnreadable,
+        t("no se puede leer una lista M3U en este ordenador"),
+    ),
+    (
+        Msg::MlReasonTooManyItems,
+        t("una lista de medios admite como máximo 256 archivos"),
+    ),
+    (
+        Msg::MlReasonTooMuchText,
+        t("las rutas y los títulos son demasiado largos para una lista"),
+    ),
+    (Msg::MlTitle, t("Elementos de la lista")),
+    (Msg::MlPosition, t("Elemento {position} de {count}")),
+    (
+        Msg::MlPositionHover,
+        t("El lugar del elemento activo en el orden de reproducción (aleatorio o no)"),
+    ),
+    (
+        Msg::MlNextHover,
+        t("Activa el elemento siguiente; se reproduce enseguida si la lista está en reproducción"),
+    ),
+    (
+        Msg::MlPreviousHover,
+        t("Activa el elemento anterior; se reproduce enseguida si la lista está en reproducción"),
+    ),
+    (Msg::MlSearchHint, t("Buscar elementos")),
+    (
+        Msg::MlSearchHover,
+        t("Muestra solo los elementos cuyo título o archivo contiene este texto"),
+    ),
+    (
+        Msg::MlNoMatches,
+        t("Ningún elemento coincide con la búsqueda"),
+    ),
+    (
+        Msg::MlDragHover,
+        t(
+            "Arrástrelo sobre otro elemento para moverlo allí; la lista se reproduce en este orden salvo en aleatorio",
+        ),
+    ),
+    (Msg::MlActive, t("ACTUAL")),
+    (
+        Msg::MlActiveHover,
+        t("El elemento que reproduce ahora esta entrada"),
+    ),
+    (Msg::MlRemoveHover, t("Quita este elemento de la lista")),
+    (
+        Msg::MlReasonOnlyItem,
+        t("una lista de medios conserva al menos un elemento"),
+    ),
+    (Msg::MlUpHover, t("Adelanta este elemento un lugar")),
+    (Msg::MlDownHover, t("Retrasa este elemento un lugar")),
+    (Msg::MlReasonFirstItem, t("el elemento ya es el primero")),
+    (Msg::MlReasonLastItem, t("el elemento ya es el último")),
+    (
+        Msg::MlActivateHover,
+        t("Activa este elemento; se reproduce enseguida si la lista está en reproducción"),
+    ),
+    (Msg::MlReasonAlreadyActive, t("el elemento ya está activo")),
+    (
+        Msg::MlMarkInHover,
+        t("Marca de entrada de este elemento: el primer fotograma que reproduce"),
+    ),
+    (
+        Msg::MlMarkOutHover,
+        t(
+            "Marca de salida de este elemento: termina antes de este fotograma; 0 reproduce hasta el final del archivo",
+        ),
+    ),
+    (
+        Msg::MlAddPathsHover,
+        t("Archivos que añadir al final de la lista: rutas en líneas separadas o una lista M3U"),
+    ),
+    (Msg::MlAdd, t("Añadir al final")),
+    (
+        Msg::MlAddHover,
+        t("Añade los archivos escritos al final de la lista"),
+    ),
     // Input lifecycle (IN-026).
     (Msg::LcDuplicate, t("Duplicar")),
     (

@@ -103,6 +103,8 @@ pub enum NewInputKind {
     Image,
     /// Pictures shown one after another (IN-009).
     Slideshow,
+    /// A media list input: files played one after another (IN-006).
+    MediaList,
 }
 
 impl NewInputKind {
@@ -121,6 +123,7 @@ impl NewInputKind {
             Self::SystemAudio => Msg::NameSystemAudio,
             Self::Image => Msg::NameImage,
             Self::Slideshow => Msg::NameSlideshow,
+            Self::MediaList => Msg::NameMediaList,
         }
     }
 
@@ -133,6 +136,7 @@ impl NewInputKind {
             Self::SystemAudio => Msg::KindSystemAudioKey,
             Self::Image => Msg::KindImageKey,
             Self::Slideshow => Msg::KindSlideshowKey,
+            Self::MediaList => Msg::KindMediaListKey,
         }
     }
 
@@ -145,6 +149,7 @@ impl NewInputKind {
             Self::SystemAudio => Msg::KindSystemAudioHover,
             Self::Image => Msg::KindImageHover,
             Self::Slideshow => Msg::KindSlideshowHover,
+            Self::MediaList => Msg::KindMediaListHover,
         }
     }
 }
@@ -436,6 +441,19 @@ pub(crate) fn add_input_intent(
     }
     let input =
         next_free_input_id(&tracker.taken_ids(view, state)).ok_or(Msg::ReasonNoFreeId.en())?;
+    // A media list is created by its own command, with its files (IN-006).
+    if draft.kind == NewInputKind::MediaList {
+        let items = draft.media_list.items()?;
+        let options = draft.media_list.options(&items);
+        return Ok(StudioIntent::MediaList {
+            input,
+            operation: fm_protocol::MediaListOperation::Create {
+                name: draft.name.trim().to_owned(),
+                items,
+                options,
+            },
+        });
+    }
     Ok(StudioIntent::AddInput {
         input,
         name: draft.name.trim().to_owned(),
@@ -461,6 +479,8 @@ pub(crate) struct AddInputDraft {
     pub(crate) image: crate::still_input_ui::ImageDraft,
     /// The slideshow form (IN-009).
     pub(crate) slideshow: crate::still_input_ui::SlideshowDraft,
+    /// The media list form (IN-006).
+    pub(crate) media_list: crate::media_list_ui::MediaListDraft,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -502,6 +522,7 @@ impl AddInputDraft {
                         u64::try_from(elapsed.as_nanos() & u128::from(u64::MAX)).unwrap_or(1)
                     }),
             ),
+            media_list: crate::media_list_ui::MediaListDraft::default(),
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -537,6 +558,8 @@ impl AddInputDraft {
             NewInputKind::Slideshow => {
                 LiveInputSource::Slideshow(Box::new(self.slideshow.config()?))
             }
+            // Created by `media_list create`, never `input_add`.
+            NewInputKind::MediaList => return Err(self.media_list.items().err().unwrap_or("")),
         })
     }
 
@@ -564,6 +587,10 @@ impl AddInputDraft {
             NewInputKind::Slideshow => {
                 let problem = self.slideshow.checked().err()?;
                 (problem.field.label(), problem.reason, problem.prompt)
+            }
+            NewInputKind::MediaList => {
+                let reason = self.media_list.items().err()?;
+                (Msg::MlFiles, reason, self.media_list.text.trim().is_empty())
             }
         };
         Some(FieldProblem {
@@ -769,7 +796,11 @@ impl CatalogueTracker {
         intents
             .iter()
             .filter_map(|intent| match intent {
-                StudioIntent::AddInput { input, name, .. } => Some(self.submit(
+                StudioIntent::AddInput { input, name, .. }
+                | StudioIntent::MediaList {
+                    input,
+                    operation: fm_protocol::MediaListOperation::Create { name, .. },
+                } => Some(self.submit(
                     CatalogueRequest::Add {
                         input: *input,
                         name: name.clone(),
@@ -1127,6 +1158,7 @@ impl StudioShell {
                                 NewInputKind::SystemAudio,
                                 NewInputKind::Image,
                                 NewInputKind::Slideshow,
+                                NewInputKind::MediaList,
                             ] {
                                 let selected = draft.kind == kind;
                                 let response = ui
@@ -1207,6 +1239,10 @@ impl StudioShell {
                         if draft.kind == NewInputKind::Slideshow {
                             ui.add_space(6.0);
                             crate::still_input_ui::draw_slideshow_form(ui, l, &mut draft.slideshow);
+                        }
+                        if draft.kind == NewInputKind::MediaList {
+                            ui.add_space(6.0);
+                            crate::media_list_ui::draw_form(ui, l, &mut draft.media_list);
                         }
                         if draft.kind == NewInputKind::Capture {
                             ui.add_space(6.0);
@@ -1628,9 +1664,12 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 muted_color(),
             );
         }
-        // A system audio input has no picture of its own; a picture shows
-        // once the server decoded it.
-        NewInputKind::SystemAudio | NewInputKind::Image | NewInputKind::Slideshow => {
+        // A system audio input has no picture of its own; a picture or a
+        // media list's first file shows once the server decoded it.
+        NewInputKind::SystemAudio
+        | NewInputKind::Image
+        | NewInputKind::Slideshow
+        | NewInputKind::MediaList => {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
@@ -2067,6 +2106,58 @@ mod tests {
         assert_eq!(
             add_input_intent(&draft, &viewer, &tracker),
             Err("this session lacks the edit_project permission")
+        );
+    }
+
+    /// IN-006: Add input → Media list creates the list input with its
+    /// files and options, and is tracked like any add.
+    #[test]
+    fn a_media_list_add_creates_the_list_with_its_files() {
+        let state = state();
+        let mut tracker = CatalogueTracker::default();
+        let mut draft = AddInputDraft::new(&state, &tracker);
+        draft.set_kind(NewInputKind::MediaList, &tracker.taken_names(&state));
+        assert_eq!(draft.name, "Media List 1");
+        assert_eq!(
+            add_input_intent(&draft, &state, &tracker),
+            Err("add at least one file")
+        );
+        assert!(draft.source_problem().is_some_and(|problem| problem.prompt));
+        draft.media_list.text = "/media/a.mov\n/media/notes.txt".into();
+        assert_eq!(
+            add_input_intent(&draft, &state, &tracker),
+            Err("a line is not a video or audio file or an M3U playlist")
+        );
+        draft.media_list.text = "/media/a.mov\n/media/b.wav".into();
+        draft.media_list.loop_list = true;
+        let intent = add_input_intent(&draft, &state, &tracker).unwrap();
+        let StudioIntent::MediaList {
+            input: id,
+            operation:
+                fm_protocol::MediaListOperation::Create {
+                    name,
+                    items,
+                    options,
+                },
+        } = &intent
+        else {
+            panic!("expected a media list creation, got {intent:?}");
+        };
+        assert_eq!((*id, name.as_str()), (input(5), "Media List 1"));
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (item.id, item.uri.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "/media/a.mov"), (2, "/media/b.wav")]
+        );
+        assert!(options.auto_next && options.loop_list && options.shuffle_seed.is_none());
+        let pending = tracker.submit_intents(&[intent], state.view.as_ref());
+        assert_eq!(pending.len(), 1);
+        assert!(
+            tracker
+                .taken_ids(state.view.as_ref().unwrap(), &state)
+                .contains(&input(5))
         );
     }
 

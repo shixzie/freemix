@@ -2606,21 +2606,23 @@ const fn media_command_class(operation: fm_protocol::MediaOperation) -> CommandC
     }
 }
 
+/// Stepping through a media list is an operator control like media
+/// transport; creating or editing one edits the project (IN-006).
+const fn media_list_command_class(operation: &fm_protocol::MediaListOperation) -> CommandClass {
+    if matches!(
+        operation,
+        fm_protocol::MediaListOperation::Navigate(_)
+            | fm_protocol::MediaListOperation::Advance { .. }
+    ) {
+        CommandClass::Transition
+    } else {
+        CommandClass::EditProject
+    }
+}
+
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
-        // Stepping through a media list is an operator control like media
-        // transport; creating or editing one edits the project.
-        CommandPayload::MediaList { operation, .. } => {
-            if matches!(
-                operation,
-                fm_protocol::MediaListOperation::Navigate(_)
-                    | fm_protocol::MediaListOperation::Advance { .. }
-            ) {
-                CommandClass::Transition
-            } else {
-                CommandClass::EditProject
-            }
-        }
+        CommandPayload::MediaList { operation, .. } => media_list_command_class(operation),
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::ApplyTitleAnimationUserPreset { .. }

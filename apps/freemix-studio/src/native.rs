@@ -2799,6 +2799,24 @@ fn intent_payload(
                 operation,
             }
         }
+        StudioIntent::MediaList { input, operation } => {
+            // A creation names a fresh input; every other operation an
+            // existing one.
+            let creates = matches!(operation, fm_protocol::MediaListOperation::Create { .. });
+            if let Some(view) = view
+                && view.inputs.contains(&input) == creates
+            {
+                return Err(if creates {
+                    format!("Input {input} already exists; open Add input again for a fresh id")
+                } else {
+                    "Input no longer exists".to_owned()
+                });
+            }
+            CommandPayload::MediaList {
+                input: WireInputId::from_domain(input),
+                operation,
+            }
+        }
         StudioIntent::Grade(command) => command.payload(),
         StudioIntent::TitleAnimation(payload)
         | StudioIntent::SceneAnimation(payload)
@@ -2960,7 +2978,11 @@ fn playlist_payload(intent: PlaylistIntent) -> CommandPayload {
 /// The live input add or remove a command payload carries, if any.
 fn catalogue_request(payload: &CommandPayload) -> Option<CatalogueRequest> {
     match payload {
-        CommandPayload::AddInput { input, name, .. } => Some(CatalogueRequest::Add {
+        CommandPayload::AddInput { input, name, .. }
+        | CommandPayload::MediaList {
+            input,
+            operation: fm_protocol::MediaListOperation::Create { name, .. },
+        } => Some(CatalogueRequest::Add {
             input: input.to_domain(),
             name: name.clone(),
         }),

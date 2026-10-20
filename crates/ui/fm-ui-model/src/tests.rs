@@ -3776,3 +3776,115 @@ fn script_syntax_is_checked_before_saving() {
     assert_eq!((check.at.line, check.at.column), (2, 12));
     assert_eq!(check.kind, ScriptCheckKind::Syntax);
 }
+
+fn media_list_status(input_id: u128, active: u32) -> fm_protocol::MediaListStatus {
+    let item = |id: u32| fm_protocol::MediaListItemSpec {
+        id,
+        uri: format!("asset://media/{id}.mov"),
+        title: None,
+        mark_in: 0,
+        mark_out: None,
+    };
+    fm_protocol::MediaListStatus {
+        input: fm_protocol::WireInputId::from_domain(input(input_id)),
+        items: vec![item(1), item(2)],
+        options: fm_protocol::MediaListOptionsSpec::default(),
+        active,
+        cycle: 0,
+        order: vec![1, 2],
+        position: active - 1,
+    }
+}
+
+/// IN-006: the snapshot's `media_list_state` records complete it; a
+/// creation adds the list input with its name and strip; later changes
+/// replace the list; removing the input drops it; a change for an input
+/// that is not a list, or a record the snapshot did not announce, is
+/// refused.
+#[test]
+fn media_lists_replicate_from_records_and_events() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut announced = snapshot(project_id, 7);
+    announced.media_list_states = 1;
+    model.install_snapshot(announced).unwrap();
+    assert!(!model.state().unwrap().media_lists_complete());
+    let mut record = fm_protocol::MediaListStateMessage {
+        revision: 7,
+        status: media_list_status(3, 1),
+    };
+    record.status.order = vec![2, 1];
+    assert_eq!(
+        model.apply_media_list_state(record),
+        Err(ModelError::MediaListStateMismatch)
+    );
+    model
+        .apply_media_list_state(fm_protocol::MediaListStateMessage {
+            revision: 7,
+            status: media_list_status(3, 1),
+        })
+        .unwrap();
+    assert!(model.state().unwrap().media_lists_complete());
+    assert_eq!(
+        model.apply_media_list_state(fm_protocol::MediaListStateMessage {
+            revision: 7,
+            status: media_list_status(2, 1),
+        }),
+        Err(ModelError::MediaListStateMismatch)
+    );
+
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let changed = |created: Option<&str>, status| DurableChange::MediaListChanged {
+        frame: 40,
+        operation: if created.is_some() {
+            "create"
+        } else {
+            "navigate"
+        },
+        created: created.map(Into::into),
+        status: Box::new(status),
+    };
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            8,
+            changed(Some("Walk-in"), media_list_status(9, 1)),
+        ))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.inputs().last(), Some(&input(9)));
+    assert_eq!(state.input_name(input(9)), Some("Walk-in"));
+    assert_eq!(state.media_lists().len(), 2);
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            9,
+            changed(None, media_list_status(9, 2)),
+        ))
+        .unwrap();
+    assert_eq!(
+        model.state().unwrap().media_list(input(9)).unwrap().active,
+        2
+    );
+    // A change for an input that is no list is refused.
+    assert_eq!(
+        model.apply_event(event(
+            project_id,
+            identity.clone(),
+            10,
+            changed(None, media_list_status(2, 1)),
+        )),
+        Err(ModelError::InvalidMediaListChange(input(2)))
+    );
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            10,
+            DurableChange::InputRemoved { input: input(9) },
+        ))
+        .unwrap();
+    assert!(model.state().unwrap().media_list(input(9)).is_none());
+}

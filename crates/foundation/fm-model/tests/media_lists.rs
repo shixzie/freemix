@@ -194,3 +194,22 @@ fn an_extinf_title_applies_only_to_the_next_entry_and_is_bounded() {
     assert_eq!(entries[0].title.as_ref().map(String::len), Some(128));
     assert_eq!(entries[1].title, None);
 }
+
+/// The client-side list file rule agrees with the model's media files: every
+/// media extension but the stills.
+#[test]
+fn list_files_are_the_media_files_that_are_not_stills() {
+    let stills = ["png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff"];
+    let expected: Vec<&str> = fm_model::MEDIA_FILE_EXTENSIONS
+        .iter()
+        .copied()
+        .filter(|extension| !stills.contains(extension))
+        .collect();
+    assert_eq!(
+        fm_types::media_list_files::MEDIA_LIST_FILE_EXTENSIONS.to_vec(),
+        expected
+    );
+    assert!(fm_model::is_media_list_file_name("/a/B.MOV"));
+    assert!(!fm_model::is_media_list_file_name("/a/b.png"));
+    assert!(!fm_model::is_media_list_file_name("/a/.wav"));
+}

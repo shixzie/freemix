@@ -725,22 +725,14 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
         // It must also be ungraded: removal drops the input's grade, and the
         // edits that set it may no longer be in the history (LUT removal
         // forgets them), so redo could not restore it.
+        // Undoing a media list's creation removes its input the same way
+        // (IN-006).
         (
             EngineCommand::RemoveInput { input },
             EngineCommand::AddInput {
                 input: added, name, ..
-            },
-        ) => {
-            input == added
-                && state.inputs().last() == Some(input)
-                && state.input_name(*input) == Some(name.as_str())
-                && !state.grading().inputs.contains_key(input)
-        }
-        // Undoing a media list's creation removes its input, under the same
-        // conditions as undoing an add (IN-006).
-        (
-            EngineCommand::RemoveInput { input },
-            EngineCommand::MediaList(crate::EngineMediaListCommand {
+            }
+            | EngineCommand::MediaList(crate::EngineMediaListCommand {
                 input: added,
                 operation: crate::EngineMediaListOperation::Create { name, .. },
             }),

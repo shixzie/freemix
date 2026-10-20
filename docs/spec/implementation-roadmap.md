@@ -27,10 +27,11 @@ highest-value remaining items, ranked:
    key overrides, Web operator buttons, scoped/chorded keys, dynamic targets,
    mouse bindings, and import/export of a shortcut set (see the RC-004
    boundary below). This is a P0 row.
-5. **Wire the tested library-only crates: Media List (`IN-006`, `OR-015`).**
-   `ListPlayer` is covered by tests but used by no app; wiring it is cheap
-   breadth for real shows. (The slideshow, `IN-009`, is now wired end to
-   end; see its boundary below.)
+5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
+   a real input end to end (engine, protocol, persistence, both daemons,
+   Studio); it still lacks next-item prefetch, per-item thumbnails,
+   transitions between items, and Windows/macOS evidence. (The slideshow,
+   `IN-009`, is now wired end to end; see its boundary below.)
 6. **Auto key and the remaining keyer refinements (`SW-008`).** Key/fill
    (luma or alpha), clip, choke, edge softness, and despill now run natively,
    persist, and are edited in Studio; auto key is still CPU-only and unwired,
@@ -3475,6 +3476,28 @@ cancelled outcomes under explicit item, pending, and history limits. Remaining
 gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
 bank, no M3U or file-list import, no transitions or variable speed between
 items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
+
+Current implementation boundary for item 5 Media List inputs (`IN-006`): a
+list input is a media input whose source is its active item's file, plus a
+`MediaList` (items with per-item in/out marks and titles, Auto Next, Auto
+First, loop, and a shuffle seed) in the show and in `project.json`. The
+engine creates, edits (undoable, padlocked), navigates (next, previous,
+first, last, go to a position, go to an item), and advances lists; its
+shuffle is `fm-playback`'s seeded per-cycle order. Activating an item swaps
+the input's source and trim (a file already open is re-cued in place) and
+plays it when the list was playing. Both daemons journal an Auto Next
+`advance` when the active item ends, so replay is frame-exact; host paths
+are imported into the bundle; snapshots carry `media_list_state` records.
+The native daemon holds the previous item's last picture until the next
+file's decoder presents (a few frames on the development box: the item
+swap is not gapless), since items are not prefetched. Studio adds lists (pasted paths and M3U playlists with
+relative entries and `#EXTINF` titles) and shows a list card in the Media
+tab with search, drag reorder, per-item marks, the active item, Previous and
+Next, and the options. Gaps: no next-item prefetch (so no gapless cut
+between files), no transitions between items, no per-item thumbnails (the
+input thumbnail follows the active item), no CLI or vMix API verbs, no
+cross-input GO bank, and Linux-only native evidence. `IN-006` stays
+`planned` until those land.
 
 Current implementation boundary for item 5 playlist automation:
 `fm-automation` provides a caller-clocked playlist engine that sequences whole

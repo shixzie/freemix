@@ -127,9 +127,9 @@ fn media_lists_are_authorized_replicated_and_auto_advanced_exactly() {
     assert_eq!((status.active, status.order.clone()), (1, vec![1, 2]));
     assert_eq!(status.items, items());
     assert_eq!(control.snapshot().snapshot.media_list_states, 1);
-    let states = control.media_list_states();
-    assert_eq!(states.len(), 1);
-    assert_eq!(states[0].status, status);
+    let records = control.media_list_states();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].status, status);
     assert!(
         control
             .snapshot()

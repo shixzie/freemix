@@ -55,6 +55,7 @@ mod input_thumbnail_ui;
 mod keymap;
 mod l10n;
 mod live_lan;
+mod media_list_ui;
 mod media_transport;
 mod menu;
 mod meter_ballistics;
@@ -408,6 +409,13 @@ pub enum StudioIntent {
     /// `offset` (IN-009); the reply fills
     /// [`fm_ui_model::StillInputStatus::listing`].
     RequestSlideshowSlides { input: InputId, offset: u32 },
+    /// Creates a media list input (a project edit, with a Studio-chosen
+    /// unused identifier), edits its items and options (a project edit), or
+    /// steps through it (an operator control) (IN-006).
+    MediaList {
+        input: InputId,
+        operation: fm_protocol::MediaListOperation,
+    },
     /// Sends one grade command from the Colour window: a target's grade,
     /// a library save, or a LUT import.
     Grade(GradeCommand),
