@@ -4112,8 +4112,14 @@ Native Program pacing (no protocol or schema change): the frame pacer is now
 anchored at the first paced tick instead of at daemon start, and the startup
 recorder opens on its worker (`FFmpeg` spawn and readiness off the loop)
 while the loop keeps realizing frames into its bounded backlog, so readiness
-no longer waits in front of frame 0. A priming segment whose bounded encoder
-queue is full moves the pair into that backlog instead of failing. Streams,
+no longer waits in front of frame 0. A segment whose bounded encoder queue
+is full (still priming, or a running `FFmpeg` briefly descheduled or slowed
+by its disk) moves the pair into that backlog instead of failing; the
+backlog drains in sequence once the recorder catches up, and only a stall
+that exhausts the backlog's byte budget (`enqueue:backlog_full`, reported
+as fell-behind) or trips the recorder's no-progress timeout fails the
+segment. `FREEMIXD_RECORDER` reports `backlogged_pairs` and
+`backlog_peak_bytes` so the backpressure is visible before any loss. Streams,
 LiveLAN, and HLS already started on workers. Each realized Program frame is
 read back once and shared between stream packing and recorders, where each
 used to issue its own blocking GPU readback. The command turn now opens only

@@ -118,7 +118,15 @@ pub(crate) fn recorder_failure(notice: &str, stderr: &str) -> OutputFailure {
     let fixed = match stage {
         "capture" | "readback" | "frame" => Some(OutputFailureCode::CaptureFailed),
         "startup" if detail == "mux_readiness_timeout" => Some(OutputFailureCode::StartupTimeout),
-        "enqueue" if ["QueueFull", "RetainedByteLimit", "open_backlog_full"].contains(&detail) => {
+        "enqueue"
+            if [
+                "QueueFull",
+                "RetainedByteLimit",
+                "open_backlog_full",
+                "backlog_full",
+            ]
+            .contains(&detail) =>
+        {
             Some(OutputFailureCode::FellBehind)
         }
         _ => None,
@@ -266,6 +274,19 @@ mod tests {
             assert_eq!(
                 latched_stream_failure(notice),
                 failure(code, None),
+                "{notice}"
+            );
+        }
+    }
+
+    /// A recorder that stalled long enough to exhaust the daemon backlog,
+    /// before or after it opened, fell behind.
+    #[test]
+    fn an_exhausted_recorder_backlog_fell_behind() {
+        for notice in ["enqueue:open_backlog_full", "enqueue:backlog_full"] {
+            assert_eq!(
+                recorder_failure(notice, ""),
+                failure(OutputFailureCode::FellBehind, None),
                 "{notice}"
             );
         }

@@ -1995,8 +1995,13 @@ struct NativeProgramRecorder {
     backlog_bytes: usize,
     /// Upper bound for [`Self::backlog_bytes`]: the recorder's own retained
     /// byte budget, so an opening segment never holds more than a running one
-    /// may.
+    /// may, and a stalled recorder is failed once it would exceed it.
     backlog_limit: usize,
+    /// Pairs that waited in [`Self::backlog`] instead of going straight to
+    /// the recorder: the segment was opening or the recorder fell behind.
+    backlogged_pairs: u64,
+    /// Highest [`Self::backlog_bytes`] this segment reached.
+    backlog_peak_bytes: usize,
     capture: RecorderCapturePolicy,
     finalization_clean: Option<bool>,
     startup_pair_timeout: Duration,
@@ -2372,6 +2377,8 @@ impl NativeProgramRecorder {
                 backlog: std::collections::VecDeque::new(),
                 backlog_bytes: 0,
                 backlog_limit,
+                backlogged_pairs: 0,
+                backlog_peak_bytes: 0,
                 capture: RecorderCapturePolicy::default(),
                 finalization_clean: None,
                 startup_pair_timeout,
@@ -2610,16 +2617,17 @@ impl NativeProgramRecorder {
         {
             match recorder.enqueue(pair) {
                 Ok(()) => return,
-                // A segment still awaiting mux readiness has just been handed
-                // the frames realized while it opened, and its `FFmpeg` may
-                // still be starting its encoder: a full queue then waits in
-                // the backlog rather than failing the segment.
+                // A full queue is backpressure, not a failure: `FFmpeg` is
+                // still starting its encoder after the segment opened, or was
+                // briefly descheduled or slowed by its disk. The pair waits in
+                // the bounded backlog and drains once the recorder catches
+                // up; only a stall long enough to exhaust the backlog (or the
+                // recorder's own no-progress timeout) fails the segment.
                 Err(error)
-                    if self.priming.is_some()
-                        && matches!(
-                            error.reason,
-                            EnqueueRejection::QueueFull | EnqueueRejection::RetainedByteLimit
-                        ) =>
+                    if matches!(
+                        error.reason,
+                        EnqueueRejection::QueueFull | EnqueueRejection::RetainedByteLimit
+                    ) =>
                 {
                     error.into_frame()
                 }
@@ -2632,15 +2640,22 @@ impl NativeProgramRecorder {
         } else {
             pair
         };
-        // The segment is still opening, older pairs are still waiting, or a
-        // priming segment's queue is full: queue behind them so the segment
+        // The segment is still opening, older pairs are still waiting, or
+        // the recorder's queue is full: queue behind them so the segment
         // stays in sequence order.
         let bytes = pair.retained_bytes();
         if self.backlog_bytes.saturating_add(bytes) > self.backlog_limit {
-            self.fail("enqueue:open_backlog_full".to_owned(), true);
+            let failure = if matches!(self.sink, RecorderSink::Open(_)) {
+                "enqueue:backlog_full"
+            } else {
+                "enqueue:open_backlog_full"
+            };
+            self.fail(failure.to_owned(), true);
             return;
         }
         self.backlog_bytes += bytes;
+        self.backlog_peak_bytes = self.backlog_peak_bytes.max(self.backlog_bytes);
+        self.backlogged_pairs = self.backlogged_pairs.saturating_add(1);
         self.backlog.push_back(pair);
         self.pump_backlog();
     }
@@ -2788,6 +2803,10 @@ impl NativeProgramRecorder {
                 &report,
                 duration_ms,
                 free_bytes,
+                RecorderBacklog {
+                    pairs: self.backlogged_pairs,
+                    peak_bytes: self.backlog_peak_bytes,
+                },
                 app_capture_failure,
                 &failure,
                 self.video_bitrate_kbps,
@@ -8961,13 +8980,14 @@ fn recorder_report(
     report: &StopReport,
     duration_ms: u64,
     free_bytes: u64,
+    backlog: RecorderBacklog,
     app_capture_failure: bool,
     failure: &str,
     video_bitrate_kbps: Option<u32>,
     audio_bitrate_kbps: Option<u32>,
 ) -> String {
     format!(
-        "FREEMIXD_RECORDER\tv=1\tslot={slot}\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tvideo_bitrate_kbps={}\taudio_bitrate_kbps={}\tduration_ms={duration_ms}\tfree_bytes={free_bytes}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={app_capture_failure}\tfailure={}",
+        "FREEMIXD_RECORDER\tv=1\tslot={slot}\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tvideo_bitrate_kbps={}\taudio_bitrate_kbps={}\tduration_ms={duration_ms}\tfree_bytes={free_bytes}\toutput_finalization={:?}\tcleanup={:?}\tbacklogged_pairs={}\tbacklog_peak_bytes={}\tapp_capture_failure={app_capture_failure}\tfailure={}",
         report.telemetry.state,
         report.outcome,
         report.telemetry.accepted_pairs,
@@ -8978,8 +8998,21 @@ fn recorder_report(
         record_bitrate_field(audio_bitrate_kbps),
         report.output,
         report.cleanup,
+        backlog.pairs,
+        backlog.peak_bytes,
         diagnostic_field(failure),
     )
+}
+
+/// How much a segment leaned on the daemon-side backlog: pairs that waited
+/// there because the segment was opening or the recorder fell behind, and
+/// the most bytes it held at once. Nonzero values on a running segment are
+/// the visible backpressure a stalled `FFmpeg` or disk caused before any loss.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RecorderBacklog {
+    pairs: u64,
+    peak_bytes: usize,
 }
 
 /// Renders one configured recorder bitrate for `FREEMIXD_RECORDER`; `None`
@@ -19157,14 +19190,34 @@ mod tests {
             },
         };
         assert_eq!(
-            recorder_report(1, &report, 1_000, 2_048, false, "none", None, None),
-            "FREEMIXD_RECORDER\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\taccepted_pairs=30\tcompleted_pairs=30\toutput_bytes=1024\twav_bytes=512\tvideo_bitrate_kbps=unset\taudio_bitrate_kbps=unset\tduration_ms=1000\tfree_bytes=2048\toutput_finalization=Synced\tcleanup=Complete\tapp_capture_failure=false\tfailure=none",
+            recorder_report(
+                1,
+                &report,
+                1_000,
+                2_048,
+                RecorderBacklog::default(),
+                false,
+                "none",
+                None,
+                None
+            ),
+            "FREEMIXD_RECORDER\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\taccepted_pairs=30\tcompleted_pairs=30\toutput_bytes=1024\twav_bytes=512\tvideo_bitrate_kbps=unset\taudio_bitrate_kbps=unset\tduration_ms=1000\tfree_bytes=2048\toutput_finalization=Synced\tcleanup=Complete\tbacklogged_pairs=0\tbacklog_peak_bytes=0\tapp_capture_failure=false\tfailure=none",
         );
         // The second slot is annotated by number, never by position in a
         // combined record, so a mixed run keeps the two segments separable.
         assert!(
-            recorder_report(2, &report, 0, 0, false, "none", None, None)
-                .starts_with("FREEMIXD_RECORDER\tv=1\tslot=2\tstate=Stopped\t")
+            recorder_report(
+                2,
+                &report,
+                0,
+                0,
+                RecorderBacklog::default(),
+                false,
+                "none",
+                None,
+                None
+            )
+            .starts_with("FREEMIXD_RECORDER\tv=1\tslot=2\tstate=Stopped\t")
         );
     }
 
@@ -19192,19 +19245,50 @@ mod tests {
             },
         };
         assert!(
-            recorder_report(1, &report, 0, 0, false, "none", Some(2_000), Some(96)).contains(
+            recorder_report(
+                1,
+                &report,
+                0,
+                0,
+                RecorderBacklog::default(),
+                false,
+                "none",
+                Some(2_000),
+                Some(96)
+            )
+            .contains(
                 "\twav_bytes=0\tvideo_bitrate_kbps=2000\taudio_bitrate_kbps=96\tduration_ms=0\t"
             )
         );
         assert!(
-            recorder_report(2, &report, 0, 0, false, "none", None, None)
-                .contains("\twav_bytes=0\tvideo_bitrate_kbps=unset\taudio_bitrate_kbps=unset\t")
+            recorder_report(
+                2,
+                &report,
+                0,
+                0,
+                RecorderBacklog::default(),
+                false,
+                "none",
+                None,
+                None
+            )
+            .contains("\twav_bytes=0\tvideo_bitrate_kbps=unset\taudio_bitrate_kbps=unset\t")
         );
         // Each field is independent: one slot can set video while keeping the
         // encoder's default audio.
         assert!(
-            recorder_report(2, &report, 0, 0, false, "none", Some(1_000), None)
-                .contains("\tvideo_bitrate_kbps=1000\taudio_bitrate_kbps=unset\t")
+            recorder_report(
+                2,
+                &report,
+                0,
+                0,
+                RecorderBacklog::default(),
+                false,
+                "none",
+                Some(1_000),
+                None
+            )
+            .contains("\tvideo_bitrate_kbps=1000\taudio_bitrate_kbps=unset\t")
         );
     }
 

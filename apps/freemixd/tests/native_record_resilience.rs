@@ -61,6 +61,12 @@ fn input(value: u128) -> InputId {
 
 /// A 64x48 generator show whose first recorder slot records from startup.
 fn save_recording_project(path: &Path) {
+    save_sized_recording_project(path, 64, 48);
+}
+
+/// A `width`x`height` generator show whose first recorder slot records from
+/// startup.
+fn save_sized_recording_project(path: &Path, width: u32, height: u32) {
     let rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
         ProjectId::new(NonZeroU128::new(7_301).unwrap()),
@@ -68,7 +74,7 @@ fn save_recording_project(path: &Path) {
         ProjectSettings {
             frame_rate: rate,
             video: VideoFormat {
-                dimensions: VideoDimensions::new(64, 48).unwrap(),
+                dimensions: VideoDimensions::new(width, height).unwrap(),
                 frame_rate: rate,
                 pixel_format: PixelFormat::Rgba8,
                 scan: ScanMode::Progressive,
@@ -540,6 +546,88 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
         let manifest = newest_manifest(&name, &[&primary, &fallback]);
         assert_eq!(manifest.state, SessionState::Stopped, "session {name}");
     }
+}
+
+/// `FFmpeg` stalls mid-show, as it does on a loaded host or a slow disk:
+/// here it is suspended for a second and a half. Frames are big enough that
+/// the loopback buffers cannot hide the stall, so the recorder's queue fills.
+/// The pairs wait in the daemon's bounded backlog and drain once `FFmpeg`
+/// resumes: the recording does not fail, every accepted pair is muxed, and
+/// the report shows the backpressure.
+#[test]
+fn a_briefly_stalled_ffmpeg_backs_up_the_recording_without_failing_it() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("stall.freemix");
+    save_sized_recording_project(&project, 640, 360);
+    let output = directory.path().join("program.mp4");
+    let mut arguments = os(&["--record-program"]);
+    arguments.push(output.clone().into());
+    let Some(daemon) = DaemonProcess::start(&project, &arguments) else {
+        return;
+    };
+    wait_until("a muxed fragment", || {
+        scan_fmp4_file(&output).is_ok_and(|scan| scan.fragments >= 1)
+    });
+    let muxer = Command::new("pgrep")
+        .args(["-P", &daemon.child.id().to_string(), "-x", "ffmpeg"])
+        .output()
+        .unwrap();
+    let muxer = String::from_utf8_lossy(&muxer.stdout).trim().to_owned();
+    assert!(
+        !muxer.is_empty() && !muxer.contains('\n'),
+        "one recorder FFmpeg: {muxer:?}"
+    );
+    let signal = |signal: &str| {
+        assert!(
+            Command::new("kill")
+                .args([signal, &muxer])
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    signal("-STOP");
+    thread::sleep(Duration::from_millis(1_500));
+    signal("-CONT");
+    // The backlog drains in the background; the stop drains whatever is
+    // left, so no catch-up timing is assumed here.
+    wait_until("a fragment muxed after the stall", || {
+        scan_fmp4_file(&output).is_ok_and(|scan| scan.fragments >= 3)
+    });
+    let stderr = daemon.stop();
+
+    assert!(
+        lines(&stderr, "FREEMIXD_RECORDER_FAILURE").is_empty(),
+        "a brief stall is not a recorder failure: {stderr}"
+    );
+    let reports = lines(&stderr, "FREEMIXD_RECORDER");
+    assert_eq!(reports.len(), 1, "{stderr}");
+    let report = reports[0];
+    eprintln!("{report}");
+    assert!(
+        report.contains("\tstate=Stopped\toutcome=Clean\t")
+            && report.ends_with("\tapp_capture_failure=false\tfailure=none"),
+        "{report}\n{stderr}"
+    );
+    let field = |name: &str| -> u64 {
+        report
+            .split('\t')
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name} in {report}"))
+            .parse()
+            .unwrap()
+    };
+    assert!(
+        field("backlogged_pairs") > 0,
+        "the stall filled the recorder queue: {report}"
+    );
+    assert!(field("backlog_peak_bytes") > 0, "{report}");
+    let completed = field("completed_pairs");
+    assert_eq!(field("accepted_pairs"), completed, "{report}");
+    assert_eq!(decoded_video_frames(&output), completed, "{report}");
 }
 
 /// The daemon dies mid-recording and its last write was torn. The next start
