@@ -50,8 +50,8 @@
 //! so a long list never starves the input pictures); a simulated daemon,
 //! which decodes no media, draws a media card tinted per item; an audio
 //! file gets the audio card. An item's record is rendered and sent once
-//! per file and in mark (and again to a peer that just subscribed), never
-//! kept alive: its picture does not change.
+//! per file, in mark, and list input grade (and again to a peer that just
+//! subscribed), never kept alive: its picture does not change otherwise.
 //!
 //! Each subscribed peer drains its thumbnails through a [`ThumbnailOutbox`]:
 //! one pending record per input (a newer one replaces an unsent one), served
@@ -126,9 +126,14 @@ pub(crate) trait ItemPictures: Send + Sync {
     fn picture(&self, path: &std::path::Path, frame: u64, size: (u32, u32)) -> Option<ImageFrame>;
 }
 
-/// One media list item's rendered picture, for one file and in mark.
+/// What a media list item's picture depends on: its file, its in mark, and
+/// its list input's grade.
+type ItemVersion = (String, u64, Option<Arc<fm_compositor::CompiledGrade>>);
+
+/// One media list item's rendered picture, for one file, in mark, and
+/// grade.
 struct ItemEntry {
-    version: (String, u64),
+    version: ItemVersion,
     /// `None` when the item has no picture (its file did not decode).
     encoded: Option<(u16, u16, Vec<u8>)>,
     native: bool,
@@ -322,7 +327,11 @@ impl ThumbnailRenderer {
             };
             for item in &list.items {
                 let key = (input.id, item.id);
-                let version = (item.asset_uri.clone(), item.mark_in);
+                let version: ItemVersion = (
+                    item.asset_uri.clone(),
+                    item.mark_in,
+                    work.grades.input(input.id).cloned(),
+                );
                 let stale = self
                     .items
                     .get(&key)
@@ -1941,6 +1950,42 @@ mod tests {
         assert!(
             items_of(&step_all(&mut renderer, &listed, start, true)) == [1],
             "a missing file has no picture to send"
+        );
+    }
+
+    /// An item's picture carries its list input's grade, so a grade edit
+    /// renders and sends the item again; an unchanged grade does not.
+    #[test]
+    fn media_list_items_follow_their_input_grade() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let at = |millis| start + Duration::from_millis(millis);
+        let plain = list_project(&[(1, "asset://media/a.mov", 0)]);
+        let first = step_all(&mut renderer, &work(plain.clone(), 1), start, false);
+        assert_eq!(items_of(&first), [1]);
+        let ungraded = pixel(&first[first.len() - 1].1, 0, 0);
+        let mut graded = plain;
+        graded
+            .set_input_grade(
+                input_id(6),
+                Some(fm_model::GradeSource::Inline(Box::new(fm_grade::Grade {
+                    exposure_millistops: 2_000,
+                    ..fm_grade::Grade::IDENTITY
+                }))),
+            )
+            .unwrap();
+        let compiled = Arc::new(CompiledProjectGrades::compile(&graded, &BTreeMap::new()).unwrap());
+        let graded_work = ThumbnailWork {
+            grades: compiled,
+            ..work(graded, 2)
+        };
+        let again = step_all(&mut renderer, &graded_work, at(10), false);
+        assert_eq!(items_of(&again), [1], "the grade edit re-renders the item");
+        let (_, record) = again.iter().find(|(key, _)| key.item == Some(1)).unwrap();
+        assert_ne!(pixel(record, 0, 0), ungraded);
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &graded_work, at(20), false)),
+            Vec::<u32>::new()
         );
     }
 
