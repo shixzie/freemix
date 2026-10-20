@@ -508,6 +508,8 @@ pub(crate) fn draw_list(
         ui.label(caption(l.text(Msg::MlNoMatches)));
     }
     let final_row = list.items.len() - 1;
+    // The current item's file length, once the transport has opened it.
+    let current_frames = current_item_frames(state, input);
     for index in shown {
         let item = &list.items[index];
         let active = item.id == list.active;
@@ -625,24 +627,48 @@ pub(crate) fn draw_list(
                         }
                     });
                 });
-                // Marks: in, and out (zero plays to the file's end).
+                // Marks: in, and out. An unmarked out plays to the file's
+                // end: it shows the file's length when known (the current
+                // item), else END.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     let in_id = Id::new(("studio-media-list-in", input, item.id));
                     let out_id = Id::new(("studio-media-list-out", input, item.id));
+                    let file_end = if active { current_frames } else { None };
+                    let shown_out = item.mark_out.or(file_end).unwrap_or(0);
                     let mut mark_in = ui
                         .data(|data| data.get_temp::<u64>(in_id))
                         .unwrap_or(item.mark_in);
                     let mut mark_out = ui
                         .data(|data| data.get_temp::<u64>(out_id))
-                        .unwrap_or(item.mark_out.unwrap_or(0));
+                        .unwrap_or(shown_out);
                     ui.label(caption(l.text(Msg::MediaTrimIn)));
                     let in_response = ui
                         .add_enabled(edit.is_none(), DragValue::new(&mut mark_in).speed(1.0))
                         .hint(l.text(Msg::MlMarkInHover), edit.unwrap_or(""));
                     ui.label(caption(l.text(Msg::MediaTrimOut)));
+                    let end = l.text(Msg::MlMarkOutEnd);
                     let out_response = ui
-                        .add_enabled(edit.is_none(), DragValue::new(&mut mark_out).speed(1.0))
+                        .add_enabled(
+                            edit.is_none(),
+                            DragValue::new(&mut mark_out)
+                                .speed(1.0)
+                                .custom_formatter(move |value, _| {
+                                    if value == 0.0 {
+                                        end.to_owned()
+                                    } else {
+                                        format!("{value:.0}")
+                                    }
+                                })
+                                .custom_parser(move |text| {
+                                    let text = text.trim();
+                                    if text.eq_ignore_ascii_case(end) {
+                                        Some(0.0)
+                                    } else {
+                                        text.parse::<f64>().ok()
+                                    }
+                                }),
+                        )
                         .hint(l.text(Msg::MlMarkOutHover), edit.unwrap_or(""));
                     for (response, id, value) in [
                         (&in_response, in_id, mark_in),
@@ -659,7 +685,7 @@ pub(crate) fn draw_list(
                             || response.lost_focus()
                             || (response.changed() && !response.dragged() && !response.has_focus())
                     };
-                    let mark_out = edited_mark_out(mark_in, mark_out);
+                    let mark_out = shown_mark_out(item.mark_out, file_end, mark_in, mark_out);
                     if (committed(&in_response) || committed(&out_response))
                         && (mark_in, mark_out) != (item.mark_in, item.mark_out)
                     {
@@ -769,6 +795,28 @@ pub(crate) fn draw_form(ui: &mut Ui, l: Locale, draft: &mut MediaListDraft) {
     });
 }
 
+/// The frame count of the file the list input's transport has open (the
+/// current item's), once known.
+fn current_item_frames(state: &StudioUiState, input: InputId) -> Option<u64> {
+    let transport = &state.project_state.as_ref()?.media_status(input)?.transport;
+    (transport.available && transport.complete && transport.frames > 0).then_some(transport.frames)
+}
+
+/// The out mark of an edit to the shown out field: the file's length
+/// shown for an unmarked item, left as it is, is still no mark.
+fn shown_mark_out(
+    marked: Option<u64>,
+    file_end: Option<u64>,
+    mark_in: u64,
+    shown: u64,
+) -> Option<u64> {
+    if marked.is_none() && Some(shown) == file_end {
+        None
+    } else {
+        edited_mark_out(mark_in, shown)
+    }
+}
+
 /// The out mark of an edit: none for zero (play to the file's end), else
 /// at least one frame past the in mark. A typed in mark as large as
 /// `u64::MAX` saturates rather than overflowing.
@@ -782,6 +830,17 @@ mod tests {
 
     fn none(_: &Path) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn an_unmarked_out_shows_the_file_length_without_marking_it() {
+        // Unmarked, the shown file length is no mark; a change is one.
+        assert_eq!(shown_mark_out(None, Some(600), 0, 600), None);
+        assert_eq!(shown_mark_out(None, Some(600), 0, 450), Some(450));
+        assert_eq!(shown_mark_out(None, None, 0, 0), None);
+        // A marked item keeps a mark at the file's length.
+        assert_eq!(shown_mark_out(Some(450), Some(600), 0, 600), Some(600));
+        assert_eq!(shown_mark_out(Some(450), Some(600), 0, 0), None);
     }
 
     #[test]

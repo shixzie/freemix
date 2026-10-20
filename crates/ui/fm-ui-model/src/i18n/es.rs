@@ -6500,9 +6500,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MlMarkOutHover,
         t(
-            "Marca de salida de este elemento: termina antes de este fotograma; 0 reproduce hasta el final del archivo",
+            "Marca de salida de este elemento: termina antes de este fotograma. Sin marca, se reproduce hasta el final del archivo: el elemento actual muestra la duración del archivo y los demás FIN; escriba 0 para quitar la marca",
         ),
     ),
+    (Msg::MlMarkOutEnd, t("FIN")),
     (
         Msg::MlAddPathsHover,
         t(
