@@ -2838,14 +2838,13 @@ impl Engine {
         Ok(())
     }
 
-    /// Captures durable and realized state at an idle frame boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SnapshotError::WorkInFlight`] while an action or transition
-    /// is pending.
-    pub fn snapshot(&self) -> Result<EngineSnapshot, SnapshotError> {
-        if self.pending_actions != 0
+    /// Whether accepted work is still being realized frame by frame: a
+    /// pending action, a timed transition or Fade to Black, an overlay in
+    /// motion, or a title on air mid In or Out phase. A snapshot is taken
+    /// only once none is (see [`Self::snapshot`]).
+    #[must_use]
+    pub fn work_in_flight(&self) -> bool {
+        self.pending_actions != 0
             || self.transition_in_flight.is_some()
             || self.realized_switcher.transition().is_some()
             || self
@@ -2859,7 +2858,16 @@ impl Engine {
                 .titles_on_air()
                 .iter()
                 .any(|title| title.frame.phase != TitleAirPhase::Hold)
-        {
+    }
+
+    /// Captures durable and realized state at an idle frame boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotError::WorkInFlight`] while an action or transition
+    /// is pending.
+    pub fn snapshot(&self) -> Result<EngineSnapshot, SnapshotError> {
+        if self.work_in_flight() {
             return Err(SnapshotError::WorkInFlight);
         }
         let mut receipts: Vec<_> = self

@@ -405,19 +405,29 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
         }
     }
 
-    /// Returns `ticks` extended until no scene or title is mid In or Out
-    /// phase on Program or Preview (GX-011 stage 5, GX-001): the frames a
-    /// command must realize so the scenes and titles it takes to Program or
-    /// Preview (or off Program) finish their phases, as a title take
-    /// realizes its whole In phase. A staged engine without Scene or title
-    /// inputs, or one that cannot tick, needs exactly `ticks`.
+    /// Returns `ticks` extended until the staged engine settles: no scene
+    /// or title is mid In or Out phase on Program or Preview (GX-011 stage
+    /// 5, GX-001) and no accepted work is in flight (a timed transition,
+    /// Fade to Black, overlay motion, or title phase; see
+    /// [`Engine::work_in_flight`]). These are the frames after which the
+    /// command leaves an idle frame boundary: the scenes and titles it
+    /// takes to Program or Preview (or off Program) finish their phases, as
+    /// a title take realizes its whole In phase, and a command accepted
+    /// while an earlier one's transition is still running settles where
+    /// that transition ends. A staged engine without Scene or title inputs
+    /// prepared on an idle engine needs exactly `ticks`, as does one that
+    /// cannot tick or does not settle within [`MAX_SETTLE_TICKS`] more
+    /// frames (its projection is then refused as work in flight).
     #[must_use]
-    pub fn scene_settle_ticks(&self, ticks: u64) -> u64 {
+    pub fn settle_ticks(&self, ticks: u64) -> u64 {
         let engine = match &self.kind {
             PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
             PreparedSubmissionKind::AuthorizationDenial { .. } => &self.control.engine,
         };
-        if engine.show().scene_inputs().is_empty() && engine.show().titles().is_empty() {
+        if engine.show().scene_inputs().is_empty()
+            && engine.show().titles().is_empty()
+            && !self.control.engine.work_in_flight()
+        {
             return ticks;
         }
         let mut projected = engine.clone();
@@ -427,8 +437,11 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             }
         }
         let mut settled = ticks;
-        while projected.scenes_in_motion() || projected.titles_in_motion() {
-            if projected.tick().is_err() {
+        while projected.scenes_in_motion()
+            || projected.titles_in_motion()
+            || projected.work_in_flight()
+        {
+            if settled - ticks >= MAX_SETTLE_TICKS || projected.tick().is_err() {
                 break;
             }
             settled += 1;
@@ -937,6 +950,11 @@ pub struct ControlService<A = Policy> {
 /// How many fired media end triggers wait for the authority at most; older
 /// ones are dropped first.
 pub const MAX_PENDING_MEDIA_END_TRIGGERS: usize = 64;
+
+/// The most frames [`PreparedSubmission::settle_ticks`] projects past a
+/// command's own ticks waiting for the engine to settle: one hour at 60
+/// frames per second, far beyond any transition, phase, or overlay motion.
+pub const MAX_SETTLE_TICKS: u64 = 60 * 60 * 60;
 
 /// A media input's end trigger fired on `frame` (IN-003): the authority may
 /// feed it to playlist automation.
@@ -2092,6 +2110,17 @@ impl<A: AuthorizationHook> ControlService<A> {
     /// Returns an engine tick error when the projected frame cannot advance.
     pub fn project_next_frame(&self) -> Result<FrameResult, ControlError> {
         self.engine.clone().tick().map_err(Into::into)
+    }
+
+    /// Whether accepted work is still being realized frame by frame: the
+    /// current engine could not be captured at an idle frame boundary (see
+    /// [`Self::idle_engine_snapshot`]).
+    #[must_use]
+    pub fn work_in_flight(&self) -> bool {
+        !self.pending_runtime_actions.is_empty()
+            || self.active_transition.is_some()
+            || self.active_fade_to_black.is_some()
+            || self.engine.work_in_flight()
     }
 
     /// Captures the current engine only when it is at an idle frame boundary.

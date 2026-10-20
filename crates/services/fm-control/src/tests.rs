@@ -4944,7 +4944,7 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
 
 /// GX-011 stage 5: a switch that takes an animated scene to Preview or
 /// Program needs exactly the frames that play its phase out
-/// ([`PreparedSubmission::scene_settle_ticks`]); a switch without scenes in
+/// ([`PreparedSubmission::settle_ticks`]); a switch without scenes in
 /// motion needs only its own frames.
 #[test]
 fn scene_settle_ticks_cover_exactly_the_phases_a_switch_starts() {
@@ -4989,7 +4989,7 @@ fn scene_settle_ticks_cover_exactly_the_phases_a_switch_starts() {
                 .prepare_submit(&principal(Role::Operator), select, 0)
                 .unwrap(),
         );
-        let ticks = prepared.scene_settle_ticks(1);
+        let ticks = prepared.settle_ticks(1);
         prepared.commit().unwrap();
         ticks
     };
@@ -5014,7 +5014,7 @@ fn scene_settle_ticks_cover_exactly_the_phases_a_switch_starts() {
             .prepare_submit(&principal(Role::Operator), back, 0)
             .unwrap(),
     );
-    assert_eq!(prepared.scene_settle_ticks(1), 1);
+    assert_eq!(prepared.settle_ticks(1), 1);
 }
 
 /// SW-019, Protocol 2.35: a scene layer grade is an `EditProject` command

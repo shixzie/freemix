@@ -14764,7 +14764,7 @@ fn command_ticks(
     command: &CommandMessage,
     prepared: &fm_control::PreparedSubmission<'_, Policy>,
 ) -> u64 {
-    prepared.scene_settle_ticks(command_base_ticks(command, prepared))
+    prepared.settle_ticks(command_base_ticks(command, prepared))
 }
 
 #[allow(clippy::too_many_lines)] // one arm per command payload
