@@ -6969,8 +6969,8 @@ fn parse_shortcut_set(
     })
 }
 
-/// Parses `shortcut-fire <project> <shortcut>` and `remote-shortcut-fire
-/// <address> <shortcut>` (RC-004): fires project shortcut `<shortcut>` as
+/// Parses `shortcut-fire <project> <shortcut>` and
+/// `remote-shortcut-fire <address> <shortcut>` (RC-004): fires project shortcut `<shortcut>` as
 /// the command it stands for, with `--selected <input>` the input its
 /// actions on the selected input act on. The fire travels like a cue
 /// command: a local fire restores, runs, and saves the project.
@@ -7699,6 +7699,13 @@ fn input_source(value: &str) -> Result<fm_protocol::WireInputSource, ArgsError> 
     }
 }
 
+/// A fire's selected input, idempotency key, and expected revision.
+type FireOptions = (
+    Option<fm_protocol::WireInputId>,
+    Option<String>,
+    Option<u64>,
+);
+
 /// Reads a fire's options: `--selected <input>` (RC-004) when `selectable`,
 /// then [`command_options`]. The selected input is the one a shortcut or
 /// cue action on the selected input acts on; the CLI has no console
@@ -7707,14 +7714,7 @@ fn input_source(value: &str) -> Result<fm_protocol::WireInputSource, ArgsError> 
 fn fire_options(
     mut arguments: impl Iterator<Item = String>,
     selectable: bool,
-) -> Result<
-    (
-        Option<fm_protocol::WireInputId>,
-        Option<String>,
-        Option<u64>,
-    ),
-    ArgsError,
-> {
+) -> Result<FireOptions, ArgsError> {
     let mut selected = None;
     let mut rest = Vec::new();
     while let Some(argument) = arguments.next() {
