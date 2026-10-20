@@ -2229,7 +2229,10 @@ English and Spanish help in the hover audit; on a Wayland server it offers
 A screen or A window instead of the picker. The tile shows OPENING / PICK ON
 SERVER / LIVE / TARGET GONE / REOPENING n / DENIED / UNSUPPORTED / FAILED
 with its details, and its menu's Pick target again sends a
-`screen_capture_pick_request`. The CLI
+`screen_capture_pick_request`. Replace source on a screen capture input
+opens the same form at the input's current target, crop, pointer, rate cap,
+stall slate, and audio, asks the server for its targets, and sends the
+edited capture as the replacement source (audited in both languages). The CLI
 adds `input-add-screen-capture`, `input-screen-capture-status`, their
 `remote-` forms, and `remote-screen-capture-targets`.
 
@@ -2252,8 +2255,6 @@ Remaining gaps:
   Windows Graphics Capture (covered windows), and no signed macOS helper;
 - X11 captures only on-screen pixels, so a covered window shows what covers
   it; minimized windows are not listed;
-- Studio's Replace source dialog does not edit a screen capture input (the
-  wire and CLI replacement source do);
 - coordinates are in points on macOS; HiDPI scaling is not applied.
 
 `IN-011` remains planned.

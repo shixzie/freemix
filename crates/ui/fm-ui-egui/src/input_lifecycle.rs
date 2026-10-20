@@ -351,16 +351,20 @@ pub(crate) enum SourceKind {
     /// A system audio capture device (AU-011), picked from the server's
     /// list or typed.
     SystemAudio,
+    /// A screen or window of the server's desktop (IN-011), picked from
+    /// the server's list.
+    ScreenCapture,
 }
 
 impl SourceKind {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Solid,
         Self::Bars,
         Self::Media,
         Self::Device,
         Self::Network,
         Self::SystemAudio,
+        Self::ScreenCapture,
     ];
 
     const fn key(self) -> Msg {
@@ -371,6 +375,7 @@ impl SourceKind {
             Self::Device => Msg::LcSourceDevice,
             Self::Network => Msg::LcSourceNetwork,
             Self::SystemAudio => Msg::KindSystemAudioKey,
+            Self::ScreenCapture => Msg::KindScreenCaptureKey,
         }
     }
 
@@ -382,13 +387,14 @@ impl SourceKind {
             Self::Device => Msg::LcSourceDeviceHover,
             Self::Network => Msg::LcSourceNetworkHover,
             Self::SystemAudio => Msg::KindSystemAudioHover,
+            Self::ScreenCapture => Msg::KindScreenCaptureHover,
         }
     }
 
     /// The hover of the kind's text field, for kinds that have one.
     const fn field_hover(self) -> Option<Msg> {
         match self {
-            Self::Solid | Self::Bars | Self::SystemAudio => None,
+            Self::Solid | Self::Bars | Self::SystemAudio | Self::ScreenCapture => None,
             Self::Media => Some(Msg::LcSourceMediaFieldHover),
             Self::Device => Some(Msg::LcSourceDeviceFieldHover),
             Self::Network => Some(Msg::LcSourceNetworkFieldHover),
@@ -407,6 +413,8 @@ pub(crate) struct ReplaceDraft {
     pub(crate) text: String,
     /// The system audio device form.
     pub(crate) system_audio: crate::system_audio_ui::SystemAudioDraft,
+    /// The screen or window capture form.
+    pub(crate) screen_capture: crate::screen_capture_ui::ScreenCaptureDraft,
 }
 
 impl ReplaceDraft {
@@ -418,6 +426,7 @@ impl ReplaceDraft {
             color: COLOUR_PRESETS[5].1,
             text: String::new(),
             system_audio: crate::system_audio_ui::SystemAudioDraft::default(),
+            screen_capture: crate::screen_capture_ui::ScreenCaptureDraft::default(),
         }
     }
 
@@ -452,6 +461,9 @@ impl ReplaceDraft {
                 endpoint: checked()?,
             },
             SourceKind::SystemAudio => WireInputSource::SystemAudio(self.system_audio.config()?),
+            SourceKind::ScreenCapture => {
+                WireInputSource::ScreenCapture(self.screen_capture.config()?)
+            }
         })
     }
 }
@@ -582,6 +594,44 @@ impl StudioShell {
         let mut draft = ReplaceDraft::new(input, name);
         draft.kind = SourceKind::SystemAudio;
         draft.system_audio = crate::system_audio_ui::SystemAudioDraft::of(config);
+        self.lifecycle.replace = Some(draft);
+    }
+
+    /// Opens Replace source on `input` as the tile menu does: a system
+    /// audio input at its device and a screen capture input at its capture,
+    /// each asking the server for its list; any other input at a colour.
+    pub(crate) fn open_replace_for(
+        &mut self,
+        view: &ClientView,
+        input: InputId,
+        name: &str,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        if let Some(entry) = view.system_audio_input(input) {
+            self.edit_system_audio_source(input, name, &entry.config);
+            intents.push(StudioIntent::RequestSystemAudioDevices);
+        } else if let Some(entry) = view.screen_capture_input(input) {
+            self.edit_screen_capture_source(input, name, &entry.config);
+            intents.push(StudioIntent::RequestScreenCaptureTargets);
+        } else {
+            self.open_replace_source(input, name);
+        }
+    }
+
+    /// Opens Replace source on a screen or window capture input at its
+    /// current target, crop, pointer, rate, slate, and audio, so the
+    /// operator edits the capture (IN-011).
+    pub(crate) fn edit_screen_capture_source(
+        &mut self,
+        input: InputId,
+        name: &str,
+        config: &fm_protocol::ScreenCaptureConfig,
+    ) {
+        let mut draft = ReplaceDraft::new(input, name);
+        draft.kind = SourceKind::ScreenCapture;
+        draft.screen_capture = crate::screen_capture_ui::ScreenCaptureDraft {
+            config: config.clone(),
+        };
         self.lifecycle.replace = Some(draft);
     }
 
@@ -766,14 +816,7 @@ impl StudioShell {
             l.text(Msg::LcReplaceHover),
             edit_reason,
         ) {
-            // A system audio input opens at its device, with the server's
-            // devices listed.
-            if let Some(entry) = view.system_audio_input(input) {
-                self.edit_system_audio_source(input, name, &entry.config);
-                intents.push(StudioIntent::RequestSystemAudioDevices);
-            } else {
-                self.open_replace_source(input, name);
-            }
+            self.open_replace_for(view, input, name, intents);
         }
         let categories = view.input_categories.clone();
         let mut manage = false;
@@ -999,6 +1042,9 @@ impl StudioShell {
                             if kind == SourceKind::SystemAudio && draft.kind != kind {
                                 intents.push(StudioIntent::RequestSystemAudioDevices);
                             }
+                            if kind == SourceKind::ScreenCapture && draft.kind != kind {
+                                intents.push(StudioIntent::RequestScreenCaptureTargets);
+                            }
                             draft.kind = kind;
                         }
                     }
@@ -1049,6 +1095,18 @@ impl StudioShell {
                         );
                         if rescan {
                             intents.push(StudioIntent::RequestSystemAudioDevices);
+                        }
+                    }
+                    None if draft.kind == SourceKind::ScreenCapture => {
+                        let outcome = crate::screen_capture_ui::draw_screen_capture_form(
+                            ui,
+                            l,
+                            state,
+                            "studio-replace-source",
+                            &mut draft.screen_capture,
+                        );
+                        if outcome.rescan {
+                            intents.push(StudioIntent::RequestScreenCaptureTargets);
                         }
                     }
                     None => {}
@@ -1695,5 +1753,69 @@ mod tests {
         draft.kind = SourceKind::Network;
         draft.text = "x".repeat(MAX_INPUT_SOURCE_BYTES + 1);
         assert_eq!(draft.source(), Err(Msg::LcReasonSourceTooLong.en()));
+    }
+    /// Replace source on a screen capture input opens at its capture and
+    /// asks for the server's targets; what the form edits is what is sent,
+    /// and a capture the daemon would refuse is not sent.
+    #[test]
+    fn a_screen_capture_input_is_replaced_from_its_own_capture() {
+        use fm_protocol::{
+            ScreenCaptureAudio, ScreenCaptureConfig, ScreenCaptureTarget, WindowRule,
+        };
+        let state = crate::hover_audit::bank_fixture();
+        let view = state.view.as_ref().unwrap();
+        let entry = view
+            .inputs
+            .iter()
+            .find_map(|input| view.screen_capture_input(*input))
+            .expect("the audit show holds a screen capture input")
+            .clone();
+        let input = entry.input.to_domain();
+        let mut shell = StudioShell::default();
+        let mut intents = Vec::new();
+        shell.open_replace_for(view, input, "Deck", &mut intents);
+        assert!(matches!(
+            intents.as_slice(),
+            [StudioIntent::RequestScreenCaptureTargets]
+        ));
+        let draft = shell.lifecycle.replace.as_mut().unwrap();
+        assert_eq!(draft.kind, SourceKind::ScreenCapture);
+        assert_eq!(
+            draft.source(),
+            Ok(WireInputSource::ScreenCapture(entry.config.clone()))
+        );
+        // Another window, application audio, black slate, no pointer.
+        draft.screen_capture.config = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(
+            WindowRule::exact("Firefox", "Scores", Some(42)),
+        ));
+        draft.screen_capture.config.audio = ScreenCaptureAudio::Application;
+        draft.screen_capture.config.cursor = false;
+        draft.screen_capture.config.fps = 12;
+        let Ok(WireInputSource::ScreenCapture(sent)) = draft.source() else {
+            panic!("a valid capture is sent");
+        };
+        assert_eq!(sent.audio, ScreenCaptureAudio::Application);
+        assert!(!sent.cursor);
+        assert_eq!(sent.fps, 12);
+        // Application audio needs a window.
+        draft.screen_capture.config.target = ScreenCaptureTarget::Screen { index: 0 };
+        assert_eq!(draft.source(), Err(Msg::ScReasonAudio.en()));
+        // A plain input still opens at a colour.
+        let other = view
+            .inputs
+            .iter()
+            .copied()
+            .find(|input| {
+                view.screen_capture_input(*input).is_none()
+                    && view.system_audio_input(*input).is_none()
+            })
+            .unwrap();
+        let mut intents = Vec::new();
+        shell.open_replace_for(view, other, "Camera", &mut intents);
+        assert_eq!(intents.len(), 0);
+        assert_eq!(
+            shell.lifecycle.replace.as_ref().unwrap().kind,
+            SourceKind::Solid
+        );
     }
 }

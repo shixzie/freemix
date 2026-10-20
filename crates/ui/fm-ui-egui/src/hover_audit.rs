@@ -1703,6 +1703,13 @@ fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
     };
     let listed = || with_screen_capture_inventory(operator.clone(), Some(inventory.clone()));
     let deck = inventory.windows[0].clone();
+    // Replace source on a screen capture input opens at its capture.
+    let replace = |config: fm_protocol::ScreenCaptureConfig| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.edit_screen_capture_source(input(2), "Camera 2", &config);
+        shell
+    };
     let follow = |title_match: TitleMatch| {
         let deck = deck.clone();
         move |draft: &mut AddInputDraft| {
@@ -1779,6 +1786,26 @@ fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
                     "Wayland session: silent screen capture needs X11; log in to an X11 session",
                 )),
             ),
+        ),
+        Scene::console(
+            "dialog/replace-source-screen-capture-window",
+            replace(fm_protocol::ScreenCaptureConfig {
+                audio: fm_protocol::ScreenCaptureAudio::Application,
+                cursor: false,
+                fps: 15,
+                slate: fm_types::network_stream::StallSlate::Black,
+                ..fm_protocol::ScreenCaptureConfig::new(fm_protocol::ScreenCaptureTarget::Window(
+                    fm_protocol::WindowRule::exact("Keynote", "Quarterly deck", Some(41)),
+                ))
+            }),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/replace-source-screen-capture-screen",
+            replace(fm_protocol::ScreenCaptureConfig::new(
+                fm_protocol::ScreenCaptureTarget::Screen { index: 1 },
+            )),
+            listed(),
         ),
     ]
     .into_iter()
