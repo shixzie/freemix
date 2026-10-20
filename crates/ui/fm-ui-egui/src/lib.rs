@@ -4083,7 +4083,7 @@ mod tests {
                 true,
                 PictureMode::Hidden,
                 &[],
-                "NO PREVIEW TAP · native Preview image not produced",
+                "NO PREVIEW TAP · waiting for the native Preview frame",
             ),
         ];
         for (bus, frame, native_runtime, picture, badges, text) in cases {

@@ -793,7 +793,7 @@ struct NativeDaemon {
     /// Which realized frames the display outputs present.
     display_pacing: display_outputs::PresentationPacing,
     /// The Preview composite, rendered only while a display output shows
-    /// Preview.
+    /// Preview and on the Preview monitor tap's due frames.
     latest_preview: Option<NativeTexture>,
     /// Whether the last Preview composite failed (reported once per run of
     /// failures).
@@ -1676,11 +1676,10 @@ struct NativeRuntimeTelemetry {
     recorder_peak_retained_bytes: u64,
     stream_enqueued_pairs_total: u64,
     stream_dropped_pairs_total: u64,
-    /// Encoded Program monitor frames published (Protocol 2.21 fallback).
-    monitor_frames_published: u64,
-    /// Program monitor readbacks or encodes that failed and were skipped;
-    /// a failed monitor tap never fails the frame tick.
-    monitor_frames_failed: u64,
+    /// Encoded monitor frames published, failed, and skipped per tap in
+    /// [`MonitorTap::index`] order (Protocol 2.21 fallback); a failed
+    /// monitor tap never fails the frame tick.
+    monitor_taps: [NativeTapCounters; 2],
     /// Latest successfully sampled free bytes across the configured outputs:
     /// the recording output's parent and every local HLS output directory;
     /// `None` until the first sample.
@@ -1735,11 +1734,14 @@ impl NativeRuntimeTelemetry {
             recorder_peak_retained_bytes: 0,
             stream_enqueued_pairs_total: 0,
             stream_dropped_pairs_total: 0,
-            monitor_frames_published: 0,
-            monitor_frames_failed: 0,
+            monitor_taps: [NativeTapCounters::default(); 2],
             disk_free_bytes: None,
             disk_alert: None,
         }
+    }
+
+    fn monitor_tap_mut(&mut self, tap: MonitorTap) -> &mut NativeTapCounters {
+        &mut self.monitor_taps[tap.index()]
     }
 
     fn observe_host_lateness(&mut self, deadline: Instant, observed: Instant) {
@@ -1859,7 +1861,7 @@ impl NativeRuntimeTelemetry {
         let presentation_active = presentation.is_some();
         let presentation = presentation.unwrap_or_default();
         format!(
-            "FREEMIXD_TELEMETRY\tv=4\thost_lateness_samples_total={}\thost_lateness_samples_retained={}\thost_lateness_metric_samples_dropped={}\thost_lateness_p50_ms={}\thost_lateness_p95_ms={}\thost_lateness_p99_ms={}\taudio_retained_blocks={}\taudio_observed_peak_retained_blocks={}\taudio_retained_samples={}\taudio_observed_peak_retained_samples={}\taudio_retained_bytes={}\taudio_observed_peak_retained_bytes={}\taudio_reservation_requests={}\taudio_reserved_blocks={}\taudio_observed_peak_reserved_blocks={}\taudio_reserved_samples={}\taudio_observed_peak_reserved_samples={}\taudio_reserved_bytes={}\taudio_observed_peak_reserved_bytes={}\taudio_source_stalls={}\taudio_positioned_blocks={}\taudio_positioned_samples={}\taudio_leading_silence_samples={}\taudio_eos_padding_blocks={}\taudio_eos_padding_samples={}\taudio_sink_depth={}\taudio_sink_peak_depth={}\taudio_sink_dropped={}\tcamera_configured_sources={}\tcamera_frames_received={}\tcamera_frames_ingested={}\tcamera_native_dropped={}\tcamera_queue_depth={}\tcamera_queue_peak_depth={}\tcamera_queue_dropped={}\tcamera_continuity_rejected={}\tcamera_recovery_timeout_discarded={}\tcamera_terminal_error_discarded={}\tcamera_terminal_trigger_discarded={}\tcamera_ready_delivery_depth={}\tcamera_ready_delivery_discarded={}\tcamera_cancellation_discarded={}\tcamera_supervisor_slot_replaced={}\tcamera_supervisor_slot_depth={}\tcamera_ingest_failed={}\tcamera_preflight_depth={}\tcamera_preflight_discarded={}\tcamera_recovery_attempts={}\tcamera_recovery_successes={}\tcamera_recovery_exhausted={}\tcamera_recovery_worker_failures={}\tpresentation_active={}\tpresentation_pending_depth={}\tpresentation_peak_pending_depth={}\tpresentation_dropped={}\trecorder_configured={}\trecorder_outstanding_pairs={}\trecorder_observed_peak_outstanding_pairs={}\trecorder_retained_bytes={}\trecorder_observed_peak_retained_bytes={}\tstream_pairs_enqueued_total={}\tstream_pairs_dropped_total={}\tmonitor_frames_published={}\tmonitor_frames_failed={}\tgpu_backend={:?}\tgpu_adapter={}\tgpu_timing={:?}\tgpu_pass_samples_total={}\tgpu_pass_samples_retained={}\tgpu_pass_metric_samples_dropped={}\tgpu_pass_p50_ms={}\tgpu_pass_p95_ms={}\tgpu_pass_p99_ms={}\tgpu_samples_pending={}\tgpu_samples_dropped={}\tgpu_samples_unavailable={}\tmetric_errors={}\tmetric_samples_dropped={}\tdisk_alert={}\tdisk_free_bytes={}",
+            "FREEMIXD_TELEMETRY\tv=4\thost_lateness_samples_total={}\thost_lateness_samples_retained={}\thost_lateness_metric_samples_dropped={}\thost_lateness_p50_ms={}\thost_lateness_p95_ms={}\thost_lateness_p99_ms={}\taudio_retained_blocks={}\taudio_observed_peak_retained_blocks={}\taudio_retained_samples={}\taudio_observed_peak_retained_samples={}\taudio_retained_bytes={}\taudio_observed_peak_retained_bytes={}\taudio_reservation_requests={}\taudio_reserved_blocks={}\taudio_observed_peak_reserved_blocks={}\taudio_reserved_samples={}\taudio_observed_peak_reserved_samples={}\taudio_reserved_bytes={}\taudio_observed_peak_reserved_bytes={}\taudio_source_stalls={}\taudio_positioned_blocks={}\taudio_positioned_samples={}\taudio_leading_silence_samples={}\taudio_eos_padding_blocks={}\taudio_eos_padding_samples={}\taudio_sink_depth={}\taudio_sink_peak_depth={}\taudio_sink_dropped={}\tcamera_configured_sources={}\tcamera_frames_received={}\tcamera_frames_ingested={}\tcamera_native_dropped={}\tcamera_queue_depth={}\tcamera_queue_peak_depth={}\tcamera_queue_dropped={}\tcamera_continuity_rejected={}\tcamera_recovery_timeout_discarded={}\tcamera_terminal_error_discarded={}\tcamera_terminal_trigger_discarded={}\tcamera_ready_delivery_depth={}\tcamera_ready_delivery_discarded={}\tcamera_cancellation_discarded={}\tcamera_supervisor_slot_replaced={}\tcamera_supervisor_slot_depth={}\tcamera_ingest_failed={}\tcamera_preflight_depth={}\tcamera_preflight_discarded={}\tcamera_recovery_attempts={}\tcamera_recovery_successes={}\tcamera_recovery_exhausted={}\tcamera_recovery_worker_failures={}\tpresentation_active={}\tpresentation_pending_depth={}\tpresentation_peak_pending_depth={}\tpresentation_dropped={}\trecorder_configured={}\trecorder_outstanding_pairs={}\trecorder_observed_peak_outstanding_pairs={}\trecorder_retained_bytes={}\trecorder_observed_peak_retained_bytes={}\tstream_pairs_enqueued_total={}\tstream_pairs_dropped_total={}\tmonitor_frames_published={}\tmonitor_frames_failed={}\tmonitor_frames_skipped={}\tpreview_monitor_frames_published={}\tpreview_monitor_frames_failed={}\tpreview_monitor_frames_skipped={}\tgpu_backend={:?}\tgpu_adapter={}\tgpu_timing={:?}\tgpu_pass_samples_total={}\tgpu_pass_samples_retained={}\tgpu_pass_metric_samples_dropped={}\tgpu_pass_p50_ms={}\tgpu_pass_p95_ms={}\tgpu_pass_p99_ms={}\tgpu_samples_pending={}\tgpu_samples_dropped={}\tgpu_samples_unavailable={}\tmetric_errors={}\tmetric_samples_dropped={}\tdisk_alert={}\tdisk_free_bytes={}",
             host.count,
             host.retained_samples,
             host.dropped_samples,
@@ -1922,8 +1924,12 @@ impl NativeRuntimeTelemetry {
             self.recorder_peak_retained_bytes,
             self.stream_enqueued_pairs_total,
             self.stream_dropped_pairs_total,
-            self.monitor_frames_published,
-            self.monitor_frames_failed,
+            self.monitor_taps[MonitorTap::Program.index()].published,
+            self.monitor_taps[MonitorTap::Program.index()].failed,
+            self.monitor_taps[MonitorTap::Program.index()].skipped,
+            self.monitor_taps[MonitorTap::Preview.index()].published,
+            self.monitor_taps[MonitorTap::Preview.index()].failed,
+            self.monitor_taps[MonitorTap::Preview.index()].skipped,
             self.gpu_backend,
             diagnostic_field(&self.gpu_adapter),
             self.gpu_support,
@@ -6081,12 +6087,10 @@ impl NativeDaemon {
         scene_preview::LiveSourceFrames::snapshot(&self.playback.latest_frames())
     }
 
-    /// Consumes the latest encoded Program monitor frame group.
-    fn take_monitor_frame(&mut self) -> Option<(MonitorTap, Vec<u8>)> {
-        self.monitor
-            .pending
-            .take()
-            .map(|bytes| (MonitorTap::Program, bytes))
+    /// Consumes every tap's latest encoded monitor frame group, Preview
+    /// first.
+    fn take_monitor_frames(&mut self) -> Vec<(MonitorTap, Vec<u8>)> {
+        self.monitor.take_frames()
     }
 
     /// Monotonic milliseconds since the native runtime's origin — the clock
@@ -6928,12 +6932,14 @@ impl NativeDaemon {
         let mut live_audio = None;
         let mut override_audio = Vec::new();
         let mut fade_to_black_excluded = Vec::new();
+        let monitor_tap = &self.monitor;
         let mut monitor_frame = None;
         let mut preview_source = None;
         let outcome = control.tick_with_realizer(server, |frame| {
             debug_assert_eq!(projected_frame, Some(frame));
             monitor_frame = Some((frame.frame.get(), frame.program.primary));
-            if shows_preview {
+            // The Preview monitor tap composes Preview only on its due frames.
+            if shows_preview || monitor_tap.due(MonitorTap::Preview, frame.frame.get()) {
                 preview_source = Some(frame.clone());
             }
             for &(input, state) in &frame.input_audio_strip_updates {
@@ -7107,32 +7113,61 @@ impl NativeDaemon {
         if let (Some(live_lan), Some(sequence)) = (&mut self.live_lan, next_sequence) {
             live_lan.sync(control.live_lan(), &self.runtime, sequence);
         }
+        // Monitor taps finish earlier readbacks without waiting, then start
+        // this frame's; neither waits for the GPU.
+        self.monitor
+            .harvest(&self.runtime, server, &mut self.telemetry);
         if let Some((frame, input)) = monitor_frame {
             self.monitor.capture(
+                MonitorTap::Program,
                 &self.runtime,
                 resolve_project_output_texture(
                     None,
                     &self.latest_project_outputs,
                     self.latest_output.as_ref(),
                 ),
-                server,
                 frame,
                 input,
                 &mut self.telemetry,
             );
         }
-        // Display outputs follow Program's own consumers, so a Preview
-        // composite never delays them. A loop that is behind its frame
-        // deadlines drops display frames rather than delaying the next
-        // Program frame and the sessions served between frames.
+        // Display outputs and the Preview monitor tap follow Program's own
+        // consumers, so a Preview composite never delays them. A loop that is
+        // behind its frame deadlines drops display frames and Preview tap
+        // frames rather than delaying the next Program frame and the
+        // sessions served between frames.
         let started = Instant::now();
-        if !self.display_presenting()
-            || self
-                .display_pacing
-                .due(started, started >= self.next_deadline()?)
-        {
-            let preview = control.snapshot().snapshot.realized_preview.to_domain();
+        let behind = started >= self.next_deadline()?;
+        let display_due = !self.display_presenting() || self.display_pacing.due(started, behind);
+        let realized_preview = control.snapshot().snapshot.realized_preview.to_domain();
+        let preview = preview_source.as_ref().map_or(realized_preview, |frame| {
+            preview_monitor_input(frame, realized_preview)
+        });
+        let preview_tap_frame = preview_source
+            .as_ref()
+            .map(|frame| frame.frame.get())
+            .filter(|&frame| self.monitor.due(MonitorTap::Preview, frame));
+        let preview_tap_frame = match preview_tap_frame {
+            Some(_) if behind || self.monitor.busy(MonitorTap::Preview) => {
+                NativeMonitorTap::skip(MonitorTap::Preview, &mut self.telemetry);
+                None
+            }
+            due => due,
+        };
+        if display_due || preview_tap_frame.is_some() {
             self.render_display_preview(preview_source, preview);
+        }
+        if let Some(frame) = preview_tap_frame {
+            self.monitor.capture(
+                MonitorTap::Preview,
+                &self.runtime,
+                self.latest_preview.as_ref(),
+                frame,
+                preview,
+                &mut self.telemetry,
+            );
+        }
+        if display_due {
             self.present_display_outputs()?;
             self.display_pacing.presented(started, Instant::now());
         } else if let Some(host) = &mut self.display_inventory {
@@ -7746,28 +7781,70 @@ fn validate_native_video_dimensions(
     Ok(())
 }
 
-/// Encoded-fallback Program monitor tap (Protocol 2.21).
+/// Encoded-fallback Preview and Program monitor taps (Protocol 2.21).
 ///
 /// While an eligible session wants frames, every `interval`-th realized frame
-/// is transformed and downscaled on the GPU into a lazily created readback
-/// target at the fitted monitor size, read back to the CPU, QOI-encoded, and
-/// held as one atomic latest-wins `monitor_frame` group. The engine produces
-/// no native Preview image, so there is no native Preview tap. Readback or
-/// encode failures skip the frame and are counted in telemetry; they never
-/// fail the frame tick.
+/// of each tap is transformed and downscaled on the GPU into that tap's lazily
+/// created readback target at the fitted monitor size, and its readback is
+/// started without waiting for the GPU. Later frames poll it, never blocking;
+/// a finished readback is QOI-encoded and held as that tap's atomic
+/// latest-wins `monitor_frame` group. Each tap keeps at most one readback in
+/// flight and skips a due frame while its previous one is still running, so a
+/// slow GPU lowers the monitor rate rather than delaying Program.
+///
+/// Preview runs half an interval out of phase with Program, so the two taps'
+/// GPU work falls on different frames. Its picture is the Preview composite
+/// display outputs show (see [`preview_frame`]): the Preview source cut in.
+/// During a transition that is the incoming source, as on most switchers. A
+/// Preview composite is rendered for the tap only on its due frames, and not
+/// at all on a frame the loop already started behind its deadline.
+///
+/// Readback or encode failures skip the frame and are counted in telemetry;
+/// they never fail the frame tick.
 #[cfg(feature = "native-media")]
 struct NativeMonitorTap {
     dimensions: Option<(u16, u16)>,
     interval: u64,
-    readback: Option<NativeProgramReadback>,
     demand: bool,
+    /// Per tap, in [`MonitorTap::index`] order.
+    taps: [NativeTapSlot; 2],
+}
+
+/// One native monitor tap's readback target, readback in flight, and latest
+/// encoded group.
+#[cfg(feature = "native-media")]
+#[derive(Default)]
+struct NativeTapSlot {
+    readback: Option<NativeProgramReadback>,
+    in_flight: Option<NativeTapReadback>,
     sequence: u64,
     pending: Option<Vec<u8>>,
 }
 
+/// A started tap readback and the frame it shows.
+#[cfg(feature = "native-media")]
+struct NativeTapReadback {
+    pending: fm_gpu::NativePendingReadback,
+    frame: u64,
+    input: InputId,
+}
+
+/// Monitor tap counters for one tap.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NativeTapCounters {
+    /// Encoded groups made ready to publish.
+    published: u64,
+    /// Frames whose render, readback, or encode failed.
+    failed: u64,
+    /// Due frames skipped: the loop was behind its deadline or the tap's
+    /// previous readback was still in flight.
+    skipped: u64,
+}
+
 #[cfg(feature = "native-media")]
 impl NativeMonitorTap {
-    /// Native monitor frames target at most about ten per second.
+    /// Native monitor frames target at most about ten per second per tap.
     const TARGET_FPS: u64 = 10;
 
     fn new(settings: &fm_model::ProjectSettings) -> Self {
@@ -7777,43 +7854,127 @@ impl NativeMonitorTap {
         Self {
             dimensions: monitor_tap::fit_monitor(dimensions.width(), dimensions.height()),
             interval: whole_fps.div_ceil(Self::TARGET_FPS).max(1),
-            readback: None,
             demand: false,
-            sequence: 0,
-            pending: None,
+            taps: [NativeTapSlot::default(), NativeTapSlot::default()],
         }
     }
 
+    /// Whether realized frame `frame` falls due for `tap`: there is demand
+    /// and the frame falls on the tap's phase.
+    fn due(&self, tap: MonitorTap, frame: u64) -> bool {
+        let phase = match tap {
+            MonitorTap::Program => 0,
+            MonitorTap::Preview => self.interval / 2,
+        };
+        self.demand
+            && self.dimensions.is_some()
+            && frame.wrapping_add(phase).is_multiple_of(self.interval)
+    }
+
+    /// Whether `tap`'s previous readback has not finished yet.
+    fn busy(&self, tap: MonitorTap) -> bool {
+        self.taps[tap.index()].in_flight.is_some()
+    }
+
+    /// Polls every tap's readback in flight once, without blocking, and
+    /// encodes the finished ones.
+    fn harvest(
+        &mut self,
+        runtime: &NativeMediaRuntime,
+        server: &ServerIdentity,
+        telemetry: &mut NativeRuntimeTelemetry,
+    ) {
+        let Some((width, height)) = self.dimensions else {
+            return;
+        };
+        for tap in MonitorTap::ALL {
+            let slot = &mut self.taps[tap.index()];
+            let Some(started) = slot.in_flight.take() else {
+                continue;
+            };
+            let published = match runtime.poll_program_readback(started.pending) {
+                Ok(fm_gpu::NativeReadbackPoll::Pending(pending)) => {
+                    slot.in_flight = Some(NativeTapReadback { pending, ..started });
+                    continue;
+                }
+                Ok(fm_gpu::NativeReadbackPoll::Ready(pixels)) => slot.encode(
+                    server,
+                    tap,
+                    started.frame,
+                    started.input,
+                    width,
+                    height,
+                    &pixels,
+                ),
+                Err(_) => false,
+            };
+            let counters = telemetry.monitor_tap_mut(tap);
+            if published {
+                counters.published = counters.published.saturating_add(1);
+            } else {
+                counters.failed = counters.failed.saturating_add(1);
+            }
+        }
+    }
+
+    /// Starts `tap`'s readback of `texture`, realized frame `frame` showing
+    /// `input`, when the tap is due on it.
     #[allow(clippy::too_many_arguments)]
     fn capture(
         &mut self,
+        tap: MonitorTap,
         runtime: &NativeMediaRuntime,
-        program: Option<&NativeTexture>,
-        server: &ServerIdentity,
+        texture: Option<&NativeTexture>,
         frame: u64,
         input: InputId,
         telemetry: &mut NativeRuntimeTelemetry,
     ) {
-        if !self.demand || !frame.is_multiple_of(self.interval) {
+        if !self.due(tap, frame) {
             return;
         }
-        let (Some((width, height)), Some(program)) = (self.dimensions, program) else {
+        if self.busy(tap) {
+            Self::skip(tap, telemetry);
+            return;
+        }
+        let Some((width, height)) = self.dimensions else {
             return;
         };
-        if self.encode(runtime, program, server, frame, input, width, height) {
-            telemetry.monitor_frames_published =
-                telemetry.monitor_frames_published.saturating_add(1);
-        } else {
-            telemetry.monitor_frames_failed = telemetry.monitor_frames_failed.saturating_add(1);
+        // A due frame without a picture is a failed render.
+        let started = texture.is_some_and(|texture| {
+            self.taps[tap.index()].begin(runtime, texture, frame, input, width, height)
+        });
+        if !started {
+            let counters = telemetry.monitor_tap_mut(tap);
+            counters.failed = counters.failed.saturating_add(1);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn encode(
+    /// Counts a due frame of `tap` that was not captured.
+    fn skip(tap: MonitorTap, telemetry: &mut NativeRuntimeTelemetry) {
+        let counters = telemetry.monitor_tap_mut(tap);
+        counters.skipped = counters.skipped.saturating_add(1);
+    }
+
+    /// Every tap's latest encoded group, Preview first.
+    fn take_frames(&mut self) -> Vec<(MonitorTap, Vec<u8>)> {
+        MonitorTap::ALL
+            .into_iter()
+            .filter_map(|tap| {
+                self.taps[tap.index()]
+                    .pending
+                    .take()
+                    .map(|bytes| (tap, bytes))
+            })
+            .collect()
+    }
+}
+
+#[cfg(feature = "native-media")]
+impl NativeTapSlot {
+    fn begin(
         &mut self,
         runtime: &NativeMediaRuntime,
-        program: &NativeTexture,
-        server: &ServerIdentity,
+        texture: &NativeTexture,
         frame: u64,
         input: InputId,
         width: u16,
@@ -7831,13 +7992,33 @@ impl NativeMonitorTap {
                 Err(_) => return false,
             }
         }
-        let Some(readback) = self.readback.as_mut() else {
+        let Some(readback) = self.readback.as_ref() else {
             return false;
         };
-        // The synchronous diagnostic readback path, bounded by its timeout.
-        let Ok(pixels) = runtime.readback_program_blocking(readback, program) else {
-            return false;
-        };
+        match runtime.begin_program_readback(readback, texture) {
+            Ok(pending) => {
+                self.in_flight = Some(NativeTapReadback {
+                    pending,
+                    frame,
+                    input,
+                });
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode(
+        &mut self,
+        server: &ServerIdentity,
+        tap: MonitorTap,
+        frame: u64,
+        input: InputId,
+        width: u16,
+        height: u16,
+        pixels: &fm_gpu::NativeTextureReadback,
+    ) -> bool {
         let (Ok(stride), Some(sequence)) =
             (usize::try_from(pixels.stride), self.sequence.checked_add(1))
         else {
@@ -7847,14 +8028,14 @@ impl NativeMonitorTap {
             return false;
         }
         let picture = monitor_tap::MonitorPicture {
-            tap: MonitorTap::Program,
+            tap,
             sequence,
             frame,
             input,
             origin: fm_protocol::MonitorFrameOrigin::Native,
             width,
             height,
-            pixels: &pixels.rgba,
+            pixels: &pixels.bytes,
             stride,
             bytes_per_pixel: 4,
         };
@@ -7865,6 +8046,14 @@ impl NativeMonitorTap {
         self.pending = Some(bytes);
         true
     }
+}
+
+/// The source the Preview monitor shows with `frame`: during a transition
+/// (timed, T-bar, or Stinger) its incoming source, as most switchers' Preview
+/// does, otherwise the realized Preview input.
+#[cfg(feature = "native-media")]
+fn preview_monitor_input(frame: &FrameResult, realized_preview: InputId) -> InputId {
+    frame.program.secondary.unwrap_or(realized_preview)
 }
 
 #[cfg(feature = "native-media")]
@@ -8041,8 +8230,8 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
-    fn take_monitor_frame(&mut self) -> Option<(MonitorTap, Vec<u8>)> {
-        None
+    fn take_monitor_frames(&mut self) -> Vec<(MonitorTap, Vec<u8>)> {
+        Vec::new()
     }
 
     #[allow(clippy::unused_self)]

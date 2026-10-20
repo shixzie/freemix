@@ -1080,7 +1080,7 @@ pub(super) fn run(
         let monitor_demand = peers.iter().any(Peer::wants_monitor_frames);
         if let Some(native) = native.as_deref_mut() {
             native.set_monitor_demand(monitor_demand);
-            if let Some((tap, bytes)) = native.take_monitor_frame() {
+            for (tap, bytes) in native.take_monitor_frames() {
                 publish_monitor_frame(&mut peers, tap, &bytes);
             }
         } else if let Some(monitor) = simulated_monitor.as_mut() {

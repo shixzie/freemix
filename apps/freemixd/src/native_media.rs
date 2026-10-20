@@ -57,7 +57,7 @@ use fm_frame::{
 };
 use fm_gpu::{
     DiagnosticReadback, NativeAdapterInfo, NativeBackend, NativeContext, NativeGpuError,
-    NativeTexture, NativeTextureReadback,
+    NativePendingReadback, NativeReadbackPoll, NativeTexture, NativeTextureReadback,
 };
 use fm_model::{
     InputAudioStripState, InputKind, Project, Rotation, SceneLayerRef, SourceRef,
@@ -8744,6 +8744,48 @@ impl NativeMediaRuntime {
         program: &NativeTexture,
     ) -> Result<DiagnosticReadback, NativeMediaError> {
         block_on(self.readback_program(owner, program))
+    }
+
+    /// Transforms canonical `Rgba16Float` light to sRGB-encoded Rec.709 in
+    /// the owner's reusable `Rgba8Unorm` target, exactly as
+    /// [`Self::readback_program`] does, then starts a nonblocking readback
+    /// of that target into a pooled staging buffer. Nothing here waits for
+    /// the GPU; finish it with [`Self::poll_program_readback`].
+    ///
+    /// Queue order keeps the readback's pixels even when the owner's target
+    /// is rewritten before it finishes, but a caller should keep one
+    /// readback in flight per owner so the staging pool stays bounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed GPU ownership, format, submission, or validation
+    /// failure.
+    pub fn begin_program_readback(
+        &self,
+        owner: &NativeProgramReadback,
+        program: &NativeTexture,
+    ) -> Result<NativePendingReadback, NativeMediaError> {
+        block_on(async {
+            owner
+                .transform
+                .transform(&self.context, program, &owner.target)
+                .await?;
+            Ok::<_, NativeMediaError>(self.context.begin_readback(&owner.target).await?)
+        })
+    }
+
+    /// Checks once, without blocking, whether a readback begun by
+    /// [`Self::begin_program_readback`] finished; its RGBA8 pixels come
+    /// back tightly packed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed GPU polling, mapping, or layout failure.
+    pub fn poll_program_readback(
+        &self,
+        pending: NativePendingReadback,
+    ) -> Result<NativeReadbackPoll, NativeMediaError> {
+        self.context.poll_readback(pending).map_err(Into::into)
     }
 
     /// Places canonical Program light into the owner's reusable `Rgba8Unorm`

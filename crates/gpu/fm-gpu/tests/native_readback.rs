@@ -14,9 +14,12 @@ use std::{
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
     thread,
+    time::{Duration, Instant},
 };
 
-use fm_gpu::{NativeBackend, NativeContext};
+use fm_gpu::{
+    NativeBackend, NativeContext, NativePendingReadback, NativeReadbackPoll, NativeTextureReadback,
+};
 
 struct ThreadWaker(thread::Thread);
 
@@ -126,4 +129,55 @@ fn same_sized_readbacks_reuse_one_staging_buffer_and_return_their_own_bytes() {
         );
     }
     assert_eq!(context.readback_staging_buffers_created(), 2);
+}
+
+/// Polls `pending` until it finishes, as a frame loop would between frames.
+fn finish(context: &NativeContext, mut pending: NativePendingReadback) -> NativeTextureReadback {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match context.poll_readback(pending).unwrap() {
+            NativeReadbackPoll::Ready(readback) => return readback,
+            NativeReadbackPoll::Pending(again) => {
+                assert!(Instant::now() < deadline, "readback never finished");
+                pending = again;
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+#[test]
+fn nonblocking_readbacks_return_their_own_bytes_and_reuse_staging_buffers() {
+    let Some(context) = native_context("nonblocking readback") else {
+        return;
+    };
+    let (width, height) = (70, 9);
+    let first = pattern(width, height, 1);
+    let texture =
+        block_on(context.upload_rgba8(width, height, width as usize * 4, &first)).unwrap();
+    let pending = block_on(context.begin_readback(&texture)).unwrap();
+    assert_eq!((pending.width(), pending.height()), (width, height));
+    // Work submitted after the copy does not change what it returns.
+    let second = pattern(width, height, 2);
+    let rewritten =
+        block_on(context.upload_rgba8(width, height, width as usize * 4, &second)).unwrap();
+    let readback = finish(&context, pending);
+    assert_eq!(readback.stride, width * 4);
+    assert_eq!(readback.bytes, first);
+    let created = context.readback_staging_buffers_created();
+    for _ in 0..4 {
+        let pending = block_on(context.begin_readback(&rewritten)).unwrap();
+        assert_eq!(finish(&context, pending).bytes, second);
+    }
+    assert_eq!(
+        context.readback_staging_buffers_created(),
+        created,
+        "steady nonblocking readbacks reuse their staging buffer"
+    );
+    // A readback dropped unfinished is harmless.
+    drop(block_on(context.begin_readback(&rewritten)).unwrap());
+    assert_eq!(
+        block_on(context.readback_rgba8(&rewritten)).unwrap().rgba,
+        second
+    );
 }

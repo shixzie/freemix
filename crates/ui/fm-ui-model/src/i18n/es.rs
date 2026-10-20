@@ -320,6 +320,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::HealthFeedNoneHover,
         t("No ha llegado ningún fotograma del monitor de Programa desde el daemon"),
     ),
+    (Msg::HealthPreviewFeedLive, t("SEÑAL PVW")),
+    (Msg::HealthPreviewFeedStale, t("SEÑAL PVW {age}")),
+    (Msg::HealthPreviewFeedNone, t("SIN SEÑAL PVW")),
+    (
+        Msg::HealthPreviewFeedHover,
+        t(
+            "Monitor de Previo: fotograma de {width}×{height} recibido hace {age}. Pasa a ámbar tras 1 s sin un fotograma nuevo.",
+        ),
+    ),
+    (
+        Msg::HealthPreviewFeedNoneHover,
+        t("No ha llegado ningún fotograma del monitor de Previo desde el daemon"),
+    ),
     (Msg::HealthMetersLive, t("MEDIDORES")),
     (Msg::HealthMetersStale, t("MEDIDORES OBSOLETOS")),
     (Msg::HealthMetersNone, t("SIN MEDIDORES")),
@@ -1298,12 +1311,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     // Monitors.
     (
         Msg::MonitorNoPreviewTap,
-        t("SIN TOMA DE PREVIO · imagen nativa de Previo no generada"),
+        t("SIN TOMA DE PREVIO · esperando el fotograma nativo de Previo"),
     ),
     (
         Msg::MonitorNoPreviewTapNote,
         t(
-            "El motor nativo solo renderiza Programa; este monitor muestra el estado de enrutamiento.",
+            "Aún no ha llegado ningún fotograma nativo de Previo; este monitor muestra el estado de enrutamiento.",
         ),
     ),
     (

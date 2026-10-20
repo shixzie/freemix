@@ -395,14 +395,19 @@ fn native_daemon_publishes_program_monitor_frames_to_studio_peers() {
     };
     let mut client = StudioClient::connect(daemon.address);
     let snapshot = client.handshake();
-    let mut assembler = fm_protocol::MonitorFrameAssembler::new();
+    let mut assemblers = [
+        fm_protocol::MonitorFrameAssembler::new(),
+        fm_protocol::MonitorFrameAssembler::new(),
+    ];
     let image = client.receive_until("native Program monitor frame", |message| {
         let WireMessage::MonitorFrame(part) = message else {
             return None;
         };
-        // The engine produces no native Preview image, so only Program taps.
-        assert_eq!(part.tap, fm_protocol::MonitorTap::Program);
-        assembler.push(part).unwrap()
+        // Preview taps arrive too; this test reads Program.
+        assemblers[part.tap.index()]
+            .push(part)
+            .unwrap()
+            .filter(|image| image.tap == fm_protocol::MonitorTap::Program)
     });
     assert_eq!(image.origin, fm_protocol::MonitorFrameOrigin::Native);
     assert_eq!(image.input, snapshot.realized_program);

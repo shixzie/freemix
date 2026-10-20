@@ -24,10 +24,10 @@ pub use native::{
     NativeCompositeAlphaMode, NativeContext, NativeFullscreenBlend, NativeFullscreenDraw,
     NativeFullscreenLoadOp, NativeFullscreenPipeline, NativeFullscreenPipelineOptions,
     NativeFullscreenTimingSample, NativeFullscreenTimingSupport, NativeFullscreenTimingTelemetry,
-    NativeGpuError, NativePresentMode, NativeSourceExtentPolicy, NativeSubmittedSurfaceFrame,
-    NativeSurface, NativeSurfaceAcquire, NativeSurfaceCapabilities, NativeSurfaceColorSpace,
-    NativeSurfaceConfiguration, NativeSurfaceFactory, NativeSurfaceFrame, NativeTexture,
-    NativeTextureReadback,
+    NativeGpuError, NativePendingReadback, NativePresentMode, NativeReadbackPoll,
+    NativeSourceExtentPolicy, NativeSubmittedSurfaceFrame, NativeSurface, NativeSurfaceAcquire,
+    NativeSurfaceCapabilities, NativeSurfaceColorSpace, NativeSurfaceConfiguration,
+    NativeSurfaceFactory, NativeSurfaceFrame, NativeTexture, NativeTextureReadback,
 };
 pub use pool::{
     BufferPool, FenceValue, LeaseId, PoolBudget, PoolError, PoolTelemetry, PooledLease, ResourceId,

@@ -188,6 +188,51 @@ pub struct NativeTextureReadback {
     pub bytes: Vec<u8>,
 }
 
+/// A staging buffer a texture copy was submitted into, with its layout.
+#[derive(Debug)]
+struct ReadbackCopy {
+    buffer: wgpu::Buffer,
+    size: u64,
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u32,
+    tight_stride: u32,
+    padded_stride: u32,
+    format: TextureFormat,
+}
+
+/// A texture readback whose copy is submitted and whose staging buffer is
+/// mapping; see [`NativeContext::begin_readback`].
+#[derive(Debug)]
+pub struct NativePendingReadback {
+    context_id: u64,
+    copy: ReadbackCopy,
+    mapped: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+}
+
+impl NativePendingReadback {
+    /// Width in pixels of the texture being read back.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.copy.width
+    }
+
+    /// Height in pixels of the texture being read back.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.copy.height
+    }
+}
+
+/// One nonblocking check of a [`NativePendingReadback`].
+#[derive(Debug)]
+pub enum NativeReadbackPoll {
+    /// The GPU has not finished; poll the readback again later.
+    Pending(NativePendingReadback),
+    /// The pixels, tightly packed.
+    Ready(NativeTextureReadback),
+}
+
 /// Blend operation used by a native fullscreen pipeline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NativeFullscreenBlend {
@@ -1883,47 +1928,13 @@ impl NativeContext {
         texture: &NativeTexture,
     ) -> Result<NativeTextureReadback, NativeGpuError> {
         validate_context_ownership(self.context_id, texture.context_id)?;
-        let bytes_per_pixel = u32::try_from(texture.format.bytes_per_texel())
-            .map_err(|_| NativeGpuError::ReadbackSizeOverflow)?;
-        let tight_stride = texture
-            .width
-            .checked_mul(bytes_per_pixel)
-            .ok_or(NativeGpuError::ReadbackSizeOverflow)?;
-        let padded_stride = aligned_bytes_per_row(tight_stride)?;
-        let readback_size = u64::from(padded_stride)
-            .checked_mul(u64::from(texture.height))
-            .ok_or(NativeGpuError::ReadbackSizeOverflow)?;
-
         let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let readback = self.readback_staging.take(&self.device, readback_size);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("fm-gpu readback commands"),
-            });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_stride),
-                    rows_per_image: Some(texture.height),
-                },
-            },
-            texture_extent(texture.width, texture.height),
-        );
-
-        let submission = self.queue.submit([encoder.finish()]);
+        let (copy, submission) = self.submit_readback_copy(texture)?;
         let (map_sender, map_receiver) = mpsc::sync_channel(1);
-        readback.map_async(wgpu::MapMode::Read, .., move |result| {
-            let _ = map_sender.send(result);
-        });
+        copy.buffer
+            .map_async(wgpu::MapMode::Read, .., move |result| {
+                let _ = map_sender.send(result);
+            });
         let poll_result = self.device.poll(wgpu::PollType::Wait {
             submission_index: Some(submission),
             timeout: Some(DIAGNOSTIC_TIMEOUT),
@@ -1937,28 +1948,151 @@ impl NativeContext {
                 mpsc::RecvTimeoutError::Disconnected => NativeGpuError::MapCallbackDropped,
             })?
             .map_err(|error| NativeGpuError::Map(error.to_string()))?;
+        self.finish_mapped_readback(copy)
+    }
 
-        let mapped = readback
+    /// Starts reading a native texture back without waiting for the GPU: the
+    /// copy into a pooled staging buffer is submitted, the buffer's map is
+    /// requested, and the call returns at once. Finish it with
+    /// [`Self::poll_readback`], which never blocks either; a pending readback
+    /// dropped unfinished simply drops its staging buffer.
+    ///
+    /// Queue submissions are ordered, so GPU work submitted later that
+    /// writes the same texture does not change what this readback returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a wrong-context texture, overflow, or a
+    /// validation failure of the copy.
+    pub async fn begin_readback(
+        &self,
+        texture: &NativeTexture,
+    ) -> Result<NativePendingReadback, NativeGpuError> {
+        validate_context_ownership(self.context_id, texture.context_id)?;
+        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (copy, _) = self.submit_readback_copy(texture)?;
+        let (map_sender, map_receiver) = mpsc::sync_channel(1);
+        copy.buffer
+            .map_async(wgpu::MapMode::Read, .., move |result| {
+                let _ = map_sender.send(result);
+            });
+        check_validation(validation_scope).await?;
+        Ok(NativePendingReadback {
+            context_id: self.context_id,
+            copy,
+            mapped: map_receiver,
+        })
+    }
+
+    /// Checks once, without blocking, whether `pending` finished: the device
+    /// is polled once (never waited on), and a mapped buffer is unpacked into
+    /// tightly packed bytes and returned to the staging pool. An unfinished
+    /// readback is handed back unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a wrong-context readback, a device poll or map
+    /// failure, a dropped map callback, or a malformed mapped layout.
+    pub fn poll_readback(
+        &self,
+        pending: NativePendingReadback,
+    ) -> Result<NativeReadbackPoll, NativeGpuError> {
+        validate_context_ownership(self.context_id, pending.context_id)?;
+        self.device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|error| NativeGpuError::Poll(error.to_string()))?;
+        match pending.mapped.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => Ok(NativeReadbackPoll::Pending(pending)),
+            Err(mpsc::TryRecvError::Disconnected) => Err(NativeGpuError::MapCallbackDropped),
+            Ok(Err(error)) => Err(NativeGpuError::Map(error.to_string())),
+            Ok(Ok(())) => self
+                .finish_mapped_readback(pending.copy)
+                .map(NativeReadbackPoll::Ready),
+        }
+    }
+
+    /// Encodes and submits the copy of `texture` into a pooled staging
+    /// buffer whose rows are dynamically aligned to 256 bytes.
+    fn submit_readback_copy(
+        &self,
+        texture: &NativeTexture,
+    ) -> Result<(ReadbackCopy, wgpu::SubmissionIndex), NativeGpuError> {
+        let bytes_per_pixel = u32::try_from(texture.format.bytes_per_texel())
+            .map_err(|_| NativeGpuError::ReadbackSizeOverflow)?;
+        let tight_stride = texture
+            .width
+            .checked_mul(bytes_per_pixel)
+            .ok_or(NativeGpuError::ReadbackSizeOverflow)?;
+        let padded_stride = aligned_bytes_per_row(tight_stride)?;
+        let size = u64::from(padded_stride)
+            .checked_mul(u64::from(texture.height))
+            .ok_or(NativeGpuError::ReadbackSizeOverflow)?;
+        let buffer = self.readback_staging.take(&self.device, size);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fm-gpu readback commands"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_stride),
+                    rows_per_image: Some(texture.height),
+                },
+            },
+            texture_extent(texture.width, texture.height),
+        );
+        let submission = self.queue.submit([encoder.finish()]);
+        Ok((
+            ReadbackCopy {
+                buffer,
+                size,
+                width: texture.width,
+                height: texture.height,
+                bytes_per_pixel,
+                tight_stride,
+                padded_stride,
+                format: texture.format,
+            },
+            submission,
+        ))
+    }
+
+    /// Unpacks a mapped staging buffer, unmaps it, and returns it to the
+    /// pool.
+    fn finish_mapped_readback(
+        &self,
+        copy: ReadbackCopy,
+    ) -> Result<NativeTextureReadback, NativeGpuError> {
+        let mapped = copy
+            .buffer
             .get_mapped_range(..)
             .map_err(|error| NativeGpuError::Map(error.to_string()))?;
         let bytes = unpack_rows(
             &mapped,
-            texture.width,
-            texture.height,
-            bytes_per_pixel,
-            padded_stride,
+            copy.width,
+            copy.height,
+            copy.bytes_per_pixel,
+            copy.padded_stride,
         );
         drop(mapped);
-        readback.unmap();
+        copy.buffer.unmap();
         // Only a buffer that copied, mapped, and unmapped cleanly is reused.
         let bytes = bytes?;
-        self.readback_staging.give_back(readback_size, readback);
-
+        self.readback_staging.give_back(copy.size, copy.buffer);
         Ok(NativeTextureReadback {
-            width: texture.width,
-            height: texture.height,
-            stride: tight_stride,
-            format: texture.format,
+            width: copy.width,
+            height: copy.height,
+            stride: copy.tight_stride,
+            format: copy.format,
             bytes,
         })
     }

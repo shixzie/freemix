@@ -161,7 +161,11 @@ pub(crate) fn health_items(
     tracker: &HealthTracker,
     now: Instant,
 ) -> Vec<HealthItem> {
-    let mut items = vec![feed_item(l, state, now), meters_item(l, tracker, now)];
+    let mut items = vec![
+        feed_item(l, state, MonitorTap::Program, now),
+        feed_item(l, state, MonitorTap::Preview, now),
+        meters_item(l, tracker, now),
+    ];
     if !state.streams.is_empty() {
         items.extend(stream_items(l, state, tracker, now));
     }
@@ -171,12 +175,44 @@ pub(crate) fn health_items(
     items
 }
 
-fn feed_item(l: Locale, state: &StudioUiState, now: Instant) -> HealthItem {
-    let Some((image, at)) = &state.monitor_images[MonitorTap::Program.index()] else {
+/// Catalog words of one monitor tap's feed lamp.
+struct FeedWords {
+    live: Msg,
+    stale: Msg,
+    none: Msg,
+    hover: Msg,
+    none_hover: Msg,
+}
+
+const fn feed_words(tap: MonitorTap) -> FeedWords {
+    match tap {
+        MonitorTap::Program => FeedWords {
+            live: Msg::HealthFeedLive,
+            stale: Msg::HealthFeedStale,
+            none: Msg::HealthFeedNone,
+            hover: Msg::HealthFeedHover,
+            none_hover: Msg::HealthFeedNoneHover,
+        },
+        MonitorTap::Preview => FeedWords {
+            live: Msg::HealthPreviewFeedLive,
+            stale: Msg::HealthPreviewFeedStale,
+            none: Msg::HealthPreviewFeedNone,
+            hover: Msg::HealthPreviewFeedHover,
+            none_hover: Msg::HealthPreviewFeedNoneHover,
+        },
+    }
+}
+
+/// One monitor tap's feed lamp: unlit before its first frame, green while
+/// frames arrive, amber once the latest is older than the monitor wells'
+/// stale threshold.
+fn feed_item(l: Locale, state: &StudioUiState, tap: MonitorTap, now: Instant) -> HealthItem {
+    let words = feed_words(tap);
+    let Some((image, at)) = &state.monitor_images[tap.index()] else {
         return HealthItem {
-            label: l.text(Msg::HealthFeedNone).to_owned(),
+            label: l.text(words.none).to_owned(),
             tone: Tone::Idle,
-            hover: l.text(Msg::HealthFeedNoneHover).to_owned(),
+            hover: l.text(words.none_hover).to_owned(),
         };
     };
     let age = now.saturating_duration_since(*at);
@@ -184,13 +220,13 @@ fn feed_item(l: Locale, state: &StudioUiState, now: Instant) -> HealthItem {
     let lapsed = age >= MONITOR_STALE_AFTER;
     HealthItem {
         label: if lapsed {
-            l.format(Msg::HealthFeedStale, &[("age", Arg::Str(&age_text))])
+            l.format(words.stale, &[("age", Arg::Str(&age_text))])
         } else {
-            l.text(Msg::HealthFeedLive).to_owned()
+            l.text(words.live).to_owned()
         },
         tone: if lapsed { Tone::Pending } else { Tone::Ready },
         hover: l.format(
-            Msg::HealthFeedHover,
+            words.hover,
             &[
                 ("width", Arg::Plain(u64::from(image.width))),
                 ("height", Arg::Plain(u64::from(image.height))),
@@ -408,14 +444,14 @@ mod tests {
         assert_eq!(tracker.total_bits_per_second(second), Some(4_000_000));
         state.streams = vec![stream(1, true)];
         let items = health_items(Locale::ENGLISH, &state, &tracker, second);
-        assert_eq!(items[2].label, "TX 4.0 Mb/s");
-        assert_eq!(items[2].tone, Tone::OnAir);
+        assert_eq!(items[3].label, "TX 4.0 Mb/s");
+        assert_eq!(items[3].tone, Tone::OnAir);
         assert!(
-            items[2]
+            items[3]
                 .hover
                 .starts_with("Streams: 1 of 1 live · 4.0 Mb/s muxed in total"),
             "{}",
-            items[2].hover
+            items[3].hover
         );
         // Target 2 joins the total once it has two samples.
         state.stream_status = Some(status(
@@ -475,7 +511,7 @@ mod tests {
         let now = Instant::now();
         let items = health_items(Locale::ENGLISH, &state, &HealthTracker::default(), now);
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
-        assert_eq!(labels, ["NO PGM FEED", "NO METERS"]);
+        assert_eq!(labels, ["NO PGM FEED", "NO PVW FEED", "NO METERS"]);
         assert!(items.iter().all(|item| item.tone == Tone::Idle));
     }
 
@@ -512,18 +548,54 @@ mod tests {
         assert_eq!(fresh[0].label, "PGM FEED");
         assert_eq!(fresh[0].tone, Tone::Ready);
         assert!(fresh[0].hover.contains("640×360"), "{}", fresh[0].hover);
-        assert_eq!(fresh[1].label, "METERS");
-        assert_eq!(fresh[1].tone, Tone::Ready);
+        assert_eq!(fresh[2].label, "METERS");
+        assert_eq!(fresh[2].tone, Tone::Ready);
         let later = start + Duration::from_millis(2_300);
         tracker.observe(&state, later);
         let lapsed = health_items(Locale::ENGLISH, &state, &tracker, later);
         assert_eq!(lapsed[0].label, "PGM FEED 2.3 s");
         assert_eq!(lapsed[0].tone, Tone::Pending);
-        assert_eq!(lapsed[1].label, "METERS STALE");
-        assert_eq!(lapsed[1].tone, Tone::Pending);
+        assert_eq!(lapsed[2].label, "METERS STALE");
+        assert_eq!(lapsed[2].tone, Tone::Pending);
         let spanish = health_items(Locale::new(Language::Spanish), &state, &tracker, later);
         assert_eq!(spanish[0].label, "SEÑAL PGM 2,3 s");
-        assert_eq!(spanish[1].label, "MEDIDORES OBSOLETOS");
+        assert_eq!(spanish[2].label, "MEDIDORES OBSOLETOS");
+    }
+
+    #[test]
+    fn preview_feed_lamp_follows_the_preview_tap_alone() {
+        let start = Instant::now();
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+        state.monitor_images[MonitorTap::Preview.index()] = Some((
+            MonitorImage {
+                tap: MonitorTap::Preview,
+                sequence: 1,
+                frame: 1,
+                input: WireInputId::new(NonZeroU128::new(2).unwrap()),
+                origin: MonitorFrameOrigin::Native,
+                width: 480,
+                height: 270,
+                rgba: Arc::from(vec![0_u8; 4]),
+            },
+            start,
+        ));
+        let tracker = HealthTracker::default();
+        let fresh = health_items(Locale::ENGLISH, &state, &tracker, start);
+        assert_eq!(fresh[0].label, "NO PGM FEED");
+        assert_eq!(fresh[0].tone, Tone::Idle);
+        assert_eq!(fresh[1].label, "PVW FEED");
+        assert_eq!(fresh[1].tone, Tone::Ready);
+        assert!(
+            fresh[1].hover.starts_with("Preview monitor: 480×270"),
+            "{}",
+            fresh[1].hover
+        );
+        let later = start + Duration::from_millis(1_500);
+        let lapsed = health_items(Locale::ENGLISH, &state, &tracker, later);
+        assert_eq!(lapsed[1].label, "PVW FEED 1.5 s");
+        assert_eq!(lapsed[1].tone, Tone::Pending);
+        let spanish = health_items(Locale::new(Language::Spanish), &state, &tracker, later);
+        assert_eq!(spanish[1].label, "SEÑAL PVW 1,5 s");
     }
 
     #[test]
@@ -534,13 +606,13 @@ mod tests {
         let tracker = HealthTracker::default();
         // Desired but not yet live, no samples: amber with an unknown rate.
         let items = health_items(Locale::ENGLISH, &state, &tracker, now);
-        assert_eq!(items[2].label, "TX —");
-        assert_eq!(items[2].tone, Tone::Pending);
+        assert_eq!(items[3].label, "TX —");
+        assert_eq!(items[3].tone, Tone::Pending);
         assert_eq!(
-            items[2].hover,
+            items[3].hover,
             "Streams: 0 of 2 live · no recent transport samples to measure the rate · 0 A/V pairs dropped"
         );
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
 
         let mut live = sample(1, StreamRealizedState::Live, 0);
         live.dropped_pairs = 1_204;
@@ -562,15 +634,16 @@ mod tests {
             labels,
             [
                 "NO PGM FEED",
+                "NO PVW FEED",
                 "NO METERS",
                 "TX —",
                 "DROP 1,204",
                 "HLS DISK 1.5 GB"
             ]
         );
-        assert_eq!(items[2].tone, Tone::OnAir);
-        assert_eq!(items[3].tone, Tone::Pending);
-        // 1.5 GB is below the 2 GB warning but above the critical floor.
+        assert_eq!(items[3].tone, Tone::OnAir);
         assert_eq!(items[4].tone, Tone::Pending);
+        // 1.5 GB is below the 2 GB warning but above the critical floor.
+        assert_eq!(items[5].tone, Tone::Pending);
     }
 }

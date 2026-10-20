@@ -792,9 +792,9 @@ fn native_daemon_listens_for_an_rtmp_push_and_an_encrypted_srt_caller() {
 }
 
 /// Protocol 2.59: a native daemon sends a subscribed Studio session live
-/// thumbnails of its inputs. The network stream sits on Preview (the native
-/// daemon has no Preview tap), so its red thumbnail can only come from the
-/// input's own feed. Nothing arrives before the subscription or after it
+/// thumbnails of its inputs. The network stream sits on Preview, and its red
+/// `input_thumbnail` comes from the input's own feed, not the Preview monitor
+/// tap. Nothing arrives before the subscription or after it
 /// ends, and each input's thumbnails stay within the 2 fps cadence.
 #[test]
 #[allow(clippy::too_many_lines)]

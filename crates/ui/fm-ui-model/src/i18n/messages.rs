@@ -212,6 +212,11 @@ messages! {
     HealthFeedNone => t("NO PGM FEED"),
     HealthFeedHover => t("Program monitor preview: {width}×{height} frame received {age} ago. Turns amber after 1 s without a new frame."),
     HealthFeedNoneHover => t("No Program monitor frame has arrived from the daemon"),
+    HealthPreviewFeedLive => t("PVW FEED"),
+    HealthPreviewFeedStale => t("PVW FEED {age}"),
+    HealthPreviewFeedNone => t("NO PVW FEED"),
+    HealthPreviewFeedHover => t("Preview monitor: {width}×{height} frame received {age} ago. Turns amber after 1 s without a new frame."),
+    HealthPreviewFeedNoneHover => t("No Preview monitor frame has arrived from the daemon"),
     HealthMetersLive => t("METERS"),
     HealthMetersStale => t("METERS STALE"),
     HealthMetersNone => t("NO METERS"),
@@ -634,8 +639,8 @@ messages! {
     FtbStateHover => t("On-air Fade-to-Black state reported by the daemon (realized).\nDESIRED {desired}\nREALIZED {realized}"),
 
     // Monitors.
-    MonitorNoPreviewTap => t("NO PREVIEW TAP · native Preview image not produced"),
-    MonitorNoPreviewTapNote => t("The native runtime renders Program only; this well shows routing state."),
+    MonitorNoPreviewTap => t("NO PREVIEW TAP · waiting for the native Preview frame"),
+    MonitorNoPreviewTapNote => t("No native Preview frame has arrived yet; this well shows routing state."),
     MonitorMetersProgramHover => t("Program audio: the master mix, left and right, on a 60 dB scale (bars RMS, ticks peak)"),
     MonitorMetersPreviewHover => t("Preview audio: the previewed source's own level, left and right, on a 60 dB scale (bars RMS, ticks peak)"),
     MonitorNoFeed => t("NO VIDEO FEED · waiting for encoded preview"),
