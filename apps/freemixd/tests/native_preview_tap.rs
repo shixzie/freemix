@@ -394,7 +394,7 @@ fn center(image: &MonitorImage) -> [u8; 3] {
 /// Whether every pixel of `image` is `color` within a small tolerance for
 /// the SDR transform's rounding.
 fn solid(image: &MonitorImage, color: [u8; 3]) -> bool {
-    image.rgba.chunks_exact(4).all(|pixel| {
+    image.rgba.as_chunks::<4>().0.iter().all(|pixel| {
         pixel[..3]
             .iter()
             .zip(color)

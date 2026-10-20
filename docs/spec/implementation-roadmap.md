@@ -11,9 +11,10 @@ highest-value remaining items, ranked:
 1. **Web gateway on the LAN with pairing and TLS (`RC-007`, `RC-014`, `RC-008`).**
    The phone/tablet operator and tally pages exist but `--web-listen` is
    loopback-only, so no real phone can reach them yet.
-2. **Native Preview monitor tap (`SW-001`, `SW-002`).** The native daemon reads
-   back Program only; Studio operators on real media switch without seeing
-   Preview.
+2. ~~**Native Preview monitor tap (`SW-001`, `SW-002`).**~~ Landed: the native
+   daemon publishes a Preview `monitor_frame` tap (the incoming source during a
+   transition) through nonblocking readbacks, and Studio shows it with a
+   `PVW FEED` lamp. The rows stay `planned` for their wider acceptance.
 3. **Strip DSP on the live mix (`AU-005`).** The tested `fm-audio` EQ, gate,
    compressor, and limiter chain is not wired to persisted strips, the engine,
    or the daemon; this is a P0 row.
@@ -266,7 +267,8 @@ Outstanding resources and handle references cannot be reissued before release.
 This is lifecycle groundwork, not preview delivery. The daemon still owns
 non-shareable opaque wgpu 30 textures in a separate process, Studio currently
 renders through eframe's wgpu 29 device, no authenticated native-handle/fence
-IPC exists, and the engine produces no separate Preview image tap. A platform
+IPC exists, and the Preview image is a second composite read back to the CPU
+(see below), not a shared handle. A platform
 bridge plus output color transform, bounded shared ring, sidecar IPC, and
 encoded fallback are required before item 6 can claim presentation without CPU
 readback.
@@ -277,8 +279,14 @@ one atomic group, published latest-only to active raw-TCP Studio peers with
 `view_status`. The simulated daemon renders both realized taps from simulated
 sources at 5 fps or immediately on a routing change (it now composes scenes,
 titles, active overlays, grades, and animation poses, but not Fade to Black;
-see `apps/freemixd/src/monitor_tap.rs`); the native daemon reads back Program on the CPU
-at up to 10 fps and still has no Preview tap. Studio letterboxes the latest
+see `apps/freemixd/src/monitor_tap.rs`); the native daemon reads back both
+Program and Preview at up to 10 fps each through nonblocking GPU readbacks
+(`NativeContext::begin_readback`/`poll_readback` over the pooled staging
+buffers), Preview being the display Preview composite (the incoming source
+during a transition), half an interval out of phase with Program, skipped
+while the loop is behind or its last readback is in flight, and composed only
+while a Studio peer is connected (`apps/freemixd/tests/native_preview_tap.rs`).
+Studio shows `PGM FEED` and `PVW FEED` lamps. Studio letterboxes the latest
 frame, labels simulated and native frames, and dims stale or mismatched ones.
 There is no subscription or cadence negotiation, Web peers receive no frames,
 and shared-image presentation without CPU readback remains absent, so item 6

@@ -18,9 +18,11 @@ Fade to Black is not composited. A tap with no frame
 routing placeholder captioned `NO VIDEO FEED · waiting for encoded preview`. A
 frame older than one second, or a simulated frame whose input no longer
 matches the realized source, is dimmed and badged `STALE`. With a native
-daemon, Program frames are GPU-downscaled CPU readbacks captioned
-`ENCODED PREVIEW {w}×{h} · CPU readback`, and Preview reads
-`NO PREVIEW TAP · native Preview image not produced`.
+daemon, Program and Preview frames are GPU-downscaled CPU readbacks captioned
+`ENCODED PREVIEW {w}×{h} · CPU readback`; until the first native Preview frame
+arrives, Preview reads `NO PREVIEW TAP · waiting for the native Preview frame`.
+(Screenshots captured before the native Preview tap show the older
+`NO PREVIEW TAP` wording.)
 
 The wells follow the canvas shape. The client receives no project video
 settings, so Studio takes the shape from the latest Program frame (else

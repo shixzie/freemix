@@ -2596,6 +2596,21 @@ so a client keeps its placeholder instead of seeing invented video:
   program bus rather than any one output, so it shows every active overlay.
   Preview never shows overlays.
 
+A native (`origin=native`) monitor frame is the GPU composition itself,
+downscaled and converted to SDR on the GPU and read back without the frame
+loop waiting for it, so it arrives one or more frames after the `frame` it
+names. The Program tap is the first realized output (or the unbound
+output). The Preview tap is the Preview composite display outputs show:
+the Preview source cut in through the same compositor path, with scenes and
+media at the frame's poses and positions, but no transition, Stinger,
+overlay, title, or Fade to Black. During a timed, T-bar, or Stinger
+transition the Preview tap shows the incoming source, as most switchers'
+Preview does, and its `input` names that source. Each tap targets about ten
+frames a second, Preview half an interval out of phase with Program; a due
+frame is skipped while the tap's previous readback is still in flight or the
+frame loop is behind its deadline, and nothing is composed or read back for
+either tap while no eligible peer is connected.
+
 Native daemons (`--native-media`) realize every title input as a live
 source frame at the project video size: the template is rendered as above
 (field values, on-demand images, nearest-neighbor scale), converted from
