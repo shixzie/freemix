@@ -442,16 +442,33 @@ mod tests {
         assert_eq!(pauses[0], MIN_ERROR_BACKOFF);
     }
 
+    /// A receiver on a free loopback port. The receiver takes no port 0, so
+    /// the port comes from a probe socket that is closed before the
+    /// receiver binds it; on a busy host another test can take the port in
+    /// between, and then another free port is tried.
+    fn bind_free_port(repaint: egui::Context) -> OscReceiver {
+        let mut attempts = 0;
+        loop {
+            let address = UdpSocket::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap();
+            match OscReceiver::bind(address, repaint.clone()) {
+                Ok(receiver) => return receiver,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && attempts < 20 => {
+                    attempts += 1;
+                }
+                Err(error) => panic!("cannot bind the OSC receiver on {address}: {error}"),
+            }
+        }
+    }
+
     /// A worker that exits, even by a panic, clears the listening flag the
     /// console shows.
     #[test]
     fn a_dead_listener_is_reported() {
         let repaint = egui::Context::default();
-        let address = UdpSocket::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        let receiver = OscReceiver::bind(address, repaint).unwrap();
+        let receiver = bind_free_port(repaint);
         assert!(receiver.is_listening());
         let counters = Arc::clone(&receiver.counters);
         receiver.shutdown().unwrap();
@@ -479,11 +496,7 @@ mod tests {
         repaint.set_request_repaint_callback(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
         });
-        let address = UdpSocket::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        let receiver = OscReceiver::bind(address, repaint).unwrap();
+        let receiver = bind_free_port(repaint);
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
         sender
             .send_to(&message("/freemix/switcher/cut"), receiver.local_addr())
