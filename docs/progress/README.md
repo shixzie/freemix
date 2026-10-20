@@ -1006,6 +1006,71 @@ Still open:
   whole session on the simulated daemon, although Program shows simulated
   renders.
 
+## Round 8
+
+Captures of 2026-10-20 at Protocol 2.75, schema 65: a polish pass over the
+views added since round 7 (the media list card, the strip FX window, still
+and slideshow inputs, project shortcuts) with the colour, animation, docking,
+and keyboard reference views checked again. Same Xvfb + lavapipe console,
+`--role admin`, simulated daemon, and synthetic meter feed (see "Round 8
+captures" under Reproducing). The round 7 show gains Station Logo (a still
+image), Weather Slides (a three-slide folder with fades), Package: Floods (a
+media input), Rundown Clips (a three-file media list added from Add input),
+bank categories and colours, and the voice, podcast, and master FX presets
+on Anchor Mic, Guest Mic, and Master.
+
+| File | What it shows |
+| --- | --- |
+| `studio-round8-workspace.png` | 1920x1080, the Default workspace mid-show with the Cues tab: every bank tile numbered (keyed caps on 1–8, plain dim plates from 9 up), category tabs, the still and slideshow tiles showing their pictures, and the Master scale's labels clear of the meter. |
+| `studio-round8-workspace-720.png` | The same show at 1280x720 with the side group on Overlays. |
+| `studio-round8-strip-fx.png` | Anchor Mic's `FX` key: the strip FX window with the tool window header (grip, title, Close), Bypass, Preset, `Copy chain` / `Paste chain` / `Reset chain` as console keys, the EQ curve with numbered bands, upper-case stage keys (HIGH-PASS, EQ on its own row, GATE, COMPRESSOR, LIMITER), whole band values, `RATIO 3.0:1`, and a `GR` legend on each gain reduction meter. |
+| `studio-round8-media-list.png` | The Media tab's media list card for Rundown Clips: the current item tinted with the accent and a `CURRENT` chip while off air, transport keys lit only for their state (PLAY green when playing, PAUSE amber when paused, STOP plain), and the item count and position as captions. |
+| `studio-round8-add-media-list.png` | Add input › Media list with three files: the kind keys in one grid (`MEDIA LIST` upper case like its neighbours), the intro naming every kind, and the sample naming the first file. |
+| `studio-round8-add-slideshow.png` | Add input › Slideshow from a folder: `Each slide` on its own row, then `CUT TO NEXT` / `FADE TO NEXT` with the fade length beside them. |
+| `studio-round8-shortcuts-empty.png` | Edit › Project shortcuts with none yet: an empty state that says what to do (`Click New shortcut…`). |
+| `studio-round8-shortcuts-editor.png` | A saved shortcut, Go next cue on F9 at `/freemix/user/go-next`: a labelled form column, the key shown as a key cap, Set/Clear key and `+ New shortcut` as console keys, the action row, and Save as the accent key. |
+| `studio-round8-colour.png` | Ctrl+G on Guest Cam with the Warm look and the vectorscope, checked again with no changes. |
+| `studio-round8-animation.png` | Guest Lower Third's Animate window after Stagger, checked again with no changes. |
+| `studio-round8-popout.png` | The Program panel dragged out of its dock into a floating window with `Dock back to…`, beside the docked panels. |
+| `studio-round8-shortcuts-reference.png` | `?` with the `PROJECT SHORTCUTS (EDIT MENU)` group listing F9 Go next cue. |
+| `studio-round8-*-es.png` | The workspace, strip FX, media list, Add input (media list, slideshow), and shortcuts editor (empty, and saved as `Siguiente cue` on F9) with `--lang es`. |
+
+Defects found in these captures and fixed (the captures above are after the
+fixes):
+
+- `freemix-cli remote-go` / `remote-preview` stopped at the handshake when
+  the snapshot carried shortcut or still state; they accept both now.
+- The media transport lit STOP red (the on-air colour) and the media list
+  lit its navigation keys red; transport keys light only for their state
+  (PLAY green, PAUSE amber), and red is kept for the current item on air.
+- The media list's current item was red even off air; it uses the accent
+  tint and a `CURRENT` chip until it is on Program.
+- The strip FX window was a plain egui window with a debug-looking title bar
+  and text buttons; it uses the tool window header and console keys, its
+  stage names are upper case, and its band values no longer clip.
+- The compressor's ratio read `3.0 :1`; it reads `RATIO 3.0:1`.
+- The gain reduction meters had no legend; each shows `GR`.
+- The shortcuts editor was a loose stack of labels and fields with plain
+  buttons; it is a labelled form with key caps and console keys. Its empty
+  pane was blank and now shows an empty state, and new shortcut and script
+  names follow the console language (`Atajo 1`, `Guion 1`).
+- The Add input intro left out slideshows and media lists; `Media list`
+  was the only kind key in mixed case; the media list sample read `No
+  files yet` with files listed, and now names the first file.
+- Bank tiles from 9 up had no number; every tile shows one.
+- The Master meter scale's labels touched the meter.
+- The slideshow timing row wrapped mid-control in Spanish; it is two rows.
+- The shortcut picker rows did not line up with the form's fields.
+
+Still open:
+
+- The media list hint suggests host paths, but the server accepts only
+  `asset://` paths for list items (the captures use `asset://media/...`).
+- An off stream row shows a disabled `RETRY` key.
+- The scene tile still reads `no thumbnail` on the simulated daemon.
+- The keyboard reference grows to fit the project shortcuts group and may
+  need scrolling at 1280x720 with many shortcuts.
+
 ## Reproducing
 
 ```sh
@@ -1660,3 +1725,46 @@ picks `03 · Guest Cam` in Target, and clicks `Warm`, `Advanced`, and
 and `Animate…`, then `Fit`, `Stagger…` › `Apply stagger`, `Fit`, and the
 ruler at frame 21. The shortcuts capture closes it and presses `?`
 (`xdotool windowfocus`, then `key question`).
+
+### Round 8 captures
+
+The round 8 captures (2026-10-20, Protocol 2.75, schema 65) built the
+working tree with `cargo build -p freemix-cli -p freemixd -p freemix-studio
+--features freemix-studio/capture-meter-signal` and ran Studio the same way
+as round 7 (`--role admin`, a fresh `FREEMIX_STUDIO_PREFS` file,
+`FREEMIX_STUDIO_CAPTURE_METERS=1`, `--daemon target/debug/freemixd`), on
+Xvfb at 1920x1080x24 (English, then `--lang es`) and 1280x720x24, each
+against a freshly built show. The show is the round 7 script plus:
+
+```sh
+freemix-cli input-add-image news.freemix 9 "Station Logo" logo.png
+freemix-cli input-add-slideshow news.freemix 10 "Weather Slides" --folder slides --fade-frames 15
+freemix-cli media-input-add news.freemix 11 "Package: Floods" asset://media/floods.mp4
+freemix-cli input-categories news.freemix 1=Cameras 2=Remote 3=Graphics 4=Playback
+freemix-cli input-category news.freemix <input> <category>   # 1,2,3,7 -> 1; 4 -> 2; 5,8,9,10 -> 3; 6,11 -> 4
+freemix-cli input-color news.freemix <input> <colour>        # 1-11: blue blue green orange purple teal red yellow purple purple teal
+freemix-cli audio-strip-dsp news.freemix 1 voice
+freemix-cli audio-strip-dsp news.freemix 3 podcast
+freemix-cli audio-strip-dsp news.freemix master master
+```
+
+and all five title animation presets (In: Bar slide-from-left, Accent wipe,
+Name fade, Role slide-from-bottom, 15 frames each; Out: Bar fade, 12
+frames). `logo.png` and `slides/slide{1,2,3}.png` are 1920x1080 ImageMagick
+gradients with text ("METRO NEWS", "Tonight: clear, 14 C", "Tomorrow:
+showers, 11 C", "Weekend: sunny, 17 C"). With Studio up, Add input ›
+`MEDIA LIST` adds Rundown Clips with the three lines
+`asset://media/opener.mov`, `asset://media/floods-package.mp4`, and
+`asset://media/weather-bed.mp4`; then `remote-go 127.0.0.1:<port> 1` three
+times, a few seconds apart, and `remote-preview … 3`. The captures then
+click, in turn: the `CUES` tab (workspace), Anchor Mic's `FX` key
+(strip FX), the `MEDIA` tab scrolled to the list card (media list), the
+bank's add tile › `MEDIA LIST` with the same three files and the name
+Package Rotation (add media list), `SLIDESHOW` with the folder
+`/srv/show/weather` (add slideshow), Edit › Project shortcuts (empty), and
+`+ New shortcut`, name Go next cue (Siguiente cue in Spanish), `Set key`
+› F9, `Add action`, OSC name `go-next` (`siguiente`), and `Save shortcut`
+(editor). The colour capture presses Ctrl+G on Guest Cam with `Warm`,
+`Advanced`, and `Vectorscope`; the animation capture follows round 7; the
+pop-out capture drags the Program panel's grip out of its dock; and the
+reference capture presses `?` with the saved shortcut in the project.
