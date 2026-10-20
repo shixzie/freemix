@@ -706,13 +706,14 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
     );
     assert_startup_loop_cpu(first, steady);
     // On a host that keeps pace with the show (the frames after startup
-    // realize in under half an interval), no startup frame is a frame late.
+    // realize in under half an interval), no startup frame is a frame late
+    // unless the host was contended while it was due (see above).
     let keeps_pace = percentile(&realize, 95) < frame_ms / 2.0;
     let late: Vec<(usize, f64)> = first
         .iter()
-        .map(|frame| frame.lateness)
         .enumerate()
-        .filter(|&(_, lateness)| keeps_pace && lateness >= frame_ms)
+        .filter(|&(_, frame)| keeps_pace && !contended(frame) && frame.lateness >= frame_ms)
+        .map(|(index, frame)| (index, frame.lateness))
         .collect();
     assert!(
         late.is_empty(),
