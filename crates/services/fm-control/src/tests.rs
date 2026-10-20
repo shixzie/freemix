@@ -5791,6 +5791,98 @@ fn overlay_motion_transitions_replicate_and_take_their_duration() {
     );
 }
 
+/// Protocol 2.86: an overlay take with a timed transition is realized on
+/// the frame its transition completes, a configuration edit meanwhile
+/// leaves it waiting, and an off during the transition supersedes it and
+/// is realized when its own transition completes.
+#[test]
+fn an_overlay_motion_is_realized_when_it_completes() {
+    use fm_protocol::{OverlayTransitionKind, WireOverlayChannelId};
+
+    let mut control = service(64, 64);
+    let server = server_identity();
+    let operator = principal(Role::Operator);
+    let channel = WireOverlayChannelId::new(5).unwrap();
+    let submit = |control: &mut ControlService, id: &str, payload| {
+        let submission = control
+            .submit(&operator, command(id, &format!("{id}-key"), payload), 0)
+            .unwrap();
+        assert!(submission.is_accepted(), "{:?}", submission.output.result);
+        control.engine.revision().get()
+    };
+    let realized = |outcome: &crate::TickOutcome, revision: u64| {
+        outcome
+            .runtime_events
+            .iter()
+            .find(|event| event.revision == revision)
+            .map(|event| event.event.clone())
+    };
+    let configure = |duration_frames| CommandPayload::ConfigureOverlayTransition {
+        channel,
+        transition: OverlayTransitionKind::CubeZoom,
+        duration_frames,
+    };
+    let take = || CommandPayload::TakeOverlay {
+        channel,
+        source: WireInputId::from_domain(input(3)),
+    };
+    submit(&mut control, "configure", configure(7));
+    control.tick(&server).unwrap();
+
+    // The take's 7-frame transition: realized on its last frame only.
+    let taken = submit(&mut control, "take", take());
+    let outcome = control.tick(&server).unwrap();
+    assert_eq!(realized(&outcome, taken), None);
+    let reconfigure = submit(&mut control, "reconfigure", configure(9));
+    let outcome = control.tick(&server).unwrap();
+    assert!(matches!(
+        realized(&outcome, reconfigure),
+        Some(RuntimeLifecycleEvent::Realized { .. })
+    ));
+    assert_eq!(realized(&outcome, taken), None);
+    for frame in 2..6 {
+        let outcome = control.tick(&server).unwrap();
+        assert_eq!(realized(&outcome, taken), None, "transition frame {frame}");
+        assert!(control.work_in_flight());
+        assert!(control.idle_engine_snapshot().is_err());
+    }
+    let outcome = control.tick(&server).unwrap();
+    assert!(
+        matches!(
+            realized(&outcome, taken),
+            Some(RuntimeLifecycleEvent::Realized { ref domain, .. }) if domain == "switcher"
+        ),
+        "{:?}",
+        outcome.runtime_events
+    );
+    assert!(!control.work_in_flight());
+
+    // The off's 9-frame transition: a take on its third frame supersedes
+    // it, and is realized when its own transition completes.
+    let off = submit(&mut control, "off", CommandPayload::OverlayOff { channel });
+    for _ in 0..2 {
+        assert_eq!(realized(&control.tick(&server).unwrap(), off), None);
+    }
+    let retake = submit(&mut control, "retake", take());
+    let outcome = control.tick(&server).unwrap();
+    assert_eq!(
+        realized(&outcome, off),
+        Some(RuntimeLifecycleEvent::Superseded {
+            by_revision: retake
+        })
+    );
+    for _ in 1..8 {
+        let outcome = control.tick(&server).unwrap();
+        assert_eq!(realized(&outcome, retake), None);
+        assert_eq!(realized(&outcome, off), None);
+    }
+    assert!(matches!(
+        realized(&control.tick(&server).unwrap(), retake),
+        Some(RuntimeLifecycleEvent::Realized { .. })
+    ));
+    assert!(!control.work_in_flight());
+}
+
 fn media_service() -> ControlService {
     let mut show = ShowState::new(
         "media show",

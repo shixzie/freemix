@@ -3893,6 +3893,105 @@ fn simulated_daemon_realizes_a_title_take_when_its_in_phase_ends() {
     assert_eq!(persisted.project().inputs()[0].name, "Renamed mid In phase");
 }
 
+/// An overlay take with a timed transition is answered on its first frame
+/// and realized once the transition has played at the show's frame rate;
+/// a Cut meanwhile is accepted and realized first, and the journal replays
+/// both.
+#[test]
+fn simulated_daemon_realizes_an_overlay_take_when_its_transition_ends() {
+    let directory = TestDirectory::new("simulated-overlay-motion");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut operator = daemon.connect();
+    operator
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    operator.handshake_as(Role::Admin, None);
+    operator.receive_snapshot();
+    let channel = fm_protocol::WireOverlayChannelId::new(1).unwrap();
+    // 50 frames at 25 fps: two seconds of fade.
+    operator.send(&command(
+        "configure",
+        "configure-key",
+        CommandPayload::ConfigureOverlayTransition {
+            channel,
+            transition: fm_protocol::OverlayTransitionKind::Fade,
+            duration_frames: 50,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "configure"), 1);
+    await_switcher_realized(&mut operator, 1);
+
+    let sent = Instant::now();
+    operator.send(&command(
+        "take",
+        "take-key",
+        CommandPayload::TakeOverlay {
+            channel,
+            source: input(2),
+        },
+    ));
+    let answered = loop {
+        match operator.receive() {
+            WireMessage::CommandResult(result) => {
+                assert!(
+                    matches!(result, CommandResult::Accepted { revision: 2, .. }),
+                    "{result:?}"
+                );
+                break sent.elapsed();
+            }
+            WireMessage::RuntimeEvent(runtime) => assert!(
+                runtime.revision != 2,
+                "the take was realized before it was answered: {runtime:?}"
+            ),
+            _ => {}
+        }
+    };
+    assert!(
+        answered < Duration::from_millis(1_000),
+        "the take was answered after {answered:?}, not on its first frame"
+    );
+    // An overlay in transition never holds Program: a Cut is accepted.
+    operator.send(&command("cut", "cut-key", CommandPayload::Cut));
+    assert_eq!(accepted_revision(&mut operator, "cut"), 3);
+    let mut realized = Vec::new();
+    while !realized.contains(&2) {
+        if let WireMessage::RuntimeEvent(runtime) = operator.receive()
+            && matches!(
+                &runtime.event,
+                RuntimeLifecycleEvent::Realized { domain, .. } if domain == "switcher"
+            )
+        {
+            realized.push(runtime.revision);
+        }
+    }
+    let ended = sent.elapsed();
+    assert_eq!(
+        realized,
+        [3, 2],
+        "the Cut inside the fade is realized first"
+    );
+    assert!(
+        ended >= Duration::from_millis(1_800),
+        "the take's 50-frame fade was realized in {ended:?}"
+    );
+    let snapshot = snapshot_of(&daemon, Role::Viewer);
+    assert!(snapshot.realized_overlays[0].active);
+    assert_eq!(snapshot.realized_overlays[0].opacity, u8::MAX);
+    drop(operator);
+    // Killed: recovery replays the take and the Cut onto their frames.
+    daemon.stop();
+    let restarted = Daemon::start(&project_path);
+    let snapshot = snapshot_of(&restarted, Role::Viewer);
+    assert_eq!(snapshot.revision, 3);
+    assert!(snapshot.realized_overlays[0].active);
+    assert_eq!(snapshot.realized_program, input(2));
+    restarted.wait_success();
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn manual_alpha_fade_state_and_receipts_survive_restart_through_commit_and_cancel() {

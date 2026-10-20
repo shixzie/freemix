@@ -633,11 +633,29 @@ pub struct EngineActionMotion {
     /// ended, ascending by input, with its animation after the action
     /// (`None` once the title is no longer animated on air).
     pub titles: Vec<(InputId, Option<TitleAir>)>,
+    /// Each overlay channel whose realized picture the action changed (its
+    /// source, on-air state, opacity, or timed transition, not its
+    /// configuration), ascending.
+    pub channels: Vec<OverlayChannelId>,
 }
 
 impl EngineActionMotion {
     /// Records the titles whose animation differs between `before` and
     /// `after`, keeping the latest animation of a title already recorded.
+    fn record_channels(
+        &mut self,
+        before: &[OverlayChannelState; OVERLAY_CHANNEL_COUNT],
+        after: &[OverlayChannelState; OVERLAY_CHANNEL_COUNT],
+    ) {
+        for ((channel, before), after) in OverlayChannelId::ALL.into_iter().zip(before).zip(after) {
+            if !before.shows_like(after)
+                && let Err(index) = self.channels.binary_search(&channel)
+            {
+                self.channels.insert(index, channel);
+            }
+        }
+    }
+
     fn record_titles(
         &mut self,
         before: &BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
@@ -2995,6 +3013,7 @@ impl Engine {
             return Ok(());
         }
         let titles_before = self.title_air.clone();
+        let overlays_before = self.realized_switcher.overlays().clone();
         if let EngineCommand::SetInputAudioStrip { input, state } = action {
             realized.input_audio_strip_updates.push((input, state));
         }
@@ -3032,6 +3051,9 @@ impl Engine {
         realized
             .motion
             .record_titles(&titles_before, &self.title_air);
+        realized
+            .motion
+            .record_channels(&overlays_before, self.realized_switcher.overlays());
         Ok(())
     }
 

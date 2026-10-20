@@ -909,14 +909,17 @@ struct ActiveTransition {
 }
 
 /// A command whose realization waits for the on-air motion it started
-/// (Protocol 2.86): a title take's In phase, or an off-air's Out phase
-/// (which ends with its overlay off).
+/// (Protocol 2.86): a title take's In phase, an off-air's Out phase (which
+/// ends with its overlay off), or an overlay channel's timed take or off.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveMotion {
     revision: u64,
-    /// Each title the command left playing an In or Out phase, with that
-    /// phase's animation.
-    titles: Vec<(InputId, TitleAir)>,
+    /// Each title the command left playing an In or Out phase, with the
+    /// overlay channel it plays on and that phase's animation.
+    titles: Vec<(InputId, OverlayChannelId, TitleAir)>,
+    /// Each overlay channel the command left in a timed transition, other
+    /// than one a title phase of `titles` plays on (the phase ends it).
+    channels: Vec<OverlayChannelId>,
 }
 
 /// Single-writer Phase 1 control service.
@@ -2869,21 +2872,38 @@ impl<A: AuthorizationHook> ControlService<A> {
         pending: &PendingRuntimeAction,
         motion: &EngineActionMotion,
     ) -> Option<ActiveMotion> {
-        if !matches!(
-            pending.command,
-            EngineCommand::TakeTitle { .. } | EngineCommand::TitleOffAir { .. }
-        ) {
-            return None;
-        }
+        let on_air = self.engine.titles_on_air();
         let titles: Vec<_> = motion
             .titles
             .iter()
-            .filter_map(|(input, air)| air.map(|air| (*input, air)))
-            .filter(|(input, air)| self.title_in_motion(*input, *air))
+            .filter_map(|(input, air)| {
+                let air = (*air)?;
+                on_air
+                    .iter()
+                    .find(|title| {
+                        title.input == *input
+                            && title.air == air
+                            && title.frame.phase != TitleAirPhase::Hold
+                    })
+                    .map(|title| (*input, title.channel, air))
+            })
             .collect();
-        (!titles.is_empty()).then_some(ActiveMotion {
+        let channels: Vec<_> = motion
+            .channels
+            .iter()
+            .copied()
+            .filter(|channel| {
+                self.engine
+                    .realized_switcher()
+                    .overlay(*channel)
+                    .is_transitioning()
+                    && !titles.iter().any(|(_, shown_on, _)| shown_on == channel)
+            })
+            .collect();
+        (!titles.is_empty() || !channels.is_empty()).then_some(ActiveMotion {
             revision: pending.revision,
             titles,
+            channels,
         })
     }
 
@@ -2933,8 +2953,9 @@ impl<A: AuthorizationHook> ControlService<A> {
     }
 
     /// A command that interrupts a motion still playing (a re-take during
-    /// an Out phase, an off-air during an In phase) abandons it: the command
-    /// that started it is superseded by `pending`, never realized. A motion
+    /// an Out phase, an off-air during an In phase, another take or off of
+    /// an overlay channel in transition) abandons it: the command that
+    /// started it is superseded by `pending`, never realized. A title phase
     /// the command leaves playing as it was (an off-air during the Out
     /// phase) keeps waiting.
     fn supersede_motions(
@@ -2946,12 +2967,16 @@ impl<A: AuthorizationHook> ControlService<A> {
         publish: bool,
     ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
         let interrupts = |active: &ActiveMotion| {
-            active.titles.iter().any(|(input, air)| {
-                motion
-                    .titles
-                    .iter()
-                    .any(|(changed, now)| changed == input && *now != Some(*air))
-            })
+            active.titles.iter().any(|(input, channel, air)| {
+                match motion.titles.iter().find(|(changed, _)| changed == input) {
+                    Some((_, now)) => *now != Some(*air),
+                    // Its channel changed under it.
+                    None => motion.channels.contains(channel),
+                }
+            }) || active
+                .channels
+                .iter()
+                .any(|channel| motion.channels.contains(channel))
         };
         let (abandoned, kept) = std::mem::take(&mut self.active_motions)
             .into_iter()
@@ -2981,7 +3006,13 @@ impl<A: AuthorizationHook> ControlService<A> {
                 !active
                     .titles
                     .iter()
-                    .any(|(input, air)| self.title_in_motion(*input, *air))
+                    .any(|(input, _, air)| self.title_in_motion(*input, *air))
+                    && !active.channels.iter().any(|channel| {
+                        self.engine
+                            .realized_switcher()
+                            .overlay(*channel)
+                            .is_transitioning()
+                    })
             });
         self.active_motions = playing;
         if !publish {

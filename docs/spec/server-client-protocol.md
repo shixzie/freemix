@@ -3239,7 +3239,12 @@ timing of command results and what a session may send meanwhile do.
   end is signalled by the event that always reported it: the
   `runtime_event` `realized` in domain `switcher` for the command's
   revision, published on the frame the transition (or Fade to Black)
-  completes; overlay commands report theirs as before.
+  completes. An `overlay_take`, `overlay_off`, or `overlay_next` whose
+  channel plays a timed transition is realized the same way, on the frame
+  that transition completes (as the 2.36 notes say), after any command
+  realized on its frames; another take or off of the channel during it
+  supersedes it (`superseded` with that command's revision), while a
+  change of the channel's configuration leaves it playing.
   A title's phase is timed the same way when the command is taken
   directly (not by a cue): a `title_take` with a nonzero In phase is
   realized (`realized` in domain `switcher`, its own revision) on the
@@ -3247,7 +3252,7 @@ timing of command results and what a session may send meanwhile do.
   a nonzero Out phase on the frame its Out phase ends and its overlay
   goes off, each after any command realized on the phase's frames. A
   command that interrupts the phase (a re-take during the Out phase, an
-  off-air during the In phase, a plain overlay take replacing the title)
+  off-air during the In phase, an overlay command on its channel)
   abandons it, and the command that started it is then reported
   `superseded` with the interrupting command's revision instead; one that
   leaves it playing as it was (an off-air during the Out phase) is

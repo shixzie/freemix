@@ -245,6 +245,18 @@ impl OverlayChannelState {
         self.automatic.is_some()
     }
 
+    /// Whether `other` shows the same source the same way as this channel:
+    /// equal on-air state, opacity, and timed transition in progress,
+    /// whatever either's configuration (transition, appearance, queue,
+    /// routing).
+    #[must_use]
+    pub fn shows_like(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.active == other.active
+            && self.opacity == other.opacity
+            && self.automatic == other.automatic
+    }
+
     /// The motion transition moving this channel's layer in this frame, or
     /// `None` when it is not in a motion transition.
     #[must_use]
