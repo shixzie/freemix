@@ -41,7 +41,7 @@ use fm_protocol::{
 use fm_ui_model::ScriptRunReport;
 
 use crate::gating::Hint;
-use crate::l10n::{self, Arg, Msg};
+use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{ERROR, caption, card, muted_color, section_label};
 use crate::{StudioIntent, StudioShell, StudioUiState};
 
@@ -168,7 +168,7 @@ impl ScriptsWindow {
 
     /// Starts a new, empty draft under the next free id (the lowest free
     /// one once the largest id is taken).
-    pub(crate) fn new_draft(&mut self, scripts: &[ScriptStatus]) {
+    pub(crate) fn new_draft(&mut self, l: Locale, scripts: &[ScriptStatus]) {
         let taken = |id: u64| scripts.iter().any(|script| script.id == id);
         let next = scripts
             .iter()
@@ -179,7 +179,7 @@ impl ScriptsWindow {
             .or_else(|| (1..=u64::MAX).find(|id| !taken(*id)))
             .unwrap_or(1);
         self.selected = Some(next);
-        self.name = format!("Script {next}");
+        self.name = l.format(Msg::IdKindScript, &[("id", Arg::Plain(next))]);
         self.source.clear();
         self.loaded = None;
     }
@@ -629,7 +629,7 @@ fn draw_list(
         .hint(l.text(Msg::ScriptNewHover), block.unwrap_or(""))
         .clicked()
     {
-        window.new_draft(scripts);
+        window.new_draft(l, scripts);
     }
 }
 
@@ -1322,7 +1322,7 @@ mod tests {
     fn a_new_draft_after_the_largest_id_takes_the_lowest_free_one() {
         let mut window = ScriptsWindow::default();
         let scripts = vec![script(1, "cut 2"), script(u64::MAX, "cut 3")];
-        window.new_draft(&scripts);
+        window.new_draft(Locale::ENGLISH, &scripts);
         assert_eq!(
             (window.selected, window.name.as_str()),
             (Some(2), "Script 2")
@@ -1333,7 +1333,7 @@ mod tests {
     fn a_new_draft_takes_the_next_id_and_lands_with_its_echo() {
         let mut window = ScriptsWindow::default();
         let mut scripts = vec![script(4, "cut 2")];
-        window.new_draft(&scripts);
+        window.new_draft(Locale::ENGLISH, &scripts);
         assert_eq!(
             (window.selected, window.name.as_str()),
             (Some(5), "Script 5")

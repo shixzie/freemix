@@ -33,7 +33,10 @@ use fm_protocol::{
 
 use crate::gating::Hint;
 use crate::l10n::{self, Arg, Locale, Msg};
-use crate::theme::{ERROR, caption, muted_color, section_label};
+use crate::theme::{
+    ACCENT_FILL, ERROR, accent_color, caption, empty_state, field_label, muted_color,
+    section_label, small_button, text_color,
+};
 use crate::toasts::ToastKind;
 use crate::{StudioIntent, StudioShell, StudioUiState};
 
@@ -41,6 +44,20 @@ const DIALOG_WIDTH: f32 = 760.0;
 const LIST_WIDTH: f32 = 200.0;
 /// The space between the list and the editor, its divider in the middle.
 const DIVIDER_GAP: f32 = 12.0;
+/// Width of the editor's field label column, so the fields line up.
+const FORM_LABEL_WIDTH: f32 = 118.0;
+
+/// A field label in the editor's label column.
+fn form_label(ui: &mut Ui, text: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(FORM_LABEL_WIDTH, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(FORM_LABEL_WIDTH);
+            ui.add(egui::Label::new(field_label(text)).truncate());
+        },
+    );
+}
 
 /// A project shortcut action. Studio maps each to one protocol command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -579,7 +596,7 @@ impl ShortcutsWindow {
 
     /// Starts a new draft under the next free id (the lowest free one once
     /// the largest id is taken): cue actions, none yet.
-    pub(crate) fn new_draft(&mut self, shortcuts: &[ShortcutStatus]) {
+    pub(crate) fn new_draft(&mut self, l: Locale, shortcuts: &[ShortcutStatus]) {
         let taken = |id: u64| shortcuts.iter().any(|found| found.id == id);
         let next = shortcuts
             .iter()
@@ -591,7 +608,7 @@ impl ShortcutsWindow {
             .unwrap_or(1);
         self.selected = Some(next);
         self.draft = Some(ShortcutSpec {
-            name: format!("Shortcut {next}"),
+            name: l.format(Msg::IdKindShortcut, &[("id", Arg::Plain(next))]),
             enabled: true,
             key: None,
             osc: None,
@@ -784,7 +801,12 @@ fn draw_contents(
             if window.draft.is_some() {
                 draw_editor(ui, state, window, shortcuts, intents);
             } else {
-                ui.label(RichText::new(l.text(Msg::UserShortcutsEmpty)).color(muted_color()));
+                ui.set_min_width(ui.available_width());
+                empty_state(
+                    ui,
+                    l.text(Msg::UserShortcutsEmpty),
+                    l.text(Msg::UserShortcutsEmptyDetail),
+                );
             }
         });
         gap.center().x
@@ -817,9 +839,6 @@ fn draw_list(
 ) {
     let l = l10n::locale(ui.ctx());
     ui.label(section_label(l.text(Msg::UserShortcutsTitle)));
-    if shortcuts.is_empty() {
-        ui.label(RichText::new(l.text(Msg::UserShortcutsEmpty)).color(muted_color()));
-    }
     for shortcut in shortcuts {
         let selected = window.selected == Some(shortcut.id);
         if ui
@@ -839,11 +858,14 @@ fn draw_list(
         (shortcuts.len() >= MAX_SHORTCUTS).then_some(Msg::UserShortcutReasonLimit.en())
     });
     if ui
-        .add_enabled(block.is_none(), Button::new(l.text(Msg::UserShortcutNew)))
+        .add_enabled(
+            block.is_none(),
+            small_button(format!("+  {}", l.text(Msg::UserShortcutNew))),
+        )
         .hint(l.text(Msg::UserShortcutNewHover), block.unwrap_or(""))
         .clicked()
     {
-        window.new_draft(shortcuts);
+        window.new_draft(l, shortcuts);
     }
 }
 
@@ -929,7 +951,7 @@ fn draw_editor(
     };
 
     ui.horizontal(|ui| {
-        ui.label(l.text(Msg::UserShortcutNameLabel));
+        form_label(ui, l.text(Msg::UserShortcutNameLabel));
         ui.add_enabled(
             edit.is_none(),
             TextEdit::singleline(&mut draft.name)
@@ -947,21 +969,23 @@ fn draw_editor(
     // The key: what it is, Set key (capture), and Clear key.
     let mut start_capture = false;
     ui.horizontal_wrapped(|ui| {
-        ui.label(l.text(Msg::UserShortcutKeyLabel));
-        let shown = if capturing {
-            RichText::new(l.text(Msg::UserShortcutKeyCapturing)).color(crate::theme::accent_color())
-        } else {
-            match &draft.key {
-                Some(key) => crate::theme::mono(l.keys(&key_text(key))),
-                None => RichText::new(l.text(Msg::UserShortcutKeyNone)).color(muted_color()),
+        form_label(ui, l.text(Msg::UserShortcutKeyLabel));
+        // The key as a key cap, like the keyboard reference draws it.
+        match (&draft.key, capturing) {
+            (_, true) => {
+                ui.label(RichText::new(l.text(Msg::UserShortcutKeyCapturing)).color(accent_color()))
             }
-        };
-        ui.label(shown)
-            .on_hover_text(l.text(Msg::UserShortcutKeyHover));
+            (Some(key), false) => crate::menu::key_cap(ui, &l.keys(&key_text(key)), 0.0),
+            (None, false) => {
+                ui.label(RichText::new(l.text(Msg::UserShortcutKeyNone)).color(muted_color()))
+            }
+        }
+        .on_hover_text(l.text(Msg::UserShortcutKeyHover));
+        ui.add_space(4.0);
         if ui
             .add_enabled(
                 edit.is_none() && !capturing,
-                Button::new(l.text(Msg::UserShortcutSetKey)),
+                small_button(l.text(Msg::UserShortcutSetKey)),
             )
             .hint(
                 l.text(Msg::UserShortcutSetKeyHover),
@@ -980,7 +1004,7 @@ fn draw_editor(
         if ui
             .add_enabled(
                 clear.is_none(),
-                Button::new(l.text(Msg::UserShortcutClearKey)),
+                small_button(l.text(Msg::UserShortcutClearKey)),
             )
             .hint(l.text(Msg::UserShortcutClearKeyHover), clear.unwrap_or(""))
             .clicked()
@@ -1013,7 +1037,7 @@ fn draw_editor(
 
     // The OSC name.
     ui.horizontal_wrapped(|ui| {
-        ui.label(l.text(Msg::UserShortcutOscLabel));
+        form_label(ui, l.text(Msg::UserShortcutOscLabel));
         let mut text = draft.osc.clone().unwrap_or_default();
         let response = ui
             .add_enabled(
@@ -1053,10 +1077,23 @@ fn draw_editor(
     ui.add_space(4.0);
 
     let spec = draft.clone();
-    ui.horizontal(|ui| {
+    ui.separator();
+    ui.horizontal_wrapped(|ui| {
         let save = save_block(state, shortcuts, shortcut, &spec, dirty);
+        // Save is the dialog's confirm key: accent, like Add input's.
         if ui
-            .add_enabled(save.is_none(), Button::new(l.text(Msg::UserShortcutSave)))
+            .add_enabled(
+                save.is_none(),
+                Button::new(
+                    RichText::new(l.text(Msg::UserShortcutSave))
+                        .size(12.0)
+                        .strong()
+                        .color(text_color()),
+                )
+                .fill(ACCENT_FILL)
+                .stroke(egui::Stroke::new(1.0, accent_color()))
+                .min_size(egui::vec2(110.0, 26.0)),
+            )
             .hint(l.text(Msg::UserShortcutSaveHover), save.unwrap_or(""))
             .clicked()
         {
@@ -1069,7 +1106,7 @@ fn draw_editor(
         if ui
             .add_enabled(
                 revert.is_none(),
-                Button::new(l.text(Msg::UserShortcutRevert)),
+                Button::new(l.text(Msg::UserShortcutRevert)).min_size(egui::vec2(0.0, 26.0)),
             )
             .hint(l.text(Msg::UserShortcutRevertHover), revert.unwrap_or(""))
             .clicked()
@@ -1091,7 +1128,10 @@ fn draw_editor(
                 .and_then(|found| fire_block(state, found))
         };
         if ui
-            .add_enabled(fire.is_none(), Button::new(l.text(Msg::UserShortcutFire)))
+            .add_enabled(
+                fire.is_none(),
+                Button::new(l.text(Msg::UserShortcutFire)).min_size(egui::vec2(0.0, 26.0)),
+            )
             .hint(l.text(Msg::UserShortcutFireHover), fire.unwrap_or(""))
             .clicked()
         {
@@ -1101,7 +1141,7 @@ fn draw_editor(
         if ui
             .add_enabled(
                 remove.is_none(),
-                Button::new(l.text(Msg::UserShortcutRemove)),
+                Button::new(l.text(Msg::UserShortcutRemove)).min_size(egui::vec2(0.0, 26.0)),
             )
             .hint(l.text(Msg::UserShortcutRemoveHover), remove.unwrap_or(""))
             .clicked()
@@ -1145,7 +1185,7 @@ fn draw_action(
     let l = l10n::locale(ui.ctx());
     let current = ActionKind::of(&draft.action);
     ui.horizontal(|ui| {
-        ui.label(l.text(Msg::UserShortcutActionLabel));
+        form_label(ui, l.text(Msg::UserShortcutActionLabel));
         ui.add_enabled_ui(edit.is_none(), |ui| {
             ComboBox::from_id_salt("studio-user-shortcut-kind")
                 .selected_text(l.text(current.label()))
@@ -1176,6 +1216,8 @@ fn draw_action(
         WireShortcutAction::Cue { list, operation } => {
             let lists = project.cue_lists();
             ui.horizontal_wrapped(|ui| {
+                // Under the Runs picker, in the fields' column.
+                ui.add_space(FORM_LABEL_WIDTH);
                 let name = lists.iter().find(|found| found.id == *list).map_or_else(
                     || l.text(Msg::UserShortcutNoneChosen).to_owned(),
                     |found| found.spec.name.clone(),
@@ -1278,6 +1320,7 @@ fn draw_action(
         WireShortcutAction::Script { script } => {
             let scripts = project.scripts();
             ui.horizontal(|ui| {
+                ui.add_space(FORM_LABEL_WIDTH);
                 let name = scripts
                     .iter()
                     .find(|found| found.id == *script)

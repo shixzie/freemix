@@ -2693,7 +2693,7 @@ fn scenes(language: Language) -> Vec<Scene> {
             "dialog/scripts-new",
             &|shell| {
                 shell.scripts.open = true;
-                shell.scripts.new_draft(&audit_scripts());
+                shell.scripts.new_draft(shell.locale, &audit_scripts());
             },
             ready(true, Variant::default()),
         ),
@@ -2784,7 +2784,9 @@ fn scenes(language: Language) -> Vec<Scene> {
             "dialog/user-shortcuts-new",
             &|shell| {
                 shell.user_shortcuts.open = true;
-                shell.user_shortcuts.new_draft(&audit_shortcuts());
+                shell
+                    .user_shortcuts
+                    .new_draft(shell.locale, &audit_shortcuts());
             },
             ready(true, Variant::default()),
         ),

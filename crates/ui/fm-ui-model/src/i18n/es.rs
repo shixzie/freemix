@@ -1159,7 +1159,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::AddTileKinds,
-        t("color · barras · red · cámara · audio"),
+        t("cámara · red · audio · imagen · lista"),
     ),
     (Msg::NoThumbnail, t("sin miniatura")),
     // Tally.
@@ -2219,7 +2219,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AddInputIntro,
         t(
-            "Añade al final del banco una entrada generada en vivo, un flujo de red, una cámara o el audio del sistema, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
+            "Añade al final del banco una entrada generada en vivo, un flujo de red, una cámara, el audio del sistema, una imagen fija, una presentación o una lista de medios, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
         ),
     ),
     (Msg::AddInputKind, t("Tipo")),
@@ -6308,7 +6308,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::MediaLanguageGerman, t("Alemán")),
     (Msg::MediaLanguageItalian, t("Italiano")),
     (Msg::MediaLanguagePortuguese, t("Portugués")),
-    (Msg::KindMediaListKey, t("Lista de medios")),
+    (Msg::KindMediaListKey, t("LISTA DE MEDIOS")),
     (
         Msg::KindMediaListHover,
         t(
@@ -8236,6 +8236,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::UserShortcutsEmpty, t("Aún no hay atajos")),
     (
+        Msg::UserShortcutsEmptyDetail,
+        t(
+            "Pulse Nuevo atajo para dar una tecla o un nombre OSC a acciones de cue, a una lista de cues o a un guion.",
+        ),
+    ),
+    (
         Msg::UserShortcutsGroup,
         t("Atajos del proyecto (menú Editar)"),
     ),
@@ -8675,6 +8681,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Mostrar la diapositiva {page}: {name}"),
     ),
     (Msg::ThumbSlideshowEmpty, t("Aún sin imágenes")),
+    (Msg::ThumbMediaListEmpty, t("Aún sin archivos")),
     // Strip and Master FX (AU-005).
     (Msg::FxKey, t("FX")),
     (

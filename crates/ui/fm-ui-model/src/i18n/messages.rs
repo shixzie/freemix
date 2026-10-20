@@ -560,7 +560,7 @@ messages! {
     AddTileHover => t("Add input…\nA solid colour, colour bars, a network stream, or a camera, appended to the end of the bank"),
     AddingName => t("ADDING {name}…"),
     InputCountHover => t("Inputs in the show / the most a show may hold"),
-    AddTileKinds => t("colour · bars · stream · camera · audio"),
+    AddTileKinds => t("camera · stream · audio · image · list"),
     NoThumbnail => t("no thumbnail"),
 
     // Tally.
@@ -959,7 +959,7 @@ messages! {
     CardControlsDisabled => t("Switching, audio, and output controls are disabled until the console is ready."),
 
     // Add and Remove input dialogs.
-    AddInputIntro => t("Appends a live generator, network stream, camera, or system audio input to the end of the bank with a default mixer strip. Media inputs are added offline."),
+    AddInputIntro => t("Appends a live generator, network stream, camera, system audio, still image, slideshow, or media list input to the end of the bank with a default mixer strip. Media inputs are added offline."),
     AddInputKind => t("Kind"),
     NameSolidColour => t("Solid Colour"),
     NameColourBars => t("Colour Bars"),
@@ -2330,7 +2330,7 @@ messages! {
     MediaLanguageItalian => t("Italian"),
     MediaLanguagePortuguese => t("Portuguese"),
     // Media list inputs (IN-006).
-    KindMediaListKey => t("Media list"),
+    KindMediaListKey => t("MEDIA LIST"),
     KindMediaListHover => t("A media list input: plays video and audio files one after another, in order or shuffled"),
     NameMediaList => t("Media List"),
     MlFiles => t("Files"),
@@ -2999,6 +2999,7 @@ messages! {
     UserShortcutsTitle => t("Project shortcuts"),
     UserShortcutsIntro => t("A shortcut runs cue actions together on one frame, operates a cue list, or runs a script, from a key on this console or an OSC message to /freemix/user/<name>. Shortcuts are saved with the project, so every console shares them. Keys act only when no dialog or text field has the keyboard."),
     UserShortcutsEmpty => t("No shortcuts yet"),
+    UserShortcutsEmptyDetail => t("Click New shortcut to give cue actions, a cue list, or a script a key or an OSC name."),
     UserShortcutsGroup => t("Project shortcuts (Edit menu)"),
     UserShortcutsReferenceEmpty => t("This project has no shortcuts with a key or OSC name; add them under Edit, Shortcuts…"),
     UserShortcutListOff => t("{name} (off)"),
@@ -3149,6 +3150,7 @@ messages! {
     StSlideNameHover => t("The caption or file name of the slide on air"),
     StSlideKeyHover => t("Show slide {page}: {name}"),
     ThumbSlideshowEmpty => t("No pictures yet"),
+    ThumbMediaListEmpty => t("No files yet"),
 
     // Strip and Master FX (AU-005).
     FxKey => t("FX"),

@@ -1832,9 +1832,9 @@ fn key_cap_column(ui: &Ui) -> f32 {
 
 /// A key cap such as `C` or `1 – 8` in a `column` wide slot (see
 /// [`key_cap_column`]), so the action column aligns across groups.
-fn key_cap(ui: &mut Ui, keys: &str, column: f32) {
+pub(crate) fn key_cap(ui: &mut Ui, keys: &str, column: f32) -> egui::Response {
     let width = key_cap_width(ui, keys);
-    let (rect, _) =
+    let (rect, response) =
         ui.allocate_exact_size(Vec2::new(width.max(column), 22.0), egui::Sense::hover());
     let painter = ui.painter();
     let cap = egui::Rect::from_min_size(rect.min, Vec2::new(width, rect.height()));
@@ -1874,6 +1874,7 @@ fn key_cap(ui: &mut Ui, keys: &str, column: f32) {
         let at = cap.center() - Vec2::new(0.0, 1.0) - galley.size() / 2.0;
         painter.galley(at, galley, text_color());
     }
+    response
 }
 
 /// Whether the global keys currently act, and why not when they do not.

@@ -403,7 +403,7 @@ fn the_draft_follows_the_project_until_edited() {
     assert_eq!(window.selected, Some(2));
 
     // A new draft takes the next free id and is dirty until saved.
-    window.new_draft(&shortcuts);
+    window.new_draft(Locale::ENGLISH, &shortcuts);
     assert_eq!(window.selected, Some(4));
     assert!(window.dirty());
 }
@@ -416,7 +416,7 @@ fn a_new_draft_after_the_largest_id_takes_the_lowest_free_one() {
     let mut shortcuts = audit_shortcuts();
     shortcuts[0].id = u64::MAX;
     let mut window = ShortcutsWindow::default();
-    window.new_draft(&shortcuts);
+    window.new_draft(Locale::ENGLISH, &shortcuts);
     let taken: Vec<u64> = shortcuts.iter().map(|found| found.id).collect();
     let id = window.selected.unwrap();
     assert_ne!(id, 0);
