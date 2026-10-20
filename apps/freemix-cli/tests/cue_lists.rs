@@ -402,7 +402,7 @@ fn a_saved_waiting_cue_restores_and_one_out_of_reach_is_refused() {
         .parse()
         .unwrap();
     let idle = "\"state\": {\"standby\": 10, \"live\": null, \"pending\": null, \
-                \"played\": [], \"fault\": null, \"armed\": null}";
+                \"played\": [], \"fault\": null, \"armed\": null, \"targets\": null}";
     assert!(saved.contains(idle), "{saved}");
     let waiting = |due: u64| {
         saved.replace(
@@ -410,7 +410,7 @@ fn a_saved_waiting_cue_restores_and_one_out_of_reach_is_refused() {
             &format!(
                 "\"state\": {{\"standby\": null, \"live\": 10, \"pending\": \
                  {{\"cue\": 10, \"action\": 1, \"due_frame\": {due}}}, \"played\": [10], \
-                 \"fault\": null, \"armed\": null}}"
+                 \"fault\": null, \"armed\": null, \"targets\": null}}"
             ),
         )
     };
