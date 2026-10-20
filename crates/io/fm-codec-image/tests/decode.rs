@@ -1,8 +1,8 @@
 use std::num::NonZeroU128;
 
 use fm_codec_image::{
-    DecodedStill, StillDecodeError, StillDecodeLimits, StillFormat, decode_still,
-    sniff_still_format,
+    DecodedStill, StillColorProfile, StillDecodeError, StillDecodeLimits, StillFormat,
+    decode_still, sniff_still_format,
 };
 use fm_frame::{
     AlphaMode, ChromaLocation, ClockDomainId, ColorMetadata, ColorPrimaries, MatrixCoefficients,
@@ -128,7 +128,16 @@ fn sniffs_jpeg_from_signature_without_decoding() {
 
 #[test]
 fn sniff_rejects_short_and_unknown_prefixes() {
-    for encoded_prefix in [&b""[..], b"\x89PNG\r\n\x1a", b"\xff", b"GIF89a"] {
+    for encoded_prefix in [
+        &b""[..],
+        b"\x89PNG\r\n\x1a",
+        b"\xff",
+        b"GIF8",
+        b"RIFF\0\0\0\0WEB",
+        b"II*",
+        b"<svgx",
+        b"<html><svg>",
+    ] {
         assert_eq!(
             sniff_still_format(encoded_prefix),
             Err(StillDecodeError::UnsupportedFormat)
@@ -200,12 +209,11 @@ fn applies_mirrored_exif_orientation() {
 }
 
 #[test]
-fn rejects_png_and_jpeg_icc_profiles_and_distinguishes_profile_bounds() {
+fn ignores_unparsable_png_and_jpeg_icc_profiles_but_bounds_their_size() {
     for encoded in [png_with_icc(b"profile"), jpeg_with_icc(b"profile")] {
-        assert_eq!(
-            decode_still(&encoded, timing(), StillDecodeLimits::default()),
-            Err(StillDecodeError::EmbeddedIccUnsupported)
-        );
+        let decoded = decode_still(&encoded, timing(), StillDecodeLimits::default()).unwrap();
+        assert_eq!(decoded.color_profile, StillColorProfile::IgnoredUnsupported);
+        assert_eq!(decoded.frame.metadata(), Some(expected_metadata()));
 
         let limits = StillDecodeLimits {
             max_icc_bytes: 3,
@@ -221,23 +229,62 @@ fn rejects_png_and_jpeg_icc_profiles_and_distinguishes_profile_bounds() {
     }
 }
 
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn png_chunk(kind: [u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+    chunk.extend_from_slice(&kind);
+    chunk.extend_from_slice(data);
+    let mut covered = kind.to_vec();
+    covered.extend_from_slice(data);
+    chunk.extend_from_slice(&crc32(&covered).to_be_bytes());
+    chunk
+}
+
 #[test]
-fn rejects_apng_control_marker() {
+fn apng_decodes_its_default_image_and_reports_animation() {
     let mut encoded = png(1, 1, &[1, 2, 3, 255]);
-    // The still encoder has no APNG API. Insert a bounded acTL chunk after IHDR;
-    // marker rejection intentionally precedes CRC validation and pixel decoding.
+    // The still encoder has no APNG API. Insert acTL and an fcTL that makes
+    // the IDAT image the first animation frame, directly after IHDR.
     let mut actl = Vec::new();
-    actl.extend_from_slice(&8_u32.to_be_bytes());
-    actl.extend_from_slice(b"acTL");
     actl.extend_from_slice(&1_u32.to_be_bytes());
     actl.extend_from_slice(&0_u32.to_be_bytes());
-    actl.extend_from_slice(&0_u32.to_be_bytes());
-    encoded.splice(33..33, actl);
+    let mut fctl = Vec::new();
+    for value in [0_u32, 1, 1, 0, 0] {
+        fctl.extend_from_slice(&value.to_be_bytes());
+    }
+    fctl.extend_from_slice(&1_u16.to_be_bytes());
+    fctl.extend_from_slice(&10_u16.to_be_bytes());
+    fctl.extend_from_slice(&[0, 0]);
+    let mut inserted = png_chunk(*b"acTL", &actl);
+    inserted.extend(png_chunk(*b"fcTL", &fctl));
+    encoded.splice(33..33, inserted);
 
-    assert_eq!(
-        decode_still(&encoded, timing(), StillDecodeLimits::default()),
-        Err(StillDecodeError::AnimatedPngUnsupported)
-    );
+    let decoded = decode_still(&encoded, timing(), StillDecodeLimits::default()).unwrap();
+    assert!(decoded.animated);
+    assert_eq!(bytes(&decoded), [1, 2, 3, 255]);
+    let still = decode_still(
+        &png(1, 1, &[1, 2, 3, 255]),
+        timing(),
+        StillDecodeLimits::default(),
+    )
+    .unwrap();
+    assert!(!still.animated);
+    assert_eq!(still.color_profile, StillColorProfile::None);
 }
 
 #[test]
@@ -247,8 +294,14 @@ fn rejects_empty_unsupported_truncated_and_corrupt_input() {
         Err(StillDecodeError::EmptyInput)
     );
     assert_eq!(
-        decode_still(b"GIF89a", timing(), StillDecodeLimits::default()),
+        decode_still(b"not an image", timing(), StillDecodeLimits::default()),
         Err(StillDecodeError::UnsupportedFormat)
+    );
+    assert_eq!(
+        decode_still(b"GIF89a", timing(), StillDecodeLimits::default()),
+        Err(StillDecodeError::CorruptInput {
+            format: StillFormat::Gif,
+        })
     );
 
     let png = png(1, 1, &[1, 2, 3, 4]);
