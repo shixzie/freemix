@@ -296,6 +296,10 @@ impl Drop for Daemon {
     }
 }
 
+/// How long a daemon may take to print its startup lines. Recovery replays
+/// the journal first, which takes well over a second on a loaded host.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(15);
+
 fn terminate_child(child: &mut Child) -> bool {
     let _ = child.kill();
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -334,7 +338,7 @@ fn read_startup_lines(child: &mut Child, count: usize) -> Vec<String> {
         })();
         let _ = sender.send(result);
     });
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + STARTUP_DEADLINE;
     let result = match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(result) => result,
         Err(error) => startup_failure(child, &[], &error.to_string(), Some(reader)),
