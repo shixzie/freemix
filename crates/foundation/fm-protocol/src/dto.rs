@@ -1945,6 +1945,12 @@ pub enum CommandPayload {
         input: WireInputId,
         navigation: crate::PagedNavigation,
     },
+    /// Creates, edits, or steps a media list input (IN-006; see
+    /// [`crate::MediaListOperation`]). Wire payload `media_list`.
+    MediaList {
+        input: WireInputId,
+        operation: crate::MediaListOperation,
+    },
     /// An input lifecycle edit (Protocol 2.38, IN-026; see
     /// [`crate::InputLifecycleOperation`]). A project edit.
     InputLifecycle(crate::InputLifecycleOperation),
@@ -2450,6 +2456,11 @@ pub struct SnapshotMessage {
     /// (after its shortcut states), one per image or slideshow input in
     /// ascending input order, at most [`crate::MAX_STILL_STATES`].
     pub still_states: u16,
+    /// How many [`crate::MediaListStateMessage`] records follow this
+    /// snapshot (after its script states), one per media list input in
+    /// ascending input order, at most [`crate::MAX_MEDIA_LIST_STATES`]
+    /// (IN-006).
+    pub media_list_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
@@ -2721,6 +2732,16 @@ pub enum EventPayload {
         input: WireInputId,
         frame: u64,
         navigation: crate::PagedNavigation,
+    },
+    /// A media list command was accepted for `frame` (IN-006): the
+    /// operation's token, the name of the input a `create` appended, and
+    /// the whole list afterwards (its active item is the one the input
+    /// plays from `frame`).
+    MediaListChanged {
+        frame: u64,
+        operation: &'static str,
+        created: Option<String>,
+        status: Box<crate::MediaListStatus>,
     },
     /// An input lifecycle edit was accepted (Protocol 2.38): the operation
     /// as executed (an undo or redo reports the edit it applied), the
@@ -3199,6 +3220,9 @@ pub enum WireMessage {
     ScriptState(crate::ScriptStateMessage),
     /// One user shortcut after a snapshot (Protocol 2.72).
     ShortcutState(crate::ShortcutStateMessage),
+    /// One media list after a snapshot (IN-006).
+    MediaListState(crate::MediaListStateMessage),
+
     /// Asks for the current display inventory (Protocol 2.42).
     DisplayInventoryRequest(crate::DisplayInventoryRequest),
     /// Answers a [`crate::DisplayInventoryRequest`] (Protocol 2.42).

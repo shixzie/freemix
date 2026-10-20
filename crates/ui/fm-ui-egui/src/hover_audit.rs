@@ -442,6 +442,7 @@ fn model(variant: Variant) -> ClientModel {
         script_states: 2,
         shortcut_states: 3,
         still_states: 0,
+        media_list_states: 0,
         input_categories: vec![
             fm_protocol::InputCategoryStatus {
                 id: 1,

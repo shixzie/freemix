@@ -800,6 +800,7 @@ fn serve_streams_snapshot_peer(
             script_states: 0,
             shortcut_states: 0,
             still_states: 0,
+            media_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -1697,6 +1698,7 @@ fn write_handshake_snapshot(
             script_states: 0,
             shortcut_states: 0,
             still_states: 0,
+            media_list_states: 0,
             input_categories: vec![fm_protocol::InputCategoryStatus {
                 id: 1,
                 name: "Cameras".into(),
@@ -1816,6 +1818,7 @@ fn write_handshake_version_with_fade_to_black(
             script_states: 0,
             shortcut_states: 0,
             still_states: 0,
+            media_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),

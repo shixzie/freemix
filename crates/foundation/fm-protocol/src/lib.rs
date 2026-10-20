@@ -10,6 +10,7 @@ mod input_lifecycle;
 mod input_thumbnail;
 mod live_lan;
 mod media;
+mod media_list;
 mod monitor_image;
 mod network_stream;
 mod output_failure;
@@ -147,6 +148,11 @@ pub use media::{
     MediaAudioPolicy, MediaAudioTrack, MediaEndAction, MediaEvent, MediaFault, MediaGrowingStatus,
     MediaOperation, MediaSeekTarget, MediaSettingsStatus, MediaStateMessage, MediaStatus,
     MediaTime, MediaTransportState, MediaTransportStatus,
+};
+pub use media_list::{
+    MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_STATES, MAX_MEDIA_LIST_TEXT_BYTES,
+    MAX_MEDIA_LIST_TITLE_BYTES, MediaListItemSpec, MediaListNavigation, MediaListOperation,
+    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,

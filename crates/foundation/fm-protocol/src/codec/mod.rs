@@ -10,6 +10,7 @@ mod input_lifecycle;
 mod layout;
 mod live_lan;
 mod media;
+mod media_list;
 mod network_stream;
 mod playlist;
 mod recorder_status;

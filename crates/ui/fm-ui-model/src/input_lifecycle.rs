@@ -187,6 +187,7 @@ pub(crate) fn apply(
                 apply_input_added(state, added, name);
             }
             copy_duplicate(state, source.to_domain(), input.to_domain());
+            crate::media_lists::copy_duplicate(state, source.to_domain(), input.to_domain());
         }
         InputLifecycleOperation::Import { .. } => {
             for (input, name) in added {

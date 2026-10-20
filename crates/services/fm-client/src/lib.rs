@@ -198,6 +198,10 @@ pub enum Intake {
     /// A `shortcut_state` completed one user shortcut the snapshot
     /// announced (Protocol 2.72).
     ShortcutStateApplied,
+    /// A `media_list_state` completed one media list input the snapshot
+    /// announced (IN-006).
+    MediaListStateApplied,
+
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
     DisplayInventoryApplied,
@@ -658,6 +662,10 @@ impl Client {
             WireMessage::SlideshowSlides(message) => {
                 self.model.apply_slideshow_slides(&message)?;
                 Ok(Intake::SlideshowSlidesApplied)
+            }
+            WireMessage::MediaListState(state) => {
+                self.apply_media_list_state(state)?;
+                Ok(Intake::MediaListStateApplied)
             }
             WireMessage::DisplayInventory(message) => {
                 self.model.apply_display_inventory(message.inventory);
@@ -1471,6 +1479,61 @@ impl Client {
         Ok(())
     }
 
+    /// Adds one `media_list_state` the installed snapshot announced
+    /// (IN-006). Media list states arrive only while synchronizing from a
+    /// snapshot, after its still states and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A media list state in any other state, at another revision, beyond
+    /// the announced count, or before the earlier follow-on records forces a
+    /// fresh-snapshot reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_media_list_state(
+        &mut self,
+        state: fm_protocol::MediaListStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+                && state.cue_lists_complete()
+                && state.scripts_complete()
+                && state.shortcuts_complete()
+                && state.stills_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_media_list_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1495,6 +1558,7 @@ impl Client {
                 && state.scripts_complete()
                 && state.shortcuts_complete()
                 && state.stills_complete()
+                && state.media_lists_complete()
         })
     }
 
@@ -1761,6 +1825,7 @@ impl Client {
                 Some(OptimisticChange::DesiredPreview(input.to_domain()))
             }
             CommandPayload::ReorderInputs { .. }
+            | CommandPayload::MediaList { .. }
             | CommandPayload::RenameInput { .. }
             | CommandPayload::AddInput { .. }
             | CommandPayload::RemoveInput { .. }

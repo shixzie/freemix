@@ -202,6 +202,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         script_states: 0,
         shortcut_states: 0,
         still_states: 0,
+        media_list_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         stream_targets: Vec::new(),
@@ -2067,6 +2068,7 @@ mod playlists {
             script_states: 0,
             shortcut_states: 0,
             still_states: 0,
+            media_list_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             ..snapshot(revision)

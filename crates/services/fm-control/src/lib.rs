@@ -26,6 +26,7 @@ mod grade;
 mod input_lifecycle;
 mod live_lan;
 mod media;
+mod media_list;
 mod network_stream;
 mod playlist;
 mod scene_animation;
@@ -47,6 +48,7 @@ pub use media::{
     domain_media_operation, wire_media_events, wire_media_fault, wire_media_operation,
     wire_media_status,
 };
+pub use media_list::{media_list_engine_command, wire_status as wire_media_list_status};
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
 };
@@ -869,6 +871,9 @@ pub struct ControlService<A = Policy> {
     /// End triggers fired since the authority last took them, oldest first
     /// (bounded by [`MAX_PENDING_MEDIA_END_TRIGGERS`]).
     media_end_triggers: Vec<MediaEndTrigger>,
+    /// Media list items that ended under Auto Next since the authority
+    /// last took them, oldest first (bounded like the end triggers).
+    media_list_ends: Vec<MediaListEnd>,
     /// Inputs whose source is unavailable, and why (IN-026): runtime state
     /// reported by media faults and by the media plane.
     input_offline: BTreeMap<InputId, fm_protocol::InputOfflineReason>,
@@ -907,6 +912,16 @@ pub const MAX_PENDING_MEDIA_END_TRIGGERS: usize = 64;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MediaEndTrigger {
     pub input: InputId,
+    pub frame: u64,
+}
+
+/// A media list input's active `item` ended on `frame` under Auto Next
+/// (IN-006): the authority journals a `media_list` `advance` from it, so a
+/// replay reaches the same item on the same frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MediaListEnd {
+    pub input: InputId,
+    pub item: u32,
     pub frame: u64,
 }
 
@@ -957,6 +972,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             runtime_sequence: 0,
             media_published: HashMap::new(),
             media_end_triggers: Vec::new(),
+            media_list_ends: Vec::new(),
             input_offline: BTreeMap::new(),
             display_states: BTreeMap::new(),
             display_inventory: fm_protocol::DisplayInventory::default(),
@@ -1015,6 +1031,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             runtime_sequence: self.runtime_sequence,
             media_published: self.media_published.clone(),
             media_end_triggers: self.media_end_triggers.clone(),
+            media_list_ends: self.media_list_ends.clone(),
             input_offline: self.input_offline.clone(),
             display_states: self.display_states.clone(),
             display_inventory: self.display_inventory.clone(),
@@ -1472,6 +1489,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         std::mem::take(&mut self.media_end_triggers)
     }
 
+    /// Takes the media list items that ended under Auto Next since the last
+    /// call, oldest first (IN-006).
+    pub fn take_media_list_ends(&mut self) -> Vec<MediaListEnd> {
+        std::mem::take(&mut self.media_list_ends)
+    }
+
     /// Returns the `media_state` records a session writes after
     /// [`Self::animation_preset_states`], last of a snapshot's follow-on
     /// records: one per media input in ascending input order, exactly as many
@@ -1822,6 +1845,14 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn shortcut_states(&self) -> Vec<fm_protocol::ShortcutStateMessage> {
         shortcut::shortcut_states(&self.engine)
+    }
+
+    /// Returns the `media_list_state` records a session writes after
+    /// [`Self::script_states`], one per media list input ascending by input
+    /// (IN-006).
+    #[must_use]
+    pub fn media_list_states(&self) -> Vec<fm_protocol::MediaListStateMessage> {
+        media_list::media_list_states(&self.engine)
     }
 
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
@@ -2200,6 +2231,24 @@ impl<A: AuthorizationHook> ControlService<A> {
                     frame: frame.frame.get(),
                 });
             }
+            let ended = media_frame.tick.as_ref().is_some_and(|tick| {
+                tick.events
+                    .iter()
+                    .any(|event| matches!(event, fm_engine::fm_playback::MediaEvent::Ended { .. }))
+            });
+            if ended
+                && let Some(list) = self.engine.show().media_list(media_frame.input)
+                && list.options.auto_next
+            {
+                if self.media_list_ends.len() == MAX_PENDING_MEDIA_END_TRIGGERS {
+                    self.media_list_ends.remove(0);
+                }
+                self.media_list_ends.push(MediaListEnd {
+                    input: media_frame.input,
+                    item: list.active,
+                    frame: frame.frame.get(),
+                });
+            }
         }
         let mut events = Vec::new();
         if !publish {
@@ -2520,7 +2569,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetStreamTarget { .. } => "project",
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
-        EngineCommand::Media(_) => "media",
+        EngineCommand::MediaList(edit) if !edit.operation.is_live() => "project",
+        EngineCommand::Media(_) | EngineCommand::MediaList(_) => "media",
         _ => "switcher",
     }
 }
@@ -2558,6 +2608,19 @@ const fn media_command_class(operation: fm_protocol::MediaOperation) -> CommandC
 
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
+        // Stepping through a media list is an operator control like media
+        // transport; creating or editing one edits the project.
+        CommandPayload::MediaList { operation, .. } => {
+            if matches!(
+                operation,
+                fm_protocol::MediaListOperation::Navigate(_)
+                    | fm_protocol::MediaListOperation::Advance { .. }
+            ) {
+                CommandClass::Transition
+            } else {
+                CommandClass::EditProject
+            }
+        }
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::ApplyTitleAnimationUserPreset { .. }
@@ -2840,6 +2903,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::RemoveCueList { .. }
         | CommandPayload::CueControl { .. }
         | CommandPayload::CueAdvance { .. }) => cue::cue_engine_command(payload),
+        payload @ CommandPayload::MediaList { .. } => {
+            media_list::media_list_engine_command(payload)
+        }
         payload @ (CommandPayload::SetScript { .. }
         | CommandPayload::RemoveScript { .. }
         | CommandPayload::RunScript { .. }
@@ -3262,6 +3328,7 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetShortcut { .. } => {
             return shortcut::wire_edit_payload(command);
         }
+        EngineCommand::MediaList(command) => media_list::wire_payload(command),
         _ => return None,
     })
 }
@@ -3590,6 +3657,11 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
                     scripts,
                 },
             )),
+            EngineEvent::MediaListChanged {
+                input,
+                frame,
+                operation,
+            } => media_list::media_list_changed(engine, *input, *frame, operation),
             EngineEvent::ScriptRunChanged { script, frame } => {
                 Some(script::script_run_changed(engine, *script, *frame))
             }
@@ -4000,6 +4072,7 @@ fn snapshot_record(
         script_states: script::script_state_count(engine),
         shortcut_states: shortcut::shortcut_state_count(engine),
         still_states: still::still_state_count(engine),
+        media_list_states: media_list::media_list_state_count(engine),
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),

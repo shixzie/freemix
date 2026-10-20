@@ -14460,6 +14460,7 @@ fn command_base_ticks(
         | CommandPayload::SetTransitionFavorite { .. }
         | CommandPayload::Media { .. }
         | CommandPayload::PageNavigate { .. }
+        | CommandPayload::MediaList { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::AudioMixer(_)

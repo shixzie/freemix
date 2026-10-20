@@ -262,6 +262,13 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             record.field("total", message.total)?;
             record.field_string("slides", super::still::encode_slides(&message.slides)?)?;
         }
+        WireMessage::MediaListState(message) => {
+            record.kind("media_list_state");
+            record.field("revision", message.revision)?;
+            super::media_list::encode_status(&message.status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::MediaState(message) => {
             record.kind("media_state");
             record.field("revision", message.revision)?;
@@ -603,6 +610,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "page_navigate")?;
             record.field("input", input)?;
             super::still::encode_navigation(*navigation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::MediaList { input, operation } => {
+            record.field("payload", "media_list")?;
+            super::media_list::encode_command(*input, operation, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }
@@ -1680,6 +1693,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         });
     }
     record.field("still_states", message.still_states)?;
+    if !super::media_list::state_count_is_valid(message.media_list_states) {
+        return Err(CodecError::InvalidField {
+            field: "media_list_states",
+            value: message.media_list_states.to_string(),
+        });
+    }
+    record.field("media_list_states", message.media_list_states)?;
     record.field_string(
         "input_categories",
         super::input_lifecycle::encode_categories(&message.input_categories)?,
@@ -2576,6 +2596,26 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                 record.field_string(event_operation_field(name), value)
             })?;
             encode_media_status(status, &mut |name, value| record.field_string(name, value))?;
+        }
+        EventPayload::MediaListChanged {
+            frame,
+            operation,
+            created,
+            status,
+        } => {
+            record.field("event", "media_list_changed")?;
+            record.field("frame", frame)?;
+            record.field("operation", operation)?;
+            match created {
+                Some(name) => {
+                    super::validate_new_input_name(name)?;
+                    record.field_str("created", name)?;
+                }
+                None => record.field("created", "-")?,
+            }
+            super::media_list::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
         }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)

@@ -21,7 +21,10 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 /// Most items one media list holds.
-pub const MAX_MEDIA_LIST_ITEMS: usize = 500;
+pub const MAX_MEDIA_LIST_ITEMS: usize = 256;
+/// Most UTF-8 bytes of every item's file and title together, so a whole
+/// list fits one protocol record.
+pub const MAX_MEDIA_LIST_TEXT_BYTES: usize = 16 * 1024;
 /// Most media list inputs one project holds.
 pub const MAX_MEDIA_LISTS: usize = 64;
 /// Longest item title, in UTF-8 bytes.
@@ -210,6 +213,9 @@ pub enum MediaListError {
     InvalidTitle(u32),
     InvalidMarks(u32),
     UnknownActiveItem(u32),
+    /// The items' files and titles together exceed
+    /// [`MAX_MEDIA_LIST_TEXT_BYTES`].
+    TooMuchText,
 }
 
 impl MediaListError {
@@ -217,7 +223,7 @@ impl MediaListError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Empty | Self::TooManyItems { .. } => "invalid_items",
+            Self::Empty | Self::TooManyItems { .. } | Self::TooMuchText => "invalid_items",
             Self::InvalidItemId(_) => "invalid_item_id",
             Self::DuplicateItem(_) => "duplicate_item",
             Self::InvalidAsset(_) => "invalid_uri",
@@ -263,6 +269,10 @@ impl fmt::Display for MediaListError {
             Self::UnknownActiveItem(id) => {
                 write!(formatter, "the media list has no item {id}")
             }
+            Self::TooMuchText => write!(
+                formatter,
+                "a media list's file names and titles hold at most {MAX_MEDIA_LIST_TEXT_BYTES} bytes"
+            ),
         }
     }
 }
@@ -302,6 +312,13 @@ pub fn validate_media_list_items(items: &[MediaListItem]) -> Result<(), MediaLis
     }
     if items.len() > MAX_MEDIA_LIST_ITEMS {
         return Err(MediaListError::TooManyItems { count: items.len() });
+    }
+    let text: usize = items
+        .iter()
+        .map(|item| item.asset_uri.len() + item.title.as_ref().map_or(0, String::len))
+        .sum();
+    if text > MAX_MEDIA_LIST_TEXT_BYTES {
+        return Err(MediaListError::TooMuchText);
     }
     for (index, item) in items.iter().enumerate() {
         if item.id == 0 || item.id > MAX_MEDIA_LIST_ITEM_ID {

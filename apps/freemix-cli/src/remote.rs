@@ -1545,7 +1545,8 @@ impl Remote {
                 | WireMessage::AnimationPresetState(_)
                 | WireMessage::MediaState(_)
                 | WireMessage::CueListState(_)
-                | WireMessage::ScriptState(_)) => {
+                | WireMessage::ScriptState(_)
+                | WireMessage::MediaListState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
@@ -1739,6 +1740,16 @@ impl Remote {
                         }
                         EventPayload::PageNavigated { .. } => {
                             completion == CommandCompletion::Switcher
+                        }
+                        EventPayload::MediaListChanged { operation, .. } => {
+                            if matches!(*operation, "navigate" | "advance") {
+                                matches!(completion, CommandCompletion::Media { .. })
+                            } else {
+                                matches!(
+                                    completion,
+                                    CommandCompletion::Project | CommandCompletion::History
+                                )
+                            }
                         }
                         EventPayload::AudioMixerChanged(_) => matches!(
                             completion,

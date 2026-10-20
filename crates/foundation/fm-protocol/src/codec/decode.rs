@@ -299,6 +299,10 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 slides,
             })
         }
+        "media_list_state" => WireMessage::MediaListState(crate::MediaListStateMessage {
+            revision: fields.canonical_required("revision")?,
+            status: super::media_list::decode_status(&mut fields)?,
+        }),
         "media_state" => WireMessage::MediaState(MediaStateMessage {
             revision: fields.canonical_required("revision")?,
             frame: fields.canonical_required("frame")?,
@@ -689,6 +693,10 @@ fn decode_command_payload(
             input: fields.canonical_input("input")?,
             navigation: super::still::decode_navigation(fields)?,
         },
+        "media_list" => {
+            let (input, operation) = super::media_list::decode_command(fields)?;
+            CommandPayload::MediaList { input, operation }
+        }
         media if media.starts_with("media_") => {
             let input = fields.canonical_input("input")?;
             let operation =
@@ -1799,6 +1807,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
                     value,
                 })?
         },
+        media_list_states: super::media_list::parse_state_count(
+            &fields.required("media_list_states")?,
+        )?,
         input_categories: super::input_lifecycle::decode_categories(
             &fields.required("input_categories")?,
         )?,
@@ -2500,6 +2511,31 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             frame: fields.canonical_required("frame")?,
             navigation: super::still::decode_navigation(fields)?,
         },
+        "media_list_changed" => {
+            let frame = fields.canonical_required("frame")?;
+            let operation = fields.required("operation")?;
+            let operation = ["create", "set", "navigate", "advance"]
+                .into_iter()
+                .find(|token| *token == operation)
+                .ok_or(CodecError::InvalidField {
+                    field: "operation",
+                    value: operation,
+                })?;
+            let created = match fields.required("created")? {
+                name if name == "-" => None,
+                name => {
+                    super::validate_new_input_name(&name)?;
+                    Some(name)
+                }
+            };
+            EventPayload::MediaListChanged {
+                frame,
+                operation,
+                created,
+                status: Box::new(super::media_list::decode_status(fields)?),
+            }
+        }
+
         "audio_mixer_changed" => {
             let operation = fields.required("operation")?;
             EventPayload::AudioMixerChanged(

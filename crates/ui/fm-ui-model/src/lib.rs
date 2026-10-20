@@ -48,6 +48,8 @@ pub mod grade_editor;
 mod grading;
 pub mod i18n;
 mod input_lifecycle;
+mod media_lists;
+
 pub mod scene_designer;
 pub mod scripts;
 pub mod shortcuts;
@@ -461,6 +463,8 @@ pub struct ProjectSnapshot {
     /// How many `still_state` records complete this snapshot (IN-008,
     /// IN-009).
     pub still_states: u16,
+    /// How many `media_list_state` records complete this snapshot (IN-006).
+    pub media_list_states: u16,
     /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -582,6 +586,7 @@ impl ProjectSnapshot {
             script_states: message.script_states,
             shortcut_states: message.shortcut_states,
             still_states: message.still_states,
+            media_list_states: message.media_list_states,
             input_lifecycle,
             input_categories: message.input_categories,
             audio_mixer: message.audio_mixer,
@@ -807,6 +812,14 @@ pub enum DurableChange {
     },
     /// A shortcut's cue actions were accepted.
     ShortcutFired(Box<shortcuts::ShortcutFireUpdate>),
+    /// A media list input after `operation` on `frame` (IN-006); `created`
+    /// names the input a creation added.
+    MediaListChanged {
+        frame: u64,
+        operation: &'static str,
+        created: Option<String>,
+        status: Box<fm_protocol::MediaListStatus>,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -903,6 +916,17 @@ impl DurableProjectEvent {
             }
             EventPayload::InputRemoved { input } => DurableChange::InputRemoved {
                 input: input.to_domain(),
+            },
+            EventPayload::MediaListChanged {
+                frame,
+                operation,
+                created,
+                status,
+            } => DurableChange::MediaListChanged {
+                frame,
+                operation,
+                created,
+                status,
             },
             EventPayload::DesiredSwitcher {
                 program,
@@ -1179,6 +1203,11 @@ pub struct ProjectState {
     /// The last accepted fire of a shortcut's cue actions since this
     /// snapshot.
     last_shortcut_fire: Option<shortcuts::ShortcutFireReport>,
+    /// Every media list input's list (IN-006).
+    media_lists: BTreeMap<InputId, fm_protocol::MediaListStatus>,
+    /// `media_list_state` records the snapshot announced that have not
+    /// arrived.
+    media_list_states_pending: u16,
     /// Every input's non-default lifecycle (Protocol 2.38).
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -1422,6 +1451,25 @@ impl ProjectState {
     #[must_use]
     pub const fn last_shortcut_fire(&self) -> Option<shortcuts::ShortcutFireReport> {
         self.last_shortcut_fire
+    }
+
+    /// Returns every media list input's list (IN-006), by input.
+    #[must_use]
+    pub const fn media_lists(&self) -> &BTreeMap<InputId, fm_protocol::MediaListStatus> {
+        &self.media_lists
+    }
+
+    /// Returns `input`'s media list when it is a media list input.
+    #[must_use]
+    pub fn media_list(&self, input: InputId) -> Option<&fm_protocol::MediaListStatus> {
+        self.media_lists.get(&input)
+    }
+
+    /// Returns whether every `media_list_state` the snapshot announced
+    /// arrived.
+    #[must_use]
+    pub const fn media_lists_complete(&self) -> bool {
+        self.media_list_states_pending == 0
     }
 
     /// Returns the last accepted script run replicated since the snapshot,
@@ -2164,6 +2212,11 @@ pub enum ModelError {
     InvalidShortcut(u64),
     /// A script change names an unknown script or does not fit its bounds.
     InvalidScript(u64),
+    /// A `media_list_state` arrived that the snapshot did not announce, at
+    /// another revision, or for an unknown or repeated input (IN-006).
+    MediaListStateMismatch,
+    /// A media list change names an unknown list input or is incoherent.
+    InvalidMediaListChange(InputId),
 }
 
 impl fmt::Display for ModelError {
@@ -2319,6 +2372,12 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidScript(script) => {
                 write!(formatter, "script {script} change does not apply")
+            }
+            Self::MediaListStateMismatch => {
+                formatter.write_str("media list state does not match the snapshot it follows")
+            }
+            Self::InvalidMediaListChange(input) => {
+                write!(formatter, "media list change for input {input} does not apply")
             }
         }
     }
@@ -2996,6 +3055,8 @@ impl ClientModel {
             shortcuts: Vec::new(),
             shortcut_states_pending: snapshot.shortcut_states,
             last_shortcut_fire: None,
+            media_lists: BTreeMap::new(),
+            media_list_states_pending: snapshot.media_list_states,
             input_lifecycle,
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
@@ -3468,6 +3529,39 @@ impl ClientModel {
         shortcuts::validate_shortcut(&message.shortcut)?;
         state.shortcuts.push(message.shortcut);
         state.shortcut_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `media_list_state` records the installed snapshot
+    /// announced (IN-006).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::MediaListStateMismatch`] when the record is at another
+    /// revision, unannounced, incoherent, or names an unknown or repeated
+    /// input.
+    pub fn apply_media_list_state(
+        &mut self,
+        message: fm_protocol::MediaListStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.status.input.to_domain();
+        if Revision::new(message.revision) != revision
+            || state.media_list_states_pending == 0
+            || !state.inputs.contains(&input)
+            || state.media_lists.contains_key(&input)
+            || !media_lists::status_is_valid(&message.status)
+        {
+            return Err(ModelError::MediaListStateMismatch);
+        }
+        state.media_lists.insert(input, message.status);
+        state.media_list_states_pending -= 1;
         Ok(())
     }
 
@@ -4450,6 +4544,11 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidScript(*script))
             };
         }
+        DurableChange::MediaListChanged {
+            created, status, ..
+        } => {
+            return media_lists::validate_change(state, created.as_ref(), status);
+        }
         DurableChange::ScriptRunsStopped { scripts, .. } => {
             return match scripts
                 .iter()
@@ -4710,6 +4809,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.scenes.retain(|scene| scene.input != input);
     state.grading.remove_input(input);
     state.media.remove(&input);
+    state.media_lists.remove(&input);
     state.input_lifecycle.remove(&input);
     state
         .audio_mixer
@@ -5125,6 +5225,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.shortcuts.retain(|candidate| candidate.id != shortcut);
         }
         DurableChange::ShortcutFired(update) => shortcuts::apply_fire(state, *update),
+        DurableChange::MediaListChanged {
+            created, status, ..
+        } => media_lists::apply_change(state, created, *status),
         DurableChange::GradeChanged(change) => state.grading.apply(change),
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TransitionFavoriteChanged { slot, favorite } => {
