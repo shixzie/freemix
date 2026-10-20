@@ -1675,6 +1675,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 Align2::CENTER_CENTER,
                 l.text(match draft.kind {
                     NewInputKind::SystemAudio => Msg::ThumbAudioOnly,
+                    NewInputKind::MediaList => Msg::ThumbMediaListEmpty,
                     _ => Msg::ThumbSlideshowEmpty,
                 }),
                 FontId::new(10.0, FontFamily::Proportional),

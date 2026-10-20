@@ -2559,8 +2559,9 @@ fn draw_meter_scale(ui: &mut Ui, layout: StripLayout) {
     let top = rect.min.y + 2.0 + CLIP_LAMP_HEIGHT + 2.0;
     let bottom = rect.max.y - 2.0;
     for (db, y) in labelled_meter_ticks(layout.meter_ticks(), top, bottom, METER_LABEL_SPACING) {
+        // Clear of the gutter's tick, so `-6` does not read as `- -6`.
         painter.text(
-            pos2(rect.min.x + 1.0, y),
+            pos2(rect.min.x + 4.0, y),
             egui::Align2::LEFT_CENTER,
             meter_tick_label(db),
             egui::FontId::new(8.5, egui::FontFamily::Monospace),

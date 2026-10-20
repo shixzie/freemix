@@ -1384,9 +1384,10 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             border,
         );
     }
-    // Key hint for the numbered Preview shortcuts.
+    // Every tile shows its bank number, as a key cap where a number key
+    // previews it (1 to 8) and as a plain dim number past those.
+    let key = number_rect(thumb, index);
     if index < 8 {
-        let key = Rect::from_min_size(thumb.min + Vec2::new(6.0, 8.0), Vec2::new(16.0, 16.0));
         painter.rect_filled(key, CornerRadius::same(3), raised_color());
         painter.rect_stroke(
             key,
@@ -1394,14 +1395,16 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Stroke::new(crate::theme::line_width(), border_strong_color()),
             StrokeKind::Inside,
         );
-        painter.text(
-            key.center(),
-            Align2::CENTER_CENTER,
-            format!("{}", index + 1),
-            FontId::new(10.0, FontFamily::Monospace),
-            text_dim_color(),
-        );
+    } else {
+        painter.rect_filled(key, CornerRadius::same(3), Color32::from_black_alpha(150));
     }
+    painter.text(
+        key.center(),
+        Align2::CENTER_CENTER,
+        format!("{}", index + 1),
+        FontId::new(10.0, FontFamily::Monospace),
+        text_dim_color(),
+    );
     paint_lifecycle_badges(
         ui,
         &painter,
@@ -1508,11 +1511,15 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
 /// corner pictures rarely use, clear of a lower third or caption along the
 /// bottom and of the tally and lifecycle badges at the top right.
 pub(crate) fn thumb_tag_rect(thumb: Rect, index: usize, size: Vec2) -> Rect {
-    let left = if index < 8 { 26.0 } else { 6.0 };
-    Rect::from_min_size(
-        pos2(thumb.min.x + left, thumb.min.y + 8.0),
-        Vec2::new(size.x + 8.0, 16.0),
-    )
+    let left = number_rect(thumb, index).right() + 4.0;
+    Rect::from_min_size(pos2(left, thumb.min.y + 8.0), Vec2::new(size.x + 8.0, 16.0))
+}
+
+/// Where a tile's bank number sits in `thumb`: the top-left corner, wide
+/// enough for its digits.
+fn number_rect(thumb: Rect, index: usize) -> Rect {
+    let width = if index < 99 { 16.0 } else { 24.0 };
+    Rect::from_min_size(thumb.min + Vec2::new(6.0, 8.0), Vec2::new(width, 16.0))
 }
 
 /// Paints a thumbnail's source tag `galley` on `fill` (see
