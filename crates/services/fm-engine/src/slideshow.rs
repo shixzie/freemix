@@ -371,15 +371,9 @@ impl SlideshowRuntime {
 
     /// The slide `navigation` lands on from the slide on air.
     fn target(&self, navigation: PagedNavigation) -> Option<SlideId> {
-        let show = self.show.as_ref()?;
+        self.show.as_ref()?;
         let config = self.config.as_ref()?;
         let page = self.page();
-        if navigation == PagedNavigation::Next
-            && matches!(config.order, SlideOrder::Random { .. })
-            && let Some(next) = show.peek_next()
-        {
-            return Some(next);
-        }
         let index = slideshow_target(navigation, page.index, page.count, config.loop_show);
         self.order.get(usize::try_from(index).ok()?).copied()
     }
@@ -407,6 +401,18 @@ impl SlideshowRuntime {
             .drain(..navigations.min(self.pending.len()))
             .collect();
         for navigation in &realized {
+            // In random order, Next takes the slide auto-advance would,
+            // starting the next cycle at the end of this one.
+            if *navigation == PagedNavigation::Next
+                && self
+                    .config
+                    .as_ref()
+                    .is_some_and(|config| matches!(config.order, SlideOrder::Random { .. }))
+                && let Some(show) = &mut self.show
+                && show.jump_next().is_some()
+            {
+                continue;
+            }
             if let Some(target) = self.target(*navigation)
                 && let Some(show) = &mut self.show
             {

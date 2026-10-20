@@ -970,6 +970,28 @@ impl Slideshow {
         Ok(())
     }
 
+    /// Moves to the slide [`Self::peek_next`] names, from the next tick,
+    /// through the configured transition, as [`Self::jump`] would, and
+    /// takes it the way auto-advance does: when it leads a new cycle, that
+    /// cycle starts (its order is the rest of the new permutation), so no
+    /// slide repeats within it. Returns the slide moved to; `None` (and
+    /// nothing changes) when [`Self::peek_next`] is `None`.
+    pub fn jump_next(&mut self) -> Option<SlideId> {
+        let Phase::Hold { slide, .. } = &self.phase else {
+            return None;
+        };
+        let plan = self.plan_next(slide.id)?;
+        let id = plan.id;
+        if plan.new_cycle {
+            self.cycle = self.cycle.saturating_add(1);
+            self.played.clear();
+        }
+        self.pending = plan.pending;
+        self.played.insert(id);
+        self.jump(id).ok()?;
+        Some(id)
+    }
+
     /// Makes `slides` the authored list. Slides absent from it that are on
     /// air stay, at their previous position, until they go off air (see
     /// [`Self::is_retiring`]); in random order slides new to the list join

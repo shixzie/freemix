@@ -454,3 +454,28 @@ fn a_folder_listing_replays_the_same_slides_whatever_order_it_was_seen_in() {
     assert_eq!(live_shown[4].1, "a.png");
     assert_eq!(live_shown, script(&mut replay));
 }
+
+#[test]
+fn next_at_the_end_of_a_random_cycle_starts_the_next_cycle() {
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    for seed in 0..32 {
+        let mut engine = engine_with(SlideshowConfig {
+            auto_advance: false,
+            order: fm_types::still::SlideOrder::Random { seed },
+            ..cut_config(list(&names))
+        });
+        let mut labels = vec![step(&mut engine).label];
+        for index in 0..(names.len() * 3 - 1) {
+            navigate(&mut engine, &format!("next-{index}"), PagedNavigation::Next);
+            labels.push(step(&mut engine).label);
+        }
+        for (cycle, chunk) in labels.chunks(names.len()).enumerate() {
+            let distinct: std::collections::BTreeSet<_> = chunk.iter().collect();
+            assert_eq!(
+                distinct.len(),
+                names.len(),
+                "seed {seed} cycle {cycle} repeats a slide: {labels:?}"
+            );
+        }
+    }
+}
