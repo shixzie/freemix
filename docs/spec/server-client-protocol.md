@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.88 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.89 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3362,6 +3362,49 @@ Protocol 2.88 adds dynamic input targets to shortcut and cue actions
   tile selects its input on this console. The Web page, OSC, and the CLI
   send no selection.
 - 2.87 is refused.
+
+Protocol 2.89 reports what a cue run is bound to, and lets the Web pages,
+OSC, and the CLI name a selection (RC-004). No schema change: schema 73
+already persists the bound targets.
+
+- A cue list's `state` (in `cue_list_set` and `cue_run_changed` events and
+  `cue_list_state` records) gains a seventh part after `armed`: the inputs
+  the run's dynamic targets are bound to, `<preview>.<program>.<selected>`
+  (each a canonical input id or `-`), or `-` when the list names no dynamic
+  target or no GO has bound one since the last reset. An armed GO that bound
+  targets is `<cue>.<due frame>.<preview>.<program>.<selected>`, otherwise
+  `<cue>.<due frame>` as before. Any other shape, a non-canonical id, and a
+  six-part state are refused. A GO binds the run's targets, which the run
+  keeps (for its waits and followed cues) until the next GO or a reset; an
+  arm binds the armed GO's own.
+- Studio's Cues panel shows "Bound at GO: Preview …, Program …, Selected …"
+  under the list, and the armed GO's binding under its countdown, with
+  English and Spanish hover help. `cue-lists` (local and `remote-`) appends
+  `, bound=preview:<id>,program:<id>,selected:<id|->` to a list that has
+  them, and ` [preview:…,program:…,selected:…]` to an armed GO's
+  `<cue>@<frame>`.
+- The operator page selects an input on the page: the "Selected input"
+  tiles in its Shortcuts section select one (tapping it again clears it),
+  marked by an accent bar on that tile and on its Preview tile, with
+  English and Spanish hover help (`title`). Every `shortcut_fire` it sends
+  carries `selected`; a shortcut whose actions name `selected` is disabled
+  while nothing is selected ("This shortcut acts on the selected input:
+  select an input first"), and an input that leaves the show is no longer
+  selected. The tally page's GO and Arm GO carry the tally's own input as
+  `selected`, explained in their hover help. The gateway relays the field
+  unchanged; the authority checks it as from any client.
+- The CLI's `go`, `cue-arm`, and the new `shortcut-fire <project|address>
+  <shortcut>` (local and `remote-`) take `--selected <input>` (a canonical
+  input id); without it nothing is selected. A local `shortcut-fire`
+  restores, fires, and saves the project like a local `go`.
+- Studio's OSC listener takes an optional selected input as an `i`
+  argument, the input's 1-based number in the input bank (as
+  `/freemix/switcher/preview/<n>` numbers inputs): one `i` on
+  `/freemix/user/<name>` and `/freemix/cue/go`, and a second `i` after the
+  delay on `/freemix/cue/arm` (`,ii`). A number of 0 or less is malformed,
+  one past the last input is rejected. Without the argument an OSC fire
+  carries Studio's own selection, like its keys.
+- 2.88 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
