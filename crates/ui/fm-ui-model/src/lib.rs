@@ -51,6 +51,7 @@ pub mod i18n;
 mod input_lifecycle;
 mod media_lists;
 
+mod paged;
 pub mod scene_designer;
 pub mod scripts;
 pub mod shortcuts;
@@ -467,6 +468,9 @@ pub struct ProjectSnapshot {
     pub still_states: u16,
     /// How many `media_list_state` records complete this snapshot (IN-006).
     pub media_list_states: u16,
+    /// How many `paged_state` records complete this snapshot, last of its
+    /// follow-on records (IN-014).
+    pub paged_states: u16,
     /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -589,6 +593,7 @@ impl ProjectSnapshot {
             shortcut_states: message.shortcut_states,
             still_states: message.still_states,
             media_list_states: message.media_list_states,
+            paged_states: message.paged_states,
             input_lifecycle,
             input_categories: message.input_categories,
             audio_mixer: message.audio_mixer,
@@ -735,6 +740,11 @@ pub enum DurableChange {
     /// lands on arrives as a `slideshow_page` runtime event.
     PageNavigated {
         input: InputId,
+    },
+    /// A paged input's complete status after an accepted `paged_input`
+    /// (IN-014).
+    PagedChanged {
+        status: Box<fm_protocol::PagedStatus>,
     },
     /// An accepted input lifecycle edit (Protocol 2.38): the operation and
     /// the inputs it appended, in order.
@@ -1014,6 +1024,7 @@ impl DurableProjectEvent {
             EventPayload::PageNavigated { input, .. } => DurableChange::PageNavigated {
                 input: input.to_domain(),
             },
+            EventPayload::PagedChanged { status, .. } => DurableChange::PagedChanged { status },
             EventPayload::InputLifecycleChanged {
                 operation, added, ..
             } => DurableChange::InputLifecycleChanged {
@@ -1179,6 +1190,11 @@ pub struct ProjectState {
     media: BTreeMap<InputId, MediaStatus>,
     /// `media_state` records the snapshot announced that have not arrived.
     media_states_pending: u16,
+    /// Every paged input's replicated status (IN-014), kept current by
+    /// `paged_changed` and `paged` runtime events.
+    paged: BTreeMap<InputId, fm_protocol::PagedStatus>,
+    /// `paged_state` records the snapshot announced that have not arrived.
+    paged_states_pending: u16,
     /// Every cue list in project order (Protocol 2.50).
     cue_lists: Vec<fm_protocol::CueListStatus>,
     /// `cue_list_state` records the snapshot announced that have not
@@ -2215,6 +2231,13 @@ pub enum ModelError {
     /// A media status (`media_changed` or a `media` runtime event) names an
     /// input outside the replicated project.
     InvalidMediaChange(InputId),
+    /// A `paged_state` arrived that the applied snapshot did not announce,
+    /// at another revision, out of input order, or for an unknown input
+    /// (IN-014).
+    PagedStateMismatch,
+    /// A paged status (`paged_changed` or a `paged` runtime event) names an
+    /// input outside the replicated project (IN-014).
+    InvalidPagedChange(InputId),
     /// An input lifecycle change (Protocol 2.38) or snapshot lifecycle does
     /// not match the replicated project.
     InvalidInputLifecycleChange,
@@ -2375,6 +2398,8 @@ impl fmt::Display for ModelError {
             | Self::MediaStateMismatch
             | Self::StillStateMismatch
             | Self::InvalidMediaChange(_)
+            | Self::PagedStateMismatch
+            | Self::InvalidPagedChange(_)
             | Self::InvalidInputLifecycleChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
             Self::InvalidTransitionFavorite(slot) => write!(
@@ -2480,6 +2505,12 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
         }
         ModelError::InvalidMediaChange(input) => {
             write!(formatter, "media status names unknown input {input}")
+        }
+        ModelError::PagedStateMismatch => {
+            formatter.write_str("paged state does not match the snapshot it follows")
+        }
+        ModelError::InvalidPagedChange(input) => {
+            write!(formatter, "paged status names unknown input {input}")
         }
         ModelError::InvalidInputLifecycleChange => {
             formatter.write_str("input lifecycle change does not match the replicated project")
@@ -3094,6 +3125,8 @@ impl ClientModel {
             transition_favorites: snapshot.transition_favorites,
             media: BTreeMap::new(),
             media_states_pending: snapshot.media_states,
+            paged: BTreeMap::new(),
+            paged_states_pending: snapshot.paged_states,
             cue_lists: Vec::new(),
             cue_list_states_pending: snapshot.cue_list_states,
             cue_frame: None,
@@ -4746,6 +4779,14 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidMediaChange(input))
             };
         }
+        DurableChange::PagedChanged { status } => {
+            let input = status.input.to_domain();
+            return if state.inputs.contains(&input) {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidPagedChange(input))
+            };
+        }
         DurableChange::TransitionFavoriteChanged { slot, .. } => {
             return if (1..=TRANSITION_FAVORITE_COUNT).contains(&usize::from(*slot)) {
                 Ok(())
@@ -4899,6 +4940,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.grading.remove_input(input);
     state.media.remove(&input);
     state.media_lists.remove(&input);
+    state.paged.remove(&input);
     state.input_lifecycle.remove(&input);
     state
         .audio_mixer
@@ -5338,6 +5380,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.media.insert(status.input.to_domain(), *status);
         }
         DurableChange::PageNavigated { .. } => {}
+        DurableChange::PagedChanged { status } => {
+            state.paged.insert(status.input.to_domain(), *status);
+        }
         DurableChange::TitleAnimationChanged { inputs, animation } => {
             for title in &mut state.titles {
                 if inputs.contains(&title.input) {

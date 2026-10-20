@@ -183,6 +183,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        paged_states: 0,
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,

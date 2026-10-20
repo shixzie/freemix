@@ -7930,3 +7930,145 @@ mod scripts {
 mod automation_authority;
 mod media_lists;
 mod shortcut_authority;
+
+/// IN-014: an imported PDF becomes a paged input whose snapshot announces a
+/// `paged_state` record; navigation waits for the media plane's page count,
+/// then replicates as `paged_changed` with the complete status, and a source
+/// report becomes a `paged` runtime event.
+#[test]
+#[allow(clippy::too_many_lines)] // one import, report, and navigation round trip
+fn paged_inputs_step_against_the_reported_page_count() {
+    use fm_protocol::{
+        DocumentState, ImportItemSpec, InputLifecycleOperation, PagedKind, PagedNavigation,
+    };
+
+    let mut control = service(16, 16);
+    let admin = principal(Role::Admin);
+    let deck = WireInputId::from_domain(input(5));
+    let imported = control
+        .submit(
+            &admin,
+            command(
+                "import",
+                "import-key",
+                CommandPayload::InputLifecycle(InputLifecycleOperation::Import {
+                    items: vec![ImportItemSpec {
+                        input: deck,
+                        name: None,
+                        uri: "asset://deck.pdf".to_owned(),
+                    }],
+                }),
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(
+        matches!(imported.output.result, CommandResult::Accepted { .. }),
+        "{:?}",
+        imported.output.result
+    );
+    assert_wire_exact(&control, &imported);
+    assert_eq!(control.snapshot().snapshot.paged_states, 1);
+    assert_eq!(
+        control.document_inputs(),
+        [(input(5), "asset://deck.pdf".to_owned())]
+    );
+    let [state] = control.paged_states().try_into().unwrap();
+    assert_eq!(state.status.kind, PagedKind::Document);
+    assert_eq!((state.status.page, state.status.count), (0, 0));
+    assert_eq!(state.status.state, DocumentState::Loading);
+
+    let next = |control: &mut ControlService, key: &str, role| {
+        control
+            .submit(
+                &principal(role),
+                command(
+                    key,
+                    key,
+                    CommandPayload::PagedInput {
+                        input: deck,
+                        navigation: PagedNavigation::Next,
+                    },
+                ),
+                0,
+            )
+            .unwrap()
+    };
+    // Unknown count: refused, retryably.
+    let early = next(&mut control, "early", Role::Operator);
+    let CommandResult::Rejected { retryable, .. } = &early.output.result else {
+        panic!("{:?}", early.output.result);
+    };
+    assert!(*retryable);
+    // A viewer may not step a document.
+    assert!(matches!(
+        next(&mut control, "viewer", Role::Viewer).output.result,
+        CommandResult::Rejected { .. }
+    ));
+
+    let report = PagedSourceReport {
+        count: Some(3),
+        state: DocumentState::Ready,
+        title: Some("Quarterly\nreview".to_owned()),
+        message: None,
+    };
+    let event = control
+        .set_paged_source(&server_identity(), input(5), &report)
+        .unwrap()
+        .expect("a changed source is published");
+    let RuntimeLifecycleEvent::Paged { status } = &event.event else {
+        panic!("{event:?}");
+    };
+    assert_eq!(status.count, 3);
+    assert_eq!(status.title.as_deref(), Some("Quarterlyreview"));
+    assert!(fm_protocol::encode_line(&WireMessage::RuntimeEvent(event.clone())).is_ok());
+    assert!(
+        control
+            .set_paged_source(&server_identity(), input(5), &report)
+            .unwrap()
+            .is_none(),
+        "an unchanged report publishes nothing"
+    );
+    assert!(
+        control
+            .set_paged_source(&server_identity(), input(1), &report)
+            .unwrap()
+            .is_none(),
+        "only paged inputs take a report"
+    );
+
+    let stepped = next(&mut control, "next", Role::Operator);
+    assert!(
+        matches!(stepped.output.result, CommandResult::Accepted { .. }),
+        "{:?}",
+        stepped.output.result
+    );
+    assert_wire_exact(&control, &stepped);
+    let [
+        EventMessage {
+            payload: EventPayload::PagedChanged { navigation, status },
+            ..
+        },
+    ] = stepped.output.events.as_slice()
+    else {
+        panic!("{:?}", stepped.output.events);
+    };
+    assert_eq!(*navigation, PagedNavigation::Next);
+    assert_eq!((status.page, status.count), (1, 3));
+    assert_eq!(status.state, DocumentState::Ready);
+    assert_eq!(control.paged_status(input(5)).unwrap().page, 1);
+    assert_eq!(control.paged_states()[0].status.page, 1);
+
+    // A shorter document clamps the page it reports.
+    control
+        .set_paged_source(
+            &server_identity(),
+            input(5),
+            &PagedSourceReport {
+                count: Some(1),
+                ..report
+            },
+        )
+        .unwrap();
+    assert_eq!(control.paged_status(input(5)).unwrap().page, 0);
+}

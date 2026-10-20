@@ -55,9 +55,13 @@ pub fn wire_source(source: &InputSourceSpec) -> WireInputSource {
             },
             tone_hz: *tone_hz,
         },
-        InputSourceSpec::Media { asset_uri } => WireInputSource::Media {
-            uri: asset_uri.clone(),
-        },
+        // A document travels as a media URI; its extension tells them apart
+        // (IN-014).
+        InputSourceSpec::Media { asset_uri } | InputSourceSpec::Document { asset_uri } => {
+            WireInputSource::Media {
+                uri: asset_uri.clone(),
+            }
+        }
         InputSourceSpec::Device { stable_key } => WireInputSource::Device {
             stable_key: stable_key.clone(),
         },
@@ -81,9 +85,7 @@ pub fn model_source(source: &WireInputSource) -> InputSourceSpec {
             },
             tone_hz: *tone_hz,
         },
-        WireInputSource::Media { uri } => InputSourceSpec::Media {
-            asset_uri: uri.clone(),
-        },
+        WireInputSource::Media { uri } => InputSourceSpec::from_asset_uri(uri),
         WireInputSource::Device { stable_key } => InputSourceSpec::Device {
             stable_key: stable_key.clone(),
         },

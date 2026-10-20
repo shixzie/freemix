@@ -28,6 +28,7 @@ mod live_lan;
 mod media;
 mod media_list;
 mod network_stream;
+mod paged;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
@@ -49,6 +50,7 @@ pub use media::{
     wire_media_status,
 };
 pub use media_list::{media_list_engine_command, wire_status as wire_media_list_status};
+pub use paged::PagedSourceReport;
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
 };
@@ -595,6 +597,9 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                         .system_audio_inputs()
                         .any(|(candidate, _)| candidate == *input)
                 });
+                control
+                    .paged_sources
+                    .retain(|input, _| control.engine.show().paged_page(*input).is_some());
                 // A disabled LiveLAN forgets its last report (see
                 // `refresh_snapshot`).
                 if !control.engine.show().live_lan().enabled {
@@ -894,6 +899,9 @@ pub struct ControlService<A = Policy> {
     /// Each system audio input's capture status as the media plane last
     /// reported it (AU-011).
     system_audio_states: BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
+    /// Each paged input's source as the media plane last reported it
+    /// (IN-014); its page count lives in the engine.
+    paged_sources: BTreeMap<InputId, paged::PagedSource>,
     /// The `LiveLAN` stream's status as the media plane last reported it
     /// (OR-017); clients see it through [`live_lan::wire_status`].
     live_lan_status: fm_protocol::LiveLanStatus,
@@ -980,6 +988,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             capture_states: BTreeMap::new(),
             capture_inventory: fm_protocol::CaptureInventory::default(),
             system_audio_states: BTreeMap::new(),
+            paged_sources: BTreeMap::new(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
             held_publications: None,
         }
@@ -1039,6 +1048,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             capture_states: self.capture_states.clone(),
             capture_inventory: self.capture_inventory.clone(),
             system_audio_states: self.system_audio_states.clone(),
+            paged_sources: self.paged_sources.clone(),
             live_lan_status: self.live_lan_status.clone(),
             held_publications: Some(Vec::new()),
         }
@@ -1577,6 +1587,75 @@ impl<A: AuthorizationHook> ControlService<A> {
     pub fn slideshows_advancing(&self) -> bool {
         self.engine.slideshows_advancing()
     }
+    /// Returns the `paged_state` records a session writes after
+    /// [`Self::media_states`]: one per paged input in ascending input
+    /// order, exactly as many as the snapshot announces (IN-014).
+    #[must_use]
+    pub fn paged_states(&self) -> Vec<fm_protocol::PagedStateMessage> {
+        paged::paged_states(&self.engine, &self.paged_sources)
+    }
+
+    /// Paged input `input`'s wire status (IN-014), or `None` when it is not
+    /// a paged input.
+    #[must_use]
+    pub fn paged_status(&self, input: InputId) -> Option<fm_protocol::PagedStatus> {
+        paged::wire_status(&self.engine, &self.paged_sources, input)
+    }
+
+    /// Every document input with its asset URI, ascending, for the media
+    /// plane that reads them (IN-014).
+    #[must_use]
+    pub fn document_inputs(&self) -> Vec<(InputId, String)> {
+        self.engine
+            .show()
+            .document_inputs()
+            .map(|(input, uri)| (input, uri.to_owned()))
+            .collect()
+    }
+
+    /// Records paged input `input`'s source as the media plane observes it
+    /// (IN-014): its page count goes to the engine (navigation resolves
+    /// against it), its state, title, and message to clients. A change
+    /// refreshes the snapshot and returns the published `paged` runtime
+    /// event; an unchanged report, or an input that is not paged, returns
+    /// `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_paged_source(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        report: &PagedSourceReport,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        let Some(before) = self.paged_status(input) else {
+            return Ok(None);
+        };
+        self.engine.set_paged_count(input, report.count);
+        self.paged_sources
+            .insert(input, paged::PagedSource::from_report(report));
+        let Some(status) = self.paged_status(input) else {
+            return Ok(None);
+        };
+        if status == before {
+            return Ok(None);
+        }
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::Paged {
+                status: Box::new(status),
+            },
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
 
     /// Media input `input`'s projected status (see
     /// [`Engine::media_status`]).
@@ -2100,14 +2179,21 @@ impl<A: AuthorizationHook> ControlService<A> {
             .engine
             .prepare_execute(message.domain_envelope(command), now_millis)?
         {
-            EnginePrepareOutcome::Replayed(outcome) => Ok(PrepareSubmitOutcome::Replayed(
-                engine_submission(&self.identity, idempotency_key, &self.engine, &outcome),
-            )),
+            EnginePrepareOutcome::Replayed(outcome) => {
+                Ok(PrepareSubmitOutcome::Replayed(engine_submission(
+                    &self.identity,
+                    idempotency_key,
+                    &self.engine,
+                    &self.paged_sources,
+                    &outcome,
+                )))
+            }
             EnginePrepareOutcome::Prepared(execution) => {
                 let submission = engine_submission(
                     &self.identity,
                     idempotency_key.clone(),
                     execution.staged_engine(),
+                    &self.paged_sources,
                     execution.outcome(),
                 );
                 Ok(PrepareSubmitOutcome::Prepared(PreparedSubmission {
@@ -2678,6 +2764,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
             CommandClass::Transition
         }
         CommandPayload::Media { operation, .. } => media_command_class(*operation),
+        // Stepping a document is an operator control like media transport.
+        CommandPayload::PagedInput { .. } => CommandClass::Transition,
         // Mixer labels and groups are project edits an audio operator owns.
         CommandPayload::SetInputAudioStrip { .. } | CommandPayload::AudioMixer(_) => {
             CommandClass::ControlAudio
@@ -2816,6 +2904,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
             input: input.to_domain(),
             navigation: *navigation,
         },
+        CommandPayload::PagedInput { input, navigation } => {
+            paged::engine_command(*input, *navigation)
+        }
         CommandPayload::InputLifecycle(operation) => {
             EngineCommand::InputLifecycle(input_lifecycle::engine_edit(operation))
         }
@@ -3575,6 +3666,7 @@ fn engine_submission(
     identity: &EngineIdentity,
     idempotency_key: IdempotencyKey,
     engine: &Engine,
+    paged_sources: &BTreeMap<InputId, paged::PagedSource>,
     outcome: &EngineCommandOutcome,
 ) -> CommandSubmission {
     let result = command_result(&outcome.receipt);
@@ -3584,7 +3676,7 @@ fn engine_submission(
                 engine: identity.clone(),
                 revision: engine.revision().get(),
             },
-            payload: accepted_event_payload(engine, outcome),
+            payload: accepted_event_payload(engine, paged_sources, outcome),
             edit_history: protocol_edit_history(engine),
         }]
     } else {
@@ -3608,7 +3700,19 @@ fn engine_submission(
 }
 
 #[allow(clippy::too_many_lines)]
-fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> EventPayload {
+fn accepted_event_payload(
+    engine: &Engine,
+    paged_sources: &BTreeMap<InputId, paged::PagedSource>,
+    outcome: &EngineCommandOutcome,
+) -> EventPayload {
+    if let Some(payload) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::PagedChanged { input, navigation } = &event.payload else {
+            return None;
+        };
+        paged::paged_changed(engine, paged_sources, *input, *navigation)
+    }) {
+        return payload;
+    }
     if let Some(payload) = outcome.events.iter().find_map(|event| {
         let EngineEvent::CueListChanged {
             list,
@@ -4078,6 +4182,7 @@ fn snapshot_record(
         animation_preset_states: animation_preset::animation_preset_state_count(engine),
         transition_favorites: transition::wire_favorites(engine),
         media_states: media::media_state_count(engine),
+        paged_states: paged::paged_state_count(engine),
         cue_list_states: cue::cue_list_state_count(engine),
         script_states: script::script_state_count(engine),
         shortcut_states: shortcut::shortcut_state_count(engine),

@@ -169,6 +169,13 @@ pub use network_stream::{
     StreamProtocol, StreamUrl, redact_stream_url, validate_stream_url,
 };
 pub use output_failure::{OutputFailure, OutputFailureCode};
+pub use paged::{
+    DocumentFormat, DocumentState, MAX_DOCUMENT_INPUTS, MAX_PAGED_MESSAGE_BYTES,
+    MAX_PAGED_NOTES_BYTES, MAX_PAGED_PAGES, MAX_PAGED_STATES, MAX_PAGED_THUMBNAIL_BYTES,
+    MAX_PAGED_THUMBNAIL_HEIGHT, MAX_PAGED_THUMBNAIL_WIDTH, MAX_PAGED_TITLE_BYTES, PagedKind,
+    PagedPageContent, PagedPageMessage, PagedPageRequest, PagedStateMessage,
+    PagedStatus, bounded_paged_text, paged_notes_valid, paged_thumbnail_size_valid,
+};
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
@@ -221,13 +228,6 @@ pub use system_audio::{
     SystemAudioError, SystemAudioInventory, SystemAudioState, SystemAudioStatus,
     bound_system_audio_description, bound_system_audio_error, default_system_audio_device,
     validate_system_audio_device,
-};
-pub use paged::{
-    DocumentFormat, DocumentState, MAX_DOCUMENT_INPUTS, MAX_PAGED_MESSAGE_BYTES,
-    MAX_PAGED_NOTES_BYTES, MAX_PAGED_PAGES, MAX_PAGED_STATES, MAX_PAGED_THUMBNAIL_BYTES,
-    MAX_PAGED_THUMBNAIL_HEIGHT, MAX_PAGED_THUMBNAIL_WIDTH, MAX_PAGED_TITLE_BYTES, PagedKind,
-    PagedPageContent, PagedPageMessage, PagedPageRequest, PagedStateMessage,
-    PagedStatus, bounded_paged_text, paged_notes_valid, paged_thumbnail_size_valid,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
 pub use web_access::{

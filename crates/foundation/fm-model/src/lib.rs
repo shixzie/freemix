@@ -87,8 +87,8 @@ pub use project::AddInputError;
 pub use project::AudioBusSendError;
 pub use project::{
     AddAudioBusError, AddOutputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError,
-    AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DuplicateInputError,
-    DocumentInput, DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
+    AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DocumentInput, DuplicateInputError,
+    DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputPanBasisPoints,
     InputReference, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry, MainMix,
     MixFeed, Output, OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,

@@ -142,6 +142,7 @@ fn navigation_is_refused_while_the_count_is_unknown_or_the_input_is_not_paged() 
     let rejection = &unknown.receipt.rejected().unwrap().rejection;
     assert_eq!(rejection.code, RejectionCode::Unavailable);
     assert_eq!(rejection.fields[0].code, "pages_unknown");
+    assert!(rejection.retryable);
     engine.set_paged_count(input(DECK), Some(0));
     assert!(
         step(&mut engine, "empty", DECK, PagedNavigation::Next)

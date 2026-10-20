@@ -160,6 +160,5 @@ pub const fn paged_thumbnail_size_valid(width: u16, height: u16) -> bool {
 /// characters other than line breaks.
 #[must_use]
 pub fn paged_notes_valid(notes: &str) -> bool {
-    notes.len() <= MAX_PAGED_NOTES_BYTES
-        && !notes.chars().any(|c| c.is_control() && c != '\n')
+    notes.len() <= MAX_PAGED_NOTES_BYTES && !notes.chars().any(|c| c.is_control() && c != '\n')
 }

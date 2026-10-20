@@ -414,6 +414,11 @@ pub enum SessionEvent {
     SlideshowSlides {
         message: fm_protocol::SlideshowSlidesMessage,
     },
+    /// The daemon answered a `paged_page_request` (IN-014): one page's
+    /// presenter notes or thumbnail.
+    PagedPage {
+        message: fm_protocol::PagedPageMessage,
+    },
     /// One valid input thumbnail arrived for `input` (Protocol 2.59); the
     /// decoded image is available from
     /// [`TcpSession::latest_input_thumbnails`].
@@ -906,6 +911,25 @@ impl TcpSession {
         self.flush_wire_wait(None)
     }
 
+    /// Asks for one paged input page's presenter notes or thumbnail
+    /// (IN-014). The answer arrives later as [`SessionEvent::PagedPage`]
+    /// naming the same `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_paged_page_request(
+        &mut self,
+        request: fm_protocol::PagedPageRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::PagedPageRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
     /// Sends one exact title preview request (see
     /// `fm_ui_model::title_animation::preview_request`). The answer arrives
     /// later as [`SessionEvent::TitlePreview`] parts, or as a
@@ -1385,6 +1409,8 @@ impl TcpSession {
                     WireMessage::ScenePreviewFrame(frame) => {
                         self.validate_scene_preview(&frame)?;
                     }
+                    // A page answer is lossy; the panel asks again.
+                    WireMessage::PagedPage(_) => {}
                     _ => {
                         self.transition_disconnect();
                         return Err(TcpSessionError::UnexpectedMessage);
@@ -1483,6 +1509,7 @@ impl TcpSession {
                 })
             }
             WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, false),
+            WireMessage::PagedPage(message) => Ok(SessionEvent::PagedPage { message }),
             WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, true),
             WireMessage::DurableGap(gap) => self.durable_gap(gap),
             WireMessage::Error(error)
@@ -1534,7 +1561,8 @@ impl TcpSession {
             | WireMessage::ShortcutState(_)
             | WireMessage::StillState(_)
             | WireMessage::MediaListState(_)
-            | WireMessage::AudioStripDspState(_)) => {
+            | WireMessage::AudioStripDspState(_)
+            | WireMessage::PagedState(_)) => {
                 self.intake(message)?;
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
@@ -1555,7 +1583,8 @@ impl TcpSession {
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
             | WireMessage::WebAccessRequest(_)
-            | WireMessage::SlideshowSlidesRequest(_) => {
+            | WireMessage::SlideshowSlidesRequest(_)
+            | WireMessage::PagedPageRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

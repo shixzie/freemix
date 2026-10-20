@@ -564,6 +564,7 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        paged_states: 0,
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,

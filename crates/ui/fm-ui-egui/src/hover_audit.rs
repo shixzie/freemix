@@ -438,6 +438,7 @@ fn model(variant: Variant) -> ClientModel {
         grade_states: 4,
         animation_preset_states: 0,
         media_states: 2,
+        paged_states: 0,
         cue_list_states: 2,
         script_states: 2,
         shortcut_states: 3,

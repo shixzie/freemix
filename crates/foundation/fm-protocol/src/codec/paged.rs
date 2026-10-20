@@ -67,11 +67,13 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<PagedStatus,
     let input = parse_canonical_input(&fields.required("input")?)
         .ok_or_else(|| invalid("input", "not a canonical input"))?;
     let kind_token = fields.required("paged_kind")?;
-    let kind = PagedKind::from_token(&kind_token).ok_or_else(|| invalid("paged_kind", kind_token))?;
+    let kind =
+        PagedKind::from_token(&kind_token).ok_or_else(|| invalid("paged_kind", kind_token))?;
     let page = page_number("page", &fields.required("page")?)?;
     let count = count_number(&fields.required("count")?)?;
     let state_token = fields.required("state")?;
-    let state = DocumentState::from_token(&state_token).ok_or_else(|| invalid("state", state_token))?;
+    let state =
+        DocumentState::from_token(&state_token).ok_or_else(|| invalid("state", state_token))?;
     let status = PagedStatus {
         input,
         kind,
@@ -138,7 +140,10 @@ pub(super) fn encode_request(
     push("request_id", request.request_id.clone())?;
     push("input", request.input.to_string())?;
     push("page", request.page.to_string())?;
-    push("thumbnail", if request.thumbnail { "1" } else { "0" }.to_owned())
+    push(
+        "thumbnail",
+        if request.thumbnail { "1" } else { "0" }.to_owned(),
+    )
 }
 
 fn flag(field: &'static str, value: &str) -> Result<bool, CodecError> {
@@ -150,9 +155,7 @@ fn flag(field: &'static str, value: &str) -> Result<bool, CodecError> {
 }
 
 /// Decodes a `paged_page_request`.
-pub(super) fn decode_request(
-    fields: &mut dyn FieldSource,
-) -> Result<PagedPageRequest, CodecError> {
+pub(super) fn decode_request(fields: &mut dyn FieldSource) -> Result<PagedPageRequest, CodecError> {
     let request_id = fields.required("request_id")?;
     super::validate_request_id(&request_id)?;
     Ok(PagedPageRequest {
@@ -165,7 +168,10 @@ pub(super) fn decode_request(
 }
 
 /// Encodes a `paged_page` answer's fields.
-pub(super) fn encode_page(message: &PagedPageMessage, push: &mut Push<'_>) -> Result<(), CodecError> {
+pub(super) fn encode_page(
+    message: &PagedPageMessage,
+    push: &mut Push<'_>,
+) -> Result<(), CodecError> {
     super::validate_request_id(&message.request_id)?;
     if message.page >= MAX_PAGED_PAGES {
         return Err(invalid("page", message.page.to_string()));

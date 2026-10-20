@@ -76,7 +76,8 @@ pub(crate) fn accept(
             "input",
             "pages_unknown",
             "the document has not loaded yet",
-        )));
+        ))
+        .retryable(true));
     };
     Ok(command.navigation.target(page, count))
 }

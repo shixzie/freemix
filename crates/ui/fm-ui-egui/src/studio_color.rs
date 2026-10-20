@@ -1605,6 +1605,7 @@ mod tests {
                 + u16::from(scene.is_some_and(|(graded, _)| graded)),
             animation_preset_states: 0,
             media_states: 0,
+            paged_states: 0,
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,

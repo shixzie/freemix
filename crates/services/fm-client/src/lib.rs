@@ -205,6 +205,9 @@ pub enum Intake {
     /// An `audio_strip_dsp_state` completed one input strip's DSP chain the
     /// snapshot announced (Protocol 2.75).
     AudioStripDspStateApplied,
+    /// A `paged_state` completed one paged input the snapshot announced
+    /// (IN-014).
+    PagedStateApplied,
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
     DisplayInventoryApplied,
@@ -674,6 +677,10 @@ impl Client {
                 self.apply_audio_strip_dsp_state(state)?;
                 Ok(Intake::AudioStripDspStateApplied)
             }
+            WireMessage::PagedState(state) => {
+                self.apply_paged_state(state)?;
+                Ok(Intake::PagedStateApplied)
+            }
             WireMessage::DisplayInventory(message) => {
                 self.model.apply_display_inventory(message.inventory);
                 Ok(Intake::DisplayInventoryApplied)
@@ -695,6 +702,8 @@ impl Client {
             | WireMessage::SystemAudioDevicesRequest(_)
             | WireMessage::WebAccessRequest(_)
             | WireMessage::SlideshowSlidesRequest(_)
+            | WireMessage::PagedPageRequest(_)
+            | WireMessage::PagedPage(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -1602,6 +1611,65 @@ impl Client {
         Ok(())
     }
 
+
+    /// Completes one paged input the snapshot announced with its
+    /// `paged_state` (IN-014): the last of a snapshot's follow-on records,
+    /// in ascending input order.
+    ///
+    /// # Errors
+    ///
+    /// A paged state in any other state, at another revision, beyond the
+    /// announced count, out of order, or before the earlier follow-on
+    /// records forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
+    pub fn apply_paged_state(
+        &mut self,
+        state: fm_protocol::PagedStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+                && state.cue_lists_complete()
+                && state.scripts_complete()
+                && state.shortcuts_complete()
+                && state.stills_complete()
+                && state.media_lists_complete()
+                && state.audio_strip_dsps_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_paged_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1628,6 +1696,7 @@ impl Client {
                 && state.stills_complete()
                 && state.media_lists_complete()
                 && state.audio_strip_dsps_complete()
+                && state.paged_complete()
         })
     }
 
@@ -1790,6 +1859,9 @@ impl Client {
         if let RuntimeLifecycleEvent::Media { status, .. } = &event.event {
             self.model.apply_runtime_media(status.as_ref().clone())?;
         }
+        if let RuntimeLifecycleEvent::Paged { status } = &event.event {
+            self.model.apply_runtime_paged(status.as_ref().clone())?;
+        }
         if let RuntimeLifecycleEvent::InputAvailability { input, offline } = &event.event {
             self.model
                 .apply_runtime_input_availability(input.to_domain(), *offline)?;
@@ -1908,6 +1980,7 @@ impl Client {
             | CommandPayload::SetTransitionFavorite { .. }
             | CommandPayload::Media { .. }
             | CommandPayload::PageNavigate { .. }
+            | CommandPayload::PagedInput { .. }
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SceneLayer(_)
             | CommandPayload::AudioMixer(_)
