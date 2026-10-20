@@ -180,6 +180,13 @@ impl EngineCommand {
                     EngineCommandKind::ProjectEdit
                 }
             }
+            Self::MediaList(command) => {
+                if command.operation.is_live() {
+                    EngineCommandKind::LiveOperation
+                } else {
+                    EngineCommandKind::ProjectEdit
+                }
+            }
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -729,6 +736,20 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
                 && state.input_name(*input) == Some(name.as_str())
                 && !state.grading().inputs.contains_key(input)
         }
+        // Undoing a media list's creation removes its input, under the same
+        // conditions as undoing an add (IN-006).
+        (
+            EngineCommand::RemoveInput { input },
+            EngineCommand::MediaList(crate::EngineMediaListCommand {
+                input: added,
+                operation: crate::EngineMediaListOperation::Create { name, .. },
+            }),
+        ) => {
+            input == added
+                && state.inputs().last() == Some(input)
+                && state.input_name(*input) == Some(name.as_str())
+                && !state.grading().inputs.contains_key(input)
+        }
         // Undoing a duplicate or a batch import removes exactly the inputs
         // it appended (see `input_lifecycle::removal_reverses`).
         (
@@ -823,6 +844,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::InputLifecycle(edit) => edit.names_input(input),
         EngineCommand::SceneLayer(edit) => edit.names_input(input),
         EngineCommand::AudioMixer(edit) => edit.names_input(input),
+        EngineCommand::MediaList(command) => command.input == input,
         _ => false,
     }
 }
@@ -917,6 +939,7 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
             crate::animation_preset::inverse(state, edit).map(EngineCommand::AnimationPreset)
         }
         EngineCommand::InputLifecycle(edit) => crate::input_lifecycle::inverse(state, edit),
+        EngineCommand::MediaList(command) => crate::media_list::inverse(state, command),
         EngineCommand::SceneLayer(edit) => {
             crate::scene_layer::inverse(state, edit).map(EngineCommand::SceneLayer)
         }
@@ -1060,6 +1083,7 @@ pub(crate) fn check_edit_locks(
         | EngineCommand::RemoveInput { input }
         | EngineCommand::Grade(EngineGradeEdit::SetInput { input, .. })
         | EngineCommand::Media(crate::EngineMediaCommand { input, .. })
+        | EngineCommand::MediaList(crate::EngineMediaListCommand { input, .. })
         | EngineCommand::SetNetworkStream { input, .. }
         | EngineCommand::SetCaptureSettings { input, .. }
             if state.is_input_locked(*input) =>

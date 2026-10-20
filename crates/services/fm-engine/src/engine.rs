@@ -446,6 +446,10 @@ pub enum EngineCommand {
         input: InputId,
         navigation: fm_types::paged::PagedNavigation,
     },
+    /// Creates, edits, or steps a media list input (IN-006; see
+    /// [`crate::media_list`]). Creating and editing are project edits;
+    /// navigation and advances are live operations.
+    MediaList(crate::EngineMediaListCommand),
     /// Edits an input's lifecycle or the input catalogue (IN-026; see
     /// [`crate::EngineInputLifecycleEdit`]). A project edit.
     InputLifecycle(crate::EngineInputLifecycleEdit),
@@ -691,6 +695,13 @@ pub enum EngineEvent {
         input: InputId,
         frame: u64,
         navigation: fm_types::paged::PagedNavigation,
+    },
+    /// A media list command was accepted for `frame` (IN-006); the list
+    /// afterwards is read from [`ShowState::media_list`].
+    MediaListChanged {
+        input: InputId,
+        frame: u64,
+        operation: crate::EngineMediaListOperation,
     },
     /// An input lifecycle edit (or its undo or redo) was accepted
     /// (IN-026). `added` lists the inputs a duplicate or import appended,
@@ -1273,7 +1284,49 @@ impl Engine {
             .collect()
     }
 
+    /// Whether media list `input`'s transport plays (or waits for data at a
+    /// growing file's live edge), or is about to as soon as its new file
+    /// opens (IN-006).
+    fn media_list_playing(&self, input: InputId) -> bool {
+        let opening = self
+            .media
+            .get(&input)
+            .is_some_and(|runtime| runtime.play_on_open && !self.media_source_open(input));
+        opening
+            || self.media_status(input).is_some_and(|status| {
+                matches!(
+                    status.state,
+                    fm_playback::MediaState::Playing | fm_playback::MediaState::Waiting
+                )
+            })
+    }
+
+    /// Media list input `input`'s replicated state (IN-006): its list, the
+    /// play order of the current cycle, and the active item's position in
+    /// it; `None` for an input that is not a list.
+    #[must_use]
+    pub fn media_list_status(&self, input: InputId) -> Option<crate::EngineMediaListStatus> {
+        let list = self.show().media_list(input)?;
+        Some(crate::EngineMediaListStatus {
+            input,
+            list: list.clone(),
+            order: list.play_order(),
+            position: list.position().unwrap_or(0),
+        })
+    }
+
+    /// Every media list's status, ascending by input.
+    #[must_use]
+    pub fn media_list_statuses(&self) -> Vec<crate::EngineMediaListStatus> {
+        self.show()
+            .media_lists()
+            .keys()
+            .filter_map(|input| self.media_list_status(*input))
+            .collect()
+    }
+
     /// Whether any media transport changes on the next frame absent new
+
     /// commands: one is playing or waiting, a synthetic source is still
     /// growing, or a command or fault is still to be realized.
     #[must_use]
@@ -1905,6 +1958,7 @@ impl Engine {
                     title_clip_bound: None,
                     scene_clip_bound: None,
                     media_tracks: None,
+                    media_list: None,
                     cue: None,
                 };
                 mutation.apply(show, &mut Vec::new()).map_err(refuse)?;
@@ -2087,6 +2141,23 @@ impl Engine {
             Some(Ok(plan)) => plan.transition,
             _ => None,
         };
+        // A media list step is planned once, here, against the pre-command
+        // show and the list's transport (IN-006).
+        let media_list = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(EngineCommand::MediaList(command)) => {
+                let playing = self.media_list_playing(command.input);
+                Some(crate::media_list::plan(
+                    self.commands.state(),
+                    command,
+                    playing,
+                ))
+            }
+            _ => None,
+        };
+        let media_list_operations = match &media_list {
+            Some(Ok(plan)) => crate::media_list::transport_operations(plan),
+            _ => Vec::new(),
+        };
         let scheduled = match (&resolution, already_seen) {
             (Ok(resolved), false) => Some(
                 self.scheduler
@@ -2096,6 +2167,9 @@ impl Engine {
                             (Some(Ok(step)), _) => EngineCommand::RealizePlaylistCue(step.cue),
                             (_, Some(Ok(plan))) => {
                                 EngineCommand::RealizeCueActions(plan.runtime.clone())
+                            }
+                            _ if !media_list_operations.is_empty() => {
+                                media_list_runtime(&resolved.command, &media_list_operations)
                             }
                             _ => runtime_action(self.commands.state(), &resolved.command),
                         },
@@ -2180,6 +2254,7 @@ impl Engine {
             _ => Vec::new(),
         };
         let staged_resolution = resolution.clone();
+        let staged_media_list = media_list.clone();
         let title_clip_bound = self.title_clip_bound;
         let scene_clip_bound = self.scene_clip_bound;
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
@@ -2241,6 +2316,7 @@ impl Engine {
                 title_clip_bound,
                 scene_clip_bound,
                 media_tracks,
+                media_list: staged_media_list,
                 cue,
             })
         });
@@ -2289,6 +2365,18 @@ impl Engine {
                     .entry(media.input)
                     .or_default()
                     .accept(media.operation);
+            }
+            if let Some(Ok(plan)) = &media_list {
+                let runtime = self.media.entry(plan.input).or_default();
+                for operation in &media_list_operations {
+                    runtime.accept(*operation);
+                }
+                // A new file opens stopped, or playing when the step plays.
+                if let Some(activation) = &plan.activation
+                    && !activation.same_source
+                {
+                    runtime.play_on_open = activation.play;
+                }
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
@@ -2885,6 +2973,8 @@ struct EngineMutation {
     scene_clip_bound: Option<crate::SceneClipBound>,
     /// The open source's audio stream indexes, for a media command.
     media_tracks: Option<Vec<u32>>,
+    /// The planned step of a media list command (IN-006).
+    media_list: Option<Result<crate::media_list::MediaListPlan, Rejection>>,
     /// The planned cue GO, operation, or advance of a cue runtime command.
     cue: Option<Result<CuePlan, Rejection>>,
 }
@@ -3335,6 +3425,9 @@ impl EngineMutation {
         if let EngineCommand::Media(command) = &self.command {
             let settings = crate::media::accept(state, command, self.media_tracks.as_deref())?;
             state.set_media_settings(command.input, settings);
+            if matches!(command.operation, crate::EngineMediaOperation::Trim { .. }) {
+                crate::media_list::sync_marks(state, command.input);
+            }
             events.push(EngineEvent::MediaChanged {
                 input: command.input,
                 frame: self.target_frame.get(),
@@ -3350,6 +3443,33 @@ impl EngineMutation {
                 input,
                 frame: self.target_frame.get(),
                 navigation,
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::MediaList(command) = &self.command {
+            let plan = self.media_list.clone().ok_or_else(|| {
+                Rejection::new(RejectionCode::Internal, "a media list step was not planned")
+            })??;
+            if let crate::EngineMediaListOperation::Create { name, .. } = &command.operation {
+                let item = plan.list.active_item().expect("a new list has its item");
+                let import = crate::EngineInputLifecycleEdit::Import {
+                    items: vec![fm_model::BatchImportRequest {
+                        input: command.input,
+                        name: Some(name.clone()),
+                        asset_uri: item.asset_uri.clone(),
+                    }],
+                };
+                // One command, one durable event: the list's event names
+                // the input it appended.
+                crate::input_lifecycle::apply(state, &import)?;
+            }
+            crate::media_list::apply(state, &plan);
+            events.push(EngineEvent::MediaListChanged {
+                input: command.input,
+                frame: self.target_frame.get(),
+                operation: command.operation.clone(),
             });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
@@ -3668,6 +3788,7 @@ impl EngineMutation {
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
+            | EngineCommand::MediaList(_)
             | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
@@ -4227,6 +4348,7 @@ fn apply_runtime(
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
+            | EngineCommand::MediaList(_)
     ) {
         return Ok(Vec::new());
     }
@@ -4420,6 +4542,7 @@ fn apply_runtime(
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
+        | EngineCommand::MediaList(_)
         | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
@@ -4616,6 +4739,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
+        | EngineCommand::MediaList(_)
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
@@ -4654,6 +4778,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetTransitionFavorite { .. })
         && !matches!(command, EngineCommand::Media(_))
         && !matches!(command, EngineCommand::PageNavigate { .. })
+        && !matches!(command, EngineCommand::MediaList(_))
         && !matches!(
             command,
             EngineCommand::InputLifecycle(edit) if !matches!(
@@ -4726,6 +4851,28 @@ const fn is_title_command(command: &EngineCommand) -> bool {
 /// they resolve to against the pre-command desired state, which is the
 /// state the mutation validates, carrying the title's animation timing; a
 /// refused command's action is cancelled before it runs.
+/// The runtime action that re-cues a media list's open transport: its
+/// planned media operations, realized in order on the target frame.
+fn media_list_runtime(
+    command: &EngineCommand,
+    operations: &[crate::EngineMediaOperation],
+) -> EngineCommand {
+    let EngineCommand::MediaList(command) = command else {
+        return command.clone();
+    };
+    EngineCommand::RealizeCueActions(
+        operations
+            .iter()
+            .map(|operation| {
+                EngineCommand::Media(crate::EngineMediaCommand {
+                    input: command.input,
+                    operation: *operation,
+                })
+            })
+            .collect(),
+    )
+}
+
 fn runtime_action(state: &ShowState, command: &EngineCommand) -> EngineCommand {
     let timing = |input: InputId| {
         state
@@ -4750,6 +4897,21 @@ fn runtime_action(state: &ShowState, command: &EngineCommand) -> EngineCommand {
                 Err(_) => command.clone(),
             }
         }
+        // A new media list input joins the realized switcher like an
+        // imported file (IN-006).
+        EngineCommand::MediaList(crate::EngineMediaListCommand {
+            input,
+            operation: crate::EngineMediaListOperation::Create { items, .. },
+        }) => EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::Import {
+            items: vec![fm_model::BatchImportRequest {
+                input: *input,
+                name: None,
+                asset_uri: items
+                    .first()
+                    .map(|item| item.asset_uri.clone())
+                    .unwrap_or_default(),
+            }],
+        }),
         // The realized switcher appends only the items the import accepts,
         // which the pre-command show determines.
         EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::Import { items }) => {

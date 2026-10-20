@@ -960,6 +960,7 @@ pub struct Project {
     scripts: Vec<crate::Script>,
     script_run: crate::ScriptRunState,
     shortcuts: Vec<crate::Shortcut>,
+    media_lists: BTreeMap<InputId, crate::MediaList>,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
@@ -1001,6 +1002,7 @@ impl Project {
             scripts: Vec::new(),
             script_run: crate::ScriptRunState::default(),
             shortcuts: Vec::new(),
+            media_lists: BTreeMap::new(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
@@ -1447,6 +1449,24 @@ impl Project {
         self.cue_lists = cue_lists;
     }
 
+    /// Every media list input's list, by input (IN-006).
+    #[must_use]
+    pub const fn media_lists(&self) -> &BTreeMap<InputId, crate::MediaList> {
+        &self.media_lists
+    }
+
+    /// Media list input `input`'s list.
+    #[must_use]
+    pub fn media_list(&self, input: InputId) -> Option<&crate::MediaList> {
+        self.media_lists.get(&input)
+    }
+
+    /// Replaces every media list without checking them; [`Project::validate`]
+    /// reports lists that do not fit their inputs.
+    pub fn set_media_lists(&mut self, lists: BTreeMap<InputId, crate::MediaList>) {
+        self.media_lists = lists;
+    }
+
     /// The project's scripts, in display order (RC-011, schema 54).
     #[must_use]
     pub fn scripts(&self) -> &[crate::Script] {
@@ -1856,6 +1876,7 @@ impl Project {
         self.locked_inputs.remove(&input);
         self.grading.inputs.remove(&input);
         self.input_lifecycle.remove(&input);
+        self.media_lists.remove(&input);
         Ok(())
     }
 

@@ -207,6 +207,9 @@ pub struct ShowState {
     transition_favorites: fm_model::TransitionFavorites,
     /// Every media input's playback settings (IN-003).
     media: BTreeMap<InputId, fm_model::MediaPlaybackSettings>,
+    /// Every media list input's list (IN-006): each is a media input above
+    /// whose source is its active item's file.
+    media_lists: BTreeMap<InputId, fm_model::MediaList>,
     /// The project's input category list (IN-026).
     input_categories: Vec<fm_model::InputCategory>,
     /// Every input whose category, colour, pause, or close differs from the
@@ -310,6 +313,7 @@ impl ShowState {
             animation_presets: fm_model::AnimationPresetLibrary::default(),
             transition_favorites: fm_model::TransitionFavorites::default(),
             media: BTreeMap::new(),
+            media_lists: BTreeMap::new(),
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
             input_sources: BTreeMap::new(),
@@ -650,6 +654,7 @@ impl ShowState {
         self.input_aliases.remove(&input);
         self.grading.inputs.remove(&input);
         self.media.remove(&input);
+        self.media_lists.remove(&input);
         self.input_lifecycle.remove(&input);
         self.input_sources.remove(&input);
         self.capture.remove(&input);
@@ -1690,6 +1695,53 @@ impl ShowState {
 
     pub(crate) fn remove_media_input(&mut self, input: InputId) {
         self.media.remove(&input);
+        self.media_lists.remove(&input);
+    }
+
+    /// Every media list input's list, by input (IN-006).
+    #[must_use]
+    pub const fn media_lists(&self) -> &BTreeMap<InputId, fm_model::MediaList> {
+        &self.media_lists
+    }
+
+    /// Media list input `input`'s list.
+    #[must_use]
+    pub fn media_list(&self, input: InputId) -> Option<&fm_model::MediaList> {
+        self.media_lists.get(&input)
+    }
+
+    /// Restores every media list (IN-006): each must be valid and belong to
+    /// a media input of the show playing its active item's file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidMediaList`] for a list that does not fit
+    /// its input; the show is unchanged on error.
+    pub fn restore_media_lists(
+        &mut self,
+        lists: BTreeMap<InputId, fm_model::MediaList>,
+    ) -> Result<(), ShowError> {
+        if lists.len() > fm_model::MAX_MEDIA_LISTS {
+            return Err(ShowError::InvalidMediaList(
+                *lists.keys().next().expect("more lists than the limit"),
+            ));
+        }
+        for (input, list) in &lists {
+            let plays_active = matches!(
+                self.input_sources.get(input),
+                Some(fm_model::InputSourceSpec::Media { asset_uri })
+                    if list.active_item().is_some_and(|item| item.asset_uri == *asset_uri)
+            );
+            if list.validate().is_err() || !self.media.contains_key(input) || !plays_active {
+                return Err(ShowError::InvalidMediaList(*input));
+            }
+        }
+        self.media_lists = lists;
+        Ok(())
+    }
+
+    pub(crate) fn insert_media_list(&mut self, input: InputId, list: fm_model::MediaList) {
+        self.media_lists.insert(input, list);
     }
 
     pub(crate) fn insert_media_input(

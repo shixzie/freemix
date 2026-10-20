@@ -448,7 +448,7 @@ impl<F: Clone> ListPlayer<F> {
                     })?;
             }
         }
-        let order = play_order(list.len(), list.options().shuffle_seed, 0);
+        let order = list_play_order(list.len(), list.options().shuffle_seed, 0);
         Ok(Self {
             library,
             list,
@@ -883,7 +883,7 @@ impl<F: Clone> ListPlayer<F> {
 
     fn advance_cycle(&mut self) {
         self.cycle = self.cycle.wrapping_add(1);
-        self.order = play_order(
+        self.order = list_play_order(
             self.list.len(),
             self.list.options().shuffle_seed,
             self.cycle,
@@ -891,9 +891,10 @@ impl<F: Clone> ListPlayer<F> {
     }
 }
 
-/// Deterministic play order: identity without a seed, otherwise a
+/// Deterministic play order of `len` items: identity without a seed, otherwise a
 /// Fisher-Yates permutation driven by `SplitMix64` seeded from (seed, cycle).
-fn play_order(len: usize, seed: Option<u64>, cycle: u64) -> Vec<usize> {
+#[must_use]
+pub fn list_play_order(len: usize, seed: Option<u64>, cycle: u64) -> Vec<usize> {
     let mut order: Vec<usize> = (0..len).collect();
     let Some(seed) = seed else {
         return order;

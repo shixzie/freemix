@@ -10,6 +10,7 @@ mod grade_edit;
 mod history;
 mod input_lifecycle;
 mod media;
+pub(crate) mod media_list;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
@@ -53,6 +54,10 @@ pub use media::{
     EngineMediaSource, EngineMediaStatus, MAX_MEDIA_TRACK_LANGUAGE_BYTES,
     MAX_MEDIA_TRACK_TITLE_BYTES, MAX_MEDIA_TRACKS, SYNTHETIC_GROWING_START_SECONDS,
     SYNTHETIC_MEDIA_SECONDS,
+};
+pub use media_list::{
+    EngineMediaListCommand, EngineMediaListNavigation, EngineMediaListOperation,
+    EngineMediaListStatus,
 };
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,

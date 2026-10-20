@@ -506,6 +506,9 @@ pub(crate) fn apply(
             if let Some(settings) = state.media_settings(*source) {
                 staged.insert_media_input(input, *settings);
             }
+            if let Some(list) = state.media_list(*source) {
+                staged.insert_media_list(input, list.clone());
+            }
             if let Some(title) = state.title(*source) {
                 staged.insert_title(input, title.clone());
             }
@@ -520,6 +523,19 @@ pub(crate) fn apply(
         }
         EngineInputLifecycleEdit::ReplaceSource { input, source } => {
             require_input(state, *input)?;
+            // A media list input's source is its active item (IN-006).
+            if state.media_list(*input).is_some() {
+                return Err(rejection(
+                    RejectionCode::Conflict,
+                    "input",
+                    "media_list_input",
+                    format!(
+                        "input {input} is a media list: its source is its active item; edit \
+                         the list instead"
+                    ),
+                ));
+            }
+
             source
                 .validate()
                 .map_err(|error| source_rejection(error, source))?;

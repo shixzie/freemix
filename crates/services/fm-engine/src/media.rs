@@ -275,6 +275,9 @@ pub(crate) struct MediaRuntime {
     /// The input source the open source was opened for (IN-026): a
     /// replaced source releases it.
     pub(crate) opened_for: Option<fm_model::InputSourceSpec>,
+    /// Whether the next source opened starts playing at once: a media list
+    /// stepped to another file while playing (IN-006).
+    pub(crate) play_on_open: bool,
 }
 
 impl MediaRuntime {
@@ -290,6 +293,12 @@ impl MediaRuntime {
             Some(source) => Some(create_playback(source, settings, output_rate)?),
             None => None,
         };
+        if source.is_some()
+            && let Some(playback) = &mut self.playback
+            && std::mem::take(&mut self.play_on_open)
+        {
+            playback.play();
+        }
         self.source = source;
         self.fault = None;
         self.fault_reported = false;

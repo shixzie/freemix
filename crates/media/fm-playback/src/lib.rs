@@ -34,7 +34,7 @@ pub use image_sequence::{
 pub use list::{
     ActivationCause, ListAction, ListControlError, ListError, ListEvent, ListGo, ListGoError,
     ListItem, ListOptions, ListPlayer, ListTick, ListTickError, MAX_LIST_GO_RECORDS,
-    MAX_LIST_ITEMS, MAX_PENDING_LIST_GO, MediaList,
+    MAX_LIST_ITEMS, MAX_PENDING_LIST_GO, MediaList, list_play_order,
 };
 pub use media::{
     AudioPlan, AudioSpeedPolicy, AudioTrack, MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE,

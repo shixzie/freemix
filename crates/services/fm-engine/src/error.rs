@@ -22,6 +22,8 @@ pub enum ShowError {
     DuplicateOutput(OutputId),
     UnknownInput(InputId),
     InvalidMediaPlayback(InputId, fm_model::MediaPlaybackSettingsError),
+    /// A media list is invalid or does not fit its input (IN-006).
+    InvalidMediaList(InputId),
     /// The input is not a capture device input, or the capture settings are
     /// invalid (IN-001).
     InvalidCaptureSettings(InputId),
@@ -78,6 +80,10 @@ impl fmt::Display for ShowError {
             Self::InvalidMediaPlayback(input, error) => {
                 write!(formatter, "media input {input} playback settings: {error}")
             }
+            Self::InvalidMediaList(input) => write!(
+                formatter,
+                "input {input}'s media list is invalid or its input does not play its active item"
+            ),
             Self::InvalidCaptureSettings(input) => write!(
                 formatter,
                 "input {input} is not a capture input or its capture settings are invalid"

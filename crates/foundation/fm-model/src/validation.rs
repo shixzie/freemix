@@ -61,6 +61,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_cue_lists(project, &mut errors);
     validate_scripts(project, &mut errors);
     validate_shortcuts(project, &mut errors);
+    validate_media_lists(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -306,6 +307,56 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
             field: "playlist.next_take",
             kind: ValidationErrorKind::OutOfRange,
         });
+    }
+}
+
+fn validate_media_lists(project: &Project, errors: &mut Vec<ValidationError>) {
+    if project.media_lists().len() > crate::MAX_MEDIA_LISTS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "media_lists",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (input, list) in project.media_lists() {
+        let entity = Some(EntityRef::Input(*input));
+        let Some(candidate) = project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == *input)
+        else {
+            errors.push(ValidationError {
+                entity,
+                field: "media_lists.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+            continue;
+        };
+        if let Err(error) = list.validate() {
+            errors.push(ValidationError {
+                entity,
+                field: "media_lists.items",
+                kind: match error {
+                    crate::MediaListError::DuplicateItem(_) => ValidationErrorKind::DuplicateId,
+                    crate::MediaListError::Empty => ValidationErrorKind::Empty,
+                    _ => ValidationErrorKind::OutOfRange,
+                },
+            });
+            continue;
+        }
+        // The input plays its active item's file.
+        let plays_active = matches!(
+            &candidate.kind,
+            crate::InputKind::Media { asset_uri, .. }
+                if list.active_item().is_some_and(|item| item.asset_uri == *asset_uri)
+        );
+        if !plays_active {
+            errors.push(ValidationError {
+                entity,
+                field: "media_lists.active",
+                kind: ValidationErrorKind::FormatMismatch,
+            });
+        }
     }
 }
 
