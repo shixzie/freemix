@@ -37,7 +37,7 @@ use fm_ui_model::title_editor::{TitleAccess, title_payload};
 use fm_protocol::{AudioMeterChannel, AudioMetersMessage};
 
 use crate::animation;
-use crate::osc::{OscAction, OscCounters, OscReceiver};
+use crate::osc::{OscAction, OscCounters, OscReceiver, OscSelected};
 use crate::{
     ControlTransport, LifecycleState, PreferenceStore, SavedPreferences, StudioConfig,
     StudioRuntime, preferences_path,
@@ -533,6 +533,23 @@ impl StudioApp {
         }
     }
 
+    /// Sends an OSC fire's intent with its selected input (RC-004): the
+    /// input the message numbers, or else this console's selection. A fire
+    /// this session cannot send, or one numbering no input, counts as
+    /// rejected.
+    fn enqueue_osc_fire(&mut self, intent: Option<StudioIntent>, selected: OscSelected) {
+        let selection = match selected {
+            None => Some(self.shell.selected_input()),
+            Some(number) => osc_input(&self.state, number).map(Some),
+        };
+        match (intent, selection) {
+            (Some(intent), Some(selection)) => {
+                self.enqueue_intent(intent.with_selected_input(selection));
+            }
+            _ => self.osc_rejected = self.osc_rejected.saturating_add(1),
+        }
+    }
+
     fn drain_osc(&mut self) {
         for drained in 1..=OSC_ACTIONS_PER_FRAME {
             let Some(action) = self.osc.as_ref().and_then(|osc| osc.try_recv().ok()) else {
@@ -548,25 +565,18 @@ impl StudioApp {
             let action = match action {
                 // A cue key acts on the Cues panel's list, gated like the
                 // panel's own key (RC-017).
-                OscAction::Cue(key) => {
-                    if let Some(intent) = self.shell.cue_key_intent(&self.state, key) {
-                        self.enqueue_intent(intent);
-                    } else {
-                        self.osc_rejected = self.osc_rejected.saturating_add(1);
-                    }
+                OscAction::Cue(key, selected) => {
+                    let intent = self.shell.cue_key_intent(&self.state, key);
+                    self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
                 // A project shortcut fires under its key's gates (RC-004);
                 // one this session cannot fire is announced.
-                OscAction::User(name) => {
-                    if let Some(intent) = self
+                OscAction::User(name, selected) => {
+                    let intent = self
                         .shell
-                        .user_shortcut_osc_intent(&self.state, name.as_str())
-                    {
-                        self.enqueue_intent(intent);
-                    } else {
-                        self.osc_rejected = self.osc_rejected.saturating_add(1);
-                    }
+                        .user_shortcut_osc_intent(&self.state, name.as_str());
+                    self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
                 OscAction::SelectPreview(number) => ExternalStudioAction::SelectPreview(number),
@@ -3029,6 +3039,13 @@ fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
 
 /// The protocol command for one Shortcuts window action or user shortcut
 /// fire (RC-004).
+/// The input an OSC message numbers (RC-004): the `number`th input of the
+/// bank, 1-based, as `/freemix/switcher/preview/<n>` numbers them.
+fn osc_input(state: &StudioUiState, number: core::num::NonZeroU32) -> Option<fm_types::InputId> {
+    let index = usize::try_from(number.get() - 1).ok()?;
+    state.view.as_ref()?.inputs.get(index).copied()
+}
+
 fn shortcut_payload(intent: fm_ui_egui::ShortcutIntent) -> CommandPayload {
     match intent {
         fm_ui_egui::ShortcutIntent::Set { shortcut, spec } => CommandPayload::SetShortcut {

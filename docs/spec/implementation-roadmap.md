@@ -42,8 +42,10 @@ highest-value remaining items, ranked:
    overrides, Web operator page buttons, and panel-scoped and chorded keys
    (Protocol 2.83, schema 70), and dynamic input targets (the input on
    Preview, on Program, or selected on the firing console; Protocol 2.88,
-   schema 73); still missing are mouse bindings and dynamic value targets
-   (see the RC-004 boundary below). This is a P0 row.
+   schema 73) with a selection from the Web pages, OSC, and the CLI and a
+   run's bound targets in the cue status (Protocol 2.89); still missing are
+   mouse bindings and dynamic value targets (see the RC-004 boundary
+   below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1025,12 +1027,20 @@ refused whole. The authority journals the Preview and Program it bound
 the same inputs. Studio's shortcut and cue action editors offer the roles in
 their input pickers (only "selected" for a take, none for title field edits,
 whose field list needs a fixed title), with English and Spanish hover help,
-and the standby preview reads a role as the input a GO would bind. Still
-missing, so RC-004 remains planned: dynamic value targets, a run's bound
-targets in the wire cue status, a selection from the Web page, OSC, or the
-CLI (their fires of a "selected" action are refused), scoping a key to a
-pop-out window apart from its panel, chorded or scoped console key
-overrides, and mouse bindings.
+and the standby preview reads a role as the input a GO would bind.
+Protocol 2.89 puts a run's bound targets (and an armed GO's) in the wire cue
+status, shown under Studio's cue list ("Bound at GO: …") and by `cue-lists`,
+and lets the other surfaces select: the Web operator page selects an input
+with its "Selected input" tiles (accent bar, English and Spanish hover help)
+and sends it with every shortcut fire, holding a shortcut on the selected
+input while none is selected; the tally page sends its own input with GO and
+Arm GO; the CLI's `go`, `cue-arm`, and new `shortcut-fire` take
+`--selected <input>`; and Studio's OSC takes an optional `i` input number on
+`/freemix/user/<name>` and `/freemix/cue/go` (a second `i` on
+`/freemix/cue/arm`), else Studio's own selection. Still missing, so RC-004
+remains planned: dynamic value targets, scoping a key to a pop-out window
+apart from its panel, chorded or scoped console key overrides, and mouse
+bindings.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact
