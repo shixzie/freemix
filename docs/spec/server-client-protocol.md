@@ -2607,9 +2607,11 @@ overlay, title, or Fade to Black. During a timed, T-bar, or Stinger
 transition the Preview tap shows the incoming source, as most switchers'
 Preview does, and its `input` names that source. Each tap targets about ten
 frames a second, Preview half an interval out of phase with Program; a due
-frame is skipped while the tap's previous readback is still in flight or the
-frame loop is behind its deadline, and nothing is composed or read back for
-either tap while no eligible peer is connected.
+frame is skipped while the tap's previous readback is still in flight, a
+frame loop behind its deadlines paces the Preview composite as it paces
+display outputs (lowering the Preview rate, never the Program rate), and
+nothing is composed or read back for either tap while no eligible peer is
+connected.
 
 Native daemons (`--native-media`) realize every title input as a live
 source frame at the project video size: the template is rendered as above

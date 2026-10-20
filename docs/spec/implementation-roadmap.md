@@ -283,8 +283,9 @@ see `apps/freemixd/src/monitor_tap.rs`); the native daemon reads back both
 Program and Preview at up to 10 fps each through nonblocking GPU readbacks
 (`NativeContext::begin_readback`/`poll_readback` over the pooled staging
 buffers), Preview being the display Preview composite (the incoming source
-during a transition), half an interval out of phase with Program, skipped
-while the loop is behind or its last readback is in flight, and composed only
+during a transition), half an interval out of phase with Program, paced
+like display outputs when the loop is behind, skipped while its last readback
+is in flight, and composed only
 while a Studio peer is connected (`apps/freemixd/tests/native_preview_tap.rs`).
 Studio shows `PGM FEED` and `PVW FEED` lamps. Studio letterboxes the latest
 frame, labels simulated and native frames, and dims stale or mismatched ones.

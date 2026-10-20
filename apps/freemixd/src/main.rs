@@ -5014,6 +5014,7 @@ impl NativeDaemon {
         let pacer_start_offset = host_deadline_offset(&pacer)?;
         let origin = Instant::now();
         let telemetry = NativeRuntimeTelemetry::new(origin, runtime.context().adapter_info());
+        let monitor = NativeMonitorTap::new(&runtime, stored.project().settings());
         Ok(Self {
             pacer,
             pacer_start_offset,
@@ -5074,7 +5075,7 @@ impl NativeDaemon {
             stream_status_sequence: 0,
             pending_stream_status: None,
             recorder_status: recorder_status::RecorderStatusTracker::default(),
-            monitor: NativeMonitorTap::new(stored.project().settings()),
+            monitor,
             titles,
             files,
             network,
@@ -7148,7 +7149,10 @@ impl NativeDaemon {
             .map(|frame| frame.frame.get())
             .filter(|&frame| self.monitor.due(MonitorTap::Preview, frame));
         let preview_tap_frame = match preview_tap_frame {
-            Some(_) if behind || self.monitor.busy(MonitorTap::Preview) => {
+            Some(_)
+                if self.monitor.busy(MonitorTap::Preview)
+                    || !self.monitor.preview_pacing.due(started, behind) =>
+            {
                 NativeMonitorTap::skip(MonitorTap::Preview, &mut self.telemetry);
                 None
             }
@@ -7166,6 +7170,9 @@ impl NativeDaemon {
                 preview,
                 &mut self.telemetry,
             );
+            self.monitor
+                .preview_pacing
+                .presented(started, Instant::now());
         }
         if display_due {
             self.present_display_outputs()?;
@@ -7796,8 +7803,11 @@ fn validate_native_video_dimensions(
 /// GPU work falls on different frames. Its picture is the Preview composite
 /// display outputs show (see [`preview_frame`]): the Preview source cut in.
 /// During a transition that is the incoming source, as on most switchers. A
-/// Preview composite is rendered for the tap only on its due frames, and not
-/// at all on a frame the loop already started behind its deadline.
+/// Preview composite is rendered for the tap only on its due frames. Once the
+/// loop falls behind its deadlines it is paced like display outputs: the next
+/// Preview capture waits until the loop has spent several times the last
+/// one's cost on everything else, so a costly Preview composite lowers the
+/// Preview rate rather than the Program rate.
 ///
 /// Readback or encode failures skip the frame and are counted in telemetry;
 /// they never fail the frame tick.
@@ -7806,6 +7816,8 @@ struct NativeMonitorTap {
     dimensions: Option<(u16, u16)>,
     interval: u64,
     demand: bool,
+    /// Which due Preview frames a late loop still captures.
+    preview_pacing: display_outputs::PresentationPacing,
     /// Per tap, in [`MonitorTap::index`] order.
     taps: [NativeTapSlot; 2],
 }
@@ -7847,16 +7859,26 @@ impl NativeMonitorTap {
     /// Native monitor frames target at most about ten per second per tap.
     const TARGET_FPS: u64 = 10;
 
-    fn new(settings: &fm_model::ProjectSettings) -> Self {
+    /// Both taps' readback targets and SDR transforms are created here, at
+    /// startup, so a Studio peer connecting never stalls a frame on their
+    /// pipeline compilation; one that fails is retried on a due frame.
+    fn new(runtime: &NativeMediaRuntime, settings: &fm_model::ProjectSettings) -> Self {
         let dimensions = settings.video.dimensions;
         let rate = settings.frame_rate;
         let whole_fps = u64::from(rate.numerator()).div_ceil(u64::from(rate.denominator().max(1)));
-        Self {
+        let mut tap = Self {
             dimensions: monitor_tap::fit_monitor(dimensions.width(), dimensions.height()),
             interval: whole_fps.div_ceil(Self::TARGET_FPS).max(1),
             demand: false,
+            preview_pacing: display_outputs::PresentationPacing::default(),
             taps: [NativeTapSlot::default(), NativeTapSlot::default()],
+        };
+        if let Some((width, height)) = tap.dimensions {
+            for slot in &mut tap.taps {
+                slot.prepare(runtime, width, height);
+            }
         }
+        tap
     }
 
     /// Whether realized frame `frame` falls due for `tap`: there is demand
@@ -7971,6 +7993,19 @@ impl NativeMonitorTap {
 
 #[cfg(feature = "native-media")]
 impl NativeTapSlot {
+    /// Creates the tap's readback target and transform if it has none.
+    fn prepare(&mut self, runtime: &NativeMediaRuntime, width: u16, height: u16) {
+        if self.readback.is_some() {
+            return;
+        }
+        if let (Some(width), Some(height)) = (
+            NonZeroU32::new(u32::from(width)),
+            NonZeroU32::new(u32::from(height)),
+        ) {
+            self.readback = runtime.create_program_readback_blocking(width, height).ok();
+        }
+    }
+
     fn begin(
         &mut self,
         runtime: &NativeMediaRuntime,
@@ -7980,18 +8015,7 @@ impl NativeTapSlot {
         width: u16,
         height: u16,
     ) -> bool {
-        if self.readback.is_none() {
-            let (Some(target_width), Some(target_height)) = (
-                NonZeroU32::new(u32::from(width)),
-                NonZeroU32::new(u32::from(height)),
-            ) else {
-                return false;
-            };
-            match runtime.create_program_readback_blocking(target_width, target_height) {
-                Ok(readback) => self.readback = Some(readback),
-                Err(_) => return false,
-            }
-        }
+        self.prepare(runtime, width, height);
         let Some(readback) = self.readback.as_ref() else {
             return false;
         };
