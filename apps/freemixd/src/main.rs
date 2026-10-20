@@ -20853,11 +20853,15 @@ mod tests {
             let NativeResolvedSource::RetainedFrame { frame, .. } = source else {
                 panic!("PNG signature must route to retained still decode")
             };
+            // A still media file is fitted into the output raster.
             assert_eq!(
                 frame.payload().dimensions(),
-                VideoDimensions::new(1, 1).unwrap()
+                VideoDimensions::new(1_280, 720).unwrap()
             );
-            assert_eq!(frame.payload().plane(0).unwrap().bytes(), &[1, 2, 3, 4]);
+            let plane = frame.payload().plane(0).unwrap();
+            let centre = 360 * plane.stride() + 640 * 4;
+            assert_eq!(&plane.bytes()[centre..centre + 4], &[1, 2, 3, 4]);
+            assert_eq!(&plane.bytes()[..4], &[0, 0, 0, 0]);
             assert_eq!(frame.timing().presentation_timestamp().as_nanos(), 0);
             assert_eq!(frame.timing().duration().as_nanos(), 1);
             assert_eq!(frame.timing().sequence().get(), 0);
