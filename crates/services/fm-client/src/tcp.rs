@@ -547,11 +547,19 @@ pub struct TcpSession {
     /// Whether this connection asked for the thumbnail feed (Protocol
     /// 2.59). Records still in flight after it is turned off are dropped.
     input_thumbnails_subscribed: bool,
+    /// The `paged_page_request`s still unanswered, by request id (IN-014).
+    paged_requests: BTreeMap<String, fm_protocol::PagedPageKey>,
+    /// The decoded page answers (notes and thumbnails), at most
+    /// [`MAX_RETAINED_PAGED_PAGES`].
+    paged_pages: BTreeMap<fm_protocol::PagedPageKey, fm_protocol::PagedPageAnswer>,
 }
 
 /// Most input thumbnails a session keeps; the oldest-received one makes room
 /// for a new input's.
 pub const MAX_RETAINED_INPUT_THUMBNAILS: usize = 256;
+/// Most paged input page answers a session keeps, and most requests it
+/// waits on; the lowest-keyed one makes room.
+pub const MAX_RETAINED_PAGED_PAGES: usize = 256;
 
 #[derive(Debug)]
 enum Transport {
@@ -674,6 +682,8 @@ impl TcpSession {
             latest_scene_preview: None,
             latest_input_thumbnails: BTreeMap::new(),
             input_thumbnails_subscribed: false,
+            paged_requests: BTreeMap::new(),
+            paged_pages: BTreeMap::new(),
         }
     }
 
@@ -926,8 +936,57 @@ impl TcpSession {
         if self.connection.is_none() {
             return Err(TcpSessionError::NotConnected);
         }
+        let key = fm_protocol::PagedPageKey {
+            input: request.input,
+            page: request.page,
+            thumbnail: request.thumbnail,
+        };
+        let request_id = request.request_id.clone();
         self.send_wire_wait(&WireMessage::PagedPageRequest(request), None)?;
+        if self.paged_requests.len() >= MAX_RETAINED_PAGED_PAGES {
+            self.paged_requests.pop_first();
+        }
+        self.paged_requests.insert(request_id, key);
         self.flush_wire_wait(None)
+    }
+
+    /// The decoded answers to this connection's `paged_page_request`s
+    /// (IN-014), by input, page, and kind. A newer answer for the same page
+    /// replaces the older; all are dropped on disconnect.
+    #[must_use]
+    pub const fn paged_pages(
+        &self,
+    ) -> &BTreeMap<fm_protocol::PagedPageKey, fm_protocol::PagedPageAnswer> {
+        &self.paged_pages
+    }
+
+    /// Keeps one `paged_page` answer to a request this session sent; an
+    /// answer naming another input or page than its request, or one that
+    /// does not decode, is dropped.
+    fn keep_paged_page(&mut self, message: &fm_protocol::PagedPageMessage) {
+        let Some(key) = self.paged_requests.remove(&message.request_id) else {
+            return;
+        };
+        if key.input != message.input || key.page != message.page {
+            return;
+        }
+        let Ok(answer) = fm_protocol::decode_paged_page(message) else {
+            return;
+        };
+        let matches_kind = match &answer {
+            fm_protocol::PagedPageAnswer::Notes(_) => !key.thumbnail,
+            fm_protocol::PagedPageAnswer::Thumbnail { .. } => key.thumbnail,
+            fm_protocol::PagedPageAnswer::Unavailable => true,
+        };
+        if !matches_kind {
+            return;
+        }
+        if !self.paged_pages.contains_key(&key)
+            && self.paged_pages.len() >= MAX_RETAINED_PAGED_PAGES
+        {
+            self.paged_pages.pop_first();
+        }
+        self.paged_pages.insert(key, answer);
     }
 
     /// Sends one exact title preview request (see
@@ -1509,7 +1568,10 @@ impl TcpSession {
                 })
             }
             WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, false),
-            WireMessage::PagedPage(message) => Ok(SessionEvent::PagedPage { message }),
+            WireMessage::PagedPage(message) => {
+                self.keep_paged_page(&message);
+                Ok(SessionEvent::PagedPage { message })
+            }
             WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, true),
             WireMessage::DurableGap(gap) => self.durable_gap(gap),
             WireMessage::Error(error)
@@ -1819,6 +1881,8 @@ impl TcpSession {
         self.latest_scene_preview = None;
         self.latest_input_thumbnails.clear();
         self.input_thumbnails_subscribed = false;
+        self.paged_requests.clear();
+        self.paged_pages.clear();
         self.connection.take();
         self.client.transport_disconnected()
     }

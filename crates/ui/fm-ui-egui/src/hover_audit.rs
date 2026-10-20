@@ -438,7 +438,7 @@ fn model(variant: Variant) -> ClientModel {
         grade_states: 4,
         animation_preset_states: 0,
         media_states: 2,
-        paged_states: 0,
+        paged_states: 1,
         cue_list_states: 2,
         script_states: 2,
         shortcut_states: 3,
@@ -724,6 +724,21 @@ fn model(variant: Variant) -> ClientModel {
                 cycle: 0,
                 order: vec![3, 2, 1],
                 position: 1,
+            },
+        })
+        .unwrap();
+    // IN-014: input 6 shows page 2 of a twelve-page presentation.
+    model
+        .apply_paged_state(fm_protocol::PagedStateMessage {
+            revision: 10,
+            status: fm_protocol::PagedStatus {
+                input: wire(6),
+                kind: fm_protocol::PagedKind::Document,
+                page: 1,
+                count: 12,
+                state: fm_protocol::DocumentState::Ready,
+                title: Some("Quarterly review".into()),
+                message: None,
             },
         })
         .unwrap();
@@ -1896,6 +1911,26 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.stream_status = Some(stream_status());
     state.audio_meters = Some(meters());
     state.source_sync = Some(source_sync());
+    // IN-014: the document card's notes and two of its thumbnails arrived.
+    let page = |page: u32, thumbnail: bool| fm_protocol::PagedPageKey {
+        input: wire(6),
+        page,
+        thumbnail,
+    };
+    state.paged_pages.insert(
+        page(1, false),
+        fm_protocol::PagedPageAnswer::Notes("Welcome everyone.\nIntroduce the panel.".into()),
+    );
+    for number in [0, 1] {
+        state.paged_pages.insert(
+            page(number, true),
+            fm_protocol::PagedPageAnswer::Thumbnail {
+                width: 4,
+                height: 2,
+                rgba: vec![200; 4 * 2 * 4].into(),
+            },
+        );
+    }
     state
 }
 

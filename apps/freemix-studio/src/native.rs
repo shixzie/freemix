@@ -1260,6 +1260,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::RequestSlideshowSlides { .. }
+                | StudioIntent::PagedPage(_)
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1293,7 +1294,8 @@ fn run_worker(
                     | SessionEvent::CaptureDevices { .. }
                     | SessionEvent::SystemAudioDevices { .. }
                     | SessionEvent::WebAccess { .. }
-                    | SessionEvent::SlideshowSlides { .. },
+                    | SessionEvent::SlideshowSlides { .. }
+                    | SessionEvent::PagedPage { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1353,6 +1355,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::RequestSlideshowSlides { .. }
+                | StudioIntent::PagedPage(_)
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1451,6 +1454,15 @@ fn handle_preview_request(
         }
         return true;
     }
+    // A document page's notes or thumbnail (IN-014) is asked for only
+    // while connected; one lost to a reconnect is asked for again by the
+    // panel.
+    if let StudioIntent::PagedPage(request) = request {
+        if !recovery.active() {
+            runtime.request_paged_page(request);
+        }
+        return true;
+    }
     // So are the system audio devices (AU-011, Protocol 2.68).
     if matches!(request, StudioIntent::RequestSystemAudioDevices) {
         if recovery.active() {
@@ -1497,6 +1509,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestSystemAudioDevices
         | StudioIntent::WebAccess(_)
         | StudioIntent::RequestSlideshowSlides { .. }
+        | StudioIntent::PagedPage(_)
         | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
@@ -1803,7 +1816,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::CaptureDevices { .. }
                         | SessionEvent::SystemAudioDevices { .. }
                         | SessionEvent::WebAccess { .. }
-                        | SessionEvent::SlideshowSlides { .. } => Some(true),
+                        | SessionEvent::SlideshowSlides { .. }
+                        | SessionEvent::PagedPage { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -2354,6 +2368,7 @@ fn receive_command_event(
                 | SessionEvent::SystemAudioDevices { .. }
                 | SessionEvent::WebAccess { .. }
                 | SessionEvent::SlideshowSlides { .. }
+                | SessionEvent::PagedPage { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2842,6 +2857,20 @@ fn intent_payload(
                 operation,
             }
         }
+        StudioIntent::PagedInput { input, navigation } => {
+            if let Some(view) = view
+                && !view.inputs.contains(&input)
+            {
+                return Err("Input no longer exists".to_owned());
+            }
+            CommandPayload::PagedInput {
+                input: WireInputId::from_domain(input),
+                navigation,
+            }
+        }
+        StudioIntent::PagedPage(_) => {
+            return Err("A document page request is not a command".to_owned());
+        }
         StudioIntent::Grade(command) => command.payload(),
         StudioIntent::TitleAnimation(payload)
         | StudioIntent::SceneAnimation(payload)
@@ -3200,6 +3229,10 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         state
             .input_thumbnails
             .clone_from(runtime.session().latest_input_thumbnails());
+        // Document page notes and thumbnails (IN-014).
+        state
+            .paged_pages
+            .clone_from(runtime.session().paged_pages());
     }
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);

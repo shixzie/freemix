@@ -6245,7 +6245,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::MediaNone, t("Sin entradas de archivo")),
     (
         Msg::MediaNoneDetail,
-        t("Añada una entrada de archivo para reproducirla aquí."),
+        t("Añada una entrada de archivo de medios, PDF o presentación para controlarla aquí."),
     ),
     (
         Msg::MediaNotSynced,
@@ -6489,6 +6489,67 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MlAddHover,
         t("Añade los archivos escritos al final de la lista"),
     ),
+    // Entradas de documento en la pestaña Medios (IN-014).
+    (Msg::DocHeading, t("Documentos")),
+    (
+        Msg::DocIntro,
+        t(
+            "PDF y presentaciones, mostrados página a página. Pasar de página es un control de operador; la página en pantalla se guarda con el proyecto.",
+        ),
+    ),
+    (Msg::DocStateLoading, t("CARGANDO")),
+    (Msg::DocStateConverting, t("CONVIRTIENDO")),
+    (
+        Msg::DocStateHover,
+        t(
+            "Si el servidor puede mostrar este documento: una presentación se convierte primero a PDF, y si no puede convertirse se indica qué hacer",
+        ),
+    ),
+    (
+        Msg::DocTitleHover,
+        t("El título guardado en el archivo del documento"),
+    ),
+    (
+        Msg::DocMessageHover,
+        t("Lo que el servidor informa sobre este documento"),
+    ),
+    (Msg::DocPrevious, t("Página anterior")),
+    (
+        Msg::DocPreviousHover,
+        t("Mostrar la página anterior en esta entrada"),
+    ),
+    (Msg::DocNext, t("Página siguiente")),
+    (
+        Msg::DocNextHover,
+        t("Mostrar la página siguiente en esta entrada"),
+    ),
+    (Msg::DocPageCounter, t("Página {page} de {count}")),
+    (Msg::DocPageUnknownCount, t("Página {page} de ?")),
+    (
+        Msg::DocPageCounterHover,
+        t("La página que muestra esta entrada y el número de páginas del documento"),
+    ),
+    (
+        Msg::DocThumbnailHover,
+        t("Mostrar la página {page} en esta entrada"),
+    ),
+    (Msg::DocNotes, t("Notas del orador")),
+    (
+        Msg::DocNotesHover,
+        t(
+            "Las notas de la página en pantalla, leídas de la presentación; solo la consola las muestra",
+        ),
+    ),
+    (Msg::DocNotesNone, t("Esta página no tiene notas.")),
+    (Msg::DocNotesLoading, t("Cargando las notas…")),
+    (
+        Msg::DocNotesUnavailable,
+        t("No se pueden leer las notas de esta página."),
+    ),
+    (
+        Msg::DocReasonPagesUnknown,
+        t("aún no se conocen las páginas del documento"),
+    ),
     // Input lifecycle (IN-026).
     (Msg::LcDuplicate, t("Duplicar")),
     (
@@ -6585,14 +6646,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::LcImportEllipsis, t("Importar archivos…")),
     (
         Msg::LcImportHover,
-        t("Añadir una entrada de medios por archivo a partir de una lista de rutas"),
+        t(
+            "Añadir una entrada por archivo a partir de una lista de rutas: archivos de medios, PDF y presentaciones",
+        ),
     ),
     (Msg::LcCategoriesEllipsis, t("Categorías…")),
     (Msg::LcImportTitle, t("Importar archivos")),
     (
         Msg::LcImportIntro,
         t(
-            "Pegue una ruta de archivo por línea: vídeos, imágenes o archivos solo de audio (WAV, MP3, AAC/M4A, FLAC, Ogg) para fondos musicales y ráfagas. Cada archivo se convierte en una entrada de medios con su nombre; el daemon copia los archivos del equipo al proyecto.",
+            "Pegue una ruta de archivo por línea: vídeos, imágenes, archivos solo de audio (WAV, MP3, AAC/M4A, FLAC, Ogg) para fondos musicales y ráfagas, o PDF y presentaciones. Cada archivo se convierte en una entrada con su nombre (una entrada de documento para un PDF o una presentación, una de medios en otro caso); el daemon copia los archivos del equipo al proyecto.",
         ),
     ),
     (

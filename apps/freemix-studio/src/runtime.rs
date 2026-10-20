@@ -282,6 +282,15 @@ impl StudioRuntime {
                 .is_ok()
     }
 
+    /// Asks the server for one document page's notes or thumbnail
+    /// (IN-014); the answer lands in the session's page answers. Returns
+    /// whether the request went out.
+    pub(crate) fn request_paged_page(&mut self, request: fm_protocol::PagedPageRequest) -> bool {
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self.session.send_paged_page_request(request).is_ok()
+    }
+
     /// Records that the UI wants the system audio devices without asking
     /// now (the session is recovering); the next (re)connect asks for them.
     pub(crate) const fn want_system_audio_devices(&mut self) {

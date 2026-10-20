@@ -141,7 +141,7 @@ pub fn is_document_file_name(name: &str) -> bool {
 }
 
 /// Where the runtime is with a document input's source.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DocumentState {
     /// The file is being read; the page count may not be known yet.
     #[default]

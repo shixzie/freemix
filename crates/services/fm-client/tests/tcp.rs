@@ -1763,6 +1763,96 @@ fn capture_devices_request_and_reply_round_trip() {
     server_thread.join().unwrap();
 }
 
+/// IN-014: a page request goes out exactly; the session keeps the decoded
+/// answer by input, page, and kind, drops an answer that does not match
+/// its request or was never asked for, and forgets every answer on
+/// disconnect.
+#[test]
+fn paged_page_answers_are_kept_by_page_and_kind() {
+    use fm_protocol::{
+        PagedPageAnswer, PagedPageContent, PagedPageKey, PagedPageMessage, PagedPageRequest,
+    };
+
+    let pixels: Vec<u8> = (0..4 * 2).flat_map(|_| [200_u8, 10, 20]).collect();
+    let data = encode_qoi_rgb(4, 2, &pixels, 12, 3).unwrap();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        for expected in ["notes-1", "thumb-1"] {
+            let WireMessage::PagedPageRequest(request) = peer.receive() else {
+                panic!("expected a paged page request")
+            };
+            assert_eq!(request.request_id, expected);
+        }
+        let answer = |request_id: &str, page, content| {
+            WireMessage::PagedPage(PagedPageMessage {
+                request_id: request_id.into(),
+                input: input(1),
+                page,
+                content,
+            })
+        };
+        peer.send_all(&[
+            // Never asked for, and an answer naming another page.
+            answer("stray", 0, PagedPageContent::Notes("stray".into())),
+            answer("thumb-1", 5, PagedPageContent::Unavailable),
+            answer("notes-1", 2, PagedPageContent::Notes("Hello\nthere".into())),
+        ]);
+    });
+
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    for (request_id, thumbnail) in [("notes-1", false), ("thumb-1", true)] {
+        session
+            .send_paged_page_request(PagedPageRequest {
+                request_id: request_id.into(),
+                input: input(1),
+                page: 2,
+                thumbnail,
+            })
+            .unwrap();
+    }
+    for _ in 0..3 {
+        assert!(matches!(
+            session.receive().unwrap(),
+            SessionEvent::PagedPage { .. }
+        ));
+    }
+    let key = |thumbnail| PagedPageKey {
+        input: input(1),
+        page: 2,
+        thumbnail,
+    };
+    assert_eq!(
+        session.paged_pages().iter().collect::<Vec<_>>(),
+        vec![(&key(false), &PagedPageAnswer::Notes("Hello\nthere".into()))]
+    );
+    // A decoded thumbnail is RGBA.
+    let thumbnail = PagedPageMessage {
+        request_id: "t".into(),
+        input: input(1),
+        page: 2,
+        content: PagedPageContent::Thumbnail {
+            width: 4,
+            height: 2,
+            data,
+        },
+    };
+    let PagedPageAnswer::Thumbnail {
+        width,
+        height,
+        rgba,
+    } = fm_protocol::decode_paged_page(&thumbnail).unwrap()
+    else {
+        panic!("expected a thumbnail")
+    };
+    assert_eq!((width, height), (4, 2));
+    assert_eq!(&rgba[..4], &[200, 10, 20, 255]);
+    server_thread.join().unwrap();
+    let _ = session.receive();
+    assert!(session.paged_pages().is_empty());
+}
+
 fn input_thumbnail(input: u128, sequence: u64, red: u8) -> fm_protocol::InputThumbnailMessage {
     let pixels: Vec<u8> = (0..4 * 2).flat_map(|_| [red, 20, 30]).collect();
     fm_protocol::InputThumbnailMessage {

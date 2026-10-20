@@ -92,7 +92,12 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
     };
     let slideshows = crate::still_input_ui::slideshows(view);
     if project.media().is_empty() && slideshows.is_empty() {
-        empty_state(ui, l.text(Msg::MediaNone), l.text(Msg::MediaNoneDetail));
+        // Document inputs (IN-014) share the tab.
+        if project.paged_statuses().next().is_none() {
+            empty_state(ui, l.text(Msg::MediaNone), l.text(Msg::MediaNoneDetail));
+        } else {
+            crate::documents_ui::draw_documents(ui, state, intents);
+        }
         return;
     }
     let rate = project.frame_rate();
@@ -149,6 +154,7 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
             }
         }
     }
+    crate::documents_ui::draw_documents(ui, state, intents);
 }
 
 /// Why slideshow slides cannot be stepped, if they cannot: the session

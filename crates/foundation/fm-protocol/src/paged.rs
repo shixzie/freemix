@@ -162,3 +162,50 @@ pub const fn paged_thumbnail_size_valid(width: u16, height: u16) -> bool {
 pub fn paged_notes_valid(notes: &str) -> bool {
     notes.len() <= MAX_PAGED_NOTES_BYTES && !notes.chars().any(|c| c.is_control() && c != '\n')
 }
+
+/// Which answer of one paged input page a client holds.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PagedPageKey {
+    pub input: WireInputId,
+    pub page: u32,
+    /// `true` for the thumbnail, `false` for the notes.
+    pub thumbnail: bool,
+}
+
+/// A decoded `paged_page` answer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedPageAnswer {
+    /// The page's presenter notes (empty when it has none).
+    Notes(String),
+    /// The page picture as tightly packed RGBA8 (alpha `255`).
+    Thumbnail {
+        width: u16,
+        height: u16,
+        rgba: std::sync::Arc<[u8]>,
+    },
+    /// The server cannot answer for this page now.
+    Unavailable,
+}
+
+/// Decodes one `paged_page` answer; a thumbnail is unpacked to RGBA8.
+///
+/// # Errors
+///
+/// A thumbnail whose QOI stream does not decode at its size.
+pub fn decode_paged_page(
+    message: &PagedPageMessage,
+) -> Result<PagedPageAnswer, crate::MonitorImageError> {
+    Ok(match &message.content {
+        PagedPageContent::Notes(notes) => PagedPageAnswer::Notes(notes.clone()),
+        PagedPageContent::Thumbnail {
+            width,
+            height,
+            data,
+        } => PagedPageAnswer::Thumbnail {
+            width: *width,
+            height: *height,
+            rgba: crate::decode_qoi_rgb(*width, *height, data)?.into(),
+        },
+        PagedPageContent::Unavailable => PagedPageAnswer::Unavailable,
+    })
+}

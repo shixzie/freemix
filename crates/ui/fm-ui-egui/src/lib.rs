@@ -42,6 +42,7 @@ mod cue_preview;
 mod cues;
 mod display_outputs;
 mod dock;
+mod documents_ui;
 mod edit_history;
 mod fade_to_black;
 mod gating;
@@ -249,6 +250,9 @@ pub enum StudioIntent {
     /// shown and off when it is not (Protocol 2.59); the thumbnails arrive
     /// in [`StudioUiState::input_thumbnails`].
     InputThumbnails { enabled: bool },
+    /// Asks for one document page's presenter notes or thumbnail (IN-014);
+    /// the answer arrives in [`StudioUiState::paged_pages`].
+    PagedPage(fm_protocol::PagedPageRequest),
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -417,6 +421,11 @@ pub enum StudioIntent {
     MediaList {
         input: InputId,
         operation: fm_protocol::MediaListOperation,
+    },
+    /// Turns a document input's page (IN-014): an operator control.
+    PagedInput {
+        input: InputId,
+        navigation: fm_protocol::PagedNavigation,
     },
     /// Sends one grade command from the Colour window: a target's grade,
     /// a library save, or a LUT import.
@@ -591,6 +600,10 @@ pub struct StudioUiState {
         fm_protocol::WireInputId,
         (fm_protocol::InputThumbnailImage, std::time::Instant),
     >,
+    /// The answered document page requests (IN-014): presenter notes and
+    /// page thumbnails, by input, page, and kind.
+    pub paged_pages:
+        std::collections::BTreeMap<fm_protocol::PagedPageKey, fm_protocol::PagedPageAnswer>,
     /// Live input adds and removes sent by this client and not yet resolved,
     /// in send order.
     pub catalogue_pending: Vec<CatalogueRequest>,
@@ -656,6 +669,7 @@ impl StudioUiState {
             reconnect: None,
             monitor_images: [None, None],
             input_thumbnails: std::collections::BTreeMap::new(),
+            paged_pages: std::collections::BTreeMap::new(),
             catalogue_pending: Vec::new(),
             catalogue_refusal: None,
             command_refusals: Vec::new(),
