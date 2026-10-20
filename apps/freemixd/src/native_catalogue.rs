@@ -80,6 +80,8 @@ pub(crate) enum NativeSourceKey {
         audio: Option<InputId>,
     },
     Title,
+    /// A document input (IN-014): stepping its page keeps its source.
+    Document(String),
     Device(String),
     Color,
     Alias,
@@ -106,6 +108,7 @@ impl NativeSourceKey {
                 audio: *audio_source,
             },
             InputKind::Title(_) => Self::Title,
+            InputKind::Document(document) => Self::Document(document.asset_uri.clone()),
             InputKind::Device { stable_key, .. } => Self::Device(stable_key.clone()),
             InputKind::Color => Self::Color,
             InputKind::Alias { .. } => Self::Alias,
@@ -134,6 +137,7 @@ impl NativeSourceKey {
             Self::Generator(_)
             | Self::Media(_)
             | Self::Network
+            | Self::Document(_)
             | Self::Scene { .. }
             | Self::Image(..)
             | Self::Slideshow(_) => None,
@@ -487,7 +491,11 @@ impl NativeDaemon {
                     });
                     Some(frame)
                 }
-                NativeSourceKey::Network | NativeSourceKey::SystemAudio => {
+                // A document's page worker ingests its page once rendered
+                // (IN-014).
+                NativeSourceKey::Network
+                | NativeSourceKey::SystemAudio
+                | NativeSourceKey::Document(_) => {
                     let frame = native_streams::startup_picture(
                         size,
                         settings.frame_rate,

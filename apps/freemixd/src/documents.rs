@@ -382,6 +382,7 @@ pub(crate) fn page_over_black(page: &RenderedPage) -> Option<ImageFrame> {
 }
 
 /// A rendered page as a premultiplied picture keeping its transparency.
+#[cfg(feature = "native-media")]
 pub(crate) fn page_premultiplied(page: &RenderedPage) -> Option<ImageFrame> {
     let mut pixels = page.pixels.clone();
     for pixel in pixels.as_chunks_mut::<4>().0 {

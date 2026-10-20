@@ -115,6 +115,8 @@ mod native_captures;
 #[cfg(feature = "native-media")]
 mod native_catalogue;
 #[cfg(feature = "native-media")]
+mod native_documents;
+#[cfg(feature = "native-media")]
 mod native_files;
 #[cfg(feature = "native-media")]
 mod native_live_lan;
@@ -764,6 +766,9 @@ struct NativeDaemon {
     /// Title inputs realized as live source frames rendered off the loop;
     /// see [`native_titles`].
     titles: native_titles::NativeTitleSources,
+    /// Document inputs realized as live source frames of their current
+    /// page, rendered off the loop (IN-014); see [`native_documents`].
+    documents: native_documents::NativeDocumentSources,
     /// Transport-controlled media-file inputs decoded off the loop; see
     /// [`native_files`].
     files: native_files::NativeMediaFiles,
@@ -5107,6 +5112,7 @@ impl NativeDaemon {
             source_sync_status: native_sync::SourceSyncTracker::default(),
             monitor,
             titles,
+            documents: native_documents::NativeDocumentSources::start(native_clock_domain())?,
             files,
             network,
             system_audio,
@@ -6869,6 +6875,14 @@ impl NativeDaemon {
             self.runtime
                 .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
         }
+        // A document's page, rendered off the loop (IN-014).
+        for (input, frame) in self.documents.take_completed() {
+            if !self.playback.registry().contains(input) {
+                continue;
+            }
+            self.runtime
+                .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
+        }
         for presented in self.files.take_completed() {
             if let Some(frame) = presented.video {
                 self.runtime.ingest_live_video_frame_blocking(
@@ -8597,8 +8611,9 @@ fn resolve_native_sources(
             InputKind::Device { .. } | InputKind::Scene { .. } | InputKind::Title(_) => continue,
             // A network stream starts on a blank picture; its receiver
             // ingests every picture after it (IN-015). A system audio
-            // input keeps its blank picture (AU-011).
-            InputKind::NetworkStream(_) | InputKind::SystemAudio(_) => {
+            // input keeps its blank picture (AU-011), and a document's
+            // page worker ingests its page (IN-014).
+            InputKind::NetworkStream(_) | InputKind::SystemAudio(_) | InputKind::Document(_) => {
                 let dimensions = settings.video.dimensions;
                 native_streams::startup_picture(
                     (dimensions.width(), dimensions.height()),
@@ -10958,6 +10973,11 @@ fn serve_inner(
     };
     if let Some(native) = native.as_mut() {
         native.attach_media_sources(&mut control.borrow_mut())?;
+        // Document inputs show their pages from the start (IN-014).
+        #[cfg(feature = "native-media")]
+        if let Some(pages) = journal.documents() {
+            native.documents.observe(project.project(), pages);
+        }
     }
     // Every authored local HLS output is a configured show destination, so it
     // fails closed before serving exactly like the configured recording
@@ -13560,6 +13580,11 @@ fn execute_native_authority_command(
     native.titles.observe(durable.project());
     #[cfg(feature = "native-media")]
     native.titles.observe_templates(&control.title_templates());
+    // A document input's page renders on the page worker (IN-014).
+    #[cfg(feature = "native-media")]
+    if let Some(pages) = store.documents() {
+        native.documents.observe(durable.project(), pages);
+    }
     #[cfg(feature = "native-media")]
     native.sync_input_catalogue(control, durable.project())?;
     // Destination edits (OR-006) rebuild only the edited destination.
