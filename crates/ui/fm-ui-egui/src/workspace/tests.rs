@@ -655,26 +655,30 @@ fn the_transition_column_follows_its_tile_within_its_range() {
 }
 
 /// Regression (round 7): at 1280x720 the meter key was cut to `RMS ·
-/// PEAK HOL…`. The key shows whole right of the mixer's title, or not at
-/// all where it does not fit (its words stay in the strips' help).
+/// PEAK HOL…`. The key shows whole or not at all where it does not fit
+/// (its words stay in the strips' help). Since round 10 the mixer's header
+/// row carries no title of its own (the dock tab names the panel), so the
+/// key fits at 1280x720 too, and it never runs under the tab.
 #[test]
 fn the_mixer_key_shows_whole_or_not_at_all_and_never_under_its_title() {
     let state = crate::hover_audit::bank_fixture();
-    for (size, shown) in [
-        (vec2(1_920.0, 1_080.0), true),
-        (vec2(1_280.0, 720.0), false),
-    ] {
+    for size in [vec2(1_920.0, 1_080.0), vec2(1_280.0, 720.0)] {
         let context = egui::Context::default();
         let mut shell = StudioShell::default();
         frame_at(&context, &mut shell, &state, size, Vec::new());
         let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
         let texts = painted_galleys(&output);
-        let title = texts
+        let titles: Vec<Rect> = texts
             .iter()
             .filter(|(text, _, _)| text == "AUDIO MIXER")
             .map(|(_, rect, _)| *rect)
-            .max_by(|a, b| a.top().total_cmp(&b.top()))
-            .expect("the mixer's section title");
+            .collect();
+        assert_eq!(
+            titles.len(),
+            1,
+            "{size:?}: only the dock tab names the mixer"
+        );
+        let tab = titles[0];
         assert!(
             !texts.iter().any(|(text, _, elided)| *elided
                 && text.starts_with("RMS")
@@ -683,14 +687,12 @@ fn the_mixer_key_shows_whole_or_not_at_all_and_never_under_its_title() {
                     .starts_with(text.trim_end_matches('…'))),
             "{size:?}: the meter key is cut"
         );
-        let legend = texts
+        let (_, legend, elided) = texts
             .iter()
-            .find(|(text, _, _)| text == Msg::MeterLegend.en());
-        assert_eq!(legend.is_some(), shown, "{size:?}");
-        if let Some((_, legend, elided)) = legend {
-            assert!(!*elided);
-            assert!(legend.left() >= title.right(), "{legend:?} over {title:?}");
-        }
+            .find(|(text, _, _)| text == Msg::MeterLegend.en())
+            .unwrap_or_else(|| panic!("{size:?}: the meter key"));
+        assert!(!*elided);
+        assert!(!legend.intersects(tab), "{legend:?} over {tab:?}");
     }
 }
 

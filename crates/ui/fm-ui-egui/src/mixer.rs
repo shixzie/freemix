@@ -41,8 +41,8 @@ use crate::meter_ballistics::{
 use crate::monitors::label_for_input;
 use crate::theme::{
     AMBER, MONITOR_BLACK, PREVIEW, PROGRAM, accent_color, border_color, border_strong_color,
-    graphite_color, muted_color, raised_color, section_header, tally_color, text_color,
-    text_dim_color, widget_color, widget_hover_color,
+    graphite_color, muted_color, raised_color, tally_color, text_color, text_dim_color,
+    widget_color, widget_hover_color,
 };
 use crate::{
     InputAudioStripUpdate, StudioConnectionStatus, StudioIntent, StudioUiState, TallyState,
@@ -615,7 +615,7 @@ pub(crate) fn draw_mixer(
     if state.audio_meters.is_some() {
         ui.ctx().request_repaint_after(METER_REPAINT_INTERVAL);
     }
-    section_header(ui, l.text(Msg::ViewAudioMixer), |ui| {
+    crate::theme::panel_header(ui, |ui| {
         if state.view.is_some() {
             crate::theme::disclosure(
                 ui,

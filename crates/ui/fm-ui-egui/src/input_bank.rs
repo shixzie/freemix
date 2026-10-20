@@ -28,8 +28,7 @@ use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
     AMBER, LOCK_BADGE_SIZE, MONITOR_BLACK, PREVIEW, PROGRAM, Tone, accent_color,
     border_strong_color, elided, lock_badge, mono, muted_color, paint_lock_badge, pill,
-    raised_color, section_header, small_button, status_chip, tally_badge, tally_color, text_color,
-    text_dim_color,
+    raised_color, small_button, status_chip, tally_badge, tally_color, text_color, text_dim_color,
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -233,7 +232,7 @@ impl StudioShell {
         self.input_bank_drawn = true;
         let count = state.view.as_ref().map(|view| view.inputs.len());
         let locks = edit_lock_summary(state);
-        section_header(ui, l.text(Msg::InputBank), |ui| {
+        crate::theme::panel_header(ui, |ui| {
             if let Some(chip) = locks.bank_chip(l) {
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
