@@ -224,6 +224,10 @@ pub struct ShowState {
     input_audio_labels: BTreeMap<InputId, String>,
     /// Every strip's group membership (AU-001).
     input_audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
+    /// Every strip whose DSP chain differs from the default (AU-005).
+    input_audio_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
+    /// The Master bus DSP chain (AU-005).
+    master_audio_dsp: fm_types::strip_dsp::StripDsp,
     /// The strip groups, group 1 first (AU-001).
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
     /// How a soloed strip is heard (AU-001).
@@ -320,6 +324,8 @@ impl ShowState {
             capture: BTreeMap::new(),
             input_audio_labels: BTreeMap::new(),
             input_audio_groups: BTreeMap::new(),
+            input_audio_dsp: BTreeMap::new(),
+            master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             audio_monitor: crate::EngineAudioMonitor::default(),
@@ -660,6 +666,7 @@ impl ShowState {
         self.capture.remove(&input);
         self.input_audio_labels.remove(&input);
         self.input_audio_groups.remove(&input);
+        self.input_audio_dsp.remove(&input);
         Ok(())
     }
 
@@ -721,6 +728,55 @@ impl ShowState {
     #[must_use]
     pub const fn input_audio_groups(&self) -> &BTreeMap<InputId, fm_model::AudioGroupNumber> {
         &self.input_audio_groups
+    }
+
+    /// The DSP chain of `input`'s strip; the default chain when unknown.
+    #[must_use]
+    pub fn input_audio_dsp(&self, input: InputId) -> fm_types::strip_dsp::StripDsp {
+        self.input_audio_dsp
+            .get(&input)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Every strip whose DSP chain differs from the default, ascending.
+    #[must_use]
+    pub const fn input_audio_dsps(&self) -> &BTreeMap<InputId, fm_types::strip_dsp::StripDsp> {
+        &self.input_audio_dsp
+    }
+
+    /// Replaces the DSP chain of `input`'s strip (AU-005).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] for an input outside the show and
+    /// [`ShowError::InvalidStripDsp`] for an out-of-range chain.
+    pub fn set_input_audio_dsp(
+        &mut self,
+        input: InputId,
+        chain: fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        chain.validate().map_err(ShowError::InvalidStripDsp)?;
+        if chain.is_default() {
+            self.input_audio_dsp.remove(&input);
+        } else {
+            self.input_audio_dsp.insert(input, chain);
+        }
+        Ok(())
+    }
+
+    /// The Master bus DSP chain (AU-005).
+    #[must_use]
+    pub const fn master_audio_dsp(&self) -> &fm_types::strip_dsp::StripDsp {
+        &self.master_audio_dsp
+    }
+
+    /// Replaces the Master bus DSP chain; callers validate it.
+    pub const fn set_master_audio_dsp(&mut self, chain: fm_types::strip_dsp::StripDsp) {
+        self.master_audio_dsp = chain;
     }
 
     /// The strip groups, group 1 first.

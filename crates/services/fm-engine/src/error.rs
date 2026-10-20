@@ -40,6 +40,8 @@ pub enum ShowError {
     InvalidAudioMonitorDevice,
     /// The monitor output level is outside the strip gain range (AU-001).
     InvalidAudioMonitorGain(i32),
+    /// A strip DSP chain value is out of range (AU-005).
+    InvalidStripDsp(fm_types::strip_dsp::StripDspError),
     /// A display output slot's configuration is refused (OR-011); carries
     /// the [`fm_model::SetDisplayOutputError::code`].
     InvalidDisplayOutput(fm_types::display::DisplayOutputSlot, &'static str),
@@ -113,6 +115,7 @@ impl fmt::Display for ShowError {
                     "monitor output gain {gain} millidB is out of range"
                 )
             }
+            Self::InvalidStripDsp(error) => error.fmt(formatter),
             Self::UnknownOutput(output) => {
                 write!(formatter, "show does not contain output {output}")
             }

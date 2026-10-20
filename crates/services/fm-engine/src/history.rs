@@ -601,6 +601,21 @@ impl EditHistory {
             .then_some(position)
     }
 
+    /// The position of the undo entry a continuing DSP chain edit folds
+    /// into: the newest entry, when its own drag opened it setting the same
+    /// chain target.
+    fn dsp_gesture_entry(&self, edit: &crate::EngineAudioMixerEdit) -> Option<usize> {
+        let gesture = edit.gesture().filter(|gesture| gesture.continues)?;
+        let target = edit.dsp_target()?;
+        let position = self.undo.len().checked_sub(1)?;
+        let entry = &self.undo[position];
+        let EngineCommand::AudioMixer(previous) = &entry.forward else {
+            return None;
+        };
+        (entry.gesture == gesture.token.get() && previous.dsp_target() == Some(target))
+            .then_some(position)
+    }
+
     /// Applies the history change for one accepted, newly committed command.
     pub(crate) fn commit(
         &mut self,
@@ -661,6 +676,21 @@ impl EditHistory {
                         }
                         gesture = edit.gesture().map_or(0, |gesture| gesture.token.get());
                         EngineCommand::Grade(edit.recorded())
+                    }
+                    // A knob drag's continuing DSP chain edit folds the same
+                    // way (AU-005).
+                    EngineCommand::AudioMixer(edit) => {
+                        if foldable && let Some(position) = self.dsp_gesture_entry(&edit) {
+                            let forward = EngineCommand::AudioMixer(edit.recorded());
+                            if self.undo[position].inverse == forward {
+                                self.undo.remove(position);
+                            } else {
+                                self.undo[position].forward = forward;
+                            }
+                            return;
+                        }
+                        gesture = edit.gesture().map_or(0, |gesture| gesture.token.get());
+                        EngineCommand::AudioMixer(edit.recorded())
                     }
                     command => command,
                 };

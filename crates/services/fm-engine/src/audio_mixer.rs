@@ -33,13 +33,23 @@
 //!   or mute. Like a strip fader or solo they are live operations: never
 //!   recorded, never reverted by undo, and never blocked by a padlock.
 //!
-//! Membership, group levels, solos, parents, the solo mode, and the monitor
-//! output reach the media plane on the command's target frame through
-//! [`crate::FrameResult::audio_mixer_updates`].
+//! - [`EngineAudioMixerEdit::SetStripDsp`] replaces one input strip's or the
+//!   Master bus's DSP chain (AU-005). It is a project edit: refused while
+//!   the project padlock (and, for a strip, the input's padlock) is
+//!   engaged, and undoable with the exact previous chain. A knob drag sends
+//!   its chain every few frames under one [`crate::GradeGesture`]: a
+//!   continuing edit folds into the undo step its drag opened for the same
+//!   target, so the whole drag undoes at once, and a drag back where it
+//!   started leaves no step.
+//!
+//! Membership, group levels, solos, parents, the solo mode, the monitor
+//! output, and DSP chains reach the media plane on the command's target
+//! frame through [`crate::FrameResult::audio_mixer_updates`].
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_model::{AudioGroupNumber, AudioSoloMode};
 use fm_types::InputId;
+use fm_types::strip_dsp::{StripDsp, StripDspTarget};
 
 use crate::{MAX_INPUT_AUDIO_GAIN_MILLIDB, MIN_INPUT_AUDIO_GAIN_MILLIDB, ShowState};
 
@@ -141,9 +151,43 @@ pub enum EngineAudioMixerEdit {
     SetMonitorDevice { device: Option<String> },
     /// Moves the monitor output level or mute. A live operation.
     SetMonitorLevel { state: EngineAudioGroupState },
+    /// Replaces a strip's or the Master bus's DSP chain (AU-005). A project
+    /// edit; `gesture` folds a knob drag into one undo step.
+    SetStripDsp {
+        target: StripDspTarget,
+        chain: StripDsp,
+        gesture: Option<crate::GradeGesture>,
+    },
 }
 
 impl EngineAudioMixerEdit {
+    /// This edit without its drag gesture, as the history records it.
+    #[must_use]
+    pub const fn recorded(mut self) -> Self {
+        if let Self::SetStripDsp { gesture, .. } = &mut self {
+            *gesture = None;
+        }
+        self
+    }
+
+    /// The drag a DSP chain edit belongs to.
+    #[must_use]
+    pub const fn gesture(&self) -> Option<crate::GradeGesture> {
+        match self {
+            Self::SetStripDsp { gesture, .. } => *gesture,
+            _ => None,
+        }
+    }
+
+    /// The chain target of a DSP chain edit.
+    #[must_use]
+    pub const fn dsp_target(&self) -> Option<StripDspTarget> {
+        match self {
+            Self::SetStripDsp { target, .. } => Some(*target),
+            _ => None,
+        }
+    }
+
     /// Whether this edit is a live operation rather than a project edit.
     #[must_use]
     pub const fn is_live(&self) -> bool {
@@ -157,8 +201,17 @@ impl EngineAudioMixerEdit {
     #[must_use]
     pub const fn locked_input(&self) -> Option<InputId> {
         match self {
-            Self::SetLabel { input, .. } | Self::SetGroup { input, .. } => Some(*input),
-            Self::RenameGroup { .. }
+            Self::SetLabel { input, .. }
+            | Self::SetGroup { input, .. }
+            | Self::SetStripDsp {
+                target: StripDspTarget::Input(input),
+                ..
+            } => Some(*input),
+            Self::SetStripDsp {
+                target: StripDspTarget::Master,
+                ..
+            }
+            | Self::RenameGroup { .. }
             | Self::SetGroupLevel { .. }
             | Self::SetGroupSolo { .. }
             | Self::SetGroupParent { .. }
@@ -205,6 +258,11 @@ pub enum EngineAudioMixerUpdate {
     MonitorDevice(Option<String>),
     /// The monitor output level or mute moved.
     MonitorLevel(EngineAudioGroupState),
+    /// A strip's or the Master bus's DSP chain changed (AU-005).
+    StripDsp {
+        target: StripDspTarget,
+        chain: StripDsp,
+    },
 }
 
 impl EngineAudioMixerUpdate {
@@ -233,6 +291,10 @@ impl EngineAudioMixerUpdate {
                 Some(Self::MonitorDevice(device.clone()))
             }
             EngineAudioMixerEdit::SetMonitorLevel { state } => Some(Self::MonitorLevel(*state)),
+            EngineAudioMixerEdit::SetStripDsp { target, chain, .. } => Some(Self::StripDsp {
+                target: *target,
+                chain: *chain,
+            }),
             EngineAudioMixerEdit::SetLabel { .. } | EngineAudioMixerEdit::RenameGroup { .. } => {
                 None
             }
@@ -370,6 +432,23 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
             state.audio_monitor_mut().state = *level;
             Ok(())
         }
+        EngineAudioMixerEdit::SetStripDsp { target, chain, .. } => {
+            chain.validate().map_err(|error| {
+                rejection(
+                    RejectionCode::InvalidCommand,
+                    "chain",
+                    "out_of_range",
+                    error.to_string(),
+                )
+            })?;
+            match *target {
+                StripDspTarget::Master => state.set_master_audio_dsp(*chain),
+                StripDspTarget::Input(input) => state
+                    .set_input_audio_dsp(input, *chain)
+                    .map_err(|_| unknown_input(input))?,
+            }
+            Ok(())
+        }
     }
 }
 
@@ -421,6 +500,23 @@ pub(crate) fn inverse(
                 device: current.clone(),
             })
         }
+        EngineAudioMixerEdit::SetStripDsp { target, .. } => match *target {
+            StripDspTarget::Master => Some(EngineAudioMixerEdit::SetStripDsp {
+                target: *target,
+                chain: *state.master_audio_dsp(),
+                gesture: None,
+            }),
+            StripDspTarget::Input(input) => {
+                state
+                    .inputs()
+                    .contains(&input)
+                    .then(|| EngineAudioMixerEdit::SetStripDsp {
+                        target: *target,
+                        chain: state.input_audio_dsp(input),
+                        gesture: None,
+                    })
+            }
+        },
         EngineAudioMixerEdit::SetGroupLevel { .. }
         | EngineAudioMixerEdit::SetGroupSolo { .. }
         | EngineAudioMixerEdit::SetMonitorLevel { .. } => None,
