@@ -18,6 +18,15 @@
 //! `title_previews` rate (fm-server) bounds the work. Exact scene previews
 //! (Protocol 2.32, [`crate::scene_preview`]) share the worker, the lossy
 //! slot, and the rate.
+//!
+//! Protocol 2.90 (GX-006) adds draft field values: a request's `fields`
+//! replace the persisted values of those fields for this render only, each
+//! checked against the template's field type and the title field limits,
+//! so the browser title editor shows its unsaved edits before Take or
+//! Update live. A Web session's request is answered through its paced
+//! feed (see [`crate::web_feed`]), at most 320x180, and may name only the
+//! fields the template exposes to browsers. The rendered image draws every
+//! field, hidden ones included, as on air.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -25,13 +34,16 @@ use std::thread::{self, JoinHandle};
 
 use fm_auth::Policy;
 use fm_control::{ControlService, title_clip_from_wire};
-use fm_model::{Project, TitleInput};
+use fm_model::{
+    Project, Rgba8, TitleFieldId, TitleFieldValue as ModelValue, TitleInput, validate_title_fields,
+};
 use fm_protocol::{
-    ServerIdentity, StructuredError, TitlePreviewFrameMessage, TitlePreviewRequest,
+    MAX_WEB_TITLE_PREVIEW_HEIGHT, MAX_WEB_TITLE_PREVIEW_WIDTH, ServerIdentity, StructuredError,
+    TitleFieldUpdate, TitleFieldValue, TitlePreviewFrameMessage, TitlePreviewRequest,
     TitlePreviewSample, WireInputId, encode_qoi_rgba, title_preview_parts,
 };
-use fm_titles::TitleTemplate;
 use fm_titles::fm_animation::{Clip, ClipPosition, ClipState, Phase};
+use fm_titles::{FieldType, TitleTemplate};
 use fm_types::InputId;
 
 use crate::title_render::{self, TitleAssets};
@@ -139,13 +151,29 @@ pub(crate) fn prepare_preview(
     project: &Project,
     server: &ServerIdentity,
     request: &TitlePreviewRequest,
+    web: bool,
 ) -> Result<PreviewJob, StructuredError> {
     let input = request.input.to_domain();
-    let title = title_render::title_of_input(project, input)
-        .ok_or_else(|| refusal("not_found", format!("input {input} is not a title")))?;
+    // A browser asks for a small image only (Protocol 2.90).
+    if web
+        && (request.width > MAX_WEB_TITLE_PREVIEW_WIDTH
+            || request.height > MAX_WEB_TITLE_PREVIEW_HEIGHT)
+    {
+        return Err(refusal(
+            "invalid_request",
+            format!(
+                "a web preview is at most {MAX_WEB_TITLE_PREVIEW_WIDTH}x\
+                 {MAX_WEB_TITLE_PREVIEW_HEIGHT}"
+            ),
+        ));
+    }
+    let mut title = title_render::title_of_input(project, input)
+        .ok_or_else(|| refusal("not_found", format!("input {input} is not a title")))?
+        .clone();
     let engine = control
         .title_template(input)
         .ok_or_else(|| refusal("not_found", format!("title {input} has no loaded template")))?;
+    apply_draft_fields(&mut title, &engine.template, &request.fields, web)?;
     let animation_revision = engine.animation().revision;
     let template: Arc<TitleTemplate> = match &request.clip {
         None => Arc::clone(&engine.template),
@@ -174,14 +202,73 @@ pub(crate) fn prepare_preview(
         request_id: request.request_id.clone(),
         wire_input: request.input,
         input,
-        title: title.clone(),
+        title,
         template,
         time,
         animation_revision,
-        draft: request.clip.is_some(),
+        draft: request.clip.is_some() || !request.fields.is_empty(),
         width: request.width,
         height: request.height,
     })
+}
+
+/// Replaces `title`'s persisted values with a preview's unsaved drafts
+/// (Protocol 2.90). Each draft must name a template field of the same type
+/// (and, from a browser, one the template exposes to it), and the result
+/// must stay within the title bounds.
+fn apply_draft_fields(
+    title: &mut TitleInput,
+    template: &TitleTemplate,
+    drafts: &[TitleFieldUpdate],
+    web: bool,
+) -> Result<(), StructuredError> {
+    for draft in drafts {
+        let id = TitleFieldId::new(draft.field.get());
+        let definition = template
+            .fields
+            .iter()
+            .find(|definition| definition.id.get() == draft.field.get())
+            .filter(|definition| !web || definition.exposed)
+            .ok_or_else(|| {
+                refusal(
+                    "not_found",
+                    format!("the title has no field {}", draft.field),
+                )
+            })?;
+        let value = match (&draft.value, definition.field_type()) {
+            (TitleFieldValue::Text(text), FieldType::Text) => ModelValue::Text(text.clone()),
+            (TitleFieldValue::Number(number), FieldType::Number) => ModelValue::Number(*number),
+            (
+                TitleFieldValue::Color {
+                    red,
+                    green,
+                    blue,
+                    alpha,
+                },
+                FieldType::Color,
+            ) => ModelValue::Color(Rgba8::new(*red, *green, *blue, *alpha)),
+            (TitleFieldValue::Image { asset_uri }, FieldType::Image) => ModelValue::Image {
+                asset_uri: asset_uri.clone(),
+            },
+            _ => {
+                return Err(refusal(
+                    "invalid_request",
+                    format!("draft field {} has the wrong type", draft.field),
+                ));
+            }
+        };
+        match title.fields.iter_mut().find(|entry| entry.id == id) {
+            Some(entry) => entry.value = value,
+            None => {
+                return Err(refusal(
+                    "not_found",
+                    format!("the title has no field {}", draft.field),
+                ));
+            }
+        }
+    }
+    validate_title_fields(&title.fields)
+        .map_err(|error| refusal("invalid_request", error.to_string()))
 }
 
 /// A worker thread that runs jobs off the session loop, at most one
@@ -352,6 +439,108 @@ mod tests {
             assert!(Instant::now() < deadline, "worker did not finish");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    fn field(id: u128) -> fm_protocol::WireTitleFieldId {
+        fm_protocol::WireTitleFieldId::new(core::num::NonZeroU128::new(id).unwrap())
+    }
+
+    fn draft(id: u128, value: fm_protocol::TitleFieldValue) -> fm_protocol::TitleFieldUpdate {
+        fm_protocol::TitleFieldUpdate {
+            field: field(id),
+            value,
+        }
+    }
+
+    /// Protocol 2.90: a preview's draft values replace the persisted ones
+    /// for the render only, typed as the template declares; a browser may
+    /// name only exposed fields, and the title bounds still hold.
+    #[test]
+    fn draft_fields_are_typed_bounded_and_exposed_only_to_browsers() {
+        use fm_model::{TitleFieldEntry, TitleFieldId, TitleFieldValue as Model, TitleInput};
+        use fm_protocol::TitleFieldValue as Wire;
+        use fm_titles::{FieldDefinition, FieldId, FieldValue, TemplateId, TitleTemplate};
+
+        let id = |value| core::num::NonZeroU128::new(value).unwrap();
+        let definition = |value, name: &str, exposed| FieldDefinition {
+            id: FieldId::new(id(value)),
+            name: name.into(),
+            default: FieldValue::Text(String::new()),
+            exposed,
+        };
+        let template = TitleTemplate {
+            id: TemplateId::new(id(1)),
+            name: "Lower".into(),
+            width: 640,
+            height: 360,
+            background: fm_titles::Color::TRANSPARENT,
+            fields: vec![definition(1, "Name", true), definition(2, "Note", false)],
+            elements: Vec::new(),
+            animation: fm_titles::TitleAnimation::default(),
+        };
+        let title = || TitleInput {
+            template_uri: "asset://titles/lower.fmtitle".into(),
+            field_revision: 3,
+            fields: [1, 2]
+                .map(|value| TitleFieldEntry {
+                    id: TitleFieldId::new(id(value)),
+                    value: Model::Text("saved".into()),
+                })
+                .to_vec(),
+        };
+        let code = |result: Result<(), fm_protocol::StructuredError>| result.unwrap_err().code;
+
+        let mut drafted = title();
+        super::apply_draft_fields(
+            &mut drafted,
+            &template,
+            &[draft(1, Wire::Text("Ana".into()))],
+            true,
+        )
+        .unwrap();
+        assert_eq!(drafted.fields[0].value, Model::Text("Ana".into()));
+        assert_eq!(drafted.fields[1].value, Model::Text("saved".into()));
+        assert_eq!(drafted.field_revision, 3);
+        // The hidden field: unknown to a browser, a draft to Studio.
+        let hidden = [draft(2, Wire::Text("x".into()))];
+        assert_eq!(
+            code(super::apply_draft_fields(
+                &mut title(),
+                &template,
+                &hidden,
+                true
+            )),
+            "not_found"
+        );
+        super::apply_draft_fields(&mut title(), &template, &hidden, false).unwrap();
+        assert_eq!(
+            code(super::apply_draft_fields(
+                &mut title(),
+                &template,
+                &[draft(9, Wire::Text("x".into()))],
+                false
+            )),
+            "not_found"
+        );
+        assert_eq!(
+            code(super::apply_draft_fields(
+                &mut title(),
+                &template,
+                &[draft(1, Wire::Number(4))],
+                true
+            )),
+            "invalid_request"
+        );
+        let long = "x".repeat(fm_model::MAX_TITLE_TEXT_CHARS + 1);
+        assert_eq!(
+            code(super::apply_draft_fields(
+                &mut title(),
+                &template,
+                &[draft(1, Wire::Text(long))],
+                true
+            )),
+            "invalid_request"
+        );
     }
 
     /// Regression: previews render off the session loop. Submitting never

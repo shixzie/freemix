@@ -1310,6 +1310,7 @@ fn run_worker(
                     | SessionEvent::InputThumbnail { .. }
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::RecorderStatus { .. }
+                    | SessionEvent::TitlePhases { .. }
                     | SessionEvent::SourceSyncStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. }
@@ -1854,6 +1855,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
+                        | SessionEvent::TitlePhases { .. }
                         | SessionEvent::SourceSyncStatus { .. }
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. }
@@ -2406,6 +2408,7 @@ fn receive_command_event(
                 | SessionEvent::InputThumbnail { .. }
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::RecorderStatus { .. }
+                | SessionEvent::TitlePhases { .. }
                 | SessionEvent::SourceSyncStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
@@ -3260,6 +3263,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         if let Some(view) = &view {
             state.audio_meters = runtime.session().latest_audio_meters().cloned();
             state.stream_status = runtime.session().latest_stream_status().cloned();
+            state.title_phases = runtime.session().latest_title_phases().cloned();
             if let Some(status) = runtime.session().latest_recorder_status() {
                 for sample in &status.samples {
                     let slot = usize::from(sample.recorder.get()) - 1;

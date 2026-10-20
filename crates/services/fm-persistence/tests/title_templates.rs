@@ -2052,6 +2052,53 @@ fn scan_for_font(directory: &Path, depth: u32) -> Option<PathBuf> {
         .find_map(|path| scan_for_font(path, depth + 1))
 }
 
+/// GX-006: a staged template carries its hidden fields with its animation,
+/// so the newest staged edit, whichever it changed, commits both.
+#[test]
+fn staged_title_templates_carry_hidden_fields() {
+    let temp = TestDirectory::new("staged-exposure");
+    let store = temp.store("show.freemix");
+    let source = write_source(&temp, "lower.fmtitle", &shape_template("Bar"));
+    let uri = store
+        .import_title_template(&source, &[])
+        .unwrap()
+        .template_uri;
+    let original = store.load_title_template(&uri).unwrap();
+    let field = original.template.fields[0].id;
+    assert!(original.template.fields[0].exposed);
+    let mut edited = shape_template("Bar");
+    edited
+        .edit_animation(|clip| clip.set_phase_frames_keeping_keys(Phase::In, 12))
+        .unwrap();
+    let animation = TitleAnimation::new(edited.animation.clip.clone(), 1);
+    store
+        .stage_title_template(&uri, 5, &animation, &[field])
+        .unwrap();
+    assert_eq!(store.load_title_template(&uri).unwrap(), original);
+    store
+        .commit_staged_title_animations([uri.as_str()], 5, false)
+        .unwrap();
+    let committed = store.load_title_template(&uri).unwrap();
+    assert!(!committed.template.fields[0].exposed);
+    assert_eq!(committed.template.animation, animation);
+    // An animation-only stage keeps what the template on disk hides.
+    store
+        .stage_title_animation(&uri, 6, &TitleAnimation::new(edited.animation.clip, 2))
+        .unwrap();
+    store
+        .commit_staged_title_animations([uri.as_str()], 6, false)
+        .unwrap();
+    assert!(!store.load_title_template(&uri).unwrap().template.fields[0].exposed);
+    // Exposing it again stages it exposed.
+    store
+        .stage_title_template(&uri, 7, &animation, &[])
+        .unwrap();
+    store
+        .commit_staged_title_animations([uri.as_str()], 7, false)
+        .unwrap();
+    assert!(store.load_title_template(&uri).unwrap().template.fields[0].exposed);
+}
+
 /// GX-011 stage 4a: animation edits are staged per revision beside the
 /// template and committed through a revision; later copies survive unless
 /// discarded, and a crash between the steps is finished by committing again.

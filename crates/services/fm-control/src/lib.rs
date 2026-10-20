@@ -1921,6 +1921,47 @@ impl<A: AuthorizationHook> ControlService<A> {
         &self.snapshot
     }
 
+    /// The fields each title input's template hides from browser clients
+    /// (Protocol 2.90), ascending by input; titles hiding nothing are left
+    /// out. A Web session is never sent these fields.
+    #[must_use]
+    pub fn title_hidden_fields(&self) -> Vec<(WireInputId, Vec<WireTitleFieldId>)> {
+        self.engine
+            .show()
+            .titles()
+            .iter()
+            .filter_map(|(input, title)| {
+                let hidden: Vec<WireTitleFieldId> = title
+                    .fields
+                    .definitions()
+                    .iter()
+                    .filter(|definition| !definition.exposed)
+                    .map(|definition| WireTitleFieldId::new(definition.id.get()))
+                    .collect();
+                (!hidden.is_empty()).then(|| (WireInputId::from_domain(*input), hidden))
+            })
+            .collect()
+    }
+
+    /// Every title input's animation phase and timeline at the engine's
+    /// frame cursor (Protocol 2.90 `title_phases`), ascending by input.
+    #[must_use]
+    pub fn title_phases(&self) -> fm_protocol::TitlePhasesMessage {
+        fm_protocol::TitlePhasesMessage {
+            frame: self.frame_cursor(),
+            titles: title_states(&self.engine)
+                .into_iter()
+                .map(|state| fm_protocol::TitlePhaseStatus {
+                    input: state.input,
+                    phase: state.phase,
+                    phase_frame: state.phase_frame,
+                    phase_frames: state.phase_frames,
+                    timeline: state.timeline,
+                })
+                .collect(),
+        }
+    }
+
     /// Returns one `title_state` per title in [`Self::snapshot`]'s title
     /// order, at the current revision.
     ///

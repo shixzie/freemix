@@ -540,6 +540,8 @@ pub struct TcpSession {
     latest_stream_status: Option<StreamStatusMessage>,
     last_recorder_status_sequence: Option<u64>,
     latest_recorder_status: Option<RecorderStatusMessage>,
+    /// The latest `title_phases` (Protocol 2.90).
+    latest_title_phases: Option<fm_protocol::TitlePhasesMessage>,
     last_source_sync_sequence: Option<u64>,
     latest_source_sync_status: Option<SourceSyncStatusMessage>,
     /// Last completed monitor frame sequence per [`MonitorTap::index`].
@@ -686,6 +688,7 @@ impl TcpSession {
             latest_stream_status: None,
             last_recorder_status_sequence: None,
             latest_recorder_status: None,
+            latest_title_phases: None,
             last_source_sync_sequence: None,
             latest_source_sync_status: None,
             monitor_sequences: [None, None],
@@ -745,6 +748,13 @@ impl TcpSession {
     #[must_use]
     pub const fn latest_recorder_status(&self) -> Option<&RecorderStatusMessage> {
         self.latest_recorder_status.as_ref()
+    }
+
+    /// The latest title animation phases (Protocol 2.90): what a title
+    /// timeline's playhead follows between snapshots.
+    #[must_use]
+    pub const fn latest_title_phases(&self) -> Option<&fm_protocol::TitlePhasesMessage> {
+        self.latest_title_phases.as_ref()
     }
 
     /// The latest live source drift telemetry (Protocol 2.76): one sample
@@ -1521,6 +1531,9 @@ impl TcpSession {
                     WireMessage::RecorderStatus(status) => {
                         self.validate_recorder_status(&status)?;
                     }
+                    WireMessage::TitlePhases(phases) => {
+                        self.latest_title_phases = Some(phases);
+                    }
                     WireMessage::SourceSyncStatus(status) => {
                         self.validate_source_sync_status(&status)?;
                     }
@@ -1610,7 +1623,10 @@ impl TcpSession {
                 self.validate_audio_meters(&meters)?;
                 Ok(SessionEvent::AudioMeters { meters })
             }
-            WireMessage::TitlePhases(phases) => Ok(SessionEvent::TitlePhases { phases }),
+            WireMessage::TitlePhases(phases) => {
+                self.latest_title_phases = Some(phases.clone());
+                Ok(SessionEvent::TitlePhases { phases })
+            }
             WireMessage::StreamStatus(status) => {
                 self.validate_stream_status(&status)?;
                 Ok(SessionEvent::StreamStatus { status })
@@ -1943,6 +1959,7 @@ impl TcpSession {
         self.latest_stream_status = None;
         self.last_recorder_status_sequence = None;
         self.latest_recorder_status = None;
+        self.latest_title_phases = None;
         self.last_source_sync_sequence = None;
         self.latest_source_sync_status = None;
         self.monitor_sequences = [None, None];

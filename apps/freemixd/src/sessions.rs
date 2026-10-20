@@ -264,10 +264,12 @@ enum LossySlot {
     Thumbnail,
     /// The latest `source_sync_status` (Protocol 2.76).
     SourceSyncStatus,
+    /// The latest `title_phases` (Protocol 2.90).
+    TitlePhases,
 }
 
 impl LossySlot {
-    const COUNT: usize = 8;
+    const COUNT: usize = 9;
 
     const fn index(self) -> usize {
         match self {
@@ -279,6 +281,7 @@ impl LossySlot {
             Self::Thumbnail => 5,
             Self::RecorderStatus => 6,
             Self::SourceSyncStatus => 7,
+            Self::TitlePhases => 8,
         }
     }
 
@@ -517,6 +520,24 @@ impl Peer {
         }
     }
 
+    /// Coalesces the latest `title_phases` (Protocol 2.90): a Web page's
+    /// feed paces it, a raw Studio session takes it in its own slot.
+    fn replace_title_phases(&mut self, bytes: &[u8]) {
+        if self.phase != Phase::Active {
+            return;
+        }
+        if let Some(feed) = self.web_feed.as_mut() {
+            feed.offer_title_phases(bytes.to_vec());
+        } else if self.recorder_status {
+            self.lossy.replace(LossySlot::TitlePhases, bytes.to_vec());
+        }
+    }
+
+    /// Whether this session takes `title_phases` records.
+    fn wants_title_phases(&self) -> bool {
+        self.phase == Phase::Active && (self.web_feed.is_some() || self.recorder_status)
+    }
+
     /// Offers a Web peer's feed the Master meters of `web_bytes`.
     fn replace_web_meter(&mut self, web_bytes: &[u8]) {
         if self.phase == Phase::Active
@@ -557,6 +578,21 @@ impl Peer {
                 error,
             })],
         };
+        // A Web page takes each part as its own record (Protocol 2.90).
+        if self.transport.is_web() {
+            let lines = messages
+                .iter()
+                .map(|message| {
+                    encode_line(message)
+                        .map(String::into_bytes)
+                        .map_err(|_| QueueRefusal::Fatal)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(feed) = self.web_feed.as_mut() {
+                feed.offer_preview(lines);
+            }
+            return Ok(());
+        }
         for message in &messages {
             let line = encode_line(message).map_err(|_| QueueRefusal::Fatal)?;
             bytes.extend_from_slice(line.as_bytes());
@@ -667,6 +703,8 @@ pub(super) fn run(
         Duration::from_millis(server.config().session_limits.heartbeat_timeout_ms);
     let mut peers = Vec::with_capacity(MAX_PEERS + web.map_or(0, |_| MAX_WEB_CLIENTS));
     let mut next_peer_id = 0_u64;
+    // When `title_phases` (Protocol 2.90) is next sent.
+    let mut phase_pacer = crate::web_titles::PhasePacer::default();
     // Where the next pass starts dispatching, so no peer is always last.
     let mut dispatch_cursor = 0_usize;
     let mut once_peer = None;
@@ -956,7 +994,11 @@ pub(super) fn run(
                 WireMessage::Command(command)
                     if group_commits && peers[index].phase == Phase::Active =>
                 {
-                    if group_commit_eligible(&command) {
+                    // A Web title command is checked against the hidden
+                    // fields on its own (see `Runtime::web_command_refusal`).
+                    if group_commit_eligible(&command)
+                        && !web_title_command(&peers[index], &command)
+                    {
                         group.push((index, command));
                         continue;
                     }
@@ -1237,6 +1279,12 @@ pub(super) fn run(
                 publish_source_sync_status(&mut peers, &status);
             }
         }
+        let phases_demand = peers.iter().any(Peer::wants_title_phases);
+        if let Some(phases) = phase_pacer.poll(Instant::now(), phases_demand, || {
+            control.borrow().title_phases()
+        }) {
+            publish_title_phases(&mut peers, phases);
+        }
         let realizing = native.as_deref();
         release_held_results(&mut peers, &mut close, |slot| {
             realizing.is_some_and(|native| native.recording_settling(slot))
@@ -1277,7 +1325,11 @@ pub(super) fn run(
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
-        drain_live(&mut peers, &mut close, &mut live_budget);
+        let hidden = peers
+            .iter()
+            .any(|peer| peer.transport.is_web())
+            .then(|| crate::web_titles::HiddenFields::new(control.borrow().title_hidden_fields()));
+        drain_live(&mut peers, &mut close, &mut live_budget, hidden.as_ref());
 
         for (index, peer) in peers.iter_mut().enumerate() {
             if close[index] {
@@ -1845,6 +1897,10 @@ impl Runtime<'_> {
         let mut native = native;
         match message {
             WireMessage::Command(command) => {
+                if let Some(refused) = self.web_command_refusal(peer, &command) {
+                    peer.reply(WireMessage::CommandResult(refused))?;
+                    return Ok(());
+                }
                 self.catch_up_playlist(&command, durable, native.is_none())?;
                 let delivery = execute_session_command(
                     peer.session.as_mut().expect("active peers have sessions"),
@@ -2104,6 +2160,24 @@ impl Runtime<'_> {
         }
     }
 
+    /// The refusal a Web peer's command meets before it executes (see
+    /// [`crate::web_titles`]); `None` for raw peers and allowed commands.
+    fn web_command_refusal(
+        &self,
+        peer: &Peer,
+        command: &fm_protocol::CommandMessage,
+    ) -> Option<fm_protocol::CommandResult> {
+        if !web_title_command(peer, command) {
+            return None;
+        }
+        let control = self.control.borrow();
+        crate::web_titles::web_command_refusal(
+            command,
+            &crate::web_titles::HiddenFields::new(control.title_hidden_fields()),
+            control.diagnostics().current_revision,
+        )
+    }
+
     /// Hands the engine's title templates to the title renderers: an
     /// accepted animation edit changes what titles draw.
     fn sync_title_templates(&self) {
@@ -2130,13 +2204,16 @@ impl Runtime<'_> {
             _ => return Ok(()),
         };
         let request_id = request.request_id().to_owned();
-        if peer.transport.is_web() {
+        // A Web page may ask for small title previews through its status
+        // feed (Protocol 2.90); scene previews stay raw-only.
+        let web = peer.transport.is_web();
+        if web && (matches!(request, PreviewRequest::Scene(_)) || peer.web_feed.is_none()) {
             peer.reply(WireMessage::Error(ErrorMessage {
                 request_id: Some(request_id),
                 current_revision: None,
                 error: StructuredError {
                     code: "unsupported".into(),
-                    message: "exact previews are served to raw protocol sessions only".into(),
+                    message: "scene previews are served to raw protocol sessions only".into(),
                     fields: Vec::new(),
                     retryable: false,
                 },
@@ -2168,6 +2245,7 @@ impl Runtime<'_> {
                         durable.project(),
                         server,
                         request,
+                        web,
                     )
                     .map(|job| crate::title_preview::PreviewWork::Title(Box::new(job))),
                     PreviewRequest::Scene(request) => crate::scene_preview::prepare_scene_preview(
@@ -2205,12 +2283,16 @@ impl Runtime<'_> {
     fn complete_snapshot(&self, peer: &mut Peer) {
         if matches!(peer.initial_sync.front(), Some(WireMessage::Snapshot(_))) {
             let control = self.control.borrow();
-            peer.initial_sync.extend(
-                control
-                    .title_states()
-                    .into_iter()
-                    .map(WireMessage::TitleState),
-            );
+            // A Web page is never sent a field its title hides (2.90).
+            let web = peer.transport.is_web();
+            peer.initial_sync
+                .extend(control.title_states().into_iter().map(|state| {
+                    WireMessage::TitleState(if web {
+                        crate::web_titles::web_title_state(state)
+                    } else {
+                        state
+                    })
+                }));
             let rate = control.snapshot().snapshot.frame_rate;
             peer.initial_sync
                 .extend(control.playlist_state().map(|mut state| {
@@ -2471,7 +2553,27 @@ fn make_retryable(response: &mut HandshakeResponse) {
     }
 }
 
-fn drain_live(peers: &mut [Peer], close: &mut [bool], budgets: &mut [usize]) {
+/// Whether `command` is a Web peer's title command that must first be
+/// checked against the fields its title hides (see [`crate::web_titles`]).
+fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool {
+    peer.transport.is_web()
+        && matches!(
+            command.payload,
+            CommandPayload::SetTitleFieldExposure { .. }
+                | CommandPayload::SetTitleFields { .. }
+                | CommandPayload::TakeTitle { .. }
+        )
+}
+
+/// Queues each active peer's live events, up to its budget. A Web peer's
+/// title records leave out the fields their titles hide (`hidden`, present
+/// whenever a Web peer is connected).
+fn drain_live(
+    peers: &mut [Peer],
+    close: &mut [bool],
+    budgets: &mut [usize],
+    hidden: Option<&crate::web_titles::HiddenFields>,
+) {
     for (index, peer) in peers.iter_mut().enumerate() {
         // A held acknowledgement precedes the events its command published.
         if close[index] || peer.phase != Phase::Active || peer.held_result.is_some() {
@@ -2487,7 +2589,12 @@ fn drain_live(peers: &mut [Peer], close: &mut [bool], budgets: &mut [usize]) {
                     .expect("active peers have subscriptions")
                     .try_recv()
                 {
-                    Ok(LiveEvent::Durable(event)) => WireMessage::Event(event),
+                    Ok(LiveEvent::Durable(event)) => match hidden {
+                        Some(hidden) if peer.transport.is_web() => {
+                            crate::web_titles::web_live_message(WireMessage::Event(event), hidden)
+                        }
+                        _ => WireMessage::Event(event),
+                    },
                     Ok(LiveEvent::Runtime(event)) => WireMessage::RuntimeEvent(event),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
@@ -2751,6 +2858,17 @@ fn publish_audio_meters(peers: &mut [Peer], meters: AudioMetersMessage) {
     };
     for peer in peers {
         peer.replace_meter(bytes.clone());
+    }
+}
+
+/// Title animation phases (Protocol 2.90) go to Web pages and raw Studio
+/// sessions, latest-wins.
+fn publish_title_phases(peers: &mut [Peer], phases: fm_protocol::TitlePhasesMessage) {
+    let Ok(bytes) = encode_line(&WireMessage::TitlePhases(phases)).map(String::into_bytes) else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_title_phases(&bytes);
     }
 }
 

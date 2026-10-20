@@ -14,7 +14,15 @@
 //! rate-limit a command result; its bandwidth is bounded by these intervals
 //! instead (a Master meter record is a few hundred bytes, a status record at
 //! most a few kilobytes).
+//!
+//! Protocol 2.90 adds the `title_phases` record (paced like a status) and
+//! the answer to the page's own exact title preview request: its
+//! `title_preview_frame` parts are handed over one record at a time ahead of
+//! every status, never interleaved with another answer, and a newer answer
+//! replaces one that has not started. The session's title preview rate
+//! bounds them (a 320x180 preview is at most nine 32 KiB parts).
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use fm_protocol::AudioMetersMessage;
@@ -55,11 +63,36 @@ pub(crate) struct WebFeed {
     meters: Slot,
     recorders: Slot,
     streams: Slot,
+    /// The `title_phases` record (Protocol 2.90), paced like a status.
+    phases: Slot,
+    /// The parts of the exact title preview being handed over, one record
+    /// each, in order (Protocol 2.90).
+    preview: VecDeque<Vec<u8>>,
+    /// The newest preview answer waiting for the one in flight: a newer
+    /// answer replaces it, so a page typing fast gets only the latest.
+    next_preview: Option<Vec<Vec<u8>>>,
 }
 
 impl WebFeed {
     pub(crate) fn offer_meters(&mut self, bytes: Vec<u8>) {
         self.meters.latest = Some(bytes);
+    }
+
+    /// Offers the newest `title_phases` record.
+    pub(crate) fn offer_title_phases(&mut self, bytes: Vec<u8>) {
+        self.phases.latest = Some(bytes);
+    }
+
+    /// Offers an exact title preview answer: its `title_preview_frame`
+    /// parts (or the error its render met), one line each. Parts of an
+    /// answer already started are all handed over first, so a page never
+    /// sees two answers interleave.
+    pub(crate) fn offer_preview(&mut self, lines: Vec<Vec<u8>>) {
+        if self.preview.is_empty() {
+            self.preview = lines.into();
+        } else {
+            self.next_preview = Some(lines);
+        }
     }
 
     pub(crate) fn offer_stream_status(&mut self, bytes: Vec<u8>) {
@@ -76,10 +109,21 @@ impl WebFeed {
     /// than the meter interval therefore still gets every kind in turn
     /// instead of only meters.
     pub(crate) fn next(&mut self, now: Instant) -> Option<Vec<u8>> {
+        // A preview the page asked for goes first, part after part; its
+        // rate is the session's preview rate.
+        if self.preview.is_empty()
+            && let Some(next) = self.next_preview.take()
+        {
+            self.preview = next.into();
+        }
+        if let Some(part) = self.preview.pop_front() {
+            return Some(part);
+        }
         let (slot, interval) = [
             (&mut self.meters, WEB_METER_INTERVAL),
             (&mut self.recorders, WEB_STATUS_INTERVAL),
             (&mut self.streams, WEB_STATUS_INTERVAL),
+            (&mut self.phases, WEB_STATUS_INTERVAL),
         ]
         .into_iter()
         .filter(|(slot, _)| slot.is_due(now))
@@ -149,6 +193,33 @@ mod tests {
             now += Duration::from_millis(5);
         }
         assert!((14..=16).contains(&sent), "{sent} meter records in 1 s");
+    }
+
+    /// A preview answer's parts go out back to back, ahead of statuses; a
+    /// newer answer waits for the one started and replaces an older one
+    /// still waiting.
+    #[test]
+    fn preview_parts_go_first_in_order_and_newest_answer_wins() {
+        let mut feed = WebFeed::default();
+        let now = Instant::now();
+        feed.offer_title_phases(b"phases".to_vec());
+        feed.offer_preview(vec![b"a1".to_vec(), b"a2".to_vec()]);
+        assert_eq!(feed.next(now).as_deref(), Some(&b"a1"[..]));
+        // Two newer answers arrive mid-answer: only the newest is kept.
+        feed.offer_preview(vec![b"b1".to_vec()]);
+        feed.offer_preview(vec![b"c1".to_vec(), b"c2".to_vec()]);
+        assert_eq!(feed.next(now).as_deref(), Some(&b"a2"[..]));
+        assert_eq!(feed.next(now).as_deref(), Some(&b"c1"[..]));
+        assert_eq!(feed.next(now).as_deref(), Some(&b"c2"[..]));
+        assert_eq!(feed.next(now).as_deref(), Some(&b"phases"[..]));
+        assert!(feed.next(now).is_none());
+        // Phases are paced like a status.
+        feed.offer_title_phases(b"p2".to_vec());
+        assert!(feed.next(now + Duration::from_millis(10)).is_none());
+        assert_eq!(
+            feed.next(now + WEB_STATUS_INTERVAL).as_deref(),
+            Some(&b"p2"[..])
+        );
     }
 
     /// A peer whose relay takes a record only every 100 ms (slower than the

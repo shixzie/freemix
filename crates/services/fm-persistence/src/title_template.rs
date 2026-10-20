@@ -487,8 +487,42 @@ impl ProjectStore {
         revision: u64,
         animation: &TitleAnimation,
     ) -> Result<(), TitleTemplateError> {
+        self.stage_template(uri, revision, animation, None)
+    }
+
+    /// Like [`Self::stage_title_animation`], also staging which fields the
+    /// template hides from browsers (GX-006): every field in `hidden` is
+    /// staged hidden, every other field exposed. A staged copy carries the
+    /// whole edited template, so an exposure edit staged after an animation
+    /// edit (or the other way round) must name both.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::stage_title_animation`].
+    pub fn stage_title_template(
+        &self,
+        uri: &str,
+        revision: u64,
+        animation: &TitleAnimation,
+        hidden: &[FieldId],
+    ) -> Result<(), TitleTemplateError> {
+        self.stage_template(uri, revision, animation, Some(hidden))
+    }
+
+    fn stage_template(
+        &self,
+        uri: &str,
+        revision: u64,
+        animation: &TitleAnimation,
+        hidden: Option<&[FieldId]>,
+    ) -> Result<(), TitleTemplateError> {
         let mut stored = self.load_title_template(uri)?;
         stored.template.animation = animation.clone();
+        if let Some(hidden) = hidden {
+            for field in &mut stored.template.fields {
+                field.exposed = !hidden.contains(&field.id);
+            }
+        }
         let document = encode_title_template(&stored)?;
         let path = self
             .resolve_asset_uri(uri)

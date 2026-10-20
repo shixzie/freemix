@@ -149,6 +149,7 @@ mod display_outputs;
 mod playlist_clock;
 mod sessions;
 mod web_feed;
+mod web_titles;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
@@ -13501,7 +13502,7 @@ impl DurableStore for GroupRecorder<'_> {
     fn stage_title_animations(
         &self,
         revision: u64,
-        animations: &[(String, fm_titles::TitleAnimation)],
+        animations: &[(String, journal::StagedTemplate)],
     ) -> AppResult<()> {
         if animations.is_empty() {
             return Ok(());
@@ -14711,6 +14712,8 @@ fn execute_durable_command_with_ticks(
     // Nothing commits before `record`, so a refusal reports this revision.
     let current_revision = control.diagnostics().current_revision;
     let began_frame = control.frame_cursor();
+    // What a template edit leaves unchanged (shared `Arc`s, so cheap).
+    let templates_before = control.title_templates();
     let preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
         Ok(preparation) => preparation,
         Err(error) => {
@@ -14771,7 +14774,7 @@ fn execute_durable_command_with_ticks(
     }
     // An animation edit's template is staged before its batch, so whatever
     // replays the batch finds the template the manifest it lands on needs.
-    let animations = staged_title_animations(&prepared, &updated);
+    let animations = staged_title_animations(&prepared, &updated, &templates_before);
     let staged_uris: Vec<String> = animations.iter().map(|(uri, _)| uri.clone()).collect();
     let revision = updated.position().revision;
     if let Err(error) = store.stage_title_animations(revision, &animations) {
@@ -14835,36 +14838,64 @@ fn execute_durable_command_with_ticks(
     })
 }
 
-/// The template animations an accepted command leaves `updated` with: one
-/// per `title_animation_changed` event, keyed by the stored template URI
-/// its titles name.
+/// The templates an accepted command leaves `updated` with: one per
+/// `title_animation_changed` or `title_exposure_changed` event, keyed by the
+/// stored template URI its titles name. A staged template is whole, so the
+/// part the event does not change (the hidden fields of an animation edit,
+/// the animation of an exposure edit) comes from `before`, the engine's
+/// templates as the command found them.
 fn staged_title_animations(
     prepared: &fm_control::PreparedSubmission<'_, Policy>,
     updated: &StoredProject,
-) -> Vec<(String, fm_titles::TitleAnimation)> {
+    before: &[fm_engine::EngineTitleTemplate],
+) -> Vec<(String, journal::StagedTemplate)> {
     if !prepared.submission().is_accepted() {
         return Vec::new();
     }
+    let template = |uri: &str| {
+        before
+            .iter()
+            .find(|template| &*template.key == uri)
+            .map(|template| &template.template)
+    };
+    let uri_of = |inputs: &[fm_protocol::WireInputId]| {
+        title_render::title_of_input(updated.project(), inputs.first()?.to_domain())
+            .map(|title| title.template_uri.clone())
+    };
     prepared
         .output()
         .events
         .iter()
-        .filter_map(|event| {
-            let fm_protocol::EventPayload::TitleAnimationChanged {
+        .filter_map(|event| match &event.payload {
+            fm_protocol::EventPayload::TitleAnimationChanged {
                 inputs,
                 animation_revision,
                 clip,
-            } = &event.payload
-            else {
-                return None;
-            };
-            let title =
-                title_render::title_of_input(updated.project(), inputs.first()?.to_domain())?;
-            let clip = fm_control::title_clip_from_wire(clip).ok()?;
-            Some((
-                title.template_uri.clone(),
-                fm_titles::TitleAnimation::new(clip, *animation_revision),
-            ))
+            } => {
+                let uri = uri_of(inputs)?;
+                let clip = fm_control::title_clip_from_wire(clip).ok()?;
+                let hidden = template(&uri).map_or_else(Vec::new, |template| {
+                    template
+                        .fields
+                        .iter()
+                        .filter(|field| !field.exposed)
+                        .map(|field| field.id)
+                        .collect()
+                });
+                let animation = fm_titles::TitleAnimation::new(clip, *animation_revision);
+                Some((uri, journal::StagedTemplate { animation, hidden }))
+            }
+            fm_protocol::EventPayload::TitleExposureChanged { inputs, fields } => {
+                let uri = uri_of(inputs)?;
+                let animation = template(&uri)?.animation.clone();
+                let hidden = fields
+                    .iter()
+                    .filter(|item| !item.exposed)
+                    .map(|item| fm_titles::FieldId::new(item.field.get()))
+                    .collect();
+                Some((uri, journal::StagedTemplate { animation, hidden }))
+            }
+            _ => None,
         })
         .collect()
 }

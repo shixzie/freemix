@@ -613,6 +613,10 @@ pub struct StudioUiState {
     /// Protocol 2.76): one sample per running live source. `None` when the
     /// daemon reports none.
     pub source_sync: Option<fm_protocol::SourceSyncStatusMessage>,
+    /// The latest title animation phases (`title_phases`, Protocol 2.90):
+    /// what the TITLES timeline strip's playhead follows. `None` until the
+    /// daemon sends one.
+    pub title_phases: Option<fm_protocol::TitlePhasesMessage>,
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Whether a Start all or Stop all command is still unresolved.
@@ -698,6 +702,7 @@ impl StudioUiState {
             recording_pending: [false; RECORDER_SLOT_COUNT],
             recorder_realized: [None, None],
             source_sync: None,
+            title_phases: None,
             stream_pending: Vec::new(),
             stream_group_pending: false,
             reconnect: None,

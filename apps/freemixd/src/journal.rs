@@ -15,8 +15,9 @@
 //! above the newest mutation, written at a bounded cadence, which replay
 //! ticks the engine idle up to after the last recorded command.
 //!
-//! A title animation edit (GX-011) also changes the stored template outside
-//! `project.json`. Its new animation is staged beside the template as of the
+//! A title animation edit (GX-011) or field exposure edit (GX-006) also
+//! changes the stored template outside `project.json`. The edited template
+//! (its animation and hidden fields) is staged beside it as of the
 //! edit's revision before the batch is appended
 //! ([`DurableStore::stage_title_animations`]), and committed over the
 //! template only once a manifest at or after that revision is durable (at
@@ -39,6 +40,15 @@ use fm_protocol::{
 use fm_types::FrameRate;
 
 use crate::{AppFailure, AppResult};
+
+/// What an accepted command leaves one stored title template with, staged
+/// whole beside it: the animation every title naming it shows (GX-011) and
+/// the fields it hides from browsers (GX-006).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StagedTemplate {
+    pub(crate) animation: fm_titles::TitleAnimation,
+    pub(crate) hidden: Vec<fm_titles::FieldId>,
+}
 
 /// Mutations allowed between two manifest checkpoints.
 ///
@@ -163,7 +173,7 @@ pub(crate) trait DurableStore {
     fn stage_title_animations(
         &self,
         _revision: u64,
-        _animations: &[(String, fm_titles::TitleAnimation)],
+        _animations: &[(String, StagedTemplate)],
     ) -> AppResult<()> {
         Ok(())
     }
@@ -367,7 +377,7 @@ enum Job {
     },
     Stage {
         revision: u64,
-        animations: Vec<(String, fm_titles::TitleAnimation)>,
+        animations: Vec<(String, StagedTemplate)>,
         reply: Reply<()>,
     },
     DiscardStaged {
@@ -747,7 +757,7 @@ impl DurableStore for DurableJournal {
     fn stage_title_animations(
         &self,
         revision: u64,
-        animations: &[(String, fm_titles::TitleAnimation)],
+        animations: &[(String, StagedTemplate)],
     ) -> AppResult<()> {
         if animations.is_empty() {
             return Ok(());
@@ -1005,13 +1015,13 @@ impl Worker<'_> {
     fn stage(
         &mut self,
         revision: u64,
-        animations: &[(String, fm_titles::TitleAnimation)],
+        animations: &[(String, StagedTemplate)],
     ) -> WorkerResult<()> {
-        for (uri, animation) in animations {
+        for (uri, staged) in animations {
             self.staged.insert(uri.clone());
             self.writer
                 .project_store()
-                .stage_title_animation(uri, revision, animation)
+                .stage_title_template(uri, revision, &staged.animation, &staged.hidden)
                 .map_err(|error| {
                     WorkerError::Failure(format!("title animation could not be staged: {error}"))
                 })?;
