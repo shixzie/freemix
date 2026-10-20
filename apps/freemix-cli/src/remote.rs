@@ -2114,12 +2114,17 @@ impl Remote {
                     durable |= matches_revision;
                 }
                 WireMessage::RuntimeEvent(runtime) => {
+                    // A command another one interrupts mid motion (an
+                    // overlay transition, a title phase, Fade to Black) is
+                    // superseded instead of realized (Protocol 2.86).
                     let matches_realization = runtime.revision == revision
-                        && matches!(
-                            &runtime.event,
-                            RuntimeLifecycleEvent::Realized { domain, .. }
-                                if completion.realizes(domain)
-                        );
+                        && match &runtime.event {
+                            RuntimeLifecycleEvent::Realized { domain, .. } => {
+                                completion.realizes(domain)
+                            }
+                            RuntimeLifecycleEvent::Superseded { .. } => true,
+                            _ => false,
+                        };
                     self.client.intake(WireMessage::RuntimeEvent(runtime))?;
                     realized |= matches_realization;
                 }

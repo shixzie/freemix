@@ -3339,6 +3339,84 @@ fn remote_fade_to_black_preserves_target_duration_and_replicated_state() {
     server.finish();
 }
 
+/// A command another session interrupts mid motion is reported superseded
+/// instead of realized (Protocol 2.86): the CLI's wait ends there.
+#[test]
+fn remote_fade_to_black_completes_when_superseded() {
+    let server = FakeRemoteServer::start_test_peer(|stream| {
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request(read_message(&mut reader));
+        write_handshake_version_with_fade_to_black(
+            &mut writer,
+            &engine,
+            0,
+            fm_protocol::CURRENT_PROTOCOL_VERSION,
+            live_fade_to_black(),
+        );
+        let WireMessage::Command(command) = read_message(&mut reader) else {
+            panic!("expected remote FTB command");
+        };
+        write_message(
+            &mut writer,
+            &WireMessage::CommandResult(CommandResult::Accepted {
+                id: command.id,
+                revision: 1,
+                scheduled_frame: Some(1),
+            }),
+        );
+        write_message(
+            &mut writer,
+            &WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine.clone(),
+                    revision: 1,
+                },
+                payload: EventPayload::DesiredSwitcher {
+                    program: input(1),
+                    preview: input(2),
+                    manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+                    fade_to_black: fm_protocol::FadeToBlackState {
+                        target_active: true,
+                        position: fm_protocol::FadeToBlackPosition::LIVE,
+                    },
+                    overlays: OverlayStatus::empty_channels(),
+                    input_audio_strips: input_audio_strips(),
+                },
+            }),
+        );
+        write_message(
+            &mut writer,
+            &WireMessage::RuntimeEvent(RuntimeEventMessage {
+                server: server_identity(&engine),
+                revision: 1,
+                generation: 1,
+                sequence: 1,
+                event: RuntimeLifecycleEvent::Superseded { by_revision: 2 },
+            }),
+        );
+    });
+    let output = invoke(&[
+        "remote-ftb",
+        &server.address(),
+        "black",
+        "2",
+        "--key",
+        "remote-blackout",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
 #[test]
 fn remote_t_bar_position_preserves_the_exact_endpoint_and_replicated_status() {
     let server = FakeRemoteServer::start_manual_position();
