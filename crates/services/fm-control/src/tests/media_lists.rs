@@ -208,6 +208,7 @@ fn media_lists_are_authorized_replicated_and_auto_advanced_exactly() {
         payload(MediaListOperation::Set {
             items: reordered.clone(),
             options: MediaListOptionsSpec::default(),
+            active: None,
         }),
     );
     assert!(set.is_accepted(), "{:?}", set.output.result);
@@ -310,4 +311,72 @@ fn every_accepted_list_fits_its_wire_records_and_one_that_cannot_is_refused() {
         let line = fm_protocol::encode_line(&message).unwrap();
         assert_eq!(fm_protocol::decode_line(&line).unwrap(), message);
     }
+}
+
+/// A list on item 2 whose `set` then dropped item 2 (cueing item 1).
+fn dropped_active() -> ControlService {
+    let mut control = service(64, 256);
+    let steps = [
+        payload(MediaListOperation::Create {
+            name: "Walk-in".to_owned(),
+            items: items(),
+            options: MediaListOptionsSpec::default(),
+        }),
+        payload(MediaListOperation::Navigate(MediaListNavigation::Next)),
+        payload(MediaListOperation::Set {
+            items: items()[..1].to_vec(),
+            options: MediaListOptionsSpec::default(),
+            active: None,
+        }),
+    ];
+    for (index, step) in steps.into_iter().enumerate() {
+        let submission = submit(&mut control, Role::Admin, &format!("step-{index}"), step);
+        assert!(submission.is_accepted(), "{:?}", submission.output.result);
+        control.tick(&server_identity()).unwrap();
+    }
+    assert_eq!(control.media_list_states()[0].status.active, 1);
+    control
+}
+
+/// An undone `set` that dropped the active item is journaled with that
+/// item as `active` (Protocol 2.77): the journal line, decoded and replayed
+/// on a restored authority, restores which item was active.
+#[test]
+fn an_undone_set_is_journaled_with_the_item_it_dropped_as_active() {
+    let mut control = dropped_active();
+    let message = undo("undo-set", None);
+    let staged = prepared(
+        control
+            .prepare_submit(&principal(Role::Admin), message.clone(), 0)
+            .unwrap(),
+    );
+    let journaled = staged.replay_command(&message);
+    assert_eq!(
+        journaled.payload,
+        payload(MediaListOperation::Set {
+            items: items(),
+            options: MediaListOptionsSpec::default(),
+            active: Some(2),
+        })
+    );
+    let undone = staged.commit().unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(changed(&undone).3.active, 2);
+
+    let line = fm_protocol::encode_line(&WireMessage::Command(journaled.clone())).unwrap();
+    assert!(line.contains("\tactive=2"), "{line}");
+    let WireMessage::Command(decoded) = fm_protocol::decode_line(&line).unwrap() else {
+        panic!("a journal line is a command");
+    };
+    assert_eq!(decoded, journaled);
+    let mut replayed = dropped_active();
+    let submission = replayed
+        .submit(&principal(Role::Admin), decoded, 0)
+        .unwrap();
+    assert!(submission.is_accepted(), "{:?}", submission.output.result);
+    assert_eq!(
+        replayed.media_list_states()[0].status,
+        control.media_list_states()[0].status
+    );
+    assert_eq!(replayed.media_list_states()[0].status.active, 2);
 }

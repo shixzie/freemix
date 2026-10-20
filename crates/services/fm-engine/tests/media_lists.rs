@@ -462,6 +462,7 @@ fn navigation_steps_the_play_order_and_keeps_playing_when_playing() {
         EngineMediaListOperation::Set {
             items: items(),
             options: looping,
+            active: None,
         },
     );
     navigate(&mut engine, "wrap", EngineMediaListNavigation::Previous);
@@ -515,6 +516,7 @@ fn set_reorders_and_retrims_keeps_the_active_item_and_is_undoable() {
     let set = list_command(EngineMediaListOperation::Set {
         items: reordered.clone(),
         options: MediaListOptions::default(),
+        active: None,
     });
     assert_eq!(set.kind(), EngineCommandKind::ProjectEdit);
     assert!(
@@ -557,6 +559,7 @@ fn set_reorders_and_retrims_keeps_the_active_item_and_is_undoable() {
                 item(1, "a.mp4", (10, Some(15))),
             ],
             options: MediaListOptions::default(),
+            active: None,
         },
     );
     assert_eq!(active(&engine), 3);
@@ -582,6 +585,7 @@ fn a_padlocked_list_refuses_edits_but_still_navigates() {
         list_command(EngineMediaListOperation::Set {
             items: items(),
             options: MediaListOptions::default(),
+            active: None,
         }),
     );
     assert_eq!(
@@ -698,4 +702,143 @@ fn duplicating_a_list_input_respects_the_media_list_limit() {
     let rejection = &outcome.receipt.rejected().expect("refused").rejection;
     assert_eq!(rejection.fields[0].code, "too_many_media_lists");
     assert_eq!(engine.show().media_lists().len(), fm_model::MAX_MEDIA_LISTS);
+}
+
+fn undo() -> EngineCommand {
+    EngineCommand::Undo {
+        expected_edit: None,
+    }
+}
+
+fn redo() -> EngineCommand {
+    EngineCommand::Redo {
+        expected_edit: None,
+    }
+}
+
+/// A list on item 2 whose `Set` then drops item 2, which cues item 1.
+fn dropped_active() -> Engine {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(active(&engine), 2);
+    accept(
+        &mut engine,
+        "drop",
+        EngineMediaListOperation::Set {
+            items: vec![
+                item(1, "a.mp4", (10, Some(15))),
+                item(3, "c.wav", (0, Some(5))),
+            ],
+            options: MediaListOptions::default(),
+            active: None,
+        },
+    );
+    assert_eq!(active(&engine), 1);
+    assert_eq!(asset(&engine), "asset://media/a.mp4");
+    engine
+}
+
+/// Undoing a `Set` that dropped the active item restores the items and the
+/// item that was active, and its file; the edit the undo resolves to (what
+/// the authority journals) carries that item, so a journal replay on a
+/// restored engine reaches the same list.
+#[test]
+fn undoing_a_set_that_dropped_the_active_item_restores_it() {
+    let mut engine = dropped_active();
+    let journaled = engine
+        .undo_entries()
+        .last()
+        .expect("the set is undoable")
+        .inverse()
+        .clone();
+    assert!(
+        matches!(
+            &journaled,
+            EngineCommand::MediaList(EngineMediaListCommand {
+                operation: EngineMediaListOperation::Set {
+                    active: Some(2),
+                    ..
+                },
+                ..
+            })
+        ),
+        "{journaled:?}"
+    );
+    let outcome = execute(&mut engine, "undo", undo());
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    assert_eq!(
+        engine.show().media_list(input(LIST)).unwrap().items,
+        items()
+    );
+    assert_eq!(active(&engine), 2);
+    assert_eq!(asset(&engine), "asset://media/b.mov");
+    assert_eq!(
+        engine.show().media_settings(input(LIST)).unwrap().trim_in,
+        20
+    );
+    // Redo and undo again agree.
+    assert!(
+        execute(&mut engine, "redo", redo())
+            .receipt
+            .accepted()
+            .is_some()
+    );
+    assert_eq!(active(&engine), 1);
+    assert!(
+        execute(&mut engine, "undo-again", undo())
+            .receipt
+            .accepted()
+            .is_some()
+    );
+    assert_eq!(active(&engine), 2);
+
+    let mut replayed = dropped_active();
+    let outcome = execute(&mut replayed, "undo", journaled);
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    assert_eq!(
+        replayed.show().media_list(input(LIST)),
+        engine.show().media_list(input(LIST))
+    );
+    assert_eq!(asset(&replayed), "asset://media/b.mov");
+}
+
+/// A `Set` naming an `active` item activates it; one naming an item the
+/// new items lack is refused.
+#[test]
+fn a_set_may_name_the_active_item() {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    accept(
+        &mut engine,
+        "set-active",
+        EngineMediaListOperation::Set {
+            items: items(),
+            options: MediaListOptions::default(),
+            active: Some(3),
+        },
+    );
+    assert_eq!(active(&engine), 3);
+    assert_eq!(asset(&engine), "asset://media/c.wav");
+    assert_eq!(
+        refused(
+            &mut engine,
+            "set-unknown",
+            EngineMediaListOperation::Set {
+                items: items(),
+                options: MediaListOptions::default(),
+                active: Some(9),
+            },
+        ),
+        "unknown_item"
+    );
+    assert_eq!(active(&engine), 3);
 }

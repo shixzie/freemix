@@ -97,9 +97,14 @@ pub fn media_list_engine_command(payload: &CommandPayload) -> EngineCommand {
             items: items.iter().map(model_item).collect(),
             options: model_options(*options),
         },
-        MediaListOperation::Set { items, options } => EngineMediaListOperation::Set {
+        MediaListOperation::Set {
+            items,
+            options,
+            active,
+        } => EngineMediaListOperation::Set {
             items: items.iter().map(model_item).collect(),
             options: model_options(*options),
+            active: *active,
         },
         MediaListOperation::Navigate(navigation) => {
             EngineMediaListOperation::Navigate(model_navigation(*navigation))
@@ -125,9 +130,14 @@ pub fn wire_payload(command: &EngineMediaListCommand) -> CommandPayload {
             items: items.iter().map(wire_item).collect(),
             options: wire_options(*options),
         },
-        EngineMediaListOperation::Set { items, options } => MediaListOperation::Set {
+        EngineMediaListOperation::Set {
+            items,
+            options,
+            active,
+        } => MediaListOperation::Set {
             items: items.iter().map(wire_item).collect(),
             options: wire_options(*options),
+            active: *active,
         },
         EngineMediaListOperation::Navigate(navigation) => {
             MediaListOperation::Navigate(wire_navigation(*navigation))

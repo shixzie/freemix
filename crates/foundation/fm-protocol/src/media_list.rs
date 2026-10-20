@@ -118,9 +118,14 @@ pub enum MediaListOperation {
         options: MediaListOptionsSpec,
     },
     /// Replaces the items and options (a padlocked, undoable project edit).
+    /// `active` (Protocol 2.77), one of `items`, becomes the active item:
+    /// an undone edit that dropped the active item restores it. `None`
+    /// keeps the active item when it is kept, else cues the first item in
+    /// play order.
     Set {
         items: Vec<MediaListItemSpec>,
         options: MediaListOptionsSpec,
+        active: Option<u32>,
     },
     /// Steps the play order (a live operation).
     Navigate(MediaListNavigation),

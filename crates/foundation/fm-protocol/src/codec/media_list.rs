@@ -14,7 +14,8 @@
 //!
 //! The `media_list` command carries `input` and `operation`
 //! (`create|set|navigate|advance`). `create` adds `name`, `items`, and the
-//! options; `set` the items and options; `navigate` a `navigation` token
+//! options; `set` the items and options and (2.77) an optional `active`
+//! item, one of its items; `navigate` a `navigation` token
 //! (`next|previous|first|last|goto|item`) with `index` for `goto` (a
 //! play-order position) and `item` (an item id); `advance` the `from` item.
 //!
@@ -192,9 +193,16 @@ pub(super) fn encode_command(
             push("items", encode_items(items)?)?;
             encode_options(*options, push)?;
         }
-        MediaListOperation::Set { items, options } => {
+        MediaListOperation::Set {
+            items,
+            options,
+            active,
+        } => {
             push("items", encode_items(items)?)?;
             encode_options(*options, push)?;
+            if let Some(active) = active {
+                push("active", check_active(*active, items)?.to_string())?;
+            }
         }
         MediaListOperation::Navigate(navigation) => {
             push("navigation", navigation.token().to_owned())?;
@@ -210,6 +218,15 @@ pub(super) fn encode_command(
         }
     }
     Ok(())
+}
+
+/// Checks a `set`'s `active` item: one of its items.
+fn check_active(active: u32, items: &[MediaListItemSpec]) -> Result<u32, CodecError> {
+    if items.iter().any(|item| item.id == active) {
+        Ok(active)
+    } else {
+        Err(invalid("active", active.to_string()))
+    }
 }
 
 /// Decodes a `media_list` command's input and operation.
@@ -229,10 +246,19 @@ pub(super) fn decode_command(
                 options: decode_options(fields)?,
             }
         }
-        "set" => MediaListOperation::Set {
-            items: decode_items(&fields.required("items")?)?,
-            options: decode_options(fields)?,
-        },
+        "set" => {
+            let items = decode_items(&fields.required("items")?)?;
+            let options = decode_options(fields)?;
+            let active = fields
+                .optional("active")
+                .map(|active| check_active(parse_u32("active", &active)?, &items))
+                .transpose()?;
+            MediaListOperation::Set {
+                items,
+                options,
+                active,
+            }
+        }
         "navigate" => {
             let navigation = fields.required("navigation")?;
             let index = fields

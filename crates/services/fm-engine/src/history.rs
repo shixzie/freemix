@@ -843,6 +843,24 @@ fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
                 position.map_or(existing.unwrap_or(last), |position| position.min(last))
             }),
         },
+        // A media list `Set` is recorded with the item it leaves active, so
+        // its inverse (which restores the old active item) reverses it.
+        EngineCommand::MediaList(
+            list_command @ crate::EngineMediaListCommand {
+                operation: crate::EngineMediaListOperation::Set { items, options, .. },
+                ..
+            },
+        ) => match crate::media_list::plan(state, list_command, false) {
+            Ok(plan) => EngineCommand::MediaList(crate::EngineMediaListCommand {
+                input: list_command.input,
+                operation: crate::EngineMediaListOperation::Set {
+                    items: items.clone(),
+                    options: *options,
+                    active: Some(plan.list.active),
+                },
+            }),
+            Err(_) => command.clone(),
+        },
         // So is a shortcut, script, or cue list edit.
         EngineCommand::SetShortcut {
             shortcut,

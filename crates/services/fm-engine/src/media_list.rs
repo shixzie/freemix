@@ -59,12 +59,15 @@ pub enum EngineMediaListOperation {
         items: Vec<MediaListItem>,
         options: MediaListOptions,
     },
-    /// Replaces the items and options. The active item stays active when it
-    /// is kept (its new marks apply at once); otherwise the first item in
-    /// play order is cued.
+    /// Replaces the items and options. `Some(active)`, one of the new
+    /// items, becomes the active item (an undo restores the item a `Set`
+    /// dropped); with `None` the active item stays active when it is kept
+    /// (its new marks apply at once), otherwise the first item in play order
+    /// is cued. A newly active item is cued, stopped.
     Set {
         items: Vec<MediaListItem>,
         options: MediaListOptions,
+        active: Option<u32>,
     },
     Navigate(EngineMediaListNavigation),
     /// The active item `from` ended under Auto Next.
@@ -246,12 +249,31 @@ pub(crate) fn plan(
     let mut list = current.clone();
     match &command.operation {
         EngineMediaListOperation::Create { .. } => unreachable!("planned above"),
-        EngineMediaListOperation::Set { items, options } => {
+        EngineMediaListOperation::Set {
+            items,
+            options,
+            active,
+        } => {
             fm_model::validate_media_list_items(items).map_err(|error| list_rejection(&error))?;
             list.items.clone_from(items);
             list.options = *options;
-            if let Some(item) = list.item(current.active).cloned() {
-                let before = current.active_item();
+            if let Some(active) = *active {
+                if list.item(active).is_none() {
+                    return Err(rejection(
+                        RejectionCode::NotFound,
+                        "active",
+                        "unknown_item",
+                        format!("media list {input} would have no item {active}"),
+                    ));
+                }
+                list.active = active;
+            }
+            if let Some(item) = list.item(list.active).cloned() {
+                // A newly named active item is activated (cued in place
+                // when the input already plays its file).
+                let before = current
+                    .active_item()
+                    .filter(|before| before.id == list.active);
                 let retrim = before.is_none_or(|before| {
                     before.mark_in != item.mark_in || before.mark_out != item.mark_out
                 });
@@ -462,7 +484,8 @@ pub(crate) fn sync_marks(state: &mut ShowState, input: InputId) {
 }
 
 /// The edit that reverts project edit `command` on `state`: `Set` restores
-/// the items and options; a `Create` is reverted by removing its input.
+/// the items, options, and active item; a `Create` is reverted by removing
+/// its input.
 pub(crate) fn inverse(
     state: &ShowState,
     command: &EngineMediaListCommand,
@@ -479,6 +502,7 @@ pub(crate) fn inverse(
                 operation: EngineMediaListOperation::Set {
                     items: list.items.clone(),
                     options: list.options,
+                    active: Some(list.active),
                 },
             }))
         }

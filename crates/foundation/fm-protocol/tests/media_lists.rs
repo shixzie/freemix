@@ -104,6 +104,7 @@ fn media_list_commands_round_trip_exactly() {
         MediaListOperation::Set {
             items: items(),
             options: MediaListOptionsSpec::default(),
+            active: None,
         },
     ));
     for navigation in [
@@ -201,6 +202,7 @@ fn malformed_media_list_commands_are_refused() {
             MediaListOperation::Set {
                 items: too_many,
                 options: options(),
+                active: None,
             }
         )),
         Err(CodecError::TooManyItems("items"))
@@ -211,6 +213,7 @@ fn malformed_media_list_commands_are_refused() {
             MediaListOperation::Set {
                 items: Vec::new(),
                 options: options(),
+                active: None,
             }
         ))
         .is_err()
@@ -284,4 +287,42 @@ fn the_state_record_and_event_carry_the_whole_list() {
         }))
         .is_err()
     );
+}
+
+/// A `set` carries an optional `active` item (Protocol 2.77), one of its
+/// items: an undone edit that dropped the active item is journaled with it,
+/// so a replay restores which item was active.
+#[test]
+fn set_carries_an_optional_active_item_exactly() {
+    let set = |active| {
+        command(
+            7,
+            MediaListOperation::Set {
+                items: items(),
+                options: options(),
+                active,
+            },
+        )
+    };
+    let without = round_trip(&set(None));
+    assert!(!without.contains("\tactive="), "{without}");
+    let line = round_trip(&set(Some(4)));
+    assert!(line.ends_with("\tactive=4\n"), "{line}");
+    for bad in ["active=2", "active=04", "active=0", "active=", "active=x"] {
+        let line = line.replacen("active=4", bad, 1);
+        assert!(decode_line(&line).is_err(), "{line}");
+    }
+    // The encoder refuses what the decoder refuses.
+    assert!(encode_line(&set(Some(2))).is_err());
+    assert!(encode_line(&set(Some(0))).is_err());
+    // Only a set carries it.
+    let create = round_trip(&command(
+        7,
+        MediaListOperation::Create {
+            name: "Walk-in".to_owned(),
+            items: items(),
+            options: options(),
+        },
+    ));
+    assert!(decode_line(&create.replacen('\n', "\tactive=4\n", 1)).is_err());
 }

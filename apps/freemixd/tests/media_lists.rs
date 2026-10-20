@@ -443,6 +443,7 @@ fn a_media_list_auto_advances_in_wall_time_persists_and_replays() {
             loop_list: true,
             ..MediaListOptionsSpec::default()
         },
+        active: None,
     });
     assert_eq!((set.active, set.items.clone()), (2, edited.clone()));
     drop(client);
@@ -586,6 +587,7 @@ fn a_media_list_imports_host_files_into_the_bundle() {
             operation: MediaListOperation::Set {
                 items: vec![host_item(1, &clips.join("missing.mov"))],
                 options: MediaListOptionsSpec::default(),
+                active: None,
             },
         },
     }));

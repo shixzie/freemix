@@ -267,9 +267,12 @@ pub(crate) fn draw_list(
         .as_ref()
         .is_some_and(|view| crate::tally_state(input, view.switcher).is_realized_program());
     let mut operation = None;
-    let set = |items: Vec<MediaListItemSpec>, options: MediaListOptionsSpec| {
-        MediaListOperation::Set { items, options }
-    };
+    let set =
+        |items: Vec<MediaListItemSpec>, options: MediaListOptionsSpec| MediaListOperation::Set {
+            items,
+            options,
+            active: None,
+        };
 
     ui.add_space(4.0);
     ui.separator();
