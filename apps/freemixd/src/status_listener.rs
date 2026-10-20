@@ -33,7 +33,7 @@ use std::{
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -89,6 +89,10 @@ const FIRST_BYTE_TIMEOUT: Duration = Duration::from_millis(50);
 const HEAD_DEADLINE: Duration = Duration::from_millis(250);
 /// Time allowed to push a reply the accept thread writes itself.
 const REPLY_DEADLINE: Duration = Duration::from_millis(250);
+/// How long a stopping accept thread keeps serving the sockets it already
+/// admitted, so a probe made while the daemon drains reads `draining` instead
+/// of a bare close a supervisor cannot tell from a crash.
+const SHUTDOWN_FLUSH: Duration = Duration::from_millis(250);
 
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
@@ -416,17 +420,20 @@ impl StatusListener {
         let mut threads = Vec::with_capacity(CONNECTION_WORKERS + 1);
         for index in 0..CONNECTION_WORKERS {
             let (sender, receiver) = mpsc::sync_channel(WORKER_QUEUE_CAPACITY);
-            let worker_cancel = Arc::clone(&cancel);
             let worker_status = Arc::clone(status);
             match thread::Builder::new()
                 .name(format!("freemixd-status-{index}"))
-                .spawn(move || worker_loop(&receiver, &worker_cancel, &worker_status))
+                .spawn(move || worker_loop(&receiver, &worker_status))
             {
                 Ok(handle) => {
                     senders.push(sender);
                     threads.push(handle);
                 }
-                Err(error) => return Err(stop_threads(&cancel, threads, error)),
+                Err(error) => {
+                    // A request thread runs until its sender is dropped.
+                    drop(senders);
+                    return Err(stop_threads(&cancel, threads, error));
+                }
             }
         }
 
@@ -438,6 +445,7 @@ impl StatusListener {
                 accept_loop(&listener, senders, &accept_cancel, &accept_status, &token);
             }) {
             Ok(handle) => threads.insert(0, handle),
+            // The failed spawn dropped its closure, and the worker senders in it.
             Err(error) => return Err(stop_threads(&cancel, threads, error)),
         }
         Ok(Self {
@@ -456,12 +464,13 @@ impl StatusListener {
     /// The join is bounded, but the bound is a deadline *plus one socket
     /// timeout per phase*, because a deadline is only re-checked between calls
     /// and a blocking call can already be inside its own timeout. The accept
-    /// thread never blocks on a socket, so it costs at most one
-    /// [`ACCEPT_POLL`]. It is joined first, which drops the worker senders. A
-    /// request thread then costs at most one [`ACCEPT_POLL`] plus, if it is
-    /// mid-bundle, [`RESPONSE_DEADLINE`] + [`SOCKET_WRITE_TIMEOUT`] +
-    /// [`DRAIN_DEADLINE`] + [`SOCKET_READ_TIMEOUT`] — about 1.1 s worst case,
-    /// and a few tens of milliseconds in practice.
+    /// thread never blocks on a socket; it notices the stop within one
+    /// [`ACCEPT_POLL`] and then answers what it already admitted for at most
+    /// [`SHUTDOWN_FLUSH`]. It is joined first, which drops the worker senders,
+    /// so a request thread serves every bundle already queued to it and then
+    /// exits: each costs at most [`RESPONSE_DEADLINE`] +
+    /// [`SOCKET_WRITE_TIMEOUT`] + [`DRAIN_DEADLINE`] + [`SOCKET_READ_TIMEOUT`]
+    /// — about 1.1 s worst case, and a few tens of milliseconds in practice.
     ///
     /// # Errors
     ///
@@ -584,6 +593,33 @@ fn accept_loop(
         if pending.is_empty() {
             thread::sleep(ACCEPT_POLL);
         } else if !progressed {
+            thread::sleep(PENDING_POLL);
+        }
+    }
+    finish_admitted(listener, pending, &mut senders, status, token);
+}
+
+/// Answers the connections the listener already admitted before it closes.
+///
+/// The daemon is draining by the time its listener stops, and a supervisor
+/// polling `/readyz` then must read that, not a close it cannot tell from a
+/// crash. On a loaded host the accept thread can be scheduled only after the
+/// stop, holding every probe made during the drain, so those are served now:
+/// the kernel backlog is admitted once more, then every held socket has until
+/// [`SHUTDOWN_FLUSH`] (and its own deadlines) to finish its head and take its
+/// reply. Whatever is unfinished then is closed. Nothing is admitted after
+/// this, and the listening socket closes when the thread returns.
+fn finish_admitted(
+    listener: &TcpListener,
+    mut pending: Vec<Pending>,
+    senders: &mut Vec<SyncSender<BundleJob>>,
+    status: &DaemonStatus,
+    token: &StatusToken,
+) {
+    let deadline = Instant::now() + SHUTDOWN_FLUSH;
+    accept_available(listener, &mut pending, status);
+    while !pending.is_empty() && Instant::now() < deadline {
+        if !advance_pending(&mut pending, senders, status, token) {
             thread::sleep(PENDING_POLL);
         }
     }
@@ -794,13 +830,11 @@ fn drain_buffered(stream: &mut TcpStream) {
     }
 }
 
-fn worker_loop(jobs: &Receiver<BundleJob>, cancel: &AtomicBool, status: &DaemonStatus) {
-    while !cancel.load(Ordering::Acquire) {
-        match jobs.recv_timeout(ACCEPT_POLL) {
-            Ok(job) => serve_bundle(job, status),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
+/// Serves bundles until the accept thread drops its sender, after serving
+/// whatever it queued before (including during its shutdown flush).
+fn worker_loop(jobs: &Receiver<BundleJob>, status: &DaemonStatus) {
+    for job in jobs {
+        serve_bundle(job, status);
     }
 }
 
@@ -1295,6 +1329,53 @@ mod tests {
         let status = DaemonStatus::new();
         assert!(status.operator_state().is_none());
         assert!(!bundle_body(&status).contains("## Operator state"));
+    }
+
+    /// A probe the daemon admitted while draining is answered `draining`
+    /// even when the accept thread first runs after the stop: a loaded host
+    /// can schedule it that late, and a bare close then reads as a crash.
+    #[test]
+    fn a_stopping_listener_answers_probes_it_already_admitted() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let status = DaemonStatus::new();
+        status.beat();
+        status.readiness.store(READINESS_READY, Ordering::Release);
+        status.begin_draining();
+        let mut probe = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        probe
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        probe
+            .write_all(b"GET /readyz HTTP/1.1\r\nHost: status\r\n\r\n")
+            .unwrap();
+        let token = StatusToken {
+            bytes: [b'x'; TOKEN_MAX_BYTES],
+            length: TOKEN_MIN_BYTES,
+        };
+
+        // Stopped before its first pass, as when the stop wins the race.
+        accept_loop(
+            &listener,
+            Vec::new(),
+            &AtomicBool::new(true),
+            &status,
+            &token,
+        );
+        drop(listener);
+
+        let mut response = Vec::new();
+        let _ = probe.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{response:?}"
+        );
+        assert!(
+            response.contains("status=not-ready\treadiness=draining\t"),
+            "{response:?}"
+        );
+        assert_eq!(status.in_flight.load(Ordering::Acquire), 0);
     }
 
     #[test]
