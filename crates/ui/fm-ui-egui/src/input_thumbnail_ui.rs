@@ -298,6 +298,7 @@ mod tests {
             input: WireInputId::from_domain(fm_types::InputId::new(
                 NonZeroU128::new(input).unwrap(),
             )),
+            item: None,
             sequence: 1,
             origin: MonitorFrameOrigin::Native,
             age_ms,

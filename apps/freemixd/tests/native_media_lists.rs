@@ -733,3 +733,74 @@ fn a_native_media_list_switches_items_gaplessly_through_prefetch() {
         [11, 12, 13, 14, 15, 16, 17, 18, 19, SECOND + 5]
     );
 }
+
+/// IN-006 item thumbnails on the native runtime: a subscribed Studio gets
+/// one `input_thumbnail` per list item (Protocol 2.80 `item`), decoded
+/// from the item's file at its in mark.
+#[test]
+fn a_native_media_list_sends_each_items_in_mark_picture() {
+    if !ffmpeg_available() {
+        eprintln!("native media list integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-media-lists.freemix");
+    save_project(&project_path, false);
+    let host = directory.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let (first, second) = (host.join("first.mkv"), host.join("second.mkv"));
+    generate_clip(&first, 0);
+    generate_clip(&second, SECOND);
+    let Some(daemon) = start_or_skip(&project_path, None) else {
+        return;
+    };
+    let (mut client, _, _) = Client::connect(daemon.address);
+    client.accept(CommandPayload::MediaList {
+        input: list(),
+        operation: MediaListOperation::Create {
+            name: "Pictures".into(),
+            items: vec![
+                MediaListItemSpec {
+                    id: 1,
+                    uri: first.to_str().unwrap().into(),
+                    title: None,
+                    mark_in: 10,
+                    mark_out: None,
+                },
+                MediaListItemSpec {
+                    id: 2,
+                    uri: second.to_str().unwrap().into(),
+                    title: None,
+                    mark_in: 5,
+                    mark_out: None,
+                },
+            ],
+            options: MediaListOptionsSpec::default(),
+        },
+    });
+    client.send(&WireMessage::InputThumbnailSubscription(
+        fm_protocol::InputThumbnailSubscription { enabled: true },
+    ));
+    let mut pictures = std::collections::BTreeMap::new();
+    client.wait_for("both items' pictures", |_, message| {
+        if let WireMessage::InputThumbnail(thumbnail) = message
+            && thumbnail.input == list()
+            && let Some(item) = thumbnail.item
+        {
+            assert_eq!(thumbnail.origin, fm_protocol::MonitorFrameOrigin::Native);
+            let image = fm_protocol::decode_input_thumbnail(&thumbnail).unwrap();
+            let (width, height) = (usize::from(image.width), usize::from(image.height));
+            let number = (0..8).fold(0, |value, bit| {
+                let x = (bit * 2 + 1) * width / 16;
+                let red = image.rgba[(height / 2 * width + x) * 4];
+                if red > 128 { value | (1 << bit) } else { value }
+            });
+            pictures.insert(item, number);
+        }
+        (pictures.len() == 2).then_some(())
+    });
+    assert_eq!(
+        pictures,
+        std::collections::BTreeMap::from([(1, 10), (2, SECOND + 5)])
+    );
+}

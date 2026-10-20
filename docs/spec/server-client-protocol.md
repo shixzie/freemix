@@ -2982,6 +2982,30 @@ did. No schema change: list order and the active item were already saved.
   carries it, so the list returns to that item.
 - 2.78 is refused.
 
+Protocol 2.80 gives every media list item its own thumbnail (IN-006).
+
+- `input_thumbnail` gains the optional `item` field, right after `input`:
+  the canonical id (`1..=1000000`) of one item of the media list input
+  `input`. Such a record is that item's picture (the frame at its in
+  mark), not the input's live picture; a record without `item` is the
+  input's own, as before. Anything else in `item` is refused both ways.
+- The daemon renders item pictures on the thumbnail worker for the same
+  subscribed peers, through the same per-peer slots (one per input and
+  one per item) and byte budget. A native daemon decodes the item's
+  in-mark frame from its file (`origin=native`); the simulated daemon
+  draws a card tinted per item (`origin=simulated`); an audio file gets
+  the audio card. At most one item is rendered per worker step. An item
+  is sent once per file and in mark, and again only to a peer that just
+  subscribed; it is never kept alive, so `age_ms` is 0 and clients do not
+  age item pictures.
+- `fm-client` keeps the latest item picture per list input and item (at
+  most 1024), sequence-checked per item, only for items the replicated
+  list has, and forgets them on unsubscribe, disconnect, or when the item
+  leaves its list. Studio subscribes while a media list card is drawn and
+  shows each item's picture at the start of its row.
+- No snapshot record or schema change: the pictures are lossy and never
+  persisted. 2.79 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

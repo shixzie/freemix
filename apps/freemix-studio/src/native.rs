@@ -3247,6 +3247,10 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         state
             .paged_pages
             .clone_from(runtime.session().paged_pages());
+        // Media list item pictures (IN-006): shared pixels, no copy.
+        state
+            .item_thumbnails
+            .clone_from(runtime.session().latest_item_thumbnails());
     }
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);

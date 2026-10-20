@@ -1859,6 +1859,7 @@ fn input_thumbnail(input: u128, sequence: u64, red: u8) -> fm_protocol::InputThu
     fm_protocol::InputThumbnailMessage {
         server: server(),
         input: self::input(input),
+        item: None,
         sequence,
         origin: MonitorFrameOrigin::Native,
         age_ms: 250,
@@ -2247,5 +2248,96 @@ fn source_sync_status_rejects_a_foreign_server_identity() {
         Err(TcpSessionError::UnexpectedMessage)
     ));
     assert!(session.latest_source_sync_status().is_none());
+    server_thread.join().unwrap();
+}
+
+/// Protocol 2.80: a media list item's picture (IN-006) is kept apart from
+/// the input's own, per list input and item, with its own sequence order;
+/// a picture of an item the replicated list does not have is dropped (no
+/// violation), and unsubscribing forgets every item picture.
+#[test]
+fn item_thumbnails_are_kept_per_item_of_a_known_list() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let item = |item: u32, sequence: u64, red: u8| {
+        let mut thumbnail = input_thumbnail(1, sequence, red);
+        thumbnail.item = Some(item);
+        WireMessage::InputThumbnail(thumbnail)
+    };
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        let WireMessage::HandshakeRequest(_) = peer.receive() else {
+            panic!("expected the handshake");
+        };
+        peer.send(&WireMessage::HandshakeResponse(handshake_version(
+            CURRENT_PROTOCOL_VERSION,
+            4,
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        let mut listed = snapshot(4);
+        listed.media_list_states = 1;
+        peer.send(&WireMessage::Snapshot(listed));
+        let spec = |id: u32| fm_protocol::MediaListItemSpec {
+            id,
+            uri: format!("asset://media/{id}.mov"),
+            title: None,
+            mark_in: 0,
+            mark_out: None,
+        };
+        peer.send(&WireMessage::MediaListState(
+            fm_protocol::MediaListStateMessage {
+                revision: 4,
+                status: fm_protocol::MediaListStatus {
+                    input: input(1),
+                    items: vec![spec(1), spec(2)],
+                    options: fm_protocol::MediaListOptionsSpec::default(),
+                    active: 1,
+                    cycle: 0,
+                    order: vec![1, 2],
+                    position: 0,
+                },
+            },
+        ));
+        assert!(matches!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(_)
+        ));
+        release_rx.recv().unwrap();
+        peer.send_all(&[
+            item(1, 5, 200),
+            // The input's own picture and another item keep their own order.
+            WireMessage::InputThumbnail(input_thumbnail(1, 2, 10)),
+            item(2, 3, 30),
+            // Not an item of the list: dropped.
+            item(9, 6, 1),
+        ]);
+        assert!(matches!(
+            peer.receive(),
+            WireMessage::InputThumbnailSubscription(_)
+        ));
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.send_input_thumbnail_subscription(true).unwrap();
+    release_tx.send(()).unwrap();
+    for _ in 0..4 {
+        assert_eq!(
+            session.receive().unwrap(),
+            SessionEvent::InputThumbnail { input: input(1) }
+        );
+    }
+    let items = session.latest_item_thumbnails();
+    assert_eq!(
+        items.keys().copied().collect::<Vec<_>>(),
+        [(input(1), 1), (input(1), 2)]
+    );
+    let (first, _) = &items[&(input(1), 1)];
+    assert_eq!((first.item, first.sequence), (Some(1), 5));
+    assert_eq!(&first.rgba[..4], &[200, 20, 30, 255]);
+    let (own, _) = &session.latest_input_thumbnails()[&input(1)];
+    assert_eq!((own.item, own.sequence), (None, 2));
+    session.send_input_thumbnail_subscription(false).unwrap();
+    assert!(session.latest_item_thumbnails().is_empty());
     server_thread.join().unwrap();
 }

@@ -3227,6 +3227,15 @@ fn encode_input_thumbnail(
     record.kind("input_thumbnail");
     encode_server_identity(record, &message.server)?;
     record.field("input", message.input)?;
+    if let Some(item) = message.item {
+        if !(1..=crate::MAX_MEDIA_LIST_ITEM_ID).contains(&item) {
+            return Err(CodecError::InvalidField {
+                field: "item",
+                value: item.to_string(),
+            });
+        }
+        record.field("item", item)?;
+    }
     record.field("sequence", message.sequence)?;
     record.field_str("origin", message.origin.as_str())?;
     record.field("age_ms", message.age_ms)?;

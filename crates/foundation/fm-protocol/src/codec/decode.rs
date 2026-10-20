@@ -3515,6 +3515,18 @@ fn decode_monitor_frame(fields: &mut Fields) -> Result<MonitorFrameMessage, Code
 fn decode_input_thumbnail(fields: &mut Fields) -> Result<crate::InputThumbnailMessage, CodecError> {
     let server = decode_server_identity(fields)?;
     let input = fields.canonical_input("input")?;
+    let item = fields
+        .canonical_optional("item")?
+        .map(|item| {
+            u32::try_from(item)
+                .ok()
+                .filter(|item| (1..=crate::MAX_MEDIA_LIST_ITEM_ID).contains(item))
+                .ok_or(CodecError::InvalidField {
+                    field: "item",
+                    value: item.to_string(),
+                })
+        })
+        .transpose()?;
     let sequence = fields.canonical_required("sequence")?;
     let origin_value = fields.required("origin")?;
     let origin = match origin_value.as_str() {
@@ -3552,6 +3564,7 @@ fn decode_input_thumbnail(fields: &mut Fields) -> Result<crate::InputThumbnailMe
     Ok(crate::InputThumbnailMessage {
         server,
         input,
+        item,
         sequence,
         origin,
         age_ms,

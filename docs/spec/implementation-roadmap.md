@@ -33,8 +33,9 @@ highest-value remaining items, ranked:
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
-   Next and Next switch files gaplessly; it still lacks per-item
-   thumbnails, transitions between items, and Windows/macOS evidence. (The slideshow,
+   Next and Next switch files gaplessly, and Studio's list card shows each
+   item's own picture; it still lacks transitions between items and
+   Windows/macOS evidence. (The slideshow,
    `IN-009`, is now wired end to end; see its boundary below.)
 6. **The remaining keyer refinements (`SW-008`).** Key/fill (luma or
    alpha), clip, choke, edge softness, and despill now run natively, persist,
@@ -3657,9 +3658,13 @@ opening) still holds the previous item's last picture until the file
 opens. Studio adds lists (pasted paths and M3U
 playlists with relative entries and `#EXTINF` titles) and shows a list card in the Media
 tab with search, drag reorder, per-item marks, the active item, Previous and
-Next, and the options. Gaps: only the next item is prefetched, no
-transitions between items, no per-item thumbnails (the
-input thumbnail follows the active item), no CLI or vMix API verbs, no
+Next, and the options. Each row starts with the item's own picture
+(Protocol 2.80 `input_thumbnail` records with `item`): a native daemon
+decodes the item's in-mark frame from its file, the simulated daemon draws
+a card per item, and an audio file gets the audio card; a drawn card keeps
+the thumbnail feed subscribed. Gaps: only the next item is prefetched, no
+transitions between items (a crossfade would need two live decoders for
+one input, which the input's single media transport does not have), no CLI or vMix API verbs, no
 cross-input GO bank, and Linux-only native evidence. The generic
 `page_navigate` step and the cue `page` action do not drive a list yet: a
 list steps with its own `navigate` (same next/previous/first/last/goto

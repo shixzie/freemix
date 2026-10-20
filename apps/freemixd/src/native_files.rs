@@ -1269,6 +1269,56 @@ fn run_worker(
     }
 }
 
+/// Decodes media list item pictures (IN-006) for the input thumbnail
+/// worker: the item's in-mark frame, opened through its own codec adapter
+/// confined to the bundle's assets. The adapter is made on first use: a
+/// bundle without media has no assets directory until a list imports one.
+struct ItemFrames {
+    assets_root: PathBuf,
+    adapter: Mutex<Option<Adapter>>,
+}
+
+impl crate::input_thumbnails::ItemPictures for ItemFrames {
+    fn picture(
+        &self,
+        path: &std::path::Path,
+        frame: u64,
+        (width, height): (u32, u32),
+    ) -> Option<fm_sim::ImageFrame> {
+        let rate = FrameRate::new(25, 1).ok()?;
+        let domain = ClockDomainId::new(std::num::NonZeroU128::MIN);
+        let mut config = FilePlaybackConfig::new(domain, rate);
+        config.audio = None;
+        config.window_frames = NonZeroU32::MIN;
+        let adapter = {
+            let mut adapter = self.adapter.lock().unwrap_or_else(PoisonError::into_inner);
+            if adapter.is_none() {
+                *adapter = Adapter::new(fm_codec_ffmpeg::Config {
+                    allowed_root: Some(self.assets_root.clone()),
+                    ..fm_codec_ffmpeg::Config::default()
+                })
+                .ok();
+            }
+            adapter.clone()?
+        };
+        let mut player = adapter.open_playback(path, config).ok()?;
+        let last = player.controller().playable_end().get().checked_sub(1)?;
+        let picture = player.decode_frame(FrameIndex::new(frame.min(last))).ok()?;
+        crate::scene_preview::sampled_live_picture(&picture, width, height)
+    }
+}
+
+/// The item picture decoder of a daemon whose bundle is `store`; `None`
+/// without a bundle.
+pub(crate) fn item_pictures(
+    store: Option<&fm_persistence::ProjectStore>,
+) -> Option<Arc<dyn crate::input_thumbnails::ItemPictures>> {
+    Some(Arc::new(ItemFrames {
+        assets_root: store?.assets_root(),
+        adapter: Mutex::new(None),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU128;

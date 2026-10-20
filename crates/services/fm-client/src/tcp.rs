@@ -549,6 +549,10 @@ pub struct TcpSession {
     /// The latest decoded thumbnail per input and when it arrived
     /// (Protocol 2.59), at most [`MAX_RETAINED_INPUT_THUMBNAILS`].
     latest_input_thumbnails: BTreeMap<WireInputId, (InputThumbnailImage, Instant)>,
+    /// The latest picture of each media list item (IN-006, Protocol
+    /// 2.80), by list input and item, at most
+    /// [`MAX_RETAINED_ITEM_THUMBNAILS`].
+    latest_item_thumbnails: BTreeMap<(WireInputId, u32), (InputThumbnailImage, Instant)>,
     /// Whether this connection asked for the thumbnail feed (Protocol
     /// 2.59). Records still in flight after it is turned off are dropped.
     input_thumbnails_subscribed: bool,
@@ -565,6 +569,8 @@ pub const MAX_RETAINED_INPUT_THUMBNAILS: usize = 256;
 /// Most paged input page answers a session keeps, and most requests it
 /// waits on; the lowest-keyed one makes room.
 pub const MAX_RETAINED_PAGED_PAGES: usize = 256;
+/// Most media list item thumbnails one session keeps.
+pub const MAX_RETAINED_ITEM_THUMBNAILS: usize = 1_024;
 
 #[derive(Debug)]
 enum Transport {
@@ -686,6 +692,7 @@ impl TcpSession {
             scene_preview_assembler: TitlePreviewAssembler::new(),
             latest_scene_preview: None,
             latest_input_thumbnails: BTreeMap::new(),
+            latest_item_thumbnails: BTreeMap::new(),
             input_thumbnails_subscribed: false,
             paged_requests: BTreeMap::new(),
             paged_pages: BTreeMap::new(),
@@ -801,6 +808,17 @@ impl TcpSession {
         &self.latest_input_thumbnails
     }
 
+    /// The latest decoded picture of each media list item (IN-006,
+    /// Protocol 2.80), by list input and item id, and when it arrived.
+    /// Empty until a thumbnail subscription is on; only items the
+    /// replicated lists still have keep one.
+    #[must_use]
+    pub const fn latest_item_thumbnails(
+        &self,
+    ) -> &BTreeMap<(WireInputId, u32), (InputThumbnailImage, Instant)> {
+        &self.latest_item_thumbnails
+    }
+
     /// Turns this session's live input thumbnail feed on or off (Protocol
     /// 2.59). Turning it off forgets every thumbnail received and drops the
     /// ones still in flight. A fresh connection starts with the feed off, so
@@ -820,6 +838,7 @@ impl TcpSession {
         self.input_thumbnails_subscribed = enabled;
         if !enabled {
             self.latest_input_thumbnails.clear();
+            self.latest_item_thumbnails.clear();
         }
         self.send_wire_wait(
             &WireMessage::InputThumbnailSubscription(fm_protocol::InputThumbnailSubscription {
@@ -1910,6 +1929,7 @@ impl TcpSession {
         self.scene_preview_assembler.reset();
         self.latest_scene_preview = None;
         self.latest_input_thumbnails.clear();
+        self.latest_item_thumbnails.clear();
         self.input_thumbnails_subscribed = false;
         self.paged_requests.clear();
         self.paged_pages.clear();
@@ -2064,11 +2084,12 @@ impl TcpSession {
 
 impl TcpSession {
     /// Validates and decodes one `input_thumbnail`. A thumbnail from another
-    /// server, one whose sequence does not increase for its input, or one
-    /// that does not decode disconnects the session. A valid one is kept
-    /// only while subscribed and only for an input the replicated project
-    /// has: one still in flight after unsubscribing, or for an input just
-    /// removed, is dropped.
+    /// server, one whose sequence does not increase for its input (or media
+    /// list item), or one that does not decode disconnects the session. A
+    /// valid one is kept only while subscribed and only for an input the
+    /// replicated project has (an item's, only for an item its list has):
+    /// one still in flight after unsubscribing, or for an input or item
+    /// just removed, is dropped.
     fn validate_input_thumbnail(
         &mut self,
         thumbnail: &InputThumbnailMessage,
@@ -2077,10 +2098,11 @@ impl TcpSession {
             .client
             .session()
             .is_some_and(|session| session.server == thumbnail.server);
-        let valid_sequence = self
-            .latest_input_thumbnails
-            .get(&thumbnail.input)
-            .is_none_or(|(image, _)| thumbnail.sequence > image.sequence);
+        let latest = match thumbnail.item {
+            None => self.latest_input_thumbnails.get(&thumbnail.input),
+            Some(item) => self.latest_item_thumbnails.get(&(thumbnail.input, item)),
+        };
+        let valid_sequence = latest.is_none_or(|(image, _)| thumbnail.sequence > image.sequence);
         let image = decode_input_thumbnail(thumbnail).ok();
         let (true, true, Some(image)) = (valid_identity, valid_sequence, image) else {
             self.transition_disconnect();
@@ -2088,6 +2110,25 @@ impl TcpSession {
         };
         self.retain_known_input_thumbnails();
         if !self.input_thumbnails_subscribed || !self.knows_input(image.input) {
+            return Ok(());
+        }
+        if let Some(item) = image.item {
+            let key = (image.input, item);
+            if !self.knows_item(key) {
+                return Ok(());
+            }
+            if !self.latest_item_thumbnails.contains_key(&key)
+                && self.latest_item_thumbnails.len() >= MAX_RETAINED_ITEM_THUMBNAILS
+                && let Some(oldest) = self
+                    .latest_item_thumbnails
+                    .iter()
+                    .min_by_key(|(_, (_, received))| *received)
+                    .map(|(key, _)| *key)
+            {
+                self.latest_item_thumbnails.remove(&oldest);
+            }
+            self.latest_item_thumbnails
+                .insert(key, (image, Instant::now()));
             return Ok(());
         }
         if !self.latest_input_thumbnails.contains_key(&image.input)
@@ -2114,7 +2155,18 @@ impl TcpSession {
             .is_none_or(|state| state.inputs().contains(&input.to_domain()))
     }
 
-    /// Forgets the thumbnails of inputs the replicated project no longer has.
+    /// Whether the replicated media list of `input` has `item` (any item
+    /// while no project state is known yet).
+    fn knows_item(&self, (input, item): (WireInputId, u32)) -> bool {
+        self.client.model().state().is_none_or(|state| {
+            state
+                .media_list(input.to_domain())
+                .is_some_and(|list| list.items.iter().any(|known| known.id == item))
+        })
+    }
+
+    /// Forgets the thumbnails of inputs the replicated project no longer
+    /// has, and of media list items their lists no longer have.
     fn retain_known_input_thumbnails(&mut self) {
         let Some(state) = self.client.model().state() else {
             return;
@@ -2122,6 +2174,11 @@ impl TcpSession {
         let inputs = state.inputs();
         self.latest_input_thumbnails
             .retain(|input, _| inputs.contains(&input.to_domain()));
+        self.latest_item_thumbnails.retain(|(input, item), _| {
+            state
+                .media_list(input.to_domain())
+                .is_some_and(|list| list.items.iter().any(|known| known.id == *item))
+        });
     }
 
     /// Validates and assembles one `title_preview_frame` part, returning

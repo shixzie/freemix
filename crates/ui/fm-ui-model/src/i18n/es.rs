@@ -6460,6 +6460,20 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MlActiveHover,
         t("El elemento que reproduce ahora esta entrada"),
     ),
+    (
+        Msg::MlThumbHover,
+        t("La imagen de este elemento en su punto de entrada, tomada de su archivo"),
+    ),
+    (
+        Msg::MlThumbSimHover,
+        t("Una tarjeta sustituta: este servidor no decodifica archivos de medios"),
+    ),
+    (
+        Msg::MlThumbPendingHover,
+        t(
+            "La imagen de este elemento aún no ha llegado; los archivos de audio muestran una tarjeta de onda",
+        ),
+    ),
     (Msg::MlRemoveHover, t("Quita este elemento de la lista")),
     (
         Msg::MlReasonOnlyItem,

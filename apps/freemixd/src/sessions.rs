@@ -48,7 +48,7 @@ use super::{
     record_heartbeat, rejected_handshake_response, requested_daemon_shutdown, server_identity,
     shutdown_message, structured_session_error,
 };
-use crate::input_thumbnails::{ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
+use crate::input_thumbnails::{ThumbnailKey, ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
 use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
@@ -573,12 +573,13 @@ impl Peer {
         self.thumbnails.is_some() && self.phase == Phase::Active
     }
 
-    /// Queues one input's newest thumbnail for a subscribed peer.
-    fn offer_thumbnail(&mut self, input: fm_types::InputId, bytes: &[u8]) {
+    /// Queues one input's (or media list item's) newest thumbnail for a
+    /// subscribed peer.
+    fn offer_thumbnail(&mut self, key: ThumbnailKey, bytes: &[u8]) {
         if self.phase == Phase::Active
             && let Some(outbox) = self.thumbnails.as_mut()
         {
-            outbox.offer(input, bytes.to_vec());
+            outbox.offer(key, bytes.to_vec());
         }
     }
 
@@ -714,10 +715,19 @@ pub(super) fn run(
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     // Input thumbnails render off this loop too (Protocol 2.59).
+    // A native daemon decodes each media list item's picture (IN-006).
+    #[cfg(feature = "native-media")]
+    let item_pictures = native
+        .is_some()
+        .then(|| crate::native_files::item_pictures(titles.store()))
+        .flatten();
+    #[cfg(not(feature = "native-media"))]
+    let item_pictures = None;
     let mut thumbnails = ThumbnailWorker::spawn(
         authority.clone(),
         Arc::clone(titles),
         Arc::clone(&documents),
+        item_pictures,
     )?;
     let mut thumbnail_grades = crate::grading::GradeCache::default();
     let mut simulated_monitor = if native.is_none() {
@@ -1180,9 +1190,9 @@ pub(super) fn run(
                 native.as_deref().map(NativeDaemon::live_source_frames),
             )
         });
-        for (input, bytes) in records {
+        for (key, bytes) in records {
             for peer in &mut peers {
-                peer.offer_thumbnail(input, &bytes);
+                peer.offer_thumbnail(key, &bytes);
             }
         }
         for peer in &mut peers {

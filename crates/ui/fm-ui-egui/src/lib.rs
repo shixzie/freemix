@@ -605,6 +605,12 @@ pub struct StudioUiState {
     /// page thumbnails, by input, page, and kind.
     pub paged_pages:
         std::collections::BTreeMap<fm_protocol::PagedPageKey, fm_protocol::PagedPageAnswer>,
+    /// Latest decoded picture of each media list item (IN-006, Protocol
+    /// 2.80), by list input and item id, while the feed is subscribed.
+    pub item_thumbnails: std::collections::BTreeMap<
+        (fm_protocol::WireInputId, u32),
+        (fm_protocol::InputThumbnailImage, std::time::Instant),
+    >,
     /// Live input adds and removes sent by this client and not yet resolved,
     /// in send order.
     pub catalogue_pending: Vec<CatalogueRequest>,
@@ -671,6 +677,7 @@ impl StudioUiState {
             monitor_images: [None, None],
             input_thumbnails: std::collections::BTreeMap::new(),
             paged_pages: std::collections::BTreeMap::new(),
+            item_thumbnails: std::collections::BTreeMap::new(),
             catalogue_pending: Vec::new(),
             catalogue_refusal: None,
             command_refusals: Vec::new(),
@@ -2013,7 +2020,7 @@ impl StudioShell {
         self.draw_strip_fx_window(ui.ctx(), state, &mut intents);
         self.draw_layout_name_dialog(ui.ctx());
         self.track_catalogue_intents(ui.ctx(), state, &intents);
-        self.follow_input_bank_visibility(state, &mut intents);
+        self.follow_input_bank_visibility(ui.ctx(), state, &mut intents);
         theme::paint_focus_ring(ui.ctx());
         intents
     }
@@ -2023,11 +2030,15 @@ impl StudioShell {
     /// every reconnect, so only changes are sent.
     fn follow_input_bank_visibility(
         &mut self,
+        context: &egui::Context,
         state: &StudioUiState,
         intents: &mut Vec<StudioIntent>,
     ) {
-        // The layer designer's auto key samples them too (SW-008).
-        let wanted = (self.input_bank_drawn || self.designer.open)
+        // The layer designer's auto key samples them too (SW-008), and a
+        // media list card shows its items' pictures (IN-006).
+        let wanted = (self.input_bank_drawn
+            || self.designer.open
+            || media_list_ui::take_item_thumbnails_drawn(context))
             && state.connection_status == StudioConnectionStatus::Ready
             && state.view.is_some();
         if wanted != self.input_thumbnails_requested {

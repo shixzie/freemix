@@ -10,6 +10,11 @@
 //! never durable, never resumable, and never projected into snapshots; a
 //! fresh connection starts unsubscribed.
 //!
+//! A record with `item` (Protocol 2.80) is not the input's live picture
+//! but one media list item's (IN-006): the picture at the item's in mark,
+//! re-sent only when the item's file or in mark changes (and to a peer that
+//! just subscribed). Records without `item` are the input's own picture.
+//!
 //! `sequence` strictly increases per input within one connection.
 //! `age_ms` is how long ago the server last saw the input's picture change
 //! (saturating at `u32::MAX`), so a client can tell a frozen live source
@@ -40,6 +45,9 @@ pub struct InputThumbnailSubscription {
 pub struct InputThumbnailMessage {
     pub server: ServerIdentity,
     pub input: WireInputId,
+    /// The media list item (`1..=MAX_MEDIA_LIST_ITEM_ID`) the picture
+    /// shows, or `None` for the input's own live picture.
+    pub item: Option<u32>,
     pub sequence: u64,
     pub origin: MonitorFrameOrigin,
     /// Milliseconds since the server last saw this input's picture change.
@@ -57,6 +65,8 @@ pub struct InputThumbnailMessage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputThumbnailImage {
     pub input: WireInputId,
+    /// The media list item the picture shows, if it is one's.
+    pub item: Option<u32>,
     pub sequence: u64,
     pub origin: MonitorFrameOrigin,
     pub age_ms: u32,
@@ -92,6 +102,7 @@ pub fn decode_input_thumbnail(
     let rgba = decode_qoi_rgb(message.width, message.height, &message.data)?;
     Ok(InputThumbnailImage {
         input: message.input,
+        item: message.item,
         sequence: message.sequence,
         origin: message.origin,
         age_ms: message.age_ms,

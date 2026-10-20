@@ -9,13 +9,19 @@
 //! Loop, and Shuffle options. Stepping through the list is an operator
 //! control (`can_transition`); every other change is a project edit sent as
 //! one `media_list` `set` with the whole list, padlocks honoured.
+//!
+//! Each row starts with the item's own picture (its in-mark frame, Protocol
+//! 2.80 `input_thumbnail` records with `item`): a drawn card keeps the
+//! thumbnail feed subscribed, and each received picture is uploaded once.
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
-use egui::{DragValue, Id, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{DragValue, Id, RichText, Sense, Stroke, TextureHandle, TextureId, Ui, Vec2};
 use fm_protocol::{
     MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_TEXT_BYTES, MediaListItemSpec, MediaListNavigation,
-    MediaListOperation, MediaListOptionsSpec, MediaListStatus,
+    MediaListOperation, MediaListOptionsSpec, MediaListStatus, MonitorFrameOrigin, WireInputId,
 };
 use fm_types::InputId;
 
@@ -32,6 +38,116 @@ use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
 /// The width of a row's icon keys.
 const ROW_KEY_WIDTH: f32 = 26.0;
+
+/// The size of a row's item picture (16:9).
+const ITEM_THUMB_SIZE: Vec2 = Vec2::new(48.0, 27.0);
+
+/// Uploaded item pictures, by list input and item, kept in the egui
+/// context between frames.
+#[derive(Clone, Default)]
+struct ItemTextures(BTreeMap<(WireInputId, u32), UploadedPicture>);
+
+/// One uploaded picture and the pixels it was uploaded from.
+type UploadedPicture = (Arc<[u8]>, TextureHandle);
+
+fn drawn_id() -> Id {
+    Id::new("studio-media-list-item-thumbnails-drawn")
+}
+
+fn textures_id() -> Id {
+    Id::new("studio-media-list-item-textures")
+}
+
+/// Whether a media list card was drawn since the last call, so its item
+/// pictures keep the thumbnail feed subscribed; clears the mark.
+pub(crate) fn take_item_thumbnails_drawn(context: &egui::Context) -> bool {
+    context.data_mut(|data| data.remove_temp::<bool>(drawn_id()).unwrap_or(false))
+}
+
+/// Frees the uploaded pictures of items `state` no longer has a picture of.
+fn retain_item_textures(context: &egui::Context, state: &StudioUiState) {
+    context.data_mut(|data| {
+        data.get_temp_mut_or_default::<ItemTextures>(textures_id())
+            .0
+            .retain(|key, _| state.item_thumbnails.contains_key(key));
+    });
+}
+
+/// The uploaded texture of `item`'s picture and its origin, uploading a
+/// newly received picture once.
+fn item_texture(
+    context: &egui::Context,
+    state: &StudioUiState,
+    input: InputId,
+    item: u32,
+) -> Option<(TextureId, MonitorFrameOrigin)> {
+    let key = (WireInputId::from_domain(input), item);
+    let (image, _) = state.item_thumbnails.get(&key)?;
+    if image.width == 0
+        || image.height == 0
+        || image.rgba.len() != usize::from(image.width) * usize::from(image.height) * 4
+    {
+        return None;
+    }
+    let uploaded = context.data(|data| {
+        data.get_temp::<ItemTextures>(textures_id())
+            .and_then(|textures| {
+                textures
+                    .0
+                    .get(&key)
+                    .filter(|(pixels, _)| Arc::ptr_eq(pixels, &image.rgba))
+                    .map(|(_, handle)| handle.id())
+            })
+    });
+    if let Some(texture) = uploaded {
+        return Some((texture, image.origin));
+    }
+    let color = egui::ColorImage::from_rgba_unmultiplied(
+        [usize::from(image.width), usize::from(image.height)],
+        &image.rgba,
+    );
+    let handle = context.load_texture(
+        format!("fm-media-list-item-{}-{item}", key.0),
+        color,
+        egui::TextureOptions::LINEAR,
+    );
+    let texture = handle.id();
+    context.data_mut(|data| {
+        data.get_temp_mut_or_default::<ItemTextures>(textures_id())
+            .0
+            .insert(key, (Arc::clone(&image.rgba), handle));
+    });
+    Some((texture, image.origin))
+}
+
+/// Paints `item`'s picture (or an empty frame while none has arrived) at
+/// the start of its row.
+fn draw_item_thumbnail(ui: &mut Ui, l: Locale, state: &StudioUiState, input: InputId, item: u32) {
+    let (rect, response) = ui.allocate_exact_size(ITEM_THUMB_SIZE, Sense::hover());
+    let shown = item_texture(ui.ctx(), state, input, item);
+    let painter = ui.painter_at(rect);
+    let radius = egui::CornerRadius::same(2);
+    painter.rect_filled(rect, radius, egui::Color32::from_rgb(16, 18, 22));
+    if let Some((texture, _)) = shown {
+        painter.image(
+            texture,
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, crate::theme::faded(text_dim_color(), 0.5)),
+        egui::StrokeKind::Inside,
+    );
+    response.on_hover_text(l.text(match shown {
+        Some((_, MonitorFrameOrigin::Native)) => Msg::MlThumbHover,
+        Some((_, MonitorFrameOrigin::Simulated)) => Msg::MlThumbSimHover,
+        None => Msg::MlThumbPendingHover,
+    }));
+}
 
 /// The longest path one item may name, as the wire bounds an input source.
 const MAX_ITEM_PATH_BYTES: usize = 4096;
@@ -274,6 +390,8 @@ pub(crate) fn draw_list(
             active: None,
         };
 
+    ui.ctx().data_mut(|data| data.insert_temp(drawn_id(), true));
+    retain_item_textures(ui.ctx(), state);
     ui.add_space(4.0);
     ui.separator();
     // Title, position, Previous and Next.
@@ -411,6 +529,7 @@ pub(crate) fn draw_list(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    draw_item_thumbnail(ui, l, state, input, item.id);
                     // The name is the drag handle.
                     let drag = ui
                         .dnd_drag_source(
@@ -750,5 +869,48 @@ mod tests {
         let options = draft.options(&items);
         assert!(options.auto_next && !options.loop_list);
         assert_eq!(options.shuffle_seed, Some(shuffle_seed(&items, 0)));
+    }
+
+    /// A drawn card asks for the thumbnail feed (once per frame), uploads
+    /// each item's picture once, shows none for an item without one, and
+    /// frees the pictures that are gone.
+    #[test]
+    fn a_drawn_card_uploads_each_item_picture_once_and_asks_for_the_feed() {
+        let mut state = crate::hover_audit::bank_fixture();
+        state.item_thumbnails = crate::hover_audit::item_thumbnails();
+        let guest = InputId::new(core::num::NonZeroU128::new(4).unwrap());
+        let list = state
+            .project_state
+            .as_ref()
+            .and_then(|project| project.media_list(guest))
+            .unwrap()
+            .clone();
+        let context = egui::Context::default();
+        let draw = |state: &StudioUiState| {
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                let mut intents = Vec::new();
+                draw_list(ui, Locale::ENGLISH, state, guest, &list, &mut intents);
+            });
+        };
+        let mut uploaded = Vec::new();
+        for _ in 0..2 {
+            draw(&state);
+            assert!(take_item_thumbnails_drawn(&context));
+            assert!(!take_item_thumbnails_drawn(&context));
+            let decoded = item_texture(&context, &state, guest, 1).unwrap();
+            assert_eq!(decoded.1, MonitorFrameOrigin::Native);
+            let card = item_texture(&context, &state, guest, 3).unwrap();
+            assert_eq!(card.1, MonitorFrameOrigin::Simulated);
+            assert!(item_texture(&context, &state, guest, 2).is_none());
+            uploaded.push((decoded.0, card.0));
+        }
+        assert_eq!(uploaded[0], uploaded[1], "uploaded once");
+        state.item_thumbnails.clear();
+        draw(&state);
+        assert!(context.data_mut(|data| {
+            data.get_temp_mut_or_default::<ItemTextures>(textures_id())
+                .0
+                .is_empty()
+        }));
     }
 }

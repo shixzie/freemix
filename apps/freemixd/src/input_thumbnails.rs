@@ -43,6 +43,16 @@
 //!   An input without a picture is tried again at most every
 //!   [`THUMBNAIL_INTERVAL`], like one with a picture.
 //!
+//! Every media list item (IN-006) gets its own record too (`item`, Protocol
+//! 2.80): the picture at the item's in mark, so Studio's list card shows
+//! each item, not only the one on air. A native daemon decodes that frame
+//! from the item's file through [`ItemPictures`] (one item per worker step,
+//! so a long list never starves the input pictures); a simulated daemon,
+//! which decodes no media, draws a media card tinted per item; an audio
+//! file gets the audio card. An item's record is rendered and sent once
+//! per file and in mark (and again to a peer that just subscribed), never
+//! kept alive: its picture does not change.
+//!
 //! Each subscribed peer drains its thumbnails through a [`ThumbnailOutbox`]:
 //! one pending record per input (a newer one replaces an unsent one), served
 //! round-robin, admitted by a per-peer [`TokenBucket`] of
@@ -91,6 +101,39 @@ const REPUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 /// Longest the worker sleeps between steps while there is work.
 const WORKER_STEP: Duration = Duration::from_millis(50);
 
+/// Most media list item pictures rendered in one worker step.
+const ITEM_RENDERS_PER_STEP: usize = 1;
+
+/// What one thumbnail record shows: an input's own picture, or one of its
+/// media list items' (IN-006).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ThumbnailKey {
+    pub(crate) input: InputId,
+    pub(crate) item: Option<u32>,
+}
+
+impl From<InputId> for ThumbnailKey {
+    fn from(input: InputId) -> Self {
+        Self { input, item: None }
+    }
+}
+
+/// Decodes the picture a media list item starts on (a native daemon's
+/// file decoder).
+pub(crate) trait ItemPictures: Send + Sync {
+    /// Source frame `frame` (clamped to the file's last) of the media file
+    /// at `path`, sampled to `width`x`height` as a straight sRGB picture.
+    fn picture(&self, path: &std::path::Path, frame: u64, size: (u32, u32)) -> Option<ImageFrame>;
+}
+
+/// One media list item's rendered picture, for one file and in mark.
+struct ItemEntry {
+    version: (String, u64),
+    /// `None` when the item has no picture (its file did not decode).
+    encoded: Option<(u16, u16, Vec<u8>)>,
+    native: bool,
+}
+
 /// What one worker step renders from.
 pub(crate) struct ThumbnailWork {
     pub(crate) revision: u64,
@@ -131,6 +174,10 @@ pub(crate) struct ThumbnailRenderer {
     /// The simulated pipeline at the fitted thumbnail size, per revision.
     pipeline: Option<(u64, Option<SimulatedPipeline>)>,
     entries: BTreeMap<InputId, Entry>,
+    /// Each media list item's picture (IN-006), by list input and item.
+    items: BTreeMap<(InputId, u32), ItemEntry>,
+    /// Decodes item pictures on a native daemon.
+    item_pictures: Option<Arc<dyn ItemPictures>>,
     /// Decoded image and slide pictures at the thumbnail size.
     stills: StillPictures,
     /// When each input was last tried, with or without a picture, so an
@@ -151,6 +198,8 @@ impl ThumbnailRenderer {
             documents: Arc::default(),
             pipeline: None,
             entries: BTreeMap::new(),
+            items: BTreeMap::new(),
+            item_pictures: None,
             stills: StillPictures::default(),
             tried: BTreeMap::new(),
             sequence: 0,
@@ -165,6 +214,13 @@ impl ThumbnailRenderer {
         Self { documents, ..self }
     }
 
+    /// Decodes media list item pictures through `pictures` (a native
+    /// daemon) instead of drawing cards.
+    pub(crate) fn with_item_pictures(mut self, pictures: Option<Arc<dyn ItemPictures>>) -> Self {
+        self.item_pictures = pictures;
+        self
+    }
+
     /// Renders every input due at `now` and hands each record to send to
     /// `emit`. `refresh` renders and sends every input with a picture at
     /// once (a peer just subscribed).
@@ -173,7 +229,7 @@ impl ThumbnailRenderer {
         work: &ThumbnailWork,
         now: Instant,
         refresh: bool,
-        emit: &mut dyn FnMut(InputId, Vec<u8>),
+        emit: &mut dyn FnMut(ThumbnailKey, Vec<u8>),
     ) {
         // Scene inputs compose on this grid on either daemon.
         if self
@@ -240,18 +296,148 @@ impl ThumbnailRenderer {
                 true
             };
             if send && let Some(bytes) = self.record(input.id, now, work.live.is_some()) {
-                emit(input.id, bytes);
+                emit(input.id.into(), bytes);
             }
         }
+        self.step_items(work, refresh, emit);
         let project = &work.project;
         let known = |input: &InputId| project.inputs().iter().any(|known| known.id == *input);
         self.entries.retain(|input, _| known(input));
         self.tried.retain(|input, _| known(input));
     }
 
+    /// Renders the pictures of media list items that are new or whose file
+    /// or in mark changed (at most [`ITEM_RENDERS_PER_STEP`]), sends each
+    /// once, and sends every item again on `refresh`.
+    fn step_items(
+        &mut self,
+        work: &ThumbnailWork,
+        refresh: bool,
+        emit: &mut dyn FnMut(ThumbnailKey, Vec<u8>),
+    ) {
+        let mut rendered = 0;
+        for input in work.project.inputs() {
+            let Some(list) = work.project.media_list(input.id) else {
+                continue;
+            };
+            for item in &list.items {
+                let key = (input.id, item.id);
+                let version = (item.asset_uri.clone(), item.mark_in);
+                let stale = self
+                    .items
+                    .get(&key)
+                    .is_none_or(|entry| entry.version != version);
+                if stale {
+                    if rendered == ITEM_RENDERS_PER_STEP {
+                        continue;
+                    }
+                    rendered += 1;
+                    let (picture, native) = self.item_picture(input.id, item, work);
+                    let encoded = picture.and_then(|picture| encode_thumbnail(&picture));
+                    self.items.insert(
+                        key,
+                        ItemEntry {
+                            version,
+                            encoded,
+                            native,
+                        },
+                    );
+                } else if !refresh {
+                    continue;
+                }
+                if let Some(bytes) = self.item_record(key) {
+                    emit(
+                        ThumbnailKey {
+                            input: input.id,
+                            item: Some(item.id),
+                        },
+                        bytes,
+                    );
+                }
+            }
+        }
+        let project = &work.project;
+        self.items.retain(|(input, item), _| {
+            project
+                .media_list(*input)
+                .is_some_and(|list| list.item(*item).is_some())
+        });
+    }
+
+    /// The picture media list item `item` of `input` starts on, graded with
+    /// the input's grade and over black, and whether it was decoded from
+    /// the file (else it is a card).
+    fn item_picture(
+        &self,
+        input: InputId,
+        item: &fm_model::MediaListItem,
+        work: &ThumbnailWork,
+    ) -> (Option<ImageFrame>, bool) {
+        let (width, height) = self
+            .pipeline
+            .as_ref()
+            .and_then(|(_, pipeline)| pipeline.as_ref())
+            .map_or(
+                (
+                    u32::from(MAX_INPUT_THUMBNAIL_WIDTH),
+                    u32::from(MAX_INPUT_THUMBNAIL_HEIGHT),
+                ),
+                |pipeline| (pipeline.width(), pipeline.height()),
+            );
+        if fm_model::is_audio_file_name(&item.asset_uri) {
+            return (audio_media_picture(width, height, None), false);
+        }
+        let decoded = self.item_pictures.as_ref().and_then(|pictures| {
+            let store = self.titles.store()?;
+            let path =
+                crate::stills::resolve_picture_path(&store.assets_root(), &item.asset_uri).ok()?;
+            pictures.picture(&path, item.mark_in, (width, height))
+        });
+        let native = decoded.is_some();
+        let picture = match decoded {
+            Some(picture) => picture,
+            None if self.item_pictures.is_some() => return (None, true),
+            None => match synthetic_media_picture(u128::from(item.id), width, height, None) {
+                Some(card) => card,
+                None => return (None, false),
+            },
+        };
+        let graded = match work.grades.input(input) {
+            Some(grade) => fm_compositor::apply_grade(&picture, grade).ok(),
+            None => Some(picture),
+        };
+        (graded.map(|graded| over_black(&graded)), native)
+    }
+
+    /// The encoded `input_thumbnail` line of media list item `key`.
+    fn item_record(&mut self, key: (InputId, u32)) -> Option<Vec<u8>> {
+        let entry = self.items.get(&key)?;
+        let (width, height, qoi) = entry.encoded.as_ref()?;
+        let sequence = self.sequence.checked_add(1)?;
+        let message = InputThumbnailMessage {
+            server: self.server.clone(),
+            input: WireInputId::from_domain(key.0),
+            item: Some(key.1),
+            sequence,
+            origin: if entry.native {
+                MonitorFrameOrigin::Native
+            } else {
+                MonitorFrameOrigin::Simulated
+            },
+            age_ms: 0,
+            width: *width,
+            height: *height,
+            data: qoi.clone(),
+        };
+        let line = encode_line(&WireMessage::InputThumbnail(message)).ok()?;
+        self.sequence = sequence;
+        Some(line.into_bytes())
+    }
+
     /// Forgets every rendered picture (nobody is subscribed any more).
     pub(crate) fn idle(&mut self) {
         self.entries.clear();
+        self.items.clear();
         self.tried.clear();
         self.pipeline = None;
     }
@@ -264,6 +450,7 @@ impl ThumbnailRenderer {
         let message = InputThumbnailMessage {
             server: self.server.clone(),
             input: WireInputId::from_domain(input),
+            item: None,
             sequence,
             origin: if native {
                 MonitorFrameOrigin::Native
@@ -469,7 +656,7 @@ impl LeafContext<'_> {
                 ImageFrame::new(width, height, bytes, vec![0; bytes.checked_mul(rows)?]).ok()
             }
             InputKind::Media { .. } => {
-                synthetic_media_picture(id, width, height, media_playhead(work, id))
+                synthetic_media_picture(id.get().get(), width, height, media_playhead(work, id))
             }
             _ => None,
         }
@@ -631,17 +818,18 @@ fn synthetic_picture(
     ImageFrame::new(width, height, columns * 4, pixels).ok()
 }
 
-/// A simulated daemon's stand-in picture for a media input it cannot
-/// decode: a dark tinted card with a progress bar along the bottom showing
-/// the playhead within the playable range (empty when unknown), so it moves
-/// exactly while the engine plays the clip.
+/// A simulated daemon's stand-in picture for a media input (or media list
+/// item) it cannot decode: a dark card tinted by `seed` (the input id or
+/// item id) with a progress bar along the bottom showing the playhead
+/// within the playable range (empty when unknown), so it moves exactly
+/// while the engine plays the clip.
 fn synthetic_media_picture(
-    input: InputId,
+    seed: u128,
     width: u32,
     height: u32,
     playhead: Option<(u64, u64)>,
 ) -> Option<ImageFrame> {
-    let shift = u8::try_from(input.get().get() % 5).ok()? * 6;
+    let shift = u8::try_from(seed % 5).ok()? * 6;
     let tint = [52_u8, 40, 72].map(|channel| channel.saturating_add(shift));
     let columns = usize::try_from(width).ok()?;
     let rows = usize::try_from(height).ok()?;
@@ -796,9 +984,9 @@ impl TokenBucket {
 /// One subscribed peer's pending thumbnails; see the module documentation.
 #[derive(Debug)]
 pub(crate) struct ThumbnailOutbox {
-    pending: BTreeMap<InputId, Vec<u8>>,
-    /// The input served last, so the next one is served after it.
-    cursor: Option<InputId>,
+    pending: BTreeMap<ThumbnailKey, Vec<u8>>,
+    /// The record served last, so the next one is served after it.
+    cursor: Option<ThumbnailKey>,
     bucket: TokenBucket,
 }
 
@@ -811,9 +999,9 @@ impl ThumbnailOutbox {
         }
     }
 
-    /// Queues `input`'s newest record, replacing an unsent older one.
-    pub(crate) fn offer(&mut self, input: InputId, bytes: Vec<u8>) {
-        self.pending.insert(input, bytes);
+    /// Queues `key`'s newest record, replacing an unsent older one.
+    pub(crate) fn offer(&mut self, key: impl Into<ThumbnailKey>, bytes: Vec<u8>) {
+        self.pending.insert(key.into(), bytes);
     }
 
     /// Records waiting, at most one per input.
@@ -853,8 +1041,8 @@ struct Slot {
     changed: bool,
     refresh: bool,
     shutdown: bool,
-    /// One latest-wins record per input.
-    finished: BTreeMap<InputId, Vec<u8>>,
+    /// One latest-wins record per input and per media list item.
+    finished: BTreeMap<ThumbnailKey, Vec<u8>>,
 }
 
 struct Shared {
@@ -888,6 +1076,7 @@ impl ThumbnailWorker {
         server: ServerIdentity,
         titles: Arc<TitleAssets>,
         documents: Arc<crate::documents::DocumentPages>,
+        item_pictures: Option<Arc<dyn ItemPictures>>,
     ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             slot: Mutex::new(Slot {
@@ -900,8 +1089,9 @@ impl ThumbnailWorker {
             wake: Condvar::new(),
         });
         let worker_shared = Arc::clone(&shared);
-        let mut renderer =
-            ThumbnailRenderer::new(server, Instant::now(), titles).with_documents(documents);
+        let mut renderer = ThumbnailRenderer::new(server, Instant::now(), titles)
+            .with_documents(documents)
+            .with_item_pictures(item_pictures);
         let worker = thread::Builder::new()
             .name("freemixd-thumbnails".to_owned())
             .spawn(move || run_worker(&worker_shared, &mut renderer))?;
@@ -934,7 +1124,7 @@ impl ThumbnailWorker {
         refresh: bool,
         now: Instant,
         build: impl FnOnce(&mut Self) -> ThumbnailWork,
-    ) -> Vec<(InputId, Vec<u8>)> {
+    ) -> Vec<(ThumbnailKey, Vec<u8>)> {
         let publish = if demand {
             let due = refresh
                 || self.published_at.is_none_or(|published| {
@@ -1008,9 +1198,9 @@ fn run_worker(shared: &Shared, renderer: &mut ThumbnailRenderer) {
             renderer.idle();
             continue;
         };
-        renderer.step(current, Instant::now(), refresh, &mut |input, bytes| {
+        renderer.step(current, Instant::now(), refresh, &mut |key, bytes| {
             // Visible to the session loop as soon as it is encoded.
-            shared.lock().finished.insert(input, bytes);
+            shared.lock().finished.insert(key, bytes);
         });
     }
 }
@@ -1109,14 +1299,32 @@ mod tests {
         now: Instant,
         refresh: bool,
     ) -> Vec<(InputId, InputThumbnailMessage)> {
+        step_all(renderer, work, now, refresh)
+            .into_iter()
+            .filter(|(key, _)| key.item.is_none())
+            .map(|(key, message)| (key.input, message))
+            .collect()
+    }
+
+    /// Every record one step sends, input pictures and media list items.
+    fn step_all(
+        renderer: &mut ThumbnailRenderer,
+        work: &ThumbnailWork,
+        now: Instant,
+        refresh: bool,
+    ) -> Vec<(ThumbnailKey, InputThumbnailMessage)> {
         let mut out = Vec::new();
-        renderer.step(work, now, refresh, &mut |input, bytes| {
+        renderer.step(work, now, refresh, &mut |key, bytes| {
             let mut decoder = LineDecoder::new();
             let messages = decoder.push(&bytes).unwrap();
             let [WireMessage::InputThumbnail(message)] = messages.as_slice() else {
                 panic!("one input_thumbnail record");
             };
-            out.push((input, message.clone()));
+            assert_eq!(
+                (message.input, message.item),
+                (WireInputId::from_domain(key.input), key.item)
+            );
+            out.push((key, message.clone()));
         });
         out
     }
@@ -1261,6 +1469,7 @@ mod tests {
         let record = InputThumbnailMessage {
             server: server(),
             input: WireInputId::from_domain(input_id(1)),
+            item: None,
             sequence: 1,
             origin: MonitorFrameOrigin::Native,
             age_ms: u32::MAX,
@@ -1327,7 +1536,8 @@ mod tests {
 
     #[test]
     fn worker_renders_off_the_loop_and_stops_without_demand() {
-        let mut worker = ThumbnailWorker::spawn(server(), Arc::default(), Arc::default()).unwrap();
+        let mut worker =
+            ThumbnailWorker::spawn(server(), Arc::default(), Arc::default(), None).unwrap();
         let project = project(vec![solid(1, 200)]);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut records = Vec::new();
@@ -1346,7 +1556,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, input_id(1));
+        assert_eq!(records[0].0, input_id(1).into());
         // Without demand nothing is collected any more.
         assert_eq!(
             worker.poll(false, false, Instant::now(), |_| unreachable!()),
@@ -1607,6 +1817,133 @@ mod tests {
         assert_eq!(pixel(&moved[0].1, 100, 89), [24, 24, 28, 255]);
     }
 
+    fn list_project(items: &[(u32, &str, u64)]) -> Project {
+        let clip = input(
+            6,
+            InputKind::Media {
+                asset_uri: items[0].1.into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+        );
+        let mut project = project(vec![clip]);
+        let items = items
+            .iter()
+            .map(|(id, uri, mark_in)| {
+                let mut item = fm_model::MediaListItem::new(*id, *uri);
+                item.mark_in = *mark_in;
+                item
+            })
+            .collect();
+        let list = fm_model::MediaList::new(items, fm_model::MediaListOptions::default()).unwrap();
+        project.set_media_lists(BTreeMap::from([(input_id(6), list)]));
+        project
+    }
+
+    fn items_of(records: &[(ThumbnailKey, InputThumbnailMessage)]) -> Vec<u32> {
+        records.iter().filter_map(|(key, _)| key.item).collect()
+    }
+
+    /// Media list items (IN-006) get their own records, one item rendered
+    /// per step: a simulated daemon draws a card tinted per item (an audio
+    /// file the audio card). An item is sent once, again only to a peer
+    /// that subscribed or when its file or in mark changes, and forgotten
+    /// once it leaves the list.
+    #[test]
+    fn media_list_items_get_one_record_each_until_they_change() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let at = |millis| start + Duration::from_millis(millis);
+        let listed = work(
+            list_project(&[(1, "asset://media/a.mov", 0), (2, "asset://media/b.wav", 0)]),
+            1,
+        );
+        let first = step_all(&mut renderer, &listed, start, false);
+        assert_eq!(items_of(&first), [1]);
+        let (_, card) = first.iter().find(|(key, _)| key.item == Some(1)).unwrap();
+        assert_eq!(card.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!(pixel(card, 0, 0), [58, 46, 78, 255], "tinted by item 1");
+        let second = step_all(&mut renderer, &listed, at(10), false);
+        assert_eq!(items_of(&second), [2]);
+        let (_, audio) = second.iter().find(|(key, _)| key.item == Some(2)).unwrap();
+        assert_eq!(pixel(audio, 0, 0), [20, 44, 48, 255], "the audio card");
+        // Never kept alive.
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, at(5_000), false)),
+            Vec::<u32>::new()
+        );
+        // A peer that subscribes gets every item again.
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, at(6_000), true)),
+            [1, 2]
+        );
+        // A new in mark renders that item again, only.
+        let moved = work(
+            list_project(&[(1, "asset://media/a.mov", 5), (2, "asset://media/b.wav", 0)]),
+            2,
+        );
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &moved, at(7_000), false)),
+            [1]
+        );
+        let shorter = work(list_project(&[(2, "asset://media/b.wav", 0)]), 3);
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &shorter, at(8_000), false)),
+            Vec::<u32>::new()
+        );
+        assert_eq!(renderer.items.len(), 1);
+    }
+
+    /// The frames an [`ItemPictures`] decodes: a picture whose red channel
+    /// is the frame asked for.
+    struct FrameShades;
+
+    impl ItemPictures for FrameShades {
+        fn picture(
+            &self,
+            path: &std::path::Path,
+            frame: u64,
+            (width, height): (u32, u32),
+        ) -> Option<ImageFrame> {
+            assert!(path.ends_with("a.mov"), "{}", path.display());
+            let red = u8::try_from(frame).ok()?;
+            let pixels = [red, 0, 0, 255].repeat(usize::try_from(width * height).ok()?);
+            ImageFrame::new(width, height, usize::try_from(width).ok()? * 4, pixels).ok()
+        }
+    }
+
+    /// A native daemon decodes each item's in-mark frame from the item's
+    /// file in the bundle; an item whose file does not resolve gets none.
+    #[test]
+    fn native_media_list_items_show_their_in_mark_frame() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = fm_persistence::ProjectStore::new(directory.path().join("p.freemix")).unwrap();
+        let assets = store.assets_root();
+        std::fs::create_dir_all(assets.join("media")).unwrap();
+        std::fs::write(assets.join("media/a.mov"), b"clip").unwrap();
+        let listed = list_project(&[
+            (1, "asset://media/a.mov", 40),
+            (2, "asset://media/gone.mov", 0),
+        ]);
+        let titles = Arc::new(TitleAssets::load(&store, &listed));
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, titles)
+            .with_item_pictures(Some(Arc::new(FrameShades)));
+        let listed = work(listed, 1);
+        let first = step_all(&mut renderer, &listed, start, false);
+        assert_eq!(items_of(&first), [1]);
+        let (_, decoded) = first.iter().find(|(key, _)| key.item == Some(1)).unwrap();
+        assert_eq!(decoded.origin, MonitorFrameOrigin::Native);
+        assert_eq!(pixel(decoded, 3, 3), [40, 0, 0, 255]);
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, start, false)),
+            Vec::<u32>::new()
+        );
+        assert!(
+            items_of(&step_all(&mut renderer, &listed, start, true)) == [1],
+            "a missing file has no picture to send"
+        );
+    }
+
     /// An audio-only media input (IN-005) gets an audio card: a waveform
     /// glyph lit up to the playhead, over the progress bar.
     #[test]
@@ -1804,13 +2141,13 @@ mod native_tests {
             live: Some(LiveSourceFrames::from_frames(frames)),
         };
         let mut out = BTreeMap::new();
-        renderer.step(&work, start, false, &mut |input, bytes| {
+        renderer.step(&work, start, false, &mut |key, bytes| {
             let messages = LineDecoder::new().push(&bytes).unwrap();
             let [WireMessage::InputThumbnail(message)] = messages.as_slice() else {
                 panic!("one input_thumbnail record");
             };
             assert_eq!(message.origin, MonitorFrameOrigin::Native);
-            out.insert(input, decode_input_thumbnail(message).unwrap());
+            out.insert(key.input, decode_input_thumbnail(message).unwrap());
         });
         out
     }

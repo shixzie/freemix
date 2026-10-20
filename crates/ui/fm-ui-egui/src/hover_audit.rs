@@ -2190,6 +2190,17 @@ fn scenes(language: Language) -> Vec<Scene> {
             ready(operator, Variant::default()),
         ));
     }
+    // IN-006: the media list card with item pictures: a decoded one, a
+    // simulated card, and one still to arrive.
+    scenes.push(Scene::console(
+        "operator/media-item-thumbnails",
+        shell(&|shell| shell.layout.dock.show(PanelId::Media)),
+        {
+            let mut state = ready(true, Variant::default());
+            state.item_thumbnails = item_thumbnails();
+            state
+        },
+    ));
     scenes.push(Scene::console(
         "operator/playlist-entry",
         shell(&|shell| {
@@ -3384,6 +3395,7 @@ pub(crate) fn green_screen_thumbnail(
     }
     let image = fm_protocol::InputThumbnailImage {
         input: wire(input),
+        item: None,
         sequence: 1,
         origin: fm_protocol::MonitorFrameOrigin::Simulated,
         age_ms: 0,
@@ -3392,6 +3404,24 @@ pub(crate) fn green_screen_thumbnail(
         rgba: rgba.into(),
     };
     BTreeMap::from([(wire(input), (image, std::time::Instant::now()))])
+}
+
+/// Pictures of the Guest media list's items 1 (decoded) and 3 (a
+/// simulated card); item 2 has none yet.
+pub(crate) fn item_thumbnails()
+-> BTreeMap<(WireInputId, u32), (fm_protocol::InputThumbnailImage, std::time::Instant)> {
+    [
+        (1, fm_protocol::MonitorFrameOrigin::Native),
+        (3, fm_protocol::MonitorFrameOrigin::Simulated),
+    ]
+    .into_iter()
+    .map(|(item, origin)| {
+        let (_, (mut image, received)) = green_screen_thumbnail(4).pop_first().unwrap();
+        image.item = Some(item);
+        image.origin = origin;
+        ((wire(4), item), (image, received))
+    })
+    .collect()
 }
 
 /// The right-click menus of the transition column and overlay channels,

@@ -25,6 +25,7 @@ fn thumbnail() -> InputThumbnailMessage {
     InputThumbnailMessage {
         server: server(),
         input: WireInputId::from_domain(fm_types::InputId::new(NonZeroU128::new(7).unwrap())),
+        item: None,
         sequence: 12,
         origin: MonitorFrameOrigin::Native,
         age_ms: 1_500,
@@ -140,4 +141,43 @@ fn decoding_checks_the_size_against_the_stream() {
             height: 1
         })
     );
+}
+
+/// Protocol 2.80: a media list item's picture (IN-006) is an
+/// `input_thumbnail` with `item` right after `input`; an item outside
+/// `1..=MAX_MEDIA_LIST_ITEM_ID` is refused both ways.
+#[test]
+fn item_thumbnails_name_their_item_exactly() {
+    let mut item = thumbnail();
+    item.item = Some(3);
+    let message = WireMessage::InputThumbnail(item.clone());
+    let line = encode_line(&message).unwrap();
+    assert_eq!(
+        line,
+        "input_thumbnail\tengine_id=e\tproject_id=p\tstate_epoch=3\tlog_id=l\tinput=7\t\
+         item=3\tsequence=12\torigin=native\tage_ms=1500\twidth=2\theight=1\t\
+         data=cW9pZgAAAAIAAAABAwBadgAAAAAAAAAB\n"
+    );
+    assert_eq!(decode_line(&line).unwrap(), message);
+    assert_eq!(decode_input_thumbnail(&item).unwrap().item, Some(3));
+    assert_eq!(decode_input_thumbnail(&thumbnail()).unwrap().item, None);
+
+    for bad in [0, fm_protocol::MAX_MEDIA_LIST_ITEM_ID + 1] {
+        let mut out_of_range = thumbnail();
+        out_of_range.item = Some(bad);
+        assert!(matches!(
+            encode_line(&WireMessage::InputThumbnail(out_of_range)),
+            Err(CodecError::InvalidField { field: "item", .. })
+        ));
+    }
+    for (from, to) in [
+        ("\titem=3\t", "\titem=0\t"),
+        ("\titem=3\t", "\titem=03\t"),
+        ("\titem=3\t", "\titem=1000001\t"),
+        ("\titem=3\t", "\titem=4294967299\t"),
+    ] {
+        let bad = line.replace(from, to);
+        assert_ne!(bad, line);
+        assert!(decode_line(&bad).is_err(), "{bad}");
+    }
 }
