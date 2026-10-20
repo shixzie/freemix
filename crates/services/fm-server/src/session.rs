@@ -273,6 +273,26 @@ impl Session {
         Ok(())
     }
 
+    /// Authorizes one screen capture targets request (IN-011).
+    ///
+    /// The listing names the server desktop's screens and every open
+    /// window's application and title, which only someone who may add or
+    /// re-target a screen capture input needs, so it requires
+    /// [`CommandClass::EditProject`]. It is not counted against the inbound
+    /// command rate: the server answers only a peer's newest request and
+    /// reuses a recent listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session or authorization error when the request cannot be
+    /// admitted.
+    pub fn admit_screen_capture_targets(&self) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::EditProject)?;
+        Ok(())
+    }
+
     /// Authorizes and accounts for one screen capture pick request
     /// (IN-011, Protocol 2.85).
     ///

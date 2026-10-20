@@ -2945,7 +2945,10 @@ captured on the server.
   comma-separated list, each id once, of
   `<id>~<pid|->~<x>~<y>~<width>~<height>~<app length>~<title length>:<app><title>`.
   Positions are signed. At most 16 screens and 48 windows; `supported=0`
-  carries empty lists.
+  carries empty lists. The listing names every open window's application
+  and title, so it needs the `edit_project` permission (as adding a screen
+  capture input does); any other session is answered with an `error`
+  naming the `request_id` (`permission_denied`).
 - Native `freemixd` lists the desktop on a worker thread twice a second and
   follows every input's target through it: a moved, resized, or cropped
   target restarts its capture on the new rectangle; a closed window reports

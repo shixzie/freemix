@@ -395,6 +395,43 @@ fn desired_role_and_commands_are_authorized_to_the_granted_scope() {
     ));
 }
 
+/// The server desktop's screens and window titles are listed only to a
+/// session that may edit the project (add or re-target a screen capture
+/// input): never to a tally viewer, an audio desk, or an operator.
+#[test]
+fn screen_capture_targets_need_project_edit_authority() {
+    let server = ready_server(config());
+    for (desired, role) in [
+        (Role::Viewer, AuthRole::Viewer),
+        (Role::Audio, AuthRole::Audio),
+        (Role::Operator, AuthRole::Operator),
+        // An admin that asked only for a viewer's role holds only that.
+        (Role::Viewer, AuthRole::Admin),
+    ] {
+        let session = server
+            .handshake(&hello(desired, None), &principal(role), 0)
+            .unwrap()
+            .session;
+        assert!(
+            matches!(
+                session.admit_screen_capture_targets(),
+                Err(SessionError::Authorization(_))
+            ),
+            "{desired:?} as {role:?}"
+        );
+    }
+    for (desired, role) in [
+        (Role::Graphics, AuthRole::Graphics),
+        (Role::Admin, AuthRole::Admin),
+    ] {
+        let session = server
+            .handshake(&hello(desired, None), &principal(role), 0)
+            .unwrap()
+            .session;
+        assert_eq!(session.admit_screen_capture_targets(), Ok(()));
+    }
+}
+
 #[test]
 fn wipe_uses_transition_authorization_and_fade_rate_accounting() {
     let server = ready_server(config());

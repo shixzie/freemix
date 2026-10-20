@@ -44,7 +44,9 @@
 //! (`0|1`), `backend`, an optional `error`, `screens`, and `windows`
 //! ([`ScreenCaptureInventory`]). The server lists off its frame loop and
 //! reuses a listing younger than a second, so it may answer only a peer's
-//! newest request.
+//! newest request. The listing names every open window's application and
+//! title, so it needs the `edit_project` permission; any other session is
+//! answered with an `error` naming the `request_id` (`permission_denied`).
 //!
 //! * `screens` is a comma-separated list, strictly ascending by index, of
 //!   `<index>~<primary 0|1>~<x>~<y>~<width>~<height>~<name length>:<name>`.

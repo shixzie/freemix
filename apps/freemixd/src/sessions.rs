@@ -2120,8 +2120,21 @@ impl Runtime<'_> {
             // The server's system audio devices (AU-011, Protocol 2.68) are
             // listed off this loop and sent on a later pass.
             // What the server can capture (IN-011) is listed off this loop
-            // and sent on a later pass.
+            // and sent on a later pass. It names every open window's
+            // application and title, so only a session that may edit the
+            // project (and so add a screen capture input) is answered.
             WireMessage::ScreenCaptureTargetsRequest(request) => {
+                let session = peer.session.as_ref().expect("active peers have sessions");
+                if let Err(error) = session.admit_screen_capture_targets() {
+                    let current_revision =
+                        Some(self.control.borrow().diagnostics().current_revision);
+                    peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision,
+                        error: structured_session_error(&error),
+                    }))?;
+                    return Ok(());
+                }
                 self.screen_capture_targets
                     .submit(peer.id, request.request_id);
                 Ok(())

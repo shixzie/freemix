@@ -24,8 +24,8 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, HandshakeOutcome, HandshakeRequest, Role,
-    WebAccessAction, WebAccessMessage, WebAccessRefusal, WebAccessRequest, WebDeviceRole,
-    WireMessage, decode_line, encode_line,
+    ScreenCaptureTargetsRequest, WebAccessAction, WebAccessMessage, WebAccessRefusal,
+    WebAccessRequest, WebDeviceRole, WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
@@ -592,6 +592,48 @@ fn a_phone_pairs_over_tls_within_its_role_until_revoked() {
     };
     assert_eq!(refusal.refusal, Some(WebAccessRefusal::WebSession));
     assert_eq!(refusal.gateway, None);
+    // Nor list the server desktop's windows: their titles are for whoever
+    // may add a screen capture input, which an Operator device may not.
+    phone
+        .send(Message::text(
+            encode_line(&WireMessage::ScreenCaptureTargetsRequest(
+                ScreenCaptureTargetsRequest {
+                    request_id: "phone-targets".into(),
+                },
+            ))
+            .unwrap(),
+        ))
+        .unwrap();
+    let refusal = loop {
+        let Message::Text(text) = phone.read().unwrap() else {
+            continue;
+        };
+        match decode_line(text.as_str()).unwrap() {
+            WireMessage::Error(error) => break error,
+            WireMessage::ScreenCaptureTargets(listing) => {
+                panic!("an Operator device was shown the desktop: {listing:?}")
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(refusal.request_id.as_deref(), Some("phone-targets"));
+    assert_eq!(refusal.error.code, "permission_denied");
+    // The admin console is answered as before.
+    console.send(&WireMessage::ScreenCaptureTargetsRequest(
+        ScreenCaptureTargetsRequest {
+            request_id: "console-targets".into(),
+        },
+    ));
+    loop {
+        match console.receive() {
+            WireMessage::ScreenCaptureTargets(listing) => {
+                assert_eq!(listing.request_id, "console-targets");
+                break;
+            }
+            WireMessage::Error(error) => panic!("the admin console was refused: {error:?}"),
+            _ => {}
+        }
+    }
 
     // The console lists the device; a cancelled pairing redeems nothing.
     let listed = console.web_access(WebAccessAction::Status).gateway.unwrap();
