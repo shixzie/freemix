@@ -653,7 +653,10 @@ fn append_inputs(
             });
         }
         let kind = match &input.kind {
-            InputKind::Media { .. } | InputKind::Image(_) | InputKind::Slideshow(_) => {
+            InputKind::Media { .. }
+            | InputKind::Document(_)
+            | InputKind::Image(_)
+            | InputKind::Slideshow(_) => {
                 let mut kind = input.kind.clone();
                 kind.map_file_asset_uris(|uri| maps.uris.get(uri).cloned());
                 if let InputKind::Slideshow(config) = &mut kind

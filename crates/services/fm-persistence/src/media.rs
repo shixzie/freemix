@@ -565,7 +565,10 @@ pub(crate) fn media_uri(project: &StoredProject, input: InputId) -> Option<&str>
         .iter()
         .find(|candidate| candidate.id == input)
         .and_then(|input| match &input.kind {
-            InputKind::Media { asset_uri, .. } => Some(asset_uri.as_str()),
+            InputKind::Media { asset_uri, .. }
+            | InputKind::Document(fm_model::DocumentInput { asset_uri, .. }) => {
+                Some(asset_uri.as_str())
+            }
             _ => None,
         })
 }

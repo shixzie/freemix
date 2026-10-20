@@ -4,6 +4,7 @@ mod capture;
 mod cue;
 mod decoder;
 mod display_output;
+mod document;
 mod encoder;
 mod grade;
 mod input_lifecycle;

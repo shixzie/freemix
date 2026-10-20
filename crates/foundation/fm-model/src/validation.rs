@@ -940,6 +940,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                     });
                 }
             }
+            InputKind::Document(document) => validate_document(entity, document, errors),
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -1010,6 +1011,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
     validate_capture_input_count(project, errors);
     validate_system_audio_count(project, errors);
     validate_slideshow_count(project, errors);
+    validate_document_count(project, errors);
 }
 
 /// The validation field of an image (`kind.image`) or slideshow
@@ -1043,6 +1045,49 @@ fn validate_slideshow_count(project: &Project, errors: &mut Vec<ValidationError>
         errors.push(ValidationError {
             entity: Some(EntityRef::Input(input.id)),
             field: "kind.slideshow",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+/// IN-014: a document input names a PDF or presentation asset and a page
+/// inside the paged bound.
+fn validate_document(
+    entity: Option<EntityRef>,
+    document: &crate::DocumentInput,
+    errors: &mut Vec<ValidationError>,
+) {
+    let source = crate::InputSourceSpec::Document {
+        asset_uri: document.asset_uri.clone(),
+    };
+    if source.validate().is_err() {
+        errors.push(ValidationError {
+            entity,
+            field: "kind.document.asset_uri",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    if document.page >= fm_types::paged::MAX_PAGED_PAGES {
+        errors.push(ValidationError {
+            entity,
+            field: "kind.document.page",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+/// IN-014: a bounded number of document inputs keeps every snapshot's
+/// follow-on records and the page renderer's work bounded.
+fn validate_document_count(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(input) = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::Document(_)))
+        .nth(fm_types::paged::MAX_DOCUMENT_INPUTS)
+    {
+        errors.push(ValidationError {
+            entity: Some(EntityRef::Input(input.id)),
+            field: "kind.document",
             kind: ValidationErrorKind::OutOfRange,
         });
     }

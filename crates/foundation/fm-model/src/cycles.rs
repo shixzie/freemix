@@ -44,6 +44,7 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
                             | InputKind::SystemAudio(_)
                             | InputKind::Image(_)
                             | InputKind::Slideshow(_)
+                            | InputKind::Document(_)
                             | InputKind::Simulated(_)
                             | InputKind::MixFeed(_)
                             | InputKind::Title(_)
@@ -95,6 +96,7 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
                 | InputKind::SystemAudio(_)
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
+                | InputKind::Document(_)
                 | InputKind::Simulated(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_) => Vec::new(),
@@ -160,6 +162,7 @@ fn alias_target(kind: &InputKind) -> Option<InputId> {
         | InputKind::SystemAudio(_)
         | InputKind::Image(_)
         | InputKind::Slideshow(_)
+        | InputKind::Document(_)
         | InputKind::Scene { .. }
         | InputKind::Simulated(_)
         | InputKind::MixFeed(_)

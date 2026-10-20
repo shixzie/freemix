@@ -1878,6 +1878,7 @@ impl Project {
                 | InputKind::SystemAudio(_)
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
+                | InputKind::Document(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
@@ -2160,8 +2161,9 @@ impl Project {
             .is_some_and(|input| input.kind.map_file_asset_uris(map))
     }
 
-    /// Points an existing media input at a new asset URI. For a media list
-    /// input, every item of the old file moves to the new one too.
+    /// Points an existing media or document input (IN-014) at a new asset
+    /// URI. For a media list input, every item of the old file moves to the
+    /// new one too.
     ///
     /// # Errors
     ///
@@ -2178,23 +2180,25 @@ impl Project {
             .iter()
             .position(|candidate| candidate.id == input)
             .ok_or(RelinkMediaInputError::UnknownInput(input))?;
-        if !matches!(self.inputs[index].kind, InputKind::Media { .. }) {
-            return Err(RelinkMediaInputError::NotMediaInput(input));
-        }
-        let InputKind::Media {
-            asset_uri: current, ..
-        } = &mut self.inputs[index].kind
-        else {
-            unreachable!("media input kind was validated above");
+        let previous = match &mut self.inputs[index].kind {
+            InputKind::Media {
+                asset_uri: current, ..
+            }
+            | InputKind::Document(crate::DocumentInput {
+                asset_uri: current, ..
+            }) => std::mem::replace(current, asset_uri),
+            _ => return Err(RelinkMediaInputError::NotMediaInput(input)),
         };
-        let previous = std::mem::replace(current, asset_uri);
         // A media list input plays its active item's file (IN-006): every
         // item of the relinked file follows it.
         if let Some(list) = self.media_lists.get_mut(&input) {
-            let relinked = current.as_str();
+            let relinked = match &self.inputs[index].kind {
+                InputKind::Media { asset_uri, .. } => asset_uri.clone(),
+                _ => return Ok(()),
+            };
             for item in &mut list.items {
                 if item.asset_uri == previous {
-                    relinked.clone_into(&mut item.asset_uri);
+                    item.asset_uri.clone_from(&relinked);
                 }
             }
         }
@@ -2282,6 +2286,48 @@ impl Project {
                 InputKind::Media { playback, .. } => Some(playback),
                 _ => None,
             })
+    }
+
+    /// Document input `input`'s file and page (IN-014), or `None` when
+    /// `input` is not a document input.
+    #[must_use]
+    pub fn document(&self, input: InputId) -> Option<&crate::DocumentInput> {
+        self.inputs
+            .iter()
+            .find(|candidate| candidate.id == input)
+            .and_then(|candidate| match &candidate.kind {
+                InputKind::Document(document) => Some(document),
+                _ => None,
+            })
+    }
+
+    /// Every document input and its file and page, in project order.
+    pub fn documents(&self) -> impl Iterator<Item = (InputId, &crate::DocumentInput)> {
+        self.inputs.iter().filter_map(|input| match &input.kind {
+            InputKind::Document(document) => Some((input.id, document)),
+            _ => None,
+        })
+    }
+
+    /// Moves document input `input` to zero-based `page` (IN-014). Returns
+    /// `false` (and changes nothing) for an input that is not a document
+    /// input or a page past [`fm_types::paged::MAX_PAGED_PAGES`].
+    pub fn set_document_page(&mut self, input: InputId, page: u32) -> bool {
+        if page >= fm_types::paged::MAX_PAGED_PAGES {
+            return false;
+        }
+        match self
+            .inputs
+            .iter_mut()
+            .find(|candidate| candidate.id == input)
+            .map(|candidate| &mut candidate.kind)
+        {
+            Some(InputKind::Document(document)) => {
+                document.page = page;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Replaces a title input's field values and field revision.
@@ -4351,6 +4397,10 @@ pub enum InputKind {
     /// A slideshow of the pictures in an asset folder or an explicit list
     /// (schema 63, IN-009): a paged input. Silent.
     Slideshow(fm_types::still::SlideshowConfig),
+    /// A document shown one page at a time (IN-014): a PDF, or a
+    /// presentation converted to PDF, and the page on screen. A paged
+    /// input: it renders its own picture and is silent.
+    Document(DocumentInput),
     Scene {
         scene_id: SceneId,
         audio_source: Option<InputId>,
@@ -4384,6 +4434,7 @@ impl InputKind {
     pub fn file_asset_uris(&self) -> Vec<&str> {
         match self {
             Self::Media { asset_uri, .. } => vec![asset_uri.as_str()],
+            Self::Document(document) => vec![document.asset_uri.as_str()],
             Self::Image(config) => vec![config.asset_uri.as_str()],
             Self::Slideshow(config) => match &config.source {
                 fm_types::still::SlideshowSource::List(items) => {
@@ -4409,6 +4460,7 @@ impl InputKind {
         };
         match self {
             Self::Media { asset_uri, .. } => apply(asset_uri),
+            Self::Document(document) => apply(&mut document.asset_uri),
             Self::Image(config) => apply(&mut config.asset_uri),
             Self::Slideshow(config) => {
                 if let fm_types::still::SlideshowSource::List(items) = &mut config.source {
@@ -4420,6 +4472,28 @@ impl InputKind {
             _ => {}
         }
         changed
+    }
+}
+
+/// A document input's file and current page (IN-014).
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct DocumentInput {
+    /// The document in the project's assets (`asset://<key>`): a `.pdf`,
+    /// `.pptx`, `.odp`, or `.key` file.
+    pub asset_uri: String,
+    /// The zero-based page on screen, below
+    /// [`fm_types::paged::MAX_PAGED_PAGES`]. The runtime shows the last
+    /// page of a shorter document.
+    pub page: u32,
+}
+
+impl DocumentInput {
+    #[must_use]
+    pub fn new(asset_uri: impl Into<String>, page: u32) -> Self {
+        Self {
+            asset_uri: asset_uri.into(),
+            page,
+        }
     }
 }
 

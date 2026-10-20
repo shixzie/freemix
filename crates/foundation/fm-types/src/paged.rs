@@ -20,7 +20,7 @@ pub const MAX_PAGED_PAGES: u32 = 10_000;
 /// Longest reported document title, in UTF-8 bytes.
 pub const MAX_PAGED_TITLE_BYTES: usize = 128;
 /// Longest presenter notes text for one page, in UTF-8 bytes.
-pub const MAX_PAGED_NOTES_BYTES: usize = 16 * 1024;
+pub const MAX_PAGED_NOTES_BYTES: usize = 8 * 1024;
 /// Longest runtime status message, in UTF-8 bytes.
 pub const MAX_PAGED_MESSAGE_BYTES: usize = 160;
 /// Most document inputs one show holds.

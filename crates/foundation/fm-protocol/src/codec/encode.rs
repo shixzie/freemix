@@ -293,6 +293,25 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::PagedState(message) => {
+            record.kind("paged_state");
+            record.field("revision", message.revision)?;
+            super::paged::encode_status(&message.status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::PagedPageRequest(message) => {
+            record.kind("paged_page_request");
+            super::paged::encode_request(message, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::PagedPage(message) => {
+            record.kind("paged_page");
+            super::paged::encode_page(message, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
     }
     record.finish()
 }
@@ -632,6 +651,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         CommandPayload::MediaList { input, operation } => {
             record.field("payload", "media_list")?;
             super::media_list::encode_command(*input, operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::PagedInput { input, navigation } => {
+            record.field("payload", "paged_input")?;
+            super::paged::encode_command(*input, *navigation, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }
@@ -1681,6 +1706,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         });
     }
     record.field("media_states", message.media_states)?;
+    if message.paged_states > crate::MAX_PAGED_STATES {
+        return Err(CodecError::InvalidField {
+            field: "paged_states",
+            value: message.paged_states.to_string(),
+        });
+    }
+    record.field("paged_states", message.paged_states)?;
     if !super::cue::list_count_is_valid(message.cue_list_states) {
         return Err(CodecError::InvalidField {
             field: "cue_list_states",
@@ -2600,6 +2632,15 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                 record.field_string(name, value)
             })?;
         }
+        EventPayload::PagedChanged { navigation, status } => {
+            record.field("event", "paged_changed")?;
+            super::paged::encode_navigation(*navigation, "target", &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+            super::paged::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         EventPayload::MediaChanged {
             frame,
             operation,
@@ -2880,6 +2921,12 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::DisplayInventory(inventory) => {
             record.field("event", "display_inventory")?;
             super::display_output::encode_inventory(inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::Paged { status } => {
+            record.field("event", "paged")?;
+            super::paged::encode_status(status, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

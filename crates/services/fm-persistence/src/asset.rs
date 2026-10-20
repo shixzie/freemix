@@ -116,7 +116,9 @@ impl ProjectStore {
             .inputs()
             .iter()
             .filter_map(|input| {
-                let InputKind::Media { asset_uri, .. } = &input.kind else {
+                let (InputKind::Media { asset_uri, .. }
+                | InputKind::Document(fm_model::DocumentInput { asset_uri, .. })) = &input.kind
+                else {
                     return None;
                 };
                 let reason = match self.resolve_asset_uri(asset_uri) {

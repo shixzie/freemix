@@ -257,6 +257,7 @@ impl<'p> SourceResolver<'p> {
                     audio_source: None, ..
                 }
                 | InputKind::MixFeed(_)
+                | InputKind::Document(_)
                 | InputKind::Title(_) => return Ok(AudioRoute::Silence),
                 InputKind::Color
                 | InputKind::Media { .. }
@@ -310,6 +311,7 @@ impl<'p> SourceResolver<'p> {
             | InputKind::SystemAudio(_)
             | InputKind::Image(_)
             | InputKind::Slideshow(_)
+            | InputKind::Document(_)
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
             | InputKind::Title(_)
@@ -397,6 +399,7 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::SystemAudio(_)
             | InputKind::Image(_)
             | InputKind::Slideshow(_)
+            | InputKind::Document(_)
             | InputKind::Scene { .. }
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
@@ -419,6 +422,7 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::SystemAudio(_)
             | InputKind::Image(_)
             | InputKind::Slideshow(_)
+            | InputKind::Document(_)
             | InputKind::Simulated(_)
             | InputKind::Title(_) => (RenderSource::Input(concrete), false),
             InputKind::Alias { .. } => unreachable!("alias chains end at a non-alias input"),

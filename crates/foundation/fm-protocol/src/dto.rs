@@ -1951,6 +1951,13 @@ pub enum CommandPayload {
         input: WireInputId,
         operation: crate::MediaListOperation,
     },
+    /// Steps a paged input (a document) to another page (IN-014). Wire
+    /// payload `paged_input` with `action` and, for `goto`, `page`. A live
+    /// operator control: never padlocked, never undone.
+    PagedInput {
+        input: WireInputId,
+        navigation: crate::PagedNavigation,
+    },
     /// An input lifecycle edit (Protocol 2.38, IN-026; see
     /// [`crate::InputLifecycleOperation`]). A project edit.
     InputLifecycle(crate::InputLifecycleOperation),
@@ -2440,6 +2447,10 @@ pub struct SnapshotMessage {
     /// ascending input order, at most [`crate::MAX_MEDIA_STATES`] (Protocol
     /// 2.37).
     pub media_states: u16,
+    /// How many [`crate::PagedStateMessage`] records follow this snapshot
+    /// (IN-014): one per paged input, ascending by input, after the
+    /// `media_state` records.
+    pub paged_states: u16,
     /// How many [`crate::CueListStateMessage`] records follow this snapshot
     /// (after its media states), one per cue list in project order, at
     /// most [`crate::MAX_CUE_LISTS`] (Protocol 2.50).
@@ -2743,6 +2754,12 @@ pub enum EventPayload {
         created: Option<String>,
         status: Box<crate::MediaListStatus>,
     },
+    /// A `paged_input` command was accepted (IN-014): the step and the
+    /// input's complete status afterwards.
+    PagedChanged {
+        navigation: crate::PagedNavigation,
+        status: Box<crate::PagedStatus>,
+    },
     /// An input lifecycle edit was accepted (Protocol 2.38): the operation
     /// as executed (an undo or redo reports the edit it applied), the
     /// inputs it appended with their names, and the batch import items it
@@ -2830,6 +2847,11 @@ pub enum RuntimeLifecycleEvent {
         frame: u64,
         events: Vec<crate::MediaEvent>,
         status: Box<crate::MediaStatus>,
+    },
+    /// A paged input's source changed (IN-014): its page count, state,
+    /// title, or message, with the input's complete status.
+    Paged {
+        status: Box<crate::PagedStatus>,
     },
     /// An input's source became unavailable or available again (Protocol
     /// 2.38): `offline` is the reason, or `None` once it is back.
@@ -3224,6 +3246,12 @@ pub enum WireMessage {
     /// One input strip's DSP chain after a snapshot (Protocol 2.75).
     AudioStripDspState(crate::AudioStripDspStateMessage),
     MediaState(crate::MediaStateMessage),
+    /// One paged input after a snapshot (IN-014).
+    PagedState(crate::PagedStateMessage),
+    /// Asks for one page's notes or thumbnail (IN-014).
+    PagedPageRequest(crate::PagedPageRequest),
+    /// Answers a [`crate::PagedPageRequest`] (IN-014).
+    PagedPage(crate::PagedPageMessage),
     /// One cue list after a snapshot (Protocol 2.50).
     CueListState(crate::CueListStateMessage),
     /// One script after a snapshot (Protocol 2.58).

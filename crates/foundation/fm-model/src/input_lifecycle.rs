@@ -322,6 +322,10 @@ pub enum InputSourceSpec {
     Image(fm_types::still::ImageInputConfig),
     /// A slideshow (IN-009): its pictures, timing, and placement.
     Slideshow(fm_types::still::SlideshowConfig),
+    /// A document in the project's assets (`asset://<key>` naming a PDF or
+    /// presentation, IN-014). A new or replaced document starts on its
+    /// first page.
+    Document { asset_uri: String },
 }
 
 /// Why a source specification is unusable.
@@ -402,6 +406,24 @@ pub fn validate_media_asset_uri(uri: &str) -> Result<(), InputSourceError> {
         return Err(InputSourceError::InvalidAssetUri);
     }
     Ok(())
+}
+
+/// Whether `path` (a URI, key, or host path) names a file a batch import
+/// accepts: a supported media type or a document (IN-014), by its
+/// extension.
+#[must_use]
+pub fn is_importable_file_name(path: &str) -> bool {
+    is_media_file_name(path) || is_document_file_name(path)
+}
+
+/// Whether `path` (a URI, key, or host path) names a document a document
+/// input shows (IN-014): a PDF or a presentation, by its extension.
+#[must_use]
+pub fn is_document_file_name(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.')
+        .is_some_and(|(stem, _)| !stem.is_empty())
+        && fm_types::paged::is_document_file_name(name)
 }
 
 /// Whether `path` (a URI, key, or host path) names a supported media type
@@ -523,6 +545,14 @@ impl InputSourceSpec {
                 .map_err(|_| InputSourceError::InvalidSystemAudio),
             Self::Image(config) => config.validate().map_err(InputSourceError::InvalidStill),
             Self::Slideshow(config) => config.validate().map_err(InputSourceError::InvalidStill),
+            Self::Document { asset_uri } => {
+                validate_media_asset_uri(asset_uri)?;
+                if is_document_file_name(asset_uri) {
+                    Ok(())
+                } else {
+                    Err(InputSourceError::UnsupportedMediaType)
+                }
+            }
         }
     }
 
@@ -553,6 +583,9 @@ impl InputSourceSpec {
             InputKind::SystemAudio(config) => Some(Self::SystemAudio(config.clone())),
             InputKind::Image(config) => Some(Self::Image(config.clone())),
             InputKind::Slideshow(config) => Some(Self::Slideshow(config.clone())),
+            InputKind::Document(document) => Some(Self::Document {
+                asset_uri: document.asset_uri.clone(),
+            }),
             InputKind::Color
             | InputKind::Scene { .. }
             | InputKind::Alias { .. }
@@ -590,6 +623,33 @@ impl InputSourceSpec {
             Self::SystemAudio(config) => InputKind::SystemAudio(config.clone()),
             Self::Image(config) => InputKind::Image(config.clone()),
             Self::Slideshow(config) => InputKind::Slideshow(config.clone()),
+            Self::Document { asset_uri } => {
+                InputKind::Document(crate::DocumentInput::new(asset_uri.clone(), 0))
+            }
+        }
+    }
+
+    /// The source a project `asset://` URI names: a document for a PDF or
+    /// presentation file name, a media file otherwise (IN-014).
+    #[must_use]
+    pub fn from_asset_uri(asset_uri: &str) -> Self {
+        if is_document_file_name(asset_uri) {
+            Self::Document {
+                asset_uri: asset_uri.to_owned(),
+            }
+        } else {
+            Self::Media {
+                asset_uri: asset_uri.to_owned(),
+            }
+        }
+    }
+
+    /// The `asset://` URI of a media or document source.
+    #[must_use]
+    pub fn asset_uri(&self) -> Option<&str> {
+        match self {
+            Self::Media { asset_uri } | Self::Document { asset_uri } => Some(asset_uri),
+            _ => None,
         }
     }
 
@@ -726,7 +786,7 @@ pub fn plan_batch_import(
             Some(BatchImportRefusal::Unavailable)
         } else if validate_media_asset_uri(&request.asset_uri).is_err() {
             Some(BatchImportRefusal::InvalidUri)
-        } else if !is_media_file_name(&request.asset_uri) {
+        } else if !is_importable_file_name(&request.asset_uri) {
             Some(BatchImportRefusal::UnsupportedType)
         } else if sources.contains(&request.asset_uri) {
             Some(BatchImportRefusal::DuplicateSource)

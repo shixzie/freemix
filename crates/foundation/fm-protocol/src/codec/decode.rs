@@ -320,6 +320,14 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             frame: fields.canonical_required("frame")?,
             status: decode_media_status(&mut |name| fields.required(name))?,
         }),
+        "paged_state" => WireMessage::PagedState(crate::PagedStateMessage {
+            revision: fields.canonical_required("revision")?,
+            status: super::paged::decode_status(&mut fields)?,
+        }),
+        "paged_page_request" => {
+            WireMessage::PagedPageRequest(super::paged::decode_request(&mut fields)?)
+        }
+        "paged_page" => WireMessage::PagedPage(super::paged::decode_page(&mut fields)?),
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
     fields.finish()?;
@@ -719,6 +727,10 @@ fn decode_command_payload(
                 })?;
             CommandPayload::Media { input, operation }
         }
+        "paged_input" => CommandPayload::PagedInput {
+            input: fields.canonical_input("input")?,
+            navigation: super::paged::decode_navigation(fields, "page")?,
+        },
         "transition_favorite_set" => CommandPayload::SetTransitionFavorite {
             slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
             favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,
@@ -1807,6 +1819,16 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
                     value,
                 })?
         },
+        paged_states: {
+            let value = fields.required("paged_states")?;
+            parse_canonical_u64(&value)
+                .and_then(|count| u16::try_from(count).ok())
+                .filter(|count| *count <= crate::MAX_PAGED_STATES)
+                .ok_or(CodecError::InvalidField {
+                    field: "paged_states",
+                    value,
+                })?
+        },
         cue_list_states: super::cue::parse_list_count(&fields.required("cue_list_states")?)?,
         script_states: super::script::parse_state_count(&fields.required("script_states")?)?,
         shortcut_states: super::shortcut::parse_state_count(&fields.required("shortcut_states")?)?,
@@ -2549,6 +2571,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             }
         }
 
+        "paged_changed" => EventPayload::PagedChanged {
+            navigation: super::paged::decode_navigation(fields, "target")?,
+            status: Box::new(super::paged::decode_status(fields)?),
+        },
         "audio_mixer_changed" => {
             let operation = fields.required("operation")?;
             EventPayload::AudioMixerChanged(
@@ -3030,6 +3056,9 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
             frame: fields.canonical_required("frame")?,
             events: decode_media_events(&fields.required("media_events")?)?,
             status: Box::new(decode_media_status(&mut |name| fields.required(name))?),
+        },
+        "paged" => RuntimeLifecycleEvent::Paged {
+            status: Box::new(super::paged::decode_status(fields)?),
         },
         _ => {
             return Err(CodecError::InvalidField {
