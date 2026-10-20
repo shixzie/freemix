@@ -199,12 +199,20 @@ fn draw_card(
             .on_hover_text(l.text(Msg::DocMessageHover));
     }
 
-    // Previous, the page counter, and Next.
+    // First, Previous, the page counter, Next, and Last.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let enabled = block.is_none();
         let reason = block.unwrap_or("");
         let key = || egui::Button::new("").min_size(Vec2::new(32.0, 24.0));
+        let end_key = |label: &str| crate::playlist::key_button(label, None, 52.0);
+        if ui
+            .add_enabled(enabled, end_key(l.text(Msg::StFirst)))
+            .hint(l.text(Msg::DocFirstHover), reason)
+            .clicked()
+        {
+            push(PagedNavigation::First);
+        }
         if add_icon_button(ui, enabled, key(), KeyIcon::Back, l.text(Msg::DocPrevious))
             .hint(l.text(Msg::DocPreviousHover), reason)
             .clicked()
@@ -232,6 +240,13 @@ fn draw_card(
             .clicked()
         {
             push(PagedNavigation::Next);
+        }
+        if ui
+            .add_enabled(enabled, end_key(l.text(Msg::StLast)))
+            .hint(l.text(Msg::DocLastHover), reason)
+            .clicked()
+        {
+            push(PagedNavigation::Last);
         }
     });
 

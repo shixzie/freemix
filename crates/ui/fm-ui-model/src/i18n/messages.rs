@@ -2409,6 +2409,8 @@ messages! {
     DocPreviousHover => t("Show the previous page on this input"),
     DocNext => t("Next page"),
     DocNextHover => t("Show the next page on this input"),
+    DocFirstHover => t("Show the first page on this input"),
+    DocLastHover => t("Show the last page on this input"),
     DocPageCounter => t("Page {page} of {count}"),
     DocPageUnknownCount => t("Page {page} of ?"),
     DocPageCounterHover => t("The page this input shows and the document's page count"),

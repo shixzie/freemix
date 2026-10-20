@@ -6556,6 +6556,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DocNextHover,
         t("Mostrar la página siguiente en esta entrada"),
     ),
+    (
+        Msg::DocFirstHover,
+        t("Mostrar la primera página en esta entrada"),
+    ),
+    (
+        Msg::DocLastHover,
+        t("Mostrar la última página en esta entrada"),
+    ),
     (Msg::DocPageCounter, t("Página {page} de {count}")),
     (Msg::DocPageUnknownCount, t("Página {page} de ?")),
     (
