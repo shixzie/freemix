@@ -34,6 +34,8 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: .75rem; }
   section.wide { grid-column: 1 / -1; }
+  /* A card that sizes to its content instead of stretching to the row. */
+  section.fit { align-self: start; }
   h2 { font-size: .8rem; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .5rem; color: var(--muted); }
   .why { margin: .4rem 0 0; font-size: .85rem; color: var(--warn); min-height: 0; }
   .why:empty { display: none; }
@@ -195,7 +197,7 @@
     <p id="why-transition" class="why" aria-live="polite"></p>
   </section>
 
-  <section aria-labelledby="shortcuts-heading">
+  <section class="fit" aria-labelledby="shortcuts-heading">
     <h2 id="shortcuts-heading" data-i18n="shortcuts">Shortcuts</h2>
     <div id="shortcut-buttons" class="bus" role="group" data-i18n-label="shortcutsLabel" aria-label="Project shortcuts"></div>
     <p id="no-shortcuts" class="why" hidden style="color:var(--muted)" data-i18n="noShortcuts">This show has no shortcuts.</p>
