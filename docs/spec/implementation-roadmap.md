@@ -63,7 +63,7 @@ highest-value remaining items, ranked:
 9. **Finish titles that start at the take and the browser title editor
    (`GX-001`, `GX-006`).** Title timelines now start on the frame a title is
    taken to Program, an overlay, or Preview, replay deterministically, and
-   persist (schema 66); `/titles` edits, takes, updates, and clears titles
+   persist (schema 67); `/titles` edits, takes, updates, and clears titles
    from a browser paired as Graphics. Still missing: per-field exposure
    flags, rendered previews in the browser, a Studio view of the timeline,
    and live `title_state` updates between snapshots.
@@ -3576,7 +3576,7 @@ on-air state, which the server re-checks atomically. Every value-carrying
 command carries the title's base revision; a conflict keeps the user's drafts,
 marks the title stale, shows base, server, and draft values per field, and
 requires an explicit rebase or discard, so nothing is silently overwritten.
-freemixd serves that editor as `/titles` (Protocol 2.77): a self-contained
+freemixd serves that editor as `/titles` (Protocol 2.78): a self-contained
 page that lists every title input with its air state (Program, overlay
 channel, or Preview), edits text, number, colour, and image fields with the
 server's bounds, shows the exact change list a preview fixes, and sends
@@ -4171,7 +4171,7 @@ UTC instant that holds at zero or overruns negative, and a stopwatch since
 the title's take. freemixd builds a registry from those definitions for every
 title render: the monotonic clock is the rendered engine frame on the project
 frame grid, time of day and countdowns read the system wall clock, and the
-take is the engine's title timeline (Protocol 2.77, schema 66): the frame
+take is the engine's title timeline (Protocol 2.78, schema 67): the frame
 a title was taken to Program, an overlay, or Preview, which tickers, scene
 clocks, and the In/Out bus animation count from; it restarts when the title
 moves between air and Preview or is taken again, is identical under journal

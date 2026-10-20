@@ -2508,7 +2508,7 @@ admin console list and revoke them (RC-007, RC-014).
 
 - A console sends `web_access_request` with `request_id` and `action`:
   `status`, `pair` with `role` (`viewer`, `audio`, `operator`, or
-  `graphics`; Protocol 2.76),
+  `graphics`; Protocol 2.78),
   `cancel_pairing`, or `revoke` with `device` (`[a-z][a-z0-9-]{0,31}`). It
   receives `web_access` with the same `request_id`, an optional `refusal`
   (`permission_denied`, `web_session`, `unavailable`, `unknown_device`,

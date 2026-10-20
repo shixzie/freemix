@@ -1,6 +1,6 @@
 //! GX-001: title timelines (the engine frame each shown title's tickers and
 //! clocks count from) round-trip exactly and strictly in `project.json`
-//! (schema 66); whether one names a title input is project validation.
+//! (schema 67); whether one names a title input is project validation.
 
 use std::{
     collections::BTreeMap,

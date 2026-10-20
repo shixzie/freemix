@@ -1528,7 +1528,7 @@ impl Project {
         self.media_lists = lists;
     }
 
-    /// Where each shown title input's timeline started (GX-001, schema 66),
+    /// Where each shown title input's timeline started (GX-001, schema 67),
     /// ascending by input. Runtime state the engine owns.
     #[must_use]
     pub const fn title_timelines(&self) -> &BTreeMap<InputId, crate::TitleTimeline> {
