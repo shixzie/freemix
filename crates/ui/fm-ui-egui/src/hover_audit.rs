@@ -1780,6 +1780,28 @@ fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
                 )),
             ),
         ),
+    ]
+    .into_iter()
+    .chain(screen_capture_portal_scenes(locale))
+    .collect()
+}
+
+/// The screen capture form on a Wayland server whose own dialog picks a
+/// screen or a window (one that cannot share windows).
+fn screen_capture_portal_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::input_catalogue::{AddInputDraft, NewInputKind};
+    let operator = ready(true, Variant::default());
+    let shell = |configure: &dyn Fn(&mut AddInputDraft)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_add_input(&operator);
+        if let Some(draft) = shell.add_input.as_mut() {
+            draft.kind = NewInputKind::ScreenCapture;
+            configure(draft);
+        }
+        shell
+    };
+    vec![
         Scene::console(
             "dialog/add-input-screen-capture-portal-screen",
             shell(&|_| {}),
