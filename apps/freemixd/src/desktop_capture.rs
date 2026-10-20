@@ -306,6 +306,13 @@ impl DesktopBackend {
             Self::Windows => crate::desktop_windows::audio_plan(audio, window),
             #[cfg(target_os = "macos")]
             Self::Macos { helper } => macos_audio_plan(helper, audio, region, window),
+            // Portal captures run in `native_portal_capture`, which reports
+            // their audio itself; nothing plans it here.
+            #[cfg(target_os = "linux")]
+            Self::Portal => AudioPlan::Unsupported(
+                "a Wayland desktop capture has no sound here yet; add a system audio input for it"
+                    .to_owned(),
+            ),
             Self::Unsupported(reason) => AudioPlan::Unsupported(reason.clone()),
             #[cfg(test)]
             Self::Fake(_) => linux_audio_plan(audio, window),

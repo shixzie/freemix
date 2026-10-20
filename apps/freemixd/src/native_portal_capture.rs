@@ -35,7 +35,10 @@ use fm_io_linux::wayland::{
     CaptureSettings, PortalBackend, PortalCapture, ShareRequest, SourceKind,
 };
 use fm_persistence::StoredProject;
-use fm_protocol::{ScreenCaptureConfig, ScreenCaptureState, ScreenCaptureStatus};
+use fm_protocol::{
+    ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureState,
+    ScreenCaptureStatus,
+};
 use fm_types::InputId;
 use fm_types::network_stream::StallSlate;
 
@@ -70,6 +73,10 @@ pub(crate) struct PortalSources {
     tokens: BTreeMap<InputId, String>,
     tokens_changed: bool,
 }
+
+/// Why a desktop-portal capture carries no sound.
+const NO_PORTAL_AUDIO: &str =
+    "a Wayland desktop capture has no sound here yet; add a system audio input for it";
 
 /// What a capture asks of the desktop for `config`.
 fn request(config: &ScreenCaptureConfig, token: Option<&String>) -> ShareRequest {
@@ -270,6 +277,10 @@ impl PortalSources {
                 (Some(capture), false) => {
                     let mut status = capture.status();
                     status.reopens = status.reopens.saturating_add(source.restarts);
+                    if source.config.audio != ScreenCaptureAudio::None {
+                        status.audio = ScreenCaptureAudioState::Unsupported;
+                        status.audio_error = Some(NO_PORTAL_AUDIO.to_owned());
+                    }
                     status
                 }
                 _ => ScreenCaptureStatus::default(),
@@ -279,6 +290,7 @@ impl PortalSources {
                     || reported.reopens != status.reopens
                     || reported.width != status.width
                     || reported.height != status.height
+                    || reported.audio != status.audio
                     || (reported.last_error.is_none() && status.last_error.is_some())
                     || (reported.last_error != status.last_error
                         && now.saturating_duration_since(*at) >= STATUS_INTERVAL)
@@ -485,6 +497,7 @@ mod tests {
             state == ScreenCaptureState::Live
         });
         assert_eq!((status.width, status.height, status.reopens), (4, 4, 1));
+        assert_eq!(status.audio, ScreenCaptureAudioState::Off);
         assert_eq!(script.lock().unwrap().requests[1].restore_token, None);
         assert_eq!(
             sources.take_restore_tokens(),
@@ -530,12 +543,19 @@ mod tests {
         assert_eq!(script.lock().unwrap().requests.len(), 1, "not asked again");
 
         // A screen instead of a window: the window's token is no use.
-        let screen = ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 0 });
+        // Its system audio is reported unsupported (a portal capture is
+        // silent).
+        let screen = ScreenCaptureConfig {
+            audio: ScreenCaptureAudio::System,
+            ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 0 })
+        };
         sources.sync(&[(input(1), screen)], |_| false);
         assert_eq!(sources.take_restore_tokens(), Some(BTreeMap::new()));
-        settle(&mut sources, input(1), |state| {
+        let status = settle(&mut sources, input(1), |state| {
             state == ScreenCaptureState::AwaitingSelection
         });
+        assert_eq!(status.audio, ScreenCaptureAudioState::Unsupported);
+        assert_eq!(status.audio_error.as_deref(), Some(NO_PORTAL_AUDIO));
         let script = script.lock().unwrap();
         assert_eq!(script.requests[1].kind, SourceKind::Monitor);
         assert_eq!(script.requests[1].restore_token, None);
