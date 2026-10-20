@@ -1871,6 +1871,10 @@ impl Client {
         if let RuntimeLifecycleEvent::Paged { status } = &event.event {
             self.model.apply_runtime_paged(status.as_ref().clone())?;
         }
+        if let RuntimeLifecycleEvent::MediaList { status } = &event.event {
+            self.model
+                .apply_runtime_media_list(status.as_ref().clone())?;
+        }
         if let RuntimeLifecycleEvent::InputAvailability { input, offline } = &event.event {
             self.model
                 .apply_runtime_input_availability(input.to_domain(), *offline)?;

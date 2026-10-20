@@ -11,6 +11,10 @@
 //!   `<id>~<uri>~<title|->~<mark in>~<mark out|->`, the uri and title
 //!   percent-escaped (a title of exactly `-` is written `%2D`).
 //! * `order`: the comma-separated item ids in play order.
+//! * `lengths` (2.91): one entry per item in authored order, comma
+//!   separated: `<frames>@<rate numerator>/<rate denominator>` (frames
+//!   `1..=MAX_MEDIA_FRAME`, the rate in lowest terms) for a probed file,
+//!   `-` while its length is unknown.
 //!
 //! The `media_list` command carries `input` and `operation`
 //! (`create|set|navigate|advance`). `create` adds `name`, `items`, and the
@@ -26,12 +30,14 @@ use std::collections::BTreeSet;
 use crate::{
     CodecError, MAX_INPUT_SOURCE_BYTES, MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS,
     MAX_MEDIA_LIST_STATES, MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TITLE_BYTES,
-    MediaListItemSpec, MediaListNavigation, MediaListOperation, MediaListOptionsSpec,
-    MediaListStatus,
+    MediaListItemLength, MediaListItemSpec, MediaListNavigation, MediaListOperation,
+    MediaListOptionsSpec, MediaListStatus,
 };
 
 use super::media::{FieldSource, Push};
+use super::playlist::{decode_frame_rate, encode_frame_rate};
 use super::value::{escape_bounded, parse_canonical_input, parse_canonical_u64, unescape};
+use super::{MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES};
 
 fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
     CodecError::InvalidField {
@@ -283,6 +289,88 @@ pub(super) fn decode_command(
     Ok((input, operation))
 }
 
+/// Encodes the `lengths` field: one entry per item.
+fn encode_lengths(
+    lengths: &[Option<MediaListItemLength>],
+    items: usize,
+) -> Result<String, CodecError> {
+    if lengths.len() != items {
+        return Err(invalid("lengths", "one length per item"));
+    }
+    lengths
+        .iter()
+        .map(|length| match length {
+            None => Ok("-".to_owned()),
+            Some(length) if length.is_valid() => Ok(format!(
+                "{}@{}",
+                length.frames,
+                encode_frame_rate(length.rate)
+            )),
+            Some(length) => Err(invalid("lengths", length.frames.to_string())),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|entries| entries.join(","))
+}
+
+/// Decodes the `lengths` field (its count is checked against the items).
+fn decode_lengths(value: &str) -> Result<Vec<Option<MediaListItemLength>>, CodecError> {
+    if value.split(',').count() > MAX_MEDIA_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("lengths"));
+    }
+    value
+        .split(',')
+        .map(|entry| {
+            if entry == "-" {
+                return Ok(None);
+            }
+            let (frames, rate) = entry
+                .split_once('@')
+                .ok_or_else(|| invalid("lengths", entry))?;
+            let length = MediaListItemLength {
+                frames: parse_u64("lengths", frames)?,
+                rate: decode_frame_rate(rate.to_owned()).map_err(|_| invalid("lengths", entry))?,
+            };
+            if length.is_valid() {
+                Ok(Some(length))
+            } else {
+                Err(invalid("lengths", entry))
+            }
+        })
+        .collect()
+}
+
+/// Whether `status`, written as one record, leaves room for the record's
+/// other fields within one line: the longest lists (many long escaped file
+/// names) leave no room for their lengths, which the authority then
+/// reports as unknown.
+#[must_use]
+pub fn media_list_status_fits(status: &MediaListStatus) -> bool {
+    /// What the record's envelope (its type, revision, frame, operation,
+    /// and edit history) may take besides the status.
+    const ENVELOPE_BYTES: usize = 8 * 1024;
+    let mut bytes = 0_usize;
+    encode_status(status, &mut |name, value| {
+        // As the record escapes it.
+        let escaped: usize = value
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+                    1
+                } else {
+                    3
+                }
+            })
+            .sum();
+        if escaped > MAX_FIELD_VALUE_BYTES {
+            return Err(CodecError::FieldValueTooLong);
+        }
+        bytes += name.len() + escaped + 2;
+        Ok(())
+    })
+    .is_ok()
+        && bytes + ENVELOPE_BYTES <= MAX_LINE_BYTES
+}
+
 /// Encodes a whole list status.
 pub(super) fn encode_status(
     status: &MediaListStatus,
@@ -311,6 +399,10 @@ pub(super) fn encode_status(
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(","),
+    )?;
+    push(
+        "lengths",
+        encode_lengths(&status.lengths, status.items.len())?,
     )
 }
 
@@ -329,8 +421,9 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<MediaListSta
             .split(',')
             .map(|id| parse_u32("order", id))
             .collect::<Result<Vec<_>, _>>()?,
+        lengths: decode_lengths(&fields.required("lengths")?)?,
     };
-    // Re-encoding checks that the order fits the items.
+    // Re-encoding checks that the order and the lengths fit the items.
     encode_status(&status, &mut |_, _| Ok(()))?;
     Ok(status)
 }

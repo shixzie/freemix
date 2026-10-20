@@ -757,6 +757,18 @@ fn model(variant: Variant) -> ClientModel {
                 cycle: 0,
                 order: vec![3, 2, 1],
                 position: 1,
+                // Protocol 2.91: two probed files and one not yet probed.
+                lengths: vec![
+                    Some(fm_protocol::MediaListItemLength {
+                        frames: 250,
+                        rate: fm_types::FrameRate::new(25, 1).unwrap(),
+                    }),
+                    Some(fm_protocol::MediaListItemLength {
+                        frames: 1_500,
+                        rate: fm_types::FrameRate::new(30_000, 1_001).unwrap(),
+                    }),
+                    None,
+                ],
             },
         })
         .unwrap();

@@ -34,9 +34,10 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStatus, MediaOperation, MonitorFrameAssembler, MonitorImage,
-    Role, SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
+    EventPayload, HandshakeRequest, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
+    MediaListOperation, MediaListOptionsSpec, MediaListStatus, MediaOperation,
+    MonitorFrameAssembler, MonitorImage, Role, RuntimeLifecycleEvent, SnapshotMessage, WireInputId,
+    WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -86,8 +87,13 @@ fn ffmpeg_available() -> bool {
 /// (mod 256) as eight 40-pixel-wide black/white bit blocks, low bit left,
 /// with a mono 48 kHz PCM track.
 fn generate_clip(path: &Path, offset: u64) {
+    generate_clip_of(path, offset, 2);
+}
+
+/// [`generate_clip`], `seconds` long.
+fn generate_clip_of(path: &Path, offset: u64, seconds: u32) {
     let video = format!(
-        "color=c=black:s=320x180:r=25:d=2,format=gray,\
+        "color=c=black:s=320x180:r=25:d={seconds},format=gray,\
          geq=lum='if(mod(floor((N+{offset})/pow(2\\,floor(X/40)))\\,2)\\,235\\,16)',\
          setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
     );
@@ -98,7 +104,7 @@ fn generate_clip(path: &Path, offset: u64) {
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:sample_rate=48000:d=2",
+            &format!("sine=frequency=440:sample_rate=48000:d={seconds}"),
         ])
         .args(["-map", "0:v", "-map", "1:a"])
         .args(["-c:v", "mpeg2video", "-g", "12", "-bf", "2", "-q:v", "2"])
@@ -803,4 +809,89 @@ fn a_native_media_list_sends_each_items_in_mark_picture() {
         pictures,
         std::collections::BTreeMap::from([(1, 10), (2, SECOND + 5)])
     );
+}
+
+/// Protocol 2.91 on the native runtime: the daemon probes every item's file
+/// through its decoder off the session loop, so each item reports its real
+/// length (not only the one on air), a file that does not decode is
+/// unknown, and a file replaced in the bundle is probed again.
+#[test]
+fn a_native_media_list_reports_every_items_probed_length() {
+    if !ffmpeg_available() {
+        eprintln!("native media list integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-media-lists.freemix");
+    save_project(&project_path, false);
+    let host = directory.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let (first, second, broken) = (
+        host.join("first.mkv"),
+        host.join("second.mkv"),
+        host.join("broken.mkv"),
+    );
+    generate_clip(&first, 0);
+    generate_clip_of(&second, SECOND, 3);
+    std::fs::write(&broken, b"not really a clip").unwrap();
+    let Some(daemon) = start_or_skip(&project_path, None) else {
+        return;
+    };
+    let (mut client, _, _) = Client::connect(daemon.address);
+    let item = |id, path: &Path| MediaListItemSpec {
+        id,
+        uri: path.to_str().unwrap().into(),
+        title: None,
+        mark_in: 0,
+        mark_out: None,
+    };
+    client
+        .accept(CommandPayload::MediaList {
+            input: list(),
+            operation: MediaListOperation::Create {
+                name: "Lengths".into(),
+                items: vec![item(1, &first), item(2, &second), item(3, &broken)],
+                options: MediaListOptionsSpec::default(),
+            },
+        })
+        .unwrap();
+    let rate = FrameRate::new(25, 1).unwrap();
+    let length = |frames| Some(MediaListItemLength { frames, rate });
+    let probed = |client: &mut Client, what: &str, expected: &[Option<MediaListItemLength>]| {
+        client.wait_for(what, |_, message| match message {
+            WireMessage::RuntimeEvent(event) => match event.event {
+                RuntimeLifecycleEvent::MediaList { status }
+                    if status.input == list() && status.lengths == expected =>
+                {
+                    Some(*status)
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+    };
+    // The off-air second item reports its own three seconds; the broken
+    // file stays unknown.
+    let status = probed(
+        &mut client,
+        "the probed lengths",
+        &[length(50), length(75), None],
+    );
+    assert_eq!(status.total_micros(), (5_000_000, false));
+
+    // Replacing the first item's file in the bundle is noticed and probed.
+    let assets = ProjectStore::new(&project_path).unwrap().assets_root();
+    let replacement = host.join("replacement.mkv");
+    generate_clip_of(&replacement, 0, 1);
+    let bundled = assets.join("first.mkv");
+    assert!(bundled.is_file(), "{}", bundled.display());
+    std::fs::copy(&replacement, &bundled).unwrap();
+    probed(
+        &mut client,
+        "the replaced file's length",
+        &[length(25), length(75), None],
+    );
+    // A reconnecting client receives the lengths with the list.
+    let (_reconnected, _, lists) = Client::connect(daemon.address);
+    assert_eq!(lists[0].lengths, [length(25), length(75), None]);
 }

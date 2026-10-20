@@ -3927,7 +3927,12 @@ Next, and the options. Each row starts with the item's own picture
 (Protocol 2.80 `input_thumbnail` records with `item`): a native daemon
 decodes the item's in-mark frame from its file, the simulated daemon draws
 a card per item, and an audio file gets the audio card; a drawn card keeps
-the thumbnail feed subscribed. Gaps: only the next item is prefetched, no
+the thumbnail feed subscribed. Every item's file length is probed off the
+session loop (Protocol 2.91: the native daemon through its decoder, cached by
+asset and probed again when the file's size or modification time changes;
+the simulated daemon by the synthetic source's length), so each row's out
+field shows where the item really ends and the card header totals the
+list. Gaps: only the next item is prefetched, no
 transitions between items (a crossfade would need two live decoders for
 one input, which the input's single media transport does not have), no CLI or vMix API verbs, no
 cross-input GO bank, and Linux-only native evidence. The generic

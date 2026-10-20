@@ -113,6 +113,7 @@ mod latest_record;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod live_lan;
 mod media_clock;
+mod media_lengths;
 mod monitor_tap;
 #[cfg(feature = "native-media")]
 mod native_captures;

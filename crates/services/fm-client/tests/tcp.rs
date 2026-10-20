@@ -2298,6 +2298,7 @@ fn item_thumbnails_are_kept_per_item_of_a_known_list() {
                     cycle: 0,
                     order: vec![1, 2],
                     position: 0,
+                    lengths: vec![None, None],
                 },
             },
         ));

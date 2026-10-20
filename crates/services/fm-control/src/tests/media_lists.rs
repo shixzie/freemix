@@ -311,6 +311,36 @@ fn every_accepted_list_fits_its_wire_records_and_one_that_cannot_is_refused() {
         let line = fm_protocol::encode_line(&message).unwrap();
         assert_eq!(fm_protocol::decode_line(&line).unwrap(), message);
     }
+    // With the longest probed length on every item (Protocol 2.91) the
+    // list has no room left for them: it reports them unknown, and every
+    // record still encodes.
+    let longest = fm_protocol::MediaListItemLength {
+        frames: fm_model::MAX_MEDIA_FRAME,
+        rate: FrameRate::new(30_000, 1_001).unwrap(),
+    };
+    let lengths: MediaListLengths = control
+        .media_list_assets()
+        .into_iter()
+        .map(|asset| (asset, longest))
+        .collect();
+    let events = control
+        .set_media_list_lengths(&server_identity(), lengths)
+        .unwrap();
+    assert!(events.is_empty(), "{events:?}");
+    for state in control.media_list_states() {
+        assert!(state.status.lengths.iter().all(Option::is_none));
+        let message = WireMessage::MediaListState(state);
+        let line = fm_protocol::encode_line(&message).unwrap();
+        assert_eq!(fm_protocol::decode_line(&line).unwrap(), message);
+    }
+    let navigated = submit(
+        &mut control,
+        Role::Admin,
+        "navigate",
+        payload(MediaListOperation::Navigate(MediaListNavigation::Next)),
+    );
+    assert!(navigated.is_accepted(), "{:?}", navigated.output.result);
+    assert_wire_exact(&control, &navigated);
 }
 
 /// A list on item 2 whose `set` then dropped item 2 (cueing item 1).
@@ -379,4 +409,91 @@ fn an_undone_set_is_journaled_with_the_item_it_dropped_as_active() {
         control.media_list_states()[0].status
     );
     assert_eq!(replayed.media_list_states()[0].status.active, 2);
+}
+
+/// Protocol 2.91: the media plane reports each item file's length by asset;
+/// every list whose lengths changed is republished as one `media_list`
+/// runtime event, and records, snapshots, and later events carry them.
+#[test]
+fn probed_item_lengths_are_published_and_carried() {
+    let mut control = service(64, 256);
+    let created = submit(
+        &mut control,
+        Role::Graphics,
+        "create",
+        payload(MediaListOperation::Create {
+            name: "Walk-in".to_owned(),
+            items: items(),
+            options: MediaListOptionsSpec::default(),
+        }),
+    );
+    let (_, _, _, status) = changed(&created);
+    assert_eq!(status.lengths, [None, None]);
+    assert_eq!(
+        control.media_list_assets().into_iter().collect::<Vec<_>>(),
+        ["asset://media/a.mp4", "asset://media/b.wav"]
+    );
+
+    let length = fm_protocol::MediaListItemLength {
+        frames: 250,
+        rate: FrameRate::new(25, 1).unwrap(),
+    };
+    let revision = control.revision();
+    let lengths = MediaListLengths::from([
+        ("asset://media/a.mp4".to_owned(), length),
+        // An asset no list names changes nothing.
+        ("asset://media/other.mov".to_owned(), length),
+    ]);
+    let events = control
+        .set_media_list_lengths(&server_identity(), lengths.clone())
+        .unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let RuntimeLifecycleEvent::MediaList { status } = &events[0].event else {
+        panic!("{events:?}");
+    };
+    assert_eq!(status.lengths, [Some(length), None]);
+    assert_eq!(status.items, items());
+    assert!(fm_protocol::encode_line(&WireMessage::RuntimeEvent(events[0].clone())).is_ok());
+    // Runtime knowledge: the revision does not move.
+    assert_eq!(control.revision(), revision);
+    assert_eq!(
+        control.media_list_states()[0].status.lengths,
+        [Some(length), None]
+    );
+    // The same report publishes nothing; so does one that changes only
+    // assets no list names.
+    let unchanged = control
+        .set_media_list_lengths(&server_identity(), lengths)
+        .unwrap();
+    assert_eq!(unchanged.len(), 0, "{unchanged:?}");
+    let unchanged = control
+        .set_media_list_lengths(
+            &server_identity(),
+            MediaListLengths::from([("asset://media/a.mp4".to_owned(), length)]),
+        )
+        .unwrap();
+    assert_eq!(unchanged.len(), 0, "{unchanged:?}");
+    // A later edit carries the lengths already known.
+    let mut edited = items();
+    edited[0].mark_in = 12;
+    let set = submit(
+        &mut control,
+        Role::Graphics,
+        "set",
+        payload(MediaListOperation::Set {
+            items: edited,
+            options: MediaListOptionsSpec::default(),
+            active: None,
+        }),
+    );
+    assert_wire_exact(&control, &set);
+    assert_eq!(changed(&set).3.lengths, [Some(length), None]);
+    // A file that can no longer be read is unknown again.
+    let events = control
+        .set_media_list_lengths(&server_identity(), MediaListLengths::new())
+        .unwrap();
+    let RuntimeLifecycleEvent::MediaList { status } = &events[0].event else {
+        panic!("{events:?}");
+    };
+    assert_eq!(status.lengths, [None, None]);
 }

@@ -51,9 +51,9 @@ pub use codec::{
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
     MAX_STREAM_DETAIL_BYTES, MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS,
     MAX_STREAM_SAMPLES, cue_action_token, cue_name_is_valid, decode_line, decode_refusal_reason,
-    encode_line, encode_refusal_reason, motion_wire_bytes, parse_cue_action_token,
-    parse_shortcut_action_text, scene_clip_wire_bytes, scene_layout_wire_bytes,
-    shortcut_action_text, title_clip_wire_bytes, validate_shortcut_spec,
+    encode_line, encode_refusal_reason, media_list_status_fits, motion_wire_bytes,
+    parse_cue_action_token, parse_shortcut_action_text, scene_clip_wire_bytes,
+    scene_layout_wire_bytes, shortcut_action_text, title_clip_wire_bytes, validate_shortcut_spec,
 };
 pub use cue::{
     CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
@@ -160,8 +160,8 @@ pub use media::{
 };
 pub use media_list::{
     MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_STATES, MAX_MEDIA_LIST_TEXT_BYTES,
-    MAX_MEDIA_LIST_TITLE_BYTES, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
+    MAX_MEDIA_LIST_TITLE_BYTES, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
+    MediaListOperation, MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,

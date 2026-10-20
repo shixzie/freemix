@@ -1,15 +1,21 @@
 //! Wire mapping of media list inputs (IN-006): the `media_list` command,
 //! the `media_list_changed` event, and the snapshot's `media_list_state`
 //! records.
+//!
+//! Each item's file length (Protocol 2.91) is runtime knowledge the media
+//! plane reports by asset ([`MediaListLengths`]); the wire status joins it
+//! to the engine's list.
 
 use fm_engine::{
     Engine, EngineCommand, EngineMediaListCommand, EngineMediaListNavigation,
     EngineMediaListOperation, EngineMediaListStatus,
 };
 use fm_model::{MediaListItem, MediaListOptions};
+use std::collections::BTreeMap;
+
 use fm_protocol::{
-    CommandPayload, EventPayload, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, WireInputId,
+    CommandPayload, EventPayload, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
+    MediaListOperation, MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, WireInputId,
 };
 
 // The wire and the model agree on every list bound.
@@ -150,14 +156,20 @@ pub fn wire_payload(command: &EngineMediaListCommand) -> CommandPayload {
     }
 }
 
-/// The wire form of one list's status.
+/// Each media list item file's length as the media plane last probed it,
+/// by asset URI (Protocol 2.91). A file absent here is reported unknown.
+pub type MediaListLengths = BTreeMap<String, MediaListItemLength>;
+
+/// The wire form of one list's status, with each item's probed length
+/// from `lengths`. A list whose lengths would not fit its record reports
+/// them unknown (see [`fm_protocol::media_list_status_fits`]).
 ///
 /// # Panics
 ///
 /// Never: a list's position is bounded by its at most 256 items.
 #[must_use]
-pub fn wire_status(status: &EngineMediaListStatus) -> MediaListStatus {
-    MediaListStatus {
+pub fn wire_status(status: &EngineMediaListStatus, lengths: &MediaListLengths) -> MediaListStatus {
+    let mut wire = MediaListStatus {
         input: WireInputId::from_domain(status.input),
         items: status.list.items.iter().map(wire_item).collect(),
         options: wire_options(status.list.options),
@@ -165,7 +177,22 @@ pub fn wire_status(status: &EngineMediaListStatus) -> MediaListStatus {
         cycle: status.list.cycle,
         order: status.order.clone(),
         position: u32::try_from(status.position).expect("lists are bounded"),
+        lengths: status
+            .list
+            .items
+            .iter()
+            .map(|item| {
+                lengths
+                    .get(&item.asset_uri)
+                    .copied()
+                    .filter(|length| length.is_valid())
+            })
+            .collect(),
+    };
+    if wire.lengths.iter().any(Option::is_some) && !fm_protocol::media_list_status_fits(&wire) {
+        wire.lengths.fill(None);
     }
+    wire
 }
 
 /// How many `media_list_state` records follow a snapshot.
@@ -176,14 +203,41 @@ pub fn media_list_state_count(engine: &Engine) -> u16 {
 
 /// The `media_list_state` records after a snapshot, ascending by input.
 #[must_use]
-pub fn media_list_states(engine: &Engine) -> Vec<MediaListStateMessage> {
+pub fn media_list_states(
+    engine: &Engine,
+    lengths: &MediaListLengths,
+) -> Vec<MediaListStateMessage> {
     engine
         .media_list_statuses()
         .iter()
         .map(|status| MediaListStateMessage {
             revision: engine.revision().get(),
-            status: wire_status(status),
+            status: wire_status(status, lengths),
         })
+        .collect()
+}
+
+/// Every list's wire status, by input.
+#[must_use]
+pub fn wire_statuses(
+    engine: &Engine,
+    lengths: &MediaListLengths,
+) -> BTreeMap<fm_types::InputId, MediaListStatus> {
+    engine
+        .media_list_statuses()
+        .iter()
+        .map(|status| (status.input, wire_status(status, lengths)))
+        .collect()
+}
+
+/// Every media list item's asset URI, once each.
+#[must_use]
+pub fn item_assets(engine: &Engine) -> std::collections::BTreeSet<String> {
+    engine
+        .show()
+        .media_lists()
+        .values()
+        .flat_map(|list| list.items.iter().map(|item| item.asset_uri.clone()))
         .collect()
 }
 
@@ -192,6 +246,7 @@ pub fn media_list_states(engine: &Engine) -> Vec<MediaListStateMessage> {
 #[must_use]
 pub fn media_list_changed(
     engine: &Engine,
+    lengths: &MediaListLengths,
     input: fm_types::InputId,
     frame: u64,
     operation: &EngineMediaListOperation,
@@ -205,6 +260,6 @@ pub fn media_list_changed(
         frame,
         operation: operation.token(),
         created,
-        status: Box::new(wire_status(&status)),
+        status: Box::new(wire_status(&status, lengths)),
     })
 }

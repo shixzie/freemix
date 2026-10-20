@@ -50,7 +50,9 @@ pub use media::{
     domain_media_operation, wire_media_events, wire_media_fault, wire_media_operation,
     wire_media_status,
 };
-pub use media_list::{media_list_engine_command, wire_status as wire_media_list_status};
+pub use media_list::{
+    MediaListLengths, media_list_engine_command, wire_status as wire_media_list_status,
+};
 pub use paged::PagedSourceReport;
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
@@ -973,6 +975,9 @@ pub struct ControlService<A = Policy> {
     /// Each document input's status as clients last heard it (IN-014): a
     /// page a cue or shortcut moved is published on the next frame.
     paged_published: BTreeMap<InputId, fm_protocol::PagedStatus>,
+    /// Each media list item file's length as the media plane last probed
+    /// it, by asset (Protocol 2.91).
+    media_list_lengths: media_list::MediaListLengths,
     /// Each screen capture input's status as the media plane last reported
     /// it (IN-011).
     screen_capture_states: BTreeMap<InputId, fm_protocol::ScreenCaptureStatus>,
@@ -1071,6 +1076,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             system_audio_states: BTreeMap::new(),
             paged_sources: BTreeMap::new(),
             paged_published: BTreeMap::new(),
+            media_list_lengths: BTreeMap::new(),
             screen_capture_states: BTreeMap::new(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
             held_publications: None,
@@ -1134,6 +1140,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             system_audio_states: self.system_audio_states.clone(),
             paged_sources: self.paged_sources.clone(),
             paged_published: self.paged_published.clone(),
+            media_list_lengths: self.media_list_lengths.clone(),
             screen_capture_states: self.screen_capture_states.clone(),
             live_lan_status: self.live_lan_status.clone(),
             held_publications: Some(Vec::new()),
@@ -2156,7 +2163,68 @@ impl<A: AuthorizationHook> ControlService<A> {
     /// (IN-006).
     #[must_use]
     pub fn media_list_states(&self) -> Vec<fm_protocol::MediaListStateMessage> {
-        media_list::media_list_states(&self.engine)
+        media_list::media_list_states(&self.engine, &self.media_list_lengths)
+    }
+
+    /// The engine's current revision.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.engine.revision().get()
+    }
+
+    /// Every media list item's asset URI, once each, for the media plane
+    /// that probes their lengths (Protocol 2.91).
+    #[must_use]
+    pub fn media_list_assets(&self) -> std::collections::BTreeSet<String> {
+        media_list::item_assets(&self.engine)
+    }
+
+    /// Records every media list item file's length as the media plane
+    /// probed it, by asset (Protocol 2.91), replacing the previous report:
+    /// an asset absent from `lengths` is unknown. Each list whose status
+    /// changed refreshes the snapshot and publishes a `media_list` runtime
+    /// event, which this returns; an unchanged report publishes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_media_list_lengths(
+        &mut self,
+        server: &ServerIdentity,
+        lengths: media_list::MediaListLengths,
+    ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        if lengths == self.media_list_lengths {
+            return Ok(Vec::new());
+        }
+        let before = media_list::wire_statuses(&self.engine, &self.media_list_lengths);
+        self.media_list_lengths = lengths;
+        let after = media_list::wire_statuses(&self.engine, &self.media_list_lengths);
+        let changed: Vec<_> = after
+            .into_iter()
+            .filter(|(input, status)| before.get(input) != Some(status))
+            .map(|(_, status)| status)
+            .collect();
+        if changed.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let mut events = Vec::with_capacity(changed.len());
+        for status in changed {
+            events.push(self.runtime_event(
+                server,
+                revision,
+                generation,
+                RuntimeLifecycleEvent::MediaList {
+                    status: Box::new(status),
+                },
+            )?);
+        }
+        let live: Vec<_> = events.iter().cloned().map(LiveEvent::Runtime).collect();
+        let _ = self.publish(&live);
+        Ok(events)
     }
 
     /// The `audio_strip_dsp_state` records that complete a snapshot: one
@@ -2429,6 +2497,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                     idempotency_key,
                     &self.engine,
                     &self.paged_sources,
+                    &self.media_list_lengths,
                     &outcome,
                 )))
             }
@@ -2438,6 +2507,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                     idempotency_key.clone(),
                     execution.staged_engine(),
                     &self.paged_sources,
+                    &self.media_list_lengths,
                     execution.outcome(),
                 );
                 Ok(PrepareSubmitOutcome::Prepared(PreparedSubmission {
@@ -4028,6 +4098,7 @@ fn engine_submission(
     idempotency_key: IdempotencyKey,
     engine: &Engine,
     paged_sources: &BTreeMap<InputId, paged::PagedSource>,
+    lengths: &media_list::MediaListLengths,
     outcome: &EngineCommandOutcome,
 ) -> CommandSubmission {
     let result = command_result(&outcome.receipt);
@@ -4037,7 +4108,7 @@ fn engine_submission(
                 engine: identity.clone(),
                 revision: engine.revision().get(),
             },
-            payload: accepted_event_payload(engine, paged_sources, outcome),
+            payload: accepted_event_payload(engine, paged_sources, lengths, outcome),
             edit_history: protocol_edit_history(engine),
         }]
     } else {
@@ -4064,6 +4135,7 @@ fn engine_submission(
 fn accepted_event_payload(
     engine: &Engine,
     paged_sources: &BTreeMap<InputId, paged::PagedSource>,
+    lengths: &media_list::MediaListLengths,
     outcome: &EngineCommandOutcome,
 ) -> EventPayload {
     if let Some(payload) = outcome.events.iter().find_map(|event| {
@@ -4136,7 +4208,7 @@ fn accepted_event_payload(
                 input,
                 frame,
                 operation,
-            } => media_list::media_list_changed(engine, *input, *frame, operation),
+            } => media_list::media_list_changed(engine, lengths, *input, *frame, operation),
             EngineEvent::ScriptRunChanged { script, frame } => {
                 Some(script::script_run_changed(engine, *script, *frame))
             }

@@ -3038,6 +3038,12 @@ fn encode_runtime_event(
                 record.field_string(name, value)
             })?;
         }
+        RuntimeLifecycleEvent::MediaList { status } => {
+            record.field("event", "media_list")?;
+            super::media_list::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         RuntimeLifecycleEvent::Media {
             frame,
             events,

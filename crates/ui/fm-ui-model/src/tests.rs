@@ -3995,6 +3995,7 @@ fn media_list_status(input_id: u128, active: u32) -> fm_protocol::MediaListStatu
         cycle: 0,
         order: vec![1, 2],
         position: active - 1,
+        lengths: vec![None, None],
     }
 }
 
@@ -4089,6 +4090,59 @@ fn media_lists_replicate_from_records_and_events() {
         ))
         .unwrap();
     assert!(model.state().unwrap().media_list(input(9)).is_none());
+}
+
+/// Protocol 2.91: a `media_list` runtime event brings a list's probed item
+/// lengths; it never moves the list itself, an event about other items is
+/// ignored, and one for an input that is no list is refused.
+#[test]
+fn media_list_runtime_events_bring_the_probed_lengths() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let length = Some(fm_protocol::MediaListItemLength {
+        frames: 250,
+        rate: fm_types::FrameRate::new(25, 1).unwrap(),
+    });
+    let mut probed = media_list_status(3, 2);
+    probed.lengths = vec![length, None];
+    assert_eq!(
+        model.apply_runtime_media_list(probed.clone()),
+        Err(ModelError::StateUnavailable)
+    );
+    let mut announced = snapshot(project_id, 7);
+    announced.media_list_states = 1;
+    model.install_snapshot(announced).unwrap();
+    model
+        .apply_media_list_state(fm_protocol::MediaListStateMessage {
+            revision: 7,
+            status: media_list_status(3, 1),
+        })
+        .unwrap();
+    model.apply_runtime_media_list(probed.clone()).unwrap();
+    let list = model.state().unwrap().media_list(input(3)).unwrap();
+    assert_eq!(list.lengths, [length, None]);
+    // Only the lengths: the active item stays the durable one.
+    assert_eq!(list.active, 1);
+    // An event about other items is ignored.
+    let mut stale = probed.clone();
+    stale.items[1].uri = "asset://media/other.mov".into();
+    stale.lengths = vec![None, length];
+    model.apply_runtime_media_list(stale).unwrap();
+    assert_eq!(
+        model.state().unwrap().media_list(input(3)).unwrap().lengths,
+        [length, None]
+    );
+    // An incoherent status, or one for an input that is no list, is refused.
+    let mut short = probed.clone();
+    short.lengths.pop();
+    assert_eq!(
+        model.apply_runtime_media_list(short),
+        Err(ModelError::InvalidMediaListChange(input(3)))
+    );
+    assert_eq!(
+        model.apply_runtime_media_list(media_list_status(2, 1)),
+        Err(ModelError::InvalidMediaListChange(input(2)))
+    );
 }
 
 #[test]

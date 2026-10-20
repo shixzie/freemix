@@ -2737,7 +2737,8 @@ input plays a list of video and audio files one at a time.
   transport bar: the active item highlighted, the play position, Previous
   and Next, a search filter, per-row activate, drag (or Up / Down)
   reordering, per-item in and out marks, removal, appending files, and the
-  Auto Next, Auto First, Loop, and Shuffle options.
+  Auto Next, Auto First, Loop, and Shuffle options. Since 2.91 every status also
+  carries each item's probed file `lengths` (see Protocol 2.91).
 - 2.73 is refused.
 
 Protocol 2.75 puts a DSP chain on every input strip and on the Master bus
@@ -3473,6 +3474,38 @@ the title template.
   uploads).
 - Journal records written by earlier protocol versions are refused as
   before; earlier protocol versions are refused.
+
+Protocol 2.91 reports every media list item's file length (IN-006). No
+schema change: lengths are runtime knowledge, never journaled or saved.
+
+- A media list status (`media_list_state`, `event=media_list_changed`, and
+  the new runtime event) gains a required `lengths` after `order`: one entry
+  per item in authored order, comma-separated, each
+  `<frames>@<numerator>/<denominator>` (the file's source frames,
+  `1..=4294967295`, at its own frame rate in lowest terms; an audio-only
+  file counts at the program rate) or `-` while the length is unknown. A
+  missing field, another entry count, a zero, non-canonical, or
+  out-of-range frame count, or a rate not in lowest terms is refused.
+- `runtime_event` gains `event=media_list` with the list's complete status
+  (the same fields as `media_list_state` after `revision`), published when
+  any of its items' lengths changes. Clients take only its `lengths`, and
+  only while their list has exactly its items.
+- The authority probes each item's file off the session loop when it is
+  added (or the list is restored at startup), caches the length by asset,
+  and checks each file's size and modification time every 2 s, probing a
+  changed file again. The native daemon opens the file through the same
+  decoder path playback uses, so a length equals the frame count the
+  transport reports once the item plays; the simulated daemon reports the
+  synthetic source's 10 s at the program rate for every item. A file that
+  is missing, cannot be read, or does not probe is `-`, as is an item still
+  waiting for its probe. A list whose record would leave less than 8 KiB of
+  its line for the envelope (the longest escaped file names) reports every
+  length `-`.
+- Studio shows each unmarked item's out point as its length (the open
+  file's transport length for the current item), `END` only while unknown,
+  and totals the list's played duration through its marks in the card
+  header (`At least` while some lengths are unknown), with hover help.
+- 2.90 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

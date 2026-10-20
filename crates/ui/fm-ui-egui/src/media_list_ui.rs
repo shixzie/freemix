@@ -13,6 +13,12 @@
 //! Each row starts with the item's own picture (its in-mark frame, Protocol
 //! 2.80 `input_thumbnail` records with `item`): a drawn card keeps the
 //! thumbnail feed subscribed, and each received picture is uploaded once.
+//!
+//! Every item's out field shows where it really ends (Protocol 2.91): its
+//! out mark, else its file's length as the authority probed it (the open
+//! file's transport length for the current item), and END only while that
+//! length is unknown. The header totals how long the list plays once
+//! through its marks, as "at least" while some lengths are unknown.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -410,6 +416,9 @@ pub(crate) fn draw_list(
             .color(text_dim_color()),
         )
         .on_hover_text(l.text(Msg::MlPositionHover));
+        let (total, total_hover) = total_text(l, list);
+        ui.label(caption(total).color(text_dim_color()))
+            .on_hover_text(total_hover);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for (navigation, label, hover) in [
                 (
@@ -628,13 +637,14 @@ pub(crate) fn draw_list(
                     });
                 });
                 // Marks: in, and out. An unmarked out plays to the file's
-                // end: it shows the file's length when known (the current
-                // item), else END.
+                // end: it shows the file's length when known (the open
+                // file's for the current item, else the probed one), else
+                // END.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     let in_id = Id::new(("studio-media-list-in", input, item.id));
                     let out_id = Id::new(("studio-media-list-out", input, item.id));
-                    let file_end = if active { current_frames } else { None };
+                    let file_end = item_file_end(list, item.id, active, current_frames);
                     let shown_out = item.mark_out.or(file_end).unwrap_or(0);
                     let mut mark_in = ui
                         .data(|data| data.get_temp::<u64>(in_id))
@@ -800,6 +810,56 @@ pub(crate) fn draw_form(ui: &mut Ui, l: Locale, draft: &mut MediaListDraft) {
 fn current_item_frames(state: &StudioUiState, input: InputId) -> Option<u64> {
     let transport = &state.project_state.as_ref()?.media_status(input)?.transport;
     (transport.available && transport.complete && transport.frames > 0).then_some(transport.frames)
+}
+
+/// The file length an item's unmarked out field shows: the open file's
+/// transport length for the current item, else the length the authority
+/// probed (Protocol 2.91); `None` (END) while unknown.
+fn item_file_end(
+    list: &MediaListStatus,
+    item: u32,
+    active: bool,
+    current_frames: Option<u64>,
+) -> Option<u64> {
+    active
+        .then_some(current_frames)
+        .flatten()
+        .or_else(|| list.item_length(item).map(|length| length.frames))
+}
+
+/// A list duration as `HH:MM:SS`, rounded to the nearest second.
+fn list_duration(micros: u64) -> String {
+    let seconds = micros.saturating_add(500_000) / 1_000_000;
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3_600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+/// The header's total and its hover: how long the list plays once through
+/// its marks, "at least" while some items' lengths are unknown.
+fn total_text(l: Locale, list: &MediaListStatus) -> (String, String) {
+    let (micros, complete) = list.total_micros();
+    let duration = list_duration(micros);
+    if complete {
+        (
+            l.format(Msg::MlTotal, &[("duration", Arg::Str(&duration))]),
+            l.text(Msg::MlTotalHover).to_owned(),
+        )
+    } else {
+        let unknown = list
+            .lengths
+            .iter()
+            .filter(|length| length.is_none())
+            .count()
+            + list.items.len().saturating_sub(list.lengths.len());
+        (
+            l.format(Msg::MlTotalPartial, &[("duration", Arg::Str(&duration))]),
+            l.format(Msg::MlTotalPartialHover, &[("count", Arg::from(unknown))]),
+        )
+    }
 }
 
 /// The out mark of an edit to the shown out field: the file's length
@@ -983,5 +1043,140 @@ mod tests {
                 .0
                 .is_empty()
         }));
+    }
+
+    fn painted_text(output: &egui::FullOutput) -> Vec<String> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn length(frames: u64, numerator: u32, denominator: u32) -> fm_protocol::MediaListItemLength {
+        fm_protocol::MediaListItemLength {
+            frames,
+            rate: fm_types::FrameRate::new(numerator, denominator).unwrap(),
+        }
+    }
+
+    /// Protocol 2.91: an unmarked item's out field shows its probed length
+    /// (the open file's transport length for the current item), END only
+    /// while unknown.
+    #[test]
+    fn every_item_shows_its_probed_file_end() {
+        let mut list = crate::hover_audit::bank_fixture()
+            .project_state
+            .as_ref()
+            .and_then(|project| {
+                project.media_list(InputId::new(core::num::NonZeroU128::new(4).unwrap()))
+            })
+            .unwrap()
+            .clone();
+        // Off air: the probed length.
+        assert_eq!(item_file_end(&list, 1, false, Some(99)), Some(250));
+        // Current: the open file's length first, else the probed one.
+        assert_eq!(item_file_end(&list, 2, true, Some(1_499)), Some(1_499));
+        assert_eq!(item_file_end(&list, 2, true, None), Some(1_500));
+        // Unknown: END.
+        assert_eq!(item_file_end(&list, 3, false, None), None);
+        assert_eq!(item_file_end(&list, 3, true, Some(40)), Some(40));
+        list.lengths = vec![None; 3];
+        assert_eq!(item_file_end(&list, 1, false, None), None);
+    }
+
+    #[test]
+    fn the_list_total_reads_in_both_languages() {
+        assert_eq!(list_duration(0), "00:00:00");
+        assert_eq!(list_duration(499_999), "00:00:00");
+        assert_eq!(list_duration(500_000), "00:00:01");
+        assert_eq!(list_duration(3_725_400_000), "01:02:05");
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let mut list = crate::hover_audit::bank_fixture()
+            .project_state
+            .as_ref()
+            .and_then(|project| {
+                project.media_list(InputId::new(core::num::NonZeroU128::new(4).unwrap()))
+            })
+            .unwrap()
+            .clone();
+        // 10 s at 25 fps and 1500 frames at 29.97 (50.05 s); the bed is
+        // not measured yet.
+        let (total, hover) = total_text(Locale::ENGLISH, &list);
+        assert_eq!(total, "At least 00:01:00");
+        assert!(
+            hover.contains("one item's file has not been measured"),
+            "{hover}"
+        );
+        let (total, hover) = total_text(spanish, &list);
+        assert_eq!(total, "Al menos 00:01:00");
+        assert!(hover.contains("el archivo de un elemento"), "{hover}");
+        list.lengths[0] = None;
+        let (_, hover) = total_text(Locale::ENGLISH, &list);
+        assert!(hover.contains("2 items' files"), "{hover}");
+        // Every length known: the total, with the marks applied.
+        list.lengths = vec![
+            Some(length(250, 25, 1)),
+            Some(length(1_500, 30_000, 1_001)),
+            Some(length(750, 25, 1)),
+        ];
+        list.items[2].mark_in = 150;
+        list.items[2].mark_out = Some(400);
+        let (total, hover) = total_text(Locale::ENGLISH, &list);
+        assert_eq!(total, "Total 00:01:10");
+        assert_eq!(hover, Msg::MlTotalHover.en());
+        assert_eq!(total_text(spanish, &list).0, "Total 00:01:10");
+    }
+
+    /// The drawn card shows the total in its header and each item's real
+    /// out point, with END for the item whose length is unknown.
+    #[test]
+    fn the_drawn_card_shows_every_items_out_and_the_total() {
+        let state = crate::hover_audit::bank_fixture();
+        let guest = InputId::new(core::num::NonZeroU128::new(4).unwrap());
+        let list = state
+            .project_state
+            .as_ref()
+            .and_then(|project| project.media_list(guest))
+            .unwrap()
+            .clone();
+        for (locale, total, end) in [
+            (Locale::ENGLISH, "At least 00:01:00", "END"),
+            (
+                Locale::new(fm_ui_model::i18n::Language::Spanish),
+                "Al menos 00:01:00",
+                "FIN",
+            ),
+        ] {
+            let context = egui::Context::default();
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                let mut intents = Vec::new();
+                draw_list(ui, locale, &state, guest, &list, &mut intents);
+                assert_eq!(intents.len(), 0);
+            });
+            let texts = painted_text(&output);
+            for wanted in [total, "250", end] {
+                assert!(
+                    texts.iter().any(|text| text == wanted),
+                    "{wanted}: {texts:?}"
+                );
+            }
+            assert_eq!(
+                texts.iter().filter(|text| *text == end).count(),
+                1,
+                "{texts:?}"
+            );
+        }
     }
 }

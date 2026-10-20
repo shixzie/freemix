@@ -1,16 +1,20 @@
 //! IN-006 media lists on the wire: the `media_list` command (create, set,
 //! navigate, advance), the `media_list_changed` event, the snapshot's
-//! `media_list_states` count, and the `media_list_state` follow-on record —
-//! exactly, and strictly.
+//! `media_list_states` count, the `media_list_state` follow-on record, and
+//! (Protocol 2.91) each item's probed length with the `media_list` runtime
+//! event that republishes it — exactly, and strictly.
 
 use core::num::NonZeroU128;
 
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload, EditHistoryStatus,
     EngineIdentity, EventCursor, EventMessage, EventPayload, MAX_MEDIA_LIST_ITEMS,
-    MediaListItemSpec, MediaListNavigation, MediaListOperation, MediaListOptionsSpec,
-    MediaListStateMessage, MediaListStatus, WireInputId, WireMessage, decode_line, encode_line,
+    MediaListItemLength, MediaListItemSpec, MediaListNavigation, MediaListOperation,
+    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, RuntimeEventMessage,
+    RuntimeLifecycleEvent, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
+    media_list_status_fits,
 };
+use fm_types::FrameRate;
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -77,8 +81,17 @@ fn status() -> MediaListStatus {
         cycle: 3,
         order: vec![1, 4],
         position: 1,
+        lengths: vec![
+            Some(MediaListItemLength {
+                frames: 300,
+                rate: FrameRate::new(30_000, 1_001).unwrap(),
+            }),
+            None,
+        ],
     }
 }
+
+const LENGTHS: &str = "lengths=300%4030000%2F1001%2C-";
 
 const ITEMS: &str = "items=1%7Easset%253A%252F%252Fmedia%252Fintro%2520clip.mp4%7EIntro%252C%2520%257Ecold%257E%7E12%7E250%2C4%7E%252Fhome%252Fshow%252Fbed.wav%7E%252D%7E0%7E-";
 
@@ -229,7 +242,7 @@ fn the_state_record_and_event_carry_the_whole_list() {
     assert_eq!(
         round_trip(&state),
         format!(
-            "media_list_state\trevision=9\tinput=7\tactive=4\tcycle=3\tposition=1\tauto_next=1\tauto_first=0\tloop=1\tshuffle_seed=18446744073709551615\t{ITEMS}\torder=1%2C4\n"
+            "media_list_state\trevision=9\tinput=7\tactive=4\tcycle=3\tposition=1\tauto_next=1\tauto_first=0\tloop=1\tshuffle_seed=18446744073709551615\t{ITEMS}\torder=1%2C4\t{LENGTHS}\n"
         )
     );
     let event = WireMessage::Event(EventMessage {
@@ -325,4 +338,195 @@ fn set_carries_an_optional_active_item_exactly() {
         },
     ));
     assert!(decode_line(&create.replacen('\n', "\tactive=4\n", 1)).is_err());
+}
+
+/// Protocol 2.91: every status carries one probed length per item, in
+/// authored order (`-` while unknown), and a `media_list` runtime event
+/// republishes the whole status when a length changes. Anything else is
+/// refused by both the encoder and the decoder.
+#[test]
+fn item_lengths_ride_every_status_exactly_and_strictly() {
+    let state = WireMessage::MediaListState(MediaListStateMessage {
+        revision: 9,
+        status: status(),
+    });
+    let line = round_trip(&state);
+    assert!(line.ends_with(&format!("\t{LENGTHS}\n")), "{line}");
+    let mut unknown = status();
+    unknown.lengths = vec![None, None];
+    let line = round_trip(&WireMessage::MediaListState(MediaListStateMessage {
+        revision: 9,
+        status: unknown,
+    }));
+    assert!(line.ends_with("\tlengths=-%2C-\n"), "{line}");
+
+    let encoded = encode_line(&state).unwrap();
+    for (from, to) in [
+        // One per item.
+        (LENGTHS, "lengths=-"),
+        (LENGTHS, "lengths=-%2C-%2C-"),
+        (LENGTHS, "lengths="),
+        // Canonical frames within the bounds, a rate in lowest terms.
+        (LENGTHS, "lengths=0%4025%2F1%2C-"),
+        (LENGTHS, "lengths=0300%4025%2F1%2C-"),
+        (LENGTHS, "lengths=4294967296%4025%2F1%2C-"),
+        (LENGTHS, "lengths=300%4050%2F2%2C-"),
+        (LENGTHS, "lengths=300%4025%2F0%2C-"),
+        (LENGTHS, "lengths=300%4025%2C-"),
+        (LENGTHS, "lengths=300%2C-"),
+        (LENGTHS, "lengths=300%4025%2F1%40x%2C-"),
+        (LENGTHS, "lengths=%2C-"),
+        (LENGTHS, "lengths=unknown%2C-"),
+        // Required.
+        (&format!("\t{LENGTHS}"), ""),
+    ] {
+        let line = encoded.replacen(from, to, 1);
+        assert_ne!(line, encoded, "{to}");
+        assert!(decode_line(&line).is_err(), "{from} -> {to}");
+    }
+    // The largest length is the largest media frame.
+    let line = encoded.replacen(LENGTHS, "lengths=4294967295%4025%2F1%2C-", 1);
+    let WireMessage::MediaListState(decoded) = decode_line(&line).unwrap() else {
+        unreachable!()
+    };
+    assert_eq!(
+        decoded.status.item_length(1).unwrap().frames,
+        u64::from(u32::MAX)
+    );
+
+    // The encoder refuses what the decoder refuses.
+    for lengths in [
+        vec![None],
+        vec![None, None, None],
+        vec![
+            Some(MediaListItemLength {
+                frames: 0,
+                rate: FrameRate::new(25, 1).unwrap(),
+            }),
+            None,
+        ],
+        vec![
+            None,
+            Some(MediaListItemLength {
+                frames: u64::from(u32::MAX) + 1,
+                rate: FrameRate::new(25, 1).unwrap(),
+            }),
+        ],
+    ] {
+        let mut status = status();
+        status.lengths = lengths;
+        assert!(
+            encode_line(&WireMessage::MediaListState(MediaListStateMessage {
+                revision: 9,
+                status,
+            }))
+            .is_err()
+        );
+    }
+
+    // The runtime event carries the whole status.
+    let runtime = WireMessage::RuntimeEvent(RuntimeEventMessage {
+        server: ServerIdentity {
+            engine_id: "engine-a".to_owned(),
+            project_id: "project-a".to_owned(),
+            state_epoch: 3,
+            log_id: "log-a".to_owned(),
+        },
+        revision: 12,
+        generation: 2,
+        sequence: 5,
+        event: RuntimeLifecycleEvent::MediaList {
+            status: Box::new(status()),
+        },
+    });
+    let line = round_trip(&runtime);
+    assert!(
+        line.contains("\tevent=media_list\tinput=7\tactive=4\tcycle=3\tposition=1\t"),
+        "{line}"
+    );
+    assert!(line.ends_with(&format!("\t{LENGTHS}\n")), "{line}");
+    for (from, to) in [
+        (format!("\t{LENGTHS}"), String::new()),
+        ("order=1%2C4".to_owned(), "order=4%2C1".to_owned()),
+        (LENGTHS.to_owned(), "lengths=-".to_owned()),
+    ] {
+        let bad = line.replacen(&from, &to, 1);
+        assert!(decode_line(&bad).is_err(), "{from} -> {to}");
+    }
+}
+
+/// The lengths and the list's played duration: an unmarked item plays to
+/// its file's end, an out mark past the end stops at the end, and an
+/// unknown length leaves the total partial.
+#[test]
+fn item_lengths_time_the_list() {
+    let rate = FrameRate::new(25, 1).unwrap();
+    let length = MediaListItemLength { frames: 250, rate };
+    assert_eq!(length.played_end(None), 250);
+    assert_eq!(length.played_end(Some(100)), 100);
+    assert_eq!(length.played_end(Some(400)), 250);
+    assert_eq!(length.played_micros(50, None), 8_000_000);
+    assert_eq!(length.played_micros(300, None), 0);
+    let ntsc = MediaListItemLength {
+        frames: 300,
+        rate: FrameRate::new(30_000, 1_001).unwrap(),
+    };
+    assert_eq!(ntsc.played_micros(0, None), 10_010_000);
+
+    let mut list = status();
+    // Item 1 plays 12..250 of 300 frames at 29.97: 238 frames, 7.941266 s.
+    assert_eq!(list.total_micros(), (7_941_266, false));
+    assert_eq!(list.item_length(4), None);
+    list.lengths[1] = Some(length);
+    assert_eq!(list.total_micros(), (17_941_266, true));
+    assert_eq!(list.item_length(4), Some(length));
+    assert_eq!(list.item_length(2), None);
+    assert!(media_list_status_fits(&list));
+}
+
+/// The longest lists leave no room for their lengths in one record: the
+/// authority then reports them unknown, which still fits.
+#[test]
+fn a_list_too_long_for_its_lengths_does_not_fit() {
+    let rate = FrameRate::new(30_000, 1_001).unwrap();
+    let list = |spaces: usize, known: bool| {
+        let items: Vec<MediaListItemSpec> = (1..=u32::try_from(MAX_MEDIA_LIST_ITEMS).unwrap())
+            .map(|id| MediaListItemSpec {
+                id: 999_744 + id,
+                // A space escapes twice: five bytes on the wire.
+                uri: format!("asset://a{}b", " ".repeat(spaces)),
+                title: None,
+                mark_in: u64::from(u32::MAX) - 1,
+                mark_out: Some(u64::from(u32::MAX)),
+            })
+            .collect();
+        MediaListStatus {
+            input: input(7),
+            order: items.iter().map(|item| item.id).collect(),
+            active: items[0].id,
+            position: 0,
+            cycle: u64::MAX,
+            options: options(),
+            lengths: vec![
+                known.then_some(MediaListItemLength {
+                    frames: u64::from(u32::MAX),
+                    rate,
+                });
+                items.len()
+            ],
+            items,
+        }
+    };
+    // Short file names fit with their lengths.
+    assert!(media_list_status_fits(&list(0, true)));
+    // Some longer names fit only without them.
+    let spaces = (0..54)
+        .find(|spaces| !media_list_status_fits(&list(*spaces, true)))
+        .unwrap();
+    let unknown = list(spaces, false);
+    assert!(media_list_status_fits(&unknown));
+    round_trip(&WireMessage::MediaListState(MediaListStateMessage {
+        revision: u64::MAX,
+        status: unknown,
+    }));
 }

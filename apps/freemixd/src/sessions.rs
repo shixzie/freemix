@@ -762,6 +762,28 @@ pub(super) fn run(
         .flatten();
     #[cfg(not(feature = "native-media"))]
     let item_pictures = None;
+    // Every media list item's file length is probed off this loop too
+    // (Protocol 2.91): a native daemon through its decoder, a simulated one
+    // by its deterministic stand-in.
+    #[cfg(feature = "native-media")]
+    let length_probe = native
+        .is_some()
+        .then(|| crate::native_files::item_lengths(titles.store()))
+        .flatten();
+    #[cfg(not(feature = "native-media"))]
+    let length_probe: Option<Arc<dyn crate::media_lengths::LengthProbe>> = None;
+    let length_probe = match length_probe {
+        Some(probe) => probe,
+        None if native.is_some() => Arc::new(crate::media_lengths::NoLengths),
+        None => Arc::new(crate::media_lengths::SimulatedLengths),
+    };
+    let mut media_lengths = crate::media_lengths::MediaLengthWorker::spawn(
+        titles
+            .store()
+            .map(fm_persistence::ProjectStore::assets_root),
+        length_probe,
+    )?;
+    let mut media_lengths_revision = None;
     let mut thumbnails = ThumbnailWorker::spawn(
         authority.clone(),
         Arc::clone(titles),
@@ -1068,6 +1090,20 @@ pub(super) fn run(
         // finished, or the daemon just started) reports it (IN-014).
         if documents.take_changed() {
             crate::documents::sync(&mut control.borrow_mut(), authority, &documents)?;
+        }
+        // Media list item lengths (Protocol 2.91): the worker learns every
+        // item asset after each revision, and a changed report republishes
+        // the lists it touches.
+        let revision = control.borrow().revision();
+        if media_lengths_revision != Some(revision) {
+            media_lengths_revision = Some(revision);
+            let assets = control.borrow().media_list_assets();
+            media_lengths.want(assets, durable.project().settings().frame_rate);
+        }
+        if let Some(lengths) = media_lengths.take_changed() {
+            control
+                .borrow_mut()
+                .set_media_list_lengths(authority, lengths)?;
         }
         // A page answer is lossy: one a peer cannot take now is dropped,
         // and the client asks again for what it still shows (IN-014).

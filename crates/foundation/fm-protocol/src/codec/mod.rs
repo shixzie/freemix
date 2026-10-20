@@ -34,6 +34,7 @@ pub use animation::{motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_by
 pub use cue::{cue_action_token, cue_name_is_valid, parse_cue_action_token};
 pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
+pub use media_list::media_list_status_fits;
 pub use refusal::{decode_refusal_reason, encode_refusal_reason};
 pub use scene_layout::scene_layout_wire_bytes;
 pub use shortcut::{parse_shortcut_action_text, shortcut_action_text, validate_shortcut_spec};

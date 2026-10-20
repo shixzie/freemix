@@ -17,7 +17,7 @@ behavior.
 | IN-003 | P0 | Video files and growing files | Seek, pause, resume, loop, trim, speed change, end triggers, audio track selection, and frame-accurate position |
 | IN-004 | P1 | Common containers/codecs: MP4, MOV, MKV, MXF, MPEG-TS, AVI and licensed H.264/H.265/AAC/ProRes/DNx/MPEG variants | Golden files decode with timestamp, color, channel, rotation, and interlace metadata preserved |
 | IN-005 | P1 | Audio files and multichannel audio-only devices | WAV/FLAC/MP3/AAC-class playback plus device channel selection and mapping |
-| IN-006 | P1 | Media List input | Mixed audio/video/M3U list supports order, search, shuffle, Auto Next/Auto First, next/previous, loop, per-item marks, and active-item events |
+| IN-006 | P1 | Media List input | Mixed audio/video/M3U list supports order, search, shuffle, Auto Next/Auto First, next/previous, loop, per-item marks, and active-item events; every item's file length is probed by the server and shown as its out point and in the list's total duration |
 | IN-007 | P2 | DVD/menu input where platform and licensing allow | Load title/menu, navigate, select audio/subtitles, and preserve aspect ratio |
 | IN-008 | P0 | Still image and solid color/bars | Load common image formats, respect alpha/orientation/color profile, generate colors/bars without per-frame CPU upload |
 | IN-009 | P1 | Photo/slideshow input | Folder/list, duration, transition, pan/zoom, random/ordered playback, live list edits, optional thumbnail suppression, and filename fallback for very large sets |

@@ -1399,6 +1399,59 @@ pub(crate) fn item_pictures(
     }))
 }
 
+/// Probes media list item lengths (Protocol 2.91) through the decoder path
+/// playback opens files with: the file opened at the program rate, so its
+/// frame count is the one the transport reports once the item plays (an
+/// audio-only file's frames counted at the program rate). Confined to the
+/// bundle's assets; the adapter is made on first use.
+struct ItemLengths {
+    assets_root: PathBuf,
+    adapter: Mutex<Option<Adapter>>,
+}
+
+impl crate::media_lengths::LengthProbe for ItemLengths {
+    fn length(
+        &self,
+        path: Option<&std::path::Path>,
+        rate: FrameRate,
+    ) -> Option<fm_protocol::MediaListItemLength> {
+        let path = path?;
+        let domain = ClockDomainId::new(std::num::NonZeroU128::MIN);
+        let mut config = FilePlaybackConfig::new(domain, rate);
+        config.audio = None;
+        config.window_frames = NonZeroU32::MIN;
+        // Only counted, never shown.
+        config.audio_only_picture = VideoDimensions::new(16, 16);
+        let adapter = {
+            let mut adapter = self.adapter.lock().unwrap_or_else(PoisonError::into_inner);
+            if adapter.is_none() {
+                *adapter = Adapter::new(fm_codec_ffmpeg::Config {
+                    allowed_root: Some(self.assets_root.clone()),
+                    ..fm_codec_ffmpeg::Config::default()
+                })
+                .ok();
+            }
+            adapter.clone()?
+        };
+        let player = adapter.open_playback(path, config).ok()?;
+        Some(fm_protocol::MediaListItemLength {
+            frames: player.frame_count(),
+            rate: player.frame_rate(),
+        })
+    }
+}
+
+/// The item length probe of a native daemon whose bundle is `store`;
+/// `None` without a bundle.
+pub(crate) fn item_lengths(
+    store: Option<&fm_persistence::ProjectStore>,
+) -> Option<Arc<dyn crate::media_lengths::LengthProbe>> {
+    Some(Arc::new(ItemLengths {
+        assets_root: store?.assets_root(),
+        adapter: Mutex::new(None),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU128;

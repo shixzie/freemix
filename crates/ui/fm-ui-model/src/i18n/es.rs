@@ -6453,6 +6453,21 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MlPositionHover,
         t("El lugar del elemento activo en el orden de reproducción (aleatorio o no)"),
     ),
+    (Msg::MlTotal, t("Total {duration}")),
+    (Msg::MlTotalPartial, t("Al menos {duration}")),
+    (
+        Msg::MlTotalHover,
+        t(
+            "Cuánto dura la lista entera de una pasada: cada elemento desde su marca de entrada hasta su marca de salida, o hasta el final de su archivo si no tiene marca",
+        ),
+    ),
+    (
+        Msg::MlTotalPartialHover,
+        plural(
+            "Cuánto dura como mínimo la lista entera: el archivo de un elemento aún no se ha medido o no se puede leer, así que su duración no se cuenta",
+            "Cuánto dura como mínimo la lista entera: los archivos de {count} elementos aún no se han medido o no se pueden leer, así que sus duraciones no se cuentan",
+        ),
+    ),
     (
         Msg::MlNextHover,
         t("Activa el elemento siguiente; se reproduce enseguida si la lista está en reproducción"),
@@ -6516,7 +6531,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MlMarkOutHover,
         t(
-            "Marca de salida de este elemento: termina antes de este fotograma. Sin marca, se reproduce hasta el final del archivo: el elemento actual muestra la duración del archivo y los demás FIN; escriba 0 para quitar la marca",
+            "Marca de salida de este elemento: termina antes de este fotograma. Sin marca, se reproduce hasta el final del archivo y muestra la duración del archivo, o FIN mientras el servidor aún no ha medido el archivo (o no puede leerlo); escriba 0 para quitar la marca",
         ),
     ),
     (Msg::MlMarkOutEnd, t("FIN")),

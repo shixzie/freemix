@@ -3158,6 +3158,9 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         "paged" => RuntimeLifecycleEvent::Paged {
             status: Box::new(super::paged::decode_status(fields)?),
         },
+        "media_list" => RuntimeLifecycleEvent::MediaList {
+            status: Box::new(super::media_list::decode_status(fields)?),
+        },
         _ => {
             return Err(CodecError::InvalidField {
                 field: "event",

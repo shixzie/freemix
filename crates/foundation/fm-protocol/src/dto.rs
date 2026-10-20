@@ -2969,6 +2969,12 @@ pub enum RuntimeLifecycleEvent {
     Paged {
         status: Box<crate::PagedStatus>,
     },
+    /// A media list's probed item lengths changed (Protocol 2.91): an item
+    /// was probed, its file changed, or it could no longer be read. Carries
+    /// the list's complete status, as `media_list_changed` does.
+    MediaList {
+        status: Box<crate::MediaListStatus>,
+    },
     /// An input's source became unavailable or available again (Protocol
     /// 2.38): `offline` is the reason, or `None` once it is back.
     InputAvailability {

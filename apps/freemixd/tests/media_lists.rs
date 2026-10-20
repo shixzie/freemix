@@ -5,6 +5,11 @@
 //! active item) persists in `project.json`, the journaled advance replays
 //! after a restart, and a reconnecting client receives one
 //! `media_list_state` per list after the snapshot.
+//!
+//! Every item's file length is probed off the session loop (Protocol
+//! 2.91): the simulated daemon's deterministic stand-in is the synthetic
+//! source's ten seconds at the program rate, published as `media_list`
+//! runtime events and carried by every later status.
 
 use std::{
     fs,
@@ -27,9 +32,10 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, MediaOperation, Role,
-    SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
+    EventPayload, HandshakeRequest, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
+    MediaListOperation, MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
+    MediaOperation, Role, RuntimeLifecycleEvent, SnapshotMessage, WireInputId, WireMessage,
+    decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -603,5 +609,85 @@ fn a_media_list_imports_host_files_into_the_bundle() {
         message.contains("asset://") && message.contains("absolute path"),
         "{message}"
     );
+    daemon.stop();
+}
+
+impl Client {
+    /// Waits for the list's `media_list` runtime event that `accept`s.
+    fn runtime_list(&mut self, accept: impl Fn(&MediaListStatus) -> bool) -> MediaListStatus {
+        self.wait_for("a media_list runtime event", |message| match message {
+            WireMessage::RuntimeEvent(event) => match event.event {
+                RuntimeLifecycleEvent::MediaList { status }
+                    if status.input == wire(LIST) && accept(&status) =>
+                {
+                    Some(*status)
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+}
+
+/// Protocol 2.91 on the simulated daemon: every item's length is probed
+/// after the list is created, an appended item after the edit, and a
+/// restored list after a restart; each arrives as a `media_list` runtime
+/// event, and every later status carries the lengths already known.
+#[test]
+fn simulated_item_lengths_are_probed_published_and_restored() {
+    let directory = TestDirectory::new("lengths");
+    let project = directory.project();
+    save_project(&project);
+    let daemon = Daemon::start(&project);
+    let (mut client, _, _) = Client::connect(&daemon);
+    let ten_seconds = Some(MediaListItemLength {
+        frames: 250,
+        rate: FrameRate::new(25, 1).unwrap(),
+    });
+
+    let created = client.list(MediaListOperation::Create {
+        name: "Walk-in".into(),
+        items: items(),
+        options: MediaListOptionsSpec::default(),
+    });
+    assert_eq!(created.lengths.len(), 3);
+    let probed = client.runtime_list(|status| status.lengths.iter().all(Option::is_some));
+    assert_eq!(probed.items, created.items);
+    assert_eq!(probed.lengths, vec![ten_seconds; 3]);
+    // Item 1 plays 20..30, item 2 0..10, and item 3 its whole 250 frames.
+    assert_eq!(probed.total_micros(), (10_800_000, true));
+
+    // An appended item is probed after the edit; the others are known.
+    let mut more = items();
+    more.push(MediaListItemSpec {
+        id: 4,
+        uri: "asset://encore.mp4".into(),
+        title: None,
+        mark_in: 0,
+        mark_out: None,
+    });
+    let set = client.list(MediaListOperation::Set {
+        items: more.clone(),
+        options: MediaListOptionsSpec::default(),
+        active: None,
+    });
+    assert_eq!(set.lengths[..3], [ten_seconds; 3]);
+    if set.lengths[3].is_none() {
+        let probed = client.runtime_list(|status| status.items == more);
+        assert_eq!(probed.lengths, vec![ten_seconds; 4]);
+    }
+    drop(client);
+    daemon.stop();
+
+    // A restored list is probed again: the lengths are never persisted.
+    let daemon = Daemon::start(&project);
+    let (mut client, _, states) = Client::connect(&daemon);
+    assert_eq!(states[0].status.items, more);
+    if states[0].status.lengths.iter().any(Option::is_none) {
+        let probed = client.runtime_list(|status| status.lengths.iter().all(Option::is_some));
+        assert_eq!(probed.lengths, vec![ten_seconds; 4]);
+    }
+    let (_reconnected, _, states) = Client::connect(&daemon);
+    assert_eq!(states[0].status.lengths, vec![ten_seconds; 4]);
     daemon.stop();
 }
