@@ -1,6 +1,7 @@
 //! The BS.1770 / EBU R128 meter against the EBU Tech 3341 reference cases
 //! that can be synthesized (AU-005): steady sines, the gating cases, a
-//! 5.0 layout, and inter-sample true peaks.
+//! 5.0 layout, and inter-sample true peaks; the EBU Tech 3342 loudness
+//! range cases that can be synthesized; and the operator reset.
 
 use fm_audio::{LoudnessMeter, LoudnessReading};
 use fm_types::{Channel, ChannelLayout};
@@ -213,4 +214,104 @@ fn planes_and_frames_measure_the_same() {
         by_frame.push_frame(&[*sample, *sample]);
     }
     assert_eq!(by_frame.reading(), by_plane.reading());
+}
+
+/// Feeds a sequence of `(dBFS, seconds)` 1 kHz stereo passages.
+fn feed_passages(meter: &mut LoudnessMeter, passages: &[(f64, f64)]) {
+    for &(dbfs, seconds) in passages {
+        feed_stereo(meter, dbfs, seconds);
+    }
+}
+
+#[test]
+fn tech_3342_cases_1_to_4_read_their_loudness_range() {
+    // EBU Tech 3342 cases 1 to 4 (tolerance +-1 LU): stereo 1 kHz sines.
+    let cases: [(&[(f64, f64)], f64); 4] = [
+        (&[(-20.0, 20.0), (-30.0, 20.0)], 10.0),
+        (&[(-20.0, 20.0), (-15.0, 20.0)], 5.0),
+        (&[(-40.0, 20.0), (-20.0, 20.0)], 20.0),
+        (
+            &[
+                (-50.0, 20.0),
+                (-35.0, 20.0),
+                (-20.0, 20.0),
+                (-35.0, 20.0),
+                (-50.0, 20.0),
+            ],
+            15.0,
+        ),
+    ];
+    for (index, (passages, expected)) in cases.iter().enumerate() {
+        let mut meter = LoudnessMeter::new(RATE, &stereo()).unwrap();
+        feed_passages(&mut meter, passages);
+        assert_near(
+            meter.reading().loudness_range_lu,
+            *expected,
+            1.0,
+            &format!("Tech 3342 case {}", index + 1),
+        );
+    }
+}
+
+#[test]
+fn a_steady_programme_has_no_loudness_range_and_silence_none_at_all() {
+    let mut meter = LoudnessMeter::new(RATE, &stereo()).unwrap();
+    feed_stereo(&mut meter, -23.0, 2.9);
+    // No 3 s short-term value yet.
+    assert_eq!(meter.reading().loudness_range_lu, None);
+    feed_stereo(&mut meter, -23.0, 10.0);
+    assert_near(meter.reading().loudness_range_lu, 0.0, 0.1, "steady");
+    let mut meter = LoudnessMeter::new(RATE, &stereo()).unwrap();
+    feed_stereo(&mut meter, -80.0, 10.0);
+    assert_eq!(meter.reading().loudness_range_lu, None);
+}
+
+#[test]
+fn the_relative_gate_drops_short_term_values_20_lu_under_the_mean() {
+    // A long -20 programme with a -45 passage: the passage sits 25 LU
+    // under the mean, so it does not widen the range; the 3 s transitions
+    // are under 5 % of the values, so they fall outside the percentiles.
+    let mut meter = LoudnessMeter::new(RATE, &stereo()).unwrap();
+    feed_passages(&mut meter, &[(-20.0, 60.0), (-45.0, 20.0), (-20.0, 60.0)]);
+    assert_near(meter.reading().loudness_range_lu, 0.0, 1.0, "gated");
+}
+
+#[test]
+fn an_operator_reset_restarts_integrated_range_and_max_true_peak_only() {
+    let mut meter = LoudnessMeter::new(RATE, &stereo()).unwrap();
+    feed_passages(&mut meter, &[(-10.0, 10.0), (-30.0, 10.0)]);
+    let before = meter.take_reading();
+    assert!(before.loudness_range_lu.unwrap() > 5.0);
+    assert!(before.max_true_peak_dbtp.unwrap() > -11.0);
+    meter.reset_measurement();
+    // Momentary and short-term keep running through the reset.
+    let reading = meter.reading();
+    assert_near(reading.momentary_lufs, -30.0, 0.1, "momentary");
+    assert_near(reading.short_term_lufs, -30.0, 0.1, "short-term");
+    assert_eq!(reading.integrated_lufs, None);
+    assert_eq!(reading.loudness_range_lu, None);
+    assert_eq!(reading.max_true_peak_dbtp, None);
+    // Only what follows the reset is measured: a -23 programme reads -23
+    // integrated with no range, though the windows still held -30.
+    feed_stereo(&mut meter, -23.0, 20.0);
+    let reading = meter.reading();
+    assert_near(reading.integrated_lufs, -23.0, 0.1, "integrated");
+    assert_near(reading.loudness_range_lu, 0.0, 0.1, "range");
+    assert!(reading.max_true_peak_dbtp.unwrap() < -22.0);
+}
+
+#[test]
+fn a_reset_mid_hop_ignores_the_hop_that_began_before_it() {
+    // 1.05 s of -10 then a reset: the hop in progress began loud, so
+    // no gating block or short-term value may include it.
+    let mut meter = LoudnessMeter::new(RATE, &stereo()).unwrap();
+    feed_stereo(&mut meter, -10.0, 1.05);
+    meter.reset_measurement();
+    feed_stereo(&mut meter, -40.0, 0.35);
+    // Four whole hops after the reset have not completed yet.
+    assert_eq!(meter.reading().integrated_lufs, None);
+    feed_stereo(&mut meter, -40.0, 0.05);
+    assert_eq!(meter.reading().integrated_lufs, None);
+    feed_stereo(&mut meter, -40.0, 0.1);
+    assert_near(meter.reading().integrated_lufs, -40.0, 0.1, "first block");
 }
