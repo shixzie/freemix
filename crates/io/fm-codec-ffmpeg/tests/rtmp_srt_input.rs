@@ -153,6 +153,58 @@ impl Drop for Peer {
     }
 }
 
+/// Pushes an RTMP publisher makes before it gives up.
+const PUBLISH_ATTEMPTS: u32 = 5;
+/// How long a refused publisher waits before it pushes again.
+const PUBLISH_RETRY: Duration = Duration::from_secs(1);
+
+/// An encoder pushing RTMP to the receiver's listener that, like a real
+/// encoder, pushes again (at most [`PUBLISH_ATTEMPTS`] times) when its push
+/// is refused. The receiver's `ffmpeg -listen 1` child closes its listening
+/// socket once it accepts a publisher, so the port refuses connections
+/// from then until the receiver's next child binds it; a loaded machine
+/// can stretch that gap past a test `ffmpeg`'s start, and the test `ffmpeg`
+/// itself never retries.
+struct Publisher {
+    url: String,
+    peer: Peer,
+    attempts: u32,
+    exited_at: Option<Instant>,
+}
+
+impl Publisher {
+    fn start(url: String) -> Self {
+        let peer = Peer::tone(&["-f", "flv", &url]);
+        Self {
+            url,
+            peer,
+            attempts: 1,
+            exited_at: None,
+        }
+    }
+
+    /// Pushes again [`PUBLISH_RETRY`] after a push ended, while attempts
+    /// remain.
+    fn keep_pushing(&mut self) {
+        if self.attempts >= PUBLISH_ATTEMPTS {
+            return;
+        }
+        match self.exited_at {
+            None => {
+                if matches!(self.peer.0.try_wait(), Ok(Some(_))) {
+                    self.exited_at = Some(Instant::now());
+                }
+            }
+            Some(at) if at.elapsed() >= PUBLISH_RETRY => {
+                self.peer = Peer::tone(&["-f", "flv", &self.url]);
+                self.attempts += 1;
+                self.exited_at = None;
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 fn stream(url: &str) -> NetworkStreamConfig {
     let mut stream = NetworkStreamConfig::new(url);
     stream.settings.jitter_buffer_ms = 200;
@@ -233,6 +285,25 @@ fn expect_live(receiver: &NetworkReceiver, observed: &mut Observed, what: &str) 
         receiver.status()
     );
     assert!(receiver.status().bitrate_bps > 0, "{what}: no bitrate");
+}
+
+/// [`expect_live`] for an RTMP push, which pushes again while it is refused.
+fn expect_pushed_live(
+    receiver: &NetworkReceiver,
+    observed: &mut Observed,
+    what: &str,
+    publisher: &mut Publisher,
+) {
+    assert!(
+        pull_until(receiver, Duration::from_secs(20), observed, |status, _| {
+            publisher.keep_pushing();
+            status.state == NetworkStreamState::Live
+        }),
+        "{what}: never went live after {} pushes: {:?}",
+        publisher.attempts,
+        receiver.status()
+    );
+    expect_live(receiver, observed, what);
 }
 
 /// Pulls for `span` and returns how many frames were loud.
@@ -316,8 +387,10 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
     assert_no_secret(&receiver.status(), &[KEY, "wrong"]);
     drop(wrong);
 
-    let publisher = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
-    expect_live(&receiver, &mut observed, "rtmp listener");
+    // The refused publisher's child accepted it and stopped listening: the
+    // port is closed until the receiver's next child binds it.
+    let mut publisher = Publisher::start(format!("rtmp://127.0.0.1:{port}/live/{KEY}"));
+    expect_pushed_live(&receiver, &mut observed, "rtmp listener", &mut publisher);
     assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
     assert_eq!(receiver.status().source_channels, 1);
 
@@ -332,8 +405,13 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
         "the listener listens again once its publisher leaves: {:?}",
         receiver.status()
     );
-    let _again = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
-    expect_live(&receiver, &mut observed, "rtmp listener, second push");
+    let mut again = Publisher::start(format!("rtmp://127.0.0.1:{port}/live/{KEY}"));
+    expect_pushed_live(
+        &receiver,
+        &mut observed,
+        "rtmp listener, second push",
+        &mut again,
+    );
     assert_no_secret(&receiver.status(), &[KEY]);
 }
 
