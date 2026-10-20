@@ -2508,7 +2508,7 @@ admin console list and revoke them (RC-007, RC-014).
 
 - A console sends `web_access_request` with `request_id` and `action`:
   `status`, `pair` with `role` (`viewer`, `audio`, `operator`, or
-  `graphics`; Protocol 2.78),
+  `graphics`; Protocol 2.80),
   `cancel_pairing`, or `revoke` with `device` (`[a-z][a-z0-9-]{0,31}`). It
   receives `web_access` with the same `request_id`, an optional `refusal`
   (`permission_denied`, `web_session`, `unavailable`, `unknown_device`,
@@ -2961,38 +2961,6 @@ captured on the server.
   `input-screen-capture-status`, their `remote-` forms, and
   `remote-screen-capture-targets`.
 
-Protocol 2.80 starts title timelines at the take and adds a browser title
-editor (GX-001, GX-006, schema 69):
-
-- The engine keeps one timeline per shown title input: `air` while the
-  title is on Program (including either side of a manual transition or a
-  transition leaving it) or on a realized overlay, `preview` while it is
-  only on Preview, with `since_frame`, the engine frame it became shown
-  there. It restarts when the title moves between air and Preview, when a
-  `title_take` starts its In phase, and when a transition leaving Program
-  is cancelled back onto it; it ends when the title is no longer shown.
-  It is derived from realized state on every engine frame, so journal
-  replay rebuilds it exactly. Tickers, scene clocks, the since-take
-  stopwatch, and the In/Out bus animation of a title cut or mixed to
-  Program count from it.
-- `title_state` carries `shown` (`none|air|preview`) and `since_frame`
-  right after `phase_frames`; `none` carries `since_frame=0`. A title
-  shown on Program or Preview without a title command reports its bus
-  In/Hold/Out phase there (a Preview title plays In from its timeline).
-- Durability (schema 69): the project gains required `"title_timelines":
-  [{"input", "on": "air"|"preview", "since_frame"}]` after `media_lists`,
-  strictly ascending by input; validation refuses one on an unknown or
-  non-title input. A restore refuses a timeline at or after the restored
-  frame cursor.
-- The web gateway pairs a `graphics` device (`web_access_request`
-  `role=graphics`; the device may ask for Graphics and Viewer). Its QR
-  link opens `/titles`, a self-contained page served like `/tally` and
-  `/operator` that edits title fields with `title_fields`
-  (`require=off_air` to save, `on_air` to update live) and takes or clears
-  titles with `title_take` and `title_off_air`, each refused by the server
-  outside the session's role.
-- 2.77 is refused.
-
 Protocol 2.79 lets an undo journal the exact place and active item it
 restores. An accepted undo is journaled as the wire payload of the edit it
 resolves to, so these fields make a journal replay land where the live undo
@@ -3038,6 +3006,38 @@ Protocol 2.80 gives every media list item its own thumbnail (IN-006).
   shows each item's picture at the start of its row.
 - No snapshot record or schema change: the pictures are lossy and never
   persisted. 2.79 is refused.
+
+Protocol 2.81 starts title timelines at the take and adds a browser title
+editor (GX-001, GX-006, schema 68):
+
+- The engine keeps one timeline per shown title input: `air` while the
+  title is on Program (including either side of a manual transition or a
+  transition leaving it) or on a realized overlay, `preview` while it is
+  only on Preview, with `since_frame`, the engine frame it became shown
+  there. It restarts when the title moves between air and Preview, when a
+  `title_take` starts its In phase, and when a transition leaving Program
+  is cancelled back onto it; it ends when the title is no longer shown.
+  It is derived from realized state on every engine frame, so journal
+  replay rebuilds it exactly. Tickers, scene clocks, the since-take
+  stopwatch, and the In/Out bus animation of a title cut or mixed to
+  Program count from it.
+- `title_state` carries `shown` (`none|air|preview`) and `since_frame`
+  right after `phase_frames`; `none` carries `since_frame=0`. A title
+  shown on Program or Preview without a title command reports its bus
+  In/Hold/Out phase there (a Preview title plays In from its timeline).
+- Durability (schema 68): the project gains required `"title_timelines":
+  [{"input", "on": "air"|"preview", "since_frame"}]` after `media_lists`,
+  strictly ascending by input; validation refuses one on an unknown or
+  non-title input. A restore refuses a timeline at or after the restored
+  frame cursor.
+- The web gateway pairs a `graphics` device (`web_access_request`
+  `role=graphics`; the device may ask for Graphics and Viewer). Its QR
+  link opens `/titles`, a self-contained page served like `/tally` and
+  `/operator` that edits title fields with `title_fields`
+  (`require=off_air` to save, `on_air` to update live) and takes or clears
+  titles with `title_take` and `title_off_air`, each refused by the server
+  outside the session's role.
+- 2.80 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

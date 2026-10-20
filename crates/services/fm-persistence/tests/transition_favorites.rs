@@ -107,7 +107,7 @@ fn favourites_round_trip_exactly_and_are_strict() {
     );
     let manifest = directory.path("show.freemix/project.json");
     let text = fs::read_to_string(&manifest).unwrap();
-    assert!(text.contains("\"schema_version\": 67"));
+    assert!(text.contains("\"schema_version\": 68"));
     let fragment = "\"animation_presets\": [],\n    \"transition_favorites\": [\n      \
                     {\"effect\": \"cross_zoom\", \"duration_frames\": 12},\n      \
                     {\"effect\": \"cut\", \"duration_frames\": 1},\n      \

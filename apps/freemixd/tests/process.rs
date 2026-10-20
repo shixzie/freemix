@@ -6478,7 +6478,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 80));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 78),
+        protocol: ProtocolVersion::new(2, 79),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,

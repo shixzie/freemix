@@ -927,7 +927,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(67);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(68);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1528,7 +1528,7 @@ impl Project {
         self.media_lists = lists;
     }
 
-    /// Where each shown title input's timeline started (GX-001, schema 67),
+    /// Where each shown title input's timeline started (GX-001, schema 68),
     /// ascending by input. Runtime state the engine owns.
     #[must_use]
     pub const fn title_timelines(&self) -> &BTreeMap<InputId, crate::TitleTimeline> {

@@ -323,7 +323,7 @@ pub enum SnapshotError {
         frame_cursor: u64,
     },
     /// A saved title timeline names an input that is not a title, or starts
-    /// at or after the frame cursor (GX-001, schema 67).
+    /// at or after the frame cursor (GX-001, schema 68).
     TitleTimelineOutOfReach {
         input: InputId,
         since_frame: u64,

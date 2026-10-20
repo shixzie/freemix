@@ -6,7 +6,7 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 67,
+//! {"schema_version": 68,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
 //!               "background": "#00000000", "fields": [...], "elements": [...],
 //!               "animation": {"timebase": "30/1", "revision": 3,

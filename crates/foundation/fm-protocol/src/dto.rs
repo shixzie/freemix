@@ -1484,7 +1484,7 @@ pub enum TitlePhase {
     Out,
 }
 
-/// Where a shown title is (Protocol 2.78). Wire encoding:
+/// Where a shown title is (Protocol 2.80). Wire encoding:
 /// `shown=air|preview`, `shown=none` for a title not shown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TitleShownOn {
@@ -1496,7 +1496,7 @@ pub enum TitleShownOn {
 
 /// Where a shown title is and the engine frame its timeline (tickers,
 /// scene clocks, since-take clocks, and its In phase on Program or
-/// Preview) started on (Protocol 2.78, GX-001).
+/// Preview) started on (Protocol 2.80, GX-001).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TitleTimelineStatus {
     pub shown: TitleShownOn,
@@ -1512,7 +1512,7 @@ pub struct TitleTimelineStatus {
 ///
 /// `phase_frame` and `phase_frames` give In/Out progress in project frames:
 /// `phase_frame < phase_frames` while In or Out plays, and both are zero
-/// while idle or holding. Since Protocol 2.78 the phase is also the title's
+/// while idle or holding. Since Protocol 2.80 the phase is also the title's
 /// In/Out on Program or Preview when no title take animates it, and
 /// `timeline` says where it is shown (`shown`, and `since_frame`, zero
 /// when it is not shown).

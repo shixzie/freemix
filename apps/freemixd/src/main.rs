@@ -12244,7 +12244,7 @@ fn restore_engine_with_titles(
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?;
-    // Every shown title continues its timeline (GX-001, schema 67).
+    // Every shown title continues its timeline (GX-001, schema 68).
     engine.restore_title_timelines(canonical.title_timelines())?;
     Ok(engine)
 }

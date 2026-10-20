@@ -1,4 +1,4 @@
-//! Title timelines in `project.json` (GX-001, schema 67).
+//! Title timelines in `project.json` (GX-001, schema 68).
 //!
 //! ```text
 //! "title_timelines": [
