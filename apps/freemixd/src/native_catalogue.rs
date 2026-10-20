@@ -404,10 +404,10 @@ impl NativeDaemon {
                     }
                     let path = self.asset_path(asset_uri);
                     if path.as_ref().is_some_and(|path| is_still(path)) {
-                        let path = path.expect("checked above");
                         self.stills.push(start_still(
                             input,
-                            path,
+                            self.assets_root.clone(),
+                            asset_uri.clone(),
                             dimensions,
                             fm_types::OutputScaling::Fit,
                         )?);
@@ -463,12 +463,16 @@ impl NativeDaemon {
                 // A still image decodes off the loop and is uploaded once
                 // when it arrives (IN-008).
                 NativeSourceKey::Image(asset_uri, fit) => {
-                    match self.asset_path(asset_uri) {
-                        Some(path) => {
-                            self.stills
-                                .push(start_still(input, path, dimensions, *fit)?);
-                        }
-                        None => eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tunrealized"),
+                    if self.asset_path(asset_uri).is_some() {
+                        self.stills.push(start_still(
+                            input,
+                            self.assets_root.clone(),
+                            asset_uri.clone(),
+                            dimensions,
+                            *fit,
+                        )?);
+                    } else {
+                        eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tunrealized");
                     }
                     Some(blank()?)
                 }
@@ -600,11 +604,12 @@ fn is_still(path: &std::path::Path) -> bool {
         && sniff_still_format(&prefix).is_ok()
 }
 
-/// Decodes the still image at `path` on its own thread, placed in the
-/// show raster with `fit`.
+/// Decodes the still image `asset_uri` of the bundle whose assets are at
+/// `assets_root` on its own thread, placed in the show raster with `fit`.
 fn start_still(
     input: InputId,
-    path: PathBuf,
+    assets_root: PathBuf,
+    asset_uri: String,
     dimensions: fm_types::VideoDimensions,
     fit: fm_types::OutputScaling,
 ) -> AppResult<PendingStill> {
@@ -612,12 +617,18 @@ fn start_still(
     thread::Builder::new()
         .name(format!("freemix-still-{input}"))
         .spawn(move || {
-            let _ = sender.send(crate::stills::decode_picture_file(
-                &path,
-                dimensions,
-                fit,
-                native_clock_domain(),
-            ));
+            // Resolved like every other bundle asset: a link out of the
+            // assets never decodes.
+            let decoded =
+                crate::stills::resolve_picture_path(&assets_root, &asset_uri).and_then(|path| {
+                    crate::stills::decode_picture_file(
+                        &path,
+                        dimensions,
+                        fit,
+                        native_clock_domain(),
+                    )
+                });
+            let _ = sender.send(decoded);
         })?;
     Ok(PendingStill { input, result })
 }
@@ -693,6 +704,33 @@ mod tests {
 
     fn reason(refusal: Option<CommandRefusal>) -> Option<RefusalReason> {
         refusal.and_then(|refusal| refusal.reason)
+    }
+
+    /// A still added live resolves like every bundle asset: a link out of
+    /// the assets never decodes (IN-008).
+    #[cfg(unix)]
+    #[test]
+    fn a_live_still_never_decodes_through_a_link_out_of_the_assets() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"not really a png").unwrap();
+        let assets = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.png"),
+            assets.path().join("escape.png"),
+        )
+        .unwrap();
+        let pending = start_still(
+            id(1),
+            assets.path().to_path_buf(),
+            "asset://escape.png".to_owned(),
+            VideoDimensions::new(16, 9).unwrap(),
+            fm_types::OutputScaling::Fit,
+        )
+        .unwrap();
+        assert_eq!(
+            pending.result.recv().unwrap(),
+            Err(EngineMediaFault::SourceMissing)
+        );
     }
 
     #[test]
