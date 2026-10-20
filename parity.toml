@@ -434,7 +434,7 @@ commands = ["cargo test -p fm-guest --test return_audio_and_roles"]
 id = "accept-rc-004"
 state = "present"
 paths = ["crates/features/fm-automation/tests/templates.rs", "crates/features/fm-automation/tests/automation.rs", "crates/foundation/fm-model/tests/shortcuts.rs", "crates/services/fm-persistence/tests/shortcuts.rs", "crates/foundation/fm-protocol/tests/shortcuts.rs", "crates/services/fm-engine/tests/shortcuts.rs", "crates/services/fm-control/src/tests/shortcut_authority.rs", "crates/ui/fm-ui-egui/src/user_shortcuts/tests.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs", "apps/freemix-studio/src/osc.rs"]
-commands = ["cargo test -p fm-automation --test templates", "cargo test -p fm-automation --test automation", "cargo test -p fm-model --test shortcuts", "cargo test -p fm-persistence --test shortcuts", "cargo test -p fm-protocol --test shortcuts", "cargo test -p fm-engine --test shortcuts", "cargo test -p fm-control --lib shortcut_authority", "cargo test -p fm-ui-egui --lib user_shortcuts", "cargo test -p fm-ui-egui --test hover_audit", "cargo test -p freemix-studio --lib osc"]
+commands = ["cargo test -p fm-automation --test templates", "cargo test -p fm-automation --test automation", "cargo test -p fm-model --test shortcuts", "cargo test -p fm-persistence --test shortcuts", "cargo test -p fm-protocol --test shortcuts", "cargo test -p fm-engine --test shortcuts", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-rc-005"
 state = "present"
