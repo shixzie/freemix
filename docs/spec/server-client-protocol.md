@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.76 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.77 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2811,9 +2811,9 @@ drift-correcting resampler and keeps its pictures following that audio.
   remote-diagnostics` prints one `SourceSync(...)` line per source.
 - 2.74 is refused.
 
-Protocol 2.73 adds paged inputs (IN-014, schema 63): a document input shows
-a PDF or a presentation one page at a time. Navigation is generic, so a
-later paged source can share it.
+Protocol 2.77 adds document inputs (IN-014, schema 66): a document input
+shows a PDF or a presentation one page at a time, stepped with the generic
+`page_navigate` that slideshows use.
 
 - A document input is created through the existing import paths: an
   `input_lifecycle` `import` (or source replacement) whose `uri` names a
@@ -2829,20 +2829,23 @@ later paged source can share it.
   percent-encoded `title` (at most 128 bytes) and `message` (at most 160
   bytes), both without control characters. The same fields ride the snapshot's `paged_state`
   follow-on records (announced by the snapshot's required `paged_states`,
-  at most 64, sent last, after every `shortcut_state`, in ascending input
-  order), the durable `paged_changed` event, and the runtime event
+  at most 64, sent last, after every `audio_strip_dsp_state`, in
+  ascending input order), the durable `paged_changed` event, and the runtime event
   `event=paged` sent when the server learns the page count or the state
-  changes. A client replaces an input's whole status on every record.
-- `paged_input` (`input`, `action=next|previous|first|last|goto`, and
-  `page` exactly when `action=goto`) is an operator control (the
-  `transition` class), journaled but not undoable, and not padlocked. It
-  resolves against the page count, clamping at both ends; a page that does
-  not move is still accepted. A non-document input is refused
-  `invalid_command` (field `input`, `not_paged_input`); a document whose
-  count is not known yet is refused retryable `unavailable` (field `input`,
-  `pages_unknown`). Pages are counted from 1 to 10,000. Realization is
-  reported in the `media` domain. The page
-  is saved with the project and restored on restart.
+  changes, or on the frame after a cue or shortcut moved the page. A client
+  replaces an input's whole status on every record.
+- `page_navigate` on a document input (the same command, operator class,
+  and refusals as a slideshow step) moves its page at once: journaled but
+  not undoable, and not padlocked, and answered by `paged_changed` instead
+  of `page_navigated`. It resolves against the page count, clamping at both
+  ends (a document never wraps); a page that does not move is still
+  accepted. An input that is neither a slideshow nor a document is refused
+  `invalid_command` (field `input`, `not_paged`); a document whose count is
+  not known yet is refused retryable `unavailable` (field `input`,
+  `pages_unknown`). Pages are counted from 1 to 10,000. The page is saved
+  with the project and restored on restart. A cue action
+  `page.<input>.<action>` steps a document the same way when its cue fires,
+  and an input a cue steps must stay a slideshow or a document.
 - The page count, title, and notes come from the asset's bytes only (a PDF
   is parsed by the pure-Rust renderer; a presentation package's XML is
   read, counting hidden slides), so journal replay resolves every page step
@@ -2867,11 +2870,13 @@ later paged source can share it.
 - Studio's Media tab lists every document input below the media transports:
   state, title, the server's message, Previous and Next keys, the page
   counter, a strip of thumbnails around the current page (a click goes to
-  that page), and the current page's presenter notes. The CLI adds
-  `input-page`, `input-pages`, and `remote-input-page`, and
+  that page), and the current page's presenter notes; the cue editor's
+  page actions offer documents next to slideshows. The CLI adds
+  `input-page` and `input-pages` for a saved project
+  (`remote-page-navigate` steps a document on a server), and
   `project-import-media` and `input-import-batch` create document inputs
   for documents.
-- 2.72 is refused.
+- 2.76 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

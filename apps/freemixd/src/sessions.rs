@@ -1979,6 +1979,7 @@ impl Runtime<'_> {
     /// clock's wall-clock frame: the simulated engine renders only while it
     /// executes commands, so its cursor lags wall time mid-entry. The native
     /// pacer realizes every frame, so there it is the engine cursor itself.
+    #[allow(clippy::too_many_lines)] // one extend per follow-on record kind
     fn complete_snapshot(&self, peer: &mut Peer) {
         if matches!(peer.initial_sync.front(), Some(WireMessage::Snapshot(_))) {
             let control = self.control.borrow();

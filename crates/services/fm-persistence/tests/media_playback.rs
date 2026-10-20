@@ -129,7 +129,7 @@ fn media_playback_settings_round_trip_exactly_and_are_strict() {
     );
     let manifest = directory.path("show.freemix/project.json");
     let text = fs::read_to_string(&manifest).unwrap();
-    assert!(text.contains("\"schema_version\": 65"));
+    assert!(text.contains("\"schema_version\": 66"));
     let configured_fragment = "{\"type\": \"media\", \"asset_uri\": \"asset://media/clip-1.mov\", \
          \"playback\": {\"trim_in\": 12, \"trim_out\": 480, \"end_action\": \"loop\", \
          \"end_trigger_lead\": 30, \"speed_basis_points\": 25000, \"audio_policy\": \"resample\", \

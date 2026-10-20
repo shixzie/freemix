@@ -3906,7 +3906,7 @@ runs; the CLI's `script-stop` takes `--run`. Remaining gaps: runs cannot be
 queued behind the bound, and a stop of every run is one command, not a
 selection.
 
-Document inputs (`IN-014`, Protocol 2.73, schema 63): a PDF or a
+Document inputs (`IN-014`, Protocol 2.77, schema 66): a PDF or a
 presentation is an input shown one page at a time. Renderer choice: `hayro`,
 a pure-Rust PDF rasterizer (MIT/Apache-2.0, no `unsafe`, no system library),
 so every platform renders PDFs with nothing to install; PowerPoint and
@@ -3917,9 +3917,13 @@ server has `soffice` (on its own thread, in a throwaway sandbox directory
 and profile, with a cleared environment and a timeout); without it the
 input reads `unavailable` with "install LibreOffice on the server or export
 the presentation to PDF" while its count and notes still work, and Keynote
-always asks for a PDF export. Navigation is generic (`PagedNavigation`:
-next, previous, first, last, goto with clamping) so later paged sources can
-share it; the engine refuses steps while the count is unknown (retryable)
+always asks for a PDF export. Navigation is the generic page step slideshows
+also use (`page_navigate` / `EngineCommand::PageNavigate` with
+`PagedNavigation`: next, previous, first, last, goto); a document clamps
+instead of wrapping, its page moves with the accepted command (answered by
+`paged_changed`), and cue page actions step documents too (a moved page is
+announced by a `paged` runtime event on the next frame); the engine refuses
+steps while the count is unknown (retryable)
 and the daemon reports counts from the asset bytes before and after every
 command, so journal replay is deterministic. The page persists in
 `project.json`. `freemixd` renders pages off the frame loop at the
@@ -3931,12 +3935,14 @@ outside the page). Clients see `paged_state`, `paged_changed`, and the
 `paged_page_request`. Studio's Media tab shows each document with Previous
 and Next keys, the page counter, a thumbnail strip (click to go), and the
 presenter notes; documents are added through Import files… (or Replace
-source…) with a path or `asset://` URI. `freemix-cli` adds `input-page`,
-`input-pages`, `remote-input-page`, and document-aware
+source…) with a path or `asset://` URI, and the cue editor's page actions
+list documents next to slideshows. `freemix-cli` adds `input-page` and
+`input-pages` for saved projects (`remote-page-navigate` steps a document on
+a server) and document-aware
 `project-import-media` and `input-import-batch`. Remaining gaps: no
 PowerPoint rendering without LibreOffice (no slide builds, transitions, or
 embedded media; a converted deck shows its final slide state), Keynote needs
-a PDF export, no cue-list, script, OSC, or keyboard page actions yet, the
+a PDF export, no script, OSC, or keyboard page actions yet, the
 simulated scene composer does not draw a document used as a Scene layer,
 and conversion is not cancelled when the input is removed (it finishes or
 times out). `IN-014` remains planned.
