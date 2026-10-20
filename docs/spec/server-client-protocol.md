@@ -1868,7 +1868,11 @@ PIN.
   cookie. The encoder writes one-second H.264/AAC HLS segments into a
   private temporary directory, so the delay is a few seconds. A change of
   source or PIN, or disabling, ends every session. A viewer is a session
-  that fetched media within ten seconds.
+  that fetched media within ten seconds. Every request must carry one
+  `Host` naming an IP address, `localhost`, a single-label name, or a name
+  under `.local`, `.lan`, `.home.arpa`, `.internal`, or `.localhost`
+  (optionally with a port); any other is refused `421 Misdirected Request`
+  before the page, a session, or media (DNS-rebinding defence).
 - Durability: the project gains required
   `"live_lan": {"enabled", "source", "max_viewers", "pin"}` with `pin` a
   digit string or `null`, stored in the bundle under the same trust model

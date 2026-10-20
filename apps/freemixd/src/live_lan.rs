@@ -662,18 +662,29 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<Request, (u
     }
     let mut content_length: usize = 0;
     let mut cookie = None;
+    let mut host = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             return Err((400, "Bad Request"));
         };
         let value = value.trim();
-        if name.eq_ignore_ascii_case("content-length") {
+        if name.eq_ignore_ascii_case("host") {
+            if host.replace(value).is_some() {
+                return Err((400, "Bad Request"));
+            }
+        } else if name.eq_ignore_ascii_case("content-length") {
             content_length = value.parse().map_err(|_| (400, "Bad Request"))?;
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             return Err((411, "Length Required"));
         } else if name.eq_ignore_ascii_case("cookie") {
             cookie = session_cookie(value).map(str::to_owned);
         }
+    }
+    // DNS-rebinding defence: a page on another site that rebinds its own
+    // name to this address reaches the listener under that name, so only
+    // names a public DNS name cannot be are served.
+    if !host.is_some_and(allowed_host) {
+        return Err((421, "Misdirected Request"));
     }
     if content_length > MAX_BODY_BYTES {
         return Err((413, "Content Too Large"));
@@ -692,6 +703,53 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<Request, (u
         cookie,
         body,
     })
+}
+
+/// Private-use name suffixes no public DNS name ends in: mDNS (`.local`),
+/// RFC 8375's home networks, ICANN's private-use `.internal`, the
+/// loopback `.localhost`, and the `.lan` home routers hand out.
+const PRIVATE_NAME_SUFFIXES: [&str; 5] =
+    [".local", ".home.arpa", ".internal", ".localhost", ".lan"];
+
+/// Whether a request's `Host` names this listener the way a viewer on the
+/// LAN does: an IP address literal, `localhost`, a single-label name, or a
+/// name under a private-use suffix ([`PRIVATE_NAME_SUFFIXES`]), with an
+/// optional port. A page on the Internet that rebinds its own (public,
+/// dotted) name to a LAN address is refused before any page, session, or
+/// media.
+fn allowed_host(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 255
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+        })
+    {
+        return false;
+    }
+    let valid_port = |port: &str| {
+        !port.is_empty() && port.len() <= 5 && port.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    if let Some(rest) = value.strip_prefix('[') {
+        return rest.split_once(']').is_some_and(|(address, port)| {
+            (port.is_empty() || port.strip_prefix(':').is_some_and(valid_port))
+                && address.parse::<std::net::Ipv6Addr>().is_ok()
+        });
+    }
+    let name = match value.split_once(':') {
+        Some((name, port)) if valid_port(port) => name,
+        Some(_) => return false,
+        None => value,
+    };
+    let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    if name.is_empty() || name.starts_with('.') {
+        return false;
+    }
+    name.parse::<std::net::Ipv4Addr>().is_ok()
+        || name == "localhost"
+        || !name.contains('.')
+        || PRIVATE_NAME_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
 }
 
 fn find_head_end(buffer: &[u8]) -> Option<usize> {
@@ -1030,6 +1088,94 @@ mod tests {
         )
     }
 
+    /// A page on the Internet that rebinds its own name to the listener's
+    /// LAN address reaches it under that public name: it is refused before
+    /// the page, a session, or any media, while every name a viewer on the
+    /// LAN uses is served.
+    #[test]
+    fn only_lan_host_names_are_served() {
+        for host in [
+            "192.168.1.20:8090",
+            "127.0.0.1",
+            "[::1]:8090",
+            "[fe80::1]",
+            "localhost:8090",
+            "x",
+            "Studio-PC",
+            "studio.local",
+            "Studio.Local.:8090",
+            "studio.lan",
+            "studio.home.arpa",
+            "studio.internal",
+            "app.localhost",
+        ] {
+            assert!(allowed_host(host), "{host}");
+        }
+        for host in [
+            "",
+            "evil.example",
+            "evil.example:8090",
+            "rebind.evil.example.",
+            "127.0.0.1.nip.io",
+            "studio.local.evil.example",
+            "localhost.evil.example",
+            "x:port",
+            "x:123456",
+            "::1",
+            "[::1]x",
+            "[evil.example]",
+            ".local",
+            "a b",
+        ] {
+            assert!(!allowed_host(host), "{host}");
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index.m3u8"), "#EXTM3U\n").unwrap();
+        let server = LiveLanServer::start("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = server.address();
+        let handle = server.handle();
+        // Open to anyone on the LAN: no PIN.
+        handle.set_access(Some(LiveLanAccess::new(None, 4)));
+        handle.set_media(Some(directory.path().to_path_buf()));
+        let request = |head: &str| exchange(address, &format!("{head}\r\n"));
+        for refused in [
+            format!(
+                "GET / HTTP/1.1\r\nHost: rebind.evil.example:{}\r\n",
+                address.port()
+            ),
+            "GET / HTTP/1.1\r\n".to_owned(),
+            "GET / HTTP/1.1\r\nHost: x\r\nHost: evil.example\r\n".to_owned(),
+            "POST /v1/live/session HTTP/1.1\r\nHost: evil.example\r\nContent-Length: 4\r\n\r\npin="
+                .to_owned(),
+        ] {
+            let response = request(&refused);
+            assert!(
+                response.starts_with("HTTP/1.1 421") || response.starts_with("HTTP/1.1 400"),
+                "{refused:?}: {response}"
+            );
+            assert!(!response.contains("fmlive="), "{response}");
+            assert!(!response.contains("/v1/live/session"), "{response}");
+        }
+        let rebound = request(&format!(
+            "GET / HTTP/1.1\r\nHost: rebind.evil.example:{}\r\n",
+            address.port()
+        ));
+        assert!(
+            rebound.starts_with("HTTP/1.1 421 Misdirected Request"),
+            "{rebound}"
+        );
+        // A viewer on the LAN, by address or by name, is served as before.
+        for host in [address.to_string(), "studio.local".to_owned()] {
+            let page = request(&format!("GET / HTTP/1.1\r\nHost: {host}\r\n"));
+            assert!(page.starts_with("HTTP/1.1 200 OK"), "{host}: {page}");
+        }
+        let joined = post_pin(address, "");
+        assert!(joined.starts_with("HTTP/1.1 204"), "{joined}");
+        let playlist = get(address, "/live/index.m3u8", Some(&cookie(&joined)));
+        assert!(playlist.starts_with("HTTP/1.1 200 OK"), "{playlist}");
+    }
+
     #[test]
     fn sessions_gate_media_by_pin_capacity_and_rate_limit() {
         let directory = tempfile::tempdir().unwrap();
@@ -1136,7 +1282,7 @@ mod tests {
         assert!(post_pin(address, "12a4").starts_with("HTTP/1.1 400"));
         let oversized = exchange(
             address,
-            "POST /v1/live/session HTTP/1.1\r\nContent-Length: 65\r\n\r\n",
+            "POST /v1/live/session HTTP/1.1\r\nHost: x\r\nContent-Length: 65\r\n\r\n",
         );
         assert!(oversized.starts_with("HTTP/1.1 413"), "{oversized}");
         let huge = format!(
@@ -1144,11 +1290,13 @@ mod tests {
             "a".repeat(MAX_REQUEST_BYTES)
         );
         assert!(exchange(address, &huge).starts_with("HTTP/1.1 431"));
-        assert!(exchange(address, "DELETE / HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 405"));
+        assert!(
+            exchange(address, "DELETE / HTTP/1.1\r\nHost: x\r\n\r\n").starts_with("HTTP/1.1 405")
+        );
         assert!(
             exchange(
                 address,
-                "POST /v1/live/session HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+                "POST /v1/live/session HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
             )
             .starts_with("HTTP/1.1 411")
         );
