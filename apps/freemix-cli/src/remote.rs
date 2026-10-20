@@ -1579,6 +1579,8 @@ impl Remote {
                 | WireMessage::MediaState(_)
                 | WireMessage::CueListState(_)
                 | WireMessage::ScriptState(_)
+                | WireMessage::ShortcutState(_)
+                | WireMessage::StillState(_)
                 | WireMessage::MediaListState(_)
                 | WireMessage::AudioStripDspState(_)) => {
                     client.intake(message)?;
