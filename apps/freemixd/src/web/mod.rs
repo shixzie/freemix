@@ -79,7 +79,11 @@ const BEARER_SUBPROTOCOL_PREFIX: &str = "freemix.bearer.";
 
 /// The optional operator token (`FREEMIXD_WEB_TOKEN`).
 fn static_token_from_environment() -> AppResult<Option<Vec<u8>>> {
-    let Ok(value) = env::var("FREEMIXD_WEB_TOKEN") else {
+    // Unset or empty: only paired devices are admitted.
+    let Some(value) = env::var("FREEMIXD_WEB_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(None);
     };
     let bytes = value.into_bytes();

@@ -439,6 +439,11 @@ the counts and lock chips.
 | `web-operator-tablet-ftb.png` | The same page at 1180x820 (tablet landscape) after `FTB`: the badge reads `BLACK` once the realized position reaches black, and the key turns into `FROM BLACK`; Record and stream and Audio sit beside Transition. |
 | `web-operator-audio-role.png` | 390x844 with the Audio role: Preview, CUT/AUTO, FTB, recorders and streams are disabled, each section naming why (`This session lacks the select_preview permission`, `This session lacks the transition permission`), while the mute keys stay live. |
 | `web-operator-reconnecting.png` | 390x844 after the daemon is killed: the `RECONNECTING` pill, `Reconnect now`, empty buses (never stale Program), every control disabled with `Not connected to the show`, Fade to Black `UNKNOWN`, and the backoff countdown. |
+| `web-pair-link.png` | LAN pairing (RC-007): the operator page opened from the QR link `https://10.0.0.88:<port>/operator#pair=…&fp=…` that an admin console's `web_access` pairing produced, at 412x915 (mobile emulation): `PAIR THIS DEVICE` in link mode (no code field), the certificate fingerprint to compare with the browser's, the device name, `Pair`, and `Use an access token instead`. The fragment is already gone from the address bar. |
+| `web-pair-operator-live.png` | After `Pair`: the page stored the device token (localStorage), connected over `wss://`, and is `LIVE` on the demo show as an Operator device, with `Unpair this device` in the header. |
+| `web-pair-code-es.png` | A second phone (its own browser context) on `/tally#lang=es` typing the six-digit code from a Viewer pairing: `Emparejar este dispositivo`, `Código de emparejamiento`, `Nombre del dispositivo` "Cámara 2", `Emparejar`, `Usar un token de acceso`. |
+| `web-pair-tally-live.png` | That tally paired and live (`En vivo — FreeMix MVP Demo como observador`, Input 1 red, Input 2 green) with `Desemparejar este dispositivo`. |
+| `web-pair-revoked.png` | The console revoked the operator phone: its live session ended within the gateway's 250 ms revocation poll, `/v1/whoami` answered 401, and the page forgot the token and shows `This device is no longer paired; pair it again`. |
 
 Web operator captures (2026-10-19, Protocol 2.59): Playwright Chromium
 (headless, device scale 2) against a simulated `freemixd serve --web-listen`
@@ -448,6 +453,17 @@ peer was admitted at a time then, so each capture is its own session.
 `web-operator-tablet-ftb.png`, `web-operator-audio-role.png`, and
 `web-operator-reconnecting.png` predate the language toggle and the
 `REQUESTED:` recorder wording.
+
+LAN pairing captures (2026-10-20, RC-007): `web-pair-*.png` come from one
+scripted run against a real `freemixd serve demo.freemix --web-listen
+0.0.0.0:0 --web-tls --web-state-dir …` (generated certificate, no
+`FREEMIXD_WEB_TOKEN`): a raw admin control session sent `web_access_request`
+pair/status/revoke, and Playwright's Chromium (headless, CDP, launched with
+`--ignore-certificate-errors-spki-list` set to the generated certificate's
+SPKI hash, which is what accepting that one certificate on a phone amounts
+to) paired the operator page by the QR link and the tally page by typed
+code over `https://`/`wss://` on the host's LAN address. The run also
+checked that neither token nor codes appeared in the daemon's output.
 
 Several Web clients and Spanish (2026-10-19, Protocol 2.60, no protocol
 change): `web-operator-phone.png` (refreshed), `web-operator-phone-es.png`,
