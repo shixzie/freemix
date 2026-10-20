@@ -30,11 +30,11 @@ pub use audio_mixer::{
 };
 pub use cue::{EngineCueListDefinition, EngineCueOperation, cue_due};
 pub use engine::{
-    CueScriptRun, Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
-    EngineFadeToBlackState, EngineManualTransitionKind, EngineManualTransitionPosition,
-    EngineManualTransitionState, EnginePrepareOutcome, EngineRestoreState, EngineSnapshot,
-    EngineStreamControl, EngineStreamStatus, EngineTitleAir, FrameResult,
-    MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS, MAX_INPUT_AUDIO_DELAY_SAMPLES,
+    CueScriptRun, Engine, EngineAcceptance, EngineActionMotion, EngineCommand,
+    EngineCommandOutcome, EngineEvent, EngineFadeToBlackState, EngineManualTransitionKind,
+    EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
+    EngineRestoreState, EngineSnapshot, EngineStreamControl, EngineStreamStatus, EngineTitleAir,
+    FrameResult, MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS, MAX_INPUT_AUDIO_DELAY_SAMPLES,
     MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS, MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS,
     MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution, TitleAirRequirement, TitleCue,
     TitleCueAction,

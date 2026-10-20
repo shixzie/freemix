@@ -3239,14 +3239,20 @@ timing of command results and what a session may send meanwhile do.
   end is signalled by the event that always reported it: the
   `runtime_event` `realized` in domain `switcher` for the command's
   revision, published on the frame the transition (or Fade to Black)
-  completes; overlay commands and a title take report theirs as before.
-  A `title_off_air` with a nonzero Out phase (taken directly, not by a
-  cue) is realized (`realized` in domain `switcher`, its own revision) on
-  the frame its Out phase ends and its overlay goes off, after any command
-  realized on the phase's frames; a re-take of the title during the phase
-  abandons it, and the off-air is then reported `superseded` with the
-  take's revision instead. A zero Out phase is realized on its first
-  frame, as before. Only the timing of these existing events changes.
+  completes; overlay commands report theirs as before.
+  A title's phase is timed the same way when the command is taken
+  directly (not by a cue): a `title_take` with a nonzero In phase is
+  realized (`realized` in domain `switcher`, its own revision) on the
+  frame its In phase ends and the title holds, and a `title_off_air` with
+  a nonzero Out phase on the frame its Out phase ends and its overlay
+  goes off, each after any command realized on the phase's frames. A
+  command that interrupts the phase (a re-take during the Out phase, an
+  off-air during the In phase, a plain overlay take replacing the title)
+  abandons it, and the command that started it is then reported
+  `superseded` with the interrupting command's revision instead; one that
+  leaves it playing as it was (an off-air during the Out phase) is
+  realized with it. A zero-length phase is realized on its first frame,
+  as before. Only the timing of these existing events changes.
   The simulated daemon (no native media) behaves the same: it renders no
   idle frames, but realizes such work after the command's first frame at
   the show's frame rate on its own wall-clock frame loop, so clients see

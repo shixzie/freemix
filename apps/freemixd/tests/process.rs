@@ -3743,6 +3743,156 @@ fn simulated_daemon_realizes_a_title_off_air_when_its_out_phase_ends() {
     );
 }
 
+/// A title take with an In phase is answered on the phase's first frame
+/// and realized once the phase has played at the show's frame rate, after
+/// another client's edit inside it; an off-air inside a second take's In
+/// phase supersedes that take, and the journal replays every command.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn simulated_daemon_realizes_a_title_take_when_its_in_phase_ends() {
+    use fm_titles::fm_animation::{AnimationPreset, Phase, Timebase};
+
+    let directory = TestDirectory::new("simulated-title-in");
+    let project_path = directory.project_path();
+    let mut template = process_title_template();
+    // Keyed at the show's 25 fps: 50 frames are two seconds of fade.
+    template.animation =
+        fm_titles::TitleAnimation::empty(Timebase::new(FrameRate::new(25, 1).unwrap()));
+    template
+        .apply_animation_preset(
+            fm_titles::ElementId::new(NonZeroU128::new(1).unwrap()),
+            Phase::In,
+            AnimationPreset::Fade,
+            50,
+        )
+        .unwrap();
+    create_title_project_with(&project_path, template);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut operator = daemon.connect();
+    let mut other = daemon.connect();
+    for client in [&mut operator, &mut other] {
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client.handshake_as(Role::Admin, None);
+        client.receive_snapshot();
+    }
+    let take = |id: &str| {
+        command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::TakeTitle {
+                input: input(4),
+                channel: fm_protocol::WireOverlayChannelId::new(2).unwrap(),
+                base_revision: 3,
+                fields: Vec::new(),
+            },
+        )
+    };
+
+    let sent = Instant::now();
+    operator.send(&take("take"));
+    let answered = loop {
+        match operator.receive() {
+            WireMessage::CommandResult(result) => {
+                assert!(
+                    matches!(result, CommandResult::Accepted { revision: 1, .. }),
+                    "{result:?}"
+                );
+                break sent.elapsed();
+            }
+            WireMessage::RuntimeEvent(runtime) => assert!(
+                runtime.revision != 1,
+                "the take was realized before it was answered: {runtime:?}"
+            ),
+            _ => {}
+        }
+    };
+    assert!(
+        answered < Duration::from_millis(1_000),
+        "the take was answered after {answered:?}, not on its first frame"
+    );
+    other.send(&command(
+        "rename",
+        "rename-key",
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: "Renamed mid In phase".into(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut other, "rename"), 2);
+    let mut realized = Vec::new();
+    while !realized.contains(&1) {
+        if let WireMessage::RuntimeEvent(runtime) = operator.receive()
+            && matches!(
+                &runtime.event,
+                RuntimeLifecycleEvent::Realized { domain, .. } if domain == "switcher" || domain == "project"
+            )
+        {
+            realized.push(runtime.revision);
+        }
+    }
+    let ended = sent.elapsed();
+    assert_eq!(
+        realized,
+        [2, 1],
+        "the edit inside the phase is realized first"
+    );
+    assert!(
+        ended >= Duration::from_millis(1_800),
+        "the take's 50-frame In phase was realized in {ended:?}"
+    );
+
+    // Off air (no Out phase), then a second take: an off-air inside its
+    // In phase supersedes it.
+    operator.send(&command(
+        "off",
+        "off-key",
+        CommandPayload::TitleOffAir { input: input(4) },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "off"), 3);
+    await_switcher_realized(&mut operator, 3);
+    operator.send(&take("retake"));
+    assert_eq!(accepted_revision(&mut operator, "retake"), 4);
+    operator.send(&command(
+        "off-mid-in",
+        "off-mid-in-key",
+        CommandPayload::TitleOffAir { input: input(4) },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "off-mid-in"), 5);
+    let superseded = loop {
+        if let WireMessage::RuntimeEvent(runtime) = operator.receive()
+            && runtime.revision == 4
+        {
+            break runtime.event;
+        }
+    };
+    assert_eq!(
+        superseded,
+        RuntimeLifecycleEvent::Superseded { by_revision: 5 }
+    );
+    await_switcher_realized(&mut operator, 5);
+    drop(operator);
+    drop(other);
+    // Killed: recovery replays every command onto its frame.
+    daemon.stop();
+    let restarted = Daemon::start(&project_path);
+    let snapshot = snapshot_of(&restarted, Role::Viewer);
+    assert_eq!(snapshot.revision, 5);
+    assert!(
+        snapshot
+            .realized_overlays
+            .iter()
+            .all(|overlay| !overlay.active)
+    );
+    restarted.wait_success();
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(persisted.position().revision, 5);
+    assert_eq!(persisted.project().inputs()[0].name, "Renamed mid In phase");
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn manual_alpha_fade_state_and_receipts_survive_restart_through_commit_and_cancel() {

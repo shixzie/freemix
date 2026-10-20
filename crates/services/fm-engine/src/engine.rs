@@ -624,6 +624,39 @@ pub struct EngineTitleAir {
     pub frame: TitleAirFrame,
 }
 
+/// The on-air animations one realized runtime action changed: what the
+/// control service watches to report the action realized once the motion
+/// it started has played (Protocol 2.86).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EngineActionMotion {
+    /// Each title whose on-air animation the action started, replaced, or
+    /// ended, ascending by input, with its animation after the action
+    /// (`None` once the title is no longer animated on air).
+    pub titles: Vec<(InputId, Option<TitleAir>)>,
+}
+
+impl EngineActionMotion {
+    /// Records the titles whose animation differs between `before` and
+    /// `after`, keeping the latest animation of a title already recorded.
+    fn record_titles(
+        &mut self,
+        before: &BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
+        after: &BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
+    ) {
+        for input in before.keys().chain(after.keys()) {
+            let now = after.get(input);
+            if before.get(input) == now {
+                continue;
+            }
+            let air = now.map(|(_, air)| *air);
+            match self.titles.binary_search_by_key(input, |(title, _)| *title) {
+                Ok(index) => self.titles[index].1 = air,
+                Err(index) => self.titles.insert(index, (*input, air)),
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineAcceptance {
     pub target_frame: FrameNumber,
@@ -1180,6 +1213,9 @@ pub struct Engine {
     /// in motion, while its overlay channel still shows it. Runtime state:
     /// never snapshotted, so a restored title holds.
     title_air: BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
+    /// What each runtime action the last tick realized changed of the
+    /// on-air animations, in realization order. Runtime state.
+    action_motions: Vec<EngineActionMotion>,
     /// Whether a title clip can be carried to clients (see
     /// [`Self::set_title_clip_bound`]); `None` bounds nothing.
     title_clip_bound: Option<crate::TitleClipBound>,
@@ -1221,6 +1257,7 @@ impl Engine {
             playlist_hold: None,
             cue_hold: None,
             title_air: BTreeMap::new(),
+            action_motions: Vec::new(),
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
@@ -2836,15 +2873,19 @@ impl Engine {
         let mut media_operations = BTreeMap::<InputId, usize>::new();
         let mut page_operations = BTreeMap::<InputId, usize>::new();
         let frame = tick.deadline.frame.get();
+        self.action_motions.clear();
         for scheduled in tick.actions {
+            let mut motion = EngineActionMotion::default();
             let mut realized = RealizedActions {
                 events: &mut events,
                 input_audio_strip_updates: &mut input_audio_strip_updates,
                 audio_mixer_updates: &mut audio_mixer_updates,
                 media_operations: &mut media_operations,
                 page_operations: &mut page_operations,
+                motion: &mut motion,
             };
             self.realize_action(scheduled.action, frame, &mut realized)?;
+            self.action_motions.push(motion);
             self.runtime_generation = self.runtime_generation.checked_next()?;
         }
 
@@ -2953,6 +2994,7 @@ impl Engine {
             }
             return Ok(());
         }
+        let titles_before = self.title_air.clone();
         if let EngineCommand::SetInputAudioStrip { input, state } = action {
             realized.input_audio_strip_updates.push((input, state));
         }
@@ -2987,7 +3029,18 @@ impl Engine {
             apply_runtime(&mut self.realized_switcher, action)?
         };
         realized.events.extend(command_events);
+        realized
+            .motion
+            .record_titles(&titles_before, &self.title_air);
         Ok(())
+    }
+
+    /// What each runtime action the last [`Self::tick`] realized changed of
+    /// the on-air animations, one entry per action in realization order
+    /// (the order of their runtime generations).
+    #[must_use]
+    pub fn action_motions(&self) -> &[EngineActionMotion] {
+        &self.action_motions
     }
 
     /// Whether accepted work is still being realized frame by frame: a
@@ -3113,6 +3166,7 @@ impl Engine {
             playlist_hold: None,
             cue_hold: None,
             title_air: BTreeMap::new(),
+            action_motions: Vec::new(),
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
@@ -3332,6 +3386,8 @@ struct RealizedActions<'a> {
     audio_mixer_updates: &'a mut Vec<crate::EngineAudioMixerUpdate>,
     media_operations: &'a mut BTreeMap<InputId, usize>,
     page_operations: &'a mut BTreeMap<InputId, usize>,
+    /// What the action changed of the on-air animations.
+    motion: &'a mut EngineActionMotion,
 }
 
 /// A planned cue command (see [`crate::cue`]): the show once every due
