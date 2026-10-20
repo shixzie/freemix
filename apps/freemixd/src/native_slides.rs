@@ -23,7 +23,7 @@ use freemixd::native_media::{
     NativeMediaRuntime, NativeSlideLayer, NativeSourcePlayback, NativeSourceRenderError,
 };
 
-use crate::stills::decode_picture_file;
+use crate::stills::{decode_picture_file, resolve_picture_path};
 
 /// Most uploaded slides kept beyond the ones on air and decoded ahead.
 const MAX_SPARE_SLIDES: usize = 4;
@@ -213,21 +213,18 @@ impl NativeSlides {
         {
             return;
         }
-        let Some(path) = asset_path(&self.assets_root, &key.asset_uri) else {
-            self.failed.insert(key.clone());
-            return;
-        };
         let (sender, result) = mpsc::sync_channel(1);
         let (dimensions, fit) = (self.dimensions, key.fit);
+        let (assets_root, asset_uri) = (self.assets_root.clone(), Arc::clone(&key.asset_uri));
         let spawned = thread::Builder::new()
             .name("freemix-slide".into())
             .spawn(move || {
-                let _ = sender.send(decode_picture_file(
-                    &path,
-                    dimensions,
-                    fit,
-                    crate::native_clock_domain(),
-                ));
+                // Resolved like every other bundle asset: a link out of the
+                // assets never decodes.
+                let decoded = resolve_picture_path(&assets_root, &asset_uri).and_then(|path| {
+                    decode_picture_file(&path, dimensions, fit, crate::native_clock_domain())
+                });
+                let _ = sender.send(decoded);
             });
         if spawned.is_ok() {
             self.decoding.push(Decoding {
@@ -303,11 +300,4 @@ impl NativeSlides {
 fn opacity_of(mix: u16) -> u8 {
     let scaled = u32::from(mix.min(10_000)) * u32::from(u8::MAX) / 10_000;
     u8::try_from(scaled).unwrap_or(u8::MAX)
-}
-
-/// The bundle path of picture `asset_uri`, if it names one.
-fn asset_path(assets_root: &std::path::Path, asset_uri: &str) -> Option<PathBuf> {
-    fm_model::validate_media_asset_uri(asset_uri).ok()?;
-    let key = asset_uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)?;
-    Some(assets_root.join(key))
 }

@@ -88,6 +88,32 @@ pub(crate) fn decode_picture_file(
         .map_err(|_| EngineMediaFault::Unsupported)
 }
 
+/// The canonical path of picture `asset_uri` in the bundle whose assets
+/// are at `assets_root`, as `ProjectStore::resolve_asset_uri` resolves it:
+/// a link (or a linked folder) that leads out of the assets never
+/// resolves, so a bundle cannot put a host file on air.
+///
+/// # Errors
+///
+/// `source_missing` when the URI is not a valid asset URI, the file is
+/// missing or not a regular file, or it resolves outside the assets.
+pub(crate) fn resolve_picture_path(
+    assets_root: &Path,
+    asset_uri: &str,
+) -> Result<std::path::PathBuf, EngineMediaFault> {
+    fm_model::validate_media_asset_uri(asset_uri).map_err(|_| EngineMediaFault::SourceMissing)?;
+    let key = asset_uri
+        .strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)
+        .ok_or(EngineMediaFault::SourceMissing)?;
+    let root = std::fs::canonicalize(assets_root).map_err(|_| EngineMediaFault::SourceMissing)?;
+    let path =
+        std::fs::canonicalize(root.join(key)).map_err(|_| EngineMediaFault::SourceMissing)?;
+    if !path.starts_with(&root) || !std::fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
+        return Err(EngineMediaFault::SourceMissing);
+    }
+    Ok(path)
+}
+
 /// The pictures directly inside folder `folder_uri` (`asset://<key>`) of
 /// the bundle at `assets_root`, in natural name order, at most
 /// [`MAX_SLIDESHOW_SLIDES`]. Only regular files with a picture extension
@@ -100,7 +126,18 @@ pub(crate) fn list_folder(assets_root: &Path, folder_uri: &str) -> Vec<EngineSli
     let Some(key) = folder_uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX) else {
         return Vec::new();
     };
-    let Ok(entries) = std::fs::read_dir(assets_root.join(key)) else {
+    // A folder that is (or sits under) a link leading out of the assets
+    // lists nothing, so host file names never reach a client.
+    let (Ok(root), Ok(folder)) = (
+        std::fs::canonicalize(assets_root),
+        std::fs::canonicalize(assets_root.join(key)),
+    ) else {
+        return Vec::new();
+    };
+    if !folder.starts_with(&root) {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
     let mut names = entries
@@ -403,6 +440,39 @@ mod tests {
             list_folder(root.path(), "asset://../etc").as_slice(),
             []
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pictures_and_folders_never_resolve_outside_the_assets() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"x").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let assets = root.path().join("assets");
+        std::fs::create_dir_all(assets.join("slides")).unwrap();
+        std::fs::write(assets.join("slides/inside.png"), b"x").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.png"),
+            assets.join("slides/escape.png"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), assets.join("elsewhere")).unwrap();
+
+        assert!(resolve_picture_path(&assets, "asset://slides/inside.png").is_ok());
+        assert_eq!(
+            resolve_picture_path(&assets, "asset://slides/escape.png"),
+            Err(EngineMediaFault::SourceMissing)
+        );
+        assert_eq!(
+            resolve_picture_path(&assets, "asset://elsewhere/secret.png"),
+            Err(EngineMediaFault::SourceMissing)
+        );
+        assert_eq!(
+            resolve_picture_path(&assets, "asset://../outside.png"),
+            Err(EngineMediaFault::SourceMissing)
+        );
+        // A folder that leads out of the bundle lists nothing.
+        assert!(list_folder(&assets, "asset://elsewhere").is_empty());
     }
 
     #[test]
