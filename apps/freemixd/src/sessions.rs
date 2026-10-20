@@ -826,8 +826,32 @@ pub(super) fn run(
         }
 
         let mut close = vec![false; peers.len()];
+        let mut failure = None;
         for (index, peer) in peers.iter_mut().enumerate() {
             close[index] = read_peer(peer);
+            // A heartbeat the peer sent is recorded before its timeout is
+            // judged: one read only now (the loop was busy, or the peer's
+            // socket was read late) still keeps the session alive. Only
+            // heartbeats at the front of the queue are, so the peer's
+            // messages are still answered in order, and none while a reply
+            // is held, so a peer that never drains still times out.
+            while !close[index]
+                && peer.phase == Phase::Active
+                && peer.held_result.is_none()
+                && matches!(peer.inbound.front(), Some(WireMessage::Heartbeat(_)))
+            {
+                let heartbeat = peer.inbound.pop_front().expect("the front is a heartbeat");
+                match runtime.dispatch(peer, heartbeat, durable, None) {
+                    Ok(()) => {}
+                    Err(DispatchError::Peer) => {
+                        close[index] = dropping(peer.id, "dispatch_refused");
+                    }
+                    Err(DispatchError::Daemon(error)) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
             if !close[index]
                 && peer.phase == Phase::AwaitHandshake
                 && Instant::now() >= peer.handshake_deadline
@@ -851,6 +875,10 @@ pub(super) fn run(
                     },
                 );
             }
+        }
+        if let Some(error) = failure {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
         }
 
         let mut live_budget = vec![LIVE_EVENTS_PER_PASS; peers.len()];
@@ -1059,29 +1087,39 @@ pub(super) fn run(
         // refused advance of either clock is retried only on a pass no
         // peer's command was ready for (the journal-idle check is the
         // clock's), so retries never take a client's frame or command turn.
-        if let Err(error) = runtime.playlist_clock.borrow_mut().poll(
-            control,
-            store,
-            durable,
-            authority,
-            native.as_deref_mut(),
-            Some(process_shutdown),
-            Instant::now(),
-            ready_turn.is_none(),
-        ) {
+        // While the native frame loop is still realizing a command's
+        // transition or title phase, the clocks (and media end triggers)
+        // wait for it to end, as they waited while a command realized those
+        // frames itself: a boundary that falls inside is cut on the first
+        // frame after it.
+        let settling = native.is_some() && control.borrow().work_in_flight();
+        if !settling
+            && let Err(error) = runtime.playlist_clock.borrow_mut().poll(
+                control,
+                store,
+                durable,
+                authority,
+                native.as_deref_mut(),
+                Some(process_shutdown),
+                Instant::now(),
+                ready_turn.is_none(),
+            )
+        {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
-        if let Err(error) = runtime.cue_clock.borrow_mut().poll(
-            control,
-            store,
-            durable,
-            authority,
-            native.as_deref_mut(),
-            Some(process_shutdown),
-            Instant::now(),
-            ready_turn.is_none(),
-        ) {
+        if !settling
+            && let Err(error) = runtime.cue_clock.borrow_mut().poll(
+                control,
+                store,
+                durable,
+                authority,
+                native.as_deref_mut(),
+                Some(process_shutdown),
+                Instant::now(),
+                ready_turn.is_none(),
+            )
+        {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
@@ -1117,16 +1155,19 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
-        if let Err(error) = runtime.end_triggers.borrow_mut().poll(
-            control,
-            store,
-            durable,
-            authority,
-            native.as_deref_mut(),
-            Some(process_shutdown),
-            Instant::now(),
-            ready_turn.is_none(),
-        ) {
+        let settling = native.is_some() && control.borrow().work_in_flight();
+        if !settling
+            && let Err(error) = runtime.end_triggers.borrow_mut().poll(
+                control,
+                store,
+                durable,
+                authority,
+                native.as_deref_mut(),
+                Some(process_shutdown),
+                Instant::now(),
+                ready_turn.is_none(),
+            )
+        {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }

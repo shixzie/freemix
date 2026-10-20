@@ -2235,8 +2235,9 @@ fn recording_start_timecode(
 
 #[cfg(feature = "native-media")]
 impl NativeProgramRecorder {
-    /// The recording format of a segment opened at the stored position.
-    fn stored_format(stored: &StoredProject) -> AppResult<RecordFormat> {
+    /// The recording format of a segment of `stored` opened at frame
+    /// `first_frame`.
+    fn stored_format(stored: &StoredProject, first_frame: u64) -> AppResult<RecordFormat> {
         let settings = stored.project().settings();
         let dimensions = settings.video.dimensions;
         Ok(RecordFormat::new(
@@ -2245,7 +2246,7 @@ impl NativeProgramRecorder {
             settings.frame_rate,
             settings.audio.sample_rate,
             settings.audio.channels.clone(),
-            SequenceNumber::new(stored.position().frames_rendered),
+            SequenceNumber::new(first_frame),
         )?)
     }
 
@@ -2277,6 +2278,7 @@ impl NativeProgramRecorder {
     fn open(
         runtime: &NativeMediaRuntime,
         stored: &StoredProject,
+        first_frame: u64,
         path: &Path,
         names: &recording_session::SegmentNames,
         wav: bool,
@@ -2284,7 +2286,7 @@ impl NativeProgramRecorder {
         audio_bitrate_kbps: Option<u32>,
         slot: usize,
     ) -> AppResult<Self> {
-        let format = Self::stored_format(stored)?;
+        let format = Self::stored_format(stored, first_frame)?;
         let timecode = recording_start_timecode(format.first_sequence().get(), format.frame_rate());
         Self::open_with_format(
             runtime,
@@ -5450,6 +5452,7 @@ impl NativeDaemon {
         self.recorders[slot] = ProgramRecording::Running(Box::new(NativeProgramRecorder::open(
             &self.runtime,
             stored,
+            stored.position().frames_rendered,
             &segment,
             &names,
             self.record_wav,
@@ -6447,6 +6450,7 @@ impl NativeDaemon {
         command: &CommandMessage,
         result: &CommandResult,
         stored: &StoredProject,
+        frame: u64,
     ) {
         let Some((active, slot)) = recording_command_slot(&command.payload) else {
             return;
@@ -6456,7 +6460,7 @@ impl NativeDaemon {
         }
         self.reap_finished_recording_finalizers();
         if active {
-            self.open_pending_recording(slot, stored);
+            self.open_pending_recording(slot, stored, frame);
         } else {
             self.recorder_status.stopped(slot);
             self.retire_running_recording(slot, None);
@@ -6533,7 +6537,8 @@ impl NativeDaemon {
     /// latches only THIS slot's attempt unavailable and reports a sanitized
     /// notice naming the slot; the show and the other slot keep running,
     /// exactly like stream sink failures.
-    fn open_pending_recording(&mut self, slot: usize, stored: &StoredProject) {
+    /// Opens `slot`'s segment at frame `frame`, the engine's frame cursor.
+    fn open_pending_recording(&mut self, slot: usize, stored: &StoredProject, frame: u64) {
         if self.recorders[slot].is_running() {
             return;
         }
@@ -6560,6 +6565,7 @@ impl NativeDaemon {
                 NativeProgramRecorder::open(
                     &self.runtime,
                     stored,
+                    frame,
                     &segment,
                     &names,
                     self.record_wav,
@@ -11222,6 +11228,11 @@ fn serve_inner(
             let mut cues = cue_clock::CueClock::default();
             let mut before_frame =
                 |native: &mut NativeDaemon, control: &mut ControlService<Policy>| {
+                    // As in the session loop: the clocks wait while the
+                    // frame loop realizes a transition or title phase.
+                    if control.work_in_flight() {
+                        return Ok(());
+                    }
                     if let Some(advance) = clock.next(
                         control,
                         playlist_clock::Pacing::Engine,
@@ -11272,7 +11283,7 @@ fn serve_inner(
             match primed {
                 Ok(true) => {}
                 Ok(false) => {
-                    checkpoint_native(&control, &journal, &mut durable)?;
+                    checkpoint_native(&control, &authority, &journal, &mut durable)?;
                     native.finalize_recorder()?;
                     return Ok(());
                 }
@@ -11475,7 +11486,7 @@ fn serve_inner(
         result?;
     }
     if native.is_some() {
-        checkpoint_native(&control, &journal, &mut durable)?;
+        checkpoint_native(&control, &authority, &journal, &mut durable)?;
     } else {
         // A clean stop is the safest checkpoint there is: no command is in
         // flight, so the manifest ends the run holding everything the journal
@@ -11525,9 +11536,21 @@ type BeforeNativeFrame<'a> =
 
 fn checkpoint_native(
     control: &SharedControl,
+    server: &ServerIdentity,
     store: &dyn DurableStore,
     durable: &mut StoredProject,
 ) -> AppResult<()> {
+    // A transition or title phase the frame loop was still realizing
+    // settles unrendered, as the frames of a command interrupted by
+    // shutdown always did, up to where the durable project says it ends.
+    {
+        let mut control = control.borrow_mut();
+        while control.work_in_flight()
+            && control.frame_cursor() < durable.position().frames_rendered
+        {
+            control.tick_for_shutdown(server)?;
+        }
+    }
     let snapshot = control.borrow().idle_engine_snapshot()?;
     *durable = stored_project_checkpoint(durable, &snapshot)?;
     // The idle snapshot advances the runtime position without advancing the
@@ -11805,16 +11828,14 @@ fn replay_journal(
             ))
             .into());
         }
-        replay_idle_frames(&mut control, &principal, &server, &recorded, &mut budget).map_err(
-            |error| {
-                AppFailure(format!(
-                    "journal batch {} (command `{}`): {error}",
-                    batch.sequence(),
-                    recorded.command.id
-                ))
-            },
-        )?;
-        execute_durable_command(
+        replay_idle_frames(&mut control, &server, &recorded, &mut budget).map_err(|error| {
+            AppFailure(format!(
+                "journal batch {} (command `{}`): {error}",
+                batch.sequence(),
+                recorded.command.id
+            ))
+        })?;
+        execute_durable_command_with_ticks(
             &mut control,
             &replayed,
             &mut durable,
@@ -11822,6 +11843,9 @@ fn replay_journal(
             &server,
             &recorded.command,
             recorded.submitted_at_millis,
+            None,
+            Realize::None,
+            |control, server| Ok(control.tick(server)?.runtime_events),
         )?;
         if durable.position() != recorded.position {
             return Err(AppFailure(format!(
@@ -11942,65 +11966,38 @@ impl IdleReplayBudget {
     }
 }
 
-/// Realizes the idle frames the daemon rendered before `recorded` executed.
+/// Realizes the frames the daemon rendered before `recorded` was committed.
 ///
-/// The native media runtime's pacer realizes a frame on every deadline, also
-/// between commands, so a command can begin at a later frame cursor than the
-/// previous command's own ticks leave a replay at. Those frames carry no
-/// command, so the journal records only where each command ended; the frame
-/// it began at is that end minus the frames the command itself realizes.
-/// Replay ticks the engine idle up to there, exactly as the pacer did. A
-/// simulated daemon renders idle frames only to catch a client's playlist
-/// control up to the show's wall-clock frame
-/// (`playlist_clock::PlaylistClock::catch_up`); replay ticks those the same
-/// way, and nothing for any other command.
-///
-/// The clock's `playlist_advance` is accepted only for the playlist's
-/// pending boundary, or for the next frame once that boundary has passed: a
-/// native advance issued late (the boundary passed while frames were realized
-/// without a clock pass, e.g. across a restart) names the frame it ran on, so
-/// replay first ticks idle up to that frame.
+/// The native media runtime's pacer realizes a frame on every deadline:
+/// idle frames between commands, and every frame of a command's timed
+/// transition or title phase after its first, on its frame loop. A command
+/// can therefore be committed at a later frame cursor than the previous
+/// command left a replay at, or while that command's transition is still
+/// running. Those frames carry no command, so the journal records the frame
+/// cursor each command was committed at, and replay ticks the engine up to
+/// it, exactly as the pacer did; the command itself then realizes nothing
+/// (its projection still settles where the daemon's did). A simulated
+/// daemon realizes a command's frames within it and renders idle frames
+/// only to catch a client's playlist control up to the show's wall-clock
+/// frame (`playlist_clock::PlaylistClock::catch_up`); replay ticks those
+/// the same way.
 ///
 /// A replay that still lands elsewhere is reported by the position check.
 fn replay_idle_frames(
     control: &mut ControlService<Policy>,
-    principal: &Principal,
     server: &ServerIdentity,
     recorded: &journal::RecordedMutation,
     budget: &mut IdleReplayBudget,
 ) -> AppResult<()> {
-    if let CommandPayload::CueAdvance { list, frame } = recorded.command.payload {
-        // As for a playlist advance: ticks stop at the due frame when the
-        // advance was on time.
-        let from = control.frame_cursor();
-        budget.check(from, frame)?;
-        while control.frame_cursor() < frame && control.cue_advance_frame() != Some((list, frame)) {
-            control.tick(server)?;
-        }
-        budget.charge(control.frame_cursor().saturating_sub(from));
+    let cursor = control.frame_cursor();
+    if recorded.began_frame < cursor {
+        return Err(AppFailure(format!(
+            "the command was recorded at frame {} but replay is already at frame {cursor}",
+            recorded.began_frame
+        ))
+        .into());
     }
-    if let CommandPayload::PlaylistAdvance { frame } = recorded.command.payload {
-        // Ticks stop at the boundary when the advance was on time, so
-        // `frame` only bounds them; the budget is charged what was ticked.
-        let from = control.frame_cursor();
-        budget.check(from, frame)?;
-        while control.frame_cursor() < frame && control.playlist_advance_frame() != Some(frame) {
-            control.tick(server)?;
-        }
-        budget.charge(control.frame_cursor().saturating_sub(from));
-    }
-    let ticks = match control.prepare_submit(
-        principal,
-        recorded.command.clone(),
-        recorded.submitted_at_millis,
-    )? {
-        PrepareSubmitOutcome::Prepared(prepared) if prepared.submission().is_accepted() => {
-            command_ticks(&recorded.command, &prepared)
-        }
-        PrepareSubmitOutcome::Prepared(_) | PrepareSubmitOutcome::Replayed(_) => return Ok(()),
-    };
-    let began = recorded.position.frames_rendered.saturating_sub(ticks);
-    budget.tick_until(control, server, began)
+    budget.tick_until(control, server, recorded.began_frame)
 }
 
 /// Maps one validated model recorder slot onto the switcher's slot domain.
@@ -13474,12 +13471,14 @@ impl DurableStore for GroupRecorder<'_> {
         &self,
         command: &CommandMessage,
         now_millis: u64,
+        began_frame: u64,
         previous: &StoredProject,
         updated: &StoredProject,
     ) -> AppResult<()> {
         self.records.borrow_mut().push(journal::GroupRecord {
             command: command.clone(),
             now_millis,
+            began_frame,
             base_revision: previous.position().revision,
             position: updated.position(),
         });
@@ -13736,6 +13735,7 @@ fn execute_native_authority_command(
             command,
             now,
             vet,
+            Realize::First,
             |control, server| {
                 // A media list stepped to the item its standby opened
                 // switches on this very frame (IN-006).
@@ -13755,13 +13755,23 @@ fn execute_native_authority_command(
     #[cfg(feature = "native-media")]
     native.observe_stream_command(command, &execution.submission.output.result);
     #[cfg(feature = "native-media")]
-    native.observe_recording_command(command, &execution.submission.output.result, durable);
+    native.observe_recording_command(
+        command,
+        &execution.submission.output.result,
+        durable,
+        control.frame_cursor(),
+    );
     // A cue's record and stream actions start and stop the same workers
     // (RC-017); its acknowledgement is not held for a segment's readiness.
     #[cfg(feature = "native-media")]
     for worker in cue_worker_commands(command, &execution.submission) {
         native.observe_stream_command(&worker, &execution.submission.output.result);
-        native.observe_recording_command(&worker, &execution.submission.output.result, durable);
+        native.observe_recording_command(
+            &worker,
+            &execution.submission.output.result,
+            durable,
+            control.frame_cursor(),
+        );
     }
     // Changed title fields re-render on the title worker; this only
     // compares and hands over state.
@@ -13780,7 +13790,7 @@ fn execute_native_authority_command(
     native.sync_media_list_prefetch(durable.project());
     // Destination edits (OR-006) rebuild only the edited destination.
     #[cfg(feature = "native-media")]
-    native.sync_stream_targets(durable.project(), durable.position().frames_rendered)?;
+    native.sync_stream_targets(durable.project(), control.frame_cursor())?;
     #[cfg(feature = "native-media")]
     native.sync_input_lifecycle(control)?;
     imported.discard_unused(store, durable.project());
@@ -14089,6 +14099,7 @@ fn execute_native_stinger_mutation(
     // command as `staging_refusal` classifies them (dropping the staged
     // native resources), failures from a commit on are fatal.
     let current_revision = control.diagnostics().current_revision;
+    let began_frame = control.frame_cursor();
     let first_preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
         Ok(preparation) => preparation,
         Err(error) => {
@@ -14107,7 +14118,7 @@ fn execute_native_stinger_mutation(
     };
     if !first_prepared.submission().is_accepted() {
         let staged = first_prepared
-            .project(0)
+            .project(first_prepared.settle_ticks(0))
             .map_err(Into::into)
             .and_then(|projected| {
                 stored_project_from_snapshot(
@@ -14128,7 +14139,7 @@ fn execute_native_stinger_mutation(
         // A durability failure refuses the command; it does not take the daemon
         // down. Dropping the preparation abandons it without touching the
         // engine, exactly as the simulated path does.
-        if let Err(error) = store.record(command, now_millis, durable, &updated) {
+        if let Err(error) = store.record(command, now_millis, began_frame, durable, &updated) {
             drop(first_prepared);
             return Ok(Ok(DurableExecution {
                 submission: refuse_undurable(
@@ -14149,7 +14160,7 @@ fn execute_native_stinger_mutation(
     }
 
     let staged = first_prepared
-        .project(1)
+        .project(first_prepared.settle_ticks(1))
         .map_err(Into::into)
         .and_then(|projected| {
             stored_project_from_snapshot(
@@ -14189,6 +14200,8 @@ fn execute_native_stinger_mutation(
         }));
     };
 
+    // The preflight realized frames: the command commits on this one.
+    let began_frame = control.frame_cursor();
     let second_preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
         Ok(preparation) => preparation,
         Err(error) => {
@@ -14215,7 +14228,7 @@ fn execute_native_stinger_mutation(
     if !second_prepared.submission().is_accepted() {
         native.stinger_retirements.discard(mutation)?;
         let staged = second_prepared
-            .project(0)
+            .project(second_prepared.settle_ticks(0))
             .map_err(Into::into)
             .and_then(|projected| {
                 stored_project_from_snapshot(
@@ -14239,7 +14252,7 @@ fn execute_native_stinger_mutation(
                 .map(Ok);
             }
         };
-        if let Err(error) = store.record(command, now_millis, durable, &updated) {
+        if let Err(error) = store.record(command, now_millis, began_frame, durable, &updated) {
             drop(second_prepared);
             return Ok(Ok(DurableExecution {
                 submission: refuse_undurable(
@@ -14260,7 +14273,7 @@ fn execute_native_stinger_mutation(
     }
 
     let staged = second_prepared
-        .project(1)
+        .project(second_prepared.settle_ticks(1))
         .map_err(Into::into)
         .and_then(|projected| {
             stored_project_from_snapshot(
@@ -14302,7 +14315,7 @@ fn execute_native_stinger_mutation(
             runtime_events: preflight_runtime_events,
         }));
     }
-    if let Err(error) = store.record(command, now_millis, durable, &updated) {
+    if let Err(error) = store.record(command, now_millis, began_frame, durable, &updated) {
         // The staged native resources are released with the preparation: the
         // command was never applied, so retrying it prepares them again.
         drop(second_prepared);
@@ -14564,8 +14577,40 @@ fn execute_durable_command(
         command,
         now_millis,
         None,
+        Realize::All,
         |control, server| Ok(control.tick(server)?.runtime_events),
     )
+}
+
+/// How many of the frames an accepted command projects
+/// [`execute_durable_command_with_ticks`] realizes before it returns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Realize {
+    /// Every one: the simulated daemon, whose frames have no wall time.
+    All,
+    /// Only its first, so the command is realized on the frame right after
+    /// its append and answered then; the native frame loop realizes the
+    /// rest (a timed transition, a title phase) one frame per pacer tick,
+    /// serving every session in between.
+    First,
+    /// None: journal replay, which ticks up to each recorded command's
+    /// first frame itself (see [`replay_idle_frames`]).
+    None,
+}
+
+impl Realize {
+    /// The frames realized now of the `projected` an accepted (or not)
+    /// command settles after. A refusal realizes nothing: it changes no
+    /// realization, and projects past frames only while earlier work is
+    /// in flight, which the frame loop realizes.
+    fn now(self, projected: u64, accepted: bool) -> u64 {
+        match self {
+            _ if !accepted => 0,
+            Self::All => projected,
+            Self::First => projected.min(1),
+            Self::None => 0,
+        }
+    }
 }
 
 /// Refuses an accepted command by the project it would leave (the durable
@@ -14590,6 +14635,7 @@ fn execute_durable_command_with_ticks(
     command: &CommandMessage,
     now_millis: u64,
     vet: Option<&ProjectVet<'_>>,
+    realize: Realize,
     mut tick: impl FnMut(
         &mut ControlService<Policy>,
         &ServerIdentity,
@@ -14602,6 +14648,7 @@ fn execute_durable_command_with_ticks(
     }
     // Nothing commits before `record`, so a refusal reports this revision.
     let current_revision = control.diagnostics().current_revision;
+    let began_frame = control.frame_cursor();
     let preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
         Ok(preparation) => preparation,
         Err(error) => {
@@ -14618,10 +14665,14 @@ fn execute_durable_command_with_ticks(
         PrepareSubmitOutcome::Prepared(prepared) => prepared,
     };
 
-    let ticks = if prepared.submission().is_accepted() {
+    // The frames after which the command leaves an idle frame boundary:
+    // its own, or, while an earlier command's work is still in flight,
+    // up to where that ends (see `fm_control::PreparedSubmission::settle_ticks`).
+    let accepted = prepared.submission().is_accepted();
+    let ticks = if accepted {
         command_ticks(command, &prepared)
     } else {
-        0
+        prepared.settle_ticks(0)
     };
     // An accepted undo or redo is journaled as the edit it resolved to:
     // replay restores an engine whose session history is empty. The project
@@ -14684,7 +14735,7 @@ fn execute_durable_command_with_ticks(
     // Durability comes first: the mutation survives a crash before the engine
     // commits it, before its events are published, and before the acceptance is
     // returned to the caller for acknowledgement.
-    if let Err(error) = store.record(&journaled, now_millis, durable, &updated) {
+    if let Err(error) = store.record(&journaled, now_millis, began_frame, durable, &updated) {
         store.discard_staged_title_animations(revision, &staged_uris)?;
         // Nothing was made durable, so nothing may be acknowledged. Dropping
         // the preparation abandons it without touching the engine: no revision,
@@ -14711,9 +14762,11 @@ fn execute_durable_command_with_ticks(
         documents::sync(control, server, documents)?;
     }
     let mut runtime_events = Vec::new();
-    for _ in 0..ticks {
+    for _ in 0..realize.now(ticks, accepted) {
         runtime_events.extend(tick(control, server)?);
     }
+    // The project as it settles: a command whose later frames the native
+    // frame loop realizes is durable (and checkpointed) as it ends.
     *durable = updated;
 
     Ok(DurableExecution {
@@ -16770,6 +16823,7 @@ mod tests {
             &self,
             _command: &CommandMessage,
             _now_millis: u64,
+            _began_frame: u64,
             _previous: &StoredProject,
             _updated: &StoredProject,
         ) -> AppResult<()> {
@@ -16798,6 +16852,7 @@ mod tests {
             &self,
             _command: &CommandMessage,
             _now_millis: u64,
+            _began_frame: u64,
             _previous: &StoredProject,
             updated: &StoredProject,
         ) -> AppResult<()> {
@@ -16819,6 +16874,7 @@ mod tests {
             &self,
             _command: &CommandMessage,
             _now_millis: u64,
+            _began_frame: u64,
             _previous: &StoredProject,
             _updated: &StoredProject,
         ) -> AppResult<()> {
@@ -16846,6 +16902,7 @@ mod tests {
             &self,
             _command: &CommandMessage,
             _now_millis: u64,
+            _began_frame: u64,
             _previous: &StoredProject,
             updated: &StoredProject,
         ) -> AppResult<()> {
@@ -19307,6 +19364,7 @@ mod tests {
                 &self,
                 _command: &CommandMessage,
                 _now_millis: u64,
+                _began_frame: u64,
                 _previous: &StoredProject,
                 _updated: &StoredProject,
             ) -> AppResult<()> {
@@ -23479,6 +23537,7 @@ mod tests {
             command,
             0,
             None,
+            Realize::All,
             |control, server| {
                 let outcome = control.tick(server)?;
                 realized.push((
@@ -24379,6 +24438,7 @@ mod tests {
             &self,
             command: &CommandMessage,
             _now_millis: u64,
+            _began_frame: u64,
             _previous: &StoredProject,
             _updated: &StoredProject,
         ) -> AppResult<()> {
@@ -28076,6 +28136,7 @@ mod tests {
             &self,
             _command: &CommandMessage,
             _now_millis: u64,
+            _began_frame: u64,
             _previous: &StoredProject,
             _updated: &StoredProject,
         ) -> AppResult<()> {

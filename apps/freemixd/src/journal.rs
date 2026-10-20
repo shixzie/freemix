@@ -66,14 +66,17 @@ const RECENT_APPENDS: usize = 32;
 const PROTOCOL_BYTES: usize = 4;
 /// Bytes of submission time that follow it.
 const SUBMITTED_AT_BYTES: usize = 8;
+/// Bytes of the frame cursor the command was committed at.
+const BEGAN_BYTES: usize = 8;
 /// Bytes of the position the command left the project at.
 const POSITION_BYTES: usize = 6 * 8;
 /// Bytes of record header that precede the encoded command in a payload.
-const HEADER_BYTES: usize = PROTOCOL_BYTES + SUBMITTED_AT_BYTES + POSITION_BYTES;
+const HEADER_BYTES: usize = PROTOCOL_BYTES + SUBMITTED_AT_BYTES + BEGAN_BYTES + POSITION_BYTES;
 
 /// Makes an accepted command durable.
 pub(crate) trait DurableStore {
-    /// Records the mutation from `previous` to `updated`.
+    /// Records the mutation from `previous` to `updated`, committed with
+    /// the engine's frame cursor at `began_frame`.
     ///
     /// Returns only once that mutation will survive loss of power. Everything
     /// that can fail happens before that point, so a caller that sees an error
@@ -82,6 +85,7 @@ pub(crate) trait DurableStore {
         &self,
         command: &CommandMessage,
         now_millis: u64,
+        began_frame: u64,
         previous: &StoredProject,
         updated: &StoredProject,
     ) -> AppResult<()>;
@@ -220,6 +224,8 @@ pub(crate) struct GroupRecord {
     /// The command as it is journaled.
     pub(crate) command: CommandMessage,
     pub(crate) now_millis: u64,
+    /// The engine frame cursor the command was committed at.
+    pub(crate) began_frame: u64,
     /// The revision the command was executed at.
     pub(crate) base_revision: u64,
     /// The position the command left the project at.
@@ -392,6 +398,7 @@ enum Job {
 struct Append {
     command: CommandMessage,
     now_millis: u64,
+    began_frame: u64,
     base_revision: u64,
     revision: u64,
     position: ProjectPosition,
@@ -639,6 +646,7 @@ impl DurableStore for DurableJournal {
         &self,
         command: &CommandMessage,
         now_millis: u64,
+        began_frame: u64,
         previous: &StoredProject,
         updated: &StoredProject,
     ) -> AppResult<()> {
@@ -670,6 +678,7 @@ impl DurableStore for DurableJournal {
             vec![Append {
                 command: command.clone(),
                 now_millis,
+                began_frame,
                 base_revision: previous.position().revision,
                 revision,
                 position: updated.position(),
@@ -699,6 +708,7 @@ impl DurableStore for DurableJournal {
                 record.appended_revision().map(|revision| Append {
                     command: record.command.clone(),
                     now_millis: record.now_millis,
+                    began_frame: record.began_frame,
                     base_revision: record.base_revision,
                     revision,
                     position: record.position,
@@ -953,8 +963,13 @@ impl Worker<'_> {
             sequence = sequence
                 .checked_add(1)
                 .ok_or_else(|| WorkerError::Failure("journal sequence overflow".into()))?;
-            let payload = encode_mutation(&append.command, append.now_millis, append.position)
-                .map_err(|error| fail(&error))?;
+            let payload = encode_mutation(
+                &append.command,
+                append.now_millis,
+                append.began_frame,
+                append.position,
+            )
+            .map_err(|error| fail(&error))?;
             batches.push(MutationBatch::new(
                 sequence,
                 append.base_revision,
@@ -1036,6 +1051,7 @@ impl DurableStore for ReplayedMutations {
         &self,
         _command: &CommandMessage,
         _now_millis: u64,
+        _began_frame: u64,
         _previous: &StoredProject,
         _updated: &StoredProject,
     ) -> AppResult<()> {
@@ -1066,20 +1082,28 @@ fn single_revision_step(previous: &StoredProject, updated: &StoredProject) -> Op
 pub(crate) struct RecordedMutation {
     pub(crate) command: CommandMessage,
     pub(crate) submitted_at_millis: u64,
+    /// The engine frame cursor the command was committed at. A native
+    /// daemon realizes frames between commands, and the frames a command
+    /// realizes after its first on its frame loop, so a later command can
+    /// be committed before an earlier one's transition has ended; replay
+    /// ticks up to this frame before re-executing the command.
+    pub(crate) began_frame: u64,
     /// The position the command left the project at. Replay must reproduce
     /// this, all of it, or it is not the history the operator was told about.
     pub(crate) position: ProjectPosition,
 }
 
-/// Encodes an accepted command, the instant it was submitted, the position it
-/// produced, and the protocol version that built the payload.
+/// Encodes an accepted command, the instant it was submitted, the frame it
+/// was committed at, the position it produced, and the protocol version
+/// that built the payload.
 ///
 /// The submission time is part of the mutation, not context: it decides
 /// deadline and receipt outcomes, so replaying the command without it would not
 /// reproduce the state the operator was told about. The position is recorded
 /// for the same reason and covers what the revision alone cannot — the frame
 /// cursor and the clock advance between commands, which native realization
-/// moves on wall time. The protocol version is recorded because the payload is
+/// moves on wall time; the frame it was committed at orders it among the
+/// frames realized around it. The protocol version is recorded because the payload is
 /// the command re-encoded by the build that accepted it, and under this
 /// project's no-compatibility rule a wire change between a crash and the
 /// restart makes every unapplied batch unreadable; saying so beats decoding
@@ -1087,6 +1111,7 @@ pub(crate) struct RecordedMutation {
 fn encode_mutation(
     command: &CommandMessage,
     now_millis: u64,
+    began_frame: u64,
     position: ProjectPosition,
 ) -> AppResult<Vec<u8>> {
     let line = encode_line(&WireMessage::Command(command.clone()))?;
@@ -1094,6 +1119,7 @@ fn encode_mutation(
     payload.extend_from_slice(&CURRENT_PROTOCOL_VERSION.major.to_le_bytes());
     payload.extend_from_slice(&CURRENT_PROTOCOL_VERSION.minor.to_le_bytes());
     payload.extend_from_slice(&now_millis.to_le_bytes());
+    payload.extend_from_slice(&began_frame.to_le_bytes());
     for field in position_fields(position) {
         payload.extend_from_slice(&field.to_le_bytes());
     }
@@ -1131,8 +1157,9 @@ pub(crate) fn decode_mutation(payload: &[u8]) -> AppResult<RecordedMutation> {
         .0
         .iter()
         .map(|chunk| u64::from_le_bytes(*chunk));
-    let mut next = || fields.next().expect("the header holds seven values");
+    let mut next = || fields.next().expect("the header holds eight values");
     let submitted_at_millis = next();
+    let began_frame = next();
     let position = ProjectPosition {
         revision: next(),
         state_epoch: next(),
@@ -1147,6 +1174,7 @@ pub(crate) fn decode_mutation(payload: &[u8]) -> AppResult<RecordedMutation> {
         WireMessage::Command(command) => Ok(RecordedMutation {
             command,
             submitted_at_millis,
+            began_frame,
             position,
         }),
         _ => Err(AppFailure("journal mutation does not hold a command".into()).into()),
@@ -1356,15 +1384,19 @@ mod tests {
 
     /// The recorded mutation must come back exactly: the submission time,
     /// because replay that guessed it would not reproduce deadline and receipt
-    /// outcomes, and the whole position, because the revision alone cannot see
-    /// a frame cursor that moved between commands.
+    /// outcomes, the frame it was committed at, because a command can be
+    /// committed while an earlier one's transition still runs, and the whole
+    /// position, because the revision alone cannot see a frame cursor that
+    /// moved between commands.
     #[test]
     fn a_recorded_mutation_round_trips_with_its_submission_time_and_position() {
-        let payload = encode_mutation(&test_command(), 1_700_000_000_123, test_position()).unwrap();
+        let payload =
+            encode_mutation(&test_command(), 1_700_000_000_123, 600, test_position()).unwrap();
 
         let decoded = decode_mutation(&payload).unwrap();
         assert_eq!(decoded.command, test_command());
         assert_eq!(decoded.submitted_at_millis, 1_700_000_000_123);
+        assert_eq!(decoded.began_frame, 600);
         assert_eq!(decoded.position, test_position());
         assert!(decode_mutation(&payload[..4]).is_err());
         assert!(decode_mutation(&payload[..HEADER_BYTES]).is_err());
@@ -1418,7 +1450,7 @@ mod tests {
     #[test]
     fn a_mutation_from_another_protocol_version_is_refused_by_version() {
         let mut payload =
-            encode_mutation(&test_command(), 1_700_000_000_123, test_position()).unwrap();
+            encode_mutation(&test_command(), 1_700_000_000_123, 600, test_position()).unwrap();
         payload[2] = payload[2].wrapping_add(1);
 
         let error = decode_mutation(&payload).unwrap_err().to_string();
