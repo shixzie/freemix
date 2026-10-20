@@ -3,7 +3,7 @@ use std::{
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroU128,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command as ProcessCommand, Output, Stdio},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -12,7 +12,6 @@ use std::{
 #[cfg(unix)]
 use std::{
     fs,
-    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 
