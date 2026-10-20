@@ -440,9 +440,7 @@ impl LeafContext<'_> {
             }
             InputKind::NetworkStream(_)
             | InputKind::Device { .. }
-            | InputKind::ScreenCapture(_) => {
-                synthetic_picture(id, width, height, self.elapsed)
-            }
+            | InputKind::ScreenCapture(_) => synthetic_picture(id, width, height, self.elapsed),
             InputKind::Image(image) => stills.image(
                 self.titles.store()?,
                 &image.asset_uri,
