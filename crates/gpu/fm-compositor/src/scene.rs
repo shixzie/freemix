@@ -225,9 +225,8 @@ impl LumaKey {
 /// `(channel * 255 + alpha / 2) / alpha` (`0` when `alpha == 0`), so a
 /// semi-transparent pixel is keyed on its true colour. Spill suppression and
 /// despill operate on the stored bytes. The native GPU path executes chroma
-/// and luma keys in its layer preparation pass (see
-/// `NativeCompositionRenderer::render`) and rejects key/fill layers and key
-/// refinements with `UnsupportedKey`.
+/// and luma keys, key/fill layers, and key refinements in its layer
+/// preparation passes (see `NativeCompositionRenderer::render`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
     Chroma(ChromaKey),

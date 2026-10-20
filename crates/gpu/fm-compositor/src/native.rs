@@ -541,9 +541,13 @@ pub enum NativeCompositionError {
         height: u32,
         maximum: u32,
     },
-    /// A key/fill pair or key refinement; chroma and luma keys are supported.
-    UnsupportedKey {
+    /// A key/fill layer whose key source is not the fill source's size.
+    KeyFillDimensionMismatch {
         layer: usize,
+        fill_width: u32,
+        fill_height: u32,
+        key_width: u32,
+        key_height: u32,
     },
     UnsupportedEffect {
         layer: usize,
@@ -594,13 +598,17 @@ impl fmt::Display for NativeCompositionError {
                 formatter,
                 "layer {layer} native transform dimensions {width}x{height} exceed {maximum}"
             ),
-            Self::UnsupportedKey { layer } => {
-                write!(
-                    formatter,
-                    "layer {layer} key/fill and key refinement are unsupported by native \
-                     composition"
-                )
-            }
+            Self::KeyFillDimensionMismatch {
+                layer,
+                fill_width,
+                fill_height,
+                key_width,
+                key_height,
+            } => write!(
+                formatter,
+                "layer {layer} key source is {key_width}x{key_height}, but its fill is \
+                 {fill_width}x{fill_height}"
+            ),
             Self::UnsupportedEffect {
                 layer,
                 effect,
@@ -722,7 +730,11 @@ impl NativeCompositionRenderer {
     /// submitted in plan order as one bounded, premultiplied source-over
     /// render pass without readback.
     ///
-    /// Key/fill layers, key refinements, unparseable effect descriptors, and
+    /// A key/fill layer or a layer with a key refinement first builds a
+    /// crop-sized matte (raw key alpha from the layer's source or the key
+    /// source, clip, choke/spread, edge softness) that the key stage then
+    /// reads; see [`crate::KeyRefinement`] and [`crate::KeyFill`]. A missing
+    /// or differently sized key source, unparseable effect descriptors, and
     /// safe-area guides are rejected before any GPU allocation.
     ///
     /// # Errors
@@ -740,7 +752,7 @@ impl NativeCompositionRenderer {
             let keyed = match &layer.preparation {
                 Some(preparation) => Some(
                     self.layer
-                        .prepare(context, layer.texture, preparation)
+                        .prepare(context, layer.texture, layer.key_texture, preparation)
                         .await?,
                 ),
                 None => None,
@@ -805,6 +817,8 @@ impl NativeCompositionRenderer {
 struct PreparedLayer<'a> {
     source: SourceId,
     texture: &'a NativeTexture,
+    /// The key/fill key source, if any (same size as `texture`).
+    key_texture: Option<&'a NativeTexture>,
     /// Non-identity grades in order: the source grade, then the layer's own.
     grades: Vec<&'a Arc<CompiledGrade>>,
     /// Key/mask/effect passes producing a crop-sized texture, if any.
@@ -844,6 +858,26 @@ fn validate_composition<'a>(
             || transform_is_visible(plan.width(), plan.height(), layer.transform()),
             |tilt| tilt.touches(plan.width(), plan.height()),
         );
+        let key_texture = match layer.key_fill() {
+            Some(fill) => {
+                let key = sources
+                    .iter()
+                    .find(|candidate| candidate.source == fill.key_source)
+                    .ok_or(NativeCompositionError::MissingSource(fill.key_source))?
+                    .texture;
+                if (key.width(), key.height()) != (texture.width(), texture.height()) {
+                    return Err(NativeCompositionError::KeyFillDimensionMismatch {
+                        layer: layer_index,
+                        fill_width: texture.width(),
+                        fill_height: texture.height(),
+                        key_width: key.width(),
+                        key_height: key.height(),
+                    });
+                }
+                Some(key)
+            }
+            None => None,
+        };
         let preparation = LayerPreparation::plan(layer_index, layer, crop)?;
         // A prepared texture is the crop with its mask already applied.
         let (crop, mask) = match &preparation {
@@ -856,6 +890,7 @@ fn validate_composition<'a>(
         prepared.push(PreparedLayer {
             source: layer.source(),
             texture,
+            key_texture,
             grades: layer
                 .grade()
                 .into_iter()
@@ -898,9 +933,6 @@ fn validate_supported_work(plan: &CompositionPlan) -> Result<(), NativeCompositi
         });
     }
     for (layer_index, layer) in plan.layers().iter().enumerate() {
-        if layer.key_fill().is_some() || layer.key_refinement().is_some() {
-            return Err(NativeCompositionError::UnsupportedKey { layer: layer_index });
-        }
         for (effect_index, effect) in layer.effects().iter().enumerate() {
             native_effect(layer_index, effect_index, effect)?;
         }
@@ -1734,12 +1766,15 @@ mod tests {
         let refined = composition_plan(
             SourceLayer::new(source, 0, base)
                 .with_key(Key::Luma(LumaKey::new(1, 2, false)))
-                .with_key_refinement(crate::KeyRefinement::default()),
+                .with_key_refinement(crate::KeyRefinement::default().with_choke(2)),
         );
-        assert_eq!(
-            validate_supported_work(&refined),
-            Err(NativeCompositionError::UnsupportedKey { layer: 0 })
+        assert_eq!(validate_supported_work(&refined), Ok(()));
+        let fill = composition_plan(
+            SourceLayer::new(source, 0, base)
+                .with_key_fill(crate::KeyFill::linear(SourceId::new(2)))
+                .with_key_refinement(crate::KeyRefinement::default().with_edge_softness(1)),
         );
+        assert_eq!(validate_supported_work(&fill), Ok(()));
 
         for (name, parameters) in [
             ("blur", vec![1]),

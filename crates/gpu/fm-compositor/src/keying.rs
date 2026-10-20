@@ -18,6 +18,9 @@ pub const MAX_AUTO_KEY_SAMPLES: usize = 65_536;
 /// Maximum absolute matte choke/spread radius in pixels.
 pub const MAX_CHOKE_RADIUS: u8 = 8;
 
+/// Maximum matte edge-softness (box blur) radius in pixels.
+pub const MAX_EDGE_SOFTNESS: u8 = 8;
+
 /// The backing color family recognized by the auto key and despill.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Backing {
@@ -66,8 +69,9 @@ impl Despill {
 
 /// Manual matte controls applied to a layer's key alpha before the mask.
 ///
-/// Order per layer: the raw key alpha (chroma, luma, or key/fill luma) is
-/// clipped, then choked, then multiplied with the rectangular mask.
+/// Order per layer: the raw key alpha (chroma, luma, or key/fill matte) is
+/// clipped, then choked, then softened, then multiplied with the rectangular
+/// (garbage) mask.
 ///
 /// Clip: alpha `<= clip_black` becomes `0`, alpha `>= clip_white` becomes
 /// `255`, and otherwise
@@ -79,6 +83,11 @@ impl Despill {
 /// maximum over a `(2 * |choke| + 1)` window. Windows are clamped to the
 /// (cropped) layer frame, so out-of-frame pixels never contribute.
 ///
+/// Edge softness: a nonzero radius `r` replaces each matte value with the
+/// rounded mean `(sum + count / 2) / count` of the choked matte over the
+/// `(2 * r + 1)` square window clamped to the layer frame (`count` is the
+/// number of in-frame pixels in the window).
+///
 /// Chroma spill suppression from [`ChromaKey::spill`] uses the refined key
 /// alpha. The optional [`Despill`] is applied to every pixel's color before
 /// alpha scaling, independent of the matte.
@@ -87,6 +96,7 @@ pub struct KeyRefinement {
     pub clip_black: u8,
     pub clip_white: u8,
     pub choke: i8,
+    pub edge_softness: u8,
     pub despill: Option<Despill>,
 }
 
@@ -97,13 +107,14 @@ impl Default for KeyRefinement {
 }
 
 impl KeyRefinement {
-    /// The identity refinement: no clip, no choke, no despill.
+    /// The identity refinement: no clip, no choke, no softness, no despill.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             clip_black: 0,
             clip_white: u8::MAX,
             choke: 0,
+            edge_softness: 0,
             despill: None,
         }
     }
@@ -122,14 +133,21 @@ impl KeyRefinement {
     }
 
     #[must_use]
+    pub const fn with_edge_softness(mut self, radius: u8) -> Self {
+        self.edge_softness = radius;
+        self
+    }
+
+    #[must_use]
     pub const fn with_despill(mut self, despill: Despill) -> Self {
         self.despill = Some(despill);
         self
     }
 
     /// # Errors
-    /// Returns an error when the clip range is empty or the choke radius
-    /// exceeds [`MAX_CHOKE_RADIUS`].
+    /// Returns an error when the clip range is empty, the choke radius
+    /// exceeds [`MAX_CHOKE_RADIUS`], or the edge softness exceeds
+    /// [`MAX_EDGE_SOFTNESS`].
     pub fn validate(&self) -> Result<(), KeyRefinementError> {
         if self.clip_black >= self.clip_white {
             return Err(KeyRefinementError::EmptyClipRange {
@@ -143,10 +161,16 @@ impl KeyRefinement {
                 maximum: MAX_CHOKE_RADIUS,
             });
         }
+        if self.edge_softness > MAX_EDGE_SOFTNESS {
+            return Err(KeyRefinementError::EdgeSoftnessOutOfRange {
+                radius: self.edge_softness,
+                maximum: MAX_EDGE_SOFTNESS,
+            });
+        }
         Ok(())
     }
 
-    fn clip(self, alpha: u8) -> u8 {
+    pub(crate) fn clip(self, alpha: u8) -> u8 {
         if alpha <= self.clip_black {
             return 0;
         }
@@ -163,6 +187,7 @@ impl KeyRefinement {
 pub enum KeyRefinementError {
     EmptyClipRange { clip_black: u8, clip_white: u8 },
     ChokeOutOfRange { choke: i8, maximum: u8 },
+    EdgeSoftnessOutOfRange { radius: u8, maximum: u8 },
 }
 
 impl fmt::Display for KeyRefinementError {
@@ -178,19 +203,35 @@ impl fmt::Display for KeyRefinementError {
             Self::ChokeOutOfRange { choke, maximum } => {
                 write!(formatter, "choke {choke} exceeds radius {maximum}")
             }
+            Self::EdgeSoftnessOutOfRange { radius, maximum } => {
+                write!(formatter, "edge softness {radius} exceeds radius {maximum}")
+            }
         }
     }
 }
 
 impl std::error::Error for KeyRefinementError {}
 
+/// Which channel of a key/fill key source drives the matte.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeyChannel {
+    /// The key pixel's BT.709 fixed-point luma (a classic linear key).
+    #[default]
+    Luma,
+    /// The key pixel's stored alpha (a key source carrying an alpha channel).
+    Alpha,
+}
+
 /// A key/fill pair: the layer's own source is the fill and the alpha comes
-/// from the luma of `key_source`.
+/// from the luma (or alpha) of `key_source`.
 ///
 /// The key source frame must have exactly the fill frame's dimensions; the
-/// layer crop is applied identically to both. The key source's own alpha is
-/// ignored and its RGB is read as straight color. The matte is
-/// [`LumaKey`]'s ramp of the key pixel's BT.709 fixed-point luma;
+/// layer crop is applied identically to both. With [`KeyChannel::Luma`] the
+/// key source's own alpha is ignored and its RGB is read as stored; with
+/// [`KeyChannel::Alpha`] only its stored alpha is read. The matte is
+/// [`LumaKey`]'s ramp (threshold and softness act as clip and gain, `high`
+/// as an upper bound, `invert` inverts) of the key pixel's BT.709
+/// fixed-point luma or of its alpha;
 /// [`KeyFill::linear`] uses `threshold = 0, softness = 255`, which maps luma
 /// to alpha exactly (`alpha == luma`). With straight fill alpha only the
 /// alpha channel is scaled; with premultiplied fill all four channels are
@@ -200,12 +241,34 @@ impl std::error::Error for KeyRefinementError {}
 pub struct KeyFill {
     pub key_source: SourceId,
     pub matte: LumaKey,
+    pub channel: KeyChannel,
 }
 
 impl KeyFill {
     #[must_use]
     pub const fn new(key_source: SourceId, matte: LumaKey) -> Self {
-        Self { key_source, matte }
+        Self {
+            key_source,
+            matte,
+            channel: KeyChannel::Luma,
+        }
+    }
+
+    /// The same key/fill reading `channel` of the key source.
+    #[must_use]
+    pub const fn with_channel(mut self, channel: KeyChannel) -> Self {
+        self.channel = channel;
+        self
+    }
+
+    /// The matte value of one key source pixel.
+    pub(crate) fn matte_alpha(self, pixel: Rgba8) -> u8 {
+        let pixel = match self.channel {
+            KeyChannel::Luma => pixel,
+            // A gray pixel's fixed-point luma is exactly its level.
+            KeyChannel::Alpha => Rgba8::new(pixel.a, pixel.a, pixel.a, u8::MAX),
+        };
+        key_factor(pixel, Key::Luma(self.matte))
     }
 
     /// Linear key: alpha equals the key source luma.
@@ -558,12 +621,12 @@ fn collect_samples(
 
 /// Applies the key/fill or refined key stage of one CPU layer.
 ///
-/// `key_fill` carries the already-cropped key source and its luma matte when
-/// the layer has a [`KeyFill`]; it must match `source` dimensions (checked by
-/// the caller).
+/// `key_fill` carries the already-cropped key source and its [`KeyFill`] when
+/// the layer has one; it must match `source` dimensions (checked by the
+/// caller).
 pub(crate) fn apply_layer_keying(
     source: &ImageFrame,
-    key_fill: Option<(&ImageFrame, LumaKey)>,
+    key_fill: Option<(&ImageFrame, KeyFill)>,
     key: Option<Key>,
     refinement: KeyRefinement,
     mask: Option<RectMask>,
@@ -580,9 +643,9 @@ pub(crate) fn apply_layer_keying(
     let mut matte = Vec::with_capacity(area);
     for y in 0..height {
         for x in 0..width {
-            let alpha = if let Some((key_frame, luma)) = key_fill {
+            let alpha = if let Some((key_frame, fill)) = key_fill {
                 let pixel = key_frame.pixel(x, y).ok_or(FrameError::LayoutOverflow)?;
-                key_factor(pixel, Key::Luma(luma))
+                fill.matte_alpha(pixel)
             } else {
                 let pixel = source.pixel(x, y).ok_or(FrameError::LayoutOverflow)?;
                 key.map_or(u8::MAX, |key| {
@@ -594,6 +657,9 @@ pub(crate) fn apply_layer_keying(
     }
     if refinement.choke != 0 {
         matte = choke_matte(&matte, width_usize, height_usize, refinement.choke);
+    }
+    if refinement.edge_softness != 0 {
+        matte = soften_matte(&matte, width_usize, height_usize, refinement.edge_softness);
     }
 
     let mut bytes = Vec::with_capacity(area * 4);
@@ -651,6 +717,32 @@ fn choke_matte(matte: &[u8], width: usize, height: usize, choke: i8) -> Vec<u8> 
         let end = (y + radius + 1).min(height);
         for x in 0..width {
             output[y * width + x] = pick(&mut (start..end).map(|row| horizontal[row * width + x]));
+        }
+    }
+    output
+}
+
+/// Square box mean over windows clamped to the frame, rounded to nearest.
+fn soften_matte(matte: &[u8], width: usize, height: usize, radius: u8) -> Vec<u8> {
+    let radius = usize::from(radius);
+    let mut horizontal = vec![0_u32; matte.len()];
+    for y in 0..height {
+        let row = &matte[y * width..(y + 1) * width];
+        for x in 0..width {
+            let start = x.saturating_sub(radius);
+            let end = (x + radius + 1).min(width);
+            horizontal[y * width + x] = row[start..end].iter().map(|&value| u32::from(value)).sum();
+        }
+    }
+    let mut output = vec![0_u8; matte.len()];
+    for y in 0..height {
+        let rows = y.saturating_sub(radius)..(y + radius + 1).min(height);
+        let row_count = rows.len();
+        for x in 0..width {
+            let columns = (x + radius + 1).min(width) - x.saturating_sub(radius);
+            let count = u32::try_from(row_count * columns).unwrap_or(u32::MAX);
+            let sum: u32 = rows.clone().map(|row| horizontal[row * width + x]).sum();
+            output[y * width + x] = u8::try_from((sum + count / 2) / count).unwrap_or(u8::MAX);
         }
     }
     output

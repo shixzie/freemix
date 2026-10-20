@@ -36,8 +36,9 @@ pub use flatten::{
     execute_flatten_cpu_frame, plan_flatten,
 };
 pub use keying::{
-    AutoKey, AutoKeyError, AutoKeyOptions, AutoKeyRegion, Backing, Despill, KeyFill, KeyRefinement,
-    KeyRefinementError, MAX_AUTO_KEY_SAMPLES, MAX_CHOKE_RADIUS, chroma_cb_cr, sample_auto_key,
+    AutoKey, AutoKeyError, AutoKeyOptions, AutoKeyRegion, Backing, Despill, KeyChannel, KeyFill,
+    KeyRefinement, KeyRefinementError, MAX_AUTO_KEY_SAMPLES, MAX_CHOKE_RADIUS, MAX_EDGE_SOFTNESS,
+    chroma_cb_cr, sample_auto_key,
 };
 pub use multiview::{
     ConfidenceMode, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,

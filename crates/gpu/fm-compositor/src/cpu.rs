@@ -218,9 +218,7 @@ pub fn execute_cpu(
             };
             apply_layer_keying(
                 &frame,
-                key_frame
-                    .as_ref()
-                    .zip(layer.key_fill().map(|fill| fill.matte)),
+                key_frame.as_ref().zip(layer.key_fill()),
                 layer.key(),
                 layer.key_refinement().unwrap_or_default(),
                 layer.mask(),

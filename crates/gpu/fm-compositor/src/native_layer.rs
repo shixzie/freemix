@@ -1,5 +1,6 @@
-//! Native GPU layer preparation: per-layer chroma/luma keys, rect masks, and
-//! the CPU reference effects ([`ReferenceEffect`]).
+//! Native GPU layer preparation: per-layer chroma/luma keys, key/fill,
+//! key refinements, rect masks, and the CPU reference effects
+//! ([`ReferenceEffect`]).
 //!
 //! The CPU reference ([`crate::execute_cpu`]) keys and filters a layer on
 //! straight 8-bit sRGB-encoded BT.709 codes after crop. This module mirrors
@@ -14,6 +15,16 @@
 //! 2. one pass per non-`passthrough` effect, in order, with the exact integer
 //!    formula of [`crate::apply_reference_effect`] (`sharpen` reads
 //!    edge-clamped neighbours, `flip` mirrors whole pixels including alpha).
+//!
+//! A layer with a key/fill pair or a key refinement first builds a separate
+//! crop-sized *matte* with the formulas of [`crate::KeyRefinement`]: one pass
+//! computes the raw key alpha (from the layer's own source for a chroma or
+//! luma key, or from the key source's luma or alpha for key/fill) and clips
+//! it, then optional choke/spread (window min/max) and edge-softness (window
+//! mean) passes read the previous matte. The key stage then reads its alpha
+//! from that matte instead of computing it, applies chroma spill with the
+//! refined alpha, the optional green/blue despill, and the mask. Matte codes
+//! are stored as `code / 255`, exact through binary16.
 //!
 //! The first pass reads the canonical working texture (linear BT.2020,
 //! premultiplied) at the crop offset and decodes it like the grade pass:
@@ -37,9 +48,12 @@ use fm_gpu::{
 };
 use fm_video::CropRect;
 
-use crate::{Effect, Key, NativeCompositionError, PlanLayer, RectMask, ReferenceEffect};
+use crate::{
+    Backing, Despill, Effect, Key, KeyChannel, KeyFill, KeyRefinement, NativeCompositionError,
+    PlanLayer, RectMask, ReferenceEffect,
+};
 
-pub(crate) const LAYER_UNIFORM_SIZE: usize = 96;
+pub(crate) const LAYER_UNIFORM_SIZE: usize = 128;
 
 const OPERATION_KEY: u32 = 0;
 const OPERATION_LEVELS: u32 = 1;
@@ -47,19 +61,31 @@ const OPERATION_BRIGHTNESS_CONTRAST: u32 = 2;
 const OPERATION_SATURATION: u32 = 3;
 const OPERATION_SHARPEN: u32 = 4;
 const OPERATION_FLIP: u32 = 5;
+const OPERATION_MATTE: u32 = 6;
+const OPERATION_CHOKE: u32 = 7;
+const OPERATION_SOFTEN: u32 = 8;
 
 /// The pass reads the canonical working texture (otherwise straight codes).
 const FLAG_DECODE_INPUT: u32 = 1;
 /// The pass writes the canonical working texture (otherwise straight codes).
 const FLAG_ENCODE_OUTPUT: u32 = 2;
+/// The key stage reads its key alpha from the matte texture (binding 1).
+const FLAG_MATTE_INPUT: u32 = 4;
 
 const KEY_NONE: u32 = 0;
 const KEY_CHROMA: u32 = 1;
 const KEY_LUMA: u32 = 2;
+/// Key/fill: the luma-key ramp of the key source's luma or alpha.
+const KEY_FILL: u32 = 3;
+
+const DESPILL_NONE: u32 = 0;
+const DESPILL_GREEN: u32 = 1;
+const DESPILL_BLUE: u32 = 2;
 
 const LAYER_FRAGMENT_SHADER: &str = r"
 // Operations: 0 key stage, 1 levels, 2 brightness_contrast, 3 saturation,
-// 4 sharpen, 5 flip. Flags: 1 decode working input, 2 encode working output.
+// 4 sharpen, 5 flip, 6 matte, 7 choke/spread, 8 edge softness. Flags:
+// 1 decode working input, 2 encode working output, 4 key alpha from matte.
 struct LayerOperation {
     operation: u32,
     flags: u32,
@@ -84,11 +110,18 @@ struct LayerOperation {
     mask_top: u32,
     mask_right: u32,
     mask_bottom: u32,
+    matte_channel: u32,
+    clip_black: u32,
+    clip_white: u32,
+    despill_backing: u32,
+    despill_strength: u32,
     padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
 };
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
-@group(0) @binding(1) var unused_source_texture: texture_2d<f32>;
+@group(0) @binding(1) var matte_texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> op: LayerOperation;
 
 fn srgb_to_linear(encoded: f32) -> f32 {
@@ -186,16 +219,21 @@ fn ramp(distance: i32, softness: i32) -> i32 {
     return (distance * 255 + softness / 2) / softness;
 }
 
-fn key_factor(pixel: vec4<i32>) -> i32 {
+fn key_factor(codes: vec4<i32>) -> i32 {
     let softness = i32(op.key_softness);
     let low = i32(op.key_low);
     if op.key_kind == 1u {
         let key = vec3<i32>(i32(op.key_red), i32(op.key_green), i32(op.key_blue));
-        let delta = abs(pixel.rgb - key);
+        let delta = abs(codes.rgb - key);
         let distance = max(delta.r, max(delta.g, delta.b));
         return ramp(distance - low, softness);
     }
-    if op.key_kind == 2u {
+    if op.key_kind == 2u || op.key_kind == 3u {
+        var pixel = codes;
+        if op.key_kind == 3u && op.matte_channel == 1u {
+            // A gray pixel's fixed-point luma is exactly its level.
+            pixel = vec4<i32>(codes.a, codes.a, codes.a, 255);
+        }
         let luma = (54 * pixel.r + 183 * pixel.g + 19 * pixel.b + 128) / 256;
         var factor = ramp(luma - low, softness);
         let high = i32(op.key_high);
@@ -229,9 +267,87 @@ fn interpolate(value: i32, neutral: i32, amount: i32) -> i32 {
     return (value * (255 - amount) + neutral * amount + 127) / 255;
 }
 
+fn clip_matte(alpha: i32) -> i32 {
+    let black = i32(op.clip_black);
+    let white = i32(op.clip_white);
+    if alpha <= black {
+        return 0;
+    }
+    if alpha >= white {
+        return 255;
+    }
+    let range = white - black;
+    return ((alpha - black) * 255 + range / 2) / range;
+}
+
+fn load_matte(pixel: vec2<i32>) -> i32 {
+    let texel = textureLoad(source_texture, pixel, 0);
+    return clamp(i32(round(texel.r * 255.0)), 0, 255);
+}
+
+fn matte(pixel: vec2<u32>) -> vec4<i32> {
+    let alpha = clip_matte(key_factor(load_codes(pixel)));
+    return vec4<i32>(alpha, alpha, alpha, 255);
+}
+
+// Window min (parameter_1 != 0, choke) or max (spread) of the matte, with
+// the window clamped to the layer.
+fn choke(pixel: vec2<u32>) -> vec4<i32> {
+    let radius = i32(op.parameter_0);
+    let erode = op.parameter_1 != 0u;
+    let center = vec2<i32>(pixel);
+    let low = max(center - vec2<i32>(radius), vec2<i32>(0));
+    let high = min(center + vec2<i32>(radius), vec2<i32>(i32(op.width) - 1, i32(op.height) - 1));
+    var picked = 0;
+    if erode {
+        picked = 255;
+    }
+    for (var y = low.y; y <= high.y; y++) {
+        for (var x = low.x; x <= high.x; x++) {
+            let value = load_matte(vec2<i32>(x, y));
+            if erode {
+                picked = min(picked, value);
+            } else {
+                picked = max(picked, value);
+            }
+        }
+    }
+    return vec4<i32>(picked, picked, picked, 255);
+}
+
+// Rounded window mean of the matte, with the window clamped to the layer.
+fn soften(pixel: vec2<u32>) -> vec4<i32> {
+    let radius = i32(op.parameter_0);
+    let center = vec2<i32>(pixel);
+    let low = max(center - vec2<i32>(radius), vec2<i32>(0));
+    let high = min(center + vec2<i32>(radius), vec2<i32>(i32(op.width) - 1, i32(op.height) - 1));
+    var sum = 0;
+    for (var y = low.y; y <= high.y; y++) {
+        for (var x = low.x; x <= high.x; x++) {
+            sum += load_matte(vec2<i32>(x, y));
+        }
+    }
+    let size = high - low + vec2<i32>(1);
+    let count = size.x * size.y;
+    let mean = (sum + count / 2) / count;
+    return vec4<i32>(mean, mean, mean, 255);
+}
+
+fn suppress(dominant: i32, first: i32, second: i32) -> i32 {
+    let limit = (first + second + 1) / 2;
+    let excess = max(dominant - limit, 0);
+    return dominant - (excess * i32(op.despill_strength) + 127) / 255;
+}
+
 fn key_stage(pixel: vec2<u32>) -> vec4<i32> {
     var codes = load_codes(pixel);
-    let key_alpha = key_factor(codes);
+    var key_alpha: i32;
+    if (op.flags & 4u) != 0u {
+        let texel = textureLoad(matte_texture, vec2<i32>(pixel), 0);
+        key_alpha = clamp(i32(round(texel.r * 255.0)), 0, 255);
+    } else {
+        key_alpha = key_factor(codes);
+    }
     let factor = multiply_u8(key_alpha, mask_factor(pixel));
     let spill = i32(op.key_spill);
     if op.key_kind == 1u && spill != 0 && key_alpha != 255 {
@@ -243,6 +359,11 @@ fn key_stage(pixel: vec2<u32>) -> vec4<i32> {
         } else {
             codes.r = interpolate(codes.r, max(codes.g, codes.b), amount);
         }
+    }
+    if op.despill_backing == 1u {
+        codes.g = suppress(codes.g, codes.r, codes.b);
+    } else if op.despill_backing == 2u {
+        codes.b = suppress(codes.b, codes.r, codes.g);
     }
     codes.a = multiply_u8(codes.a, factor);
     return codes;
@@ -359,6 +480,15 @@ fn layer_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f
         case 4u: {
             codes = sharpen(pixel);
         }
+        case 6u: {
+            codes = matte(pixel);
+        }
+        case 7u: {
+            codes = choke(pixel);
+        }
+        case 8u: {
+            codes = soften(pixel);
+        }
         default: {
             codes = flip(pixel);
         }
@@ -394,17 +524,41 @@ pub(crate) fn native_effect(
         })
 }
 
+/// Which texture a preparation pass reads at binding 0.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PassInput {
+    /// The layer's own (fill) working source, at the crop offset.
+    Source,
+    /// The key/fill key source, at the crop offset.
+    KeySource,
+    /// The current matte.
+    Matte,
+    /// The previous image pass's output.
+    Previous,
+}
+
+/// One preparation pass: its uniform and texture routing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Pass {
+    uniform: [u8; LAYER_UNIFORM_SIZE],
+    input: PassInput,
+    /// Binds the current matte at binding 1 (the key stage).
+    reads_matte: bool,
+    /// The output becomes the current matte instead of the image.
+    writes_matte: bool,
+}
+
 /// The preparation passes of one layer, built before any GPU allocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LayerPreparation {
     width: u32,
     height: u32,
-    passes: Vec<[u8; LAYER_UNIFORM_SIZE]>,
+    passes: Vec<Pass>,
 }
 
 impl LayerPreparation {
-    /// Plans `layer`'s key/mask stage and effect passes over `crop`, or
-    /// returns `None` when the layer has neither a key nor a
+    /// Plans `layer`'s matte, key/mask stage, and effect passes over `crop`,
+    /// or returns `None` when the layer has no key, no key/fill, and no
     /// non-`passthrough` effect (its mask then stays in the composition
     /// pass).
     ///
@@ -423,37 +577,57 @@ impl LayerPreparation {
                 effects.push(effect);
             }
         }
-        if layer.key().is_none() && effects.is_empty() {
+        let keyed = layer.key().is_some() || layer.key_fill().is_some();
+        if !keyed && effects.is_empty() {
             return Ok(None);
         }
+        let key = KeyStage::of(layer);
+        let mut passes = Vec::with_capacity(effects.len() + 4);
+        let offset = (crop.x, crop.y);
+        let (width, height) = (crop.width, crop.height);
+        let refined = layer.key_fill().is_some() || layer.key_refinement().is_some();
+        if refined {
+            passes.extend(matte_passes(layer, key, crop));
+        }
         let mut operations = Vec::with_capacity(effects.len() + 1);
-        if layer.key().is_some() || layer.mask().is_some() {
-            operations.push(Operation::Key {
-                key: layer.key(),
-                mask: layer.mask(),
-            });
+        if keyed || layer.mask().is_some() {
+            operations.push(Operation::Key(key));
         }
         operations.extend(effects.into_iter().map(Operation::Effect));
         let last = operations.len() - 1;
-        let passes = operations
-            .into_iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                let first = index == 0;
-                let mut flags = 0;
-                if first {
-                    flags |= FLAG_DECODE_INPUT;
-                }
-                if index == last {
-                    flags |= FLAG_ENCODE_OUTPUT;
-                }
-                let offset = if first { (crop.x, crop.y) } else { (0, 0) };
-                encode_layer_uniform(operation, flags, offset, crop.width, crop.height)
-            })
-            .collect();
+        for (index, operation) in operations.into_iter().enumerate() {
+            let first = index == 0;
+            let mut flags = 0;
+            if first {
+                flags |= FLAG_DECODE_INPUT;
+            }
+            if index == last {
+                flags |= FLAG_ENCODE_OUTPUT;
+            }
+            let reads_matte = refined && matches!(operation, Operation::Key(_));
+            if reads_matte {
+                flags |= FLAG_MATTE_INPUT;
+            }
+            passes.push(Pass {
+                uniform: encode_layer_uniform(
+                    operation,
+                    flags,
+                    if first { offset } else { (0, 0) },
+                    width,
+                    height,
+                ),
+                input: if first {
+                    PassInput::Source
+                } else {
+                    PassInput::Previous
+                },
+                reads_matte,
+                writes_matte: false,
+            });
+        }
         Ok(Some(Self {
-            width: crop.width,
-            height: crop.height,
+            width,
+            height,
             passes,
         }))
     }
@@ -464,13 +638,135 @@ impl LayerPreparation {
     }
 }
 
+/// The matte chain of a key/fill or refined layer: the clipped raw matte
+/// (from the key source for key/fill, else the layer's own source), then
+/// optional choke/spread and edge-softness passes over it.
+fn matte_passes(layer: &PlanLayer, key: KeyStage, crop: CropRect) -> Vec<Pass> {
+    let (width, height) = (crop.width, crop.height);
+    let matte_pass = |operation, flags, offset, input| Pass {
+        uniform: encode_layer_uniform(operation, flags, offset, width, height),
+        input,
+        reads_matte: false,
+        writes_matte: true,
+    };
+    let input = if layer.key_fill().is_some() {
+        PassInput::KeySource
+    } else {
+        PassInput::Source
+    };
+    let mut passes = vec![matte_pass(
+        Operation::Matte(key),
+        FLAG_DECODE_INPUT,
+        (crop.x, crop.y),
+        input,
+    )];
+    if key.refinement.choke != 0 {
+        passes.push(matte_pass(
+            Operation::Choke(key.refinement.choke),
+            0,
+            (0, 0),
+            PassInput::Matte,
+        ));
+    }
+    if key.refinement.edge_softness != 0 {
+        passes.push(matte_pass(
+            Operation::Soften(key.refinement.edge_softness),
+            0,
+            (0, 0),
+            PassInput::Matte,
+        ));
+    }
+    passes
+}
+
+/// A layer's key-stage parameters.
+#[derive(Clone, Copy, Debug)]
+struct KeyStage {
+    key: Option<Key>,
+    fill: Option<KeyFill>,
+    mask: Option<RectMask>,
+    refinement: KeyRefinement,
+}
+
+impl KeyStage {
+    fn of(layer: &PlanLayer) -> Self {
+        Self {
+            key: layer.key(),
+            fill: layer.key_fill(),
+            mask: layer.mask(),
+            refinement: layer.key_refinement().unwrap_or_default(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Operation {
-    Key {
-        key: Option<Key>,
-        mask: Option<RectMask>,
-    },
+    /// The raw (clipped) matte.
+    Matte(KeyStage),
+    /// Matte choke (positive) or spread (negative).
+    Choke(i8),
+    /// Matte edge softness radius.
+    Soften(u8),
+    /// The key stage: key alpha, spill, despill, mask.
+    Key(KeyStage),
     Effect(ReferenceEffect),
+}
+
+fn encode_key_words(words: &mut [u32; LAYER_UNIFORM_SIZE / 4], stage: KeyStage) {
+    match (stage.key, stage.fill) {
+        (_, Some(fill)) => {
+            words[8] = KEY_FILL;
+            words[12] = u32::from(fill.matte.threshold);
+            words[13] = u32::from(fill.matte.softness);
+            words[15] = u32::from(fill.matte.high);
+            words[16] = u32::from(fill.matte.invert);
+            words[23] = match fill.channel {
+                KeyChannel::Luma => 0,
+                KeyChannel::Alpha => 1,
+            };
+        }
+        (None, None) => words[8] = KEY_NONE,
+        (Some(Key::Chroma(chroma)), None) => {
+            words[8] = KEY_CHROMA;
+            words[9] = u32::from(chroma.color.r);
+            words[10] = u32::from(chroma.color.g);
+            words[11] = u32::from(chroma.color.b);
+            words[12] = u32::from(chroma.tolerance);
+            words[13] = u32::from(chroma.softness);
+            words[14] = u32::from(chroma.spill);
+            words[15] = u32::from(u8::MAX);
+        }
+        (Some(Key::Luma(luma)), None) => {
+            words[8] = KEY_LUMA;
+            words[12] = u32::from(luma.threshold);
+            words[13] = u32::from(luma.softness);
+            words[15] = u32::from(luma.high);
+            words[16] = u32::from(luma.invert);
+        }
+    }
+    if let Some(mask) = stage.mask {
+        words[17] = 1;
+        words[18] = u32::from(mask.invert);
+        words[19] = mask.x;
+        words[20] = mask.y;
+        words[21] = mask.x.saturating_add(mask.width);
+        words[22] = mask.y.saturating_add(mask.height);
+    }
+    words[24] = u32::from(stage.refinement.clip_black);
+    words[25] = u32::from(stage.refinement.clip_white);
+    let (backing, strength) = match stage.refinement.despill {
+        None => (DESPILL_NONE, 0),
+        Some(Despill {
+            backing: Backing::Green,
+            strength,
+        }) => (DESPILL_GREEN, strength),
+        Some(Despill {
+            backing: Backing::Blue,
+            strength,
+        }) => (DESPILL_BLUE, strength),
+    };
+    words[26] = backing;
+    words[27] = u32::from(strength);
 }
 
 fn encode_layer_uniform(
@@ -488,36 +784,22 @@ fn encode_layer_uniform(
     words[5] = height;
     let signed = |value: i16| i32::from(value).cast_unsigned();
     match operation {
-        Operation::Key { key, mask } => {
+        Operation::Matte(stage) => {
+            words[0] = OPERATION_MATTE;
+            encode_key_words(&mut words, stage);
+        }
+        Operation::Choke(choke) => {
+            words[0] = OPERATION_CHOKE;
+            words[6] = u32::from(choke.unsigned_abs());
+            words[7] = u32::from(choke > 0);
+        }
+        Operation::Soften(radius) => {
+            words[0] = OPERATION_SOFTEN;
+            words[6] = u32::from(radius);
+        }
+        Operation::Key(stage) => {
             words[0] = OPERATION_KEY;
-            match key {
-                None => words[8] = KEY_NONE,
-                Some(Key::Chroma(chroma)) => {
-                    words[8] = KEY_CHROMA;
-                    words[9] = u32::from(chroma.color.r);
-                    words[10] = u32::from(chroma.color.g);
-                    words[11] = u32::from(chroma.color.b);
-                    words[12] = u32::from(chroma.tolerance);
-                    words[13] = u32::from(chroma.softness);
-                    words[14] = u32::from(chroma.spill);
-                    words[15] = u32::from(u8::MAX);
-                }
-                Some(Key::Luma(luma)) => {
-                    words[8] = KEY_LUMA;
-                    words[12] = u32::from(luma.threshold);
-                    words[13] = u32::from(luma.softness);
-                    words[15] = u32::from(luma.high);
-                    words[16] = u32::from(luma.invert);
-                }
-            }
-            if let Some(mask) = mask {
-                words[17] = 1;
-                words[18] = u32::from(mask.invert);
-                words[19] = mask.x;
-                words[20] = mask.y;
-                words[21] = mask.x.saturating_add(mask.width);
-                words[22] = mask.y.saturating_add(mask.height);
-            }
+            encode_key_words(&mut words, stage);
         }
         Operation::Effect(effect) => match effect {
             ReferenceEffect::Levels { black, white } => {
@@ -590,45 +872,54 @@ impl NativeLayerRenderer {
         Ok(Self { pipeline })
     }
 
-    /// Runs `preparation`'s passes over the canonical working `source`,
-    /// returning a crop-sized canonical working texture.
+    /// Runs `preparation`'s passes over the canonical working `source` (and
+    /// `key_source` for a key/fill layer), returning a crop-sized canonical
+    /// working texture.
     ///
     /// # Errors
     ///
     /// Returns a mapped GPU resource, context, or validation error.
+    ///
+    /// # Panics
+    ///
+    /// When a key/fill preparation is run without its `key_source` (the
+    /// caller validates key sources before any GPU work).
     pub(crate) async fn prepare(
         &self,
         context: &NativeContext,
         source: &NativeTexture,
+        key_source: Option<&NativeTexture>,
         preparation: &LayerPreparation,
     ) -> Result<NativeTexture, NativeGpuError> {
-        // `plan` never builds an empty pass list; the first pass reads the
-        // source, each later pass the previous output.
-        let (first, rest) = preparation
-            .passes
-            .split_first()
-            .expect("a layer preparation has at least one pass");
-        let mut current = self.pass(context, source, preparation, first).await?;
-        for uniform in rest {
-            current = self.pass(context, &current, preparation, uniform).await?;
+        // `plan` always ends with an image pass, and every matte/previous
+        // read follows the pass that produced it.
+        let mut image: Option<NativeTexture> = None;
+        let mut matte: Option<NativeTexture> = None;
+        for pass in &preparation.passes {
+            let input = match pass.input {
+                PassInput::Source => source,
+                PassInput::KeySource => key_source.expect("key/fill layers have a key source"),
+                PassInput::Matte => matte.as_ref().expect("a matte pass precedes its readers"),
+                PassInput::Previous => image.as_ref().expect("an image pass precedes this one"),
+            };
+            let second = if pass.reads_matte {
+                matte.as_ref().expect("the key stage follows its matte")
+            } else {
+                input
+            };
+            let output = context
+                .create_rgba16_float_render_target(preparation.width, preparation.height)
+                .await?;
+            context
+                .submit_fullscreen(&self.pipeline, input, second, &output, &pass.uniform)
+                .await?;
+            if pass.writes_matte {
+                matte = Some(output);
+            } else {
+                image = Some(output);
+            }
         }
-        Ok(current)
-    }
-
-    async fn pass(
-        &self,
-        context: &NativeContext,
-        input: &NativeTexture,
-        preparation: &LayerPreparation,
-        uniform: &[u8; LAYER_UNIFORM_SIZE],
-    ) -> Result<NativeTexture, NativeGpuError> {
-        let output = context
-            .create_rgba16_float_render_target(preparation.width, preparation.height)
-            .await?;
-        context
-            .submit_fullscreen(&self.pipeline, input, input, &output, uniform)
-            .await?;
-        Ok(output)
+        Ok(image.expect("a layer preparation ends with an image pass"))
     }
 }
 
@@ -699,19 +990,23 @@ mod tests {
         let preparation = LayerPreparation::plan(3, &keyed, crop).unwrap().unwrap();
         assert_eq!(preparation.size(), (5, 4));
         assert_eq!(preparation.passes.len(), 3);
-        let key = words(&preparation.passes[0]);
+        let key = words(&preparation.passes[0].uniform);
         assert_eq!(
             key,
             [
-                0, 1, 2, 3, 5, 4, 0, 0, 1, 10, 200, 30, 40, 20, 128, 255, 0, 1, 1, 1, 1, 3, 3, 0
+                0, 1, 2, 3, 5, 4, 0, 0, 1, 10, 200, 30, 40, 20, 128, 255, 0, 1, 1, 1, 1, 3, 3, 0,
+                0, 255, 0, 0, 0, 0, 0, 0
             ]
         );
-        let contrast = words(&preparation.passes[1]);
+        assert_eq!(preparation.passes[0].input, PassInput::Source);
+        assert!(!preparation.passes[0].reads_matte);
+        let contrast = words(&preparation.passes[1].uniform);
         assert_eq!(
             contrast[..8],
             [2, 0, 0, 0, 5, 4, (-20_i32).cast_unsigned(), 35]
         );
-        let flip = words(&preparation.passes[2]);
+        assert_eq!(preparation.passes[1].input, PassInput::Previous);
+        let flip = words(&preparation.passes[2].uniform);
         assert_eq!(flip[..8], [5, 2, 0, 0, 5, 4, 1, 0]);
 
         let luma = layer(
@@ -722,9 +1017,91 @@ mod tests {
         let preparation = LayerPreparation::plan(0, &luma, CropRect::new(0, 0, 4, 4))
             .unwrap()
             .unwrap();
-        let luma = words(&preparation.passes[0]);
+        let luma = words(&preparation.passes[0].uniform);
         assert_eq!(luma[..2], [0, 3]);
         assert_eq!(luma[8..18], [2, 0, 0, 0, 30, 10, 0, 200, 1, 0]);
+    }
+
+    #[test]
+    fn key_fill_and_refinements_build_a_matte_chain_before_the_key_stage() {
+        let crop = CropRect::new(1, 2, 6, 3);
+        let fill = layer(
+            base()
+                .with_crop(crop)
+                .with_key_fill(
+                    KeyFill::new(SourceId::new(2), LumaKey::new(16, 200, true).with_high(240))
+                        .with_channel(KeyChannel::Alpha),
+                )
+                .with_key_refinement(
+                    KeyRefinement::new()
+                        .with_clip(10, 220)
+                        .with_choke(-3)
+                        .with_edge_softness(2)
+                        .with_despill(Despill::new(Backing::Blue, 90)),
+                )
+                .with_effect(Effect::new("saturation", vec![10])),
+        );
+        let preparation = LayerPreparation::plan(0, &fill, crop).unwrap().unwrap();
+        let routing = preparation
+            .passes
+            .iter()
+            .map(|pass| (pass.input, pass.reads_matte, pass.writes_matte))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            routing,
+            [
+                (PassInput::KeySource, false, true),
+                (PassInput::Matte, false, true),
+                (PassInput::Matte, false, true),
+                (PassInput::Source, true, false),
+                (PassInput::Previous, false, false),
+            ]
+        );
+        let matte = words(&preparation.passes[0].uniform);
+        assert_eq!(matte[..6], [6, 1, 1, 2, 6, 3]);
+        assert_eq!(matte[8..17], [3, 0, 0, 0, 16, 200, 0, 240, 1]);
+        assert_eq!(matte[23..28], [1, 10, 220, 2, 90]);
+        assert_eq!(
+            words(&preparation.passes[1].uniform)[..8],
+            [7, 0, 0, 0, 6, 3, 3, 0]
+        );
+        assert_eq!(
+            words(&preparation.passes[2].uniform)[..7],
+            [8, 0, 0, 0, 6, 3, 2]
+        );
+        let key = words(&preparation.passes[3].uniform);
+        assert_eq!(key[..4], [0, 1 | 4, 1, 2]);
+        assert_eq!(words(&preparation.passes[4].uniform)[..2], [3, 2]);
+
+        // A refined chroma key keys its own source; a choke-free refinement
+        // needs only the matte pass.
+        let refined = layer(
+            base()
+                .with_key(Key::Chroma(ChromaKey::new(
+                    Rgba8::new(0, 255, 0, 255),
+                    9,
+                    9,
+                    0,
+                )))
+                .with_key_refinement(KeyRefinement::new().with_choke(2)),
+        );
+        let crop = CropRect::new(0, 0, 4, 4);
+        let preparation = LayerPreparation::plan(0, &refined, crop).unwrap().unwrap();
+        let routing = preparation
+            .passes
+            .iter()
+            .map(|pass| (pass.input, pass.reads_matte, pass.writes_matte))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            routing,
+            [
+                (PassInput::Source, false, true),
+                (PassInput::Matte, false, true),
+                (PassInput::Source, true, false),
+            ]
+        );
+        assert_eq!(words(&preparation.passes[1].uniform)[6..8], [2, 1]);
+        assert_eq!(words(&preparation.passes[2].uniform)[1], 1 | 2 | 4);
     }
 
     #[test]

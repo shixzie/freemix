@@ -581,3 +581,101 @@ fn planner_rejects_invalid_key_combinations() {
         .is_ok()
     );
 }
+
+#[test]
+fn edge_softness_averages_the_matte_over_frame_clamped_windows() {
+    let linear = Key::Luma(LumaKey::new(0, 255, false));
+    let source = frame(3, 1, &[gray(255), gray(0), gray(0)]);
+    let plan = compile(
+        3,
+        1,
+        layer(3, 1)
+            .with_key(linear)
+            .with_key_refinement(KeyRefinement::new().with_edge_softness(1)),
+    )
+    .unwrap();
+    // Windows: {255, 0} -> (255 + 1) / 2 = 128; {255, 0, 0} -> (255 + 1) / 3
+    // = 85; {0, 0} -> 0.
+    assert_eq!(
+        pixels(&run(&plan, &[(1, &source)])),
+        [
+            Rgba8::new(128, 128, 128, 128),
+            Rgba8::new(0, 0, 0, 85),
+            CLEAR
+        ]
+    );
+
+    // Softness follows choke: the spread single white pixel is then
+    // averaged.
+    let source = frame(3, 1, &[gray(0), gray(255), gray(0)]);
+    let plan = compile(
+        3,
+        1,
+        layer(3, 1)
+            .with_key(linear)
+            .with_key_refinement(KeyRefinement::new().with_choke(1).with_edge_softness(1)),
+    )
+    .unwrap();
+    // Choke 1 erodes everything to 0.
+    assert_eq!(pixels(&run(&plan, &[(1, &source)])), [CLEAR; 3]);
+
+    assert_eq!(
+        compile(
+            1,
+            1,
+            layer(1, 1)
+                .with_key(linear)
+                .with_key_refinement(KeyRefinement::new().with_edge_softness(9))
+        ),
+        Err(PlanError::InvalidKeyRefinement {
+            layer: 0,
+            reason: KeyRefinementError::EdgeSoftnessOutOfRange {
+                radius: 9,
+                maximum: 8,
+            },
+        })
+    );
+}
+
+#[test]
+fn alpha_channel_key_fill_reads_the_key_source_alpha() {
+    let fill = uniform(3, 1, gray(255));
+    // RGB is ignored: only the stored alpha drives the matte.
+    let key = frame(
+        3,
+        1,
+        &[
+            Rgba8::new(0, 0, 0, 200),
+            Rgba8::new(255, 255, 255, 0),
+            Rgba8::new(9, 9, 9, 255),
+        ],
+    );
+    let plan = compile(
+        3,
+        1,
+        layer(3, 1).with_key_fill(
+            KeyFill::linear(SourceId::new(2)).with_channel(fm_compositor::KeyChannel::Alpha),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pixels(&run(&plan, &[(1, &fill), (2, &key)])),
+        [Rgba8::new(200, 200, 200, 200), CLEAR, gray(255)]
+    );
+
+    // Gain and invert apply to the alpha too: threshold 100, softness 100,
+    // inverted -> alpha 200 keys to 255 - 255 = 0, alpha 0 to 255.
+    let plan = compile(
+        3,
+        1,
+        layer(3, 1).with_key_fill(
+            KeyFill::new(SourceId::new(2), LumaKey::new(100, 100, true))
+                .with_channel(fm_compositor::KeyChannel::Alpha),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pixels(&run(&plan, &[(1, &fill), (2, &key)])),
+        [CLEAR, gray(255), CLEAR]
+    );
+}
