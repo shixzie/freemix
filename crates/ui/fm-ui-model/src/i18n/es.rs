@@ -8696,6 +8696,59 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::UserShortcutImportNoId,
         t("no queda ningún id de atajo libre"),
     ),
+    (Msg::UserShortcutLocalLabel, t("Esta consola")),
+    (
+        Msg::UserShortcutLocalHover,
+        t(
+            "La tecla que dispara este atajo en esta consola. Se guarda en las preferencias de esta consola, no en el proyecto, así que las demás consolas conservan la tecla del proyecto",
+        ),
+    ),
+    (Msg::UserShortcutLocalProject, t("Tecla del proyecto")),
+    (Msg::UserShortcutLocalNone, t("Sin tecla en esta consola")),
+    (
+        Msg::UserShortcutLocalCapturing,
+        t("Pulse ahora la tecla de esta consola (Esc conserva la anterior)"),
+    ),
+    (Msg::UserShortcutSetLocal, t("Tecla de la consola")),
+    (
+        Msg::UserShortcutSetLocalHover,
+        t(
+            "Capturar la próxima tecla que pulse como tecla de este atajo solo en esta consola; el proyecto y las demás consolas conservan la suya",
+        ),
+    ),
+    (Msg::UserShortcutUseProject, t("Usar la tecla del proyecto")),
+    (
+        Msg::UserShortcutUseProjectHover,
+        t(
+            "Quitar la tecla propia de esta consola para que el atajo vuelva a responder aquí a la tecla del proyecto",
+        ),
+    ),
+    (Msg::UserShortcutNoLocalKey, t("Sin tecla aquí")),
+    (
+        Msg::UserShortcutNoLocalKeyHover,
+        t("Dejar el atajo sin tecla en esta consola; las demás consolas conservan la suya"),
+    ),
+    (
+        Msg::UserShortcutLocalTaken,
+        t("En esta consola el atajo {name} ya responde a esta tecla"),
+    ),
+    (
+        Msg::UserShortcutLocalShadowed,
+        t("En esta consola {name} responde a esta tecla del proyecto en su lugar"),
+    ),
+    (Msg::UserShortcutListLocal, t("{keys} (esta consola)")),
+    (
+        Msg::UserShortcutReasonProjectKeyHere,
+        t("el atajo ya responde aquí a la tecla del proyecto"),
+    ),
+    (
+        Msg::UserShortcutReasonNoKeyHere,
+        t("el atajo ya no tiene tecla en esta consola"),
+    ),
+    (
+        Msg::UserShortcutReasonOverrideLimit,
+        t("esta consola no guarda más teclas propias"),
+    ),
     (Msg::CueActSlideNext, t("Diapositiva siguiente")),
     (Msg::CueActSlidePrevious, t("Diapositiva anterior")),
     (Msg::CueActSlideFirst, t("Primera diapositiva")),

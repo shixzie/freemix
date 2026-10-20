@@ -2763,3 +2763,78 @@ fn the_timeline_snapping_toggle_round_trips_and_saves_debounced() {
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn console_keys_for_project_shortcuts_round_trip_and_save_debounced() {
+    use core::num::NonZeroU128;
+
+    use fm_protocol::WireShortcutKey;
+    use fm_types::ProjectId;
+    use fm_ui_egui::ShortcutKeyOverrides;
+
+    let project = ProjectId::new(NonZeroU128::new(42).unwrap());
+    let mut overrides = ShortcutKeyOverrides::default();
+    assert!(overrides.set(
+        project,
+        3,
+        Some(WireShortcutKey {
+            key: "F9".into(),
+            command: true,
+            shift: false,
+            alt: true,
+        })
+    ));
+    assert!(overrides.set(project, 4, None));
+    let keyed = SavedPreferences {
+        shortcut_keys: Some(overrides.clone()),
+        ..SavedPreferences::default()
+    };
+    let text = keyed.render();
+    assert!(text.contains("shortcut.key.42.3 = Ctrl+Alt+F9\n"), "{text}");
+    assert!(text.contains("shortcut.key.42.4 = none\n"), "{text}");
+    assert_eq!(SavedPreferences::parse(&text), keyed);
+    // A bad line is skipped, and is never read as a layout entry.
+    let parsed = SavedPreferences::parse("shortcut.key.42.3 = Alt+Ctrl+F9\n");
+    assert_eq!(parsed.shortcut_keys, None);
+    assert_eq!(parsed.layout, None);
+
+    let directory = scratch_directory("shortcut-key-prefs");
+    let path = directory.join("studio.conf");
+    let file = SavedPreferences::from_locale(Locale::ENGLISH);
+    file.save(&path).unwrap();
+    let layout = ConsoleLayout::default();
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        file,
+        Locale::ENGLISH,
+        layout.clone(),
+        Appearance::default(),
+    );
+    let start = Instant::now();
+    let delay = freemix_studio::SAVE_DELAY;
+    store.note_shortcut_keys(start, &ShortcutKeyOverrides::default());
+    assert!(!store.is_pending(), "unchanged");
+    store.note_shortcut_keys(start, &overrides);
+    assert_eq!(
+        store
+            .observe_at(start, Locale::ENGLISH, &layout, Appearance::default())
+            .unwrap(),
+        Some(delay)
+    );
+    store.note_shortcut_keys(start + delay, &overrides);
+    assert_eq!(
+        store
+            .observe_at(
+                start + delay,
+                Locale::ENGLISH,
+                &layout,
+                Appearance::default()
+            )
+            .unwrap(),
+        None
+    );
+    let saved = SavedPreferences::load(&path).unwrap();
+    assert_eq!(saved.shortcut_keys, Some(overrides));
+    assert_eq!(saved.language, Some(Language::English), "the rest is kept");
+    std::fs::remove_dir_all(&directory).unwrap();
+}

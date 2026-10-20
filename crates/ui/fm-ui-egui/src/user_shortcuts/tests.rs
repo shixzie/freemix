@@ -427,7 +427,7 @@ fn a_new_draft_after_the_largest_id_takes_the_lowest_free_one() {
 #[test]
 fn the_keyboard_reference_lists_project_shortcuts() {
     let state = shortcuts_fixture(true);
-    let rows = reference_rows(Locale::ENGLISH, &state);
+    let rows = reference_rows(Locale::ENGLISH, &state, &ShortcutKeyOverrides::default());
     assert_eq!(
         rows,
         vec![
@@ -442,7 +442,11 @@ fn the_keyboard_reference_lists_project_shortcuts() {
             ("Alt+J".to_owned(), "Scores (off)".to_owned()),
         ]
     );
-    let spanish = reference_rows(Locale::new(fm_ui_model::i18n::Language::Spanish), &state);
+    let spanish = reference_rows(
+        Locale::new(fm_ui_model::i18n::Language::Spanish),
+        &state,
+        &ShortcutKeyOverrides::default(),
+    );
     assert_eq!(spanish[1].0, "Solo OSC");
     assert_eq!(spanish[2].1, "Scores (desactivado)");
 }
@@ -660,4 +664,164 @@ fn the_set_file_row_exports_what_is_saved_and_imports_only_with_edit_rights() {
         ]
     );
     assert_eq!(shell.take_preset_file_requests(), Vec::new());
+}
+
+fn project() -> fm_types::ProjectId {
+    fm_types::ProjectId::new(core::num::NonZeroU128::new(1).unwrap())
+}
+
+/// A console key replaces the project key on this console only, takes
+/// the key from a shortcut whose project key it is, and "no key here"
+/// silences a shortcut here.
+#[test]
+fn console_keys_replace_project_keys_on_this_console() {
+    let state = shortcuts_fixture(true);
+    let mut shell = StudioShell::default();
+    let f2 = key_event(Key::F2, press(true, false, false), false);
+    let f9 = key_event(Key::F9, Modifiers::NONE, false);
+    let alt_j = key_event(Key::J, press(false, false, true), false);
+    assert!(
+        shell
+            .shortcut_keys
+            .set(project(), 1, Some(key("F2", true, false, false)))
+    );
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![f2], false),
+        vec![fire(1)]
+    );
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![f9.clone()], false),
+        Vec::new(),
+        "the project key no longer fires here"
+    );
+
+    // Shortcut 2 (OSC only) takes F9 here; shortcut 1 keeps Ctrl+F2.
+    assert!(
+        shell
+            .shortcut_keys
+            .set(project(), 2, Some(key("F9", false, false, false)))
+    );
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![f9], false),
+        vec![fire(2)]
+    );
+
+    // No key here: Alt+J no longer reaches shortcut 3.
+    assert!(shell.shortcut_keys.set(project(), 3, None));
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![alt_j.clone()], false),
+        Vec::new()
+    );
+    assert_eq!(toasts(&shell), Vec::<String>::new());
+    shell.shortcut_keys.clear(project(), 3);
+    // Shortcut 3 is disabled, so its key is swallowed and announced.
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![alt_j], false),
+        Vec::new()
+    );
+    assert_eq!(toasts(&shell).len(), 1);
+
+    // Another project's overrides do not apply.
+    let mut other = StudioShell::default();
+    let elsewhere = fm_types::ProjectId::new(core::num::NonZeroU128::new(2).unwrap());
+    assert!(other.shortcut_keys.set(elsewhere, 1, None));
+    let f9 = key_event(Key::F9, Modifiers::NONE, false);
+    assert_eq!(
+        run_frame(&mut other, &state, vec![f9], false),
+        vec![fire(1)]
+    );
+}
+
+#[test]
+fn a_console_key_capture_refuses_console_keys_and_keys_taken_here() {
+    let state = shortcuts_fixture(true);
+    let mut overrides = ShortcutKeyOverrides::default();
+    let keys = ConsoleKeys::of(&state, &overrides);
+    assert_eq!(local_capture(keys, 3, Captured::Cancel), None);
+    assert_eq!(
+        local_capture(keys, 3, Captured::Unsupported),
+        Some(Err(LocalRefusal::Unsupported))
+    );
+    assert_eq!(
+        local_capture(keys, 3, Captured::Key(key("B", false, false, false))),
+        Some(Err(LocalRefusal::Reserved("B")))
+    );
+    assert_eq!(
+        local_capture(keys, 3, Captured::Key(key("F9", false, false, false))),
+        Some(Err(LocalRefusal::Taken("Lower third".into())))
+    );
+    // Its own project key is fine.
+    assert_eq!(
+        local_capture(keys, 1, Captured::Key(key("F9", false, false, false))),
+        Some(Ok(key("F9", false, false, false)))
+    );
+    // Once Lower third answers Ctrl+F2 here, F9 is free and Ctrl+F2 taken.
+    overrides.set(project(), 1, Some(key("F2", true, false, false)));
+    let keys = ConsoleKeys::of(&state, &overrides);
+    assert_eq!(
+        local_capture(keys, 3, Captured::Key(key("F9", false, false, false))),
+        Some(Ok(key("F9", false, false, false)))
+    );
+    assert_eq!(
+        local_capture(keys, 3, Captured::Key(key("F2", true, false, false))),
+        Some(Err(LocalRefusal::Taken("Lower third".into())))
+    );
+}
+
+/// "Set console key" binds the next press in this console's preferences
+/// and sends nothing; the list and the keyboard reference show it.
+#[test]
+fn set_console_key_binds_the_next_press_locally() {
+    let state = shortcuts_fixture(false);
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    shell.open_user_shortcuts(&state);
+    shell.user_shortcuts.capturing_local = true;
+    context.begin_pass(egui::RawInput {
+        events: vec![key_event(Key::F10, press(false, true, false), false)],
+        ..Default::default()
+    });
+    let mut intents = Vec::new();
+    shell.draw_user_shortcuts_window(&context, &state, &mut intents);
+    let _ = context.end_pass();
+    assert_eq!(intents, Vec::new(), "a viewer may set a console key");
+    assert!(!shell.user_shortcuts.capturing_local);
+    assert_eq!(shell.user_shortcuts.local_refusal, None);
+    assert_eq!(
+        shell.shortcut_key_overrides().get(project(), 1),
+        Some(&Some(key("F10", false, true, false)))
+    );
+    assert!(
+        !shell.user_shortcuts.dirty(),
+        "the project draft is untouched"
+    );
+
+    let rows = reference_rows(Locale::ENGLISH, &state, shell.shortcut_key_overrides());
+    assert_eq!(rows[0].0, "Shift+F10 (this console)");
+    let spanish = reference_rows(
+        Locale::new(fm_ui_model::i18n::Language::Spanish),
+        &state,
+        shell.shortcut_key_overrides(),
+    );
+    assert_ne!(spanish[0].0, rows[0].0);
+    let keys = ConsoleKeys::of(&state, shell.shortcut_key_overrides());
+    assert_eq!(
+        row_text(Locale::ENGLISH, keys, &audit_shortcuts()[0]),
+        "Lower third  Shift+F10 (this console)"
+    );
+
+    // A console key is refused and reported, binding nothing.
+    shell.user_shortcuts.select(&audit_shortcuts(), Some(3));
+    shell.user_shortcuts.capturing_local = true;
+    context.begin_pass(egui::RawInput {
+        events: vec![key_event(Key::B, Modifiers::NONE, false)],
+        ..Default::default()
+    });
+    shell.draw_user_shortcuts_window(&context, &state, &mut intents);
+    let _ = context.end_pass();
+    assert_eq!(
+        shell.user_shortcuts.local_refusal,
+        Some(LocalRefusal::Reserved("B"))
+    );
+    assert_eq!(shell.shortcut_key_overrides().get(project(), 3), None);
 }

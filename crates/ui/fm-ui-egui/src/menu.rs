@@ -1511,6 +1511,7 @@ impl StudioShell {
         if self.show_shortcuts {
             let (status, tone) = shortcut_status(l, state);
             let columns = shortcut_columns(context.viewport_rect().width());
+            let overrides = &self.shortcut_keys;
             let response = help_modal(
                 context,
                 "studio-shortcuts-window",
@@ -1569,7 +1570,7 @@ impl StudioShell {
                                             shortcut_group(ui, l, *group, column);
                                         }
                                         if index == project {
-                                            user_shortcut_group(ui, l, state, column);
+                                            user_shortcut_group(ui, l, state, overrides, column);
                                         }
                                     });
                                 }
@@ -1776,12 +1777,18 @@ fn project_column(first: &[ShortcutGroup], second: &[ShortcutGroup]) -> usize {
 
 /// The project's own shortcuts (RC-004) under the console's: each key (or
 /// "OSC only") beside its shortcut's name, else where to add them.
-fn user_shortcut_group(ui: &mut Ui, l: Locale, state: &StudioUiState, column: f32) {
+fn user_shortcut_group(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    overrides: &crate::ShortcutKeyOverrides,
+    column: f32,
+) {
     ui.add_space(10.0);
     ui.label(section_label(l.text(Msg::UserShortcutsGroup)));
     ui.add_space(2.0);
     let action_width = (SHORTCUT_COLUMN_WIDTH - column - 16.0).max(120.0);
-    let rows = crate::user_shortcuts::reference_rows(l, state);
+    let rows = crate::user_shortcuts::reference_rows(l, state, overrides);
     if rows.is_empty() {
         ui.label(RichText::new(l.text(Msg::UserShortcutsReferenceEmpty)).color(muted_color()));
         return;

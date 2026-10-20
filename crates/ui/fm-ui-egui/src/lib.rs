@@ -75,6 +75,7 @@ mod preset_files;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
+mod shortcut_keys;
 mod source_sync_ui;
 mod still_input_ui;
 mod stinger_config;
@@ -135,6 +136,7 @@ pub use preferences::Appearance;
 pub use preset_files::{ExportLut, ExportedLut, ImportedLut, PresetFileAnswer, PresetFileRequest};
 pub use scene_designer::SCENE_DESIGNER_SHORTCUT;
 pub use scripts::{ScriptIntent, run_block as script_run_block, save_block as script_save_block};
+pub use shortcut_keys::{MAX_KEY_OVERRIDES, ShortcutKeyOverrides};
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
@@ -1638,6 +1640,9 @@ pub struct StudioShell {
     web_access: web_access::WebAccessWindow,
     scripts: scripts::ScriptsWindow,
     user_shortcuts: user_shortcuts::ShortcutsWindow,
+    /// This console's own keys for project shortcuts, a console
+    /// preference (RC-004).
+    shortcut_keys: ShortcutKeyOverrides,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
     stream_targets: stream_targets::StreamTargetsUi,
     /// Tab drags, native window placement, and the layout name dialog.
@@ -1734,6 +1739,19 @@ impl StudioShell {
     /// one restored from preferences.
     pub const fn set_timeline_snapping(&mut self, snapping: bool) {
         self.animation.set_snapping(snapping);
+    }
+
+    /// This console's own keys for project shortcuts, a console
+    /// preference the host saves (RC-004).
+    #[must_use]
+    pub const fn shortcut_key_overrides(&self) -> &ShortcutKeyOverrides {
+        &self.shortcut_keys
+    }
+
+    /// Restores this console's own keys for project shortcuts, for
+    /// example from preferences.
+    pub fn set_shortcut_key_overrides(&mut self, overrides: ShortcutKeyOverrides) {
+        self.shortcut_keys = overrides;
     }
 
     /// Returns to the Default layout and default sizes, docking every
@@ -2171,6 +2189,7 @@ impl Default for StudioShell {
             web_access: web_access::WebAccessWindow::default(),
             scripts: scripts::ScriptsWindow::default(),
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
+            shortcut_keys: ShortcutKeyOverrides::default(),
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
         }

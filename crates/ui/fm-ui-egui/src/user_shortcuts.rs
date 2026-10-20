@@ -31,10 +31,12 @@ use fm_protocol::{
     MAX_SHORTCUT_OSC_BYTES, MAX_SHORTCUTS, ShortcutSpec, ShortcutStatus, WireCue, WireCueAction,
     WireShortcutAction, WireShortcutCueOperation, WireShortcutKey,
 };
+use fm_types::ProjectId;
 
 use crate::gating::Hint;
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::preset_files::PresetFileRequest;
+use crate::shortcut_keys::{MAX_KEY_OVERRIDES, ShortcutKeyOverrides};
 use crate::theme::{
     ACCENT_FILL, ERROR, accent_color, caption, empty_state, field_label, muted_color,
     section_label, small_button, text_color,
@@ -346,27 +348,88 @@ fn captured_key(key: Key, modifiers: Modifiers) -> Captured {
     }
 }
 
-/// The shortcut a press of `key` with `modifiers` names: one whose key
-/// matches exactly and does not shadow a console key.
-#[must_use]
-pub(crate) fn pressed(
-    shortcuts: &[ShortcutStatus],
-    key: Key,
-    modifiers: Modifiers,
-) -> Option<&ShortcutStatus> {
-    shortcuts.iter().find(|shortcut| {
-        shortcut.spec.key.as_ref().is_some_and(|bound| {
-            Key::from_name(&bound.key) == Some(key)
-                && modifiers.matches_exact(pattern(bound))
-                && reserved_by(bound).is_none()
+/// The keys project shortcuts answer on this console: each shortcut's
+/// console key (see [`crate::shortcut_keys`]) when this console gives it
+/// one, else its project key unless another shortcut's console key took
+/// that key here.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConsoleKeys<'a> {
+    pub(crate) shortcuts: &'a [ShortcutStatus],
+    pub(crate) overrides: &'a ShortcutKeyOverrides,
+    /// The project the overrides are looked up under (none before a
+    /// snapshot, when no override applies).
+    pub(crate) project: Option<ProjectId>,
+}
+
+impl<'a> ConsoleKeys<'a> {
+    /// The replicated shortcuts under `overrides`.
+    pub(crate) fn of(state: &'a StudioUiState, overrides: &'a ShortcutKeyOverrides) -> Self {
+        Self {
+            shortcuts: replicated(state),
+            overrides,
+            project: state.view.as_ref().map(|view| view.cursor.project_id),
+        }
+    }
+
+    /// This console's override of `shortcut`: `None` without one,
+    /// `Some(&None)` for no key here.
+    pub(crate) fn local(self, shortcut: u64) -> Option<&'a Option<WireShortcutKey>> {
+        self.overrides.get(self.project?, shortcut)
+    }
+
+    /// The other shortcut whose console key is `key`, if one's is.
+    pub(crate) fn local_owner(
+        self,
+        shortcut: u64,
+        key: &WireShortcutKey,
+    ) -> Option<&'a ShortcutStatus> {
+        self.shortcuts.iter().find(|other| {
+            other.id != shortcut
+                && matches!(self.local(other.id), Some(Some(found)) if found == key)
         })
-    })
+    }
+
+    /// The key `shortcut` answers here and whether it is this console's
+    /// own, or `None` when it answers no key here.
+    pub(crate) fn key(self, shortcut: &'a ShortcutStatus) -> Option<(&'a WireShortcutKey, bool)> {
+        if let Some(local) = self.local(shortcut.id) {
+            return local.as_ref().map(|key| (key, true));
+        }
+        let key = shortcut.spec.key.as_ref()?;
+        self.local_owner(shortcut.id, key)
+            .is_none()
+            .then_some((key, false))
+    }
+
+    /// The other shortcut that answers `key` here, if one does.
+    pub(crate) fn answering(
+        self,
+        shortcut: u64,
+        key: &WireShortcutKey,
+    ) -> Option<&'a ShortcutStatus> {
+        self.shortcuts.iter().find(|other| {
+            other.id != shortcut && self.key(other).is_some_and(|(found, _)| found == key)
+        })
+    }
+
+    /// The shortcut a press of `key` with `modifiers` names: one whose key
+    /// here matches exactly and does not shadow a console key.
+    #[must_use]
+    pub(crate) fn pressed(self, key: Key, modifiers: Modifiers) -> Option<&'a ShortcutStatus> {
+        self.shortcuts.iter().find(|shortcut| {
+            self.key(shortcut).is_some_and(|(bound, _)| {
+                Key::from_name(&bound.key) == Some(key)
+                    && modifiers.matches_exact(pattern(bound))
+                    && reserved_by(bound).is_none()
+            })
+        })
+    }
 }
 
 /// Removes this frame's presses of shortcut keys from `events`, so nothing
 /// else reads them, and returns the shortcuts the new presses name, in
 /// order. The repeats of a held key are swallowed without firing again.
-pub(crate) fn take_presses(events: &mut Vec<Event>, shortcuts: &[ShortcutStatus]) -> Vec<u64> {
+pub(crate) fn take_presses(events: &mut Vec<Event>, keys: ConsoleKeys<'_>) -> Vec<u64> {
     let mut fired = Vec::new();
     events.retain(|event| {
         let Event::Key {
@@ -379,7 +442,7 @@ pub(crate) fn take_presses(events: &mut Vec<Event>, shortcuts: &[ShortcutStatus]
         else {
             return true;
         };
-        let Some(shortcut) = pressed(shortcuts, *key, *modifiers) else {
+        let Some(shortcut) = keys.pressed(*key, *modifiers) else {
             return true;
         };
         if !repeat {
@@ -651,6 +714,7 @@ pub fn import_plan(
 // ---------------------------------------------------------------------------
 
 /// The window's open state and the draft being edited.
+#[allow(clippy::struct_excessive_bools)] // the open window and its two captures
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ShortcutsWindow {
     pub(crate) open: bool,
@@ -664,6 +728,11 @@ pub(crate) struct ShortcutsWindow {
     pub(crate) capturing: bool,
     /// The last capture pressed a key a shortcut cannot name.
     unsupported: bool,
+    /// Whether the next key press binds the selected shortcut's key on
+    /// this console.
+    pub(crate) capturing_local: bool,
+    /// Why the last console key capture bound nothing.
+    pub(crate) local_refusal: Option<LocalRefusal>,
     /// The `.fmshortcuts` path typed in the set file row.
     pub(crate) file_path: String,
     /// Set exports and imports waiting for the host.
@@ -679,6 +748,8 @@ impl ShortcutsWindow {
         self.loaded.clone_from(&self.draft);
         self.capturing = false;
         self.unsupported = false;
+        self.capturing_local = false;
+        self.local_refusal = None;
     }
 
     /// Starts a new draft under the next free id (the lowest free one once
@@ -704,6 +775,8 @@ impl ShortcutsWindow {
         self.loaded = None;
         self.capturing = false;
         self.unsupported = false;
+        self.capturing_local = false;
+        self.local_refusal = None;
     }
 
     /// Whether the draft differs from what it was loaded from.
@@ -737,9 +810,10 @@ impl ShortcutsWindow {
                 self.loaded = Some(replicated);
             }
             (Some(_), Some(_)) if !self.dirty() => {
-                let capturing = self.capturing;
+                let (capturing, capturing_local) = (self.capturing, self.capturing_local);
                 self.select(shortcuts, Some(id));
                 self.capturing = capturing;
+                self.capturing_local = capturing_local;
             }
             _ => {}
         }
@@ -791,14 +865,37 @@ impl StudioShell {
                 None => {}
             }
         }
+        if window.capturing_local {
+            let captured = context.input_mut(|input| capture(&mut input.events));
+            let keys = ConsoleKeys::of(state, &self.shortcut_keys);
+            if let Some(captured) = captured {
+                window.capturing_local = false;
+                let bound = window
+                    .selected
+                    .zip(keys.project)
+                    .and_then(|(shortcut, project)| {
+                        local_capture(keys, shortcut, captured).map(|key| (project, shortcut, key))
+                    });
+                match bound {
+                    Some((project, shortcut, Ok(key))) => {
+                        window.local_refusal =
+                            (!self.shortcut_keys.set(project, shortcut, Some(key)))
+                                .then_some(LocalRefusal::Limit);
+                    }
+                    Some((_, _, Err(refusal))) => window.local_refusal = Some(refusal),
+                    None => {}
+                }
+            }
+        }
+        let overrides = &mut self.shortcut_keys;
         let close = crate::menu::help_modal(
             context,
             "studio-user-shortcuts",
             l.text(Msg::UserShortcutsTitle),
             DIALOG_WIDTH,
-            |ui| draw_contents(ui, state, window, intents),
+            |ui| draw_contents(ui, state, window, overrides, intents),
         );
-        if close && !self.user_shortcuts.capturing {
+        if close && !self.user_shortcuts.capturing && !self.user_shortcuts.capturing_local {
             self.user_shortcuts.open = false;
         }
     }
@@ -815,11 +912,11 @@ impl StudioShell {
         if self.console_keys_blocked(ui.ctx()) || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
-        let shortcuts = replicated(state);
-        if shortcuts.is_empty() {
+        let keys = ConsoleKeys::of(state, &self.shortcut_keys);
+        if keys.shortcuts.is_empty() {
             return;
         }
-        let fired = ui.input_mut(|input| take_presses(&mut input.events, shortcuts));
+        let fired = ui.input_mut(|input| take_presses(&mut input.events, keys));
         for shortcut in fired {
             if let Some(intent) = self.user_shortcut_intent(state, shortcut) {
                 intents.push(intent);
@@ -871,6 +968,7 @@ fn draw_contents(
     ui: &mut Ui,
     state: &StudioUiState,
     window: &mut ShortcutsWindow,
+    overrides: &mut ShortcutKeyOverrides,
     intents: &mut Vec<StudioIntent>,
 ) {
     let l = l10n::locale(ui.ctx());
@@ -881,12 +979,13 @@ fn draw_contents(
     let row = ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(LIST_WIDTH);
-            draw_list(ui, state, window, shortcuts);
+            draw_list(ui, state, window, ConsoleKeys::of(state, overrides));
         });
         let (gap, _) = ui.allocate_exact_size(egui::vec2(DIVIDER_GAP, 0.0), egui::Sense::hover());
         ui.vertical(|ui| {
             if window.draft.is_some() {
                 draw_editor(ui, state, window, shortcuts, intents);
+                draw_console_key(ui, state, window, overrides);
             } else {
                 ui.set_min_width(ui.available_width());
                 empty_state(
@@ -1000,12 +1099,13 @@ impl ShortcutsWindow {
     }
 }
 
-/// A list row's text: the name, then its key in the console's words.
-fn row_text(l: Locale, shortcut: &ShortcutStatus) -> String {
+/// A list row's text: the name, then the key it answers on this console
+/// in the console's words (marked when it is this console's own).
+fn row_text(l: Locale, keys: ConsoleKeys<'_>, shortcut: &ShortcutStatus) -> String {
     let mut text = shortcut.spec.name.clone();
-    if let Some(key) = &shortcut.spec.key {
+    if let Some((key, local)) = keys.key(shortcut) {
         text.push_str("  ");
-        text.push_str(&l.keys(&key_text(key)));
+        text.push_str(&key_words(l, key, local));
     }
     if !shortcut.spec.enabled {
         text = l.format(Msg::UserShortcutListOff, &[("name", Arg::Str(&text))]);
@@ -1017,14 +1117,15 @@ fn draw_list(
     ui: &mut Ui,
     state: &StudioUiState,
     window: &mut ShortcutsWindow,
-    shortcuts: &[ShortcutStatus],
+    keys: ConsoleKeys<'_>,
 ) {
+    let shortcuts = keys.shortcuts;
     let l = l10n::locale(ui.ctx());
     ui.label(section_label(l.text(Msg::UserShortcutsTitle)));
     for shortcut in shortcuts {
         let selected = window.selected == Some(shortcut.id);
         if ui
-            .selectable_label(selected, row_text(l, shortcut))
+            .selectable_label(selected, row_text(l, keys, shortcut))
             .on_hover_text(l.format(
                 Msg::UserShortcutListHover,
                 &[("name", Arg::Str(&shortcut.spec.name))],
@@ -1048,6 +1149,194 @@ fn draw_list(
         .clicked()
     {
         window.new_draft(l, shortcuts);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// This console's key
+// ---------------------------------------------------------------------------
+
+/// Why a console key capture bound nothing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum LocalRefusal {
+    /// A key a shortcut cannot name.
+    Unsupported,
+    /// One of the console's own keys, by its reference text.
+    Reserved(&'static str),
+    /// The key another shortcut already answers here.
+    Taken(String),
+    /// The console keeps [`MAX_KEY_OVERRIDES`] overrides already.
+    Limit,
+}
+
+/// A key in the console's words, marked when it is this console's own.
+fn key_words(l: Locale, key: &WireShortcutKey, local: bool) -> String {
+    let keys = l.keys(&key_text(key));
+    if local {
+        l.format(Msg::UserShortcutListLocal, &[("keys", Arg::Str(&keys))])
+    } else {
+        keys
+    }
+}
+
+/// What a console key capture for `shortcut` binds: the key, or why it
+/// binds nothing; `None` for Esc (nothing changes).
+pub(crate) fn local_capture(
+    keys: ConsoleKeys<'_>,
+    shortcut: u64,
+    captured: Captured,
+) -> Option<Result<WireShortcutKey, LocalRefusal>> {
+    match captured {
+        Captured::Cancel => None,
+        Captured::Unsupported => Some(Err(LocalRefusal::Unsupported)),
+        Captured::Key(key) => Some(if let Some(reserved) = reserved_by(&key) {
+            Err(LocalRefusal::Reserved(reserved))
+        } else if let Some(other) = keys.answering(shortcut, &key) {
+            Err(LocalRefusal::Taken(other.spec.name.clone()))
+        } else {
+            Ok(key)
+        }),
+    }
+}
+
+/// Why this console cannot keep one more override for `shortcut`, if it
+/// cannot.
+fn override_block(keys: ConsoleKeys<'_>, shortcut: u64) -> Option<&'static str> {
+    (keys.local(shortcut).is_none() && keys.overrides.len() >= MAX_KEY_OVERRIDES)
+        .then_some(Msg::UserShortcutReasonOverrideLimit.en())
+}
+
+/// The "This console" row: the key the selected shortcut answers on this
+/// console, Set console key (capture), Use project key, and No key here.
+/// These change this console's preferences, not the project, so they need
+/// no edit permission.
+#[allow(clippy::too_many_lines)] // one immediate-mode row
+fn draw_console_key(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    window: &mut ShortcutsWindow,
+    overrides: &mut ShortcutKeyOverrides,
+) {
+    let l = l10n::locale(ui.ctx());
+    let Some(shortcut) = window.selected else {
+        return;
+    };
+    let keys = ConsoleKeys::of(state, overrides);
+    let (Some(project), Some(found)) = (
+        keys.project,
+        keys.shortcuts.iter().find(|found| found.id == shortcut),
+    ) else {
+        return;
+    };
+    let local = keys.local(shortcut).cloned();
+    let shadowed = found
+        .spec
+        .key
+        .as_ref()
+        .and_then(|key| keys.local_owner(shortcut, key))
+        .filter(|_| local.is_none())
+        .map(|other| other.spec.name.clone());
+    let limit = override_block(keys, shortcut);
+    let capturing = window.capturing || window.capturing_local;
+    // Some(true): use the project key; Some(false): no key here.
+    let mut use_project: Option<bool> = None;
+    ui.horizontal_wrapped(|ui| {
+        form_label(ui, l.text(Msg::UserShortcutLocalLabel));
+        match (&local, window.capturing_local) {
+            (_, true) => ui.label(
+                RichText::new(l.text(Msg::UserShortcutLocalCapturing)).color(accent_color()),
+            ),
+            (Some(Some(key)), false) => crate::menu::key_cap(ui, &l.keys(&key_text(key)), 0.0),
+            (Some(None), false) => {
+                ui.label(RichText::new(l.text(Msg::UserShortcutLocalNone)).color(muted_color()))
+            }
+            (None, false) => {
+                ui.label(RichText::new(l.text(Msg::UserShortcutLocalProject)).color(muted_color()))
+            }
+        }
+        .on_hover_text(l.text(Msg::UserShortcutLocalHover));
+        ui.add_space(4.0);
+        let set = if capturing {
+            Some(Msg::UserShortcutReasonCapturing.en())
+        } else {
+            limit
+        };
+        if ui
+            .add_enabled(
+                set.is_none(),
+                small_button(l.text(Msg::UserShortcutSetLocal)),
+            )
+            .hint(l.text(Msg::UserShortcutSetLocalHover), set.unwrap_or(""))
+            .clicked()
+        {
+            window.capturing_local = true;
+            window.local_refusal = None;
+        }
+        let project_key = local
+            .is_none()
+            .then_some(Msg::UserShortcutReasonProjectKeyHere.en());
+        if ui
+            .add_enabled(
+                project_key.is_none(),
+                small_button(l.text(Msg::UserShortcutUseProject)),
+            )
+            .hint(
+                l.text(Msg::UserShortcutUseProjectHover),
+                project_key.unwrap_or(""),
+            )
+            .clicked()
+        {
+            use_project = Some(true);
+        }
+        let no_key = (local == Some(None))
+            .then_some(Msg::UserShortcutReasonNoKeyHere.en())
+            .or(limit);
+        if ui
+            .add_enabled(
+                no_key.is_none(),
+                small_button(l.text(Msg::UserShortcutNoLocalKey)),
+            )
+            .hint(
+                l.text(Msg::UserShortcutNoLocalKeyHover),
+                no_key.unwrap_or(""),
+            )
+            .clicked()
+        {
+            use_project = Some(false);
+        }
+    });
+    match use_project {
+        Some(true) => {
+            overrides.clear(project, shortcut);
+            window.local_refusal = None;
+        }
+        Some(false) => {
+            window.local_refusal =
+                (!overrides.set(project, shortcut, None)).then_some(LocalRefusal::Limit);
+        }
+        None => {}
+    }
+    let refusal = match &window.local_refusal {
+        Some(LocalRefusal::Unsupported) => Some(l.text(Msg::UserShortcutKeyUnsupported).to_owned()),
+        Some(LocalRefusal::Reserved(keys)) => Some(l.format(
+            Msg::UserShortcutKeyReserved,
+            &[("keys", Arg::Str(&l.keys(keys)))],
+        )),
+        Some(LocalRefusal::Taken(name)) => {
+            Some(l.format(Msg::UserShortcutLocalTaken, &[("name", Arg::Str(name))]))
+        }
+        Some(LocalRefusal::Limit) => {
+            Some(l.tr(Msg::UserShortcutReasonOverrideLimit.en()).to_owned())
+        }
+        None => None,
+    };
+    if let Some(refusal) = refusal {
+        ui.label(RichText::new(refusal).color(ERROR));
+    } else if let Some(name) = shadowed {
+        ui.label(
+            RichText::new(l.format(Msg::UserShortcutLocalShadowed, &[("name", Arg::Str(&name))]))
+                .color(muted_color()),
+        );
     }
 }
 
@@ -1127,6 +1416,7 @@ fn draw_editor(
     let edit = crate::cues::edit_block(state);
     let dirty = window.dirty();
     let capturing = window.capturing;
+    let window_capturing_local = window.capturing_local;
     let unsupported = window.unsupported;
     let Some(draft) = window.draft.as_mut() else {
         return;
@@ -1166,7 +1456,7 @@ fn draw_editor(
         ui.add_space(4.0);
         if ui
             .add_enabled(
-                edit.is_none() && !capturing,
+                edit.is_none() && !capturing && !window_capturing_local,
                 small_button(l.text(Msg::UserShortcutSetKey)),
             )
             .hint(
@@ -1542,14 +1832,23 @@ fn draw_action(
 
 /// The keyboard reference's Project shortcuts group: each shortcut with a
 /// key or OSC name, then where to edit them.
-pub(crate) fn reference_rows(l: Locale, state: &StudioUiState) -> Vec<(String, String)> {
-    replicated(state)
+pub(crate) fn reference_rows(
+    l: Locale,
+    state: &StudioUiState,
+    overrides: &ShortcutKeyOverrides,
+) -> Vec<(String, String)> {
+    let console = ConsoleKeys::of(state, overrides);
+    console
+        .shortcuts
         .iter()
-        .filter(|shortcut| shortcut.spec.key.is_some() || shortcut.spec.osc.is_some())
-        .map(|shortcut| {
-            let keys = shortcut.spec.key.as_ref().map_or_else(
+        .filter_map(|shortcut| {
+            let key = console.key(shortcut);
+            (key.is_some() || shortcut.spec.osc.is_some()).then_some((shortcut, key))
+        })
+        .map(|(shortcut, key)| {
+            let keys = key.map_or_else(
                 || l.text(Msg::UserShortcutOscOnly).to_owned(),
-                |key| l.keys(&key_text(key)),
+                |(key, local)| key_words(l, key, local),
             );
             let mut action = shortcut.spec.name.clone();
             if let Some(name) = &shortcut.spec.osc {

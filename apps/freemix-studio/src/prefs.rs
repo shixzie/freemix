@@ -1,8 +1,9 @@
 //! Local console preferences that survive a restart: the UI language, the
 //! top-bar clock, the UI scale and high-contrast theme, the animation
-//! timeline's Snapping toggle, and the panel layout (the docked panels,
-//! popped-out windows and their places, tool windows, and the operator's
-//! saved layouts).
+//! timeline's Snapping toggle, this console's own keys for project
+//! shortcuts (RC-004), and the panel layout (the docked panels, popped-out
+//! windows and their places, tool windows, and the operator's saved
+//! layouts).
 //!
 //! The file is plain `key = value` text in the platform configuration
 //! directory (`$XDG_CONFIG_HOME/freemix/studio.conf`, else
@@ -16,7 +17,7 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use fm_ui_egui::{Appearance, ConsoleLayout};
+use fm_ui_egui::{Appearance, ConsoleLayout, ShortcutKeyOverrides};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
 /// Environment variable naming the preferences file explicitly.
@@ -26,6 +27,9 @@ const FILE_NAME: &str = "studio.conf";
 
 /// The key of the animation timeline's Snapping toggle.
 const SNAPPING_KEY: &str = "animation.snapping";
+
+/// The key prefix of a console key for a project shortcut.
+const SHORTCUT_KEY_PREFIX: &str = "shortcut.key.";
 
 /// How long the preferences must stay unchanged before they are written,
 /// so dragging a splitter or a window writes the file once, not every
@@ -46,6 +50,9 @@ pub struct SavedPreferences {
     /// Whether the animation timelines snap drags without Shift (their
     /// Snapping toggle).
     pub timeline_snapping: Option<bool>,
+    /// This console's own keys for project shortcuts; `None` when the
+    /// file has none.
+    pub shortcut_keys: Option<ShortcutKeyOverrides>,
 }
 
 impl SavedPreferences {
@@ -59,6 +66,7 @@ impl SavedPreferences {
             ui_scale_percent: None,
             high_contrast: None,
             timeline_snapping: None,
+            shortcut_keys: None,
         }
     }
 
@@ -112,6 +120,11 @@ impl SavedPreferences {
                         _ => saved.timeline_snapping,
                     };
                 }
+                key if key.starts_with(SHORTCUT_KEY_PREFIX) => {
+                    let mut overrides = saved.shortcut_keys.take().unwrap_or_default();
+                    overrides.apply_preference(key, value);
+                    saved.shortcut_keys = (!overrides.is_empty()).then_some(overrides);
+                }
                 key => {
                     let mut layout = saved.layout.clone().unwrap_or_default();
                     if layout.apply_preference(key, value) {
@@ -153,6 +166,14 @@ impl SavedPreferences {
         if let Some(snapping) = self.timeline_snapping {
             text.push_str(SNAPPING_KEY);
             text.push_str(if snapping { " = on\n" } else { " = off\n" });
+        }
+        if let Some(overrides) = &self.shortcut_keys {
+            for (key, value) in overrides.preference_entries() {
+                text.push_str(&key);
+                text.push_str(" = ");
+                text.push_str(&value);
+                text.push('\n');
+            }
         }
         if let Some(layout) = &self.layout {
             for (key, value) in layout.preference_entries() {
@@ -248,6 +269,8 @@ pub struct PreferenceStore {
     known_appearance: Appearance,
     /// The timeline Snapping toggle at startup or last saved.
     known_snapping: bool,
+    /// This console's keys for project shortcuts at startup or last saved.
+    known_shortcut_keys: ShortcutKeyOverrides,
     /// When the unsaved change was last seen; `None` when the file is up
     /// to date.
     pending: Option<Instant>,
@@ -266,10 +289,12 @@ impl PreferenceStore {
         appearance: Appearance,
     ) -> Self {
         let known_snapping = saved.timeline_snapping();
+        let known_shortcut_keys = saved.shortcut_keys.clone().unwrap_or_default();
         Self {
             path,
             saved,
             known_snapping,
+            known_shortcut_keys,
             known_locale: locale,
             known_layout: layout,
             known_appearance: appearance,
@@ -333,6 +358,16 @@ impl PreferenceStore {
         if snapping != self.known_snapping {
             self.known_snapping = snapping;
             self.saved.timeline_snapping = Some(snapping);
+            self.pending = Some(now);
+        }
+    }
+
+    /// Notes this console's keys for project shortcuts at `now`: a change
+    /// is saved like the Snapping toggle's.
+    pub fn note_shortcut_keys(&mut self, now: Instant, overrides: &ShortcutKeyOverrides) {
+        if *overrides != self.known_shortcut_keys {
+            self.known_shortcut_keys = overrides.clone();
+            self.saved.shortcut_keys = Some(overrides.clone());
             self.pending = Some(now);
         }
     }

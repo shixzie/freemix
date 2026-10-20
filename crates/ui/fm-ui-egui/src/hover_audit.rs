@@ -3006,6 +3006,46 @@ fn scenes(language: Language) -> Vec<Scene> {
             ready(true, Variant::default()),
         ),
         (
+            "dialog/user-shortcuts-console-key",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                let project = ProjectId::new(NonZeroU128::new(1).unwrap());
+                shell.shortcut_keys.set(
+                    project,
+                    1,
+                    Some(fm_protocol::WireShortcutKey {
+                        key: "F2".into(),
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    }),
+                );
+                shell.shortcut_keys.set(project, 3, None);
+            },
+            ready(false, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-console-capturing",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(3));
+                shell.user_shortcuts.capturing_local = true;
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-console-taken",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(3));
+                shell.user_shortcuts.local_refusal = Some(
+                    crate::user_shortcuts::LocalRefusal::Taken("Lower third".into()),
+                );
+            },
+            ready(true, Variant::default()),
+        ),
+        (
             "dialog/user-shortcuts-clash",
             &|shell| {
                 shell.user_shortcuts.open = true;

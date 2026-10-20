@@ -409,6 +409,7 @@ impl StudioApp {
         shell.set_layout(layout.clone());
         shell.set_appearance(saved.appearance());
         shell.set_timeline_snapping(saved.timeline_snapping());
+        shell.set_shortcut_key_overrides(saved.shortcut_keys.clone().unwrap_or_default());
         // The first frame already draws at the saved scale.
         creation_context
             .egui_ctx
@@ -683,6 +684,8 @@ impl eframe::App for StudioApp {
         let now = Instant::now();
         self.preferences
             .note_timeline_snapping(now, self.shell.timeline_snapping());
+        self.preferences
+            .note_shortcut_keys(now, self.shell.shortcut_key_overrides());
         match self.preferences.observe_at(
             now,
             self.shell.locale(),
@@ -702,6 +705,8 @@ impl eframe::App for StudioApp {
         // Whatever changed in the last moments is saved too.
         self.preferences
             .note_timeline_snapping(Instant::now(), self.shell.timeline_snapping());
+        self.preferences
+            .note_shortcut_keys(Instant::now(), self.shell.shortcut_key_overrides());
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),
