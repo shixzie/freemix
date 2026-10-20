@@ -12,7 +12,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::os::fd::{IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -95,6 +95,13 @@ fn aligned(pod: &[u8]) -> Vec<u64> {
             u64::from_ne_bytes(word)
         })
         .collect()
+}
+
+/// What descriptor `fd` of this process names (`socket:[inode]` for a
+/// socket), read from `/proc` without touching the descriptor, so a number
+/// that may have been closed is safe to ask about.
+fn descriptor_target(fd: RawFd) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()
 }
 
 /// A C string's text, or `fallback` for a null pointer.
@@ -395,14 +402,28 @@ impl VideoStream {
         let data = std::ptr::from_ref::<Shared>(&self.shared)
             .cast_mut()
             .cast::<c_void>();
-        // SAFETY: the context is valid; the descriptor's ownership passes
-        // to the core.
-        self.core = unsafe {
-            (api.context_connect_fd)(self.context, remote.into_raw_fd(), std::ptr::null_mut(), 0)
-        };
+        let fd = remote.as_raw_fd();
+        let socket = descriptor_target(fd);
+        // SAFETY: the context is valid and `fd` is open (owned by `remote`
+        // until the call returns); on success the core owns it.
+        self.core =
+            unsafe { (api.context_connect_fd)(self.context, fd, std::ptr::null_mut(), 0) };
         if self.core.is_null() {
+            // libpipewire documents that it closes the descriptor on error,
+            // but (0.3 through 1.4 at least) none of its failure paths do:
+            // a core that cannot be made, or a loop that cannot watch the
+            // socket, returns with it still open. It is closed here unless
+            // the number no longer names the same socket (a library that
+            // did close it), where closing could hit another descriptor.
+            if socket.is_some() && descriptor_target(fd) == socket {
+                drop(remote);
+            } else {
+                let _ = remote.into_raw_fd();
+            }
             return Err("the desktop's PipeWire connection cannot be used".into());
         }
+        // The core owns the descriptor now.
+        let _ = remote.into_raw_fd();
         // SAFETY: a core is a proxy; the hook and the shared state are
         // boxed and outlive the core (see `Drop`).
         unsafe {
@@ -532,6 +553,26 @@ impl Drop for VideoStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_descriptor_is_told_apart_from_a_closed_or_reused_number() {
+        let (first, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let first = OwnedFd::from(first);
+        let fd = first.as_raw_fd();
+        let socket = descriptor_target(fd);
+        assert!(
+            socket
+                .as_ref()
+                .is_some_and(|target| target.to_string_lossy().starts_with("socket:[")),
+            "{socket:?}"
+        );
+        assert_eq!(descriptor_target(fd), socket, "the same socket");
+        drop(first);
+        // Closed, or reused by another socket: not the same any more.
+        let (second, _other) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert_ne!(descriptor_target(fd), socket);
+        drop(second);
+    }
 
     #[test]
     fn pods_are_aligned_whole() {
