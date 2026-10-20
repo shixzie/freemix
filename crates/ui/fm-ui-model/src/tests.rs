@@ -699,6 +699,51 @@ fn runtime_realization_mid_transition_holds_the_realized_buses() {
     assert_eq!(model.state().unwrap().switcher().realized, before);
 }
 
+/// An overlay or title command whose motion is realized after later
+/// commands (Protocol 2.86) never holds the buses: a Cut accepted while it
+/// plays is realized at once, and the motion's late realization keeps the
+/// newest realized state, so no transition looks in flight.
+#[test]
+fn runtime_realization_of_a_late_overlay_motion_never_holds_the_buses() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 7)).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let before = BusSelection::new(input(1), input(2));
+    let cut = BusSelection::new(input(2), input(1));
+    let with_overlay = |buses| {
+        let mut change = desired(buses);
+        if let DurableChange::DesiredSwitcher { overlays, .. } = &mut change {
+            overlays[0].source = Some(input(3));
+            overlays[0].active = true;
+        }
+        change
+    };
+    model
+        .apply_event(event(project_id, identity.clone(), 8, with_overlay(before)))
+        .unwrap();
+    assert!(!model.state().unwrap().switcher().bus_change_in_flight());
+    model
+        .apply_event(event(project_id, identity.clone(), 9, with_overlay(cut)))
+        .unwrap();
+
+    model
+        .apply_runtime_realization(realization(project_id, identity.clone(), 9, 5, 1))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.switcher().realized, cut);
+    assert!(!state.switcher().bus_change_in_flight());
+    assert!(state.realized_overlays()[0].active);
+
+    model
+        .apply_runtime_realization(realization(project_id, identity, 8, 5, 2))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.switcher().realized, cut);
+    assert!(!state.switcher().bus_change_in_flight());
+    assert!(state.realized_overlays()[0].active);
+}
+
 /// A snapshot taken while a transition runs realizes the buses it left;
 /// commands realized on later frames keep them, and the transition's
 /// completion (of a revision older than the snapshot) realizes its target.

@@ -3245,8 +3245,8 @@ timing of command results and what a session may send meanwhile do.
   realized on its frames; another take or off of the channel during it
   supersedes it (`superseded` with that command's revision), while a
   change of the channel's configuration leaves it playing.
-  A title's phase is timed the same way when the command is taken
-  directly (not by a cue): a `title_take` with a nonzero In phase is
+  A title's phase is timed the same way: a `title_take` with a nonzero
+  In phase is
   realized (`realized` in domain `switcher`, its own revision) on the
   frame its In phase ends and the title holds, and a `title_off_air` with
   a nonzero Out phase on the frame its Out phase ends and its overlay
@@ -3257,7 +3257,14 @@ timing of command results and what a session may send meanwhile do.
   `superseded` with the interrupting command's revision instead; one that
   leaves it playing as it was (an off-air during the Out phase) is
   realized with it. A zero-length phase is realized on its first frame,
-  as before. Only the timing of these existing events changes.
+  as before. A cue operation (`cue_go` and the like, `cue_advance`), a
+  `script_run`, or a `shortcut_fire` that leaves Program and Preview as
+  they were waits likewise for every overlay transition and title phase
+  its actions started (and for the switcher to settle); one that changes
+  either is realized once the switcher settles, as before, while those
+  motions play on, because its realization is what releases a client's
+  held buses and an overlay or title motion never refuses a Cut. Only the
+  timing of these existing events changes.
   The simulated daemon (no native media) behaves the same: it renders no
   idle frames, but realizes such work after the command's first frame at
   the show's frame rate on its own wall-clock frame loop, so clients see

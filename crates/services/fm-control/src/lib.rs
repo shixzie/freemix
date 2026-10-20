@@ -604,6 +604,11 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             PreparedSubmissionKind::Engine {
                 execution, command, ..
             } => {
+                let buses = |engine: &Engine| {
+                    let desired = engine.show().desired_switcher();
+                    (desired.program(), desired.preview())
+                };
+                let buses_before = buses(&control.engine);
                 let _ = control.engine.commit_execute(*execution)?;
 
                 if submission.accepted.is_some() {
@@ -618,6 +623,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                         .push_back(PendingRuntimeAction {
                             revision: control.engine.revision().get(),
                             command,
+                            changes_buses: buses(&control.engine) != buses_before,
                         });
                 }
                 control
@@ -900,6 +906,8 @@ struct Subscriber {
 struct PendingRuntimeAction {
     revision: u64,
     command: EngineCommand,
+    /// Whether the command changed the desired Program or Preview.
+    changes_buses: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -920,6 +928,9 @@ struct ActiveMotion {
     /// Each overlay channel the command left in a timed transition, other
     /// than one a title phase of `titles` plays on (the phase ends it).
     channels: Vec<OverlayChannelId>,
+    /// Whether the command (a cue, script, or shortcut run) also waits for
+    /// the realized switcher to settle on the desired one.
+    switcher: bool,
 }
 
 /// Single-writer Phase 1 control service.
@@ -2904,6 +2915,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             revision: pending.revision,
             titles,
             channels,
+            switcher: is_program_transition(&pending.command),
         })
     }
 
@@ -2920,7 +2932,18 @@ impl<A: AuthorizationHook> ControlService<A> {
         publish: bool,
     ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
         let mut events = self.supersede_motions(server, pending, motion, generation, publish)?;
-        if is_program_transition(&pending.command) {
+        // A command that changed Program or Preview is realized once the
+        // switcher settles, whatever overlay or title motion it started:
+        // its realization releases the clients' held buses. Fade to Black
+        // is realized when its own fade completes.
+        let motion_started = (!pending.changes_buses
+            && !matches!(&pending.command, EngineCommand::FadeToBlack { .. }))
+        .then(|| self.motion_started(pending, motion))
+        .flatten();
+        if let Some(active) = motion_started {
+            // Realized once its motion has played (Protocol 2.86).
+            self.active_motions.push(active);
+        } else if is_program_transition(&pending.command) {
             self.active_transitions.push(ActiveTransition {
                 revision: pending.revision,
                 generation,
@@ -2938,9 +2961,6 @@ impl<A: AuthorizationHook> ControlService<A> {
                     pending.revision,
                 )?);
             }
-        } else if let Some(active) = self.motion_started(pending, motion) {
-            // Realized once its motion has played (Protocol 2.86).
-            self.active_motions.push(active);
         } else if publish {
             events.push(self.runtime_realized(
                 server,
@@ -3003,10 +3023,11 @@ impl<A: AuthorizationHook> ControlService<A> {
         let (ended, playing) = std::mem::take(&mut self.active_motions)
             .into_iter()
             .partition::<Vec<_>, _>(|active| {
-                !active
-                    .titles
-                    .iter()
-                    .any(|(input, _, air)| self.title_in_motion(*input, *air))
+                (!active.switcher || self.switcher_settled())
+                    && !active
+                        .titles
+                        .iter()
+                        .any(|(input, _, air)| self.title_in_motion(*input, *air))
                     && !active.channels.iter().any(|channel| {
                         self.engine
                             .realized_switcher()
@@ -3024,13 +3045,18 @@ impl<A: AuthorizationHook> ControlService<A> {
             .collect()
     }
 
-    fn take_completed_switcher_operations(&mut self) -> Vec<ActiveTransition> {
-        let settled = self.engine.realized_switcher().transition().is_none()
+    /// Whether the realized switcher has settled on the desired Program
+    /// and Preview, with no transition running.
+    fn switcher_settled(&self) -> bool {
+        self.engine.realized_switcher().transition().is_none()
             && self.engine.realized_switcher().program()
                 == self.engine.show().desired_switcher().program()
             && self.engine.realized_switcher().preview()
-                == self.engine.show().desired_switcher().preview();
-        let mut completed = if settled {
+                == self.engine.show().desired_switcher().preview()
+    }
+
+    fn take_completed_switcher_operations(&mut self) -> Vec<ActiveTransition> {
+        let mut completed = if self.switcher_settled() {
             std::mem::take(&mut self.active_transitions)
         } else {
             Vec::new()

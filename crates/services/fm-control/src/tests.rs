@@ -3326,6 +3326,101 @@ mod titles {
         assert!(!control.work_in_flight());
     }
 
+    /// A cue that takes a title off air without changing Program or
+    /// Preview is realized when the title's Out phase ends, like a direct
+    /// off-air; one that also cuts Program is realized once the switcher
+    /// settles, so clients' held buses are released on the cut's frame.
+    #[test]
+    fn a_cue_off_air_is_realized_when_its_out_phase_ends_unless_it_changes_the_buses() {
+        use fm_protocol::{CueListSpec, CueOperation, TransitionFavoriteEffect, WireCue};
+        use fm_protocol::{WireCueAction, WireTargetBindings};
+        use fm_types::InputTarget;
+
+        let mut control = animated_title_service();
+        let admin = principal(Role::Admin);
+        let server = server_identity();
+        let submit = |control: &mut ControlService, id: &str, payload| {
+            let submission = control
+                .submit(&admin, command(id, &format!("{id}-key"), payload), 0)
+                .unwrap();
+            assert!(submission.is_accepted(), "{submission:?}");
+            control.engine.revision().get()
+        };
+        let title_off = WireCueAction::TitleOff {
+            input: InputTarget::Fixed(WireInputId::from_domain(input(TITLE))),
+        };
+        let cut = WireCueAction::Take {
+            input: Some(InputTarget::Fixed(WireInputId::from_domain(input(2)))),
+            effect: TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        };
+        let cue = |id, actions| WireCue {
+            id,
+            name: format!("Cue {id}"),
+            auto_follow: false,
+            actions,
+        };
+        submit(
+            &mut control,
+            "list",
+            CommandPayload::SetCueList {
+                list: 7,
+                spec: Box::new(CueListSpec {
+                    name: "Show".into(),
+                    cues: vec![
+                        cue(10, vec![title_off.clone()]),
+                        cue(20, vec![title_off, cut]),
+                    ],
+                }),
+                position: None,
+            },
+        );
+        let go = || CommandPayload::CueControl {
+            list: 7,
+            operation: CueOperation::Go {
+                cue: None,
+                targets: WireTargetBindings::default(),
+            },
+        };
+        let take_and_hold = |control: &mut ControlService, id| {
+            submit(control, id, take(0, Vec::new()));
+            for _ in 0..20 {
+                control.tick(&server).unwrap();
+            }
+            assert_eq!(phase_of(control), (fm_protocol::TitlePhase::Hold, 0, 0));
+        };
+
+        // The 10-frame Out phase: the cue is realized on its last frame.
+        take_and_hold(&mut control, "take");
+        let first = submit(&mut control, "go", go());
+        for frame in 0..9 {
+            let outcome = control.tick(&server).unwrap();
+            assert_eq!(realized(&outcome, first), None, "Out frame {frame}");
+            assert!(control.work_in_flight());
+        }
+        assert!(matches!(
+            realized(&control.tick(&server).unwrap(), first),
+            Some(RuntimeLifecycleEvent::Realized { ref domain, .. }) if domain == "switcher"
+        ));
+        assert_eq!(control.titles_on_air(), Vec::new());
+
+        // With a cut too, the cue is realized on its first frame while the
+        // Out phase plays on.
+        take_and_hold(&mut control, "retake");
+        let second = submit(&mut control, "go-again", go());
+        let outcome = control.tick(&server).unwrap();
+        assert!(
+            matches!(
+                realized(&outcome, second),
+                Some(RuntimeLifecycleEvent::Realized { ref domain, .. }) if domain == "switcher"
+            ),
+            "{:?}",
+            outcome.runtime_events
+        );
+        assert_eq!(phase_of(&control), (fm_protocol::TitlePhase::Out, 1, 10));
+        assert_eq!(control.engine.realized_switcher().program(), input(2));
+    }
+
     fn score(value: i64) -> Vec<TitleFieldUpdate> {
         vec![TitleFieldUpdate {
             field: field(SCORE),
