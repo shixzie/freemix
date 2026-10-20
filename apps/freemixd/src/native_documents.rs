@@ -15,7 +15,9 @@
 //! latest-wins in both directions: a page stepped twice before the worker
 //! sees it renders once, and a frame not yet ingested is replaced by a
 //! newer one. A page that cannot render yet (a presentation still
-//! converting) is tried again every [`RETRY_INTERVAL`] while it is wanted.
+//! converting) is tried again every [`RETRY_INTERVAL`] while it is wanted;
+//! a page that failed to draw answers nothing until its backed-off retry
+//! time (see [`DocumentPages::render`]).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};

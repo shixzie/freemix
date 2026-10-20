@@ -32,9 +32,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use fm_auth::Policy;
 use fm_control::{ControlService, PagedSourceReport};
@@ -53,6 +54,14 @@ use crate::AppResult;
 
 /// The most rendered page bytes kept for reuse.
 const PAGE_CACHE_BYTES: usize = 96 * 1024 * 1024;
+/// How long one page render may take before the caller stops waiting for
+/// it. `hayro` cannot cancel a render, so it finishes on its own thread
+/// and the page counts as failed.
+const RENDER_BUDGET: Duration = Duration::from_secs(5);
+/// The wait before a page that failed to render is tried again, doubling
+/// with each further failure up to [`MAX_RENDER_RETRY`].
+const MIN_RENDER_RETRY: Duration = Duration::from_secs(1);
+const MAX_RENDER_RETRY: Duration = Duration::from_secs(300);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -64,9 +73,101 @@ enum Renderable {
     Converting,
     /// A PDF (the asset itself or a presentation's conversion). The parser
     /// renders one page at a time.
-    Ready(Arc<Mutex<PdfDocument>>),
+    Ready(Arc<Pdf>),
     /// Nothing renders; the error says why.
     Failed(DocumentError),
+}
+
+/// A parsed PDF and its renders that ran past [`RENDER_BUDGET`].
+struct Pdf {
+    document: Mutex<PdfDocument>,
+    /// Renders still running that their caller stopped waiting for; while
+    /// any runs (holding the document), no new render starts.
+    abandoned: AtomicUsize,
+}
+
+impl Pdf {
+    fn new(document: PdfDocument) -> Arc<Self> {
+        Arc::new(Self {
+            document: Mutex::new(document),
+            abandoned: AtomicUsize::new(0),
+        })
+    }
+}
+
+/// Why a page render produced nothing.
+#[derive(Debug, Eq, PartialEq)]
+enum RenderFailure {
+    /// The renderer refused or could not draw the page.
+    Failed(DocumentError),
+    /// The render ran past its budget and was abandoned.
+    OverBudget,
+}
+
+/// One render job's outcome, shared by the caller and the render thread.
+#[derive(Default)]
+struct Job {
+    result: Option<Result<RenderedPage, DocumentError>>,
+    abandoned: bool,
+}
+
+/// Renders `page` of `pdf` on its own thread, waiting at most `budget`. A
+/// render past the budget keeps running; the caller gets
+/// [`RenderFailure::OverBudget`] and the PDF counts it as abandoned until
+/// it ends.
+fn render_within(
+    pdf: &Arc<Pdf>,
+    page: u32,
+    size: (u32, u32),
+    budget: Duration,
+) -> Result<RenderedPage, RenderFailure> {
+    let job = Arc::new((Mutex::new(Job::default()), Condvar::new()));
+    let (worker_pdf, worker_job) = (Arc::clone(pdf), Arc::clone(&job));
+    thread::Builder::new()
+        .name("freemixd-page-render".into())
+        .spawn(move || {
+            let result = lock(&worker_pdf.document).render_page(page, size.0, size.1);
+            let mut job = lock(&worker_job.0);
+            if job.abandoned {
+                worker_pdf.abandoned.fetch_sub(1, Ordering::AcqRel);
+            } else {
+                job.result = Some(result);
+                worker_job.1.notify_all();
+            }
+        })
+        .map_err(|error| {
+            RenderFailure::Failed(DocumentError::Io(format!(
+                "the render thread could not start: {error}"
+            )))
+        })?;
+    let (state, _) = job
+        .1
+        .wait_timeout_while(lock(&job.0), budget, |job| job.result.is_none())
+        .unwrap_or_else(PoisonError::into_inner);
+    let mut state = state;
+    match state.result.take() {
+        Some(result) => result.map_err(RenderFailure::Failed),
+        None => {
+            state.abandoned = true;
+            pdf.abandoned.fetch_add(1, Ordering::AcqRel);
+            Err(RenderFailure::OverBudget)
+        }
+    }
+}
+
+/// A page that failed to render, and when it may be tried again.
+#[derive(Clone, Copy, Debug)]
+struct PageFailure {
+    failures: u32,
+    retry_at: Instant,
+}
+
+/// The wait before a page that failed `failures` times renders again.
+fn render_retry_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    MIN_RENDER_RETRY
+        .saturating_mul(1 << doublings)
+        .min(MAX_RENDER_RETRY)
 }
 
 /// One document asset, read once.
@@ -110,7 +211,7 @@ impl Source {
         }
     }
 
-    fn pdf(&self) -> Option<Arc<Mutex<PdfDocument>>> {
+    fn pdf(&self) -> Option<Arc<Pdf>> {
         match &*lock(&self.renderable) {
             Renderable::Ready(pdf) => Some(Arc::clone(pdf)),
             Renderable::Converting | Renderable::Failed(_) => None,
@@ -136,6 +237,9 @@ struct Inner {
     /// Most recently used last.
     cache: VecDeque<(PageKey, Arc<RenderedPage>)>,
     cache_bytes: usize,
+    /// Pages (by asset and page) whose last render failed or ran past its
+    /// budget: they are not tried again before their retry time.
+    failures: BTreeMap<(String, u32), PageFailure>,
 }
 
 /// Reads, converts, and renders document assets; see the module
@@ -148,6 +252,8 @@ pub(crate) struct DocumentPages {
     /// Set when a source's status changed off the session loop (a
     /// conversion finished), so the loop reports it again.
     changed: Arc<AtomicBool>,
+    /// How long one page render may take ([`RENDER_BUDGET`]).
+    render_budget: Duration,
 }
 
 impl Default for DocumentPages {
@@ -166,6 +272,7 @@ impl DocumentPages {
             converter,
             inner: Mutex::new(Inner::default()),
             changed: Arc::new(AtomicBool::new(true)),
+            render_budget: RENDER_BUDGET,
         }
     }
 
@@ -204,7 +311,10 @@ impl DocumentPages {
     /// Zero-based `page` of `uri` fitted and centred in `width` x `height`
     /// (straight-alpha RGBA8, transparent outside the page), rendering it
     /// unless a recent render matches. `None` while nothing renders. Never
-    /// call this on the session loop: a render takes as long as the page.
+    /// call this on the session loop: a render takes as long as the page,
+    /// up to [`RENDER_BUDGET`]. A page that failed to draw or ran past the
+    /// budget answers `None` without rendering until its retry time, which
+    /// backs off from [`MIN_RENDER_RETRY`] to [`MAX_RENDER_RETRY`].
     pub(crate) fn render(
         &self,
         uri: &str,
@@ -227,9 +337,49 @@ impl DocumentPages {
                 return Some(page);
             }
         }
+        let failure_key = (uri.to_owned(), page);
+        if lock(&self.inner)
+            .failures
+            .get(&failure_key)
+            .is_some_and(|failure| Instant::now() < failure.retry_at)
+        {
+            return None;
+        }
         let pdf = self.source(uri).pdf()?;
-        let rendered = Arc::new(lock(&pdf).render_page(page, width, height).ok()?);
+        // A render of this document past its budget still holds it.
+        if pdf.abandoned.load(Ordering::Acquire) > 0 {
+            return None;
+        }
+        let rendered = match render_within(&pdf, page, (width, height), self.render_budget) {
+            Ok(rendered) => Arc::new(rendered),
+            Err(failure) => {
+                let mut inner = lock(&self.inner);
+                let failures = inner
+                    .failures
+                    .get(&failure_key)
+                    .map_or(1, |failure| failure.failures.saturating_add(1));
+                let delay = render_retry_delay(failures);
+                inner.failures.insert(
+                    failure_key,
+                    PageFailure {
+                        failures,
+                        retry_at: Instant::now() + delay,
+                    },
+                );
+                let reason = match failure {
+                    RenderFailure::Failed(error) => error.to_string(),
+                    RenderFailure::OverBudget => "the page takes too long to draw".to_owned(),
+                };
+                eprintln!(
+                    "FREEMIXD_DOCUMENT\tv=1\tasset={uri}\tpage={page}\trender=failed\t\
+                     retry_ms={}\terror={reason}",
+                    delay.as_millis()
+                );
+                return None;
+            }
+        };
         let mut inner = lock(&self.inner);
+        inner.failures.remove(&failure_key);
         inner.cache_bytes += rendered.pixels.len();
         inner.cache.push_back((key, Arc::clone(&rendered)));
         while inner.cache_bytes > PAGE_CACHE_BYTES && inner.cache.len() > 1 {
@@ -244,6 +394,9 @@ impl DocumentPages {
     fn retain(&self, uris: &BTreeSet<&str>) {
         let mut inner = lock(&self.inner);
         inner.sources.retain(|uri, _| uris.contains(uri.as_str()));
+        inner
+            .failures
+            .retain(|(uri, _), _| uris.contains(uri.as_str()));
         let mut freed = 0;
         inner.cache.retain(|(key, page)| {
             let keep = uris.contains(key.uri.as_str());
@@ -278,7 +431,7 @@ impl DocumentPages {
             return match PdfDocument::open(bytes) {
                 Ok(pdf) => Source {
                     probe: Ok(pdf.info()),
-                    renderable: Arc::new(Mutex::new(Renderable::Ready(Arc::new(Mutex::new(pdf))))),
+                    renderable: Arc::new(Mutex::new(Renderable::Ready(Pdf::new(pdf)))),
                 },
                 Err(error) => Source::failed(error),
             };
@@ -303,7 +456,7 @@ impl DocumentPages {
                     .convert(format, &bytes, DEFAULT_CONVERSION_TIMEOUT)
                     .and_then(PdfDocument::open);
                 let result = match pdf_bytes {
-                    Ok(pdf) => Renderable::Ready(Arc::new(Mutex::new(pdf))),
+                    Ok(pdf) => Renderable::Ready(Pdf::new(pdf)),
                     Err(error) => {
                         eprintln!(
                             "FREEMIXD_DOCUMENT\tv=1\tasset={asset}\tconversion=failed\terror={error}"
@@ -575,6 +728,56 @@ mod tests {
         assert!(Arc::ptr_eq(&blue, &again), "a repeated render is cached");
         let flat = page_over_black(&blue).unwrap();
         assert_eq!(&flat.pixels()[..4], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_page_past_its_render_budget_is_abandoned_and_backs_off() {
+        let big = SolidPage {
+            width: 1_000,
+            height: 1_000,
+            rgb: [0, 255, 0],
+        };
+        let root = bundle(&[("big.pdf", solid_pages_pdf(None, &[big]))]);
+        let mut pages = DocumentPages::new(root.path(), None);
+        pages.render_budget = Duration::from_millis(1);
+        let started = Instant::now();
+        assert!(pages.render("asset://big.pdf", 0, 4_096, 4_096).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the caller stops waiting at the budget"
+        );
+        // Until its retry time the page is not rendered again, even at a
+        // size that would be cheap.
+        pages.render_budget = RENDER_BUDGET;
+        assert!(pages.render("asset://big.pdf", 0, 16, 16).is_none());
+        let failure = lock(&pages.inner).failures[&("asset://big.pdf".to_owned(), 0)];
+        assert_eq!(failure.failures, 1);
+        // Once the abandoned render ends and the retry time passes, the
+        // page renders again.
+        lock(&pages.inner)
+            .failures
+            .get_mut(&("asset://big.pdf".to_owned(), 0))
+            .unwrap()
+            .retry_at = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let rendered = loop {
+            if let Some(rendered) = pages.render("asset://big.pdf", 0, 16, 16) {
+                break rendered;
+            }
+            assert!(Instant::now() < deadline, "the page never rendered again");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(rendered.pixel(8, 8), Some([0, 255, 0, 255]));
+        assert!(lock(&pages.inner).failures.is_empty());
+    }
+
+    #[test]
+    fn render_retries_back_off_up_to_their_cap() {
+        assert_eq!(render_retry_delay(1), MIN_RENDER_RETRY);
+        assert_eq!(render_retry_delay(2), MIN_RENDER_RETRY * 2);
+        assert_eq!(render_retry_delay(4), MIN_RENDER_RETRY * 8);
+        assert_eq!(render_retry_delay(30), MAX_RENDER_RETRY);
+        assert_eq!(render_retry_delay(u32::MAX), MAX_RENDER_RETRY);
     }
 
     #[test]
