@@ -3509,3 +3509,87 @@ fn next_layer_id() -> fm_model::LayerId {
     fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
         .expect("layer ids start at one")
 }
+
+/// A key/fill key input is a leaf picture (SW-008): replacing the source of
+/// an input a key uses so that it renders a scene (an alias re-pointed at a
+/// Scene input, directly or further down its chain, or the input itself
+/// becoming a Scene input) is refused at edit time, leaving the project
+/// valid and unchanged.
+#[test]
+fn source_replacement_refuses_a_key_input_that_would_render_a_scene() {
+    let alias = |target: u128| InputKind::Alias {
+        target: input_id(target),
+        crop: None,
+    };
+    let mut project = Project::new(project_id(91), "Key source", settings());
+    for (id, name, kind) in [
+        (95, "Fill", InputKind::Color),
+        (96, "Picture", InputKind::Color),
+        (
+            97,
+            "Nested",
+            InputKind::Scene {
+                scene_id: scene_id(96),
+                audio_source: None,
+            },
+        ),
+        (98, "Key alias", alias(99)),
+        (99, "Inner alias", alias(96)),
+        (100, "Spare alias", alias(96)),
+    ] {
+        project.add_input(Input {
+            id: input_id(id),
+            name: name.into(),
+            kind,
+            required_capabilities: Vec::new(),
+        });
+    }
+    for (id, name) in [(97, "Keyed"), (96, "Other")] {
+        project.add_scene(Scene {
+            id: scene_id(id),
+            name: name.into(),
+            background: Rgba8::OPAQUE_BLACK,
+            layers: vec![layer("Fill", SourceRef::Input(input_id(95)))],
+            animation: fm_model::SceneAnimation::default(),
+        });
+    }
+    project
+        .set_scene_layer_key(
+            scene_id(97),
+            0,
+            Some(LayerKey::Fill(fm_model::FillLayerKey::linear(input_id(98)))),
+        )
+        .unwrap();
+    assert_eq!(project.validate(), Ok(()));
+    let before = project.clone();
+
+    // The key's own alias, an alias further down its chain, and the key
+    // input becoming a Scene input are all refused.
+    for (input, kind) in [
+        (98, alias(97)),
+        (99, alias(97)),
+        (
+            98,
+            InputKind::Scene {
+                scene_id: scene_id(96),
+                audio_source: None,
+            },
+        ),
+    ] {
+        assert_eq!(
+            project.replace_input_source(input_id(input), kind, Vec::new()),
+            Err(ReplaceInputError::SceneKeyInput(input_id(98)))
+        );
+        assert_eq!(project, before);
+    }
+
+    // An alias no key uses may still show a scene, and the key's alias may
+    // still be re-pointed at another picture.
+    project
+        .replace_input_source(input_id(100), alias(97), Vec::new())
+        .unwrap();
+    project
+        .replace_input_source(input_id(98), alias(95), Vec::new())
+        .unwrap();
+    assert_eq!(project.validate(), Ok(()));
+}

@@ -319,6 +319,9 @@ pub enum ReplaceInputError {
     MissingInput(InputId),
     /// The replacement would make the input's scene graph reach itself.
     SourceCycle,
+    /// The replacement would make this key/fill key input render a scene,
+    /// directly or through an alias chain (SW-008).
+    SceneKeyInput(InputId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -684,6 +687,10 @@ impl std::fmt::Display for ReplaceInputError {
             Self::MissingScene(scene) => write!(formatter, "unknown scene {scene}"),
             Self::MissingInput(target) => write!(formatter, "unknown alias target input {target}"),
             Self::SourceCycle => formatter.write_str("input source would create a cycle"),
+            Self::SceneKeyInput(input) => write!(
+                formatter,
+                "key input {input} would render a scene; a key/fill key needs a picture input"
+            ),
         }
     }
 }
@@ -2108,7 +2115,9 @@ impl Project {
     /// Returns [`ReplaceInputError::UnknownInput`] when the input does not
     /// exist, [`ReplaceInputError::MissingScene`] when a scene source names a
     /// scene that does not exist, and [`ReplaceInputError::SourceCycle`] when
-    /// the replacement would make the input's scene graph reach itself.
+    /// the replacement would make the input's scene graph reach itself, and
+    /// [`ReplaceInputError::SceneKeyInput`] when it would make a key/fill
+    /// key input render a scene (an alias re-pointed at a Scene input).
     pub fn replace_input_source(
         &mut self,
         input: InputId,
@@ -2142,6 +2151,19 @@ impl Project {
             })
         }) {
             return Err(ReplaceInputError::SourceCycle);
+        }
+        // A key/fill key input is a leaf picture: refuse a replacement that
+        // makes one render a scene (validation would report it).
+        if let Some(key_input) = candidate
+            .scenes
+            .iter()
+            .flat_map(|scene| &scene.layers)
+            .filter_map(|layer| layer.key.and_then(crate::LayerKey::key_input))
+            .find(|key_input| {
+                candidate.input_renders_scene(*key_input) && !self.input_renders_scene(*key_input)
+            })
+        {
+            return Err(ReplaceInputError::SceneKeyInput(key_input));
         }
         *self = candidate;
         Ok(())
