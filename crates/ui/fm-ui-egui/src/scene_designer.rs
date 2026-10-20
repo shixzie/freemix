@@ -2477,6 +2477,17 @@ fn refinement_fields(
                 ui.end_row();
             }
         });
+    despill_fields(ui, l, document, id, lock);
+}
+
+/// A key's despill (off, green, or blue) and, while on, its strength.
+fn despill_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
     let despill = document
         .layer(id)
         .and_then(|layer| layer.key)

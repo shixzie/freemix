@@ -18,7 +18,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.69\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.70\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -197,7 +197,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_43() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 69));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 70));
 }
 
 #[test]
@@ -477,6 +477,7 @@ fn layout_changes_carry_the_edit_and_the_whole_new_layout() {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one record: every layout field and key kind
 #[test]
 fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
     let full = outline(2);

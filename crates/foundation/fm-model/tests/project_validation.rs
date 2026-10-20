@@ -2305,6 +2305,7 @@ fn layer_keys_are_bounded_and_set_atomically() {
     );
 }
 
+#[allow(clippy::too_many_lines)] // one story: every key bound and the key input's hold
 #[test]
 fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
     let mut project = Project::new(project_id(97), "Key fill", settings());

@@ -619,11 +619,11 @@ fn write_layer_key(output: &mut String, key: Option<fm_model::LayerKey>) {
         fm_model::KeyDespill::Off => output.push_str("{\"type\": \"off\"}"),
         fm_model::KeyDespill::Green { strength } => {
             write!(output, "{{\"type\": \"green\", \"strength\": {strength}}}")
-                .expect("writing to a string cannot fail")
+                .expect("writing to a string cannot fail");
         }
         fm_model::KeyDespill::Blue { strength } => {
             write!(output, "{{\"type\": \"blue\", \"strength\": {strength}}}")
-                .expect("writing to a string cannot fail")
+                .expect("writing to a string cannot fail");
         }
     }
     output.push_str("}}");

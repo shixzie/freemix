@@ -560,7 +560,7 @@ fn assets_listing(store: &ProjectStore) -> Vec<String> {
 fn every_element_kind_round_trips_exactly() {
     let expected = rich_template();
     let encoded = encode_title_template(&expected).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 60,\n  \"template\": {\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 61,\n  \"template\": {\n"));
     assert!(encoded.contains(
         "\"kind\": {\"type\": \"image\", \"field\": 4, \"fit\": \"contain\", \"filter\": \"bilinear\"}"
     ));
@@ -732,7 +732,7 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
 
     for (schema, found) in [("59", 59), ("61", 61)] {
         let document = encoded.replacen(
-            "\"schema_version\": 60",
+            "\"schema_version\": 61",
             &format!("\"schema_version\": {schema}"),
             1,
         );

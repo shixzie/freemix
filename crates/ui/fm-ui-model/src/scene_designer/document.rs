@@ -946,28 +946,12 @@ impl SceneLayoutDocument {
             | Field::KeyChoke
             | Field::KeyEdgeSoftness
             | Field::KeyDespill
-            | Field::KeyDespillStrength => {
-                let refinement = layer
+            | Field::KeyDespillStrength => refinement_value(
+                layer
                     .key
-                    .map_or(WireKeyRefinement::NONE, |key| key.refinement());
-                match field {
-                    Field::KeyClipBlack => f64::from(refinement.clip_black),
-                    Field::KeyClipWhite => f64::from(refinement.clip_white),
-                    Field::KeyChoke => f64::from(refinement.choke),
-                    Field::KeyEdgeSoftness => f64::from(refinement.edge_softness),
-                    Field::KeyDespill => f64::from(match refinement.despill {
-                        WireKeyDespill::Off => 0_u8,
-                        WireKeyDespill::Green { .. } => 1,
-                        WireKeyDespill::Blue { .. } => 2,
-                    }),
-                    _ => f64::from(match refinement.despill {
-                        WireKeyDespill::Off => 0,
-                        WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => {
-                            strength
-                        }
-                    }),
-                }
-            }
+                    .map_or(WireKeyRefinement::NONE, |key| key.refinement()),
+                field,
+            ),
             Field::EffectParameter { effect, parameter } => f64::from(
                 *layer
                     .effects
@@ -1625,6 +1609,26 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
         Field::EffectParameter { effect, parameter } => {
             set_effect_parameter(layer, usize::from(effect), usize::from(parameter), value);
         }
+    }
+}
+
+/// The value refinement `field` shows (despill reads `0` off, `1` green,
+/// `2` blue; its strength reads `0` while off).
+fn refinement_value(refinement: WireKeyRefinement, field: Field) -> f64 {
+    match field {
+        Field::KeyClipBlack => f64::from(refinement.clip_black),
+        Field::KeyClipWhite => f64::from(refinement.clip_white),
+        Field::KeyChoke => f64::from(refinement.choke),
+        Field::KeyEdgeSoftness => f64::from(refinement.edge_softness),
+        Field::KeyDespill => f64::from(match refinement.despill {
+            WireKeyDespill::Off => 0_u8,
+            WireKeyDespill::Green { .. } => 1,
+            WireKeyDespill::Blue { .. } => 2,
+        }),
+        _ => f64::from(match refinement.despill {
+            WireKeyDespill::Off => 0,
+            WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => strength,
+        }),
     }
 }
 

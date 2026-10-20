@@ -4646,27 +4646,41 @@ fn layer_key_spec(
             });
         }
     };
+    let Some(key) = key else {
+        return Ok((None, arguments.collect()));
+    };
+    let (refinement, rest) = key_refinement_options(arguments)?;
+    Ok((Some(key.with_refinement(refinement)), rest))
+}
+
+fn read_byte(
+    arguments: &mut impl Iterator<Item = String>,
+    field: &'static str,
+) -> Result<u8, ArgsError> {
+    number(&required(arguments, field)?, field)
+}
+
+/// A key's refinement options (SW-008): `--clip <black> <white>`,
+/// `--choke <n>`, `--edge-softness <n>`, and `--despill green|blue
+/// <strength>`; every other argument is returned in order.
+fn key_refinement_options(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<(fm_model::KeyRefinement, Vec<String>), ArgsError> {
     let mut refinement = fm_model::KeyRefinement::NONE;
     let mut rest = Vec::new();
-    fn read_byte(
-        arguments: &mut impl Iterator<Item = String>,
-        field: &'static str,
-    ) -> Result<u8, ArgsError> {
-        number(&required(arguments, field)?, field)
-    }
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
-            "--clip" if key.is_some() => {
+            "--clip" => {
                 refinement.clip_black = read_byte(arguments, "clip black")?;
                 refinement.clip_white = read_byte(arguments, "clip white")?;
             }
-            "--choke" if key.is_some() => {
+            "--choke" => {
                 refinement.choke = number(&required(arguments, "choke")?, "choke")?;
             }
-            "--edge-softness" if key.is_some() => {
+            "--edge-softness" => {
                 refinement.edge_softness = read_byte(arguments, "edge softness")?;
             }
-            "--despill" if key.is_some() => {
+            "--despill" => {
                 let backing = required(arguments, "despill backing")?;
                 let strength = read_byte(arguments, "despill strength")?;
                 refinement.despill = match backing.as_str() {
@@ -4683,7 +4697,7 @@ fn layer_key_spec(
             _ => rest.push(argument),
         }
     }
-    Ok((key.map(|key| key.with_refinement(refinement)), rest))
+    Ok((refinement, rest))
 }
 
 /// `scene-layer-key <show> <scene> <layer-index> <key spec>` (IN-020).
