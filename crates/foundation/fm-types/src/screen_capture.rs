@@ -112,22 +112,32 @@ impl WindowRule {
         }
     }
 
-    /// Whether a window of `app` titled `title` satisfies the rule.
+    /// Whether a window of `app` titled `title` satisfies the rule. The
+    /// window's texts are compared as a listing carries them (see
+    /// [`bound_screen_capture_text`]), so a rule picked from a listing
+    /// matches a desktop title longer than the wire carries or holding
+    /// control characters.
     #[must_use]
     pub fn matches(&self, app: &str, title: &str) -> bool {
         self.matches_app(app)
             && match self.title_match {
-                TitleMatch::Exact => title == self.title,
-                TitleMatch::Contains => title.to_lowercase().contains(&self.title.to_lowercase()),
+                TitleMatch::Exact => {
+                    bound_screen_capture_text(title, MAX_SCREEN_CAPTURE_TITLE_BYTES) == self.title
+                }
+                TitleMatch::Contains => bound_screen_capture_text(title, usize::MAX)
+                    .to_lowercase()
+                    .contains(&self.title.to_lowercase()),
                 TitleMatch::Any => true,
             }
     }
 
     /// Whether a window of `app` satisfies the application part of the
-    /// rule.
+    /// rule (the application compared as a listing carries it).
     #[must_use]
     pub fn matches_app(&self, app: &str) -> bool {
-        self.app.is_empty() || app.eq_ignore_ascii_case(&self.app)
+        self.app.is_empty()
+            || bound_screen_capture_text(app, MAX_SCREEN_CAPTURE_APP_BYTES)
+                .eq_ignore_ascii_case(&self.app)
     }
 }
 
@@ -815,6 +825,45 @@ mod tests {
             window(4, "Xmessage", "").rule().title_match,
             TitleMatch::Any
         );
+    }
+
+    #[test]
+    fn a_rule_picked_from_a_fitted_listing_finds_its_reopened_window() {
+        // The desktop's own titles can be longer than the wire carries, or
+        // hold control characters; the operator picks from the fitted
+        // listing, and the capture resolves against the desktop.
+        let long = format!("{} - Mozilla Firefox", "Breaking news ".repeat(20));
+        let desktop = vec![
+            window(5, "Firefox", &long),
+            window(8, "XTerm", "make\tbuild"),
+        ];
+        let fitted = ScreenCaptureInventory {
+            supported: true,
+            backend: "x11".into(),
+            screens: Vec::new(),
+            windows: desktop.clone(),
+            error: None,
+        }
+        .fitted();
+        for (index, picked) in fitted.windows.iter().enumerate() {
+            let rule = picked.rule();
+            assert!(validate_window_rule(&rule).is_ok());
+            // The window closed and opened again under a new id.
+            let reopened = vec![WindowInfo {
+                id: 40 + picked.id,
+                ..desktop[index].clone()
+            }];
+            assert_eq!(
+                resolve_window(&reopened, &rule).map(|w| w.id),
+                Some(40 + picked.id),
+                "{rule:?}"
+            );
+        }
+        let contains = WindowRule {
+            title_match: TitleMatch::Contains,
+            ..WindowRule::exact("XTerm", "make build", None)
+        };
+        assert_eq!(resolve_window(&desktop, &contains).map(|w| w.id), Some(8));
     }
 
     #[test]
