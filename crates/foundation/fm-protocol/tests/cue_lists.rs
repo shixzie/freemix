@@ -22,7 +22,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.77\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.78\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {
@@ -207,7 +207,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 77));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 78));
 }
 
 #[test]

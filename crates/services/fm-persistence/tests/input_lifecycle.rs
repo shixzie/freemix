@@ -142,7 +142,7 @@ fn input_lifecycle_round_trips_exactly_and_is_strict() {
     );
     let manifest = directory.path("show.freemix/project.json");
     let text = fs::read_to_string(&manifest).unwrap();
-    assert!(text.contains("\"schema_version\": 66"));
+    assert!(text.contains("\"schema_version\": 67"));
     let fragment = "\"input_categories\": [{\"id\": 4, \"name\": \"Cameras \\\"main\\\"\"}, \
                     {\"id\": 2, \"name\": \"Graphics\"}],\n    \"input_lifecycle\": [\n      \
                     {\"input\": 1, \"category\": 4, \"color\": \"purple\", \"paused\": false, \
