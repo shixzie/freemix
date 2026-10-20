@@ -440,8 +440,11 @@ pub enum EngineCommand {
     /// operations; settings changes are project edits (padlocked, without
     /// an undo entry). Realized on the target frame (see [`crate::media`]).
     Media(crate::EngineMediaCommand),
-    /// Moves a paged input (a slideshow, IN-009) to another page. A live
-    /// operation realized on the target frame (see [`crate::slideshow`]).
+    /// Moves a paged input to another page: a slideshow (IN-009), realized
+    /// on the target frame (see [`crate::slideshow`]), or a document
+    /// (IN-014), whose durable page moves at once, resolved against the page
+    /// count the media plane reported (see [`crate::paged`]). A live
+    /// operation.
     PageNavigate {
         input: InputId,
         navigation: fm_types::paged::PagedNavigation,
@@ -450,10 +453,6 @@ pub enum EngineCommand {
     /// [`crate::media_list`]). Creating and editing are project edits;
     /// navigation and advances are live operations.
     MediaList(crate::EngineMediaListCommand),
-    /// Steps a paged (document) input to another page (IN-014; see
-    /// [`crate::paged`]). A live operation, resolved against the page count
-    /// the media plane reported.
-    Paged(crate::EnginePagedCommand),
     /// Edits an input's lifecycle or the input catalogue (IN-026; see
     /// [`crate::EngineInputLifecycleEdit`]). A project edit.
     InputLifecycle(crate::EngineInputLifecycleEdit),
@@ -707,8 +706,8 @@ pub enum EngineEvent {
         frame: u64,
         operation: crate::EngineMediaListOperation,
     },
-    /// A paged command was accepted (IN-014); the page afterwards is read
-    /// from [`ShowState::paged_page`].
+    /// A page step of a document input was accepted (IN-014); the page
+    /// afterwards is read from [`ShowState::paged_page`].
     PagedChanged {
         input: InputId,
         navigation: fm_types::paged::PagedNavigation,
@@ -2011,6 +2010,12 @@ impl Engine {
                     }
                     _ => None,
                 };
+                let paged_count = match &sub {
+                    EngineCommand::PageNavigate { input, .. } => {
+                        self.paged_counts.get(input).copied()
+                    }
+                    _ => None,
+                };
                 let mutation = EngineMutation {
                     command: sub,
                     target_frame,
@@ -2020,7 +2025,7 @@ impl Engine {
                     scene_clip_bound: None,
                     media_tracks: None,
                     media_list: None,
-                    paged_count: None,
+                    paged_count,
                     cue: None,
                 };
                 mutation.apply(show, &mut Vec::new()).map_err(refuse)?;
@@ -2283,7 +2288,7 @@ impl Engine {
             _ => None,
         };
         let paged_count = match resolution.as_ref().map(|resolved| &resolved.command) {
-            Ok(EngineCommand::Paged(command)) => self.paged_counts.get(&command.input).copied(),
+            Ok(EngineCommand::PageNavigate { input, .. }) => self.paged_counts.get(input).copied(),
             _ => None,
         };
         let media_tracks = match resolution.as_ref().map(|resolved| &resolved.command) {
@@ -2418,14 +2423,21 @@ impl Engine {
                     .or_default()
                     .accept(media.operation);
             }
-            if let EngineCommand::PageNavigate { input, navigation } = &command {
+            // A document's page moved with the show; a slideshow steps on
+            // its target frame.
+            let show = self.commands.state();
+            if let EngineCommand::PageNavigate { input, navigation } = &command
+                && crate::slideshow::paged_config(show, *input).is_ok()
+            {
                 self.slideshows
                     .entry(*input)
                     .or_default()
                     .accept(*navigation);
             }
             for (input, navigation) in cue_pages {
-                self.slideshows.entry(input).or_default().accept(navigation);
+                if crate::slideshow::paged_config(show, input).is_ok() {
+                    self.slideshows.entry(input).or_default().accept(navigation);
+                }
             }
             for media in cue_media {
                 self.media
@@ -3508,12 +3520,19 @@ impl EngineMutation {
             });
         }
         if let EngineCommand::PageNavigate { input, navigation } = self.command {
-            crate::slideshow::paged_config(state, input)?;
-            events.push(EngineEvent::PageNavigated {
-                input,
-                frame: self.target_frame.get(),
-                navigation,
-            });
+            // A document's page is show state (IN-014); a slideshow's slide
+            // is runtime, stepped on the target frame (IN-009).
+            if let Some(page) = crate::paged::accept(state, input, navigation, self.paged_count) {
+                state.set_paged_page_unchecked(input, page?);
+                events.push(EngineEvent::PagedChanged { input, navigation });
+            } else {
+                crate::slideshow::paged_config(state, input)?;
+                events.push(EngineEvent::PageNavigated {
+                    input,
+                    frame: self.target_frame.get(),
+                    navigation,
+                });
+            }
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
             });
@@ -3540,17 +3559,6 @@ impl EngineMutation {
                 input: command.input,
                 frame: self.target_frame.get(),
                 operation: command.operation.clone(),
-            });
-            return Ok(EngineAcceptance {
-                target_frame: self.target_frame,
-            });
-        }
-        if let EngineCommand::Paged(command) = &self.command {
-            let page = crate::paged::accept(state, command, self.paged_count)?;
-            state.set_paged_page_unchecked(command.input, page);
-            events.push(EngineEvent::PagedChanged {
-                input: command.input,
-                navigation: command.navigation,
             });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
@@ -3870,7 +3878,6 @@ impl EngineMutation {
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
-            | EngineCommand::Paged(_)
             | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
@@ -4443,7 +4450,6 @@ fn apply_runtime(
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
-            | EngineCommand::Paged(_)
     ) {
         return Ok(Vec::new());
     }
@@ -4638,7 +4644,6 @@ fn apply_runtime(
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
-        | EngineCommand::Paged(_)
         | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
@@ -4836,7 +4841,6 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
-        | EngineCommand::Paged(_)
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
@@ -4876,7 +4880,6 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::Media(_))
         && !matches!(command, EngineCommand::PageNavigate { .. })
         && !matches!(command, EngineCommand::MediaList(_))
-        && !matches!(command, EngineCommand::Paged(_))
         && !matches!(
             command,
             EngineCommand::InputLifecycle(edit) if !matches!(

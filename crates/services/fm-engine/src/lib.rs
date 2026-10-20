@@ -60,7 +60,7 @@ pub use media_list::{
     EngineMediaListCommand, EngineMediaListNavigation, EngineMediaListOperation,
     EngineMediaListStatus,
 };
-pub use paged::{EnginePagedCommand, EnginePagedStatus};
+pub use paged::EnginePagedStatus;
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
     PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,

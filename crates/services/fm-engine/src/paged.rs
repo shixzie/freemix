@@ -2,7 +2,8 @@
 //!
 //! A document input's current page is durable show state
 //! ([`crate::ShowState::paged_page`]): a new or replaced document starts on
-//! its first page, and a `paged` command moves it. Its page count is
+//! its first page, and the generic page step
+//! ([`crate::EngineCommand::PageNavigate`], shared with slideshows) moves it. Its page count is
 //! engine runtime: the media plane reads the document and reports the count
 //! ([`crate::Engine::set_paged_count`]); it is never snapshotted. A
 //! navigation is resolved against that count by
@@ -21,13 +22,6 @@ use fm_types::paged::PagedNavigation;
 
 use crate::ShowState;
 
-/// Steps one paged input.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct EnginePagedCommand {
-    pub input: InputId,
-    pub navigation: PagedNavigation,
-}
-
 /// A paged input's page and what the engine knows of its page count.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct EnginePagedStatus {
@@ -38,38 +32,29 @@ pub struct EnginePagedStatus {
     pub count: Option<u32>,
 }
 
-/// The page `command` lands on in `state`, given the input's reported page
-/// `count`.
+/// The page `navigation` moves document input `input` to in `state`, given
+/// its reported page `count`, or `None` when `input` is not a document.
 pub(crate) fn accept(
     state: &ShowState,
-    command: &EnginePagedCommand,
+    input: InputId,
+    navigation: PagedNavigation,
+    count: Option<u32>,
+) -> Option<Result<u32, Rejection>> {
+    let page = state.paged_page(input)?;
+    Some(document_target(input, navigation, page, count))
+}
+
+fn document_target(
+    input: InputId,
+    navigation: PagedNavigation,
+    page: u32,
     count: Option<u32>,
 ) -> Result<u32, Rejection> {
-    let Some(page) = state.paged_page(command.input) else {
-        return Err(if state.inputs().contains(&command.input) {
-            Rejection::new(
-                RejectionCode::InvalidCommand,
-                format!("input {} is not a paged input", command.input),
-            )
-            .with_field(FieldIssue::new(
-                "input",
-                "not_paged_input",
-                "the input is not a document",
-            ))
-        } else {
-            Rejection::new(
-                RejectionCode::NotFound,
-                format!("show does not contain input {}", command.input),
-            )
-            .with_reason(crate::error::unknown_input_reason(command.input))
-        });
-    };
     let Some(count) = count.filter(|count| *count > 0) else {
         return Err(Rejection::new(
             RejectionCode::Unavailable,
             format!(
-                "input {}'s pages are not known yet; try again once the document has loaded",
-                command.input
+                "input {input}'s pages are not known yet; try again once the document has loaded"
             ),
         )
         .with_field(FieldIssue::new(
@@ -79,5 +64,5 @@ pub(crate) fn accept(
         ))
         .retryable(true));
     };
-    Ok(command.navigation.target(page, count))
+    Ok(navigation.target(page, count))
 }

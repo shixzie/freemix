@@ -600,6 +600,13 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 control
                     .paged_sources
                     .retain(|input, _| control.engine.show().paged_page(*input).is_some());
+                for event in &submission.output.events {
+                    if let EventPayload::PagedChanged { status, .. } = &event.payload {
+                        control
+                            .paged_published
+                            .insert(status.input.to_domain(), (**status).clone());
+                    }
+                }
                 // A disabled LiveLAN forgets its last report (see
                 // `refresh_snapshot`).
                 if !control.engine.show().live_lan().enabled {
@@ -902,6 +909,9 @@ pub struct ControlService<A = Policy> {
     /// Each paged input's source as the media plane last reported it
     /// (IN-014); its page count lives in the engine.
     paged_sources: BTreeMap<InputId, paged::PagedSource>,
+    /// Each document input's status as clients last heard it (IN-014): a
+    /// page a cue or shortcut moved is published on the next frame.
+    paged_published: BTreeMap<InputId, fm_protocol::PagedStatus>,
     /// The `LiveLAN` stream's status as the media plane last reported it
     /// (OR-017); clients see it through [`live_lan::wire_status`].
     live_lan_status: fm_protocol::LiveLanStatus,
@@ -989,6 +999,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             capture_inventory: fm_protocol::CaptureInventory::default(),
             system_audio_states: BTreeMap::new(),
             paged_sources: BTreeMap::new(),
+            paged_published: BTreeMap::new(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
             held_publications: None,
         }
@@ -1049,6 +1060,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             capture_inventory: self.capture_inventory.clone(),
             system_audio_states: self.system_audio_states.clone(),
             paged_sources: self.paged_sources.clone(),
+            paged_published: self.paged_published.clone(),
             live_lan_status: self.live_lan_status.clone(),
             held_publications: Some(Vec::new()),
         }
@@ -1639,6 +1651,7 @@ impl<A: AuthorizationHook> ControlService<A> {
         let Some(status) = self.paged_status(input) else {
             return Ok(None);
         };
+        self.paged_published.insert(input, status.clone());
         if status == before {
             return Ok(None);
         }
@@ -2378,6 +2391,23 @@ impl<A: AuthorizationHook> ControlService<A> {
             };
             events.push(self.runtime_event(server, revision_now, generation, event)?);
         }
+        // A document page a cue or shortcut moved (IN-014); a direct step
+        // or a source report was already announced.
+        self.paged_published
+            .retain(|input, _| self.engine.show().paged_page(*input).is_some());
+        let documents: Vec<InputId> = self.engine.show().paged_inputs().keys().copied().collect();
+        for input in documents {
+            let Some(status) = self.paged_status(input) else {
+                continue;
+            };
+            let previous = self.paged_published.insert(input, status.clone());
+            if previous.is_some_and(|previous| previous != status) {
+                let event = RuntimeLifecycleEvent::Paged {
+                    status: Box::new(status),
+                };
+                events.push(self.runtime_event(server, revision_now, generation, event)?);
+            }
+        }
         let frames_per_second = u64::from(self.engine.frame_rate().numerator())
             .div_ceil(u64::from(self.engine.frame_rate().denominator()));
         let revision = self.engine.revision().get();
@@ -2772,13 +2802,12 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
         // Which outputs Fade to Black fades belongs to the switcher operator
         // (like overlay output inclusion).
-        // Stepping a slideshow is an operator control, like a media transport.
+        // Stepping a slideshow or a document is an operator control, like a
+        // media transport.
         CommandPayload::PageNavigate { .. }
         | CommandPayload::SetFadeToBlackOutput { .. }
         | CommandPayload::SetFadeToBlackOutputDuration { .. }
         | CommandPayload::SetFadeToBlackCurve { .. }
-        // Stepping a document is an operator control like media transport.
-        | CommandPayload::PagedInput { .. }
         | CommandPayload::Cut
         | CommandPayload::Fade { .. }
         | CommandPayload::AlphaFade { .. }
@@ -2905,9 +2934,6 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
             input: input.to_domain(),
             navigation: *navigation,
         },
-        CommandPayload::PagedInput { input, navigation } => {
-            paged::engine_command(*input, *navigation)
-        }
         CommandPayload::InputLifecycle(operation) => {
             EngineCommand::InputLifecycle(input_lifecycle::engine_edit(operation))
         }

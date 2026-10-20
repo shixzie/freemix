@@ -1,4 +1,5 @@
-//! Paged inputs (IN-014): the `paged_input` command, the `paged_changed`
+//! Paged inputs (IN-014): document steps through `page_navigate`, the
+//! `paged_changed`
 //! durable event, the `paged` runtime event, the `paged_state` snapshot
 //! records, and the `paged_page_request` / `paged_page` exchange — exactly,
 //! and strictly.
@@ -80,7 +81,7 @@ fn status() -> PagedStatus {
 }
 
 #[test]
-fn paged_input_commands_round_trip_every_action_exactly() {
+fn document_pages_step_with_the_generic_page_navigate_command() {
     for navigation in [
         PagedNavigation::Next,
         PagedNavigation::Previous,
@@ -89,47 +90,18 @@ fn paged_input_commands_round_trip_every_action_exactly() {
         PagedNavigation::Goto(0),
         PagedNavigation::Goto(MAX_PAGED_PAGES - 1),
     ] {
-        let line = round_trip(&command(CommandPayload::PagedInput {
+        let line = round_trip(&command(CommandPayload::PageNavigate {
             input: input(3),
             navigation,
         }));
-        assert!(line.contains("\tpayload=paged_input\t"), "{line}");
-        assert!(
-            line.contains(&format!("\taction={}", navigation.token())),
-            "{line}"
-        );
-        assert_eq!(
-            line.contains("\tpage="),
-            matches!(navigation, PagedNavigation::Goto(_)),
-            "{line}"
-        );
+        assert!(line.contains("\tpayload=page_navigate\t"), "{line}");
     }
-
-    let goto = round_trip(&command(CommandPayload::PagedInput {
-        input: input(3),
-        navigation: PagedNavigation::Goto(2),
-    }));
-    let next = round_trip(&command(CommandPayload::PagedInput {
+    // There is no document-only page command.
+    let next = round_trip(&command(CommandPayload::PageNavigate {
         input: input(3),
         navigation: PagedNavigation::Next,
     }));
-    // A goto needs its page; nothing else takes one.
-    refused(&goto.replace("\tpage=2", ""));
-    refused(&next.replace("action=next", "action=next\tpage=2"));
-    refused(&goto.replace("page=2", &format!("page={MAX_PAGED_PAGES}")));
-    refused(&goto.replace("page=2", "page=02"));
-    refused(&goto.replace("page=2", "page=-1"));
-    refused(&next.replace("action=next", "action=skip"));
-    refused(&next.replace("action=next", "action=Next"));
-    refused(&format!("{}\textra=1\n", next.trim_end()));
-    // Encoding a goto past the bound is refused too.
-    assert!(
-        encode_line(&command(CommandPayload::PagedInput {
-            input: input(3),
-            navigation: PagedNavigation::Goto(MAX_PAGED_PAGES),
-        }))
-        .is_err()
-    );
+    refused(&next.replace("payload=page_navigate", "payload=paged_input"));
 }
 
 #[test]

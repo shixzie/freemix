@@ -727,10 +727,6 @@ fn decode_command_payload(
                 })?;
             CommandPayload::Media { input, operation }
         }
-        "paged_input" => CommandPayload::PagedInput {
-            input: fields.canonical_input("input")?,
-            navigation: super::paged::decode_navigation(fields, "page")?,
-        },
         "transition_favorite_set" => CommandPayload::SetTransitionFavorite {
             slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
             favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,

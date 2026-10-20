@@ -8601,11 +8601,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueActSlideGoto, t("Ir a la diapositiva")),
     (
         Msg::CueParamSlideshowHover,
-        t("La entrada de presentación cuyas diapositivas avanza esta acción"),
+        t("La entrada de presentación o documento cuyas diapositivas o páginas avanza esta acción"),
     ),
     (
         Msg::CueParamSlideHover,
-        t("Número de diapositiva que mostrar, contando desde 1; pasado el final muestra la última"),
+        t(
+            "Número de diapositiva o página que mostrar, contando desde 1; pasado el final muestra la última",
+        ),
     ),
     (
         Msg::CuePvSlideNext,
@@ -8627,7 +8629,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::CuePvSlideGoto,
         t("Mostrar la diapositiva {page} de {input}"),
     ),
-    (Msg::CuePvRefNotSlideshow, t("no es una presentación")),
+    (
+        Msg::CuePvRefNotSlideshow,
+        t("no es una presentación ni un documento"),
+    ),
     (Msg::NameImage, t("Imagen")),
     (Msg::KindImageKey, t("IMAGEN FIJA")),
     (

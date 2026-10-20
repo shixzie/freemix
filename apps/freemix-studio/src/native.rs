@@ -2857,17 +2857,6 @@ fn intent_payload(
                 operation,
             }
         }
-        StudioIntent::PagedInput { input, navigation } => {
-            if let Some(view) = view
-                && !view.inputs.contains(&input)
-            {
-                return Err("Input no longer exists".to_owned());
-            }
-            CommandPayload::PagedInput {
-                input: WireInputId::from_domain(input),
-                navigation,
-            }
-        }
         StudioIntent::PagedPage(_) => {
             return Err("A document page request is not a command".to_owned());
         }

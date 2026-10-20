@@ -654,12 +654,6 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 record.field_string(name, value)
             })?;
         }
-        CommandPayload::PagedInput { input, navigation } => {
-            record.field("payload", "paged_input")?;
-            super::paged::encode_command(*input, *navigation, &mut |name, value| {
-                record.field_string(name, value)
-            })?;
-        }
         CommandPayload::Media { input, operation } => {
             record.field("payload", media_payload_name(*operation))?;
             record.field("input", input)?;

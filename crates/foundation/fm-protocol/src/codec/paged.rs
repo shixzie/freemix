@@ -3,8 +3,6 @@
 //! * Status fields: `input`, `paged_kind` (`document`), `page`, `count`,
 //!   `state` (`loading|converting|ready|unavailable|failed`), and optional
 //!   `title` and `message`. A known count bounds the page.
-//! * `paged_input` command: `input`, `action` (`next|previous|first|last|
-//!   goto`), and `page` exactly when `action=goto`.
 //! * `paged_changed` event: `action`, `target` exactly when `action=goto`,
 //!   then the status fields.
 //! * `paged_page_request`: `request_id`, `input`, `page`, `thumbnail`
@@ -16,7 +14,7 @@ use fm_types::paged::{DocumentState, MAX_PAGED_PAGES, PagedNavigation};
 
 use crate::{
     CodecError, PagedKind, PagedPageContent, PagedPageMessage, PagedPageRequest, PagedStatus,
-    WireInputId, paged_notes_valid, paged_thumbnail_size_valid,
+    paged_notes_valid, paged_thumbnail_size_valid,
 };
 
 use super::media::{FieldSource, Push};
@@ -116,16 +114,6 @@ pub(super) fn decode_navigation(
         .map(|value| page_number(page_field, &value))
         .transpose()?;
     PagedNavigation::from_token(&action, page).ok_or_else(|| invalid("action", action))
-}
-
-/// Encodes a `paged_input` command's fields after `payload`.
-pub(super) fn encode_command(
-    input: WireInputId,
-    navigation: PagedNavigation,
-    push: &mut Push<'_>,
-) -> Result<(), CodecError> {
-    push("input", input.to_string())?;
-    encode_navigation(navigation, "page", push)
 }
 
 /// Encodes a `paged_page_request`'s fields.

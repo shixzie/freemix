@@ -1466,9 +1466,6 @@ impl CommandCompletion {
             CommandPayload::Media { operation, .. } => Self::Media {
                 transport: operation.is_transport(),
             },
-            // A page step is a live operator control realized like a media
-            // transport (Protocol 2.73).
-            CommandPayload::PagedInput { .. } => Self::Media { transport: true },
             CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
                 Self::Playlist { edit: false }
             }
@@ -1802,7 +1799,9 @@ impl Remote {
                         EventPayload::MediaChanged { .. } => {
                             matches!(completion, CommandCompletion::Media { .. })
                         }
-                        EventPayload::PageNavigated { .. } => {
+                        // A slideshow step answers `page_navigated`, a
+                        // document step `paged_changed` (IN-014).
+                        EventPayload::PageNavigated { .. } | EventPayload::PagedChanged { .. } => {
                             completion == CommandCompletion::Switcher
                         }
                         EventPayload::MediaListChanged { operation, .. } => {
@@ -1814,9 +1813,6 @@ impl Remote {
                                     CommandCompletion::Project | CommandCompletion::History
                                 )
                             }
-                        }
-                        EventPayload::PagedChanged { .. } => {
-                            completion == CommandCompletion::Media { transport: true }
                         }
                         EventPayload::AudioMixerChanged(_) => matches!(
                             completion,

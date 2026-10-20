@@ -1,7 +1,7 @@
 //! Process-level IN-014 on the simulated runtime: a host PDF and a
 //! `PowerPoint` presentation import as document inputs; the PDF reports its
 //! page count and title, steps page by page (clamped at both ends) through
-//! `paged_input`, answers presenter notes and page thumbnails, and lands
+//! `page_navigate`, answers presenter notes and page thumbnails, and lands
 //! on the same page after a crash (journal replay) and a clean restart; a
 //! presentation without `LibreOffice` still counts its slides and serves its
 //! notes, and says how to show it; with a converter it converts and
@@ -325,7 +325,7 @@ impl Client {
 
     /// Steps `id` and returns the status the daemon replicated.
     fn step(&mut self, id: u128, navigation: PagedNavigation) -> PagedStatus {
-        match self.command(&CommandPayload::PagedInput {
+        match self.command(&CommandPayload::PageNavigate {
             input: wire(id),
             navigation,
         }) {
@@ -451,7 +451,7 @@ fn a_pdf_steps_page_by_page_and_survives_replay_and_restart() {
     assert_eq!(client.page(1, 0, false), PagedPageContent::Unavailable);
 
     // A non-document refuses navigation.
-    client.submit_message(&CommandPayload::PagedInput {
+    client.submit_message(&CommandPayload::PageNavigate {
         input: wire(1),
         navigation: PagedNavigation::Next,
     });
@@ -460,7 +460,7 @@ fn a_pdf_steps_page_by_page_and_survives_replay_and_restart() {
         _ => None,
     });
     assert!(
-        matches!(&refused, CommandResult::Rejected { fields, .. } if fields[0].code == "not_paged_input"),
+        matches!(&refused, CommandResult::Rejected { fields, .. } if fields[0].code == "not_paged"),
         "{refused:?}"
     );
 

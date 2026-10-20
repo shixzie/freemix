@@ -281,6 +281,7 @@ impl ThumbnailRenderer {
     /// The picture of one input, graded with its input grade and shown over
     /// black (straight colour, opaque), or `None` when it has none on this
     /// daemon.
+    #[allow(clippy::too_many_lines)] // one arm per input kind
     fn picture(&mut self, input: &Input, work: &ThumbnailWork, now: Instant) -> Option<ImageFrame> {
         let id = input.id;
         let pipeline = self

@@ -715,32 +715,21 @@ pub fn run(command: Command) -> AppResult<()> {
             )?,
         },
         Command::InputPage {
-            target,
+            path,
             input,
             navigation,
             key,
             expected_revision,
-        } => match target {
-            crate::args::MediaTarget::Local(path) => mutate(
-                &path,
-                EngineCommand::Paged(fm_engine::EnginePagedCommand {
-                    input: input_id(input)?,
-                    navigation,
-                }),
-                1,
-                key,
-                expected_revision,
-            )?,
-            crate::args::MediaTarget::Remote(address) => remote::execute(
-                address,
-                fm_protocol::CommandPayload::PagedInput {
-                    input: fm_protocol::WireInputId::from_domain(input_id(input)?),
-                    navigation,
-                },
-                key,
-                expected_revision,
-            )?,
-        },
+        } => mutate(
+            &path,
+            EngineCommand::PageNavigate {
+                input: input_id(input)?,
+                navigation,
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
         Command::InputPages { path } => {
             let project = inspect_engine(&path)?;
             for (input, document) in project.project.documents() {
@@ -6284,7 +6273,6 @@ Usage:
   freemix-cli remote-transition-favorite-set <127.0.0.1:port> <slot:1..=4> <cut|kind|stinger-N> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-media-<play|pause|stop|complete|seek|trim|rate|end-action|end-trigger|audio-track|audio-policy> <127.0.0.1:port> <input-id> <operands> [--key <key>] [--expect <revision>]
       seek <frame|N/Ds|Ns>; complete declares a growing file finished
-  freemix-cli remote-input-page <127.0.0.1:port> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger <127.0.0.1:port> <slot:1..=8> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-configure <127.0.0.1:port> <slot:1..=8> <media-input> <true|false> <cut-point-frames> <muted|stinger-only|mix-with-program> <cut|fade|keep-program> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-remove <127.0.0.1:port> <slot:1..=8> [--key <key>] [--expect <revision>]

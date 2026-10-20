@@ -6,13 +6,13 @@
 //! page count, once known, the [`DocumentState`], the document title, and a
 //! status message). The same status rides the `paged_state` follow-on
 //! record of a snapshot, the durable `paged_changed` event of an accepted
-//! `paged_input` command, and the `runtime_event` with `event=paged` when
+//! `page_navigate` step, and the `runtime_event` with `event=paged` when
 //! the source's state changes, so a client replaces the whole status of
 //! one input on every record that names it.
 //!
-//! Navigation is generic ([`PagedNavigation`]): `paged_input` with
-//! `action=next|previous|first|last`, or `action=goto` and a zero-based
-//! `page`. The server resolves it against the page count (clamping at both
+//! Navigation is the generic page step shared with slideshows
+//! ([`crate::PagedNavigation`]): `page_navigate` with `action=next|previous|first|
+//! last`, or `action=goto` and a zero-based `page`. The server resolves it against the page count (clamping at both
 //! ends); a source whose count is not known yet refuses navigation as
 //! retryable.
 //!
@@ -26,8 +26,7 @@
 
 pub use fm_types::paged::{
     DocumentFormat, DocumentState, MAX_DOCUMENT_INPUTS, MAX_PAGED_MESSAGE_BYTES,
-    MAX_PAGED_NOTES_BYTES, MAX_PAGED_PAGES, MAX_PAGED_TITLE_BYTES, PagedNavigation,
-    bounded_paged_text,
+    MAX_PAGED_NOTES_BYTES, MAX_PAGED_PAGES, MAX_PAGED_TITLE_BYTES, bounded_paged_text,
 };
 
 use crate::WireInputId;

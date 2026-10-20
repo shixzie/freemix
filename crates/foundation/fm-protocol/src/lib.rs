@@ -173,9 +173,9 @@ pub use paged::{
     DocumentFormat, DocumentState, MAX_DOCUMENT_INPUTS, MAX_PAGED_MESSAGE_BYTES,
     MAX_PAGED_NOTES_BYTES, MAX_PAGED_PAGES, MAX_PAGED_STATES, MAX_PAGED_THUMBNAIL_BYTES,
     MAX_PAGED_THUMBNAIL_HEIGHT, MAX_PAGED_THUMBNAIL_WIDTH, MAX_PAGED_TITLE_BYTES, PagedKind,
-    PagedPageAnswer, PagedPageContent, PagedPageKey, PagedPageMessage,
-    PagedPageRequest, PagedStateMessage, PagedStatus, bounded_paged_text, decode_paged_page,
-    paged_notes_valid, paged_thumbnail_size_valid,
+    PagedPageAnswer, PagedPageContent, PagedPageKey, PagedPageMessage, PagedPageRequest,
+    PagedStateMessage, PagedStatus, bounded_paged_text, decode_paged_page, paged_notes_valid,
+    paged_thumbnail_size_valid,
 };
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,

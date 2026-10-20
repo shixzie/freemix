@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use fm_engine::{Engine, EngineCommand, EnginePagedCommand};
+use fm_engine::Engine;
 use fm_protocol::{
     DocumentState, EventPayload, MAX_PAGED_MESSAGE_BYTES, MAX_PAGED_TITLE_BYTES, PagedKind,
     PagedNavigation, PagedStateMessage, PagedStatus, WireInputId, bounded_paged_text,
@@ -94,18 +94,7 @@ pub(super) fn paged_states(
         .collect()
 }
 
-/// The engine command of a wire `paged_input`.
-pub(super) const fn engine_command(
-    input: WireInputId,
-    navigation: PagedNavigation,
-) -> EngineCommand {
-    EngineCommand::Paged(EnginePagedCommand {
-        input: input.to_domain(),
-        navigation,
-    })
-}
-
-/// The durable event of an accepted `paged_input`.
+/// The durable event of an accepted document page step.
 pub(super) fn paged_changed(
     engine: &Engine,
     sources: &BTreeMap<InputId, PagedSource>,

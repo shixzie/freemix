@@ -174,7 +174,7 @@ fn draw_card(
     intents: &mut Vec<StudioIntent>,
 ) {
     let block = document_navigation_block(state, status);
-    let mut push = |navigation| intents.push(StudioIntent::PagedInput { input, navigation });
+    let mut push = |navigation| intents.push(StudioIntent::PageNavigate { input, navigation });
 
     // Name, state, and title.
     ui.horizontal(|ui| {

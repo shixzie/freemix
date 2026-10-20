@@ -64,7 +64,7 @@ pub(crate) struct Show {
     /// Each on-air overlay channel with its source.
     pub(crate) overlays: Vec<(u8, InputId)>,
     pub(crate) media: Vec<InputId>,
-    /// Every slideshow input (IN-009).
+    /// Every paged input: slideshows (IN-009) and documents (IN-014).
     pub(crate) slideshows: Vec<InputId>,
     pub(crate) titles: Vec<ShowTitle>,
     /// Each audio strip: input, gain in millidecibels, muted.
@@ -120,6 +120,8 @@ impl Show {
                     matches!(still.source, fm_protocol::WireStillSource::Slideshow(_))
                 })
                 .map(|(input, _)| *input)
+                // A document steps like a slideshow (IN-014).
+                .chain(project.paged_statuses().map(|status| status.input.to_domain()))
                 .collect(),
             titles: project
                 .titles()

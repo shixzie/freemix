@@ -2,7 +2,7 @@
 
 //! Process-level native document realization (IN-014): a native daemon
 //! renders a stored PDF's current page as a live source on Program, turns
-//! the page after a `paged_input` step, and adds a document input live.
+//! the page after a `page_navigate` step, and adds a document input live.
 //!
 //! The test needs a native GPU adapter (Metal, Vulkan, or Direct3D 12; a
 //! software Vulkan driver such as lavapipe suffices). Without one the daemon
@@ -306,7 +306,7 @@ fn native_daemon_shows_a_document_page_and_turns_it() {
 
     client.command(
         "next",
-        CommandPayload::PagedInput {
+        CommandPayload::PageNavigate {
             input: WireInputId::from_domain(input(2)),
             navigation: PagedNavigation::Next,
         },

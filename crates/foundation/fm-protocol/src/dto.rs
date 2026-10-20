@@ -1938,9 +1938,11 @@ pub enum CommandPayload {
         input: WireInputId,
         operation: crate::MediaOperation,
     },
-    /// Steps a paged input (a slideshow, IN-009): payload `page_navigate`
-    /// with `input`, `action`, and for `goto` `page`. A live operation
-    /// realized on its target frame.
+    /// Steps a paged input: payload `page_navigate` with `input`, `action`,
+    /// and for `goto` `page`. A live operation: a slideshow (IN-009) steps
+    /// on its target frame and is answered by `page_navigated`; a document
+    /// (IN-014) moves its durable page at once and is answered by
+    /// `paged_changed`.
     PageNavigate {
         input: WireInputId,
         navigation: crate::PagedNavigation,
@@ -1950,13 +1952,6 @@ pub enum CommandPayload {
     MediaList {
         input: WireInputId,
         operation: crate::MediaListOperation,
-    },
-    /// Steps a paged input (a document) to another page (IN-014). Wire
-    /// payload `paged_input` with `action` and, for `goto`, `page`. A live
-    /// operator control: never padlocked, never undone.
-    PagedInput {
-        input: WireInputId,
-        navigation: crate::PagedNavigation,
     },
     /// An input lifecycle edit (Protocol 2.38, IN-026; see
     /// [`crate::InputLifecycleOperation`]). A project edit.
@@ -2755,8 +2750,8 @@ pub enum EventPayload {
         created: Option<String>,
         status: Box<crate::MediaListStatus>,
     },
-    /// A `paged_input` command was accepted (IN-014): the step and the
-    /// input's complete status afterwards.
+    /// A `page_navigate` step of a document input was accepted (IN-014):
+    /// the step and the input's complete status afterwards.
     PagedChanged {
         navigation: crate::PagedNavigation,
         status: Box<crate::PagedStatus>,

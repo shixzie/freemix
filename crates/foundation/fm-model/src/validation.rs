@@ -454,7 +454,11 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                 Some(found)
                     if (is_title && !matches!(found.kind, InputKind::Title(_)))
                         || (is_media && !matches!(found.kind, InputKind::Media { .. }))
-                        || (is_page && !matches!(found.kind, InputKind::Slideshow(_))) =>
+                        || (is_page
+                            && !matches!(
+                                found.kind,
+                                InputKind::Slideshow(_) | InputKind::Document(_)
+                            )) =>
                 {
                     errors.push(ValidationError {
                         entity: Some(EntityRef::Input(input)),

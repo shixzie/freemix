@@ -405,8 +405,9 @@ pub enum StudioIntent {
         input: InputId,
         operation: MediaOperation,
     },
-    /// Steps a slideshow input to another slide (IN-009): an operator
-    /// control like a media transport.
+    /// Steps a paged input to another page: a slideshow's slide (IN-009)
+    /// or a document's page (IN-014). An operator control like a media
+    /// transport.
     PageNavigate {
         input: InputId,
         navigation: fm_protocol::PagedNavigation,
@@ -421,11 +422,6 @@ pub enum StudioIntent {
     MediaList {
         input: InputId,
         operation: fm_protocol::MediaListOperation,
-    },
-    /// Turns a document input's page (IN-014): an operator control.
-    PagedInput {
-        input: InputId,
-        navigation: fm_protocol::PagedNavigation,
     },
     /// Sends one grade command from the Colour window: a target's grade,
     /// a library save, or a LUT import.

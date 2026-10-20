@@ -741,7 +741,7 @@ pub enum DurableChange {
     PageNavigated {
         input: InputId,
     },
-    /// A paged input's complete status after an accepted `paged_input`
+    /// A document input's complete status after an accepted page step
     /// (IN-014).
     PagedChanged {
         status: Box<fm_protocol::PagedStatus>,

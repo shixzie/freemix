@@ -187,12 +187,9 @@ impl EngineCommand {
                     EngineCommandKind::ProjectEdit
                 }
             }
-            Self::Paged(_) => EngineCommandKind::LiveOperation,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
-            // A page step is an operator control, like a transport (IN-014).
-            Self::Paged(_)
-            | Self::SetInputAudioStrip { .. }
+            Self::SetInputAudioStrip { .. }
             | Self::PageNavigate { .. }
             | Self::SelectPreview(_)
             | Self::Cut

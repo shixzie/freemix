@@ -694,7 +694,7 @@ impl ActionKind {
         };
         let page = |navigation| {
             Some(WireCueAction::Page {
-                input: slideshow_inputs(view)
+                input: paged_inputs(view, project)
                     .first()
                     .copied()
                     .map(WireInputId::from_domain)?,
@@ -805,14 +805,17 @@ const fn number_field(value: &TitleFieldValue) -> bool {
 
 /// The show's media inputs, in input order: the media actions' choices.
 /// The show's slideshow inputs, in show order (IN-009).
-fn slideshow_inputs(view: &ClientView) -> Vec<InputId> {
+/// The inputs a page action steps: slideshows (IN-009) and documents
+/// (IN-014).
+fn paged_inputs(view: &ClientView, project: &ProjectState) -> Vec<InputId> {
     view.inputs
         .iter()
         .copied()
         .filter(|input| {
-            view.still_input(*input).is_some_and(|still| {
-                matches!(still.source, fm_protocol::WireStillSource::Slideshow(_))
-            })
+            project.paged_status(*input).is_some()
+                || view.still_input(*input).is_some_and(|still| {
+                    matches!(still.source, fm_protocol::WireStillSource::Slideshow(_))
+                })
         })
         .collect()
 }
@@ -2479,7 +2482,7 @@ fn draw_params(
             }
         }
         WireCueAction::Page { input, navigation } => {
-            let slideshows = slideshow_inputs(names.view);
+            let slideshows = paged_inputs(names.view, names.project);
             let mut value = Some(*input);
             let changed = input_picker(
                 ui,

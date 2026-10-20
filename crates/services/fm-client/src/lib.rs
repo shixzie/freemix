@@ -1611,7 +1611,6 @@ impl Client {
         Ok(())
     }
 
-
     /// Completes one paged input the snapshot announced with its
     /// `paged_state` (IN-014): the last of a snapshot's follow-on records,
     /// in ascending input order.
@@ -1980,7 +1979,6 @@ impl Client {
             | CommandPayload::SetTransitionFavorite { .. }
             | CommandPayload::Media { .. }
             | CommandPayload::PageNavigate { .. }
-            | CommandPayload::PagedInput { .. }
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SceneLayer(_)
             | CommandPayload::AudioMixer(_)

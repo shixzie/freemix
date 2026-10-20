@@ -617,7 +617,7 @@ pub(crate) fn paged_config(
                 .with_field(FieldIssue::new("input", "unknown_input", message)))
         }
         _ => {
-            let message = format!("input {input} is not a paged input (a slideshow)");
+            let message = format!("input {input} is not a paged input (a slideshow or a document)");
             Err(
                 Rejection::new(RejectionCode::InvalidCommand, message.clone())
                     .with_field(FieldIssue::new("input", "not_paged", message)),

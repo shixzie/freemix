@@ -585,9 +585,16 @@ pub(crate) fn apply(
             {
                 crate::engine::check_slideshow_room(state)?;
             }
-            // A cue's page action needs its input to stay a slideshow.
-            if matches!(current, InputSourceSpec::Slideshow(_))
-                && !matches!(source, InputSourceSpec::Slideshow(_))
+            // A cue's page action needs its input to stay paged: a
+            // slideshow or a document (IN-014).
+            let paged = |spec: &InputSourceSpec| {
+                matches!(
+                    spec,
+                    InputSourceSpec::Slideshow(_) | InputSourceSpec::Document { .. }
+                )
+            };
+            if paged(&current)
+                && !paged(source)
                 && let Some((list, cue)) = state.cue_lists().iter().find_map(|list| {
                     list.cues
                         .iter()
@@ -609,8 +616,8 @@ pub(crate) fn apply(
                     "source",
                     "input_in_use",
                     format!(
-                        "input {input} must stay a slideshow: cue {cue} of cue list {list} \
-                         steps its slides"
+                        "input {input} must stay a slideshow or a document: cue {cue} of cue \
+                         list {list} steps its pages"
                     ),
                 )
                 .with_reason(error.reason()));

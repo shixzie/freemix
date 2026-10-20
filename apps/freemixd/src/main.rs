@@ -14650,7 +14650,6 @@ fn command_base_ticks(
         | CommandPayload::Media { .. }
         | CommandPayload::PageNavigate { .. }
         | CommandPayload::MediaList { .. }
-        | CommandPayload::PagedInput { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::AudioMixer(_)

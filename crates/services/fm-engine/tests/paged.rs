@@ -8,7 +8,7 @@ use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdempotencyKey, RejectionCode};
 use fm_engine::{
     Engine, EngineCommand, EngineCommandOutcome, EngineEvent, EngineInputLifecycleEdit,
-    EnginePagedCommand, EnginePagedStatus, ShowState,
+    EnginePagedStatus, ShowState,
 };
 use fm_model::{BatchImportRequest, GeneratorVideo, InputSourceSpec};
 use fm_types::paged::{MAX_DOCUMENT_INPUTS, PagedNavigation};
@@ -76,10 +76,10 @@ fn step(
     run(
         engine,
         key,
-        EngineCommand::Paged(EnginePagedCommand {
+        EngineCommand::PageNavigate {
             input: input(value),
             navigation,
-        }),
+        },
     )
 }
 
@@ -154,7 +154,7 @@ fn navigation_is_refused_while_the_count_is_unknown_or_the_input_is_not_paged() 
     let not_paged = step(&mut engine, "bars", 2, PagedNavigation::Next);
     let rejection = &not_paged.receipt.rejected().unwrap().rejection;
     assert_eq!(rejection.code, RejectionCode::InvalidCommand);
-    assert_eq!(rejection.fields[0].code, "not_paged_input");
+    assert_eq!(rejection.fields[0].code, "not_paged");
 
     let missing = step(&mut engine, "missing", 40, PagedNavigation::Next);
     assert_eq!(
@@ -306,4 +306,59 @@ fn the_document_count_is_bounded() {
         }),
     );
     assert!(replace.receipt.rejected().is_some());
+}
+
+/// A cue's page action steps a document like a direct page step: the page
+/// moves with the GO, against the reported count.
+#[test]
+fn a_cue_page_action_steps_a_document() {
+    let mut engine = engine();
+    engine.set_paged_count(input(DECK), Some(5));
+    let cue = |id, navigation| fm_model::Cue {
+        id,
+        name: format!("Cue {id}"),
+        actions: vec![fm_model::CueAction::Page {
+            input: input(DECK),
+            navigation,
+        }],
+        auto_follow: false,
+    };
+    let set = run(
+        &mut engine,
+        "set",
+        EngineCommand::SetCueList {
+            list: 1,
+            definition: Some(fm_engine::EngineCueListDefinition {
+                name: "Slides".into(),
+                cues: vec![
+                    cue(1, PagedNavigation::Goto(3)),
+                    cue(2, PagedNavigation::Next),
+                    cue(3, PagedNavigation::Next),
+                ],
+            }),
+        },
+    );
+    assert!(set.receipt.accepted().is_some(), "{:?}", set.receipt);
+    let go = |engine: &mut Engine, key: &str| {
+        let outcome = run(
+            engine,
+            key,
+            EngineCommand::CueControl {
+                list: 1,
+                operation: fm_engine::EngineCueOperation::Go { cue: None },
+            },
+        );
+        assert!(
+            outcome.receipt.accepted().is_some(),
+            "{:?}",
+            outcome.receipt
+        );
+    };
+    go(&mut engine, "go-1");
+    assert_eq!(page(&engine), 3);
+    go(&mut engine, "go-2");
+    assert_eq!(page(&engine), 4);
+    // The last page stays.
+    go(&mut engine, "go-3");
+    assert_eq!(page(&engine), 4);
 }

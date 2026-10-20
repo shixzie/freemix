@@ -7985,7 +7985,7 @@ fn paged_inputs_step_against_the_reported_page_count() {
                 command(
                     key,
                     key,
-                    CommandPayload::PagedInput {
+                    CommandPayload::PageNavigate {
                         input: deck,
                         navigation: PagedNavigation::Next,
                     },
@@ -8066,9 +8066,78 @@ fn paged_inputs_step_against_the_reported_page_count() {
             input(5),
             &PagedSourceReport {
                 count: Some(1),
-                ..report
+                ..report.clone()
             },
         )
         .unwrap();
     assert_eq!(control.paged_status(input(5)).unwrap().page, 0);
+
+    // A cue's page action moves the document too; the next frame announces
+    // the page clients have not heard of.
+    control
+        .set_paged_source(&server_identity(), input(5), &report)
+        .unwrap();
+    control.tick(&server_identity()).unwrap();
+    let list = CommandPayload::SetCueList {
+        list: 2,
+        spec: Box::new(fm_protocol::CueListSpec {
+            name: "Deck".into(),
+            cues: vec![fm_protocol::WireCue {
+                id: 1,
+                name: "Last page".into(),
+                auto_follow: false,
+                actions: vec![fm_protocol::WireCueAction::Page {
+                    input: deck,
+                    navigation: PagedNavigation::Last,
+                }],
+            }],
+        }),
+    };
+    let set = control
+        .submit(&principal(Role::Admin), command("cues", "cues", list), 0)
+        .unwrap();
+    assert!(
+        matches!(set.output.result, CommandResult::Accepted { .. }),
+        "{:?}",
+        set.output.result
+    );
+    control.tick(&server_identity()).unwrap();
+    let go = control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "go",
+                "go",
+                CommandPayload::CueControl {
+                    list: 2,
+                    operation: fm_protocol::CueOperation::Go { cue: None },
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(
+        matches!(go.output.result, CommandResult::Accepted { .. }),
+        "{:?}",
+        go.output.result
+    );
+    assert_eq!(control.paged_status(input(5)).unwrap().page, 2);
+    let tick = control.tick(&server_identity()).unwrap();
+    let announced: Vec<_> = tick
+        .runtime_events
+        .iter()
+        .filter_map(|event| match &event.event {
+            RuntimeLifecycleEvent::Paged { status } => Some(status.page),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![2]);
+    let tick = control.tick(&server_identity()).unwrap();
+    assert!(
+        !tick
+            .runtime_events
+            .iter()
+            .any(|event| matches!(event.event, RuntimeLifecycleEvent::Paged { .. })),
+        "an unchanged page is announced once"
+    );
 }
