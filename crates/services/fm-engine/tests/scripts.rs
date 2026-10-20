@@ -1134,3 +1134,97 @@ fn two_interleaved_runs_restore_and_replay_deterministically() {
     assert_eq!(original.show().script_run().runs, []);
     assert_eq!(original.show().script_run().last_run, 2);
 }
+
+/// A restored show whose last issued run id is the largest one (a
+/// hand-edited project: validation accepts it) refuses a run that would
+/// wait instead of issuing that id again, which left two runs sharing it
+/// and a show no project could save. A run that does not wait needs no id.
+#[test]
+fn a_run_never_reuses_the_last_run_id() {
+    let rate = FrameRate::new(25, 1).unwrap();
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set-1", set(1, "wait 50\ncut 2")));
+    accepted(&submit(&mut engine, "set-2", set(2, "wait 50\ncut 3")));
+    accepted(&submit(&mut engine, "set-3", set(3, "preview 2")));
+    accepted(&submit(&mut engine, "run-1", run(1)));
+    let mut show = engine.show().clone();
+    let mut runs = show.script_run().clone();
+    runs.runs[0].run = u64::MAX;
+    runs.last_run = u64::MAX;
+    show.set_script_run(runs, rate).unwrap();
+    let mut engine = Engine::new(
+        show,
+        rate,
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+    let before = engine.show().script_run().clone();
+    let (code, reason, _) = refusal(&submit(&mut engine, "run-2", run(2)));
+    assert_eq!(code, RejectionCode::ResourceExhausted);
+    assert_eq!(reason, Some(RefusalReason::bounds("last_run", u64::MAX)));
+    assert_eq!(*engine.show().script_run(), before);
+    fm_model::validate_script_run(engine.show().script_run(), engine.show().scripts(), rate)
+        .expect("the runs stay valid");
+    accepted(&submit(&mut engine, "run-3", run(3)));
+    assert_eq!(engine.show().desired_switcher().preview(), input(12));
+}
+
+/// Two runs due on the frame a cue list's waiting cue is due on: the cue
+/// goes first, holding the frame when its advance is accepted ahead, and
+/// both runs join it there, the lowest run id first.
+#[test]
+fn runs_due_with_a_cue_join_its_held_frame() {
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "set-1", set(1, "wait 5\npreview 2\n")));
+    accepted(&submit(&mut engine, "set-2", set(2, "wait 5\nmute 1\n")));
+    accepted(&submit(
+        &mut engine,
+        "list",
+        EngineCommand::SetCueList {
+            list: 1,
+            definition: Some(fm_engine::EngineCueListDefinition {
+                name: "Show".to_owned(),
+                cues: vec![fm_model::Cue {
+                    id: 1,
+                    name: "One".to_owned(),
+                    actions: vec![
+                        fm_model::CueAction::Wait { frames: 5 },
+                        fm_model::CueAction::AudioMute {
+                            input: input(12),
+                            muted: true,
+                        },
+                    ],
+                    auto_follow: false,
+                }],
+            }),
+        },
+    ));
+    let start = accepted(&submit(
+        &mut engine,
+        "go",
+        EngineCommand::CueControl {
+            list: 1,
+            operation: fm_engine::EngineCueOperation::Go { cue: Some(1) },
+        },
+    ));
+    assert_eq!(accepted(&submit(&mut engine, "run-1", run(1))), start);
+    assert_eq!(accepted(&submit(&mut engine, "run-2", run(2))), start);
+    let due = start + 5;
+    let mut order = Vec::new();
+    while let Some((list, at)) = engine.cue_advance_frame() {
+        assert_eq!(at, due);
+        let outcome = submit(
+            &mut engine,
+            &format!("advance-{}", order.len()),
+            EngineCommand::CueAdvance { list, frame: at },
+        );
+        assert_eq!(accepted(&outcome), due);
+        order.push((list, parts_ran(std::slice::from_ref(&outcome))));
+    }
+    assert_eq!(
+        order,
+        vec![(1, vec![]), (0, vec![(1, due)]), (0, vec![(2, due)])]
+    );
+    tick(&mut engine, 7);
+    assert!(muted(&engine, 11) && muted(&engine, 12));
+    assert_eq!(engine.show().desired_switcher().preview(), input(12));
+}

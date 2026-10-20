@@ -712,8 +712,9 @@ fn run_alone(
 /// # Errors
 ///
 /// Refuses a run of a script already waiting, an unknown script, a run
-/// whose first part stops early, and a run that would wait while
-/// [`fm_model::MAX_SCRIPT_RUNS`] runs already do.
+/// whose first part stops early, a run that would wait while
+/// [`fm_model::MAX_SCRIPT_RUNS`] runs already do, and a run that would wait
+/// once every run id has been issued.
 pub(crate) fn plan(
     engine: &Engine,
     script: u64,
@@ -747,6 +748,15 @@ pub(crate) fn plan(
             "script_runs",
             fm_model::MAX_SCRIPT_RUNS as u64,
         )));
+    }
+    // A run id is never reused: once the last one is issued (only a
+    // hand-edited project gets there), no run may wait again.
+    if waits && runs.last_run == u64::MAX {
+        return Err(Rejection::new(
+            RejectionCode::ResourceExhausted,
+            "the show has issued every script run id; no run can wait",
+        )
+        .with_reason(RefusalReason::bounds("last_run", u64::MAX)));
     }
     Ok(plan)
 }

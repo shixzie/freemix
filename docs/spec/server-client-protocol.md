@@ -2409,8 +2409,10 @@ a lower-third timer and a score update can run side by side.
   waits is refused `script_running:<script>` (a second run of one source
   would fight the first over the same titles and inputs; stop it first),
   and a run that would wait while 8 do is refused
-  `bounds_exceeded:script_runs:8` (`resource_exhausted`). A run that does
-  not wait is never bounded by them. Each run is authorized on its own, as
+  `bounds_exceeded:script_runs:8` (`resource_exhausted`). Once `last_run`
+  is the largest u64 (only a hand-edited project), a run that would wait is
+  refused `bounds_exceeded:last_run:18446744073709551615` rather than
+  reusing an id. A run that does not wait is never bounded by them. Each run is authorized on its own, as
   before: a direct run of a script holding `wait` needs every verb's class up
   front; the clock resumes it under its own authority.
 - `run` names the run and the step it is at:
