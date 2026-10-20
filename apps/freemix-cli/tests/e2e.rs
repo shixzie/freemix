@@ -2873,6 +2873,7 @@ fn remote_scene_layer_key_and_effects_are_live_layer_edits() {
         similarity: 64,
         smoothness: 32,
         spill: 128,
+        refinement: fm_protocol::WireKeyRefinement::NONE,
     })));
     let server = start(RemoteEdit {
         role: Role::Graphics,
@@ -9886,6 +9887,79 @@ fn local_scene_layer_effects_author_render_and_clear_exactly() {
     apply!(&["scene-layer-key", path, "11", "0", "none"]);
     render_keyed();
     assert_solid_ppm(&keyed, 4, 4, [64, 64, 64]);
+
+    // SW-008: a key/fill key cuts the layer with another input's picture: a
+    // black key input removes the layer, a white one keeps it; a refinement
+    // shows in the listing; a Scene input cannot be the key.
+    apply!(&["input-replace-solid", path, "2", "0", "0", "0", "255"]);
+    let fill = [
+        "scene-layer-key",
+        path,
+        "11",
+        "0",
+        "fill",
+        "2",
+        "luma",
+        "0",
+        "255",
+        "255",
+        "off",
+        "--edge-softness",
+        "2",
+        "--despill",
+        "green",
+        "255",
+    ];
+    apply!(&fill);
+    let scenes = invoke(&["scenes", path]);
+    assert!(
+        stdout(&scenes).contains(
+            "key=fill(key_input=2 channel=luma low=0 high=255 softness=255 invert=off)\
+             +refine(clip=0,255 choke=0 edge_softness=2 despill=green:255)"
+        ),
+        "{}",
+        stdout(&scenes)
+    );
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [0, 0, 0]);
+    apply!(&["input-replace-solid", path, "2", "255", "255", "255", "255"]);
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [64, 64, 64]);
+    let before_fill = fs::read(project.join("project.json")).unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-key",
+            path,
+            "11",
+            "0",
+            "fill",
+            "3",
+            "luma",
+            "0",
+            "255",
+            "255",
+            "off",
+        ]),
+        "key input 3 is a Scene input",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-key",
+            path,
+            "11",
+            "0",
+            "luma",
+            "0",
+            "255",
+            "0",
+            "off",
+            "--choke",
+            "9",
+        ]),
+        "key choke must be within 8 pixels either way",
+    );
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), before_fill);
+    apply!(&["scene-layer-key", path, "11", "0", "none"]);
 
     // Only the reference effects with their exact, in-range parameters
     // enter a layer (IN-020); a rejection leaves the manifest byte-identical.

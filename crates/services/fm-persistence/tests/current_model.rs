@@ -1369,6 +1369,7 @@ fn effected_project() -> Project {
                     similarity: 64,
                     smoothness: 32,
                     spill: 128,
+                    refinement: fm_model::KeyRefinement::NONE,
                 })),
                 effects: vec![
                     LayerEffect::new("levels", vec![0, 128]),
@@ -1521,6 +1522,67 @@ fn strict_layer_effect_parser_rejects_missing_mistyped_unknown_and_duplicate_fie
 }
 
 #[test]
+fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
+    let temp = TestDirectory::new("key-fill-refinements");
+    let store = temp.store("show");
+    let mut project = effected_project();
+    project
+        .set_scene_layer_key(
+            scene_id(1),
+            1,
+            Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey {
+                key_input: input_id(1),
+                channel: fm_model::KeyChannel::Alpha,
+                low: 8,
+                high: 247,
+                softness: 90,
+                invert: true,
+                refinement: fm_model::KeyRefinement {
+                    clip_black: 12,
+                    clip_white: 230,
+                    choke: -8,
+                    edge_softness: 8,
+                    despill: fm_model::KeyDespill::Green { strength: 200 },
+                },
+            })),
+        )
+        .unwrap();
+    project
+        .set_scene_layer_key(
+            scene_id(1),
+            0,
+            Some(fm_model::LayerKey::Luma(fm_model::LumaLayerKey {
+                refinement: fm_model::KeyRefinement {
+                    choke: 3,
+                    despill: fm_model::KeyDespill::Blue { strength: 1 },
+                    ..fm_model::KeyRefinement::NONE
+                },
+                ..fm_model::LumaLayerKey::BLACK
+            })),
+        )
+        .unwrap();
+    let expected = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(
+        encoded.contains(
+            "\"key\": {\"type\": \"fill\", \"key_input\": 1, \"channel\": \"alpha\", \
+             \"low\": 8, \"high\": 247, \"softness\": 90, \"invert\": true, \"refinement\": \
+             {\"clip_black\": 12, \"clip_white\": 230, \"choke\": -8, \"edge_softness\": 8, \
+             \"despill\": {\"type\": \"green\", \"strength\": 200}}}"
+        ),
+        "{encoded}"
+    );
+    assert_eq!(store.load().unwrap(), expected);
+}
+
+#[test]
 fn layer_effect_bounds_are_rejected_at_the_current_schema() {
     let (_temp, store, valid) = stored_effected_manifest("strict-effects-bounds");
     let descriptor = "{\"name\": \"levels\", \"parameters\": [0, 128]}";
@@ -1531,8 +1593,13 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
         .collect::<Vec<_>>()
         .join(", ");
 
-    let key = "\"key\": {\"type\": \"chroma\", \"red\": 0, \"green\": 255, \"blue\": 0, \
-               \"similarity\": 64, \"smoothness\": 32, \"spill\": 128}";
+    let refinement = "\"refinement\": {\"clip_black\": 0, \"clip_white\": 255, \"choke\": 0, \
+                      \"edge_softness\": 0, \"despill\": {\"type\": \"off\"}}";
+    let key = format!(
+        "\"key\": {{\"type\": \"chroma\", \"red\": 0, \"green\": 255, \"blue\": 0, \
+         \"similarity\": 64, \"smoothness\": 32, \"spill\": 128, {refinement}}}"
+    );
+    let key = key.as_str();
     assert!(valid.contains(key));
     assert!(valid.contains("\"key\": null"));
 
@@ -1561,8 +1628,62 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
         valid.replacen(key, &key.replace(", \"spill\": 128", ""), 1),
         valid.replacen(
             key,
-            "\"key\": {\"type\": \"luma\", \"low\": 40, \"high\": 40, \"softness\": 0, \
-             \"invert\": false}",
+            &format!(
+                "\"key\": {{\"type\": \"luma\", \"low\": 40, \"high\": 40, \"softness\": 0, \
+                 \"invert\": false, {refinement}}}"
+            ),
+            1,
+        ),
+        // Refinements are required and bounded (schema 61, SW-008).
+        valid.replacen(key, &key.replace(&format!(", {refinement}"), ""), 1),
+        valid.replacen(
+            key,
+            &key.replace("\"clip_black\": 0", "\"clip_black\": 255"),
+            1,
+        ),
+        valid.replacen(key, &key.replace("\"choke\": 0", "\"choke\": 9"), 1),
+        valid.replacen(key, &key.replace("\"choke\": 0", "\"choke\": -200"), 1),
+        valid.replacen(
+            key,
+            &key.replace("\"edge_softness\": 0", "\"edge_softness\": 9"),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "{\"type\": \"off\"}",
+                "{\"type\": \"off\", \"strength\": 1}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "{\"type\": \"off\"}",
+                "{\"type\": \"red\", \"strength\": 1}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace("{\"type\": \"off\"}", "{\"type\": \"green\"}"),
+            1,
+        ),
+        // A key/fill key names its key input and a known channel.
+        valid.replacen(
+            key,
+            &format!(
+                "\"key\": {{\"type\": \"fill\", \"key_input\": 0, \"channel\": \"luma\", \
+                 \"low\": 0, \"high\": 255, \"softness\": 255, \"invert\": false, {refinement}}}"
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &format!(
+                "\"key\": {{\"type\": \"fill\", \"key_input\": 1, \"channel\": \"red\", \
+                 \"low\": 0, \"high\": 255, \"softness\": 255, \"invert\": false, {refinement}}}"
+            ),
             1,
         ),
         valid.replacen("\"key\": null,\n", "", 1),

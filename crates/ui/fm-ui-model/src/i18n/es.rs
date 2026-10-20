@@ -5732,6 +5732,91 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DesignLumaInvertHover,
         t("Conservar solo el brillo que la clave quitaría y quitar el resto"),
     ),
+    (Msg::DesignKeyFill, t("Clave/relleno")),
+    (
+        Msg::DesignKeyFillHover,
+        t(
+            "Recortar la capa con una imagen de clave aparte: donde la entrada de clave es blanca se ve la capa, donde es negra se quita",
+        ),
+    ),
+    (
+        Msg::DesignReasonNoKeyInput,
+        t(
+            "ninguna entrada puede ser la clave: añada una entrada de imagen que no muestre una escena",
+        ),
+    ),
+    (Msg::DesignKeyInput, t("Entrada de clave")),
+    (
+        Msg::DesignKeyInputHover,
+        t(
+            "La entrada cuya imagen es la clave: su brillo, o su alfa, decide dónde se ve esta capa. Las entradas que muestran una escena no pueden ser clave",
+        ),
+    ),
+    (
+        Msg::DesignKeyInputChoiceHover,
+        t("Usar esta entrada como imagen de clave"),
+    ),
+    (Msg::DesignKeyFillAlpha, t("Usar alfa de la clave")),
+    (
+        Msg::DesignKeyFillAlphaHover,
+        t(
+            "Tomar la clave del canal alfa de la entrada de clave en lugar de su brillo, para un gráfico con transparencia",
+        ),
+    ),
+    (Msg::DesignKeyMatte, t("Mate")),
+    (
+        Msg::DesignKeyMatteHover,
+        t(
+            "Afinar el mate de la clave una vez extraído: recortarlo, encogerlo o ampliarlo, suavizar su borde y quitar el derrame de color",
+        ),
+    ),
+    (Msg::DesignKeyClipBlack, t("Recorte de negro")),
+    (
+        Msg::DesignKeyClipBlackHover,
+        t(
+            "Los valores del mate iguales o inferiores a este pasan a ser totalmente transparentes, de 0 a 254 (siempre por debajo de Recorte de blanco)",
+        ),
+    ),
+    (Msg::DesignKeyClipWhite, t("Recorte de blanco")),
+    (
+        Msg::DesignKeyClipWhiteHover,
+        t(
+            "Los valores del mate iguales o superiores a este pasan a ser totalmente opacos, de 1 a 255 (siempre por encima de Recorte de negro)",
+        ),
+    ),
+    (Msg::DesignKeyChoke, t("Contracción")),
+    (
+        Msg::DesignKeyChokeHover,
+        t("Encoger la zona conservada (positivo) o ampliarla (negativo) hasta 8 píxeles"),
+    ),
+    (Msg::DesignKeyEdgeSoftness, t("Suavidad del borde")),
+    (
+        Msg::DesignKeyEdgeSoftnessHover,
+        t("Difuminar el borde del mate hasta 8 píxeles; 0 lo deja nítido"),
+    ),
+    (Msg::DesignKeyDespill, t("Supresión de derrame")),
+    (
+        Msg::DesignKeyDespillHover,
+        t("Quitar de la imagen conservada el tinte de una pantalla verde o azul"),
+    ),
+    (Msg::DesignKeyDespillOff, t("Sin supresión")),
+    (
+        Msg::DesignKeyDespillOffHover,
+        t("Dejar los colores conservados como están"),
+    ),
+    (
+        Msg::DesignKeyDespillGreenHover,
+        t("Quitar el derrame verde de la imagen conservada, para una pantalla verde"),
+    ),
+    (
+        Msg::DesignKeyDespillBlueHover,
+        t("Quitar el derrame azul de la imagen conservada, para una pantalla azul"),
+    ),
+    (Msg::DesignKeyDespillStrength, t("Intensidad de supresión")),
+    (
+        Msg::DesignKeyDespillStrengthHover,
+        t("Cuánto derrame se quita, de 0 a 255"),
+    ),
     (Msg::DesignGroupEffects, t("Efectos")),
     (
         Msg::DesignEffectsHover,

@@ -5465,11 +5465,32 @@ fn remote_scene_layer_edit(
     ))
 }
 
-/// Renders one layer's optional key, or `none` (IN-020).
+/// Renders one layer's optional key, or `none` (IN-020), then its matte
+/// refinement when that is not the identity (SW-008).
 fn format_layer_key(key: Option<fm_model::LayerKey>) -> String {
+    let Some(key) = key else {
+        return "none".to_owned();
+    };
+    let refinement = key.refinement();
+    let kind = format_key_kind(key);
+    if refinement.is_identity() {
+        return kind;
+    }
+    let despill = match refinement.despill {
+        fm_model::KeyDespill::Off => "off".to_owned(),
+        fm_model::KeyDespill::Green { strength } => format!("green:{strength}"),
+        fm_model::KeyDespill::Blue { strength } => format!("blue:{strength}"),
+    };
+    format!(
+        "{kind}+refine(clip={},{} choke={} edge_softness={} despill={despill})",
+        refinement.clip_black, refinement.clip_white, refinement.choke, refinement.edge_softness
+    )
+}
+
+/// Renders one key's kind and settings (IN-020, SW-008).
+fn format_key_kind(key: fm_model::LayerKey) -> String {
     match key {
-        None => "none".to_owned(),
-        Some(fm_model::LayerKey::Chroma(chroma)) => format!(
+        fm_model::LayerKey::Chroma(chroma) => format!(
             "chroma(rgb={},{},{} similarity={} smoothness={} spill={})",
             chroma.red,
             chroma.green,
@@ -5478,12 +5499,24 @@ fn format_layer_key(key: Option<fm_model::LayerKey>) -> String {
             chroma.smoothness,
             chroma.spill
         ),
-        Some(fm_model::LayerKey::Luma(luma)) => format!(
+        fm_model::LayerKey::Luma(luma) => format!(
             "luma(low={} high={} softness={} invert={})",
             luma.low,
             luma.high,
             luma.softness,
             if luma.invert { "on" } else { "off" }
+        ),
+        fm_model::LayerKey::Fill(fill) => format!(
+            "fill(key_input={} channel={} low={} high={} softness={} invert={})",
+            fill.key_input,
+            match fill.channel {
+                fm_model::KeyChannel::Luma => "luma",
+                fm_model::KeyChannel::Alpha => "alpha",
+            },
+            fill.low,
+            fill.high,
+            fill.softness,
+            if fill.invert { "on" } else { "off" }
         ),
     }
 }
@@ -5834,7 +5867,7 @@ Usage:
   freemix-cli scene-layer-effect-set <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index> <name> [<i32-parameter>...]
   freemix-cli scene-layer-effect-remove <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index>
   freemix-cli scene-layer-effect-clear <show.freemix> <scene-id> <zero-based-layer-index>
-  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>
+  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>]
   freemix-cli remote-scene-layer-key <127.0.0.1:port> <scene-id> <layer-id> <key spec as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-scene-layer-effects <127.0.0.1:port> <scene-id> <layer-id> none|<name>[:<i32>,...]... [--key <key>] [--expect <revision>]
   freemix-cli project-rename <show.freemix> <name>

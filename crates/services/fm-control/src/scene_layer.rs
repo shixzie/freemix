@@ -1,6 +1,6 @@
 //! Wire mapping of the live scene layer edits (`scene_layer_*`) and the
 //! `scene_layout_changed` event (Protocol 2.39, SW-006; keys and effects
-//! 2.43, IN-020).
+//! 2.43, IN-020; key/fill and key refinements 2.70, SW-008).
 //!
 //! A wire edit names its scene and stable layer id; the engine edit is the
 //! same edit on domain types. Every accepted edit, undo and redo included,
@@ -9,13 +9,15 @@
 
 use fm_engine::{Engine, EngineCommand, EngineSceneLayerEdit};
 use fm_model::{
-    ChromaLayerKey, CropRect, Layer, LayerAnchor, LayerEffect, LayerGeometry, LayerId, LayerKey,
-    LumaLayerKey, RectMask, Rotation, SceneLayerChange, SourceRef,
+    ChromaLayerKey, CropRect, FillLayerKey, KeyChannel, KeyDespill, KeyRefinement, Layer,
+    LayerAnchor, LayerEffect, LayerGeometry, LayerId, LayerKey, LumaLayerKey, RectMask, Rotation,
+    SceneLayerChange, SourceRef,
 };
 use fm_protocol::{
-    EventPayload, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireInputId, WireLayerCrop,
-    WireLayerEffect, WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey, WireSceneId,
-    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource,
+    EventPayload, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireFillKey, WireInputId,
+    WireKeyDespill, WireKeyRefinement, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
+    WireLayerKey, WireLayerMask, WireLumaKey, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
+    WireSceneLayerSource,
 };
 
 // The wire carries exactly what the model stores and the engine accepts.
@@ -29,7 +31,41 @@ const _: () = {
     assert!(fm_protocol::SCENE_LAYER_ANCHOR_CENTER == LayerAnchor::CENTER.y);
     assert!(fm_protocol::MIN_SCENE_LAYER_TILT_MILLIDEGREES == LayerGeometry::MIN_TILT_MILLIDEGREES);
     assert!(fm_protocol::MAX_SCENE_LAYER_TILT_MILLIDEGREES == LayerGeometry::MAX_TILT_MILLIDEGREES);
+    assert!(fm_protocol::MAX_KEY_CHOKE == fm_model::MAX_KEY_CHOKE);
+    assert!(fm_protocol::MAX_KEY_EDGE_SOFTNESS == fm_model::MAX_KEY_EDGE_SOFTNESS);
 };
+
+/// The domain refinement a wire refinement names.
+#[must_use]
+pub const fn domain_refinement(refinement: WireKeyRefinement) -> KeyRefinement {
+    KeyRefinement {
+        clip_black: refinement.clip_black,
+        clip_white: refinement.clip_white,
+        choke: refinement.choke,
+        edge_softness: refinement.edge_softness,
+        despill: match refinement.despill {
+            WireKeyDespill::Off => KeyDespill::Off,
+            WireKeyDespill::Green { strength } => KeyDespill::Green { strength },
+            WireKeyDespill::Blue { strength } => KeyDespill::Blue { strength },
+        },
+    }
+}
+
+/// `refinement` on the wire.
+#[must_use]
+pub const fn wire_refinement(refinement: KeyRefinement) -> WireKeyRefinement {
+    WireKeyRefinement {
+        clip_black: refinement.clip_black,
+        clip_white: refinement.clip_white,
+        choke: refinement.choke,
+        edge_softness: refinement.edge_softness,
+        despill: match refinement.despill {
+            KeyDespill::Off => WireKeyDespill::Off,
+            KeyDespill::Green { strength } => WireKeyDespill::Green { strength },
+            KeyDespill::Blue { strength } => WireKeyDespill::Blue { strength },
+        },
+    }
+}
 
 const fn rotation(quarter_turns: u8) -> Rotation {
     match quarter_turns % 4 {
@@ -122,12 +158,27 @@ pub const fn domain_key(key: WireLayerKey) -> LayerKey {
             similarity: chroma.similarity,
             smoothness: chroma.smoothness,
             spill: chroma.spill,
+            refinement: domain_refinement(chroma.refinement),
         }),
         WireLayerKey::Luma(luma) => LayerKey::Luma(LumaLayerKey {
             low: luma.low,
             high: luma.high,
             softness: luma.softness,
             invert: luma.invert,
+            refinement: domain_refinement(luma.refinement),
+        }),
+        WireLayerKey::Fill(fill) => LayerKey::Fill(FillLayerKey {
+            key_input: fill.key_input.to_domain(),
+            channel: if fill.alpha_channel {
+                KeyChannel::Alpha
+            } else {
+                KeyChannel::Luma
+            },
+            low: fill.low,
+            high: fill.high,
+            softness: fill.softness,
+            invert: fill.invert,
+            refinement: domain_refinement(fill.refinement),
         }),
     }
 }
@@ -143,12 +194,23 @@ pub const fn wire_key(key: LayerKey) -> WireLayerKey {
             similarity: chroma.similarity,
             smoothness: chroma.smoothness,
             spill: chroma.spill,
+            refinement: wire_refinement(chroma.refinement),
         }),
         LayerKey::Luma(luma) => WireLayerKey::Luma(WireLumaKey {
             low: luma.low,
             high: luma.high,
             softness: luma.softness,
             invert: luma.invert,
+            refinement: wire_refinement(luma.refinement),
+        }),
+        LayerKey::Fill(fill) => WireLayerKey::Fill(WireFillKey {
+            key_input: WireInputId::from_domain(fill.key_input),
+            alpha_channel: matches!(fill.channel, KeyChannel::Alpha),
+            low: fill.low,
+            high: fill.high,
+            softness: fill.softness,
+            invert: fill.invert,
+            refinement: wire_refinement(fill.refinement),
         }),
     }
 }

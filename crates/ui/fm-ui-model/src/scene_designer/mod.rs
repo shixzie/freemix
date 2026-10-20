@@ -39,8 +39,8 @@ use core::hash::{Hash, Hasher};
 use fm_protocol::{WireSceneLayerSource, WireSceneLayout};
 
 pub use document::{
-    CHROMA_GREEN, DesignLayer, EditLabel, Field, LUMA_BLACK, MAX_UNDO_STEPS, SceneLayoutDocument,
-    default_effect, effect_ranges, wire_geometry,
+    CHROMA_GREEN, DEFAULT_DESPILL_STRENGTH, DesignLayer, EditLabel, Field, LUMA_BLACK,
+    MAX_UNDO_STEPS, SceneLayoutDocument, default_effect, effect_ranges, fill_linear, wire_geometry,
 };
 pub use edits::SceneLayerEdit;
 pub use fm_protocol::{MAX_SCENE_LAYER_EFFECTS, SCENE_LAYER_EFFECT_KINDS};

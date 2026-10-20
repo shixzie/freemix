@@ -9,13 +9,17 @@
 //! leading `-` only when negative), booleans `true`/`false`, and the
 //! `scene_layer_add` `spec` and the `scene_layer_effects_set` `effects` in
 //! the binary encodings of the scene layout codec. A `scene_layer_key_set`
-//! names its `kind` (`chroma` or `luma`) and that kind's byte fields.
+//! names its `kind` (`chroma`, `luma`, or `fill` since 2.70) and that kind's
+//! fields, then (since 2.70) the refinement's `clip_black`, `clip_white`,
+//! `choke` (signed), `edge_softness`, `despill` (`off`, `green`, or `blue`),
+//! and `despill_strength` (`0` when `despill` is `off`).
 
 use core::num::NonZeroU32;
 
 use crate::{
-    CodecError, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireLayerCrop,
-    WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey, WireSceneLayerId,
+    CodecError, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireFillKey, WireKeyDespill,
+    WireKeyRefinement, WireLayerCrop, WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey,
+    WireSceneLayerId,
 };
 
 use super::media::{FieldSource, Push};
@@ -23,7 +27,7 @@ use super::scene_layout::{
     decode_effect_list, decode_layer_spec, encode_effect_list, encode_layer_spec,
     parse_canonical_scene,
 };
-use super::value::parse_canonical_u64;
+use super::value::{parse_canonical_input, parse_canonical_u64};
 
 fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
     CodecError::InvalidField {
@@ -151,16 +155,29 @@ pub(super) fn encode_scene_layer_edit(
                     push("blue", chroma.blue.to_string())?;
                     push("similarity", chroma.similarity.to_string())?;
                     push("smoothness", chroma.smoothness.to_string())?;
-                    push("spill", chroma.spill.to_string())
+                    push("spill", chroma.spill.to_string())?;
                 }
                 WireLayerKey::Luma(luma) => {
                     push("kind", "luma".to_owned())?;
                     push("low", luma.low.to_string())?;
                     push("high", luma.high.to_string())?;
                     push("softness", luma.softness.to_string())?;
-                    push("invert", luma.invert.to_string())
+                    push("invert", luma.invert.to_string())?;
+                }
+                WireLayerKey::Fill(fill) => {
+                    push("kind", "fill".to_owned())?;
+                    push("key_input", fill.key_input.to_string())?;
+                    push(
+                        "channel",
+                        if fill.alpha_channel { "alpha" } else { "luma" }.to_owned(),
+                    )?;
+                    push("low", fill.low.to_string())?;
+                    push("high", fill.high.to_string())?;
+                    push("softness", fill.softness.to_string())?;
+                    push("invert", fill.invert.to_string())?;
                 }
             }
+            push_refinement(push, key.refinement())
         }
         SceneLayerOperation::SetEffects(effects) => push("effects", encode_effect_list(effects)?),
         SceneLayerOperation::SetCrop(None)
@@ -180,6 +197,46 @@ pub(super) fn encode_scene_layer_edit(
 }
 
 /// Decodes the edit named by `payload`, or `None` for another payload.
+/// Pushes a key refinement's fields (Protocol 2.70).
+fn push_refinement(push: &mut Push<'_>, refinement: WireKeyRefinement) -> Result<(), CodecError> {
+    push("clip_black", refinement.clip_black.to_string())?;
+    push("clip_white", refinement.clip_white.to_string())?;
+    push("choke", refinement.choke.to_string())?;
+    push("edge_softness", refinement.edge_softness.to_string())?;
+    let (despill, strength) = match refinement.despill {
+        WireKeyDespill::Off => ("off", 0),
+        WireKeyDespill::Green { strength } => ("green", strength),
+        WireKeyDespill::Blue { strength } => ("blue", strength),
+    };
+    push("despill", despill.to_owned())?;
+    push("despill_strength", strength.to_string())
+}
+
+/// A key refinement's fields (Protocol 2.70).
+fn refinement_fields(fields: &mut dyn FieldSource) -> Result<WireKeyRefinement, CodecError> {
+    let clip_black = bounded(fields, "clip_black", u8::MAX)?;
+    let clip_white = bounded(fields, "clip_white", u8::MAX)?;
+    let choke_value = i32_field(fields, "choke")?;
+    let choke = i8::try_from(choke_value).map_err(|_| invalid("choke", choke_value.to_string()))?;
+    let edge_softness = bounded(fields, "edge_softness", u8::MAX)?;
+    let despill = fields.required("despill")?;
+    let strength = bounded(fields, "despill_strength", u8::MAX)?;
+    let despill = match despill.as_str() {
+        "off" if strength == 0 => WireKeyDespill::Off,
+        "off" => return Err(invalid("despill_strength", strength.to_string())),
+        "green" => WireKeyDespill::Green { strength },
+        "blue" => WireKeyDespill::Blue { strength },
+        _ => return Err(invalid("despill", despill)),
+    };
+    Ok(WireKeyRefinement {
+        clip_black,
+        clip_white,
+        choke,
+        edge_softness,
+        despill,
+    })
+}
+
 /// The `kind` and that kind's fields of a `scene_layer_key_set`.
 fn key_fields(fields: &mut dyn FieldSource) -> Result<WireLayerKey, CodecError> {
     let kind = fields.required("kind")?;
@@ -192,13 +249,35 @@ fn key_fields(fields: &mut dyn FieldSource) -> Result<WireLayerKey, CodecError> 
             similarity: byte(fields, "similarity")?,
             smoothness: byte(fields, "smoothness")?,
             spill: byte(fields, "spill")?,
+            refinement: refinement_fields(fields)?,
         }),
         "luma" => WireLayerKey::Luma(WireLumaKey {
             low: byte(fields, "low")?,
             high: byte(fields, "high")?,
             softness: byte(fields, "softness")?,
             invert: bool_field(fields, "invert")?,
+            refinement: refinement_fields(fields)?,
         }),
+        "fill" => {
+            let input = fields.required("key_input")?;
+            let key_input =
+                parse_canonical_input(&input).ok_or_else(|| invalid("key_input", input))?;
+            let channel = fields.required("channel")?;
+            let alpha_channel = match channel.as_str() {
+                "luma" => false,
+                "alpha" => true,
+                _ => return Err(invalid("channel", channel)),
+            };
+            WireLayerKey::Fill(WireFillKey {
+                key_input,
+                alpha_channel,
+                low: byte(fields, "low")?,
+                high: byte(fields, "high")?,
+                softness: byte(fields, "softness")?,
+                invert: bool_field(fields, "invert")?,
+                refinement: refinement_fields(fields)?,
+            })
+        }
         _ => return Err(invalid("kind", kind)),
     };
     if !key.is_valid() {

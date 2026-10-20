@@ -1200,8 +1200,9 @@ pub const MAX_SCENE_CANVAS_SIDE: u32 = 8_192;
 /// Largest binary encoding of one [`WireSceneLayout`]'s layer list, in
 /// bytes; with the bounds above every layout fits (worst case about 30
 /// KiB of design plus, since Protocol 2.43, about 9 KiB of keys and
-/// effects).
-pub const MAX_SCENE_LAYOUT_BYTES: usize = 42 * 1024;
+/// effects, and since 2.70 about 3.5 KiB more of key/fill keys and key
+/// refinements: 43,970 bytes in all).
+pub const MAX_SCENE_LAYOUT_BYTES: usize = 44 * 1024;
 
 /// What one scene layer draws (Protocol 2.35): an input (a Scene input
 /// draws its scene) or a scene directly.

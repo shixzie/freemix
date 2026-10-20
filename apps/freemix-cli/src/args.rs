@@ -4572,16 +4572,20 @@ fn parse_scene_layer_effect_clear(
 }
 
 /// Reads a key spec: `none`, `chroma <red> <green> <blue> <similarity>
-/// <smoothness> <spill>`, or `luma <low> <high> <softness> <invert:on|off>`
-/// (IN-020). The model checks the luma band.
+/// <smoothness> <spill>`, `luma <low> <high> <softness> <invert:on|off>`
+/// (IN-020), or `fill <key-input> luma|alpha <low> <high> <softness>
+/// <invert:on|off>` (SW-008), then any of the refinement options
+/// `--clip <black> <white>`, `--choke <-8..=8>`, `--edge-softness <0..=8>`,
+/// and `--despill green|blue <strength>`. Returns the key and the arguments
+/// after it. The model checks the band and refinement bounds.
 fn layer_key_spec(
     arguments: &mut impl Iterator<Item = String>,
-) -> Result<Option<fm_model::LayerKey>, ArgsError> {
+) -> Result<(Option<fm_model::LayerKey>, Vec<String>), ArgsError> {
     let kind = required(arguments, "key kind")?;
     let mut byte = |field: &'static str| -> Result<u8, ArgsError> {
         number(&required(arguments, field)?, field)
     };
-    Ok(match kind.as_str() {
+    let key = match kind.as_str() {
         "none" => None,
         "chroma" => Some(fm_model::LayerKey::Chroma(fm_model::ChromaLayerKey {
             red: byte("red")?,
@@ -4590,6 +4594,7 @@ fn layer_key_spec(
             similarity: byte("similarity")?,
             smoothness: byte("smoothness")?,
             spill: byte("spill")?,
+            refinement: fm_model::KeyRefinement::NONE,
         })),
         "luma" => {
             let low = byte("low")?;
@@ -4601,6 +4606,37 @@ fn layer_key_spec(
                 high,
                 softness,
                 invert,
+                refinement: fm_model::KeyRefinement::NONE,
+            }))
+        }
+        "fill" => {
+            let key_input =
+                fm_types::InputId::new(number(&required(arguments, "key input")?, "key input")?);
+            let channel = match required(arguments, "key channel")?.as_str() {
+                "luma" => fm_model::KeyChannel::Luma,
+                "alpha" => fm_model::KeyChannel::Alpha,
+                other => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "key channel",
+                        value: other.to_owned(),
+                    });
+                }
+            };
+            let mut byte = |field: &'static str| -> Result<u8, ArgsError> {
+                number(&required(arguments, field)?, field)
+            };
+            let low = byte("low")?;
+            let high = byte("high")?;
+            let softness = byte("softness")?;
+            let invert = boolean_choice(&required(arguments, "invert")?, "invert")?;
+            Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey {
+                key_input,
+                channel,
+                low,
+                high,
+                softness,
+                invert,
+                refinement: fm_model::KeyRefinement::NONE,
             }))
         }
         _ => {
@@ -4609,7 +4645,45 @@ fn layer_key_spec(
                 value: kind,
             });
         }
-    })
+    };
+    let mut refinement = fm_model::KeyRefinement::NONE;
+    let mut rest = Vec::new();
+    fn read_byte(
+        arguments: &mut impl Iterator<Item = String>,
+        field: &'static str,
+    ) -> Result<u8, ArgsError> {
+        number(&required(arguments, field)?, field)
+    }
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--clip" if key.is_some() => {
+                refinement.clip_black = read_byte(arguments, "clip black")?;
+                refinement.clip_white = read_byte(arguments, "clip white")?;
+            }
+            "--choke" if key.is_some() => {
+                refinement.choke = number(&required(arguments, "choke")?, "choke")?;
+            }
+            "--edge-softness" if key.is_some() => {
+                refinement.edge_softness = read_byte(arguments, "edge softness")?;
+            }
+            "--despill" if key.is_some() => {
+                let backing = required(arguments, "despill backing")?;
+                let strength = read_byte(arguments, "despill strength")?;
+                refinement.despill = match backing.as_str() {
+                    "green" => fm_model::KeyDespill::Green { strength },
+                    "blue" => fm_model::KeyDespill::Blue { strength },
+                    _ => {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "despill backing",
+                            value: backing,
+                        });
+                    }
+                };
+            }
+            _ => rest.push(argument),
+        }
+    }
+    Ok((key.map(|key| key.with_refinement(refinement)), rest))
 }
 
 /// `scene-layer-key <show> <scene> <layer-index> <key spec>` (IN-020).
@@ -4619,8 +4693,8 @@ fn parse_scene_layer_key(
     let path = required_path(&mut arguments, "project path")?;
     let scene = number(&required(&mut arguments, "scene")?, "scene")?;
     let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
-    let layer_key = layer_key_spec(&mut arguments)?;
-    reject_extra(&mut arguments)?;
+    let (layer_key, rest) = layer_key_spec(&mut arguments)?;
+    reject_extra(&mut rest.into_iter())?;
     Ok(Command::SceneLayerKey {
         path,
         scene,
@@ -4630,15 +4704,16 @@ fn parse_scene_layer_key(
 }
 
 /// `remote-scene-layer-key <address> <scene> <layer-id> <key spec>
-/// [--key <key>] [--expect <revision>]` (IN-020, Protocol 2.43).
+/// [--key <key>] [--expect <revision>]` (IN-020, Protocol 2.43; key/fill
+/// and refinements 2.70).
 fn parse_remote_scene_layer_key(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
     let address = socket_address(&required(&mut arguments, "address")?)?;
     let scene = number(&required(&mut arguments, "scene")?, "scene")?;
     let layer = number(&required(&mut arguments, "layer id")?, "layer id")?;
-    let layer_key = layer_key_spec(&mut arguments)?;
-    let (key, expected_revision) = command_options(arguments)?;
+    let (layer_key, rest) = layer_key_spec(&mut arguments)?;
+    let (key, expected_revision) = command_options(rest.into_iter())?;
     Ok(Command::RemoteSceneLayerKey {
         address,
         scene,

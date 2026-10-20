@@ -160,14 +160,26 @@ pub(crate) fn render_scene(
             pipeline.width(),
             pipeline.height(),
         )?;
-        let token = if let Some(token) = sources.get(&input.id) {
-            *token
-        } else {
-            let token = SourceId::new(sources.len() as u64);
-            sources.insert(input.id, token);
-            token
+        let mut token_of = |input: InputId| {
+            if let Some(token) = sources.get(&input) {
+                *token
+            } else {
+                let token = SourceId::new(sources.len() as u64);
+                sources.insert(input, token);
+                token
+            }
         };
-        let mut source_layer = compositor_layer(token, layer);
+        let token = token_of(input.id);
+        // A key/fill key's input (SW-008) renders like a layer source.
+        let key_token = match layer.key.and_then(fm_model::LayerKey::key_input) {
+            Some(key_input) => {
+                let key_input = input_for_layer(project, SourceRef::Input(key_input))?;
+                validate_input(key_input)?;
+                Some(token_of(key_input.id))
+            }
+            None => None,
+        };
+        let mut source_layer = compositor_layer(token, layer, key_token);
         if let Some(grade) = grades.input(input.id) {
             source_layer = source_layer.with_grade(grade.clone());
         }
@@ -272,7 +284,11 @@ fn validate_bounds(
     Ok(())
 }
 
-fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
+fn compositor_layer(
+    token: SourceId,
+    layer: &fm_model::Layer,
+    key_token: Option<SourceId>,
+) -> SourceLayer {
     let geometry = layer.geometry;
     let rotation = match geometry.rotation {
         fm_model::Rotation::Deg0 => Rotation::Deg0,
@@ -302,7 +318,7 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
         );
     }
     if let Some(key) = layer.key {
-        result = result.with_key(compositor_key(key));
+        result = with_layer_key(result, key, key_token);
     }
     for effect in &layer.effects {
         result = result.with_effect(Effect::new(effect.name.clone(), effect.parameters.clone()));
@@ -310,19 +326,65 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
     result
 }
 
-/// `key` as the compositor's chroma or luma key (IN-020).
-fn compositor_key(key: fm_model::LayerKey) -> fm_compositor::Key {
-    match key {
+/// `layer` keyed by `key` (IN-020, SW-008): a chroma or luma key, or a
+/// key/fill key whose matte is `key_token`'s picture, with the key's
+/// refinement when it is not the identity. A key/fill key without a key
+/// token leaves the layer undrawn.
+fn with_layer_key(
+    layer: SourceLayer,
+    key: fm_model::LayerKey,
+    key_token: Option<SourceId>,
+) -> SourceLayer {
+    let layer = match key {
         fm_model::LayerKey::Chroma(chroma) => {
-            fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
+            layer.with_key(fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
                 fm_compositor::Rgba8::new(chroma.red, chroma.green, chroma.blue, u8::MAX),
                 chroma.similarity,
                 chroma.smoothness,
                 chroma.spill,
-            ))
+            )))
         }
-        fm_model::LayerKey::Luma(luma) => fm_compositor::Key::Luma(
+        fm_model::LayerKey::Luma(luma) => layer.with_key(fm_compositor::Key::Luma(
             fm_compositor::LumaKey::new(luma.low, luma.softness, luma.invert).with_high(luma.high),
-        ),
+        )),
+        fm_model::LayerKey::Fill(fill) => {
+            let Some(key_token) = key_token else {
+                return layer.with_enabled(false);
+            };
+            layer.with_key_fill(
+                fm_compositor::KeyFill::new(
+                    key_token,
+                    fm_compositor::LumaKey::new(fill.low, fill.softness, fill.invert)
+                        .with_high(fill.high),
+                )
+                .with_channel(match fill.channel {
+                    fm_model::KeyChannel::Luma => fm_compositor::KeyChannel::Luma,
+                    fm_model::KeyChannel::Alpha => fm_compositor::KeyChannel::Alpha,
+                }),
+            )
+        }
+    };
+    let refinement = key.refinement();
+    if refinement.is_identity() {
+        return layer;
     }
+    let despill = match refinement.despill {
+        fm_model::KeyDespill::Off => None,
+        fm_model::KeyDespill::Green { strength } => Some(fm_compositor::Despill::new(
+            fm_compositor::Backing::Green,
+            strength,
+        )),
+        fm_model::KeyDespill::Blue { strength } => Some(fm_compositor::Despill::new(
+            fm_compositor::Backing::Blue,
+            strength,
+        )),
+    };
+    let mut compositor = fm_compositor::KeyRefinement::new()
+        .with_clip(refinement.clip_black, refinement.clip_white)
+        .with_choke(refinement.choke)
+        .with_edge_softness(refinement.edge_softness);
+    if let Some(despill) = despill {
+        compositor = compositor.with_despill(despill);
+    }
+    layer.with_key_refinement(compositor)
 }

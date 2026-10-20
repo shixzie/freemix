@@ -24,9 +24,11 @@ highest-value remaining items, ranked:
 5. **Wire the tested library-only crates: Media List and slideshow (`IN-006`,
    `IN-009`, `OR-015`).** `ListPlayer` and the slideshow are covered by tests
    but used by no app; wiring them is cheap breadth for real shows.
-6. **Native key/fill and key refinements (`SW-008`).** Chroma and luma keys run
-   natively, but key/fill, choke/despill refinements, and auto key are refused
-   by the native GPU path and absent from Studio.
+6. **Auto key and the remaining keyer refinements (`SW-008`).** Key/fill
+   (luma or alpha), clip, choke, edge softness, and despill now run natively,
+   persist, and are edited in Studio; auto key is still CPU-only and unwired,
+   distance is per RGB channel, and light wrap and non-rectangular garbage
+   mattes are absent.
 7. **Source clock drift telemetry on the wire and on real devices
    (`AU-004`).** Every live source the native daemon ingests (V4L2/ALSA
    capture, network streams, system audio) now runs its audio through a
@@ -1942,17 +1944,23 @@ chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
 the `fm-compositor` CPU reference adds a bounded auto key that samples a border
 or region, takes a fixed-point BT.709 chroma median, classifies green or blue
 backing, and yields manual chroma parameters; matte refinement with black and
-white clip, choke or spread up to eight pixels, and exact green or blue
-despill that only lowers channels; and key/fill layers whose alpha comes from
-a same-size key source's luma. The planner rejects conflicting keys and
-refinements without a key. Remaining gaps: auto key is a one-shot sample
-assuming an opaque backing, the native GPU path refuses key/fill and
-refinements (persisted chroma and luma layer keys run natively and are edited
-in Studio, see `IN-020`), auto key, refinement, and key/fill are not persisted
-or exposed in Studio or the daemon, key/fill is not tied to paired
-SDI or NDI inputs, distance is per RGB channel rather than perceptual, and
-edge blur, garbage mattes, and light wrap are absent. `SW-008` remains
-planned.
+white clip, choke or spread up to eight pixels, edge softness (a box mean of
+the matte over up to eight pixels), and exact green or blue despill that only
+lowers channels; and key/fill layers whose alpha comes from a same-size key
+source's luma or alpha channel. The planner rejects conflicting keys and
+refinements without a key. The native GPU path runs key/fill and every
+refinement as a matte chain (pull, clip, choke, soften, then the key stage
+with the mask and despill) and matches the CPU reference within two code
+values (`fm-compositor` `tests/native_keys.rs`). Since Protocol 2.70 and
+schema 61 each persisted layer key carries its refinement and a layer may
+carry a key/fill key naming a non-Scene key input; the engine, both daemon
+renderers, the CLI, and Studio's layer designer handle them, and a key/fill
+layer whose key input draws no picture is not drawn. Remaining gaps: auto key
+is a one-shot CPU sample assuming an opaque backing and is not wired to the
+engine, protocol, or Studio; key/fill is not tied to paired SDI or NDI fill
+and key inputs, and a Scene cannot be a key input; distance is per RGB
+channel rather than perceptual; garbage mattes are the one rectangular mask;
+and light wrap is absent. `SW-008` remains planned.
 
 Current implementation boundary for freeze and snapshot (`SW-016`): `fm-video`
 provides a per-input freeze controller that latches the first source frame at

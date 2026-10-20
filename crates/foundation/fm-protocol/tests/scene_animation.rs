@@ -460,17 +460,23 @@ fn the_worst_case_layout_fits_one_line() {
                 width: 1_792,
                 height: 952,
             }),
-            // Protocol 2.43: the longest key and the longest effect list.
-            key: Some(fm_protocol::WireLayerKey::Chroma(
-                fm_protocol::WireChromaKey {
-                    red: 255,
-                    green: 255,
-                    blue: 255,
-                    similarity: 255,
-                    smoothness: 255,
-                    spill: 255,
+            // Protocol 2.43: the longest key and the longest effect list
+            // (since 2.70 a key/fill key with a refinement).
+            key: Some(fm_protocol::WireLayerKey::Fill(fm_protocol::WireFillKey {
+                key_input: fm_protocol::WireInputId::new(NonZeroU128::MAX),
+                alpha_channel: true,
+                low: 254,
+                high: 255,
+                softness: 255,
+                invert: true,
+                refinement: fm_protocol::WireKeyRefinement {
+                    clip_black: 254,
+                    clip_white: 255,
+                    choke: -8,
+                    edge_softness: 8,
+                    despill: fm_protocol::WireKeyDespill::Green { strength: 255 },
                 },
-            )),
+            })),
             effects: vec![
                 fm_protocol::WireLayerEffect {
                     name: "brightness_contrast".into(),

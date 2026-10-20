@@ -421,6 +421,7 @@ fn key_and_effect_scrubs_fold_into_one_step_each() {
                 high: 100,
                 softness: 0,
                 invert: false,
+                refinement: fm_model::KeyRefinement::NONE,
             }))),
             "key",
             "invalid_key",
@@ -454,6 +455,57 @@ fn key_and_effect_scrubs_fold_into_one_step_each() {
         );
         assert_eq!(shown(&engine, 1), scrubbed);
     }
+}
+
+/// SW-008: a key/fill key takes its matte from a picture input of the show;
+/// a missing input or one rendering a scene is refused, and the refined key
+/// is one undoable step.
+#[test]
+fn key_fill_keys_name_a_picture_input_of_the_show() {
+    let mut engine = engine();
+    let original = shown(&engine, 1);
+    let fill = |key_input: u128| {
+        SceneLayerChange::Key(Some(LayerKey::Fill(fm_model::FillLayerKey {
+            channel: fm_model::KeyChannel::Alpha,
+            refinement: fm_model::KeyRefinement {
+                choke: 2,
+                edge_softness: 1,
+                despill: fm_model::KeyDespill::Green { strength: 255 },
+                ..fm_model::KeyRefinement::NONE
+            },
+            ..fm_model::FillLayerKey::linear(input(key_input))
+        })))
+    };
+    for (index, (key_input, code, issue)) in [
+        (99, RejectionCode::NotFound, "unknown_input"),
+        (SHARED_A, RejectionCode::InvalidCommand, "scene_key_input"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let outcome = execute(
+            &mut engine,
+            &format!("fill-bad-{index}"),
+            edit(1, 2, fill(key_input)),
+        );
+        let refused = rejection(&outcome);
+        assert_eq!(refused.code, code);
+        assert_eq!(
+            (
+                refused.fields[0].field.as_str(),
+                refused.fields[0].code.as_str()
+            ),
+            ("key", issue)
+        );
+        assert_eq!(shown(&engine, 1), original);
+    }
+    accept(&mut engine, "fill", edit(1, 2, fill(SPARE)));
+    let SceneLayerChange::Key(key) = fill(SPARE) else {
+        unreachable!()
+    };
+    assert_eq!(shown(&engine, 1).layers[1].key, key);
+    undo(&mut engine, "undo-fill");
+    assert_eq!(shown(&engine, 1), original);
 }
 
 /// A gesture's later sends fold only into the step its own accepted first

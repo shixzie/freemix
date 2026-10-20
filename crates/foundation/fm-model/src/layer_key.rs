@@ -1,9 +1,10 @@
-//! Per-scene-layer keys (IN-020).
+//! Per-scene-layer keys (IN-020, SW-008).
 //!
 //! A scene layer may carry one [`LayerKey`]: a chroma key that removes one
-//! colour or a luma key that removes a brightness band. The key is applied
-//! after the layer's crop, multiplied with its mask, and before its effects
-//! and grade, with the compositor's exact integer semantics:
+//! colour, a luma key that removes a brightness band, or a key/fill pair
+//! whose matte comes from a separate key input. The key is applied after the
+//! layer's crop, multiplied with its mask, and before its effects and grade,
+//! with the compositor's exact integer semantics:
 //!
 //! * **Chroma**: a pixel's distance is the largest per-channel difference
 //!   from the key colour. Alpha is `0` while the distance is at most
@@ -15,8 +16,103 @@
 //!   rises to `255` over `softness` codes, and (when `high < 255`) falls back
 //!   to `0` over `softness` codes below `high`; `invert` swaps kept and keyed
 //!   pixels.
+//! * **Key/fill** ([`FillLayerKey`]): the layer's source is the fill and the
+//!   matte is the luma ramp above applied to the key input's luma (a linear
+//!   key) or alpha ([`KeyChannel`]); `low` and `softness` act as clip and
+//!   gain. The key input is cropped like the fill and must be a non-Scene
+//!   input.
+//!
+//! Every key carries a [`KeyRefinement`] (the identity by default): the raw
+//! matte is clipped, choked or spread, and softened before the mask, and an
+//! optional green or blue despill lowers the backing colour's spill.
 
 use core::fmt;
+
+use fm_types::InputId;
+
+/// Largest choke or spread radius, in pixels.
+pub const MAX_KEY_CHOKE: u8 = 8;
+/// Largest edge-softness radius, in pixels.
+pub const MAX_KEY_EDGE_SOFTNESS: u8 = 8;
+
+/// Spill suppression of a green or blue backing.
+///
+/// For a green backing green is lowered toward `(red + blue + 1) / 2` by
+/// `strength / 255` of its excess (blue likewise for a blue backing); a
+/// channel is only ever lowered.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeyDespill {
+    #[default]
+    Off,
+    Green {
+        strength: u8,
+    },
+    Blue {
+        strength: u8,
+    },
+}
+
+/// Matte refinement applied to a layer key's raw alpha.
+///
+/// Order: clip (alpha at most `clip_black` becomes `0`, at least
+/// `clip_white` becomes `255`, linear between), then choke (`choke > 0`
+/// erodes with a `2 * choke + 1` square window minimum, `choke < 0` spreads
+/// with the maximum), then edge softness (the rounded mean over a
+/// `2 * edge_softness + 1` window), then the mask. Windows are clamped to
+/// the cropped layer. [`KeyDespill`] adjusts colour independently.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyRefinement {
+    pub clip_black: u8,
+    /// Always above `clip_black`.
+    pub clip_white: u8,
+    /// `-MAX_KEY_CHOKE..=MAX_KEY_CHOKE`.
+    pub choke: i8,
+    /// `0..=MAX_KEY_EDGE_SOFTNESS`.
+    pub edge_softness: u8,
+    pub despill: KeyDespill,
+}
+
+impl Default for KeyRefinement {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl KeyRefinement {
+    /// The identity refinement: no clip, choke, softness, or despill.
+    pub const NONE: Self = Self {
+        clip_black: 0,
+        clip_white: 255,
+        choke: 0,
+        edge_softness: 0,
+        despill: KeyDespill::Off,
+    };
+
+    /// Whether this refinement changes nothing.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        *self == Self::NONE
+    }
+
+    /// Checks the clip range and the choke and softness radii.
+    ///
+    /// # Errors
+    ///
+    /// [`LayerKeyError::EmptyClipRange`], [`LayerKeyError::ChokeOutOfRange`],
+    /// or [`LayerKeyError::EdgeSoftnessOutOfRange`].
+    pub const fn validate(self) -> Result<(), LayerKeyError> {
+        if self.clip_black >= self.clip_white {
+            return Err(LayerKeyError::EmptyClipRange);
+        }
+        if self.choke.unsigned_abs() > MAX_KEY_CHOKE {
+            return Err(LayerKeyError::ChokeOutOfRange);
+        }
+        if self.edge_softness > MAX_KEY_EDGE_SOFTNESS {
+            return Err(LayerKeyError::EdgeSoftnessOutOfRange);
+        }
+        Ok(())
+    }
+}
 
 /// A chroma key: removes pixels near one colour.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,11 +127,12 @@ pub struct ChromaLayerKey {
     pub smoothness: u8,
     /// Spill suppression strength, `0` off.
     pub spill: u8,
+    pub refinement: KeyRefinement,
 }
 
 impl ChromaLayerKey {
     /// A green-screen key: pure green, similarity 64, smoothness 32, no
-    /// spill suppression.
+    /// spill suppression or refinement.
     pub const GREEN: Self = Self {
         red: 0,
         green: 255,
@@ -43,6 +140,7 @@ impl ChromaLayerKey {
         similarity: 64,
         smoothness: 32,
         spill: 0,
+        refinement: KeyRefinement::NONE,
     };
 }
 
@@ -58,6 +156,7 @@ pub struct LumaLayerKey {
     pub softness: u8,
     /// Keeps the keyed band and removes the rest instead.
     pub invert: bool,
+    pub refinement: KeyRefinement,
 }
 
 impl LumaLayerKey {
@@ -67,7 +166,51 @@ impl LumaLayerKey {
         high: 255,
         softness: 32,
         invert: false,
+        refinement: KeyRefinement::NONE,
     };
+}
+
+/// Which channel of a key/fill key input drives the matte.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeyChannel {
+    /// The key input's BT.709 luma (a classic linear key signal).
+    #[default]
+    Luma,
+    /// The key input's alpha channel.
+    Alpha,
+}
+
+/// A key/fill pair: the layer's source is the fill and `key_input` supplies
+/// the matte.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FillLayerKey {
+    /// The key signal; a non-Scene input of the project.
+    pub key_input: InputId,
+    pub channel: KeyChannel,
+    /// Matte ramp, as [`LumaLayerKey`]: `low` clips the key signal's dark
+    /// end, `softness` sets the gain, `high < 255` adds an upper bound, and
+    /// `invert` inverts the matte. `low < high`.
+    pub low: u8,
+    pub high: u8,
+    pub softness: u8,
+    pub invert: bool,
+    pub refinement: KeyRefinement,
+}
+
+impl FillLayerKey {
+    /// A linear key: the matte equals the key input's luma.
+    #[must_use]
+    pub const fn linear(key_input: InputId) -> Self {
+        Self {
+            key_input,
+            channel: KeyChannel::Luma,
+            low: 0,
+            high: 255,
+            softness: 255,
+            invert: false,
+            refinement: KeyRefinement::NONE,
+        }
+    }
 }
 
 /// One scene layer's key.
@@ -75,25 +218,64 @@ impl LumaLayerKey {
 pub enum LayerKey {
     Chroma(ChromaLayerKey),
     Luma(LumaLayerKey),
+    Fill(FillLayerKey),
 }
 
 impl LayerKey {
-    /// Checks the key's bounds: a luma key's `low` must be below its
-    /// `high`. Every chroma key is valid.
+    /// Checks the key's bounds: a luma or key/fill band's `low` must be
+    /// below its `high`, and the refinement must hold
+    /// ([`KeyRefinement::validate`]).
     ///
     /// # Errors
     ///
-    /// [`LayerKeyError::EmptyLumaBand`].
+    /// [`LayerKeyError::EmptyLumaBand`] or a refinement error.
     pub const fn validate(self) -> Result<(), LayerKeyError> {
+        let band = match self {
+            Self::Chroma(_) => true,
+            Self::Luma(luma) => luma.low < luma.high,
+            Self::Fill(fill) => fill.low < fill.high,
+        };
+        if !band {
+            return Err(LayerKeyError::EmptyLumaBand);
+        }
+        self.refinement().validate()
+    }
+
+    /// The key's matte refinement.
+    #[must_use]
+    pub const fn refinement(self) -> KeyRefinement {
         match self {
-            Self::Chroma(_) => Ok(()),
-            Self::Luma(luma) => {
-                if luma.low < luma.high {
-                    Ok(())
-                } else {
-                    Err(LayerKeyError::EmptyLumaBand)
-                }
+            Self::Chroma(chroma) => chroma.refinement,
+            Self::Luma(luma) => luma.refinement,
+            Self::Fill(fill) => fill.refinement,
+        }
+    }
+
+    /// The same key with `refinement`.
+    #[must_use]
+    pub const fn with_refinement(self, refinement: KeyRefinement) -> Self {
+        match self {
+            Self::Chroma(mut chroma) => {
+                chroma.refinement = refinement;
+                Self::Chroma(chroma)
             }
+            Self::Luma(mut luma) => {
+                luma.refinement = refinement;
+                Self::Luma(luma)
+            }
+            Self::Fill(mut fill) => {
+                fill.refinement = refinement;
+                Self::Fill(fill)
+            }
+        }
+    }
+
+    /// The key/fill key input, if this is a key/fill key.
+    #[must_use]
+    pub const fn key_input(self) -> Option<InputId> {
+        match self {
+            Self::Fill(fill) => Some(fill.key_input),
+            Self::Chroma(_) | Self::Luma(_) => None,
         }
     }
 }
@@ -101,14 +283,31 @@ impl LayerKey {
 /// Why a [`LayerKey`] is invalid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayerKeyError {
-    /// A luma key whose `low` is not below its `high`.
+    /// A luma or key/fill band whose `low` is not below its `high`.
     EmptyLumaBand,
+    /// A refinement whose `clip_black` is not below its `clip_white`.
+    EmptyClipRange,
+    /// A choke or spread beyond [`MAX_KEY_CHOKE`] pixels.
+    ChokeOutOfRange,
+    /// An edge softness beyond [`MAX_KEY_EDGE_SOFTNESS`] pixels.
+    EdgeSoftnessOutOfRange,
 }
 
 impl fmt::Display for LayerKeyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyLumaBand => formatter.write_str("luma key low must be below its high"),
+            Self::EmptyClipRange => {
+                formatter.write_str("key clip black must be below its clip white")
+            }
+            Self::ChokeOutOfRange => write!(
+                formatter,
+                "key choke must be within {MAX_KEY_CHOKE} pixels either way"
+            ),
+            Self::EdgeSoftnessOutOfRange => write!(
+                formatter,
+                "key edge softness must be at most {MAX_KEY_EDGE_SOFTNESS} pixels"
+            ),
         }
     }
 }

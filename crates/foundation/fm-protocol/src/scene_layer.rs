@@ -14,14 +14,19 @@
 //! | [`SceneLayerOperation::SetAppearance`] | `scene_layer_appearance_set` | `enabled`, `opacity` |
 //! | [`SceneLayerOperation::SetCrop`] | `scene_layer_crop_set` / `scene_layer_crop_clear` | `x`, `y`, `width`, `height` (set only) |
 //! | [`SceneLayerOperation::SetMask`] | `scene_layer_mask_set` / `scene_layer_mask_clear` | `x`, `y`, `width`, `height`, `invert` (set only) |
-//! | [`SceneLayerOperation::SetKey`] | `scene_layer_key_set` / `scene_layer_key_clear` | `kind` (`chroma`: `red`, `green`, `blue`, `similarity`, `smoothness`, `spill`; `luma`: `low`, `high`, `softness`, `invert`) (set only) |
+//! | [`SceneLayerOperation::SetKey`] | `scene_layer_key_set` / `scene_layer_key_clear` | `kind` (`chroma`: `red`, `green`, `blue`, `similarity`, `smoothness`, `spill`; `luma`: `low`, `high`, `softness`, `invert`; `fill` (Protocol 2.70): `key_input`, `channel` (`luma`/`alpha`), `low`, `high`, `softness`, `invert`), then the refinement (Protocol 2.70): `clip_black`, `clip_white`, `choke`, `edge_softness`, `despill` (`off`/`green`/`blue`), `despill_strength` (set only) |
 //! | [`SceneLayerOperation::SetEffects`] | `scene_layer_effects_set` | `effects` |
 //! | [`SceneLayerOperation::SetZOrder`] | `scene_layer_z_order_set` | `z_order` |
 //! | [`SceneLayerOperation::Move`] | `scene_layer_move` | `index` |
 //! | [`SceneLayerOperation::Add`] | `scene_layer_add` | `index`, `spec` |
 //! | [`SceneLayerOperation::Remove`] | `scene_layer_remove` | (none) |
 
-use crate::{WireSceneId, WireSceneLayerId, WireSceneLayerOutline};
+use crate::{WireInputId, WireSceneId, WireSceneLayerId, WireSceneLayerOutline};
+
+/// Largest key choke or spread radius, in pixels (Protocol 2.70).
+pub const MAX_KEY_CHOKE: u8 = 8;
+/// Largest key edge-softness radius, in pixels (Protocol 2.70).
+pub const MAX_KEY_EDGE_SOFTNESS: u8 = 8;
 
 /// The far edge of a layer anchor coordinate, in basis points.
 pub const SCENE_LAYER_ANCHOR_MAX: u16 = 10_000;
@@ -171,6 +176,57 @@ impl WireLayerEffect {
     }
 }
 
+/// Green or blue backing spill suppression of a key (Protocol 2.70).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum WireKeyDespill {
+    #[default]
+    Off,
+    Green {
+        strength: u8,
+    },
+    Blue {
+        strength: u8,
+    },
+}
+
+/// A key's matte refinement (Protocol 2.70): clip, then choke (`> 0`) or
+/// spread (`< 0`), then edge softness, then the mask; despill adjusts
+/// colour. `clip_black < clip_white`, `|choke| <= MAX_KEY_CHOKE`,
+/// `edge_softness <= MAX_KEY_EDGE_SOFTNESS`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WireKeyRefinement {
+    pub clip_black: u8,
+    pub clip_white: u8,
+    pub choke: i8,
+    pub edge_softness: u8,
+    pub despill: WireKeyDespill,
+}
+
+impl Default for WireKeyRefinement {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl WireKeyRefinement {
+    /// The identity refinement.
+    pub const NONE: Self = Self {
+        clip_black: 0,
+        clip_white: 255,
+        choke: 0,
+        edge_softness: 0,
+        despill: WireKeyDespill::Off,
+    };
+
+    /// Whether every bound holds.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.clip_black < self.clip_white
+            && self.choke.unsigned_abs() <= MAX_KEY_CHOKE
+            && self.edge_softness <= MAX_KEY_EDGE_SOFTNESS
+    }
+}
+
 /// A chroma key (Protocol 2.43): removes pixels within `similarity` of the
 /// key colour, ramps alpha over `smoothness`, and suppresses `spill`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -181,6 +237,8 @@ pub struct WireChromaKey {
     pub similarity: u8,
     pub smoothness: u8,
     pub spill: u8,
+    /// Protocol 2.70.
+    pub refinement: WireKeyRefinement,
 }
 
 /// A luma key (Protocol 2.43): removes luma at most `low` and (when `high`
@@ -192,22 +250,52 @@ pub struct WireLumaKey {
     pub high: u8,
     pub softness: u8,
     pub invert: bool,
+    /// Protocol 2.70.
+    pub refinement: WireKeyRefinement,
 }
 
-/// A layer's key (Protocol 2.43).
+/// A key/fill key (Protocol 2.70): the layer's source is the fill and the
+/// matte is the luma-key ramp (`low`, `high`, `softness`, `invert`) of the
+/// non-Scene input `key_input`'s luma, or its alpha when `alpha_channel`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WireFillKey {
+    pub key_input: WireInputId,
+    pub alpha_channel: bool,
+    pub low: u8,
+    pub high: u8,
+    pub softness: u8,
+    pub invert: bool,
+    pub refinement: WireKeyRefinement,
+}
+
+/// A layer's key (Protocol 2.43; key/fill and refinements 2.70).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WireLayerKey {
     Chroma(WireChromaKey),
     Luma(WireLumaKey),
+    Fill(WireFillKey),
 }
 
 impl WireLayerKey {
-    /// Whether the key's bounds hold (a luma key's `low < high`).
+    /// Whether the key's bounds hold (a luma or key/fill band's
+    /// `low < high`, and the refinement's bounds).
     #[must_use]
     pub const fn is_valid(&self) -> bool {
-        match self {
+        let band = match self {
             Self::Chroma(_) => true,
             Self::Luma(luma) => luma.low < luma.high,
+            Self::Fill(fill) => fill.low < fill.high,
+        };
+        band && self.refinement().is_valid()
+    }
+
+    /// The key's matte refinement.
+    #[must_use]
+    pub const fn refinement(&self) -> WireKeyRefinement {
+        match self {
+            Self::Chroma(chroma) => chroma.refinement,
+            Self::Luma(luma) => luma.refinement,
+            Self::Fill(fill) => fill.refinement,
         }
     }
 }

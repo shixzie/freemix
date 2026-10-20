@@ -327,6 +327,7 @@ fn a_refused_change_leaves_the_scene_untouched() {
                 high: 50,
                 softness: 0,
                 invert: false,
+                refinement: fm_model::KeyRefinement::NONE,
             }))),
             SceneLayerEditError::InvalidKey(LayerKeyError::EmptyLumaBand),
         ),

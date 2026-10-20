@@ -5,6 +5,7 @@
 //! z-order, tilt, and anchor — exactly, and strictly. Protocol 2.43
 //! (IN-020) adds each layer's key and effects to the layout record and
 //! `scene_layer_key_set`/`_clear` and `scene_layer_effects_set`.
+//! Protocol 2.70 (SW-008) adds key/fill keys and every key's refinement.
 
 use core::num::{NonZeroU32, NonZeroU128};
 
@@ -111,6 +112,7 @@ fn chroma() -> WireLayerKey {
         similarity: 64,
         smoothness: 32,
         spill: 128,
+        refinement: fm_protocol::WireKeyRefinement::NONE,
     })
 }
 
@@ -120,6 +122,25 @@ fn luma() -> WireLayerKey {
         high: 235,
         softness: 8,
         invert: true,
+        refinement: fm_protocol::WireKeyRefinement::NONE,
+    })
+}
+
+fn fill() -> WireLayerKey {
+    WireLayerKey::Fill(fm_protocol::WireFillKey {
+        key_input: WireInputId::new(NonZeroU128::new(9).unwrap()),
+        alpha_channel: true,
+        low: 4,
+        high: 250,
+        softness: 60,
+        invert: false,
+        refinement: fm_protocol::WireKeyRefinement {
+            clip_black: 12,
+            clip_white: 240,
+            choke: -8,
+            edge_softness: 3,
+            despill: fm_protocol::WireKeyDespill::Blue { strength: 90 },
+        },
     })
 }
 
@@ -252,12 +273,19 @@ fn scene_layer_commands_have_an_exact_wire_form() {
         (
             SceneLayerOperation::SetKey(Some(chroma())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=chroma\t\
-             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\n",
+             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\n",
         ),
         (
             SceneLayerOperation::SetKey(Some(luma())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=luma\t\
-             low=16\thigh=235\tsoftness=8\tinvert=true\n",
+             low=16\thigh=235\tsoftness=8\tinvert=true\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\n",
+        ),
+        (
+            SceneLayerOperation::SetKey(Some(fill())),
+            "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=fill\t\
+             key_input=9\tchannel=alpha\tlow=4\thigh=250\t\
+             softness=60\tinvert=false\tclip_black=12\tclip_white=240\tchoke=-8\t\
+             edge_softness=3\tdespill=blue\tdespill_strength=90\n",
         ),
         (
             SceneLayerOperation::SetKey(None),
@@ -289,6 +317,7 @@ fn scene_layer_commands_are_strict() {
     })));
     let add_line = round_trip(&command(edit(operations()[11].clone())));
     let key_line = round_trip(&command(edit(SceneLayerOperation::SetKey(Some(luma())))));
+    let fill_line = round_trip(&command(edit(SceneLayerOperation::SetKey(Some(fill())))));
     let effects_line = round_trip(&command(edit(SceneLayerOperation::SetEffects(
         effects()[..1].to_vec(),
     ))));
@@ -325,6 +354,21 @@ fn scene_layer_commands_are_strict() {
         key_line.replace("low=16", "low=235"),
         key_line.replace("invert=true", "invert=1"),
         key_line.replace("\tsoftness=8", ""),
+        // Key/fill keys name a canonical input and a known channel;
+        // refinements are bounded, canonical, and complete.
+        fill_line.replace("channel=alpha", "channel=red"),
+        fill_line.replace("key_input=9", "key_input=09"),
+        fill_line.replace("key_input=9", "key_input=0"),
+        fill_line.replace("\tchannel=alpha", ""),
+        fill_line.replace("clip_black=12", "clip_black=240"),
+        fill_line.replace("choke=-8", "choke=-9"),
+        fill_line.replace("choke=-8", "choke=9"),
+        fill_line.replace("choke=-8", "choke=-08"),
+        fill_line.replace("edge_softness=3", "edge_softness=9"),
+        fill_line.replace("despill=blue", "despill=red"),
+        fill_line.replace("despill=blue", "despill=off"),
+        fill_line.replace("\tdespill_strength=90", ""),
+        key_line.replace("\tclip_white=255", ""),
         // Effects are a known kind with in-range values, no trailing bytes.
         effects_line.replace("effects=AQAg1gM", "effects=AQUg1gM"),
         effects_line.replace("effects=AQAg1gM", "effects=AQDWAyA"),
@@ -364,6 +408,7 @@ fn scene_layer_commands_are_strict() {
         high: 9,
         softness: 0,
         invert: false,
+        refinement: fm_protocol::WireKeyRefinement::NONE,
     });
     assert!(
         encode_line(&command(edit(SceneLayerOperation::SetKey(Some(
@@ -450,6 +495,11 @@ fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
         key: Some(luma()),
         ..full.clone()
     });
+    layout.layers.push(WireSceneLayerOutline {
+        id: layer(5),
+        key: Some(fill()),
+        ..full.clone()
+    });
     let line = round_trip(&WireMessage::SceneLayoutState(
         fm_protocol::SceneLayoutStateMessage {
             revision: 4,
@@ -471,6 +521,7 @@ fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
     assert_eq!(decoded.layout, Box::new(layout.clone()));
     assert_eq!((guest.key, &guest.effects), (Some(chroma()), &effects()));
     assert_eq!(decoded.layout.layers[2].key, Some(luma()));
+    assert_eq!(decoded.layout.layers[3].key, Some(fill()));
     // A crop beyond the canvas, a mask beyond the cropped source, or an
     // anchor outside the box is refused.
     for broken in [
@@ -507,6 +558,22 @@ fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
                 high: 100,
                 softness: 0,
                 invert: false,
+                refinement: fm_protocol::WireKeyRefinement::NONE,
+            })),
+            ..full.clone()
+        },
+        WireSceneLayerOutline {
+            key: Some(WireLayerKey::Chroma(WireChromaKey {
+                red: 0,
+                green: 255,
+                blue: 0,
+                similarity: 1,
+                smoothness: 1,
+                spill: 0,
+                refinement: fm_protocol::WireKeyRefinement {
+                    edge_softness: 9,
+                    ..fm_protocol::WireKeyRefinement::NONE
+                },
             })),
             ..full.clone()
         },

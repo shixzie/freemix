@@ -664,9 +664,13 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
     Ok(layer)
 }
 
-/// Parses one layer's key (schema 41, IN-020): `{"type": "chroma", "red",
-/// "green", "blue", "similarity", "smoothness", "spill"}` or `{"type":
-/// "luma", "low", "high", "softness", "invert"}` with `low < high`.
+/// Parses one layer's key (schema 41, IN-020; key/fill and refinements
+/// schema 61, SW-008): `{"type": "chroma", "red", "green", "blue",
+/// "similarity", "smoothness", "spill", "refinement"}`, `{"type": "luma",
+/// "low", "high", "softness", "invert", "refinement"}`, or `{"type":
+/// "fill", "key_input", "channel": "luma"|"alpha", "low", "high",
+/// "softness", "invert", "refinement"}`, with `low < high` and the
+/// refinement in bounds.
 fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
     let mut object = Object::new(value, "layer key")?;
     let key = match object.string("type")?.as_str() {
@@ -677,12 +681,27 @@ fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
             similarity: object.u8("similarity")?,
             smoothness: object.u8("smoothness")?,
             spill: object.u8("spill")?,
+            refinement: parse_key_refinement(object.take("refinement")?)?,
         }),
         "luma" => fm_model::LayerKey::Luma(fm_model::LumaLayerKey {
             low: object.u8("low")?,
             high: object.u8("high")?,
             softness: object.u8("softness")?,
             invert: object.boolean("invert")?,
+            refinement: parse_key_refinement(object.take("refinement")?)?,
+        }),
+        "fill" => fm_model::LayerKey::Fill(fm_model::FillLayerKey {
+            key_input: InputId::new(object.nonzero_u128("key_input")?),
+            channel: match object.string("channel")?.as_str() {
+                "luma" => fm_model::KeyChannel::Luma,
+                "alpha" => fm_model::KeyChannel::Alpha,
+                value => return Err(unknown_enum("key channel", value)),
+            },
+            low: object.u8("low")?,
+            high: object.u8("high")?,
+            softness: object.u8("softness")?,
+            invert: object.boolean("invert")?,
+            refinement: parse_key_refinement(object.take("refinement")?)?,
         }),
         value => return Err(unknown_enum("layer key", value)),
     };
@@ -690,6 +709,39 @@ fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
     key.validate()
         .map_err(|error| syntax(format!("layer key is invalid: {error}")))?;
     Ok(key)
+}
+
+/// Parses a key refinement (schema 61, SW-008): `{"clip_black",
+/// "clip_white", "choke", "edge_softness", "despill"}` where `despill` is
+/// `{"type": "off"}` or `{"type": "green"|"blue", "strength"}`.
+fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeError> {
+    let mut object = Object::new(value, "key refinement")?;
+    let clip_black = object.u8("clip_black")?;
+    let clip_white = object.u8("clip_white")?;
+    let choke = object.i32("choke")?;
+    let choke =
+        i8::try_from(choke).map_err(|_| syntax(format!("key choke {choke} is out of range")))?;
+    let edge_softness = object.u8("edge_softness")?;
+    let mut despill = Object::new(object.take("despill")?, "key despill")?;
+    let despill_value = match despill.string("type")?.as_str() {
+        "off" => fm_model::KeyDespill::Off,
+        "green" => fm_model::KeyDespill::Green {
+            strength: despill.u8("strength")?,
+        },
+        "blue" => fm_model::KeyDespill::Blue {
+            strength: despill.u8("strength")?,
+        },
+        value => return Err(unknown_enum("key despill", value)),
+    };
+    despill.finish()?;
+    object.finish()?;
+    Ok(fm_model::KeyRefinement {
+        clip_black,
+        clip_white,
+        choke,
+        edge_softness,
+        despill: despill_value,
+    })
 }
 
 /// Parses one layer's ordered effect array.

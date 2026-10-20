@@ -87,8 +87,11 @@ fn shell_word(value: &str) -> String {
 }
 
 /// The `scene-layer-key` arguments after the scene: the layer index, then
-/// `none`, `chroma <r> <g> <b> <similarity> <smoothness> <spill>`, or
-/// `luma <low> <high> <softness> on|off`.
+/// `none`, `chroma <r> <g> <b> <similarity> <smoothness> <spill>`,
+/// `luma <low> <high> <softness> on|off`, or `fill <key-input> luma|alpha
+/// <low> <high> <softness> on|off`, then the options of a refinement that
+/// is not the identity (`--clip`, `--choke`, `--edge-softness`,
+/// `--despill`).
 fn key_arguments(index: usize, key: Option<WireLayerKey>) -> Vec<String> {
     let mut arguments = vec![index.to_string()];
     match key {
@@ -109,6 +112,50 @@ fn key_arguments(index: usize, key: Option<WireLayerKey>) -> Vec<String> {
             luma.softness.to_string(),
             if luma.invert { "on" } else { "off" }.to_owned(),
         ]),
+        Some(WireLayerKey::Fill(fill)) => arguments.extend([
+            "fill".to_owned(),
+            fill.key_input.to_string(),
+            if fill.alpha_channel { "alpha" } else { "luma" }.to_owned(),
+            fill.low.to_string(),
+            fill.high.to_string(),
+            fill.softness.to_string(),
+            if fill.invert { "on" } else { "off" }.to_owned(),
+        ]),
+    }
+    if let Some(key) = key {
+        let refinement = key.refinement();
+        let identity = fm_protocol::WireKeyRefinement::NONE;
+        if (refinement.clip_black, refinement.clip_white)
+            != (identity.clip_black, identity.clip_white)
+        {
+            arguments.extend([
+                "--clip".to_owned(),
+                refinement.clip_black.to_string(),
+                refinement.clip_white.to_string(),
+            ]);
+        }
+        if refinement.choke != 0 {
+            arguments.extend(["--choke".to_owned(), refinement.choke.to_string()]);
+        }
+        if refinement.edge_softness != 0 {
+            arguments.extend([
+                "--edge-softness".to_owned(),
+                refinement.edge_softness.to_string(),
+            ]);
+        }
+        match refinement.despill {
+            fm_protocol::WireKeyDespill::Off => {}
+            fm_protocol::WireKeyDespill::Green { strength } => arguments.extend([
+                "--despill".to_owned(),
+                "green".to_owned(),
+                strength.to_string(),
+            ]),
+            fm_protocol::WireKeyDespill::Blue { strength } => arguments.extend([
+                "--despill".to_owned(),
+                "blue".to_owned(),
+                strength.to_string(),
+            ]),
+        }
     }
     arguments
 }

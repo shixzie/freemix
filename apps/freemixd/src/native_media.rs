@@ -140,6 +140,10 @@ struct NativeScenePlan {
     followed: Arc<fm_model::Scene>,
     /// Each layer's source token, in scene order.
     layer_tokens: Vec<SourceId>,
+    /// Each layer's key/fill key input token (SW-008), in scene order;
+    /// `None` for a layer without a key/fill key or whose key input draws
+    /// no leaf picture (such a key/fill layer is not drawn).
+    key_tokens: Vec<Option<SourceId>>,
     /// Every Scene input showing this scene, ascending.
     inputs: Vec<InputId>,
     sources: Vec<(SourceId, NativeSceneSource)>,
@@ -164,7 +168,8 @@ fn resolved_scene(model: &fm_model::Scene) -> fm_model::Scene {
 
 /// Compiles one scene's layers into its native composition, each enabled
 /// layer bound to its source token (`layer_tokens`, one per layer in scene
-/// order). The plan compiles every scene in its static pose and ungraded; a
+/// order) and a key/fill layer to its key input's token (`key_tokens`,
+/// SW-008). The plan compiles every scene in its static pose and ungraded; a
 /// frame that shows a scene mid In or Out phase recompiles it posed (GX-011
 /// stage 5), and a frame of a scene with graded layers recompiles it with
 /// each layer's grade (SW-019, from `grades`), which the compositor applies
@@ -176,6 +181,7 @@ fn native_scene_composition(
     scene_id: SceneId,
     model: &fm_model::Scene,
     layer_tokens: &[SourceId],
+    key_tokens: &[Option<SourceId>],
     width: u32,
     height: u32,
     grades: NativeSceneGrades<'_>,
@@ -194,7 +200,7 @@ fn native_scene_composition(
         scene: scene_id,
         error,
     })?;
-    for (layer, &token) in model.layers.iter().zip(layer_tokens) {
+    for ((layer, &token), &key_token) in model.layers.iter().zip(layer_tokens).zip(key_tokens) {
         let geometry = layer.geometry;
         let rotation = match geometry.rotation {
             Rotation::Deg0 => CompositorRotation::Deg0,
@@ -231,7 +237,7 @@ fn native_scene_composition(
             );
         }
         if let Some(key) = layer.key {
-            native_layer = native_layer.with_key(native_key(key));
+            native_layer = with_native_layer_key(native_layer, key, key_token);
         }
         for effect in &layer.effects {
             native_layer = native_layer.with_effect(CompositorEffect::new(
@@ -256,21 +262,68 @@ fn native_scene_composition(
     Ok(composition)
 }
 
-/// `key` as the compositor's chroma or luma key (IN-020).
-fn native_key(key: fm_model::LayerKey) -> fm_compositor::Key {
-    match key {
+/// `layer` keyed by `key` (IN-020, SW-008): a chroma or luma key, or a
+/// key/fill key whose matte is `key_token`'s picture, with the key's
+/// refinement when it is not the identity. A key/fill key without a key
+/// token leaves the layer undrawn.
+fn with_native_layer_key(
+    layer: SourceLayer,
+    key: fm_model::LayerKey,
+    key_token: Option<SourceId>,
+) -> SourceLayer {
+    let layer = match key {
         fm_model::LayerKey::Chroma(chroma) => {
-            fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
+            layer.with_key(fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
                 fm_compositor::Rgba8::new(chroma.red, chroma.green, chroma.blue, u8::MAX),
                 chroma.similarity,
                 chroma.smoothness,
                 chroma.spill,
-            ))
+            )))
         }
-        fm_model::LayerKey::Luma(luma) => fm_compositor::Key::Luma(
+        fm_model::LayerKey::Luma(luma) => layer.with_key(fm_compositor::Key::Luma(
             fm_compositor::LumaKey::new(luma.low, luma.softness, luma.invert).with_high(luma.high),
-        ),
+        )),
+        fm_model::LayerKey::Fill(fill) => {
+            let Some(key_token) = key_token else {
+                return layer.with_enabled(false);
+            };
+            layer.with_key_fill(
+                fm_compositor::KeyFill::new(
+                    key_token,
+                    fm_compositor::LumaKey::new(fill.low, fill.softness, fill.invert)
+                        .with_high(fill.high),
+                )
+                .with_channel(match fill.channel {
+                    fm_model::KeyChannel::Luma => fm_compositor::KeyChannel::Luma,
+                    fm_model::KeyChannel::Alpha => fm_compositor::KeyChannel::Alpha,
+                }),
+            )
+        }
+    };
+    let refinement = key.refinement();
+    if refinement.is_identity() {
+        return layer;
     }
+    let mut compositor = fm_compositor::KeyRefinement::new()
+        .with_clip(refinement.clip_black, refinement.clip_white)
+        .with_choke(refinement.choke)
+        .with_edge_softness(refinement.edge_softness);
+    match refinement.despill {
+        fm_model::KeyDespill::Off => {}
+        fm_model::KeyDespill::Green { strength } => {
+            compositor = compositor.with_despill(fm_compositor::Despill::new(
+                fm_compositor::Backing::Green,
+                strength,
+            ));
+        }
+        fm_model::KeyDespill::Blue { strength } => {
+            compositor = compositor.with_despill(fm_compositor::Despill::new(
+                fm_compositor::Backing::Blue,
+                strength,
+            ));
+        }
+    }
+    layer.with_key_refinement(compositor)
 }
 
 /// The compiled grades a native scene composition attaches to its layers
@@ -335,7 +388,16 @@ impl NativeScenePlan {
         // masks, and a grade changes no geometry, so the scene compiles
         // whenever the static one did; should it not, the frame shows the
         // static plan.
-        native_scene_composition(self.id, &posed, &self.layer_tokens, width, height, grades).map_or(
+        native_scene_composition(
+            self.id,
+            &posed,
+            &self.layer_tokens,
+            &self.key_tokens,
+            width,
+            height,
+            grades,
+        )
+        .map_or(
             std::borrow::Cow::Borrowed(&self.composition),
             std::borrow::Cow::Owned,
         )
@@ -679,6 +741,7 @@ impl NativeProjectPlan {
                 .ok_or(NativeProjectPlanError::MissingScene(scene_id))?;
             let mut tokens = BTreeMap::new();
             let mut layer_tokens = Vec::with_capacity(model.layers.len());
+            let mut key_tokens = Vec::with_capacity(model.layers.len());
             for (layer_index, layer) in model.layers.iter().enumerate() {
                 let (source_width, source_height) = layer
                     .crop
@@ -718,11 +781,37 @@ impl NativeProjectPlan {
                     SourceId::new(0)
                 };
                 layer_tokens.push(token);
+                // A key/fill key's input (SW-008) binds like a leaf source;
+                // one that is missing or renders a scene leaves the layer
+                // undrawn.
+                let key_source = layer
+                    .key
+                    .and_then(fm_model::LayerKey::key_input)
+                    .filter(|_| layer.enabled)
+                    .and_then(|input| {
+                        resolve_scene_source(SourceRef::Input(input), &inputs, &scene_models).ok()
+                    })
+                    .filter(|source| matches!(source, NativeSceneSource::Leaf(_)));
+                let key_token = match key_source {
+                    Some(source) => Some(if let Some(token) = tokens.get(&source) {
+                        *token
+                    } else {
+                        let token = SourceId::new(next_source);
+                        next_source = next_source
+                            .checked_add(1)
+                            .ok_or(NativeProjectPlanError::SourceTokenExhausted)?;
+                        tokens.insert(source, token);
+                        token
+                    }),
+                    None => None,
+                };
+                key_tokens.push(key_token);
             }
             let composition = native_scene_composition(
                 scene_id,
                 &resolved_scene(model),
                 &layer_tokens,
+                &key_tokens,
                 dimensions.width(),
                 dimensions.height(),
                 NativeSceneGrades {
@@ -741,6 +830,7 @@ impl NativeProjectPlan {
                 model: Arc::new((*model).clone()),
                 followed: Arc::new((*model).clone()),
                 layer_tokens,
+                key_tokens,
                 inputs: video_routes
                     .iter()
                     .filter(|(_, route)| **route == NativeVideoRoute::Scene(scene_id))
@@ -1152,10 +1242,44 @@ impl NativeProjectPlan {
                 .into_iter()
                 .map(|token| token.unwrap_or(SourceId::new(0)))
                 .collect();
+            // A key/fill key's leaf input (SW-008) binds like a layer's
+            // leaf source; a key input that is missing or renders a scene
+            // leaves the layer undrawn.
+            let mut key_tokens = Vec::with_capacity(drawn.layers.len());
+            for layer in &drawn.layers {
+                let key_input = layer
+                    .key
+                    .and_then(fm_model::LayerKey::key_input)
+                    .filter(|_| layer.enabled);
+                let source = key_input.and_then(|input| match self.video_routes.get(&input) {
+                    Some(NativeVideoRoute::Leaf(_)) => Some(NativeSceneSource::Leaf(input)),
+                    Some(NativeVideoRoute::Scene(_)) | None => None,
+                });
+                let Some(source) = source else {
+                    key_tokens.push(None);
+                    continue;
+                };
+                let known = plan
+                    .sources
+                    .iter()
+                    .chain(&bound)
+                    .find(|(_, candidate)| *candidate == source)
+                    .map(|(token, _)| *token);
+                let token = known.or_else(|| {
+                    next_source.checked_add(1).map(|after| {
+                        let token = SourceId::new(next_source);
+                        next_source = after;
+                        bound.push((token, source));
+                        token
+                    })
+                });
+                key_tokens.push(token);
+            }
             let Ok(composition) = native_scene_composition(
                 plan.id,
                 &resolved_scene(&drawn),
                 &tokens,
+                &key_tokens,
                 width,
                 height,
                 NativeSceneGrades {
@@ -1177,11 +1301,13 @@ impl NativeProjectPlan {
                         .iter()
                         .zip(&tokens)
                         .any(|(layer, drawn_token)| layer.enabled && drawn_token == token)
+                    || key_tokens.contains(&Some(*token))
             });
             plan.sources.extend(bound);
             plan.model = drawn;
             plan.followed = model;
             plan.layer_tokens = tokens;
+            plan.key_tokens = key_tokens;
             plan.composition = composition;
             self.next_source = next_source;
             changed = true;
@@ -10129,6 +10255,7 @@ mod tests {
                     high: 235,
                     softness: 8,
                     invert: true,
+                    refinement: fm_model::KeyRefinement::NONE,
                 })),
                 effects: vec![
                     fm_model::LayerEffect::new("levels", vec![0, 200]),
@@ -10173,6 +10300,76 @@ mod tests {
             ))
         );
         assert_eq!(mapped.opacity(), 123);
+    }
+
+    /// SW-008: a key/fill layer binds its leaf key input as a source token
+    /// and carries the key's channel and refinement; one whose key input
+    /// renders a scene is compiled undrawn.
+    #[test]
+    fn native_project_plan_binds_key_fill_inputs_and_refinements() {
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, input(1));
+        add_leaf(&mut project, input(4));
+        add_scene_input(&mut project, input(2), scene(10), None);
+        let refinement = fm_model::KeyRefinement {
+            clip_black: 10,
+            clip_white: 240,
+            choke: -2,
+            edge_softness: 3,
+            despill: fm_model::KeyDespill::Green { strength: 200 },
+        };
+        let keyed = |id: u32, key_input: InputId| Layer {
+            key: Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey {
+                channel: fm_model::KeyChannel::Alpha,
+                refinement,
+                ..fm_model::FillLayerKey::linear(key_input)
+            })),
+            id: fm_model::LayerId::new(id).unwrap(),
+            ..layer(SourceRef::Input(input(1)), i32::try_from(id).unwrap())
+        };
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![keyed(1, input(4)), keyed(2, input(2))],
+        );
+
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let scene_plan = &plan.scenes[0];
+        let key_token = scene_plan.key_tokens[0].unwrap();
+        assert!(
+            scene_plan
+                .sources
+                .contains(&(key_token, NativeSceneSource::Leaf(input(4))))
+        );
+        assert_eq!(scene_plan.key_tokens[1], None);
+        let layers = scene_plan.composition.layers();
+        let fill = fm_model::FillLayerKey::linear(input(4));
+        assert_eq!(
+            layers[0].key_fill(),
+            Some(
+                fm_compositor::KeyFill::new(
+                    key_token,
+                    fm_compositor::LumaKey::new(fill.low, fill.softness, fill.invert)
+                        .with_high(fill.high),
+                )
+                .with_channel(fm_compositor::KeyChannel::Alpha)
+            )
+        );
+        assert_eq!(
+            layers[0].key_refinement(),
+            Some(
+                fm_compositor::KeyRefinement::new()
+                    .with_clip(10, 240)
+                    .with_choke(-2)
+                    .with_edge_softness(3)
+                    .with_despill(fm_compositor::Despill::new(
+                        fm_compositor::Backing::Green,
+                        200
+                    ))
+            )
+        );
+        assert!(layers[0].enabled());
+        assert!(!layers[1].enabled());
     }
 
     #[test]

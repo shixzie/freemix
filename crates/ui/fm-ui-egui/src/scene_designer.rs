@@ -31,7 +31,10 @@ use egui::{
     FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Shape, Stroke, TextureHandle,
     TextureOptions, Ui, Vec2, pos2, vec2,
 };
-use fm_protocol::{TitlePreviewImage, WireLayerKey, WireSceneLayerId, WireSceneLayerSource};
+use fm_protocol::{
+    TitlePreviewImage, WireInputId, WireKeyDespill, WireLayerKey, WireSceneLayerId,
+    WireSceneLayerSource,
+};
 use fm_types::{InputId, SceneId};
 use fm_ui_model::scene_designer::geometry::{Corner, Edge, Handle, HitTarget, Point};
 use fm_ui_model::scene_designer::gesture::{
@@ -205,6 +208,26 @@ fn scene_input(state: &StudioUiState, scene: SceneId) -> Option<InputId> {
             .find(|shown| shown.scene == Some(scene))
             .map(|shown| shown.input)
     })
+}
+
+/// Every input that can be a key/fill key's key input (SW-008), with its
+/// display name, in show order: the show's inputs except Scene inputs.
+fn key_input_choices(state: &StudioUiState) -> Vec<(InputId, String)> {
+    let Some(view) = state.view.as_ref() else {
+        return Vec::new();
+    };
+    let scene_inputs: Vec<InputId> = state
+        .project_state
+        .as_ref()
+        .map_or_else(Vec::new, |project| {
+            project.scenes().iter().map(|shown| shown.input).collect()
+        });
+    view.inputs
+        .iter()
+        .zip(&view.input_names)
+        .filter(|(input, _)| !scene_inputs.contains(input))
+        .map(|(input, name)| (*input, name.clone()))
+        .collect()
 }
 
 /// Every project scene with its display name, in project order.
@@ -754,6 +777,7 @@ fn draw_contents(
             .then_some(Msg::DesignReasonWaitingPicture.en())
     });
     let height = ui.available_height().max(240.0);
+    let key_inputs = key_input_choices(state);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             Vec2::new(LIST_WIDTH, height),
@@ -791,7 +815,7 @@ fn draw_contents(
                     .id_salt("studio-designer-inspector")
                     .show(ui, |ui| {
                         if let Some(document) = window.documents.get_mut(&scene) {
-                            inspector(ui, l, document, lock);
+                            inspector(ui, l, document, &key_inputs, lock);
                         }
                     });
             },
@@ -1657,6 +1681,7 @@ fn inspector(
     ui: &mut Ui,
     l: Locale,
     document: &mut SceneLayoutDocument,
+    key_inputs: &[(InputId, String)],
     lock: Option<&'static str>,
 ) {
     ui.label(section_label(l.text(Msg::DesignInspector)))
@@ -1973,7 +1998,7 @@ fn inspector(
                 }
             }
         });
-    key_section(ui, l, document, id, lock);
+    key_section(ui, l, document, id, key_inputs, lock);
     effects_section(ui, l, document, id, lock);
     group(ui, Msg::DesignGroupStack);
     let position = document.index_of(id).map_or(0, |index| index + 1);
@@ -2074,25 +2099,77 @@ fn byte_scrub(field: Field, label: &'static str, hover: String) -> Scrub {
 }
 
 /// The KEY section: no key, a chroma key (colour, similarity, smoothness,
-/// spill), or a luma key (low, high, softness, invert).
-#[allow(clippy::too_many_lines)] // one section: kind, then each kind's fields
+/// spill), a luma key (low, high, softness, invert), or a key/fill key
+/// (key input, low, high, softness, invert, key alpha; SW-008), then the
+/// matte refinements every key shares.
 fn key_section(
     ui: &mut Ui,
     l: Locale,
     document: &mut SceneLayoutDocument,
     id: WireSceneLayerId,
+    key_inputs: &[(InputId, String)],
     lock: Option<&'static str>,
 ) {
     ui.add_space(6.0);
     ui.label(section_label(l.text(Msg::DesignGroupKey)))
         .on_hover_text(l.text(Msg::DesignKeyHover));
-    let key = document.layer(id).and_then(|layer| layer.key);
+    key_kind_picker(ui, l, document, id, key_inputs, lock);
+    match document.layer(id).and_then(|layer| layer.key) {
+        None => return,
+        Some(WireLayerKey::Chroma(chroma)) => {
+            chroma_fields(
+                ui,
+                l,
+                document,
+                id,
+                [chroma.red, chroma.green, chroma.blue],
+                lock,
+            );
+        }
+        Some(WireLayerKey::Luma(luma)) => {
+            luma_fields(ui, l, document, id, luma.invert, lock);
+        }
+        Some(WireLayerKey::Fill(fill)) => {
+            key_input_picker(ui, l, document, fill.key_input, key_inputs, lock);
+            luma_fields(ui, l, document, id, fill.invert, lock);
+            let mut alpha = fill.alpha_channel;
+            if ui
+                .add_enabled(
+                    lock.is_none(),
+                    egui::Checkbox::new(&mut alpha, l.text(Msg::DesignKeyFillAlpha)),
+                )
+                .hint(l.text(Msg::DesignKeyFillAlphaHover), lock.unwrap_or(""))
+                .changed()
+            {
+                document.set_field(Field::FillAlpha, f64::from(u8::from(alpha)));
+            }
+        }
+    }
+    refinement_fields(ui, l, document, id, lock);
+}
+
+/// The key kind: none, chroma, luma, or key/fill (which needs an input
+/// that can be the key).
+fn key_kind_picker(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    key_inputs: &[(InputId, String)],
+    lock: Option<&'static str>,
+) {
     let kinds = [
-        (None, Msg::DesignKeyNone, Msg::DesignKeyNoneHover),
-        (Some(true), Msg::DesignKeyChroma, Msg::DesignKeyChromaHover),
-        (Some(false), Msg::DesignKeyLuma, Msg::DesignKeyLumaHover),
+        (0_u8, Msg::DesignKeyNone, Msg::DesignKeyNoneHover),
+        (1, Msg::DesignKeyChroma, Msg::DesignKeyChromaHover),
+        (2, Msg::DesignKeyLuma, Msg::DesignKeyLumaHover),
+        (3, Msg::DesignKeyFill, Msg::DesignKeyFillHover),
     ];
-    let current = key.map(|key| matches!(key, WireLayerKey::Chroma(_)));
+    let current = match document.layer(id).and_then(|layer| layer.key) {
+        None => 0,
+        Some(WireLayerKey::Chroma(_)) => 1,
+        Some(WireLayerKey::Luma(_)) => 2,
+        Some(WireLayerKey::Fill(_)) => 3,
+    };
     let shown = kinds
         .iter()
         .find(|(kind, _, _)| *kind == current)
@@ -2104,9 +2181,13 @@ fn key_section(
             .width(INSPECTOR_WIDTH - 24.0)
             .show_ui(ui, |ui| {
                 for (kind, text, hover) in kinds {
+                    let possible = kind != 3 || !key_inputs.is_empty();
                     if ui
-                        .selectable_label(kind == current, l.text(text))
-                        .on_hover_text(l.text(hover))
+                        .add_enabled(
+                            possible,
+                            egui::Button::selectable(kind == current, l.text(text)),
+                        )
+                        .hint(l.text(hover), Msg::DesignReasonNoKeyInput.en())
                         .clicked()
                     {
                         chosen = Some(kind);
@@ -2116,139 +2197,352 @@ fn key_section(
             .response
             .hint(l.text(Msg::DesignKeyKindHover), lock.unwrap_or(""));
     });
-    if let Some(kind) = chosen {
-        document.set_key_kind(kind);
+    match chosen {
+        Some(0) => {
+            document.set_key_kind(None);
+        }
+        Some(1) => {
+            document.set_key_kind(Some(true));
+        }
+        Some(2) => {
+            document.set_key_kind(Some(false));
+        }
+        Some(_) if current != 3 => {
+            if let Some((input, _)) = key_inputs.first() {
+                document.set_key_fill(WireInputId::from_domain(*input));
+            }
+        }
+        _ => {}
     }
-    match document.layer(id).and_then(|layer| layer.key) {
-        None => {}
-        Some(WireLayerKey::Chroma(chroma)) => {
-            ui.horizontal(|ui| {
-                let mut colour = [chroma.red, chroma.green, chroma.blue];
-                let response = ui
-                    .add_enabled_ui(lock.is_none(), |ui| {
-                        egui::color_picker::color_edit_button_srgb(ui, &mut colour)
-                    })
-                    .inner
-                    .hint(l.text(Msg::DesignKeyColourHover), lock.unwrap_or(""));
-                if response.changed() {
-                    // A picker drag is one step: it closes when the
-                    // pointer is released.
-                    document.begin(EditLabel::KeyColour);
-                    document.set_key_colour(colour);
-                }
-                for (rgb, text, hover) in [
-                    ([0, 255, 0], Msg::ColourGreen, Msg::DesignKeyGreenHover),
-                    ([0, 0, 255], Msg::ColourBlue, Msg::DesignKeyBlueHover),
-                ] {
-                    let on = colour == rgb;
-                    if ui
-                        .add_enabled(lock.is_none(), egui::Button::selectable(on, l.text(text)))
-                        .hint(l.text(hover), lock.unwrap_or(""))
-                        .clicked()
-                    {
-                        document.set_key_colour(rgb);
+}
+
+/// The key/fill key's key input; an input no longer in the show reads as
+/// its id.
+fn key_input_picker(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    key_input: WireInputId,
+    key_inputs: &[(InputId, String)],
+    lock: Option<&'static str>,
+) {
+    let current = key_input.to_domain();
+    let shown = key_inputs
+        .iter()
+        .find(|(input, _)| *input == current)
+        .map_or_else(|| current.to_string(), |(_, name)| name.clone());
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label(field_label(l.text(Msg::DesignKeyInput)));
+        ui.add_enabled_ui(lock.is_none(), |ui| {
+            ComboBox::from_id_salt("studio-designer-key-input")
+                .selected_text(shown)
+                .width(INSPECTOR_WIDTH - 110.0)
+                .show_ui(ui, |ui| {
+                    for (input, name) in key_inputs {
+                        if ui
+                            .selectable_label(*input == current, name)
+                            .on_hover_text(l.text(Msg::DesignKeyInputChoiceHover))
+                            .clicked()
+                        {
+                            chosen = Some(*input);
+                        }
                     }
-                }
-            });
-            if document.editing_label() == Some(EditLabel::KeyColour)
-                && !ui.ctx().input(|input| input.pointer.any_down())
-            {
-                document.commit();
-            }
-            egui::Grid::new("studio-designer-chroma-colour")
-                .num_columns(6)
-                .spacing(Vec2::new(6.0, 4.0))
-                .show(ui, |ui| {
-                    for (field, label, hover) in [
-                        (Field::KeyRed, "R", Msg::DesignKeyRedHover),
-                        (Field::KeyGreen, "G", Msg::DesignKeyGreenChannelHover),
-                        (Field::KeyBlue, "B", Msg::DesignKeyBlueChannelHover),
-                    ] {
-                        scrub(
-                            ui,
-                            l,
-                            document,
-                            id,
-                            byte_scrub(field, label, l.text(hover).to_owned()),
-                            lock,
-                        );
-                    }
-                    ui.end_row();
-                });
-            egui::Grid::new("studio-designer-chroma")
-                .num_columns(2)
-                .spacing(Vec2::new(6.0, 4.0))
-                .show(ui, |ui| {
-                    for (field, label, hover) in [
-                        (
-                            Field::KeySimilarity,
-                            Msg::DesignKeySimilarity,
-                            Msg::DesignKeySimilarityHover,
-                        ),
-                        (
-                            Field::KeySmoothness,
-                            Msg::DesignKeySmoothness,
-                            Msg::DesignKeySmoothnessHover,
-                        ),
-                        (
-                            Field::KeySpill,
-                            Msg::DesignKeySpill,
-                            Msg::DesignKeySpillHover,
-                        ),
-                    ] {
-                        scrub(
-                            ui,
-                            l,
-                            document,
-                            id,
-                            byte_scrub(field, l.text(label), l.text(hover).to_owned()),
-                            lock,
-                        );
-                        ui.end_row();
-                    }
-                });
+                })
+                .response
+                .hint(l.text(Msg::DesignKeyInputHover), lock.unwrap_or(""));
+        });
+    });
+    if let Some(input) = chosen.filter(|input| *input != current) {
+        document.set_key_fill(WireInputId::from_domain(input));
+    }
+}
+
+/// A chroma key's colour, its presets and components, and its similarity,
+/// smoothness, and spill.
+#[allow(clippy::too_many_lines)] // one group: colour, components, thresholds
+fn chroma_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    colour: [u8; 3],
+    lock: Option<&'static str>,
+) {
+    ui.horizontal(|ui| {
+        let mut colour = colour;
+        let response = ui
+            .add_enabled_ui(lock.is_none(), |ui| {
+                egui::color_picker::color_edit_button_srgb(ui, &mut colour)
+            })
+            .inner
+            .hint(l.text(Msg::DesignKeyColourHover), lock.unwrap_or(""));
+        if response.changed() {
+            // A picker drag is one step: it closes when the
+            // pointer is released.
+            document.begin(EditLabel::KeyColour);
+            document.set_key_colour(colour);
         }
-        Some(WireLayerKey::Luma(luma)) => {
-            egui::Grid::new("studio-designer-luma")
-                .num_columns(2)
-                .spacing(Vec2::new(6.0, 4.0))
-                .show(ui, |ui| {
-                    for (field, label, hover) in [
-                        (Field::LumaLow, Msg::DesignLumaLow, Msg::DesignLumaLowHover),
-                        (
-                            Field::LumaHigh,
-                            Msg::DesignLumaHigh,
-                            Msg::DesignLumaHighHover,
-                        ),
-                        (
-                            Field::LumaSoftness,
-                            Msg::DesignLumaSoftness,
-                            Msg::DesignLumaSoftnessHover,
-                        ),
-                    ] {
-                        scrub(
-                            ui,
-                            l,
-                            document,
-                            id,
-                            byte_scrub(field, l.text(label), l.text(hover).to_owned()),
-                            lock,
-                        );
-                        ui.end_row();
-                    }
-                });
-            let mut invert = luma.invert;
+        for (rgb, text, hover) in [
+            ([0, 255, 0], Msg::ColourGreen, Msg::DesignKeyGreenHover),
+            ([0, 0, 255], Msg::ColourBlue, Msg::DesignKeyBlueHover),
+        ] {
+            let on = colour == rgb;
             if ui
-                .add_enabled(
-                    lock.is_none(),
-                    egui::Checkbox::new(&mut invert, l.text(Msg::DesignMaskInvert)),
-                )
-                .hint(l.text(Msg::DesignLumaInvertHover), lock.unwrap_or(""))
-                .changed()
+                .add_enabled(lock.is_none(), egui::Button::selectable(on, l.text(text)))
+                .hint(l.text(hover), lock.unwrap_or(""))
+                .clicked()
             {
-                document.set_field(Field::LumaInvert, f64::from(u8::from(invert)));
+                document.set_key_colour(rgb);
             }
         }
+    });
+    if document.editing_label() == Some(EditLabel::KeyColour)
+        && !ui.ctx().input(|input| input.pointer.any_down())
+    {
+        document.commit();
+    }
+    egui::Grid::new("studio-designer-chroma-colour")
+        .num_columns(6)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, hover) in [
+                (Field::KeyRed, "R", Msg::DesignKeyRedHover),
+                (Field::KeyGreen, "G", Msg::DesignKeyGreenChannelHover),
+                (Field::KeyBlue, "B", Msg::DesignKeyBlueChannelHover),
+            ] {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    byte_scrub(field, label, l.text(hover).to_owned()),
+                    lock,
+                );
+            }
+            ui.end_row();
+        });
+    egui::Grid::new("studio-designer-chroma")
+        .num_columns(2)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, hover) in [
+                (
+                    Field::KeySimilarity,
+                    Msg::DesignKeySimilarity,
+                    Msg::DesignKeySimilarityHover,
+                ),
+                (
+                    Field::KeySmoothness,
+                    Msg::DesignKeySmoothness,
+                    Msg::DesignKeySmoothnessHover,
+                ),
+                (
+                    Field::KeySpill,
+                    Msg::DesignKeySpill,
+                    Msg::DesignKeySpillHover,
+                ),
+            ] {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    byte_scrub(field, l.text(label), l.text(hover).to_owned()),
+                    lock,
+                );
+                ui.end_row();
+            }
+        });
+}
+
+/// A luma or key/fill key's thresholds, softness, and invert.
+fn luma_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    invert: bool,
+    lock: Option<&'static str>,
+) {
+    egui::Grid::new("studio-designer-luma")
+        .num_columns(2)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, hover) in [
+                (Field::LumaLow, Msg::DesignLumaLow, Msg::DesignLumaLowHover),
+                (
+                    Field::LumaHigh,
+                    Msg::DesignLumaHigh,
+                    Msg::DesignLumaHighHover,
+                ),
+                (
+                    Field::LumaSoftness,
+                    Msg::DesignLumaSoftness,
+                    Msg::DesignLumaSoftnessHover,
+                ),
+            ] {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    byte_scrub(field, l.text(label), l.text(hover).to_owned()),
+                    lock,
+                );
+                ui.end_row();
+            }
+        });
+    let mut invert = invert;
+    if ui
+        .add_enabled(
+            lock.is_none(),
+            egui::Checkbox::new(&mut invert, l.text(Msg::DesignMaskInvert)),
+        )
+        .hint(l.text(Msg::DesignLumaInvertHover), lock.unwrap_or(""))
+        .changed()
+    {
+        document.set_field(Field::LumaInvert, f64::from(u8::from(invert)));
+    }
+}
+
+/// The matte refinements every key shares (SW-008): clip black and white,
+/// choke, edge softness, and despill with its strength.
+fn refinement_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
+    ui.label(field_label(l.text(Msg::DesignKeyMatte)))
+        .on_hover_text(l.text(Msg::DesignKeyMatteHover));
+    egui::Grid::new("studio-designer-key-matte")
+        .num_columns(2)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, hover) in [
+                (
+                    Field::KeyClipBlack,
+                    Msg::DesignKeyClipBlack,
+                    Msg::DesignKeyClipBlackHover,
+                ),
+                (
+                    Field::KeyClipWhite,
+                    Msg::DesignKeyClipWhite,
+                    Msg::DesignKeyClipWhiteHover,
+                ),
+            ] {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    byte_scrub(field, l.text(label), l.text(hover).to_owned()),
+                    lock,
+                );
+                ui.end_row();
+            }
+            let choke = f64::from(fm_protocol::MAX_KEY_CHOKE);
+            for (field, label, hover, range) in [
+                (
+                    Field::KeyChoke,
+                    Msg::DesignKeyChoke,
+                    Msg::DesignKeyChokeHover,
+                    -choke..=choke,
+                ),
+                (
+                    Field::KeyEdgeSoftness,
+                    Msg::DesignKeyEdgeSoftness,
+                    Msg::DesignKeyEdgeSoftnessHover,
+                    0.0..=f64::from(fm_protocol::MAX_KEY_EDGE_SOFTNESS),
+                ),
+            ] {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    Scrub {
+                        field,
+                        label: l.text(label),
+                        hover: l.text(hover).to_owned(),
+                        range,
+                        speed: 0.05,
+                        suffix: " px",
+                        shown_per_stored: 1.0,
+                    },
+                    lock,
+                );
+                ui.end_row();
+            }
+        });
+    let despill = document
+        .layer(id)
+        .and_then(|layer| layer.key)
+        .map_or(WireKeyDespill::Off, |key| key.refinement().despill);
+    let current = match despill {
+        WireKeyDespill::Off => 0_u8,
+        WireKeyDespill::Green { .. } => 1,
+        WireKeyDespill::Blue { .. } => 2,
+    };
+    let choices = [
+        (
+            0_u8,
+            Msg::DesignKeyDespillOff,
+            Msg::DesignKeyDespillOffHover,
+        ),
+        (1, Msg::ColourGreen, Msg::DesignKeyDespillGreenHover),
+        (2, Msg::ColourBlue, Msg::DesignKeyDespillBlueHover),
+    ];
+    let shown = choices
+        .iter()
+        .find(|(choice, _, _)| *choice == current)
+        .map_or(Msg::DesignKeyDespillOff, |(_, text, _)| *text);
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label(field_label(l.text(Msg::DesignKeyDespill)));
+        ui.add_enabled_ui(lock.is_none(), |ui| {
+            ComboBox::from_id_salt("studio-designer-key-despill")
+                .selected_text(l.text(shown))
+                .width(INSPECTOR_WIDTH - 110.0)
+                .show_ui(ui, |ui| {
+                    for (choice, text, hover) in choices {
+                        if ui
+                            .selectable_label(choice == current, l.text(text))
+                            .on_hover_text(l.text(hover))
+                            .clicked()
+                        {
+                            chosen = Some(choice);
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::DesignKeyDespillHover), lock.unwrap_or(""));
+        });
+    });
+    if let Some(choice) = chosen.filter(|choice| *choice != current) {
+        document.set_field(Field::KeyDespill, f64::from(choice));
+    }
+    if current != 0 {
+        egui::Grid::new("studio-designer-key-despill-strength")
+            .num_columns(2)
+            .spacing(Vec2::new(6.0, 4.0))
+            .show(ui, |ui| {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    byte_scrub(
+                        Field::KeyDespillStrength,
+                        l.text(Msg::DesignKeyDespillStrength),
+                        l.text(Msg::DesignKeyDespillStrengthHover).to_owned(),
+                    ),
+                    lock,
+                );
+                ui.end_row();
+            });
     }
 }
 

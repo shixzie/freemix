@@ -570,28 +570,63 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
     array_end(output, project.input_audio_strips().is_empty(), 4);
 }
 
-/// One scene layer's `key`: `null` or the tagged chroma or luma key.
+/// One scene layer's `key`: `null` or the tagged chroma, luma, or key/fill
+/// key with its refinement.
 fn write_layer_key(output: &mut String, key: Option<fm_model::LayerKey>) {
+    let Some(key) = key else {
+        output.push_str("null");
+        return;
+    };
     match key {
-        None => output.push_str("null"),
-        Some(fm_model::LayerKey::Chroma(chroma)) => write!(
+        fm_model::LayerKey::Chroma(chroma) => write!(
             output,
-            "{{\"type\": \"chroma\", \"red\": {}, \"green\": {}, \"blue\": {}, \"similarity\": {}, \"smoothness\": {}, \"spill\": {}}}",
+            "{{\"type\": \"chroma\", \"red\": {}, \"green\": {}, \"blue\": {}, \"similarity\": {}, \"smoothness\": {}, \"spill\": {}",
             chroma.red,
             chroma.green,
             chroma.blue,
             chroma.similarity,
             chroma.smoothness,
             chroma.spill,
-        )
-        .expect("writing to a string cannot fail"),
-        Some(fm_model::LayerKey::Luma(luma)) => write!(
+        ),
+        fm_model::LayerKey::Luma(luma) => write!(
             output,
-            "{{\"type\": \"luma\", \"low\": {}, \"high\": {}, \"softness\": {}, \"invert\": {}}}",
+            "{{\"type\": \"luma\", \"low\": {}, \"high\": {}, \"softness\": {}, \"invert\": {}",
             luma.low, luma.high, luma.softness, luma.invert,
-        )
-        .expect("writing to a string cannot fail"),
+        ),
+        fm_model::LayerKey::Fill(fill) => write!(
+            output,
+            "{{\"type\": \"fill\", \"key_input\": {}, \"channel\": \"{}\", \"low\": {}, \"high\": {}, \"softness\": {}, \"invert\": {}",
+            fill.key_input,
+            match fill.channel {
+                fm_model::KeyChannel::Luma => "luma",
+                fm_model::KeyChannel::Alpha => "alpha",
+            },
+            fill.low,
+            fill.high,
+            fill.softness,
+            fill.invert,
+        ),
     }
+    .expect("writing to a string cannot fail");
+    let refinement = key.refinement();
+    write!(
+        output,
+        ", \"refinement\": {{\"clip_black\": {}, \"clip_white\": {}, \"choke\": {}, \"edge_softness\": {}, \"despill\": ",
+        refinement.clip_black, refinement.clip_white, refinement.choke, refinement.edge_softness,
+    )
+    .expect("writing to a string cannot fail");
+    match refinement.despill {
+        fm_model::KeyDespill::Off => output.push_str("{\"type\": \"off\"}"),
+        fm_model::KeyDespill::Green { strength } => {
+            write!(output, "{{\"type\": \"green\", \"strength\": {strength}}}")
+                .expect("writing to a string cannot fail")
+        }
+        fm_model::KeyDespill::Blue { strength } => {
+            write!(output, "{{\"type\": \"blue\", \"strength\": {strength}}}")
+                .expect("writing to a string cannot fail")
+        }
+    }
+    output.push_str("}}");
 }
 
 fn write_scenes(output: &mut String, project: &fm_model::Project) {

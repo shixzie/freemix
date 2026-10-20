@@ -56,7 +56,10 @@ pub use input_lifecycle::{
     media_input_name, plan_batch_import, unique_input_name, validate_input_categories,
     validate_input_category_name, validate_media_asset_uri,
 };
-pub use layer_key::{ChromaLayerKey, LayerKey, LayerKeyError, LumaLayerKey};
+pub use layer_key::{
+    ChromaLayerKey, FillLayerKey, KeyChannel, KeyDespill, KeyRefinement, LayerKey, LayerKeyError,
+    LumaLayerKey, MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS,
+};
 pub use media_playback::{
     DEFAULT_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_FRAME,
     MAX_MEDIA_IDLE_COMPLETION_REFRESHES, MAX_MEDIA_LIVE_EDGE_OFFSET_FRAMES,

@@ -1,5 +1,5 @@
 //! Scene layouts (Protocol 2.31; layer sources 2.35; full layer design
-//! 2.39; keys and effects 2.43).
+//! 2.39; keys and effects 2.43; key/fill and key refinements 2.70).
 //!
 //! A layout's canvas travels as the plain `width` and `height` fields; its
 //! layer list travels as one unpadded base64url `layers` field holding a
@@ -18,8 +18,12 @@
 //! source = kind(byte: 0 input, 1 scene) id(varint, nonzero u128)
 //! crop   = x(varint) y(varint) width(varint) height(varint)
 //! mask   = x(varint) y(varint) width(varint) height(varint)
-//! key    = 0(byte) red green blue similarity smoothness spill (bytes)
-//!        | 1(byte) low high softness (bytes) invert(byte 0 or 1)
+//! key    = 0(byte) red green blue similarity smoothness spill (bytes) refine
+//!        | 1(byte) low high softness (bytes) invert(byte 0 or 1) refine
+//!        | 2(byte) key_input(varint, nonzero u128) channel(byte: 0 luma,
+//!          1 alpha) low high softness (bytes) invert(byte 0 or 1) refine
+//! refine = clip_black clip_white (bytes) choke(zigzag) edge_softness(byte)
+//!          despill(byte: 0 off, 1 green, 2 blue) strength(byte, 0 when off)
 //! effect = kind(byte, index into SCENE_LAYER_EFFECT_KINDS)
 //!          value(zigzag)* (exactly the kind's parameter count)
 //! ```
@@ -30,8 +34,9 @@
 //! [`MAX_SCENE_LAYER_NAME_BYTES`] bytes of UTF-8 without control characters;
 //! tilts in `MIN_SCENE_LAYER_TILT_MILLIDEGREES..MAX_SCENE_LAYER_TILT_MILLIDEGREES`;
 //! anchors within `0..=SCENE_LAYER_ANCHOR_MAX`; crops nonempty and inside
-//! the canvas and masks nonempty and inside the cropped source; luma keys
-//! with `low < high`; every effect valid
+//! the canvas and masks nonempty and inside the cropped source; luma and
+//! key/fill keys with `low < high` and every key refinement within its
+//! bounds ([`crate::WireKeyRefinement::is_valid`]); every effect valid
 //! ([`crate::WireLayerEffect::kind_index`]); and the encoding at most
 //! [`MAX_SCENE_LAYOUT_BYTES`].
 //!
@@ -48,9 +53,9 @@ use crate::{
     CodecError, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_NAME_BYTES,
     MAX_SCENE_LAYER_TILT_MILLIDEGREES, MAX_SCENE_LAYOUT_BYTES, MAX_SCENE_LAYOUT_LAYERS,
     MIN_SCENE_LAYER_TILT_MILLIDEGREES, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS,
-    WireChromaKey, WireInputId, WireLayerCrop, WireLayerEffect, WireLayerKey, WireLayerMask,
-    WireLumaKey, WireSceneClip, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
-    WireSceneLayerSource, WireSceneLayout,
+    WireChromaKey, WireFillKey, WireInputId, WireKeyDespill, WireKeyRefinement, WireLayerCrop,
+    WireLayerEffect, WireLayerKey, WireLayerMask, WireLumaKey, WireSceneClip, WireSceneId,
+    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
 };
 
 const LAYERS: &str = "layers";
@@ -62,6 +67,10 @@ const MASK_INVERTED: u8 = 8;
 const KEYED: u8 = 16;
 const KEY_CHROMA: u8 = 0;
 const KEY_LUMA: u8 = 1;
+const KEY_FILL: u8 = 2;
+const DESPILL_OFF: u8 = 0;
+const DESPILL_GREEN: u8 = 1;
+const DESPILL_BLUE: u8 = 2;
 const EFFECTS: &str = "effects";
 const SOURCE_INPUT: u8 = 0;
 const SOURCE_SCENE: u8 = 1;
@@ -156,7 +165,7 @@ fn validate_design(
         }
     }
     if layer.key.is_some_and(|key| !key.is_valid()) {
-        return refuse("keyed with an empty luma band");
+        return refuse("keyed with an empty luma band or an invalid refinement");
     }
     if layer.effects.len() > MAX_SCENE_LAYER_EFFECTS {
         return refuse(&format!("carrying {} effects", layer.effects.len()));
@@ -206,7 +215,27 @@ fn push_key(out: &mut Vec<u8>, key: WireLayerKey) {
             luma.softness,
             u8::from(luma.invert),
         ]),
+        WireLayerKey::Fill(fill) => {
+            out.push(KEY_FILL);
+            push_varint(out, fill.key_input.get().get());
+            out.extend_from_slice(&[
+                u8::from(fill.alpha_channel),
+                fill.low,
+                fill.high,
+                fill.softness,
+                u8::from(fill.invert),
+            ]);
+        }
     }
+    let refinement = key.refinement();
+    out.extend_from_slice(&[refinement.clip_black, refinement.clip_white]);
+    push_varint(out, u128::from(zigzag(i64::from(refinement.choke))));
+    let (despill, strength) = match refinement.despill {
+        WireKeyDespill::Off => (DESPILL_OFF, 0),
+        WireKeyDespill::Green { strength } => (DESPILL_GREEN, strength),
+        WireKeyDespill::Blue { strength } => (DESPILL_BLUE, strength),
+    };
+    out.extend_from_slice(&[refinement.edge_softness, despill, strength]);
 }
 
 /// Validates and encodes a `scene_layer_effects_set` list.
@@ -421,6 +450,34 @@ impl Reader<'_> {
         Some(effects)
     }
 
+    fn flag(&mut self) -> Option<bool> {
+        match self.byte()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn refinement(&mut self) -> Option<WireKeyRefinement> {
+        let clip_black = self.byte()?;
+        let clip_white = self.byte()?;
+        let choke = i8::try_from(self.i32()?).ok()?;
+        let edge_softness = self.byte()?;
+        let despill = match (self.byte()?, self.byte()?) {
+            (DESPILL_OFF, 0) => WireKeyDespill::Off,
+            (DESPILL_GREEN, strength) => WireKeyDespill::Green { strength },
+            (DESPILL_BLUE, strength) => WireKeyDespill::Blue { strength },
+            _ => return None,
+        };
+        Some(WireKeyRefinement {
+            clip_black,
+            clip_white,
+            choke,
+            edge_softness,
+            despill,
+        })
+    }
+
     fn key(&mut self) -> Option<WireLayerKey> {
         Some(match self.byte()? {
             KEY_CHROMA => WireLayerKey::Chroma(WireChromaKey {
@@ -430,16 +487,23 @@ impl Reader<'_> {
                 similarity: self.byte()?,
                 smoothness: self.byte()?,
                 spill: self.byte()?,
+                refinement: self.refinement()?,
             }),
             KEY_LUMA => WireLayerKey::Luma(WireLumaKey {
                 low: self.byte()?,
                 high: self.byte()?,
                 softness: self.byte()?,
-                invert: match self.byte()? {
-                    0 => false,
-                    1 => true,
-                    _ => return None,
-                },
+                invert: self.flag()?,
+                refinement: self.refinement()?,
+            }),
+            KEY_FILL => WireLayerKey::Fill(WireFillKey {
+                key_input: WireInputId::new(core::num::NonZeroU128::new(self.varint(128)?)?),
+                alpha_channel: self.flag()?,
+                low: self.byte()?,
+                high: self.byte()?,
+                softness: self.byte()?,
+                invert: self.flag()?,
+                refinement: self.refinement()?,
             }),
             _ => return None,
         })

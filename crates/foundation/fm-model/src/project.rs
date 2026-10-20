@@ -531,6 +531,8 @@ pub enum SceneLayerError {
     MissingInput(InputId),
     MissingScene(SceneId),
     SourceCycle,
+    /// A key/fill key input that is a Scene input (SW-008).
+    SceneKeyInput(InputId),
     /// The edit would leave `scene` with more than
     /// [`Scene::MAX_RENDERED_LAYERS`] enabled layers.
     TooManyEnabledLayers {
@@ -630,6 +632,10 @@ impl std::fmt::Display for SceneLayerError {
             Self::MissingInput(input) => write!(formatter, "missing source input {input}"),
             Self::MissingScene(scene) => write!(formatter, "missing source scene {scene}"),
             Self::SourceCycle => formatter.write_str("scene layer source would create a cycle"),
+            Self::SceneKeyInput(input) => write!(
+                formatter,
+                "key input {input} is a Scene input; a key/fill key needs a non-Scene input"
+            ),
             Self::TooManyEnabledLayers { scene } => write!(
                 formatter,
                 "scene {scene} already draws {} enabled layers, the most the compositor draws",
@@ -1759,10 +1765,10 @@ impl Project {
             return Some(InputReference::Stinger(stinger.slot));
         }
         if let Some(scene) = self.scenes.iter().find(|scene| {
-            scene
-                .layers
-                .iter()
-                .any(|layer| layer.source == SourceRef::Input(input))
+            scene.layers.iter().any(|layer| {
+                layer.source == SourceRef::Input(input)
+                    || layer.key.and_then(crate::LayerKey::key_input) == Some(input)
+            })
         }) {
             return Some(InputReference::SceneLayer(scene.id));
         }
@@ -3106,14 +3112,18 @@ impl Project {
         Ok(())
     }
 
-    /// Sets or clears one layer's chroma or luma key (IN-020).
+    /// Sets or clears one layer's chroma, luma, or key/fill key (IN-020,
+    /// SW-008).
     ///
     /// # Errors
     ///
     /// Returns [`SceneLayerError::UnknownScene`] when the scene does not
     /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
-    /// beyond the scene's layer count, and [`SceneLayerError::InvalidKey`]
-    /// when the key breaks its bounds; the layer is unchanged on error.
+    /// beyond the scene's layer count, [`SceneLayerError::InvalidKey`]
+    /// when the key breaks its bounds, [`SceneLayerError::MissingInput`]
+    /// when a key/fill key input does not exist, and
+    /// [`SceneLayerError::SceneKeyInput`] when it is a Scene input; the layer
+    /// is unchanged on error.
     pub fn set_scene_layer_key(
         &mut self,
         scene: SceneId,
@@ -3128,6 +3138,15 @@ impl Project {
                     index,
                     reason,
                 })?;
+            if let Some(input) = key.key_input() {
+                match self.inputs.iter().find(|candidate| candidate.id == input) {
+                    None => return Err(SceneLayerError::MissingInput(input)),
+                    Some(candidate) if matches!(candidate.kind, InputKind::Scene { .. }) => {
+                        return Err(SceneLayerError::SceneKeyInput(input));
+                    }
+                    Some(_) => {}
+                }
+            }
         }
         self.scenes[scene_index].layers[index].key = key;
         Ok(())

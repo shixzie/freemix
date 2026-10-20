@@ -466,9 +466,35 @@ impl<'a> Composer<'a> {
             let Placement::Draw(placed) = (self.place)(layer)? else {
                 continue;
             };
+            // A key/fill layer (SW-008) also binds its key input's picture;
+            // without a drawable picture input the layer is not drawn.
+            let key_feed = match layer.key.and_then(fm_model::LayerKey::key_input) {
+                None => None,
+                Some(input) => match self.feed(SourceRef::Input(input)) {
+                    Some(feed @ Feed::Leaf(leaf))
+                        if self
+                            .input(leaf)
+                            .is_some_and(|input| self.sources.draws(input)) =>
+                    {
+                        Some(feed)
+                    }
+                    _ => continue,
+                },
+            };
             let next = SourceId::new(u64::try_from(sources.len()).ok()?);
             let token = *sources.entry(feed).or_insert(next);
-            composition.push_layer(self.graded(compositor_layer(token, &placed), model.id, layer));
+            let key_token = match key_feed {
+                Some(key_feed) => {
+                    let next = SourceId::new(u64::try_from(sources.len()).ok()?);
+                    Some(*sources.entry(key_feed).or_insert(next))
+                }
+                None => None,
+            };
+            composition.push_layer(self.graded(
+                compositor_layer(token, &placed, key_token),
+                model.id,
+                layer,
+            ));
         }
 
         let (plan, _) = compile_scene(&composition, OutputTarget::Program).ok()?;
@@ -666,7 +692,11 @@ fn bounds_fit(
     mask.is_none_or(|mask| inside(mask.x, mask.y, mask.width, mask.height, width, height))
 }
 
-fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
+fn compositor_layer(
+    token: SourceId,
+    layer: &fm_model::Layer,
+    key_token: Option<SourceId>,
+) -> SourceLayer {
     let geometry = layer.geometry;
     let rotation = match geometry.rotation {
         fm_model::Rotation::Deg0 => Rotation::Deg0,
@@ -696,7 +726,7 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
         );
     }
     if let Some(key) = layer.key {
-        result = result.with_key(compositor_key(key));
+        result = with_layer_key(result, key, key_token);
     }
     for effect in &layer.effects {
         result = result.with_effect(Effect::new(effect.name.clone(), effect.parameters.clone()));
@@ -704,19 +734,66 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
     result
 }
 
-/// `key` as the compositor's chroma or luma key (IN-020).
-fn compositor_key(key: fm_model::LayerKey) -> fm_compositor::Key {
-    match key {
+/// `layer` keyed by `key` (IN-020, SW-008): a chroma or luma key, or a
+/// key/fill key whose matte is `key_token`'s picture, with the key's
+/// refinement when it is not the identity. A key/fill key without a key
+/// token leaves the layer undrawn.
+fn with_layer_key(
+    layer: SourceLayer,
+    key: fm_model::LayerKey,
+    key_token: Option<SourceId>,
+) -> SourceLayer {
+    let layer = match key {
         fm_model::LayerKey::Chroma(chroma) => {
-            fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
+            layer.with_key(fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
                 fm_compositor::Rgba8::new(chroma.red, chroma.green, chroma.blue, u8::MAX),
                 chroma.similarity,
                 chroma.smoothness,
                 chroma.spill,
-            ))
+            )))
         }
-        fm_model::LayerKey::Luma(luma) => fm_compositor::Key::Luma(
+        fm_model::LayerKey::Luma(luma) => layer.with_key(fm_compositor::Key::Luma(
             fm_compositor::LumaKey::new(luma.low, luma.softness, luma.invert).with_high(luma.high),
-        ),
+        )),
+        fm_model::LayerKey::Fill(fill) => {
+            let Some(key_token) = key_token else {
+                return layer.with_enabled(false);
+            };
+            layer.with_key_fill(
+                fm_compositor::KeyFill::new(
+                    key_token,
+                    fm_compositor::LumaKey::new(fill.low, fill.softness, fill.invert)
+                        .with_high(fill.high),
+                )
+                .with_channel(match fill.channel {
+                    fm_model::KeyChannel::Luma => fm_compositor::KeyChannel::Luma,
+                    fm_model::KeyChannel::Alpha => fm_compositor::KeyChannel::Alpha,
+                }),
+            )
+        }
+    };
+    let refinement = key.refinement();
+    if refinement.is_identity() {
+        return layer;
     }
+    let mut compositor = fm_compositor::KeyRefinement::new()
+        .with_clip(refinement.clip_black, refinement.clip_white)
+        .with_choke(refinement.choke)
+        .with_edge_softness(refinement.edge_softness);
+    match refinement.despill {
+        fm_model::KeyDespill::Off => {}
+        fm_model::KeyDespill::Green { strength } => {
+            compositor = compositor.with_despill(fm_compositor::Despill::new(
+                fm_compositor::Backing::Green,
+                strength,
+            ));
+        }
+        fm_model::KeyDespill::Blue { strength } => {
+            compositor = compositor.with_despill(fm_compositor::Despill::new(
+                fm_compositor::Backing::Blue,
+                strength,
+            ));
+        }
+    }
+    layer.with_key_refinement(compositor)
 }

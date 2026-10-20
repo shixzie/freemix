@@ -23,7 +23,9 @@
 //!   [`fm_model::Scene::apply_layer_change`] on the project canvas, and for an
 //!   added layer its source (an input of the show or a registered scene) and
 //!   cycles (a scene may not draw itself, directly, through a nested scene,
-//!   through a Scene input, or through an alias input of any of those). A
+//!   through a Scene input, or through an alias input of any of those);
+//!   for a key/fill key (set, or on an added layer) its key input, which
+//!   must be an input of the show that renders no scene (SW-008). A
 //!   scene holds at most [`MAX_SCENE_LAYERS`] layers after an add, and at
 //!   most [`fm_model::Scene::MAX_RENDERED_LAYERS`] enabled layers (the
 //!   compositor's limit) after an add or enable. A removal is refused
@@ -117,11 +119,20 @@ impl EngineSceneLayerEdit {
             && discriminant(&self.change) == discriminant(&previous.change)
     }
 
-    /// Whether the edit refers to `input` (an added layer drawing it).
+    /// Whether the edit refers to `input` (an added layer drawing it, or a
+    /// key/fill key taking its matte from it).
     #[must_use]
     pub fn names_input(&self, input: InputId) -> bool {
-        matches!(&self.change, SceneLayerChange::Add { layer, .. }
-            if layer.source == SourceRef::Input(input))
+        match &self.change {
+            SceneLayerChange::Add { layer, .. } => {
+                layer.source == SourceRef::Input(input)
+                    || layer.key.and_then(fm_model::LayerKey::key_input) == Some(input)
+            }
+            SceneLayerChange::Key(key) => {
+                key.and_then(fm_model::LayerKey::key_input) == Some(input)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -239,6 +250,39 @@ fn check_source(state: &ShowState, scene: SceneId, source: SourceRef) -> Result<
     Ok(())
 }
 
+/// Checks a key/fill key's key input against the show: an input of the show
+/// that renders no scene (SW-008).
+fn check_key_input(
+    state: &ShowState,
+    field: &str,
+    key: Option<fm_model::LayerKey>,
+) -> Result<(), Rejection> {
+    let Some(input) = key.and_then(fm_model::LayerKey::key_input) else {
+        return Ok(());
+    };
+    if !state.inputs().contains(&input) {
+        return Err(rejection(
+            RejectionCode::NotFound,
+            field,
+            "unknown_input",
+            format!("key input {input} does not exist"),
+        )
+        .with_reason(crate::error::unknown_input_reason(input)));
+    }
+    if state
+        .scene_inputs()
+        .contains_key(&state.input_rendered(input))
+    {
+        return Err(rejection(
+            RejectionCode::InvalidCommand,
+            field,
+            "scene_key_input",
+            format!("key input {input} renders a scene; a key/fill key needs a picture input"),
+        ));
+    }
+    Ok(())
+}
+
 /// Applies one live scene layer edit to the show.
 pub(crate) fn apply(state: &mut ShowState, edit: &EngineSceneLayerEdit) -> Result<(), Rejection> {
     let shown = state.scene(edit.scene).ok_or_else(|| {
@@ -278,7 +322,9 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineSceneLayerEdit) -> Resul
                 ));
             }
             check_source(state, edit.scene, layer.source)?;
+            check_key_input(state, "spec", layer.key)?;
         }
+        SceneLayerChange::Key(key) => check_key_input(state, "key", *key)?,
         SceneLayerChange::Remove => {
             if state
                 .grading()

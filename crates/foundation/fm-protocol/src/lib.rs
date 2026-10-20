@@ -160,11 +160,12 @@ pub use output_failure::{OutputFailure, OutputFailureCode};
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
+pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS};
 pub use scene_layer::{
     MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,
     SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,
-    SceneLayerOperation, WireChromaKey, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
-    WireLayerKey, WireLayerMask, WireLumaKey,
+    SceneLayerOperation, WireChromaKey, WireFillKey, WireKeyDespill, WireKeyRefinement,
+    WireLayerCrop, WireLayerEffect, WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey,
 };
 pub use script::{
     MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange,

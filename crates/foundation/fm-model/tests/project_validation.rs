@@ -2266,6 +2266,7 @@ fn layer_keys_are_bounded_and_set_atomically() {
         high: 200,
         softness: 0,
         invert: false,
+        refinement: fm_model::KeyRefinement::NONE,
     });
     assert_eq!(
         project.set_scene_layer_key(scene, 0, Some(empty_band)),
@@ -2302,6 +2303,164 @@ fn layer_keys_are_bounded_and_set_atomically() {
             .any(|error| error.field == "layers.key"
                 && error.kind == ValidationErrorKind::OutOfRange)
     );
+}
+
+#[test]
+fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
+    let mut project = Project::new(project_id(97), "Key fill", settings());
+    for (id, name, kind) in [
+        (95, "Fill", InputKind::Color),
+        (96, "Key", InputKind::Color),
+        (
+            97,
+            "Nested",
+            InputKind::Scene {
+                scene_id: scene_id(96),
+                audio_source: None,
+            },
+        ),
+    ] {
+        project.add_input(Input {
+            id: input_id(id),
+            name: name.into(),
+            kind,
+            required_capabilities: Vec::new(),
+        });
+    }
+    for (id, name) in [(97, "Keyed"), (96, "Other")] {
+        project.add_scene(Scene {
+            id: scene_id(id),
+            name: name.into(),
+            background: Rgba8::OPAQUE_BLACK,
+            layers: vec![layer("Fill", SourceRef::Input(input_id(95)))],
+            animation: fm_model::SceneAnimation::default(),
+        });
+    }
+    let scene = scene_id(97);
+    let fill = fm_model::FillLayerKey {
+        channel: fm_model::KeyChannel::Alpha,
+        refinement: fm_model::KeyRefinement {
+            clip_black: 10,
+            clip_white: 240,
+            choke: -8,
+            edge_softness: 8,
+            despill: fm_model::KeyDespill::Blue { strength: 200 },
+        },
+        ..fm_model::FillLayerKey::linear(input_id(96))
+    };
+    project
+        .set_scene_layer_key(scene, 0, Some(LayerKey::Fill(fill)))
+        .unwrap();
+    assert_eq!(project.validate(), Ok(()));
+    // The key input is held like a layer source.
+    assert_eq!(
+        project.input_reference(input_id(96)),
+        Some(fm_model::InputReference::SceneLayer(scene))
+    );
+
+    // A missing or Scene key input is refused; the layer keeps its key.
+    assert_eq!(
+        project.set_scene_layer_key(
+            scene,
+            0,
+            Some(LayerKey::Fill(fm_model::FillLayerKey::linear(input_id(5))))
+        ),
+        Err(SceneLayerError::MissingInput(input_id(5)))
+    );
+    assert_eq!(
+        project.set_scene_layer_key(
+            scene,
+            0,
+            Some(LayerKey::Fill(fm_model::FillLayerKey::linear(input_id(97))))
+        ),
+        Err(SceneLayerError::SceneKeyInput(input_id(97)))
+    );
+    assert_eq!(
+        project.scenes()[0].layers[0].key,
+        Some(LayerKey::Fill(fill))
+    );
+
+    // Refinement bounds hold for every key kind.
+    for (refinement, reason) in [
+        (
+            fm_model::KeyRefinement {
+                clip_black: 50,
+                clip_white: 50,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::EmptyClipRange,
+        ),
+        (
+            fm_model::KeyRefinement {
+                choke: 9,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::ChokeOutOfRange,
+        ),
+        (
+            fm_model::KeyRefinement {
+                choke: -9,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::ChokeOutOfRange,
+        ),
+        (
+            fm_model::KeyRefinement {
+                edge_softness: 9,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::EdgeSoftnessOutOfRange,
+        ),
+    ] {
+        for key in [
+            LayerKey::Chroma(ChromaLayerKey::GREEN),
+            LayerKey::Luma(LumaLayerKey::BLACK),
+            LayerKey::Fill(fill),
+        ] {
+            assert_eq!(
+                project.set_scene_layer_key(scene, 0, Some(key.with_refinement(refinement))),
+                Err(SceneLayerError::InvalidKey {
+                    scene,
+                    index: 0,
+                    reason,
+                })
+            );
+        }
+    }
+    let empty_band = fm_model::FillLayerKey {
+        low: 100,
+        high: 100,
+        ..fill
+    };
+    assert_eq!(
+        LayerKey::Fill(empty_band).validate(),
+        Err(LayerKeyError::EmptyLumaBand)
+    );
+
+    // Validation reports a stored key input that is gone or a Scene input.
+    for (key_input, kind) in [
+        (
+            input_id(5),
+            ValidationErrorKind::MissingReference(fm_model::EntityRef::Input(input_id(5))),
+        ),
+        (input_id(97), ValidationErrorKind::OutOfRange),
+    ] {
+        let mut broken = Project::new(project_id(96), "Broken key input", settings());
+        for input in project.inputs() {
+            broken.add_input(input.clone());
+        }
+        let mut keyed = project.scenes()[0].clone();
+        keyed.layers[0].key = Some(LayerKey::Fill(fm_model::FillLayerKey { key_input, ..fill }));
+        broken.add_scene(keyed);
+        broken.add_scene(project.scenes()[1].clone());
+        let errors = broken.validate().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.field == "layers.key.key_input" && error.kind == kind),
+            "{errors:?}"
+        );
+    }
 }
 
 #[test]

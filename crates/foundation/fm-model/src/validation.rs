@@ -1189,6 +1189,24 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
             // preserves them and only execution rejects an unrecognized
             // descriptor. The bounds themselves match the compositor plan.
             validate_layer_effects(layer, entity, errors);
+            if let Some(key_input) = layer.key.and_then(crate::LayerKey::key_input) {
+                match project.inputs().iter().find(|input| input.id == key_input) {
+                    None => errors.push(ValidationError {
+                        entity,
+                        field: "layers.key.key_input",
+                        kind: ValidationErrorKind::MissingReference(EntityRef::Input(key_input)),
+                    }),
+                    // A key/fill key input is a leaf picture, never a scene.
+                    Some(input) if matches!(input.kind, crate::InputKind::Scene { .. }) => {
+                        errors.push(ValidationError {
+                            entity,
+                            field: "layers.key.key_input",
+                            kind: ValidationErrorKind::OutOfRange,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
             match layer.source {
                 SourceRef::Input(id) if !project.inputs().iter().any(|input| input.id == id) => {
                     errors.push(ValidationError {

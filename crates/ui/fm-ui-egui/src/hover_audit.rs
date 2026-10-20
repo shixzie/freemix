@@ -2560,7 +2560,8 @@ pub(crate) fn designer_fixture(operator: bool, locked: bool) -> (StudioUiState, 
 /// The layer designer (SW-006): nothing selected, one layer selected with
 /// a crop and an inverted mask in the draft (every field and the draft
 /// buttons enabled, a chroma key, and one effect of every kind), the luma
-/// keyed layer with a full effect list (Add effect refused), two layers
+/// keyed layer with a full effect list (Add effect refused), the same layer
+/// key/filled from another input with green despill (SW-008), two layers
 /// selected (their effects differ), the project padlock, and a viewer.
 fn designer_scenes(locale: Locale) -> Vec<Scene> {
     use fm_ui_model::scene_designer::Field;
@@ -2591,6 +2592,12 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
             document.add_effect("flip");
         }
     };
+    let fill = |shell: &mut StudioShell| {
+        let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
+        document.select(scene_layer(2), false);
+        document.set_key_fill(wire(1));
+        document.set_field(Field::KeyDespill, 1.0);
+    };
     let both = |shell: &mut StudioShell| {
         let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
         document.select(scene_layer(1), false);
@@ -2612,6 +2619,7 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
         ("operator/designer", &unchanged, operator()),
         ("operator/designer-edited", &edited, operator()),
         ("operator/designer-luma", &luma, operator()),
+        ("operator/designer-fill", &fill, operator()),
         ("operator/designer-multi", &both, operator()),
         ("operator/designer-locked", &edited, locked),
         ("viewer/designer", &both, ready(false, Variant::default())),

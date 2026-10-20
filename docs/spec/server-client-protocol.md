@@ -2451,6 +2451,51 @@ a lower-third timer and a score update can run side by side.
   `ScriptRun(...)` lines print `run=` and, while waiting, `line=`.
 - 2.68 is refused.
 
+Protocol 2.70 adds key/fill keys and matte refinements to scene layers
+(SW-008, schema 61).
+
+- A layer key is now `chroma`, `luma`, or `fill`: a key/fill key takes its
+  matte from another input's picture (`key_input`, an input of the show
+  that renders no scene), from its luma or its alpha (`channel`), shaped by
+  `low`, `high`, `softness`, and `invert` like a luma key. Every key also
+  carries a refinement: `clip_black < clip_white` (bytes), `choke` in
+  `-8..=8` (positive shrinks the kept area, negative grows it),
+  `edge_softness` in `0..=8` pixels (a box mean over the matte), and
+  `despill` `off`, `green`, or `blue` with a `despill_strength` byte (`0`
+  when off). The identity refinement is `0 255 0 0 off`.
+- `scene_layer_key_set` takes `kind=fill` with `key_input` (decimal),
+  `channel` (`luma|alpha`), `low`, `high`, `softness`, `invert`, and every
+  kind takes the refinement fields `clip_black`, `clip_white`, `choke`,
+  `edge_softness`, `despill`, `despill_strength` (all required). A key
+  input that does not exist is refused `not_found` (field `key`,
+  `unknown_input`); one that renders a scene `invalid_command` (field `key`,
+  `scene_key_input`). An added layer's key input is checked the same way
+  (field `spec`).
+- In the layout encoding each key is followed by
+  `refine = clip_black clip_white (bytes) choke (zigzag) edge_softness
+  despill (0 off, 1 green, 2 blue) strength (bytes)`, and key kind `2` is
+  `key_input (varint) channel (0 luma, 1 alpha) low high softness invert`.
+  `MAX_SCENE_LAYOUT_BYTES` is now **44 KiB** raw and a command or event
+  field holds at most **60 KiB** encoded.
+- Every renderer (the CPU compositor and the native GPU compositor) pulls
+  the matte (chroma, luma, or the key input's luma/alpha), then clips,
+  chokes, softens, and multiplies it by the mask; despill uses the refined
+  matte. A key/fill layer whose key input draws no picture is not drawn.
+- Durability (schema 61): each stored key carries a required
+  `"refinement": {"clip_black", "clip_white", "choke", "edge_softness",
+  "despill": {"type": "off"} | {"type": "green"|"blue", "strength"}}`, and
+  `{"type": "fill", "key_input", "channel": "luma"|"alpha", "low", "high",
+  "softness", "invert", "refinement"}` is a new key type. Validation refuses
+  a key input that is missing or a Scene input.
+- Studio's layer designer offers Key/fill (with its key input and Use key
+  alpha) and a Matte group (clip black and white, choke, edge softness,
+  despill and its strength) for every key. The CLI's `scene-layer-key` and
+  `remote-scene-layer-key` take `fill <key-input> luma|alpha <low> <high>
+  <softness> on|off` and the options `--clip <black> <white>`,
+  `--choke <n>`, `--edge-softness <n>`, and `--despill green|blue
+  <strength>`.
+- 2.69 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

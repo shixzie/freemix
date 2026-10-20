@@ -20,8 +20,9 @@ use std::collections::BTreeSet;
 
 use fm_protocol::{
     MAX_SCENE_LAYER_EFFECTS, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit as WireSceneLayerEdit,
-    SceneLayerOperation, WireChromaKey, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
-    WireLayerKey, WireLayerMask, WireLumaKey, WireSceneId, WireSceneLayerId, WireSceneLayerSource,
+    SceneLayerOperation, WireChromaKey, WireFillKey, WireInputId, WireKeyDespill,
+    WireKeyRefinement, WireLayerCrop, WireLayerEffect, WireLayerGeometry, WireLayerKey,
+    WireLayerMask, WireLumaKey, WireSceneId, WireSceneLayerId, WireSceneLayerSource,
     WireSceneLayout,
 };
 
@@ -50,7 +51,8 @@ pub struct DesignLayer {
     /// Drawing order key: layers draw by ascending z-order, ties in list
     /// order.
     pub z_order: i32,
-    /// The chroma or luma key, if any (Protocol 2.43).
+    /// The chroma, luma, or key/fill key, if any (Protocol 2.43; key/fill
+    /// and refinements 2.70).
     pub key: Option<WireLayerKey>,
     /// The ordered video effects, at most [`MAX_SCENE_LAYER_EFFECTS`].
     pub effects: Vec<WireLayerEffect>,
@@ -65,6 +67,7 @@ pub const CHROMA_GREEN: WireChromaKey = WireChromaKey {
     similarity: 64,
     smoothness: 32,
     spill: 0,
+    refinement: fm_protocol::WireKeyRefinement::NONE,
 };
 
 /// The key a layer gets when the operator picks a luma key: removes black
@@ -74,7 +77,44 @@ pub const LUMA_BLACK: WireLumaKey = WireLumaKey {
     high: 255,
     softness: 32,
     invert: false,
+    refinement: fm_protocol::WireKeyRefinement::NONE,
 };
+
+/// The key a layer gets when the operator picks a key/fill key with
+/// `key_input`: a linear key (the matte is the key input's luma).
+#[must_use]
+pub const fn fill_linear(key_input: WireInputId) -> WireFillKey {
+    WireFillKey {
+        key_input,
+        alpha_channel: false,
+        low: 0,
+        high: 255,
+        softness: 255,
+        invert: false,
+        refinement: WireKeyRefinement::NONE,
+    }
+}
+
+/// Default despill strength when despill is first switched on.
+pub const DEFAULT_DESPILL_STRENGTH: u8 = 255;
+
+/// `key` with `refinement`.
+const fn with_refinement(key: WireLayerKey, refinement: WireKeyRefinement) -> WireLayerKey {
+    match key {
+        WireLayerKey::Chroma(mut chroma) => {
+            chroma.refinement = refinement;
+            WireLayerKey::Chroma(chroma)
+        }
+        WireLayerKey::Luma(mut luma) => {
+            luma.refinement = refinement;
+            WireLayerKey::Luma(luma)
+        }
+        WireLayerKey::Fill(mut fill) => {
+            fill.refinement = refinement;
+            WireLayerKey::Fill(fill)
+        }
+    }
+}
 
 /// The inclusive range of every parameter of effect kind `name`, in
 /// order, or `None` for a kind the protocol does not know.
@@ -172,14 +212,30 @@ pub enum Field {
     KeySmoothness,
     /// Chroma key spill suppression, `0..=255`.
     KeySpill,
-    /// Luma key lower threshold, below the upper one (luma keys only).
+    /// Luma (or key/fill matte) lower threshold, below the upper one
+    /// (luma and key/fill keys only).
     LumaLow,
-    /// Luma key upper threshold, above the lower one.
+    /// Luma (or key/fill matte) upper threshold, above the lower one.
     LumaHigh,
-    /// Luma key ramp width, `0..=255`.
+    /// Luma (or key/fill matte) ramp width, `0..=255`.
     LumaSoftness,
-    /// Whether the luma key keeps the band (1) or removes it (0).
+    /// Whether the luma or key/fill key keeps the band (1) or removes it
+    /// (0).
     LumaInvert,
+    /// Whether a key/fill key reads its key input's alpha (1) or luma (0).
+    FillAlpha,
+    /// Key refinement clip black, below clip white (any key).
+    KeyClipBlack,
+    /// Key refinement clip white, above clip black.
+    KeyClipWhite,
+    /// Key refinement choke (positive) or spread (negative), pixels.
+    KeyChoke,
+    /// Key refinement edge softness radius, pixels.
+    KeyEdgeSoftness,
+    /// Key despill backing: 0 off, 1 green, 2 blue.
+    KeyDespill,
+    /// Key despill strength, `0..=255` (despill on only).
+    KeyDespillStrength,
     /// Parameter `parameter` of the effect at list position `effect`,
     /// within its kind's range (a `levels` black stays below its white).
     EffectParameter {
@@ -857,16 +913,60 @@ impl SceneLayoutDocument {
                 })
             }
             Field::LumaLow | Field::LumaHigh | Field::LumaSoftness | Field::LumaInvert => {
-                let luma = match layer.key {
-                    Some(WireLayerKey::Luma(luma)) => luma,
-                    _ => LUMA_BLACK,
+                let (low, high, softness, invert) = match layer.key {
+                    Some(WireLayerKey::Fill(fill)) => {
+                        (fill.low, fill.high, fill.softness, fill.invert)
+                    }
+                    Some(WireLayerKey::Luma(luma)) => {
+                        (luma.low, luma.high, luma.softness, luma.invert)
+                    }
+                    _ => (
+                        LUMA_BLACK.low,
+                        LUMA_BLACK.high,
+                        LUMA_BLACK.softness,
+                        LUMA_BLACK.invert,
+                    ),
                 };
                 f64::from(match field {
-                    Field::LumaLow => luma.low,
-                    Field::LumaHigh => luma.high,
-                    Field::LumaSoftness => luma.softness,
-                    _ => u8::from(luma.invert),
+                    Field::LumaLow => low,
+                    Field::LumaHigh => high,
+                    Field::LumaSoftness => softness,
+                    _ => u8::from(invert),
                 })
+            }
+            Field::FillAlpha => f64::from(u8::from(matches!(
+                layer.key,
+                Some(WireLayerKey::Fill(WireFillKey {
+                    alpha_channel: true,
+                    ..
+                }))
+            ))),
+            Field::KeyClipBlack
+            | Field::KeyClipWhite
+            | Field::KeyChoke
+            | Field::KeyEdgeSoftness
+            | Field::KeyDespill
+            | Field::KeyDespillStrength => {
+                let refinement = layer
+                    .key
+                    .map_or(WireKeyRefinement::NONE, |key| key.refinement());
+                match field {
+                    Field::KeyClipBlack => f64::from(refinement.clip_black),
+                    Field::KeyClipWhite => f64::from(refinement.clip_white),
+                    Field::KeyChoke => f64::from(refinement.choke),
+                    Field::KeyEdgeSoftness => f64::from(refinement.edge_softness),
+                    Field::KeyDespill => f64::from(match refinement.despill {
+                        WireKeyDespill::Off => 0_u8,
+                        WireKeyDespill::Green { .. } => 1,
+                        WireKeyDespill::Blue { .. } => 2,
+                    }),
+                    _ => f64::from(match refinement.despill {
+                        WireKeyDespill::Off => 0,
+                        WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => {
+                            strength
+                        }
+                    }),
+                }
             }
             Field::EffectParameter { effect, parameter } => f64::from(
                 *layer
@@ -987,19 +1087,49 @@ impl SceneLayoutDocument {
     /// Gives every selected layer no key (`None`), a chroma key
     /// (`Some(true)`), or a luma key (`Some(false)`) as one step, keeping
     /// a key already of the chosen kind and starting any other at
-    /// [`CHROMA_GREEN`] or [`LUMA_BLACK`].
+    /// [`CHROMA_GREEN`] or [`LUMA_BLACK`] with the previous key's
+    /// refinement.
     pub fn set_key_kind(&mut self, chroma: Option<bool>) -> bool {
         if self.selection.is_empty() {
             return false;
         }
         self.edit_selected(EditLabel::Key, |layer| {
+            let refinement = layer
+                .key
+                .map_or(WireKeyRefinement::NONE, |key| key.refinement());
             layer.key = match (chroma, layer.key) {
                 (None, _) => None,
                 (Some(true), Some(key @ WireLayerKey::Chroma(_)))
                 | (Some(false), Some(key @ WireLayerKey::Luma(_))) => Some(key),
-                (Some(true), _) => Some(WireLayerKey::Chroma(CHROMA_GREEN)),
-                (Some(false), _) => Some(WireLayerKey::Luma(LUMA_BLACK)),
+                (Some(true), _) => Some(with_refinement(
+                    WireLayerKey::Chroma(CHROMA_GREEN),
+                    refinement,
+                )),
+                (Some(false), _) => {
+                    Some(with_refinement(WireLayerKey::Luma(LUMA_BLACK), refinement))
+                }
             };
+        })
+    }
+
+    /// Gives every selected layer a key/fill key (SW-008) whose matte comes
+    /// from `key_input`, as one step: a key/fill key keeps its matte
+    /// settings and only changes input; any other starts at
+    /// [`fill_linear`] with the previous key's refinement.
+    pub fn set_key_fill(&mut self, key_input: WireInputId) -> bool {
+        if self.selection.is_empty() {
+            return false;
+        }
+        self.edit_selected(EditLabel::Key, |layer| {
+            layer.key = Some(match layer.key {
+                Some(WireLayerKey::Fill(fill)) => {
+                    WireLayerKey::Fill(WireFillKey { key_input, ..fill })
+                }
+                other => with_refinement(
+                    WireLayerKey::Fill(fill_linear(key_input)),
+                    other.map_or(WireKeyRefinement::NONE, |key| key.refinement()),
+                ),
+            });
         })
     }
 
@@ -1452,20 +1582,87 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
             }
         }
         Field::LumaLow | Field::LumaHigh | Field::LumaSoftness | Field::LumaInvert => {
-            if let Some(WireLayerKey::Luma(luma)) = &mut layer.key {
-                match field {
-                    Field::LumaLow => luma.low = to_u8(value, 0, luma.high.saturating_sub(1)),
-                    Field::LumaHigh => {
-                        luma.high = to_u8(value, luma.low.saturating_add(1), u8::MAX);
-                    }
-                    Field::LumaSoftness => luma.softness = to_u8(value, 0, u8::MAX),
-                    _ => luma.invert = value >= 0.5,
-                }
+            let (low, high, softness, invert) = match &mut layer.key {
+                Some(WireLayerKey::Luma(luma)) => (
+                    &mut luma.low,
+                    &mut luma.high,
+                    &mut luma.softness,
+                    &mut luma.invert,
+                ),
+                Some(WireLayerKey::Fill(fill)) => (
+                    &mut fill.low,
+                    &mut fill.high,
+                    &mut fill.softness,
+                    &mut fill.invert,
+                ),
+                _ => return,
+            };
+            match field {
+                Field::LumaLow => *low = to_u8(value, 0, high.saturating_sub(1)),
+                Field::LumaHigh => *high = to_u8(value, low.saturating_add(1), u8::MAX),
+                Field::LumaSoftness => *softness = to_u8(value, 0, u8::MAX),
+                _ => *invert = value >= 0.5,
             }
+        }
+        Field::FillAlpha => {
+            if let Some(WireLayerKey::Fill(fill)) = &mut layer.key {
+                fill.alpha_channel = value >= 0.5;
+            }
+        }
+        Field::KeyClipBlack
+        | Field::KeyClipWhite
+        | Field::KeyChoke
+        | Field::KeyEdgeSoftness
+        | Field::KeyDespill
+        | Field::KeyDespillStrength => {
+            let Some(key) = layer.key else {
+                return;
+            };
+            let mut refinement = key.refinement();
+            apply_refinement_field(&mut refinement, field, value);
+            layer.key = Some(with_refinement(key, refinement));
         }
         Field::EffectParameter { effect, parameter } => {
             set_effect_parameter(layer, usize::from(effect), usize::from(parameter), value);
         }
+    }
+}
+
+/// Sets one refinement `field` to `value`, clamped to its bounds (clip
+/// black stays below clip white).
+fn apply_refinement_field(refinement: &mut WireKeyRefinement, field: Field, value: f64) {
+    let choke_limit = i32::from(fm_protocol::MAX_KEY_CHOKE);
+    match field {
+        Field::KeyClipBlack => {
+            refinement.clip_black = to_u8(value, 0, refinement.clip_white.saturating_sub(1));
+        }
+        Field::KeyClipWhite => {
+            refinement.clip_white = to_u8(value, refinement.clip_black.saturating_add(1), u8::MAX);
+        }
+        Field::KeyChoke => {
+            refinement.choke =
+                i8::try_from(to_i32(value).clamp(-choke_limit, choke_limit)).unwrap_or(0);
+        }
+        Field::KeyEdgeSoftness => {
+            refinement.edge_softness = to_u8(value, 0, fm_protocol::MAX_KEY_EDGE_SOFTNESS);
+        }
+        Field::KeyDespill => {
+            let strength = match refinement.despill {
+                WireKeyDespill::Off => DEFAULT_DESPILL_STRENGTH,
+                WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => strength,
+            };
+            refinement.despill = match to_u8(value, 0, 2) {
+                0 => WireKeyDespill::Off,
+                1 => WireKeyDespill::Green { strength },
+                _ => WireKeyDespill::Blue { strength },
+            };
+        }
+        _ => match &mut refinement.despill {
+            WireKeyDespill::Off => {}
+            WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => {
+                *strength = to_u8(value, 0, u8::MAX);
+            }
+        },
     }
 }
 

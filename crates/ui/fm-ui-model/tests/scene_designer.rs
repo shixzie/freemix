@@ -660,6 +660,7 @@ fn the_designer_starts_from_the_replicated_key_and_effects() {
         high: 200,
         softness: 8,
         invert: true,
+        refinement: fm_protocol::WireKeyRefinement::NONE,
     }));
     keyed.layers[1].effects = vec![effect("saturation", &[-40])];
     assert_ne!(layout_stamp(&keyed), layout_stamp(&layout()));
@@ -764,6 +765,7 @@ fn key_edits_send_set_key_and_a_scrub_folds_into_one_gesture() {
             high: 100,
             softness: LUMA_BLACK.softness,
             invert: true,
+            refinement: fm_protocol::WireKeyRefinement::NONE,
         }))
     );
     assert!(!document.set_key(Some(WireLayerKey::Luma(WireLumaKey {
@@ -771,6 +773,7 @@ fn key_edits_send_set_key_and_a_scrub_folds_into_one_gesture() {
         high: 9,
         softness: 0,
         invert: false,
+        refinement: fm_protocol::WireKeyRefinement::NONE,
     }))));
     // Removing the key is one step and one `SetKey(None)`.
     document.take_live_edits();
@@ -779,6 +782,105 @@ fn key_edits_send_set_key_and_a_scrub_folds_into_one_gesture() {
     assert_eq!(cleared.len(), 1);
     assert_eq!(cleared[0].operation, SceneLayerOperation::SetKey(None));
     assert!(!cleared[0].continues);
+}
+
+/// SW-008: a key/fill key takes its matte from another input, keeps its
+/// matte settings when only the input changes, and every key carries the
+/// matte refinements, clamped to their bounds, into the live edit and the
+/// exported command.
+#[test]
+fn key_fill_and_matte_refinements_edit_live_and_export() {
+    let key_input = WireInputId::from_domain(InputId::new(NonZeroU128::new(7).unwrap()));
+    let other = WireInputId::from_domain(InputId::new(NonZeroU128::new(8).unwrap()));
+    let mut document = SceneLayoutDocument::new(scene(), &layout());
+    document.select(layer_id(2), false);
+    // A chroma key's refinement carries over to the key/fill key.
+    assert!(document.set_key_kind(Some(true)));
+    assert!(document.set_field(Field::KeyChoke, 3.0));
+    assert!(document.set_key_fill(key_input));
+    let Some(WireLayerKey::Fill(fill)) = document.layer(layer_id(2)).unwrap().key else {
+        panic!("a key/fill key");
+    };
+    assert_eq!(
+        fill,
+        fm_protocol::WireFillKey {
+            refinement: fm_protocol::WireKeyRefinement {
+                choke: 3,
+                ..fm_protocol::WireKeyRefinement::NONE
+            },
+            ..fm_ui_model::scene_designer::fill_linear(key_input)
+        }
+    );
+    // Luma fields and the alpha switch edit the key/fill key.
+    assert!(document.set_field(Field::LumaLow, 30.0));
+    assert!(document.set_field(Field::FillAlpha, 1.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::FillAlpha),
+        Some(1.0)
+    );
+    // Changing only the input keeps the matte settings.
+    assert!(document.set_key_fill(other));
+    let Some(WireLayerKey::Fill(fill)) = document.layer(layer_id(2)).unwrap().key else {
+        panic!("a key/fill key");
+    };
+    assert_eq!(
+        (fill.key_input, fill.low, fill.alpha_channel),
+        (other, 30, true)
+    );
+    assert!(!document.set_key_fill(other));
+
+    // Refinements clamp: choke within 8 either way, edge softness within
+    // 8, clip black below clip white.
+    assert!(document.set_field(Field::KeyChoke, -50.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::KeyChoke),
+        Some(-8.0)
+    );
+    assert!(document.set_field(Field::KeyEdgeSoftness, 40.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::KeyEdgeSoftness),
+        Some(8.0)
+    );
+    assert!(document.set_field(Field::KeyClipWhite, 100.0));
+    assert!(document.set_field(Field::KeyClipBlack, 200.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::KeyClipBlack),
+        Some(99.0)
+    );
+    // Despill starts at full strength; its strength edits only while on.
+    assert!(!document.set_field(Field::KeyDespillStrength, 10.0));
+    assert!(document.set_field(Field::KeyDespill, 2.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::KeyDespillStrength),
+        Some(255.0)
+    );
+    assert!(document.set_field(Field::KeyDespillStrength, 128.0));
+    let live = document.take_live_edits();
+    let Some(SceneLayerOperation::SetKey(Some(sent))) =
+        live.last().map(|edit| edit.operation.clone())
+    else {
+        panic!("a live SetKey");
+    };
+    assert_eq!(
+        sent.refinement(),
+        fm_protocol::WireKeyRefinement {
+            clip_black: 99,
+            clip_white: 100,
+            choke: -8,
+            edge_softness: 8,
+            despill: fm_protocol::WireKeyDespill::Blue { strength: 128 },
+        }
+    );
+    assert!(sent.refinement().is_valid());
+    let script = document.cli_script("show.freemix");
+    assert!(script.lines().any(|line| line
+        == "freemix-cli scene-layer-key show.freemix 100 1 fill 8 alpha 30 255 255 off \
+            --clip 99 100 --choke -8 --edge-softness 8 --despill blue 128"));
+    // Back to a luma key: the refinement stays, the key input goes.
+    assert!(document.set_key_kind(Some(false)));
+    let key = document.layer(layer_id(2)).unwrap().key.unwrap();
+    assert!(matches!(key, WireLayerKey::Luma(_)));
+    assert_eq!(key.refinement(), sent.refinement());
 }
 
 /// IN-020: effect list edits send the whole list as `SetEffects`; a
@@ -923,6 +1025,7 @@ fn keys_and_effects_export_as_freemix_cli_commands() {
             high: 240,
             softness: 5,
             invert: true,
+            refinement: fm_protocol::WireKeyRefinement::NONE,
         })),
     };
     assert_eq!(
