@@ -723,7 +723,22 @@ impl LiveStripDsp {
         let mut start = 0;
         while start < samples {
             let length = SUB_BLOCK.min(samples - start);
+            // A filter retuned by a glide blends from its previous
+            // coefficients sample by sample: a coefficient step at the
+            // sub-block boundary would kink the waveform (zipper noise).
+            let high_pass_from = self.high_pass_coefficients;
+            let bands_from = self.band_coefficients;
             self.apply_glides(false);
+            let high_pass_ramp = (high_pass_from != self.high_pass_coefficients)
+                .then_some((high_pass_from, self.high_pass_coefficients));
+            let band_ramps: [Option<(BiquadCoefficients, BiquadCoefficients)>;
+                STRIP_EQ_BAND_COUNT] = core::array::from_fn(|band| {
+                (bands_from[band] != self.band_coefficients[band])
+                    .then_some((bands_from[band], self.band_coefficients[band]))
+            });
+            let ramping = high_pass_ramp.is_some() || band_ramps.iter().any(Option::is_some);
+            #[allow(clippy::cast_precision_loss)]
+            let ramp_length = length as f64;
             // A stage fully off is skipped; it re-enters with clear state.
             let mut running = [false; FADES];
             for (stage, fade) in self.fades.iter_mut().enumerate() {
@@ -751,6 +766,18 @@ impl LiveStripDsp {
                     for (offset, sample) in buffer.iter_mut().enumerate() {
                         let dry = *sample;
                         let mut value = dry;
+                        if ramping {
+                            #[allow(clippy::cast_precision_loss)]
+                            let fraction = (offset + 1) as f64 / ramp_length;
+                            if let Some((from, to)) = high_pass_ramp {
+                                channel.high_pass.retune(from.blend(to, fraction));
+                            }
+                            for (filter, ramp) in channel.bands.iter_mut().zip(&band_ramps) {
+                                if let Some((from, to)) = ramp {
+                                    filter.retune(from.blend(*to, fraction));
+                                }
+                            }
+                        }
                         if running[POLARITY] {
                             // Ramps the sign: +1 at rest normal, -1 inverted.
                             value *= 1.0 - 2.0 * mixes[POLARITY][offset];
@@ -929,6 +956,39 @@ mod tests {
         // Settled on the new shape: a high shelf leaves 60 Hz alone.
         let settled = peak(&after[0][40_000..]);
         assert!((settled - 0.05).abs() < 0.01, "{settled}");
+    }
+
+    #[test]
+    fn a_shelf_gain_glide_has_no_sub_block_steps() {
+        for kind in [EqBandKind::LowShelf, EqBandKind::HighShelf] {
+            let mut settings = StripDspSettings::DEFAULT;
+            settings.eq.enabled = true;
+            for band in &mut settings.eq.bands {
+                band.enabled = false;
+            }
+            settings.eq.bands[0].enabled = true;
+            settings.eq.bands[0].kind = kind;
+            settings.eq.bands[0].frequency_hz = 200;
+            let mut dsp = LiveStripDsp::new(48_000.0, 1, &settings).unwrap();
+            let input = sine(60.0, 0.05, 48_000);
+            let mut planes = vec![input[..4_800].to_vec()];
+            dsp.process(4_800, &mut InPlacePlanes(&mut planes));
+            settings.eq.bands[0].gain_millidb = 18_000;
+            dsp.set_settings(&settings).unwrap();
+            let mut after = vec![input[4_800..].to_vec()];
+            dsp.process(43_200, &mut InPlacePlanes(&mut after));
+            let mut joined = planes[0].clone();
+            joined.extend_from_slice(&after[0]);
+            // A sine's second difference is at most a * w^2; a coefficient
+            // step shows up as a far larger kink.
+            let omega = core::f32::consts::TAU * 60.0 / 48_000.0;
+            let bound = 10.0 * peak(&joined) * omega * omega;
+            let kink = joined
+                .windows(3)
+                .map(|three| (three[2] - 2.0 * three[1] + three[0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(kink < bound, "{kind:?}: {kink} vs {bound}");
+        }
     }
 
     #[test]

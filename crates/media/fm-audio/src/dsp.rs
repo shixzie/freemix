@@ -227,6 +227,21 @@ impl Default for BiquadCoefficients {
 }
 
 impl BiquadCoefficients {
+    /// The coefficients `fraction` (0 to 1) of the way from `self` to
+    /// `other`. Stable biquads form a convex set (the stability triangle of
+    /// `a1` and `a2`), so a blend of two stable sections is stable.
+    #[must_use]
+    pub(crate) fn blend(self, other: Self, fraction: f64) -> Self {
+        let mix = |from: f64, to: f64| from + (to - from) * fraction;
+        Self {
+            b0: mix(self.b0, other.b0),
+            b1: mix(self.b1, other.b1),
+            b2: mix(self.b2, other.b2),
+            a1: mix(self.a1, other.a1),
+            a2: mix(self.a2, other.a2),
+        }
+    }
+
     /// Unity passthrough coefficients.
     #[must_use]
     pub const fn identity() -> Self {
