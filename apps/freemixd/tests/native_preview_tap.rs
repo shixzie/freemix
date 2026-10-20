@@ -162,6 +162,7 @@ impl DaemonProcess {
             .arg("serve")
             .arg(project)
             .arg("--native-media")
+            .env("FREEMIXD_PACING_TRACE", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -606,14 +607,88 @@ fn native_preview_tap_shows_and_follows_preview_only_when_subscribed_without_lat
     for field in ["preview_monitor_frames_failed", "monitor_frames_failed"] {
         assert_eq!(telemetry_field(&tapped, field), 0.0, "{field}: {tapped}");
     }
-    // Both shows ran at once on the same host, so a loaded host delays
-    // both alike; the taps must not add Program lateness of their own.
+    // The taps never hold the frame loop back: their readbacks do not wait
+    // for the GPU, so the typical frame starts on time but for what the
+    // frames before it overran (see `loop_stalls`), however loaded the host.
     let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
+    let traced = traced_frames(&tapped);
+    let stall_p50 = percentile(&loop_stalls(&traced), 50);
+    assert!(
+        stall_p50 < frame_ms / 2.0,
+        "the monitor taps held the frame loop back: stall p50 {stall_p50:.2} ms"
+    );
+    // Both shows ran at once on the same host, so a loaded host delays
+    // both alike; on a host that keeps pace with both shows (their frames,
+    // monitor work included, realize in under half an interval) the taps add
+    // no Program lateness of their own. On one whose cores are all busy the
+    // tapped show's bounded monitor work (paced once the loop is behind)
+    // still costs CPU the host lacks, and only the stalls above say
+    // anything, as for sessions in native_sessions.
+    let realize_p95 = |frames: &[(f64, f64)]| {
+        let realize: Vec<f64> = frames.iter().map(|&(_, realize)| realize).collect();
+        percentile(&realize, 95)
+    };
+    let keeps_pace = realize_p95(&traced) < frame_ms / 2.0
+        && realize_p95(&traced_frames(&untapped)) < frame_ms / 2.0;
     let p50 = telemetry_field(&tapped, "host_lateness_p50_ms");
     let baseline_p50 = telemetry_field(&untapped, "host_lateness_p50_ms");
     assert!(
-        p50 <= baseline_p50 + frame_ms / 2.0,
+        !keeps_pace || p50 <= baseline_p50 + frame_ms / 2.0,
         "the monitor taps made Program frames late: host lateness p50 {p50} ms, \
          {baseline_p50} ms without a subscriber"
     );
+}
+
+/// Every Program frame of the shutdown `FREEMIXD_PACING_TRACE` record, in
+/// frame order: how late it started and how long realizing it took, in
+/// milliseconds.
+fn traced_frames(stderr: &str) -> Vec<(f64, f64)> {
+    let record = stderr
+        .lines()
+        .find(|line| line.starts_with("FREEMIXD_PACING_TRACE\t"))
+        .unwrap_or_else(|| panic!("no pacing trace: {stderr}"));
+    record
+        .split('\t')
+        .find_map(|field| field.strip_prefix("samples="))
+        .unwrap_or_else(|| panic!("no samples in {record}"))
+        .split(',')
+        .filter(|sample| !sample.is_empty())
+        .map(|sample| {
+            let mut fields = sample.split(':');
+            let mut milliseconds = || fields.next().unwrap().parse::<f64>().unwrap() / 1_000.0;
+            (milliseconds(), milliseconds())
+        })
+        .collect()
+}
+
+/// How long the frame loop held each traced frame back on its own: the
+/// frame's lateness less what realizing the frame before it overran the
+/// interval by.
+fn loop_stalls(frames: &[(f64, f64)]) -> Vec<f64> {
+    let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
+    frames
+        .iter()
+        .enumerate()
+        .map(|(index, &(lateness, _))| {
+            let overrun = index
+                .checked_sub(1)
+                .map_or(0.0, |previous| {
+                    let (lateness, realize) = frames[previous];
+                    lateness + realize - frame_ms
+                })
+                .max(0.0);
+            (lateness - overrun).max(0.0)
+        })
+        .collect()
+}
+
+/// The `percent` percentile of `samples` (nearest rank); 0 for none.
+fn percentile(samples: &[f64], percent: usize) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = (percent * sorted.len()).div_ceil(100);
+    sorted[rank.clamp(1, sorted.len()) - 1]
 }
