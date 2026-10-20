@@ -275,6 +275,11 @@ impl NativeScreenCapture {
             if source.config != *config {
                 source.config = config.clone();
                 source.resolved = None;
+                // The cursor, rate, and slate are options of the running
+                // capture, not of its region: a capture of an unchanged
+                // region restarts so a changed option takes effect.
+                source.receiver = None;
+                source.live_connection = None;
             }
             if closed && !source.closed {
                 source.lose(Target::Unknown);
@@ -702,6 +707,27 @@ mod tests {
         assert_eq!(status.window_id, Some(9));
         assert_eq!(status.reopens, 2);
         assert_ne!(status.state, ScreenCaptureState::TargetGone);
+    }
+
+    #[test]
+    fn a_changed_cursor_or_rate_restarts_a_capture_of_the_same_region() {
+        let listings = Arc::new(Mutex::new(listing(vec![window(7, 40)])));
+        let mut capture = capture(Arc::clone(&listings), false);
+        let mut frame = 0;
+        settle(&mut capture, &mut frame, |source| {
+            matches!(source.target, Target::Captured(_)) && source.receiver.is_some()
+        });
+        assert_eq!(capture.sources[&input()].restarts, 0);
+        // The window stays where it is; only the cursor and rate change.
+        let changed = ScreenCaptureConfig {
+            cursor: false,
+            fps: 10,
+            ..window_config()
+        };
+        capture.sync(&[(input(), changed)], |_| false);
+        settle(&mut capture, &mut frame, |source| {
+            source.restarts == 1 && source.receiver.is_some()
+        });
     }
 
     #[test]
