@@ -159,8 +159,9 @@ impl SwitcherState {
     /// frame loop until its realization arrives (Protocol 2.86), and a Cut,
     /// transition, or Preview selection is refused until then.
     #[must_use]
-    pub fn bus_change_in_flight(&self) -> bool {
-        self.desired != self.realized
+    pub const fn bus_change_in_flight(&self) -> bool {
+        self.desired.program.get().get() != self.realized.program.get().get()
+            || self.desired.preview.get().get() != self.realized.preview.get().get()
     }
 }
 

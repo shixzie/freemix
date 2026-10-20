@@ -78,6 +78,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("hay una transición manual con T-bar en curso"),
     ),
     (
+        Msg::ReasonTransitionInFlight,
+        t("hay una transición en curso; espera a que termine"),
+    ),
+    (
         Msg::ReasonStateDisallows,
         t("el estado actual no lo permite"),
     ),

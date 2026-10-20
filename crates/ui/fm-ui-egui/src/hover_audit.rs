@@ -6,6 +6,7 @@
 //! The audit renders the real [`StudioShell`] headlessly over rich fixtures
 //! (each side tab, including the Media tab's transport bars, every dialog, the advanced controls behind each
 //! disclosure, a session without permissions, a live manual transition, a
+//! timed transition in flight, a
 //! locked project, Fade-to-Black and a running playlist, toasts, the input
 //! lifecycle (colour labels, badges, the category filter, the tile menu's
 //! Category and Colour label submenus, and the Replace source, Import
@@ -195,6 +196,7 @@ fn model(variant: Variant) -> ClientModel {
         locked,
         black,
         playing,
+        transitioning,
     } = variant;
     let project = ProjectId::new(NonZeroU128::new(1).unwrap());
     let fade = FadeToBlackState {
@@ -395,8 +397,10 @@ fn model(variant: Variant) -> ClientModel {
                 delay_samples: 0,
             })
             .collect(),
-        desired_program: wire(1),
-        desired_preview: wire(2),
+        // A timed transition in flight has swapped the desired buses; the
+        // realized ones follow when it ends.
+        desired_program: wire(if transitioning { 2 } else { 1 }),
+        desired_preview: wire(if transitioning { 1 } else { 2 }),
         realized_program: wire(1),
         realized_preview: wire(2),
         desired_manual_transition: manual_status,
@@ -1056,6 +1060,8 @@ struct Variant {
     locked: bool,
     black: bool,
     playing: bool,
+    /// A timed transition is in flight (Protocol 2.86).
+    transitioning: bool,
 }
 
 /// OR-011: slot 1 shows Clean Feed on a connected display (remembered by
@@ -2498,6 +2504,17 @@ fn scenes(language: Language) -> Vec<Scene> {
             true,
             Variant {
                 manual: true,
+                ..Variant::default()
+            },
+        ),
+    ));
+    scenes.push(Scene::console(
+        "operator/timed-transition",
+        shell(&|_| {}),
+        ready(
+            true,
+            Variant {
+                transitioning: true,
                 ..Variant::default()
             },
         ),

@@ -1564,7 +1564,12 @@ exact position without treating widget state as engine truth. Its manual
 controls require Ready state and transition permission. While either replicated
 manual state is active, Studio disables automatic Program/Preview transitions and
 input-bank Preview selection, but leaves Fade-to-Black and overlay controls
-independently gated. Reconnect handling
+independently gated. While a timed transition or scheduled take is still being
+realized (its desired buses accepted, the realized ones not yet moved; Protocol
+2.86), Studio disables Cut, the transitions, Preview selection, and a T-bar
+start the same way, with the reason on hover; the daemon still refuses a Cut
+mid transition rather than completing it, since a Cut swaps the desired buses
+the transition already swapped. Reconnect handling
 preserves strict worker FIFO. Web's transport-free semantic model
 retains the manual controls and adds FTB live/black actions, a bounded duration,
 exact separate desired and realized state, reversal through the opposite target,

@@ -121,6 +121,7 @@ messages! {
     ReasonNoControlAudio => t("this session lacks the control_audio permission"),
     ReasonNoEditProject => t("this session lacks the edit_project permission"),
     ReasonManualInFlight => t("a manual T-bar transition is in progress"),
+    ReasonTransitionInFlight => t("a transition is in progress; wait for it to finish"),
     ReasonStateDisallows => t("the current state does not allow it"),
     ReasonProjectLocked => t("the project is locked against edits"),
     ReasonInputLocked => t("this input is locked against edits"),

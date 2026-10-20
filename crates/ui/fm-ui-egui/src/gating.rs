@@ -19,7 +19,7 @@ pub(crate) enum Capability {
 
 /// Returns the first gate that blocks `capability`, in the order an operator
 /// would fix them: connection, synchronized state, permission, then a manual
-/// transition in flight. Falls back to a state-specific explanation when every
+/// or timed transition in flight. Falls back to a state-specific explanation when every
 /// session gate passes (for example Fade-to-Black is already at its target).
 pub(crate) fn unavailable_reason(state: &StudioUiState, capability: Capability) -> &'static str {
     match state.connection_status {
@@ -54,9 +54,14 @@ pub(crate) fn unavailable_reason(state: &StudioUiState, capability: Capability) 
     if matches!(
         capability,
         Capability::SelectPreview | Capability::Transition
-    ) && TransitionGate::from_state(state).manual_transition_in_flight
-    {
-        return Msg::ReasonManualInFlight.en();
+    ) {
+        let gate = TransitionGate::from_state(state);
+        if gate.manual_transition_in_flight {
+            return Msg::ReasonManualInFlight.en();
+        }
+        if gate.transition_in_flight {
+            return Msg::ReasonTransitionInFlight.en();
+        }
     }
     Msg::ReasonStateDisallows.en()
 }

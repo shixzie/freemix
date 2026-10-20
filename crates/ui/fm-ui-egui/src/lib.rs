@@ -852,11 +852,16 @@ impl TransitionAvailability {
 
 /// Session gates for automatic transition controls.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // independent session and state gates
 pub struct TransitionGate {
     pub connection_status: StudioConnectionStatus,
     pub has_view: bool,
     pub can_transition: bool,
     pub manual_transition_in_flight: bool,
+    /// A timed transition (or a scheduled take) the daemon accepted is
+    /// still being realized: Cut, transitions, Preview selection, and a
+    /// T-bar start are refused until it ends (Protocol 2.86).
+    pub transition_in_flight: bool,
 }
 
 impl TransitionGate {
@@ -868,6 +873,10 @@ impl TransitionGate {
             can_transition: state.can_transition,
             manual_transition_in_flight: match &state.view {
                 Some(view) => manual_transition_in_flight(view.switcher),
+                None => false,
+            },
+            transition_in_flight: match &state.view {
+                Some(view) => view.switcher.bus_change_in_flight(),
                 None => false,
             },
         }
@@ -884,11 +893,16 @@ pub struct ManualTransitionAvailability {
 
 /// Session and replicated-state gates for manual T-bar controls.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // independent session and state gates
 pub struct ManualTransitionGate {
     pub connection_status: StudioConnectionStatus,
     pub has_view: bool,
     pub can_transition: bool,
     pub manual_transition_in_flight: bool,
+    /// A timed transition (or a scheduled take) the daemon accepted is
+    /// still being realized: Cut, transitions, Preview selection, and a
+    /// T-bar start are refused until it ends (Protocol 2.86).
+    pub transition_in_flight: bool,
 }
 
 impl ManualTransitionGate {
@@ -902,6 +916,10 @@ impl ManualTransitionGate {
                 Some(view) => manual_transition_in_flight(view.switcher),
                 None => false,
             },
+            transition_in_flight: match &state.view {
+                Some(view) => view.switcher.bus_change_in_flight(),
+                None => false,
+            },
         }
     }
 }
@@ -912,7 +930,8 @@ pub const fn transition_availability(gate: TransitionGate) -> TransitionAvailabi
     let base = gate.connection_status.controls_enabled()
         && gate.has_view
         && gate.can_transition
-        && !gate.manual_transition_in_flight;
+        && !gate.manual_transition_in_flight
+        && !gate.transition_in_flight;
     TransitionAvailability {
         base: TransitionBaseAvailability {
             basic: base,
@@ -945,6 +964,7 @@ pub(crate) const fn preview_selection_available(
         && gate.has_view
         && can_select_preview
         && !gate.manual_transition_in_flight
+        && !gate.transition_in_flight
 }
 
 /// Converts one external action using the latest replicated state and current operator gates.
@@ -1474,7 +1494,7 @@ pub fn manual_transition_availability(
 ) -> ManualTransitionAvailability {
     let base = gate.connection_status.controls_enabled() && gate.has_view && gate.can_transition;
     ManualTransitionAvailability {
-        start: base && !gate.manual_transition_in_flight,
+        start: base && !gate.manual_transition_in_flight && !gate.transition_in_flight,
         alpha_fade_start_exposed: true,
         active_controls: base && active,
     }
@@ -2350,6 +2370,7 @@ mod tests {
             has_view: true,
             can_transition: true,
             manual_transition_in_flight: false,
+            transition_in_flight: false,
         };
         let key = |key, modifiers, repeat| Event::Key {
             key,
@@ -2622,6 +2643,7 @@ mod tests {
             has_view: true,
             can_transition: true,
             manual_transition_in_flight: false,
+            transition_in_flight: false,
         };
         let context = egui::Context::default();
         let press = |key| {
@@ -2970,6 +2992,7 @@ mod tests {
             has_view: true,
             can_transition: true,
             manual_transition_in_flight: false,
+            transition_in_flight: false,
         };
         assert_eq!(
             transition_availability(base),
@@ -3044,6 +3067,7 @@ mod tests {
                 has_view: true,
                 can_transition: true,
                 manual_transition_in_flight: manual_transition_in_flight(switcher),
+                transition_in_flight: false,
             };
             assert!(gate.manual_transition_in_flight);
             assert!(!transition_availability(gate).basic());
@@ -3054,6 +3078,7 @@ mod tests {
                     has_view: true,
                     can_transition: true,
                     manual_transition_in_flight: true,
+                    transition_in_flight: false,
                 },
                 desired_active,
             );
@@ -3069,6 +3094,67 @@ mod tests {
             Some(desired_active.desired_fade_to_black),
         );
         assert!(fade_to_black.to_black);
+    }
+
+    /// A timed transition in flight (its desired buses accepted, not yet
+    /// realized) disables what the daemon would refuse as a conflict, Cut,
+    /// the transitions, Preview selection, and a T-bar start, and says why,
+    /// while Fade to Black stays available.
+    #[test]
+    fn timed_transition_in_flight_blocks_switcher_controls_with_a_reason() {
+        let mut view = recording_view([false, false]);
+        view.inputs = vec![input(1), input(2)];
+        view.switcher = switcher((2, 1), (1, 2));
+        let state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(view.clone())
+            .with_switcher_permissions(true, true);
+        let gate = TransitionGate::from_state(&state);
+        assert!(gate.transition_in_flight);
+        assert!(!gate.manual_transition_in_flight);
+        assert!(!transition_availability(gate).basic());
+        assert!(!transition_availability(gate).wipe);
+        assert!(!preview_selection_available(gate, true));
+        assert!(
+            !manual_transition_availability(ManualTransitionGate::from_state(&state), false).start
+        );
+        for action in [
+            ExternalStudioAction::Cut,
+            ExternalStudioAction::Fade,
+            ExternalStudioAction::SelectPreview(2),
+        ] {
+            assert_eq!(external_intent(&state, action, 25, 25), None);
+        }
+        assert!(
+            external_intent(
+                &state,
+                ExternalStudioAction::FadeToBlack { active: true },
+                25,
+                25
+            )
+            .is_some()
+        );
+        for capability in [
+            gating::Capability::Transition,
+            gating::Capability::SelectPreview,
+        ] {
+            assert_eq!(
+                gating::unavailable_reason(&state, capability),
+                "a transition is in progress; wait for it to finish"
+            );
+        }
+
+        // Once realized, the controls come back.
+        view.switcher = switcher((2, 1), (2, 1));
+        let state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(view)
+            .with_switcher_permissions(true, true);
+        let gate = TransitionGate::from_state(&state);
+        assert!(!gate.transition_in_flight);
+        assert!(transition_availability(gate).basic());
+        assert_eq!(
+            external_intent(&state, ExternalStudioAction::Cut, 25, 25),
+            Some(StudioIntent::Cut)
+        );
     }
 
     fn stream_roster_entry(value: u128, name: &str, desired_running: bool) -> StreamStatus {
@@ -3722,6 +3808,7 @@ mod tests {
             has_view: true,
             can_transition: true,
             manual_transition_in_flight: false,
+            transition_in_flight: false,
         };
         assert_eq!(
             manual_transition_availability(available, false),
