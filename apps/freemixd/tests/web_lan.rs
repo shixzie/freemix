@@ -87,7 +87,8 @@ fn create_project(path: &Path) {
             },
             audio: AudioFormat {
                 sample_rate: SampleRate::new(48_000).unwrap(),
-                sample_format: SampleFormat::I24,
+                // Planar F32, so the native (windowed) daemon accepts it too.
+                sample_format: SampleFormat::F32,
                 channels: ChannelLayout::stereo(),
             },
         },
@@ -175,6 +176,11 @@ struct Daemon {
 
 impl Daemon {
     fn start(directory: &Path, project: &Path, run: &str) -> Self {
+        Self::start_with(directory, project, run, &[])
+    }
+
+    /// [`Self::start`] with `extra` daemon options.
+    fn start_with(directory: &Path, project: &Path, run: &str, extra: &[&str]) -> Self {
         let stdout_path = directory.join(format!("{run}.stdout"));
         let stderr_path = directory.join(format!("{run}.stderr"));
         let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
@@ -189,6 +195,7 @@ impl Daemon {
             ])
             .arg("--web-state-dir")
             .arg(directory.join("web-state"))
+            .args(extra)
             .env_remove("FREEMIXD_WEB_TOKEN")
             .stdout(fs::File::create(&stdout_path).unwrap())
             .stderr(fs::File::create(&stderr_path).unwrap())
@@ -653,4 +660,77 @@ fn a_phone_pairs_over_tls_within_its_role_until_revoked() {
     drop(operator_console);
     let restarted = Daemon::start(&directory.0, &project, "second");
     assert_eq!(restarted.fingerprint, fingerprint);
+}
+
+/// Studio's supervised daemon (`--display-presenter-if-available`) is the
+/// windowed program daemon whenever a window system and GPU are there, and
+/// it serves the web gateway with the same settings, pairing, and roles as
+/// the headless daemon. Without a window system the daemon falls back to
+/// headless serving, which must serve the gateway all the same; with
+/// `FM_REQUIRE_DISPLAY_SURFACE=1` the presenter must open.
+#[cfg(feature = "display-surface")]
+#[test]
+fn the_windowed_program_daemon_serves_the_gateway() {
+    use fm_protocol::DisplayInventoryRequest;
+    let directory = TestDirectory::new("windowed");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start_with(
+        &directory.0,
+        &project,
+        "windowed",
+        &["--native-media", "--display-presenter-if-available"],
+    );
+    let mut console = Console::connect(daemon.control, Role::Admin);
+    console.send(&WireMessage::DisplayInventoryRequest(
+        DisplayInventoryRequest {
+            request_id: "presenter".into(),
+        },
+    ));
+    let presenter = loop {
+        if let WireMessage::DisplayInventory(reply) = console.receive()
+            && reply.request_id == "presenter"
+        {
+            break reply.inventory.presenter;
+        }
+    };
+    let required = std::env::var("FM_REQUIRE_DISPLAY_SURFACE").as_deref() == Ok("1");
+    assert!(presenter || !required, "the presenter did not open");
+    if !presenter {
+        eprintln!("no window system or GPU: checking the headless fallback's gateway");
+    }
+
+    // The pages are served over TLS.
+    let host = daemon.web.to_string();
+    let (status, _, _) = https(
+        &daemon,
+        &format!("HEAD /tally HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+
+    // Pairing and roles work exactly as on the headless daemon.
+    let status = console.web_access(WebAccessAction::Status).gateway.unwrap();
+    assert_eq!(
+        status.fingerprint.as_deref(),
+        Some(daemon.fingerprint.as_str())
+    );
+    let pairing = console
+        .web_access(WebAccessAction::Pair {
+            role: WebDeviceRole::Viewer,
+        })
+        .gateway
+        .unwrap();
+    let code = pairing.pairing.unwrap().code;
+    let origin = format!("https://{host}");
+    let (status, _, body) = https(&daemon, &pair_request(&host, Some(&origin), &code));
+    assert_eq!(status, "HTTP/1.1 200 OK", "{body}");
+    let token = json_field(&body, "token").unwrap();
+    let (_, answer) = browser(&daemon, &token, Role::Viewer).unwrap();
+    assert!(granted(&answer, Role::Viewer), "{answer:?}");
+    let (_, answer) = browser(&daemon, &token, Role::Operator).unwrap();
+    assert!(!granted(&answer, Role::Operator), "{answer:?}");
+    assert!(
+        !daemon.output().contains(&token),
+        "a token reached the logs"
+    );
 }

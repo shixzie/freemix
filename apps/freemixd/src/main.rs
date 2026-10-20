@@ -10218,7 +10218,6 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 && display_outputs.is_empty()
                 && !fullscreen_program
                 && display_inventory.is_none()
-                && web_listen.is_none()
                 && status_listen.is_none()
                 && hls_listen.is_none()
                 && live_lan_listen.is_none()
@@ -10347,18 +10346,12 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             }
             web.validate(web_listen)
                 .map_err(|error| AppFailure(error.to_string()))?;
-            if web_listen.is_some() {
-                if once {
-                    return Err(
-                        AppFailure("--web-listen cannot be combined with --once".into()).into(),
-                    );
-                }
-                if fullscreen_program {
-                    return Err(AppFailure(
-                        "--web-listen cannot be combined with --fullscreen-program".into(),
-                    )
-                    .into());
-                }
+            // The windowed program daemon serves the gateway too, with the
+            // same settings, pairing, and permissions as the headless one.
+            if web_listen.is_some() && once {
+                return Err(
+                    AppFailure("--web-listen cannot be combined with --once".into()).into(),
+                );
             }
             if let Some(address) = status_listen {
                 if !address.ip().is_loopback() {
@@ -10615,6 +10608,8 @@ fn run(command: Command) -> AppResult<()> {
                 let result = run_fullscreen_program(
                     project.clone(),
                     listen,
+                    web_listen,
+                    web.clone(),
                     once,
                     display_outputs.clone(),
                     camera_helper.clone(),
@@ -10689,6 +10684,8 @@ fn run(command: Command) -> AppResult<()> {
 fn run_fullscreen_program(
     project: PathBuf,
     listen: SocketAddr,
+    web_listen: Option<SocketAddr>,
+    web: web::WebSettings,
     once: bool,
     display_overrides: Vec<DisplayOutputConfig>,
     camera_helper: Option<PathBuf>,
@@ -10706,6 +10703,8 @@ fn run_fullscreen_program(
     program_surface::run(program_surface::ProgramWorkerOptions {
         project,
         listen,
+        web_listen,
+        web,
         once,
         display_overrides,
         camera_helper,
@@ -10727,6 +10726,8 @@ fn run_fullscreen_program(
 fn run_fullscreen_program(
     _project: PathBuf,
     _listen: SocketAddr,
+    _web_listen: Option<SocketAddr>,
+    _web: web::WebSettings,
     _once: bool,
     _display_overrides: Vec<DisplayOutputConfig>,
     _camera_helper: Option<PathBuf>,
@@ -10803,6 +10804,8 @@ struct ServeListeners {
 fn serve_program_worker(
     path: &Path,
     listen: SocketAddr,
+    web_listen: Option<SocketAddr>,
+    web: web::WebSettings,
     once: bool,
     context: NativeContext,
     outputs: Vec<program_surface::DisplayPresentationSetup>,
@@ -10824,8 +10827,8 @@ fn serve_program_worker(
         path,
         ServeListeners {
             listen,
-            web_listen: None,
-            web: web::WebSettings::default(),
+            web_listen,
+            web,
             status_listen: None,
             hls_listen: None,
             live_lan_listen: None,
@@ -11067,17 +11070,8 @@ fn serve_inner(
     web_settings
         .validate(web_listen)
         .map_err(|error| AppFailure(error.to_string()))?;
-    if web_listen.is_some() {
-        if once {
-            return Err(AppFailure("--web-listen cannot be combined with --once".into()).into());
-        }
-        #[cfg(feature = "display-surface")]
-        if matches!(&mode, NativeServeMode::Program(_)) {
-            return Err(AppFailure(
-                "--web-listen cannot be combined with --fullscreen-program".into(),
-            )
-            .into());
-        }
+    if web_listen.is_some() && once {
+        return Err(AppFailure("--web-listen cannot be combined with --once".into()).into());
     }
     if status_listen.is_some_and(|address| !address.ip().is_loopback()) {
         return Err(AppFailure("--status-listen must use a loopback address".into()).into());
@@ -16292,13 +16286,13 @@ Every program segment is a crash-safe recording session with a <stem>.fmsession 
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 Fullscreen display selection is a zero-based index ordered by desktop position, then name, then platform display id; --fullscreen-program --fullscreen-display N is shorthand for --display-output display=index:N.\n\
---display-output replaces the project's display-output slots (slot 1, then slot 2) and opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display); it requires --native-media plus a build with feature `display-surface`. --display-presenter opens the project's own display-output slots the same way. --display-presenter-if-available (what Studio's supervised daemon uses) does so (the presenter always runs native media) in a build with feature `display-surface` unless --web-listen, --status-listen, --hls-listen, --record-fallback-dir, --diagnostic-stop-after, or --recover-to-checkpoint is given; when no window system, window, or GPU is available it emits FREEMIXD_DISPLAY_PRESENTER state=unavailable and serves as without the option, which is also all it does in any other build. Slots are project configuration edited live by set_display_output/clear_display_output commands (Protocol 2.42); a daemon without a presenter keeps them waiting with reason no-presenter. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|preview|output:<output-id> (default program; preview is composited only while an output showing it is active), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
+--display-output replaces the project's display-output slots (slot 1, then slot 2) and opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display); it requires --native-media plus a build with feature `display-surface`. --display-presenter opens the project's own display-output slots the same way. --display-presenter-if-available (what Studio's supervised daemon uses) does so (the presenter always runs native media) in a build with feature `display-surface` unless --status-listen, --hls-listen, --record-fallback-dir, --diagnostic-stop-after, or --recover-to-checkpoint is given; when no window system, window, or GPU is available it emits FREEMIXD_DISPLAY_PRESENTER state=unavailable and serves as without the option, which is also all it does in any other build. Slots are project configuration edited live by set_display_output/clear_display_output commands (Protocol 2.42); a daemon without a presenter keeps them waiting with reason no-presenter. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|preview|output:<output-id> (default program; preview is composited only while an output showing it is active), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
 --diagnostic-display-inventory FILE presents the project's display outputs headlessly to off-screen rasters sized to a tab-separated display inventory re-read from FILE (one display per line: id=, mode=, optional name=, x=, y=, modes=, hdr=; a missing file means no display is connected) and emits sampled FREEMIXD_DISPLAY_FRAME probes. It is a test and diagnostic aid, not an operator output.\n\
 --diagnostic-capture-inventory FILE (requires --native-media) replaces the capture backend with a deterministic fake whose devices follow a tab-separated inventory re-read from FILE (one device per line: key=, path=, formats=, optional name=, rgba=, audio=, stalled=, no_signal=; a missing file means no device is connected). Capture inputs acquire solid pictures from it and report capture_status as with real devices. It is a test and diagnostic aid.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
 The daemon, simulated or native, serves up to eight raw `--listen` control sessions at once (a further connection's handshake is refused as retryable `resource_exhausted`) next to the Web clients; each session keeps its own role, heartbeat, subscriptions, rate limits, and outbound queue.\n\
---web-listen enables the `/v1/control` WebSocket gateway (up to 16 clients at once, each its own session, plus the /tally and /operator pages and /v1/pair device pairing); it works with or without --native-media and is unavailable with --fullscreen-program. Plain HTTP is loopback-only: a LAN or 0.0.0.0 address needs --web-tls (a self-signed certificate generated once in the web state directory; FREEMIXD_WEB_TLS prints its SHA-256 fingerprint) or --web-tls-cert PEM --web-tls-key PEM. --web-state-dir DIR holds the certificate and the paired devices (default: $XDG_STATE_HOME/freemix/web or ~/.local/state/freemix/web; ~/Library/Application Support/FreeMix/web on macOS; %LOCALAPPDATA%\\FreeMix\\web on Windows). --web-host NAME (repeatable) adds a DNS name phones may use; the first one names the pairing URL, and requests for any other name than an IP address, localhost, or a --web-host are refused (DNS-rebinding defence). Devices pair from Studio's Web access window; FREEMIXD_WEB_TOKEN, when set, is a 32..=256-byte operator token with every role.\n\
+--web-listen enables the `/v1/control` WebSocket gateway (up to 16 clients at once, each its own session, plus the /tally and /operator pages and /v1/pair device pairing); it works with or without --native-media, and the windowed program daemon (--fullscreen-program, --display-output, --display-presenter, or Studio's --display-presenter-if-available) serves it too. Plain HTTP is loopback-only: a LAN or 0.0.0.0 address needs --web-tls (a self-signed certificate generated once in the web state directory; FREEMIXD_WEB_TLS prints its SHA-256 fingerprint) or --web-tls-cert PEM --web-tls-key PEM. --web-state-dir DIR holds the certificate and the paired devices (default: $XDG_STATE_HOME/freemix/web or ~/.local/state/freemix/web; ~/Library/Application Support/FreeMix/web on macOS; %LOCALAPPDATA%\\FreeMix\\web on Windows). --web-host NAME (repeatable) adds a DNS name phones may use; the first one names the pairing URL, and requests for any other name than an IP address, localhost, or a --web-host are refused (DNS-rebinding defence). Devices pair from Studio's Web access window; FREEMIXD_WEB_TOKEN, when set, is a 32..=256-byte operator token with every role.\n\
 --status-listen enables the loopback-only operator status listener serving /healthz, /readyz, and the token-guarded /v1/support-bundle; it requires FREEMIXD_STATUS_TOKEN and is unavailable with --fullscreen-program.\n\
 --hls-listen enables the loopback-only HLS listener for local hls:// stream destinations. It serves GET /v1/hls/<target>/index.m3u8 and GET /v1/hls/<target>/segment-NNNNN.ts, plus the same shapes under rung directories 0..=7 for a multi-bitrate ladder, and requires both --native-media and FREEMIXD_HLS_TOKEN; TLS, LAN binding, Web Controller roles, and per-viewer capacity remain future work.\n\
 Native mode continues across client disconnects; close the Program window or press Escape for bounded shutdown."
@@ -17005,8 +16999,8 @@ mod tests {
                 ..
             }
         ));
-        // The windowed program daemon serves no gateway.
-        assert!(
+        // The windowed program daemon serves the gateway too.
+        assert!(matches!(
             parse_args(strings(&[
                 "serve",
                 "show.freemix",
@@ -17015,8 +17009,13 @@ mod tests {
                 "--native-media",
                 "--fullscreen-program",
             ]))
-            .is_err()
-        );
+            .unwrap(),
+            Command::Serve {
+                web_listen: Some(_),
+                fullscreen_program: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -20339,10 +20338,7 @@ mod tests {
         // An explicit presenter or diagnostic inventory keeps its own
         // behavior, and options the windowed daemon does not serve keep the
         // daemon headless.
-        for options in [
-            &["--native-media", "--diagnostic-display-inventory", "d.tsv"][..],
-            &["--web-listen", "127.0.0.1:0"][..],
-        ] {
+        for options in [&["--native-media", "--diagnostic-display-inventory", "d.tsv"][..]] {
             let mut arguments = vec!["serve", "show.freemix", "--display-presenter-if-available"];
             arguments.extend(options);
             let Command::Serve {
@@ -20364,6 +20360,29 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(error.to_string().contains("duplicate option"), "{error}");
+
+        // The web gateway rides along with the presenter: Studio's
+        // supervised daemon serves phones and the program windows at once.
+        let Command::Serve {
+            fullscreen_program,
+            presenter_fallback,
+            web_listen,
+            ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--display-presenter-if-available",
+            "--web-listen",
+            "0.0.0.0:0",
+            "--web-tls",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        assert_eq!(fullscreen_program, surfaces);
+        assert_eq!(presenter_fallback, surfaces);
+        assert!(web_listen.is_some());
     }
 
     #[test]

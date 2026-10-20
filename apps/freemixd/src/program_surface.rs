@@ -720,6 +720,9 @@ fn accepts_resize<M: PartialEq>(target: Option<&M>, current: Option<&M>) -> bool
 pub(super) struct ProgramWorkerOptions {
     pub(super) project: PathBuf,
     pub(super) listen: SocketAddr,
+    /// The web gateway (RC-007), served exactly as by the headless daemon.
+    pub(super) web_listen: Option<SocketAddr>,
+    pub(super) web: super::web::WebSettings,
     pub(super) once: bool,
     /// `--display-output` slots replacing the project's on load.
     pub(super) display_overrides: Vec<DisplayOutputConfig>,
@@ -990,6 +993,8 @@ impl ProgramApp {
                     let result = super::serve_program_worker(
                         &options.project,
                         options.listen,
+                        options.web_listen,
+                        options.web,
                         options.once,
                         context,
                         setups,
