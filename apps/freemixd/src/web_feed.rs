@@ -37,10 +37,12 @@ struct Slot {
 }
 
 impl Slot {
-    fn take_due(&mut self, now: Instant, interval: Duration) -> Option<Vec<u8>> {
-        if self.due.is_some_and(|due| now < due) {
-            return None;
-        }
+    /// Whether a record waits and its interval has passed at `now`.
+    fn is_due(&self, now: Instant) -> bool {
+        self.latest.is_some() && self.due.is_none_or(|due| now >= due)
+    }
+
+    fn take(&mut self, now: Instant, interval: Duration) -> Option<Vec<u8>> {
         let bytes = self.latest.take()?;
         self.due = now.checked_add(interval);
         Some(bytes)
@@ -68,13 +70,23 @@ impl WebFeed {
         self.recorders.latest = Some(bytes);
     }
 
-    /// The next record due at `now`: meters first, then recorders, then
-    /// streams.
+    /// The next record due at `now`: of the kinds due, the one that has
+    /// been due the longest (one never sent first), ties going to meters,
+    /// then recorders, then streams. A peer that takes records more slowly
+    /// than the meter interval therefore still gets every kind in turn
+    /// instead of only meters.
     pub(crate) fn next(&mut self, now: Instant) -> Option<Vec<u8>> {
-        self.meters
-            .take_due(now, WEB_METER_INTERVAL)
-            .or_else(|| self.recorders.take_due(now, WEB_STATUS_INTERVAL))
-            .or_else(|| self.streams.take_due(now, WEB_STATUS_INTERVAL))
+        let (slot, interval) = [
+            (&mut self.meters, WEB_METER_INTERVAL),
+            (&mut self.recorders, WEB_STATUS_INTERVAL),
+            (&mut self.streams, WEB_STATUS_INTERVAL),
+        ]
+        .into_iter()
+        .filter(|(slot, _)| slot.is_due(now))
+        // `None` (never sent) orders before every instant; `min_by_key`
+        // keeps the first of equal keys.
+        .min_by_key(|(slot, _)| slot.due)?;
+        slot.take(now, interval)
     }
 }
 
@@ -135,5 +147,33 @@ mod tests {
             now += Duration::from_millis(5);
         }
         assert!((14..=16).contains(&sent), "{sent} meter records in 1 s");
+    }
+
+    /// A peer whose relay takes a record only every 100 ms (slower than the
+    /// meter interval) still gets recorder and stream status: meters do not
+    /// win every free turn.
+    #[test]
+    fn a_slow_peer_still_gets_every_kind() {
+        let mut feed = WebFeed::default();
+        let start = Instant::now();
+        let (mut meters, mut recorders, mut streams) = (0, 0, 0);
+        for step in 0..30 {
+            let now = start + Duration::from_millis(100 * step);
+            // The daemon offers fresh records of every kind meanwhile.
+            feed.offer_meters(b"m".to_vec());
+            feed.offer_recorder_status(b"r".to_vec());
+            feed.offer_stream_status(b"s".to_vec());
+            match feed.next(now).as_deref() {
+                Some(b"m") => meters += 1,
+                Some(b"r") => recorders += 1,
+                Some(b"s") => streams += 1,
+                other => panic!("{other:?} at step {step}"),
+            }
+        }
+        assert!(meters >= 9, "{meters} meter records");
+        assert!(recorders >= 6, "{recorders} recorder records");
+        assert!(streams >= 6, "{streams} stream records");
+        // Each kind keeps its own interval.
+        assert!(recorders <= 12 && streams <= 12, "{recorders} {streams}");
     }
 }

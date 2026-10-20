@@ -64,8 +64,17 @@ pub(crate) fn latched_stream_failure(notice: &str) -> OutputFailure {
 
 /// Text markers of a recorder failure, matched case-insensitively in order
 /// against the daemon's notice and `FFmpeg`'s redacted stderr tail. The first
-/// match wins, so storage causes outrank the generic ones.
-const RECORDER_MARKERS: [(&str, OutputFailureCode); 22] = [
+/// match wins: an unusable `FFmpeg` (whose `Debug` names an I/O kind such as
+/// `PermissionDenied` too) outranks the storage causes, which outrank the
+/// generic ones.
+const RECORDER_MARKERS: [(&str, OutputFailureCode); 23] = [
+    ("toolunavailable", OutputFailureCode::FfmpegUnavailable),
+    ("invalidexecutable", OutputFailureCode::FfmpegUnavailable),
+    ("spawn(notfound)", OutputFailureCode::FfmpegUnavailable),
+    (
+        "spawn(permissiondenied)",
+        OutputFailureCode::FfmpegUnavailable,
+    ),
     ("no space left", OutputFailureCode::DiskFull),
     ("storagefull", OutputFailureCode::DiskFull),
     ("disk quota exceeded", OutputFailureCode::DiskFull),
@@ -81,9 +90,6 @@ const RECORDER_MARKERS: [(&str, OutputFailureCode); 22] = [
         "operation not permitted",
         OutputFailureCode::FolderNotWritable,
     ),
-    ("toolunavailable", OutputFailureCode::FfmpegUnavailable),
-    ("invalidexecutable", OutputFailureCode::FfmpegUnavailable),
-    ("spawn(notfound)", OutputFailureCode::FfmpegUnavailable),
     (
         "no such file or directory",
         OutputFailureCode::FolderMissing,
@@ -342,6 +348,22 @@ mod tests {
                 "readback:device lost",
                 "",
                 failure(OutputFailureCode::CaptureFailed, None),
+            ),
+            // An `FFmpeg` that may not be run is not a folder problem.
+            (
+                "start:FFmpeg recorder startup failed: ToolUnavailable(PermissionDenied) (Complete cleanup)",
+                "",
+                failure(OutputFailureCode::FfmpegUnavailable, None),
+            ),
+            (
+                "start:FFmpeg recorder startup failed: Spawn(PermissionDenied) (Complete cleanup)",
+                "",
+                failure(OutputFailureCode::FfmpegUnavailable, None),
+            ),
+            (
+                "start:FFmpeg recorder startup failed: OutputMetadata(PermissionDenied) (Complete cleanup)",
+                "",
+                failure(OutputFailureCode::FolderNotWritable, None),
             ),
             ("", "", failure(OutputFailureCode::Unknown, None)),
         ] {
