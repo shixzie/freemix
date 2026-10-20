@@ -153,6 +153,17 @@ pub struct SwitcherState {
     pub runtime_generation: Option<u64>,
 }
 
+impl SwitcherState {
+    /// Whether a Program/Preview change the authority accepted is still
+    /// being realized: a timed transition (or a scheduled take) runs on the
+    /// frame loop until its realization arrives (Protocol 2.86), and a Cut,
+    /// transition, or Preview selection is refused until then.
+    #[must_use]
+    pub fn bus_change_in_flight(&self) -> bool {
+        self.desired != self.realized
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StingerStatus {
     pub slot: u8,
@@ -2606,6 +2617,18 @@ fn write_recording_message(
     }
 }
 
+/// A Program/Preview change whose realization is still outstanding (see
+/// [`ClientModel::apply_runtime_realization`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BusHold {
+    /// The revision that changed the buses, or for a snapshot taken mid
+    /// transition, the snapshot's revision.
+    revision: Revision,
+    /// The hold came from a snapshot whose realized buses lag its desired
+    /// ones: the completion of any revision up to it ends it.
+    from_snapshot: bool,
+}
+
 /// Project-bound replicated client state and reducer.
 #[derive(Clone, Debug)]
 pub struct ClientModel {
@@ -2628,6 +2651,14 @@ pub struct ClientModel {
     /// (Protocol 2.86): an older revision realized after it (a timed
     /// transition completing on the frame loop) does not regress it.
     realized_revision: Option<Revision>,
+    /// The revision of the installed snapshot: the oldest desired state a
+    /// realization can be looked up for since the engine identity last
+    /// changed.
+    snapshot_revision: Option<Revision>,
+    /// A Program/Preview change accepted but not realized yet while later
+    /// commands are realized on its frames (Protocol 2.86): the realized
+    /// buses stay where they are until it completes.
+    bus_hold: Option<BusHold>,
     pending: Vec<PendingCommand>,
     last_rejection: Option<RejectedCommand>,
     sync_status: SyncStatus,
@@ -2661,6 +2692,8 @@ impl ClientModel {
             desired_by_revision: HashMap::new(),
             last_runtime_realization: None,
             realized_revision: None,
+            snapshot_revision: None,
+            bus_hold: None,
             pending: Vec::new(),
             last_rejection: None,
             sync_status: SyncStatus::AwaitingSnapshot,
@@ -3164,6 +3197,15 @@ impl ClientModel {
             self.last_runtime_realization = None;
             self.realized_revision = None;
         }
+        // A snapshot taken while a transition runs realizes the buses it
+        // leaves; the transition's completion (of a revision up to this
+        // one) moves them.
+        self.snapshot_revision = Some(snapshot.cursor.revision);
+        self.bus_hold =
+            (snapshot.switcher.realized != snapshot.switcher.desired).then_some(BusHold {
+                revision: snapshot.cursor.revision,
+                from_snapshot: true,
+            });
         self.desired_by_revision.insert(
             snapshot.cursor.revision,
             (
@@ -4036,19 +4078,32 @@ impl ClientModel {
                 },
             }
         }
-        if !self.desired_by_revision.contains_key(&realization.revision) {
+        // A transition running when the snapshot was taken may complete
+        // with a revision older than every retained desired state: it
+        // stands for the snapshot's, whose desired state holds its target.
+        let known = self.desired_by_revision.contains_key(&realization.revision);
+        let predates_snapshot = self
+            .snapshot_revision
+            .is_some_and(|snapshot| realization.revision < snapshot);
+        if !known && !predates_snapshot {
             return Err(ModelError::UnknownDurableRevision {
                 revision: realization.revision,
             });
         }
-        // A timed transition completes on the native frame loop after
-        // later commands were realized on its frames (Protocol 2.86): its
+        // A timed transition completes on the frame loop after later
+        // commands were realized on its frames (Protocol 2.86): its
         // realization then stands for the newest realized revision, whose
         // desired state already holds the transition's target.
+        let floor = if known {
+            realization.revision
+        } else {
+            self.snapshot_revision.unwrap_or(realization.revision)
+        };
         let revision = self
             .realized_revision
-            .filter(|newest| *newest > realization.revision)
-            .unwrap_or(realization.revision);
+            .filter(|newest| *newest > floor)
+            .unwrap_or(floor);
+        let bus_hold = self.next_bus_hold(realization.revision, known);
         let (desired, _, _, desired_overlays) = self
             .desired_by_revision
             .get(&revision)
@@ -4060,14 +4115,70 @@ impl ClientModel {
         let inputs = state.inputs.iter().copied().collect();
         validate_manual_transition(realized_manual_transition, desired, &inputs)?;
         let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
-        state.switcher.realized = desired;
+        if bus_hold.is_none() {
+            state.switcher.realized = desired;
+        }
         state.switcher.realized_manual_transition = realized_manual_transition;
         state.switcher.realized_fade_to_black = realized_fade_to_black;
         state.realized_overlays = desired_overlays;
         state.switcher.runtime_generation = Some(realization.generation);
         self.realized_revision = Some(revision);
+        self.bus_hold = bus_hold;
         self.last_runtime_realization = Some(realization);
         Ok(RuntimeRealizationApplied::Applied)
+    }
+
+    /// The bus hold after `revision` is realized (`known` when its desired
+    /// state is retained).
+    ///
+    /// Commands realize in the order they were accepted, except a timed
+    /// transition (or a scheduled take), which is realized only when its
+    /// last frame is. A revision that changed Program or Preview and is
+    /// still unrealized when a later one is realized is therefore in
+    /// flight: the realized buses hold until its own realization arrives.
+    /// A realized revision that changes the buses itself ends any hold, as
+    /// no bus change is accepted while a transition is in flight.
+    fn next_bus_hold(&self, revision: Revision, known: bool) -> Option<BusHold> {
+        if known && self.changes_buses(revision) {
+            return None;
+        }
+        match self.bus_hold {
+            Some(hold)
+                if hold.revision == revision
+                    || (hold.from_snapshot && revision <= hold.revision) =>
+            {
+                return None;
+            }
+            Some(hold) => return Some(hold),
+            None => {}
+        }
+        if !known {
+            return None;
+        }
+        // Revisions up to the snapshot were realized as it says.
+        let after = self.realized_revision.max(self.snapshot_revision)?;
+        (after.get().saturating_add(1)..revision.get())
+            .map(Revision::new)
+            .find(|candidate| self.changes_buses(*candidate))
+            .map(|revision| BusHold {
+                revision,
+                from_snapshot: false,
+            })
+    }
+
+    /// Whether `revision` changed the desired Program or Preview from the
+    /// revision before it; `false` when either is not retained.
+    fn changes_buses(&self, revision: Revision) -> bool {
+        let Some(previous) = revision.get().checked_sub(1).map(Revision::new) else {
+            return false;
+        };
+        match (
+            self.desired_by_revision.get(&previous),
+            self.desired_by_revision.get(&revision),
+        ) {
+            (Some(before), Some(after)) => before.0 != after.0,
+            _ => false,
+        }
     }
 
     /// Registers a command before it is sent.

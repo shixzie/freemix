@@ -635,6 +635,101 @@ fn runtime_realization_of_a_retained_revision_keeps_the_newest_realized_desired_
     assert_eq!(model.state().unwrap().switcher().realized, newest);
 }
 
+/// A command realized on a timed transition's frames (an overlay or
+/// title take) does not realize the transition's target early: the
+/// realized buses hold until the transition's own realization arrives,
+/// while the overlays follow the newest realized revision.
+#[test]
+fn runtime_realization_mid_transition_holds_the_realized_buses() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 7)).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let before = BusSelection::new(input(1), input(2));
+    let target = BusSelection::new(input(2), input(1));
+    model
+        .apply_event(event(project_id, identity.clone(), 8, desired(target)))
+        .unwrap();
+    let mut overlay = desired(target);
+    if let DurableChange::DesiredSwitcher { overlays, .. } = &mut overlay {
+        overlays[0].source = Some(input(3));
+        overlays[0].active = true;
+    }
+    model
+        .apply_event(event(project_id, identity.clone(), 9, overlay))
+        .unwrap();
+    model
+        .apply_event(event(project_id, identity.clone(), 10, desired(target)))
+        .unwrap();
+    let desired_overlays = model.state().unwrap().desired_overlays().to_vec();
+    assert!(model.state().unwrap().switcher().bus_change_in_flight());
+
+    for (revision, sequence) in [(9, 1), (10, 2)] {
+        model
+            .apply_runtime_realization(realization(
+                project_id,
+                identity.clone(),
+                revision,
+                5,
+                sequence,
+            ))
+            .unwrap();
+        let state = model.state().unwrap();
+        assert_eq!(state.switcher().realized, before, "revision {revision}");
+        assert!(state.switcher().bus_change_in_flight());
+        // The overlay taken on the transition's frames is realized.
+        assert_eq!(state.realized_overlays()[0].active, revision == 9);
+    }
+
+    model
+        .apply_runtime_realization(realization(project_id, identity.clone(), 8, 6, 3))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.switcher().realized, target);
+    assert!(!state.switcher().bus_change_in_flight());
+    assert_eq!(state.realized_overlays(), desired_overlays.as_slice());
+
+    // A Cut afterwards realizes at once.
+    model
+        .apply_event(event(project_id, identity.clone(), 11, desired(before)))
+        .unwrap();
+    model
+        .apply_runtime_realization(realization(project_id, identity, 11, 7, 4))
+        .unwrap();
+    assert_eq!(model.state().unwrap().switcher().realized, before);
+}
+
+/// A snapshot taken while a transition runs realizes the buses it left;
+/// commands realized on later frames keep them, and the transition's
+/// completion (of a revision older than the snapshot) realizes its target.
+#[test]
+fn runtime_realization_after_a_mid_transition_snapshot_holds_until_completion() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut mid = snapshot(project_id, 7);
+    let target = BusSelection::new(input(2), input(1));
+    mid.switcher.desired = target;
+    model.install_snapshot(mid).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let before = BusSelection::new(input(1), input(2));
+    assert!(model.state().unwrap().switcher().bus_change_in_flight());
+
+    model
+        .apply_event(event(project_id, identity.clone(), 8, desired(target)))
+        .unwrap();
+    model
+        .apply_runtime_realization(realization(project_id, identity.clone(), 8, 5, 1))
+        .unwrap();
+    assert_eq!(model.state().unwrap().switcher().realized, before);
+
+    model
+        .apply_runtime_realization(realization(project_id, identity, 6, 6, 2))
+        .unwrap();
+    let switcher = model.state().unwrap().switcher();
+    assert_eq!(switcher.realized, target);
+    assert!(!switcher.bus_change_in_flight());
+}
+
 #[test]
 fn runtime_realization_ordering_is_scoped_to_generation() {
     let project_id = project(10);
