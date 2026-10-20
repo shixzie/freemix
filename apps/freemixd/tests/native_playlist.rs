@@ -261,8 +261,10 @@ impl Client {
             "daemon closed"
         );
         let message = decode_line(&line).unwrap();
-        if let WireMessage::MonitorFrame(part) = &message {
-            assert_eq!(part.tap, MonitorTap::Program);
+        // The native daemon also sends a Preview tap; only Program is checked.
+        if let WireMessage::MonitorFrame(part) = &message
+            && part.tap == MonitorTap::Program
+        {
             if let Some(image) = self.assembler.push(part).unwrap() {
                 let width = usize::from(image.width);
                 let centre = (usize::from(image.height) / 2 * width + width / 2) * 4;
