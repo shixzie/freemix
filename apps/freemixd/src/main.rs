@@ -12025,6 +12025,8 @@ fn restore_engine_with_titles(
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
     restore_presets_favorites_and_media(&mut show, canonical)?;
+    // Each list input's active item is its media source (IN-006).
+    show.restore_media_lists(canonical.media_lists().clone())?;
     // Checked against the restored titles, media inputs, and scripts (a cue
     // may run one, schema 55).
     show.set_scripts(canonical.scripts().to_vec())?;
@@ -12527,6 +12529,13 @@ fn handle_client(
             }
             for state in control.borrow().still_states() {
                 write_session_message(&mut writer, &mut session, &WireMessage::StillState(state))?;
+            }
+            for state in control.borrow().media_list_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::MediaListState(state),
+                )?;
             }
         }
         SyncPayload::Resume(events) => {
@@ -13492,7 +13501,10 @@ impl HostMediaImport {
                     ..
                 }) => asset_uri == uri,
                 kind => kind.file_asset_uris().contains(&uri.as_str()),
-            });
+            }) || project
+                .media_lists()
+                .values()
+                .any(|list| list.items.iter().any(|item| item.asset_uri == *uri));
             if !used && let Err(error) = store.discard_imported_media(uri) {
                 eprintln!("FREEMIXD_IMPORT\tv=1\tasset={uri}\terror={error}");
             }
@@ -13563,6 +13575,13 @@ fn host_media_uris(payload: &mut CommandPayload) -> Vec<(&mut String, bool)> {
                 .map(|item| (&mut item.asset_uri, false))
                 .collect(),
         },
+        // Every item of a media list being created or edited (IN-006).
+        CommandPayload::MediaList {
+            operation:
+                fm_protocol::MediaListOperation::Create { items, .. }
+                | fm_protocol::MediaListOperation::Set { items, .. },
+            ..
+        } => items.iter_mut().map(|item| (&mut item.uri, false)).collect(),
         _ => Vec::new(),
     }
 }
@@ -14667,6 +14686,7 @@ fn stored_project_with_receipts(
     project.set_scripts(show.scripts().to_vec());
     project.set_script_run(show.script_run().clone());
     project.set_shortcuts(show.shortcuts().to_vec());
+    project.set_media_lists(show.media_lists().clone());
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());
@@ -14811,9 +14831,22 @@ fn sync_project_inputs(
                     })?;
                 continue;
             }
-            Some(CommandPayload::InputLifecycle(
-                fm_protocol::InputLifecycleOperation::Import { .. },
-            )) => {
+            // A media list input (IN-006), created or recreated by a redo:
+            // a media input playing its active item.
+            Some(
+                CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::Import {
+                    ..
+                })
+                | CommandPayload::MediaList { .. }
+                | CommandPayload::Redo { .. },
+            ) if show.media_list(input).is_some()
+                || matches!(
+                    command.map(|command| &command.payload),
+                    Some(CommandPayload::InputLifecycle(
+                        fm_protocol::InputLifecycleOperation::Import { .. }
+                    ))
+                ) =>
+            {
                 let source = show
                     .input_source(input)
                     .ok_or_else(|| AppFailure(format!("imported input {input} has no source")))?;

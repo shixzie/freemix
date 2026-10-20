@@ -2949,6 +2949,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     project.set_scripts(snapshot.show().scripts().to_vec());
     project.set_script_run(snapshot.show().script_run().clone());
     project.set_shortcuts(snapshot.show().shortcuts().to_vec());
+    project.set_media_lists(snapshot.show().media_lists().clone());
     sync_title_fields(&mut project, snapshot.show())?;
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
@@ -4342,6 +4343,8 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
     // A run paused at a wait, or a failed part's report (schema 56).
     show.set_script_run(project.script_run().clone(), project.settings().frame_rate)?;
     show.set_shortcuts(project.shortcuts().to_vec())?;
+    // Each list input's active item is its media source (IN-006).
+    show.restore_media_lists(project.media_lists().clone())?;
     Ok(())
 }
 

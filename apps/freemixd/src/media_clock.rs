@@ -25,7 +25,7 @@
 
 use std::time::Instant;
 
-use fm_control::{ControlService, MediaEndTrigger};
+use fm_control::{ControlService, MediaEndTrigger, MediaListEnd};
 use fm_engine::fm_playback::MediaState;
 use fm_persistence::StoredProject;
 use fm_protocol::{
@@ -191,6 +191,26 @@ pub(super) fn end_trigger_command(trigger: MediaEndTrigger, revision: u64) -> Co
     }
 }
 
+/// The command a media list item that ended under Auto Next feeds (IN-006):
+/// `media_list advance` from the item that ended. The key names the input,
+/// the item, and the frame it ended on, so a repeated delivery replays its
+/// receipt; the engine refuses an advance whose item is no longer active,
+/// so one overtaken by the operator does nothing.
+pub(super) fn media_list_end_command(end: MediaListEnd) -> CommandMessage {
+    let key = format!("media-list-end-{}-{}-{}", end.input, end.item, end.frame);
+    CommandMessage {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        id: key.clone(),
+        idempotency_key: key,
+        expected_revision: None,
+        deadline_ms: None,
+        payload: CommandPayload::MediaList {
+            input: WireInputId::from_domain(end.input),
+            operation: fm_protocol::MediaListOperation::Advance { from: end.item },
+        },
+    }
+}
+
 /// A refused end trigger's later attempt `retry` at `revision`: its key
 /// names the revision too, so no later attempt (a retry, or a first attempt
 /// at a new revision) meets the receipt of an earlier refusal; see
@@ -270,6 +290,24 @@ impl EndTriggerFeed {
         now: Instant,
         retry_window: bool,
     ) -> AppResult<()> {
+        // Auto Next (IN-006): every list item that ended advances its list
+        // by a journaled command, so replay reaches the same item on the
+        // same frame. A refusal (the operator moved on, or the list ended)
+        // is final.
+        let ends = control.borrow_mut().take_media_list_ends();
+        for end in ends {
+            execute_authority_command(
+                control,
+                store,
+                durable,
+                &development_principal()?,
+                server,
+                &media_list_end_command(end),
+                now_millis()?,
+                native.as_deref_mut(),
+                process_shutdown,
+            )?;
+        }
         let triggers = control.borrow_mut().take_media_end_triggers();
         let fed = !triggers.is_empty();
         for trigger in triggers {

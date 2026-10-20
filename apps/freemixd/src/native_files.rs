@@ -419,7 +419,7 @@ fn run_guarded(shared: &Shared, body: impl FnOnce()) {
 }
 
 /// `frame` re-dated onto the output timeline.
-fn redated(frame: &CpuVideoFrame, timing: MediaTiming) -> Option<CpuVideoFrame> {
+pub(crate) fn redated(frame: &CpuVideoFrame, timing: MediaTiming) -> Option<CpuVideoFrame> {
     let moved = CpuVideoFrame::new(timing, frame.payload().clone());
     match frame.metadata() {
         Some(metadata) => moved.with_metadata(metadata).ok(),

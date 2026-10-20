@@ -2004,6 +2004,12 @@ impl Runtime<'_> {
                     .into_iter()
                     .map(WireMessage::StillState),
             );
+            peer.initial_sync.extend(
+                control
+                    .media_list_states()
+                    .into_iter()
+                    .map(WireMessage::MediaListState),
+            );
         }
     }
 

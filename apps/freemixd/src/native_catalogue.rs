@@ -348,6 +348,19 @@ impl NativeDaemon {
             .map(|(input, key)| (*input, key.clone()))
             .collect::<Vec<_>>();
 
+        // A media list moving to an item of another file (IN-006) holds the
+        // last picture of the item before until the new file presents, so
+        // the swap never flashes black on air.
+        let held = replaced
+            .iter()
+            .filter(|input| project.media_list(**input).is_some())
+            .filter_map(|input| {
+                self.playback
+                    .latest_frames()
+                    .get(*input)
+                    .map(|frame| (*input, frame))
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut resolved = self.resolved_sources.as_ref().clone();
         for input in removed.iter().chain(&replaced) {
             self.files.remove(*input);
@@ -420,6 +433,10 @@ impl NativeDaemon {
                                 },
                             )
                             .map_err(AppFailure)?;
+                        let seed = held
+                            .get(&input)
+                            .and_then(|frame| native_files::redated(frame, seed.timing()))
+                            .unwrap_or(seed);
                         resolved.push(NativeResolvedSource::LocalVideo { input, path });
                         pushed.push(input);
                         Some(seed)
