@@ -13880,6 +13880,47 @@ fn remote_system_audio_commands_send_exact_payloads() {
     );
 }
 
+/// Every malformed `input-add-screen-capture` is refused with its reason.
+fn assert_bad_screen_capture_inputs_refused(context: &ContractContext) {
+    for (arguments, message) in [
+        (vec!["42", "Bad", "region", "0"], "capture target"),
+        (
+            vec!["42", "Bad", "screen", "64"],
+            "invalid screen capture input",
+        ),
+        (
+            vec!["42", "Bad", "screen", "0", "--fps", "61"],
+            "invalid screen capture input",
+        ),
+        (
+            vec!["42", "Bad", "screen", "0", "--match", "any"],
+            "invalid screen capture input",
+        ),
+        (vec!["42", "Bad", "screen", "0", "--crop", "1,2,3"], "crop"),
+        (
+            vec!["42", "Bad", "screen", "0", "--cursor", "maybe"],
+            "cursor",
+        ),
+        (
+            vec!["42", "Bad", "window", "", ""],
+            "invalid screen capture input",
+        ),
+        (vec!["42", "Bad", "screen", "0", "--key", "k"], "--key"),
+        (
+            vec!["42", "Bad", "screen", "0", "--audio", "app"],
+            "application audio needs a window capture",
+        ),
+        (
+            vec!["42", "Bad", "screen", "0", "--audio", "loud"],
+            "audio (none, system, or app)",
+        ),
+    ] {
+        let mut full = vec!["input-add-screen-capture", context.project_path()];
+        full.extend(arguments);
+        assert_failure_contains(&invoke_bounded(&full), message);
+    }
+}
+
 /// IN-011: local screen and window capture inputs are validated,
 /// persisted with their target, crop, cursor, rate, slate, and audio, and
 /// listed idle; application audio needs a window target.
@@ -13934,43 +13975,7 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         "--audio",
         "system",
     ]));
-    for (arguments, message) in [
-        (vec!["42", "Bad", "region", "0"], "capture target"),
-        (
-            vec!["42", "Bad", "screen", "64"],
-            "invalid screen capture input",
-        ),
-        (
-            vec!["42", "Bad", "screen", "0", "--fps", "61"],
-            "invalid screen capture input",
-        ),
-        (
-            vec!["42", "Bad", "screen", "0", "--match", "any"],
-            "invalid screen capture input",
-        ),
-        (vec!["42", "Bad", "screen", "0", "--crop", "1,2,3"], "crop"),
-        (
-            vec!["42", "Bad", "screen", "0", "--cursor", "maybe"],
-            "cursor",
-        ),
-        (
-            vec!["42", "Bad", "window", "", ""],
-            "invalid screen capture input",
-        ),
-        (vec!["42", "Bad", "screen", "0", "--key", "k"], "--key"),
-        (
-            vec!["42", "Bad", "screen", "0", "--audio", "app"],
-            "application audio needs a window capture",
-        ),
-        (
-            vec!["42", "Bad", "screen", "0", "--audio", "loud"],
-            "audio (none, system, or app)",
-        ),
-    ] {
-        let mut full = vec!["input-add-screen-capture", context.project_path()];
-        full.extend(arguments);
-        assert_failure_contains(&invoke_bounded(&full), message);
-    }
+    assert_bad_screen_capture_inputs_refused(&context);
     // The window a Wayland server's sharing dialog picks (Protocol 2.85).
     assert_success(&invoke_bounded(&[
         "input-add-screen-capture",
