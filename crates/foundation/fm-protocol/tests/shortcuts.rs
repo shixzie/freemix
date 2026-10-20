@@ -462,3 +462,21 @@ fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
         live_lan_status: fm_protocol::LiveLanStatus::default(),
     }
 }
+
+/// `osc=-` is the wire's "no OSC name", so `-` itself can never be an OSC
+/// name: it would encode as none and a client would lose the address the
+/// project answers.
+#[test]
+fn a_lone_dash_is_not_an_osc_name() {
+    assert!(!fm_protocol::shortcut_osc_is_valid("-"));
+    assert!(fm_protocol::shortcut_osc_is_valid("-a"));
+    let mut dash = spec(WireShortcutAction::Script { script: 1 });
+    dash.osc = Some("-".to_owned());
+    assert!(
+        encode_line(&command(CommandPayload::SetShortcut {
+            shortcut: 1,
+            spec: Box::new(dash),
+        }))
+        .is_err()
+    );
+}

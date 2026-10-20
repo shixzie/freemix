@@ -2570,7 +2570,8 @@ OSC addresses that run show actions.
 - `key` is `-` or `<key>.<command>.<shift>.<alt>`: a key name of 1 to 16
   ASCII letters and digits (the console's names: `F9`, `J`, `9`, `PageUp`)
   and `0`/`1` for Ctrl (Cmd on macOS), Shift, and Alt. `osc` is `-` or 1 to
-  32 lowercase ASCII letters, digits, `-`, and `_`; Studio's OSC listener
+  32 lowercase ASCII letters, digits, `-`, and `_` other than a lone `-`
+  (which means none); Studio's OSC listener
   answers `/freemix/user/<osc>` (no arguments) with a fire.
 - `action` is `actions:<tokens>` (1 to 16 `/`-separated cue action tokens,
   no `wait` or `delay`, Program taken at most once, at most 512 bytes of

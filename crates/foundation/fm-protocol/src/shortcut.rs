@@ -93,7 +93,7 @@ pub struct ShortcutSpec {
     pub enabled: bool,
     pub key: Option<WireShortcutKey>,
     /// 1 to [`MAX_SHORTCUT_OSC_BYTES`] lowercase ASCII letters, digits,
-    /// `-`, and `_`.
+    /// `-`, and `_`, but not a lone `-`.
     pub osc: Option<String>,
     pub action: WireShortcutAction,
 }
@@ -155,10 +155,12 @@ pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
         && key.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
-/// Whether `name` is a valid OSC name.
+/// Whether `name` is a valid OSC name. A lone `-` is not: the `osc` field
+/// writes it for "no OSC name".
 #[must_use]
 pub fn shortcut_osc_is_valid(name: &str) -> bool {
     !name.is_empty()
+        && name != "-"
         && name.len() <= MAX_SHORTCUT_OSC_BYTES
         && name.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')

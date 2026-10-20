@@ -163,8 +163,8 @@ pub enum ShortcutError {
     InvalidName,
     /// The key name is empty, too long, or not ASCII letters and digits.
     InvalidKey,
-    /// The OSC name is empty, too long, or not lowercase ASCII letters,
-    /// digits, `-`, and `_`.
+    /// The OSC name is empty, too long, a lone `-`, or not lowercase ASCII
+    /// letters, digits, `-`, and `_`.
     InvalidOsc,
     /// The action list is empty or too long.
     InvalidActionCount,
@@ -258,10 +258,12 @@ pub fn shortcut_name_is_valid(name: &str) -> bool {
 }
 
 /// Whether `name` is a valid OSC name: 1 to [`MAX_SHORTCUT_OSC_BYTES`]
-/// lowercase ASCII letters, digits, `-`, and `_`.
+/// lowercase ASCII letters, digits, `-`, and `_`, but not a lone `-`
+/// (the protocol's "no OSC name").
 #[must_use]
 pub fn shortcut_osc_is_valid(name: &str) -> bool {
     !name.is_empty()
+        && name != "-"
         && name.len() <= MAX_SHORTCUT_OSC_BYTES
         && name.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')

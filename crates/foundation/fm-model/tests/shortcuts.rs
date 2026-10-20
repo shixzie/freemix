@@ -57,7 +57,8 @@ fn a_definition_is_bounded() {
             "{key:?}"
         );
     }
-    for osc in ["", "Intro", "in/tro", "in tro", &"a".repeat(33)] {
+    // `-` alone is the wire's "no OSC name" (Protocol 2.72).
+    for osc in ["", "-", "Intro", "in/tro", "in tro", &"a".repeat(33)] {
         let invalid = Shortcut {
             osc: Some(osc.to_owned()),
             ..shortcut(1)
