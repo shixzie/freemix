@@ -74,6 +74,7 @@ use fm_titles::{AnimSample, TitleAir};
 use fm_types::{InputId, VideoDimensions};
 use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
+use crate::documents::DocumentPages;
 use crate::grading::GradeCache;
 use crate::scene_render;
 use crate::stills::{SlidesShown, StillPictures};
@@ -376,6 +377,9 @@ pub(crate) struct SimulatedMonitorTap {
     built_revision: Option<u64>,
     /// Title templates and fonts loaded at startup.
     titles: Arc<TitleAssets>,
+    /// The bundle's documents, whose current pages document inputs show
+    /// (IN-014).
+    documents: Arc<DocumentPages>,
     /// The per-input and program grades of the depicted revision.
     grades: Arc<CompiledProjectGrades>,
     /// Scene compositions used by the most recent cadence step.
@@ -416,6 +420,11 @@ impl SimulatedMonitorTap {
             titles,
             ..Self::default()
         }
+    }
+
+    /// This tap, rendering document inputs from `documents` (IN-014).
+    pub(crate) fn with_documents(self, documents: Arc<DocumentPages>) -> Self {
+        Self { documents, ..self }
     }
 
     /// Cadence and rendering against an explicit realized state. Takes the
@@ -562,6 +571,22 @@ impl SimulatedMonitorTap {
                 Some(grade) => fm_compositor::apply_grade(&flat, grade).ok().map(Arc::new),
                 None => Some(flat),
             };
+        }
+        // A document input shows its current page over black (IN-014).
+        if let Some(document) = project.document(input) {
+            let pipeline = self.pipeline.as_ref()?;
+            let page = self.documents.render(
+                &document.asset_uri,
+                document.page,
+                pipeline.width(),
+                pipeline.height(),
+            )?;
+            let picture = crate::documents::page_over_black(&page)?;
+            return match self.grades.input(input) {
+                Some(grade) => fm_compositor::apply_grade(&picture, grade).ok(),
+                None => Some(picture),
+            }
+            .map(Arc::new);
         }
         // Other non-simulated inputs are never registered, so they render
         // nothing. A simulated input carries its input grade.
@@ -1000,8 +1025,12 @@ impl SimulatedMonitorWorker {
     /// # Errors
     ///
     /// Returns the operating system error when the thread cannot start.
-    pub(crate) fn spawn(server: ServerIdentity, titles: Arc<TitleAssets>) -> std::io::Result<Self> {
-        let mut tap = SimulatedMonitorTap::with_titles(titles);
+    pub(crate) fn spawn(
+        server: ServerIdentity,
+        titles: Arc<TitleAssets>,
+        documents: Arc<DocumentPages>,
+    ) -> std::io::Result<Self> {
+        let mut tap = SimulatedMonitorTap::with_titles(titles).with_documents(documents);
         Self::spawn_with(Box::new(move |work, now, emit| {
             if let Some((state, work)) = work {
                 tap.grades = Arc::clone(&work.grades);

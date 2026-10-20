@@ -2001,6 +2001,7 @@ dependencies = [
  "fm-model",
  "fm-observability",
  "fm-persistence",
+ "fm-presentations",
  "fm-protocol",
  "fm-record",
  "fm-scheduler",

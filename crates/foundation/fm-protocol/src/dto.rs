@@ -2448,8 +2448,9 @@ pub struct SnapshotMessage {
     /// 2.37).
     pub media_states: u16,
     /// How many [`crate::PagedStateMessage`] records follow this snapshot
-    /// (IN-014): one per paged input, ascending by input, after the
-    /// `media_state` records.
+    /// (IN-014): one per paged input, ascending by input, at most
+    /// [`crate::MAX_PAGED_STATES`], last of its follow-on records (after
+    /// the `script_state` records).
     pub paged_states: u16,
     /// How many [`crate::CueListStateMessage`] records follow this snapshot
     /// (after its media states), one per cue list in project order, at

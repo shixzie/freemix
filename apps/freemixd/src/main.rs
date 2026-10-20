@@ -100,6 +100,7 @@ mod clock_retry;
 mod cue_clock;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
+mod documents;
 mod grading;
 mod hls_server;
 mod input_thumbnails;
@@ -11583,6 +11584,14 @@ fn replay_journal(
     let server = control_server_identity(&control, project_id);
     let principal = development_principal()?;
     let mut budget = IdleReplayBudget::new(durable.project().settings().frame_rate);
+    // Documents are probed (never converted) so each replayed page step
+    // resolves against the page count it first did (IN-014).
+    let replayed = ReplayedMutations {
+        documents: bundle_assets
+            .assets_root
+            .as_ref()
+            .map(|root| Arc::new(documents::DocumentPages::new(root, None))),
+    };
     for batch in batches {
         let recorded = journal::decode_mutation(batch.payload())?;
         if recorded.position.revision != batch.revision() {
@@ -11605,7 +11614,7 @@ fn replay_journal(
         )?;
         execute_durable_command(
             &mut control,
-            &ReplayedMutations,
+            &replayed,
             &mut durable,
             &principal,
             &server,
@@ -11810,6 +11819,9 @@ type TitleTemplates = std::collections::BTreeMap<InputId, fm_titles::TitleTempla
 struct BundleAssets {
     titles: TitleTemplates,
     luts: std::collections::BTreeMap<fm_model::LutId, fm_engine::EngineLut>,
+    /// Where document assets are read from (IN-014); `None` without a
+    /// bundle.
+    assets_root: Option<PathBuf>,
 }
 
 /// Loads the title templates (see [`load_title_templates`]) and the LUTs
@@ -11821,6 +11833,7 @@ fn load_bundle_assets(
     Ok(BundleAssets {
         titles: load_title_templates(store, project)?,
         luts: grading::load_grade_luts(store, project),
+        assets_root: Some(store.assets_root()),
     })
 }
 
@@ -11995,6 +12008,10 @@ fn restore_presets_favorites_and_media(
         }
         if let fm_model::InputKind::Device { capture, .. } = &input.kind {
             show.set_capture_settings(input.id, capture.clone())?;
+        }
+        // A document opens on the page it was left on (IN-014).
+        if let fm_model::InputKind::Document(document) = &input.kind {
+            show.set_paged_page(input.id, document.page)?;
         }
     }
     show.restore_input_lifecycle(
@@ -12640,6 +12657,9 @@ fn handle_client(
                     &WireMessage::AudioStripDspState(state),
                 )?;
             }
+            for state in control.borrow().paged_states() {
+                write_session_message(&mut writer, &mut session, &WireMessage::PagedState(state))?;
+            }
         }
         SyncPayload::Resume(events) => {
             for event in events {
@@ -13269,6 +13289,10 @@ impl DurableStore for GroupRecorder<'_> {
         self.store.busy()
     }
 
+    fn documents(&self) -> Option<&Arc<documents::DocumentPages>> {
+        self.store.documents()
+    }
+
     fn stage_title_animations(
         &self,
         revision: u64,
@@ -13628,7 +13652,7 @@ fn importable_host_path(uri: &str) -> Option<&Path> {
     let path = Path::new(uri);
     (!uri.starts_with(fm_model::MEDIA_ASSET_URI_PREFIX)
         && path.is_absolute()
-        && (fm_model::is_media_file_name(uri) || fm_types::still::is_image_file_name(uri))
+        && (fm_model::is_importable_file_name(uri) || fm_types::still::is_image_file_name(uri))
         && path.is_file())
     .then_some(path)
 }
@@ -14355,6 +14379,11 @@ fn execute_durable_command_with_ticks(
         &ServerIdentity,
     ) -> AppResult<Vec<RuntimeEventMessage>>,
 ) -> AppResult<DurableExecution> {
+    // Every document's page count is known before the command runs, live
+    // and in replay alike, so a page step resolves the same way (IN-014).
+    if let Some(documents) = store.documents() {
+        documents::sync(control, server, documents)?;
+    }
     // Nothing commits before `record`, so a refusal reports this revision.
     let current_revision = control.diagnostics().current_revision;
     let preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
@@ -14461,6 +14490,10 @@ fn execute_durable_command_with_ticks(
     }
 
     let submission = prepared.commit()?;
+    // A document the command added or replaced reports its pages now.
+    if let Some(documents) = store.documents() {
+        documents::sync(control, server, documents)?;
+    }
     let mut runtime_events = Vec::new();
     for _ in 0..ticks {
         runtime_events.extend(tick(control, server)?);
@@ -14592,6 +14625,7 @@ fn command_base_ticks(
         | CommandPayload::Media { .. }
         | CommandPayload::PageNavigate { .. }
         | CommandPayload::MediaList { .. }
+        | CommandPayload::PagedInput { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::AudioMixer(_)
@@ -14811,6 +14845,18 @@ fn stored_project_with_receipts(
                         "project cannot take media input {input}'s playback: {error}"
                     ))
                 })?;
+        }
+    }
+    // A document's page lives beside its asset (IN-014).
+    for (&input, &page) in show.paged_inputs() {
+        if project
+            .document(input)
+            .is_some_and(|document| document.page != page)
+            && !project.set_document_page(input, page)
+        {
+            return Err(
+                AppFailure(format!("project cannot take document input {input}'s page")).into(),
+            );
         }
     }
     // Capture settings live beside the device source (IN-001).
@@ -27818,6 +27864,7 @@ mod tests {
         let assets = BundleAssets {
             titles: [(test_input_id(3), animated_title_template(0, empty))].into(),
             luts: std::collections::BTreeMap::new(),
+            assets_root: None,
         };
         let mut control = ControlService::new(
             restore_engine_with_titles(&durable, &assets).unwrap(),
@@ -27897,6 +27944,7 @@ mod tests {
             let assets = BundleAssets {
                 titles: [(test_input_id(3), animated_title_template(0, empty.clone()))].into(),
                 luts: std::collections::BTreeMap::new(),
+                assets_root: None,
             };
             let mut control = ControlService::new(
                 restore_engine_with_titles(&manifest, &assets).unwrap(),

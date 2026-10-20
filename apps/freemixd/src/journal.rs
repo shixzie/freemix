@@ -27,7 +27,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -204,6 +204,13 @@ pub(crate) trait DurableStore {
     fn discard_imported_media(&self, _asset_uri: &str) -> AppResult<()> {
         Ok(())
     }
+
+    /// The document assets of the bundle this store records (IN-014),
+    /// which every command's page steps resolve against; `None` without a
+    /// bundle.
+    fn documents(&self) -> Option<&Arc<crate::documents::DocumentPages>> {
+        None
+    }
 }
 
 /// One command of a group commit ([`DurableStore::record_group`]): what
@@ -298,6 +305,8 @@ pub(crate) struct DurableJournal {
     appends: RefCell<VecDeque<Duration>>,
     /// A background progress write failed and has not succeeded since.
     progress_failing: Cell<bool>,
+    /// The bundle's documents (IN-014), shared with the page renderers.
+    documents: Arc<crate::documents::DocumentPages>,
 }
 
 /// The environment variable that makes the persistence worker report when
@@ -412,6 +421,9 @@ impl DurableJournal {
     /// Opens `store`'s journal writer on a new persistence worker, failing
     /// as opening the writer fails.
     pub(crate) fn open(store: &ProjectStore) -> AppResult<Self> {
+        let documents = Arc::new(crate::documents::DocumentPages::with_host_converter(
+            store.assets_root(),
+        ));
         let store = store.clone();
         let (jobs, queue) = mpsc::channel();
         let (finished_sender, finished) = mpsc::channel();
@@ -454,6 +466,7 @@ impl DurableJournal {
             checkpoints_requested: Cell::new(0),
             appends: RefCell::new(VecDeque::new()),
             progress_failing: Cell::new(false),
+            documents,
         })
     }
 
@@ -595,6 +608,10 @@ impl Drop for DurableJournal {
 }
 
 impl DurableStore for DurableJournal {
+    fn documents(&self) -> Option<&Arc<crate::documents::DocumentPages>> {
+        Some(&self.documents)
+    }
+
     fn import_media_path(&self, path: &std::path::Path) -> AppResult<Option<(String, bool)>> {
         self.call(|reply| Job::Import {
             path: path.to_path_buf(),
@@ -1008,7 +1025,11 @@ impl Worker<'_> {
 }
 
 /// Replay reruns commands that are already durable, so it records nothing.
-pub(crate) struct ReplayedMutations;
+pub(crate) struct ReplayedMutations {
+    /// The bundle's documents, probed so replayed page steps resolve as
+    /// they first did (IN-014).
+    pub(crate) documents: Option<Arc<crate::documents::DocumentPages>>,
+}
 
 impl DurableStore for ReplayedMutations {
     fn record(
@@ -1023,6 +1044,10 @@ impl DurableStore for ReplayedMutations {
 
     fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
         Ok(())
+    }
+
+    fn documents(&self) -> Option<&Arc<crate::documents::DocumentPages>> {
+        self.documents.as_ref()
     }
 }
 

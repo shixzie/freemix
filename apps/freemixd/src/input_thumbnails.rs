@@ -122,6 +122,9 @@ pub(crate) struct ThumbnailRenderer {
     server: ServerIdentity,
     /// The title templates, fonts, and images title inputs draw with.
     titles: Arc<TitleAssets>,
+    /// The bundle's documents, whose current pages document inputs show
+    /// (IN-014).
+    documents: Arc<crate::documents::DocumentPages>,
     /// The simulated pipeline at the fitted thumbnail size, per revision.
     pipeline: Option<(u64, Option<SimulatedPipeline>)>,
     entries: BTreeMap<InputId, Entry>,
@@ -142,6 +145,7 @@ impl ThumbnailRenderer {
         Self {
             server,
             titles,
+            documents: Arc::default(),
             pipeline: None,
             entries: BTreeMap::new(),
             stills: StillPictures::default(),
@@ -151,6 +155,11 @@ impl ThumbnailRenderer {
             #[cfg(test)]
             attempts: 0,
         }
+    }
+
+    /// This renderer, drawing document inputs from `documents` (IN-014).
+    pub(crate) fn with_documents(self, documents: Arc<crate::documents::DocumentPages>) -> Self {
+        Self { documents, ..self }
     }
 
     /// Renders every input due at `now` and hands each record to send to
@@ -365,6 +374,14 @@ impl ThumbnailRenderer {
                         .map(|(_, shown)| shown)?;
                     self.stills
                         .slides(self.titles.store()?, shown, (width, height))?
+                }
+                // A document shows its current page on either daemon's
+                // thumbnail as it does on Program (IN-014).
+                InputKind::Document(document) => {
+                    let page =
+                        self.documents
+                            .render(&document.asset_uri, document.page, width, height)?;
+                    crate::documents::page_over_black(&page)?
                 }
                 InputKind::Media { .. } => {
                     synthetic_media_picture(id, width, height, media_playhead(work, id))?
@@ -749,7 +766,11 @@ impl ThumbnailWorker {
     /// # Errors
     ///
     /// Returns the operating system error when the thread cannot start.
-    pub(crate) fn spawn(server: ServerIdentity, titles: Arc<TitleAssets>) -> std::io::Result<Self> {
+    pub(crate) fn spawn(
+        server: ServerIdentity,
+        titles: Arc<TitleAssets>,
+        documents: Arc<crate::documents::DocumentPages>,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             slot: Mutex::new(Slot {
                 work: None,
@@ -761,7 +782,8 @@ impl ThumbnailWorker {
             wake: Condvar::new(),
         });
         let worker_shared = Arc::clone(&shared);
-        let mut renderer = ThumbnailRenderer::new(server, Instant::now(), titles);
+        let mut renderer =
+            ThumbnailRenderer::new(server, Instant::now(), titles).with_documents(documents);
         let worker = thread::Builder::new()
             .name("freemixd-thumbnails".to_owned())
             .spawn(move || run_worker(&worker_shared, &mut renderer))?;
@@ -1187,7 +1209,7 @@ mod tests {
 
     #[test]
     fn worker_renders_off_the_loop_and_stops_without_demand() {
-        let mut worker = ThumbnailWorker::spawn(server(), Arc::default()).unwrap();
+        let mut worker = ThumbnailWorker::spawn(server(), Arc::default(), Arc::default()).unwrap();
         let project = project(vec![solid(1, 200)]);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut records = Vec::new();

@@ -677,6 +677,9 @@ pub(super) fn run(
         crate::system_audio_devices::enumerator(native.is_some()),
         crate::system_audio_devices::REUSE_FOR,
     )?;
+    // Document pages render off this loop too (IN-014).
+    let documents = store.documents().cloned().unwrap_or_default();
+    let document_pages = crate::documents::PageWorker::spawn(Arc::clone(&documents))?;
     let runtime = Runtime {
         server,
         authority,
@@ -686,6 +689,7 @@ pub(super) fn run(
         title_previews: &title_previews,
         system_audio_devices: &system_audio_devices,
         web_access: web.map(WebGateway::access),
+        document_pages: &document_pages,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
@@ -704,12 +708,17 @@ pub(super) fn run(
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     // Input thumbnails render off this loop too (Protocol 2.59).
-    let mut thumbnails = ThumbnailWorker::spawn(authority.clone(), Arc::clone(titles))?;
+    let mut thumbnails = ThumbnailWorker::spawn(
+        authority.clone(),
+        Arc::clone(titles),
+        Arc::clone(&documents),
+    )?;
     let mut thumbnail_grades = crate::grading::GradeCache::default();
     let mut simulated_monitor = if native.is_none() {
         Some(SimulatedMonitorWorker::spawn(
             authority.clone(),
             Arc::clone(titles),
+            Arc::clone(&documents),
         )?)
     } else {
         None
@@ -965,6 +974,24 @@ pub(super) fn run(
                 {
                     close[index] = true;
                 }
+            }
+        }
+        // A document whose status changed off this loop (a conversion
+        // finished, or the daemon just started) reports it (IN-014).
+        if documents.take_changed() {
+            crate::documents::sync(&mut control.borrow_mut(), authority, &documents)?;
+        }
+        // A page answer is lossy: one a peer cannot take now is dropped,
+        // and the client asks again for what it still shows (IN-014).
+        for (id, answer) in document_pages.take_finished() {
+            if let Some(index) = peers.iter().position(|peer| peer.id == id)
+                && !close[index]
+                && peers[index].phase == Phase::Active
+                && let Err(refusal) =
+                    peers[index].queue(&WireMessage::PagedPage(answer), Accounting::Session)
+                && !refusal.transient()
+            {
+                close[index] = true;
             }
         }
         // A listed device answer waits while its peer resynchronizes or
@@ -1466,6 +1493,8 @@ struct Runtime<'a> {
     system_audio_devices: &'a crate::system_audio_devices::SystemAudioDevices,
     /// The web gateway's pairing and devices (Protocol 2.71), when it runs.
     web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
+    /// Answers document page requests off this loop (IN-014).
+    document_pages: &'a crate::documents::PageWorker,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
@@ -1830,6 +1859,19 @@ impl Runtime<'_> {
                     .submit(peer.id, request.request_id);
                 Ok(())
             }
+            // A document page's notes or thumbnail (IN-014) are read off
+            // this loop and sent on a later pass.
+            WireMessage::PagedPageRequest(request) => {
+                let input = request.input.to_domain();
+                let uri = self
+                    .control
+                    .borrow()
+                    .document_inputs()
+                    .into_iter()
+                    .find_map(|(document, uri)| (document == input).then_some(uri));
+                self.document_pages.submit(peer.id, uri, request);
+                Ok(())
+            }
             _ => {
                 peer.reply(error_message(
                     "unexpected_message",
@@ -2037,6 +2079,12 @@ impl Runtime<'_> {
                     .strip_dsp_states()
                     .into_iter()
                     .map(WireMessage::AudioStripDspState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .paged_states()
+                    .into_iter()
+                    .map(WireMessage::PagedState),
             );
         }
     }
