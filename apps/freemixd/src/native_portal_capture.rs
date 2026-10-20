@@ -12,7 +12,10 @@
 //! waits on the server's desktop. A cancelled or refused dialog, or sharing
 //! stopped on the desktop, is `denied` until the operator picks again
 //! ([`PortalSources::pick`]); a shared window that closes is `target_gone`
-//! and asked for again.
+//! and asked for again. Where asking again would reopen the dialog (no
+//! restore token), a share that ended or failed is `reopening` for half a
+//! minute and longer instead, so the operator is not prompted every few
+//! seconds; a pick asks at once.
 //!
 //! Each grant's restore token is kept per input
 //! ([`PortalSources::take_restore_tokens`]) and the session loop stores it

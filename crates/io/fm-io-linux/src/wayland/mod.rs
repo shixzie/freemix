@@ -70,6 +70,9 @@ pub const DENIED_CANCELLED: &str = "sharing was cancelled in the sharing dialog 
 /// The desktop refused without a dialog answer.
 pub const DENIED_REFUSED: &str = "the server's desktop refused to share a screen or window; pick \
      again to ask once more";
+/// A share asked for again later opens the sharing dialog again.
+pub const DIALOG_AGAIN: &str = "the sharing dialog opens again on the server's desktop when \
+     retried (pick to ask now)";
 /// The desktop paused a share that was running.
 pub const PAUSED_ON_DESKTOP: &str = "the server's desktop paused the shared stream; it shows \
      again when the desktop resumes it";
@@ -220,6 +223,7 @@ mod tests {
             DENIED_REFUSED,
             STOPPED_ON_DESKTOP,
             PAUSED_ON_DESKTOP,
+            DIALOG_AGAIN,
             NO_WINDOW_SHARING,
             NO_SCREEN_SHARING,
             NO_EMBEDDED_CURSOR,

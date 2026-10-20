@@ -11,7 +11,10 @@
 //! usually without a dialog); a stream the desktop pauses is
 //! `target_gone` until it resumes, without asking again; a failure is
 //! retried with backoff
-//! (`reopening`). The owner polls [`PortalCapture::status`],
+//! (`reopening`). Where asking again opens the desktop's sharing dialog
+//! (no restore token), a share that ended or failed after asking waits
+//! [`DIALOG_RETRY_MIN`] and longer (`reopening`, its error saying the
+//! dialog opens again), so the operator is not prompted every few seconds. The owner polls [`PortalCapture::status`],
 //! [`PortalCapture::take_picture`], and
 //! [`PortalCapture::take_restore_token`]; none of them waits on the
 //! desktop.
@@ -34,6 +37,11 @@ pub const RETRY_MIN: Duration = Duration::from_millis(500);
 pub const RETRY_MAX: Duration = Duration::from_secs(5);
 /// How long a gone target waits before it is asked for again.
 pub const GONE_WAIT: Duration = Duration::from_secs(1);
+/// The first and the longest wait before a share that ended or failed is
+/// asked for again when asking opens the sharing dialog (no restore
+/// token): the operator is not prompted every few seconds.
+pub const DIALOG_RETRY_MIN: Duration = Duration::from_secs(30);
+pub const DIALOG_RETRY_MAX: Duration = Duration::from_secs(300);
 
 /// What a capture makes of each shared picture.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -195,6 +203,7 @@ fn run(mut backend: Box<dyn PortalBackend>, shared: &Shared, request: &ShareRequ
             last_picture: None,
             pending: None,
             delivered: false,
+            asked: false,
         };
         let end = backend.share(
             &ShareRequest {
@@ -206,6 +215,9 @@ fn run(mut backend: Box<dyn PortalBackend>, shared: &Shared, request: &ShareRequ
         if sink.delivered {
             attempt = 0;
         }
+        // The desktop was asked, and asking again carries no restore token:
+        // its sharing dialog would open again.
+        let dialog = sink.asked && shared.state().token.is_none();
         let wait = match end {
             ShareEnd::Stopped => return,
             ShareEnd::Denied(reason) => {
@@ -230,7 +242,7 @@ fn run(mut backend: Box<dyn PortalBackend>, shared: &Shared, request: &ShareRequ
                 });
                 return;
             }
-            ShareEnd::Ended(reason) => {
+            ShareEnd::Ended(reason) if !dialog => {
                 shared.set(|status| {
                     *status = ScreenCaptureStatus {
                         state: ScreenCaptureState::TargetGone,
@@ -241,11 +253,19 @@ fn run(mut backend: Box<dyn PortalBackend>, shared: &Shared, request: &ShareRequ
                 });
                 GONE_WAIT
             }
-            ShareEnd::Failed(error) => {
+            ShareEnd::Ended(error) | ShareEnd::Failed(error) => {
                 attempt = attempt.saturating_add(1);
-                let backoff = RETRY_MIN
-                    .saturating_mul(1 << (attempt - 1).min(8))
-                    .min(RETRY_MAX);
+                let (first, longest) = if dialog {
+                    (DIALOG_RETRY_MIN, DIALOG_RETRY_MAX)
+                } else {
+                    (RETRY_MIN, RETRY_MAX)
+                };
+                let backoff = first.saturating_mul(1 << (attempt - 1).min(8)).min(longest);
+                let error = if dialog {
+                    format!("{}: {error}", super::DIALOG_AGAIN)
+                } else {
+                    error
+                };
                 shared.set(|status| {
                     *status = ScreenCaptureStatus {
                         state: ScreenCaptureState::Reopening {
@@ -281,6 +301,8 @@ struct Sink<'a> {
     last_picture: Option<Instant>,
     pending: Option<Pending>,
     delivered: bool,
+    /// The share asked the desktop (`Start`, which may show its dialog).
+    asked: bool,
 }
 
 impl Sink<'_> {
@@ -327,6 +349,7 @@ const CROP_KEEPS_NOTHING: &str = "the crop keeps nothing of the shared picture";
 
 impl ShareSink for Sink<'_> {
     fn awaiting_selection(&mut self) {
+        self.asked = true;
         self.shared.set(|status| {
             status.state = ScreenCaptureState::AwaitingSelection;
             status.last_error = None;
@@ -652,6 +675,59 @@ mod tests {
         });
         assert_eq!(capture.status().reopens, 0);
         assert_eq!(requests.lock().unwrap().len(), 1, "the share was kept");
+    }
+
+    fn reopening(status: &ScreenCaptureStatus) -> Option<(u32, u32)> {
+        match status.state {
+            ScreenCaptureState::Reopening {
+                attempt,
+                next_in_ms,
+            } => Some((attempt, next_in_ms)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn without_a_restore_token_the_dialog_is_not_reopened_every_few_seconds() {
+        let dialog_min = u32::try_from(DIALOG_RETRY_MIN.as_millis()).unwrap();
+        for end in [
+            ShareEnd::Failed("PipeWire: the shared stream failed".into()),
+            ShareEnd::Ended("the shared stream ended".into()),
+        ] {
+            let (capture, requests) = start(
+                vec![vec![
+                    Step::Await,
+                    Step::Grant(None),
+                    Step::Frame(4, 2, [255, 0, 0]),
+                    Step::End(end),
+                ]],
+                None,
+            );
+            settle(&capture, |status| reopening(status).is_some());
+            let status = capture.status();
+            assert_eq!(reopening(&status), Some((1, dialog_min)), "{status:?}");
+            assert!(
+                status
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with(super::super::DIALOG_AGAIN)),
+                "{status:?}"
+            );
+            std::thread::sleep(RETRY_MAX.min(GONE_WAIT) + Duration::from_millis(300));
+            assert_eq!(requests.lock().unwrap().len(), 1, "not asked again yet");
+        }
+
+        // A failure before the desktop was asked shows no dialog: retried
+        // soon.
+        let (capture, requests) = start(
+            vec![
+                vec![Step::End(ShareEnd::Failed("no bus".into()))],
+                vec![Step::Await, Step::Grant(None), Step::Frame(4, 2, [0, 0, 0])],
+            ],
+            None,
+        );
+        settle(&capture, |status| status.state == ScreenCaptureState::Live);
+        assert_eq!(requests.lock().unwrap().len(), 2);
     }
 
     #[test]
