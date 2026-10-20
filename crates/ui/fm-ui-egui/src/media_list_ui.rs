@@ -25,7 +25,7 @@ use crate::l10n::{Arg, Locale, Msg};
 use crate::media_transport::media_settings_block;
 use crate::playlist::key_button;
 use crate::theme::{
-    ERROR, KeyIcon, PREVIEW, PROGRAM, Tone, add_icon_button, caption, mono, section_label,
+    ACCENT_FILL, KeyIcon, PROGRAM, Tone, accent_color, add_icon_button, caption, section_label,
     small_button, status_chip, text_color, text_dim_color,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
@@ -253,6 +253,10 @@ pub(crate) fn draw_list(
 ) {
     let control = control_block(state);
     let edit = media_settings_block(state, input);
+    let on_air = state
+        .view
+        .as_ref()
+        .is_some_and(|view| crate::tally_state(input, view.switcher).is_realized_program());
     let mut operation = None;
     let set = |items: Vec<MediaListItemSpec>, options: MediaListOptionsSpec| {
         MediaListOperation::Set { items, options }
@@ -264,15 +268,15 @@ pub(crate) fn draw_list(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.label(section_label(l.text(Msg::MlTitle)));
+        ui.add_space(4.0);
         ui.label(
-            mono(l.format(
+            caption(l.format(
                 Msg::MlPosition,
                 &[
                     ("position", Arg::from(list.position as usize + 1)),
                     ("count", Arg::from(list.items.len())),
                 ],
             ))
-            .size(crate::theme::legible(10.5))
             .color(text_dim_color()),
         )
         .on_hover_text(l.text(Msg::MlPositionHover));
@@ -292,7 +296,7 @@ pub(crate) fn draw_list(
                 if ui
                     .add_enabled(
                         control.is_none(),
-                        key_button(&l.text(label).to_uppercase(), Some(PREVIEW), 72.0),
+                        key_button(&l.text(label).to_uppercase(), None, 72.0),
                     )
                     .hint(l.text(hover), control.unwrap_or(""))
                     .clicked()
@@ -377,18 +381,20 @@ pub(crate) fn draw_list(
     for index in shown {
         let item = &list.items[index];
         let active = item.id == list.active;
-        let fill = if active {
-            PROGRAM.gamma_multiply(0.16)
-        } else {
-            egui::Color32::TRANSPARENT
+        // The current item is red only while the list is on Program; cued
+        // off air it is the console's selection blue.
+        let (fill, stroke) = match (active, on_air) {
+            (false, _) => (egui::Color32::TRANSPARENT, Stroke::NONE),
+            (true, true) => (
+                PROGRAM.gamma_multiply(0.16),
+                Stroke::new(1.0, PROGRAM.gamma_multiply(0.8)),
+            ),
+            (true, false) => (ACCENT_FILL, Stroke::new(1.0, accent_color())),
         };
         let row = egui::Frame::new()
             .fill(fill)
-            .stroke(if active {
-                Stroke::new(1.0, PROGRAM.gamma_multiply(0.8))
-            } else {
-                Stroke::NONE
-            })
+            .stroke(stroke)
+            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS))
             .inner_margin(egui::Margin::symmetric(4, 2))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -415,7 +421,8 @@ pub(crate) fn draw_list(
                         crate::l10n::disabled_text(l, l.text(Msg::MlDragHover), edit.unwrap_or(""))
                     });
                     if active {
-                        status_chip(ui, l.text(Msg::MlActive), Tone::OnAir, 56.0)
+                        let tone = if on_air { Tone::OnAir } else { Tone::Ready };
+                        status_chip(ui, l.text(Msg::MlActive), tone, 64.0)
                             .on_hover_text(l.text(Msg::MlActiveHover));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -424,7 +431,7 @@ pub(crate) fn draw_list(
                         if add_icon_button(
                             ui,
                             edit.is_none() && !only,
-                            key_button("", Some(ERROR), ROW_KEY_WIDTH),
+                            key_button("", None, ROW_KEY_WIDTH),
                             KeyIcon::Remove,
                             l.text(Msg::MlRemoveHover),
                         )
@@ -471,7 +478,7 @@ pub(crate) fn draw_list(
                         if add_icon_button(
                             ui,
                             control.is_none() && !active,
-                            key_button("", Some(PREVIEW), ROW_KEY_WIDTH),
+                            key_button("", None, ROW_KEY_WIDTH),
                             KeyIcon::Play,
                             l.text(Msg::MlActivateHover),
                         )
@@ -603,8 +610,7 @@ pub(crate) fn draw_form(ui: &mut Ui, l: Locale, draft: &mut MediaListDraft) {
     .on_hover_text(l.text(Msg::MlFilesHover));
     let count = draft.items().map_or(0, |items| items.len());
     ui.label(
-        mono(l.format(Msg::MlFilesCount, &[("count", Arg::from(count))]))
-            .size(crate::theme::legible(10.5))
+        caption(l.format(Msg::MlFilesCount, &[("count", Arg::from(count))]))
             .color(text_dim_color()),
     );
     ui.horizontal_wrapped(|ui| {

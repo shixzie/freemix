@@ -26,7 +26,7 @@ use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::playlist::{key_button, timecode};
 use crate::theme::{
-    AMBER, PREVIEW, PROGRAM, Tone, caption, card, empty_state, mono, status_chip, text_color,
+    AMBER, PREVIEW, Tone, caption, card, empty_state, mono, status_chip, text_color,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -285,24 +285,29 @@ fn draw_bar(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let growing = settings.growing.is_some() && !transport.complete;
+        // A key is lit only while its state holds (PLAY green while the
+        // file plays, PAUSE amber while it is paused); STOP stays a neutral
+        // key, since red is reserved for on air.
+        let playing = transport.state.is_advancing();
+        let paused = transport.state == MediaTransportState::Paused;
         let mut keys = vec![
             (
                 MediaOperation::Play,
                 l.text(Msg::MediaPlay),
                 Msg::MediaPlayHover,
-                Some(PREVIEW),
+                playing.then_some(PREVIEW),
             ),
             (
                 MediaOperation::Pause,
                 l.text(Msg::PlaylistPause),
                 Msg::MediaPauseHover,
-                Some(AMBER),
+                paused.then_some(AMBER),
             ),
             (
                 MediaOperation::Stop,
                 l.text(Msg::PlaylistStop),
                 Msg::MediaStopHover,
-                Some(PROGRAM),
+                None,
             ),
         ];
         if growing {
