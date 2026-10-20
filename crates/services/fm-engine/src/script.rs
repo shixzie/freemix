@@ -78,10 +78,10 @@
 //!   its due engine frame, exactly like a waiting cue (the time the show
 //!   was down does not count).
 //! - A cue's script step runs on its cue's frame, so the script it runs
-//!   must not wait: a cue list naming such a script, or an edit adding a
-//!   wait to a script a cue runs, is refused (field issue
-//!   `script_waits`), and a step that reached a wait anyway would fail
-//!   with the `waits` budget.
+//!   must not wait: a cue list or a shortcut's cue actions naming such a
+//!   script, or an edit adding a wait to a script either runs, is refused
+//!   (field issue `script_waits`), and a step that reached a wait anyway
+//!   would fail with the `waits` budget.
 
 use fm_automation::FiredCueAction;
 use fm_command::{
@@ -148,9 +148,9 @@ pub(crate) fn waits_in_cue(script: u64, owner: &str) -> Rejection {
 ///
 /// Refuses script id zero, an invalid name or source, a script past the
 /// project bound, removing an unknown script, removing a script a cue
-/// runs, adding a wait to a script a cue runs, and changing or removing
-/// the running script. Replacing or removing a faulted script clears its
-/// fault.
+/// runs, adding a wait to a script a cue or a shortcut's cue actions run,
+/// and changing or removing the running script. Replacing or removing a
+/// faulted script clears its fault.
 pub(crate) fn apply_set(
     state: &mut ShowState,
     script: u64,
@@ -218,6 +218,14 @@ pub(crate) fn apply_set(
         })
     {
         return Err(waits_in_cue(script, &format!("cue list {}", list.id)));
+    }
+    if fm_model::script_waits(&definition.source)
+        && let Some(shortcut) = state.shortcuts().iter().find(|shortcut| {
+            matches!(&shortcut.action, fm_model::ShortcutAction::Actions(actions)
+                if actions.iter().any(|action| action.script() == Some(script)))
+        })
+    {
+        return Err(waits_in_cue(script, &format!("shortcut {}", shortcut.id)));
     }
     let next = fm_model::Script {
         id: script,

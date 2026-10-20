@@ -381,3 +381,58 @@ fn edits_are_undoable_padlocked_and_keep_keys_unique() {
     // A fire is a live operation, allowed under the padlock.
     accepted(&submit(&mut engine, "fire-locked", fire(1)));
 }
+
+/// A shortcut's cue actions run on one frame, so a script step among them
+/// cannot wait: saving such a shortcut is refused like a cue list naming
+/// a waiting script, and so is adding a wait to a script a shortcut runs.
+#[test]
+fn a_shortcut_running_a_waiting_script_is_refused_when_saved() {
+    let script = |source: &str| EngineCommand::SetScript {
+        script: 5,
+        definition: Some(EngineScriptDefinition {
+            name: "Script".to_owned(),
+            source: source.to_owned(),
+        }),
+    };
+    let script_waits = |outcome: &EngineCommandOutcome| {
+        outcome
+            .receipt
+            .rejected()
+            .expect("command should be rejected")
+            .rejection
+            .fields
+            .iter()
+            .any(|field| field.code == "script_waits")
+    };
+    let mut engine = engine();
+    accepted(&submit(&mut engine, "waits", script("wait 5\ncut 2")));
+    let refused = submit(
+        &mut engine,
+        "set",
+        set(shortcut(
+            1,
+            actions(vec![CueAction::RunScript { script: 5 }]),
+        )),
+    );
+    assert!(script_waits(&refused), "{:?}", refused.receipt);
+    assert!(engine.show().shortcut(1).is_none());
+    // A script shortcut runs the script on its own, which may wait.
+    accepted(&submit(
+        &mut engine,
+        "set-run",
+        set(shortcut(2, ShortcutAction::Script { script: 5 })),
+    ));
+
+    accepted(&submit(&mut engine, "no-wait", script("cut 2")));
+    accepted(&submit(
+        &mut engine,
+        "set-again",
+        set(shortcut(
+            1,
+            actions(vec![CueAction::RunScript { script: 5 }]),
+        )),
+    ));
+    let refused = submit(&mut engine, "add-wait", script("wait 5\ncut 2"));
+    assert!(script_waits(&refused), "{:?}", refused.receipt);
+    assert_eq!(engine.show().script(5).unwrap().source, "cut 2");
+}

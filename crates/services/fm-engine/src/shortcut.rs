@@ -74,7 +74,8 @@ fn invalid(error: &ShortcutError) -> Rejection {
 ///
 /// Refuses shortcut id zero, an invalid definition, a definition whose id
 /// differs from the command's, a key or OSC name another shortcut uses, a
-/// shortcut past the project bound, and removing an unknown shortcut.
+/// shortcut past the project bound, cue actions running a script that
+/// waits, and removing an unknown shortcut.
 pub(crate) fn apply_set(
     state: &mut ShowState,
     shortcut: u64,
@@ -101,6 +102,24 @@ pub(crate) fn apply_set(
         )));
     }
     fm_model::validate_shortcut_definition(definition).map_err(|error| invalid(&error))?;
+    // Its actions run on one frame, like a cue's: a script step among them
+    // cannot wait. A script the show lacks is refused only when fired.
+    if let ShortcutAction::Actions(actions) = &definition.action
+        && let Some(script) =
+            actions
+                .iter()
+                .filter_map(fm_model::CueAction::script)
+                .find(|script| {
+                    state
+                        .script(*script)
+                        .is_some_and(|found| fm_model::script_waits(&found.source))
+                })
+    {
+        return Err(crate::script::waits_in_cue(
+            script,
+            &format!("shortcut {shortcut}"),
+        ));
+    }
     let mut next = state.shortcuts().to_vec();
     match existing {
         Some(index) => next[index] = definition.clone(),
