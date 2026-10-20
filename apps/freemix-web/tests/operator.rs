@@ -93,6 +93,7 @@ fn snapshot(show: &Show) -> WireMessage {
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
         system_audio_inputs: Vec::new(),
+        screen_capture_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         engine: EngineIdentity {
             engine_id: "engine-operator".to_owned(),

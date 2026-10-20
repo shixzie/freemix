@@ -213,6 +213,7 @@ fn events_carry_the_redacted_config() {
         name: "Camera".into(),
         network_stream: Some(Box::new(config)),
         system_audio: None,
+        screen_capture: None,
         capture: None,
         still: None,
     });
@@ -223,6 +224,7 @@ fn events_carry_the_redacted_config() {
         name: "Slate".into(),
         network_stream: None,
         system_audio: None,
+        screen_capture: None,
         capture: None,
         still: None,
     });
@@ -580,6 +582,7 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         display_output_states: Vec::new(),
         network_streams,
         system_audio_inputs: Vec::new(),
+        screen_capture_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),

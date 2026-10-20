@@ -2948,3 +2948,102 @@ fn image_and_slideshow_inputs_round_trip_exactly_and_reject_malformed_values() {
         );
     }
 }
+
+/// IN-011: a screen or window capture input round-trips its target, crop,
+/// cursor, rate, and stall slate exactly, and a missing, unknown, or
+/// unusable value is refused.
+#[test]
+fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
+    use fm_types::network_stream::StallSlate;
+    use fm_types::screen_capture::{
+        ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureTarget, TitleMatch, WindowRule,
+    };
+
+    let temp = TestDirectory::new("screen-capture");
+    let store = temp.store("show");
+    let mut project = rich_project();
+    let window = project.inputs()[0].id;
+    let screen = project.inputs()[1].id;
+    let slides = ScreenCaptureConfig {
+        target: ScreenCaptureTarget::Window(WindowRule {
+            app: "Keynote".into(),
+            title: "Deck \"final\"".into(),
+            title_match: TitleMatch::Contains,
+            window_id: Some(4_242),
+        }),
+        crop: ScreenCaptureCrop {
+            left: 1,
+            top: 28,
+            right: 3,
+            bottom: 2,
+        },
+        cursor: false,
+        fps: 25,
+        slate: StallSlate::Black,
+    };
+    let desktop = ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 1 });
+    project
+        .replace_input_source(window, InputKind::ScreenCapture(slides.clone()), Vec::new())
+        .unwrap();
+    project
+        .replace_input_source(
+            screen,
+            InputKind::ScreenCapture(desktop.clone()),
+            Vec::new(),
+        )
+        .unwrap();
+    let stored = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+    let loaded = store.load().unwrap();
+    let kind = |id| {
+        loaded
+            .project()
+            .inputs()
+            .iter()
+            .find(|input| input.id == id)
+            .unwrap()
+            .kind
+            .clone()
+    };
+    assert_eq!(kind(window), InputKind::ScreenCapture(slides));
+    assert_eq!(kind(screen), InputKind::ScreenCapture(desktop));
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    let window_object = "{\"type\": \"screen_capture\", \"target\": {\"kind\": \"window\", \"app\": \"Keynote\", \"title\": \"Deck \\\"final\\\"\", \"title_match\": \"contains\", \"window_id\": 4242}, \"crop\": {\"left\": 1, \"top\": 28, \"right\": 3, \"bottom\": 2}, \"cursor\": false, \"fps\": 25, \"stall\": \"black\"}";
+    assert!(encoded.contains(window_object), "{encoded}");
+    let screen_object = "{\"type\": \"screen_capture\", \"target\": {\"kind\": \"screen\", \"index\": 1}, \"crop\": {\"left\": 0, \"top\": 0, \"right\": 0, \"bottom\": 0}, \"cursor\": true, \"fps\": 30, \"stall\": \"freeze\"}";
+    assert!(encoded.contains(screen_object), "{encoded}");
+
+    for (from, to) in [
+        ("\"kind\": \"window\"", "\"kind\": \"region\""),
+        (
+            "\"title_match\": \"contains\"",
+            "\"title_match\": \"regex\"",
+        ),
+        ("\"window_id\": 4242", "\"window_id\": 0"),
+        ("\"app\": \"Keynote\", ", ""),
+        ("\"index\": 1", "\"index\": 64"),
+        ("\"left\": 1", "\"left\": 16385"),
+        ("\"cursor\": false", "\"cursor\": 0"),
+        ("\"fps\": 25", "\"fps\": 0"),
+        ("\"fps\": 25", "\"fps\": 61"),
+        ("\"stall\": \"black\"", "\"stall\": \"slate\""),
+        (
+            "\"stall\": \"black\"}",
+            "\"stall\": \"black\", \"extra\": true}",
+        ),
+    ] {
+        let invalid = encoded.replacen(from, to, 1);
+        assert_ne!(invalid, encoded, "{from}");
+        fs::write(store.manifest_path(), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}"
+        );
+    }
+}

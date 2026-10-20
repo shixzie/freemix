@@ -227,6 +227,24 @@ pub struct DeviceInput {
     /// `options`, and `path` name the audio input, `audio` is `None`, and
     /// the receiver paces its pictures from the audio.
     pub audio_only: bool,
+    /// Fit the pictures into the program picture keeping their aspect
+    /// ratio, with black bars, rather than stretching them (IN-011).
+    pub letterbox: bool,
+    /// Environment variables the child keeps beside `PATH`, such as
+    /// `DISPLAY` and `XAUTHORITY` for an X11 screen capture (IN-011).
+    pub environment: Vec<String>,
+    /// A helper whose standard output becomes the child's standard input,
+    /// such as a screen capture helper that writes raw pictures (IN-011).
+    /// It is started before each connection and killed after it.
+    pub feeder: Option<DeviceFeeder>,
+}
+
+/// A helper process feeding a [`DeviceInput`]'s child through a pipe.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceFeeder {
+    /// The helper executable.
+    pub program: std::path::PathBuf,
+    pub args: Vec<String>,
 }
 
 /// The audio input of a [`DeviceInput`].
@@ -326,6 +344,9 @@ impl NetworkInputConfig {
                 field_order: None,
                 audio: None,
                 audio_only: true,
+                letterbox: false,
+                environment: Vec::new(),
+                feeder: None,
             },
             settings,
             2,
@@ -1358,14 +1379,22 @@ fn device_arguments(
         .field_order
         .map(|order| format!("yadif=mode=send_frame:parity={order},"))
         .unwrap_or_default();
+    let (width, height) = (config.width, config.height);
+    let scale = if device.letterbox {
+        // Fit inside the program picture and centre on opaque black.
+        format!(
+            "scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1,\
+             pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    } else {
+        format!("scale={width}:{height}")
+    };
     args.extend([
         "-map".into(),
         "0:v:0".into(),
         "-vf".into(),
         format!(
-            "{deinterlace}scale={}:{},fps=fps={}/{}:start_time=0,format=rgba",
-            config.width,
-            config.height,
+            "{deinterlace}{scale},fps=fps={}/{}:start_time=0,format=rgba",
             rate.numerator(),
             rate.denominator()
         ),
@@ -1472,6 +1501,32 @@ const AUDIO_SERVER_ENVIRONMENT: &[&str] = &[
     "PULSE_RUNTIME_PATH",
 ];
 
+/// Starts a device's feeder with its standard output piped, the same
+/// retained environment as the child, and its messages discarded.
+fn spawn_feeder(plan: &Plan, spec: &DeviceFeeder) -> Result<Child, String> {
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear();
+    let environment = plan
+        .config
+        .device
+        .iter()
+        .flat_map(|device| device.environment.iter().map(String::as_str));
+    for name in ["PATH", "HOME", "TMPDIR"].into_iter().chain(environment) {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.spawn().map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => "capture helper unavailable".to_owned(),
+        kind => format!("capture helper spawn failed: {kind:?}"),
+    })
+}
+
 fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     #[cfg(target_os = "linux")]
     let mut command = match parent_death_wrapper() {
@@ -1505,7 +1560,17 @@ fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     } else {
         &[]
     };
-    for name in retained.iter().chain(audio_server) {
+    let device_environment = plan
+        .config
+        .device
+        .iter()
+        .flat_map(|device| device.environment.iter().map(String::as_str));
+    for name in retained
+        .iter()
+        .chain(audio_server)
+        .copied()
+        .chain(device_environment)
+    {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
@@ -1619,30 +1684,44 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
     }
 }
 
+/// Resets the shared state for a new connection: its generation and
+/// whether the source has no audio, or `None` once shut down.
+fn begin_connection(shared: &Shared, plan: &Plan) -> Option<(u64, bool)> {
+    let mut inner = shared.lock();
+    if inner.shutdown {
+        return None;
+    }
+    inner.generation = inner.generation.wrapping_add(1);
+    inner.frames.clear();
+    if let Some(clock) = inner.clock.as_mut() {
+        clock.restart();
+    }
+    inner.delivered = false;
+    inner.last_data = None;
+    inner.empty_pulls = 0;
+    inner.saw_empty_output = false;
+    inner.audio_input_failed = false;
+    inner.rejected_peer = false;
+    inner.in_input_dump = false;
+    if plan.listens() {
+        inner.state = NetworkStreamState::Listening;
+    }
+    inner.bitrate.clear();
+    Some((inner.generation, inner.audio_absent))
+}
+
+/// Ends a connection's feeder process, if it has one.
+fn stop_feeder(feeder: Option<Child>) {
+    if let Some(mut feeder) = feeder {
+        let _ = feeder.kill();
+        let _ = feeder.wait();
+    }
+}
+
 /// Runs one connection to its end.
 fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
-    let (generation, audio_absent) = {
-        let mut inner = shared.lock();
-        if inner.shutdown {
-            return Ended::Shutdown;
-        }
-        inner.generation = inner.generation.wrapping_add(1);
-        inner.frames.clear();
-        if let Some(clock) = inner.clock.as_mut() {
-            clock.restart();
-        }
-        inner.delivered = false;
-        inner.last_data = None;
-        inner.empty_pulls = 0;
-        inner.saw_empty_output = false;
-        inner.audio_input_failed = false;
-        inner.rejected_peer = false;
-        inner.in_input_dump = false;
-        if plan.listens() {
-            inner.state = NetworkStreamState::Listening;
-        }
-        inner.bitrate.clear();
-        (inner.generation, inner.audio_absent)
+    let Some((generation, audio_absent)) = begin_connection(shared, plan) else {
+        return Ended::Shutdown;
     };
     let listener = if audio_absent {
         None
@@ -1659,9 +1738,28 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         .as_ref()
         .and_then(|listener| listener.local_addr().ok())
         .map(|address| address.port());
-    let mut child = match command(plan, port).spawn() {
+    let feeder = plan
+        .config
+        .device
+        .as_ref()
+        .and_then(|device| device.feeder.as_ref())
+        .map(|spec| spawn_feeder(plan, spec))
+        .transpose();
+    let mut feeder = match feeder {
+        Ok(feeder) => feeder,
+        Err(error) => {
+            shared.lock().last_error = Some(error);
+            return Ended::Dropped { delivered: false };
+        }
+    };
+    let mut command = command(plan, port);
+    if let Some(stdout) = feeder.as_mut().and_then(|feeder| feeder.stdout.take()) {
+        command.stdin(Stdio::from(stdout));
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            stop_feeder(feeder);
             shared.lock().last_error = Some(match error.kind() {
                 io::ErrorKind::NotFound => "ffmpeg unavailable".to_owned(),
                 kind => format!("ffmpeg spawn failed: {kind:?}"),
@@ -1705,6 +1803,7 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
     let ran = started.elapsed();
     let _ = child.kill();
     let _ = child.wait();
+    stop_feeder(feeder);
     {
         let mut inner = shared.lock();
         // Readers of this connection stop pushing.
@@ -2316,6 +2415,9 @@ mod tests {
                 path: "hw:CARD=Cam,DEV=0".into(),
             }),
             audio_only: false,
+            letterbox: false,
+            environment: Vec::new(),
+            feeder: None,
         };
         let config = NetworkInputConfig::device(
             device,

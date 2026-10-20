@@ -13,6 +13,10 @@ use fm_types::network_stream::{
     RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamUrl,
 };
 use fm_types::paged::PagedNavigation;
+use fm_types::screen_capture::{
+    ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureError, ScreenCaptureTarget, TitleMatch,
+    WindowRule,
+};
 use fm_types::still::{
     ImageInputConfig, SlideOrder, SlideTransitionStyle, SlideshowConfig, SlideshowItem,
     SlideshowSource, StillInputError,
@@ -1257,6 +1261,35 @@ pub enum Command {
     RemoteSystemAudioDevices {
         address: SocketAddr,
     },
+    /// Adds a screen or window capture input to a project (IN-011).
+    ScreenCaptureInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        config: Box<ScreenCaptureConfig>,
+    },
+    /// Adds a screen or window capture input to a running daemon (IN-011).
+    RemoteScreenCaptureInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        config: Box<ScreenCaptureConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists a project's screen capture inputs (idle: nothing captures).
+    ScreenCaptureStatus {
+        path: PathBuf,
+    },
+    /// Lists a running daemon's screen capture inputs with their status.
+    RemoteScreenCaptureStatus {
+        address: SocketAddr,
+    },
+    /// Lists the screens and windows a running daemon can capture
+    /// (IN-011).
+    RemoteScreenCaptureTargets {
+        address: SocketAddr,
+    },
     /// Adds a system audio input to a project (AU-011).
     SystemAudioInputAdd {
         path: PathBuf,
@@ -1766,6 +1799,8 @@ pub enum ArgsError {
     InvalidSystemAudio(SystemAudioError),
     /// An image or slideshow setting is unusable (IN-008, IN-009).
     InvalidStill(StillInputError),
+    /// A screen capture target or setting is unusable (IN-011).
+    InvalidScreenCapture(ScreenCaptureError),
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1810,6 +1845,9 @@ impl core::fmt::Display for ArgsError {
                 write!(formatter, "invalid system audio input: {error}")
             }
             Self::InvalidStill(error) => write!(formatter, "invalid picture input: {error}"),
+            Self::InvalidScreenCapture(error) => {
+                write!(formatter, "invalid screen capture input: {error}")
+            }
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -2164,6 +2202,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "input-add-slideshow"
         | "remote-input-add-slideshow") => parse_still_input_add(still, arguments),
         "remote-page-navigate" => parse_remote_page_navigate(arguments),
+        screen_capture @ ("input-add-screen-capture"
+        | "remote-input-add-screen-capture"
+        | "input-screen-capture-status"
+        | "remote-input-screen-capture-status"
+        | "remote-screen-capture-targets") => parse_screen_capture(screen_capture, arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -6370,6 +6413,167 @@ fn parse_remote_page_navigate(
         key,
         expected_revision,
     })
+}
+
+/// Parses the screen capture input commands (IN-011):
+/// `input-add-screen-capture <project> <input> <name> <target> [options]`,
+/// `remote-input-add-screen-capture <address> <input> <name> <target>
+/// [options] [--key <key>] [--expect <revision>]`,
+/// `input-screen-capture-status <project>` /
+/// `remote-input-screen-capture-status <address>`, and
+/// `remote-screen-capture-targets <address>`.
+///
+/// The target is `screen <index>` or `window <app> <title>`; the options
+/// are `--match exact|contains|any`, `--window-id <id>`,
+/// `--crop <left>,<top>,<right>,<bottom>`, `--cursor on|off`,
+/// `--fps <1-60>`, and `--stall freeze|black`.
+fn parse_screen_capture(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let action = command.strip_prefix("remote-").unwrap_or(command);
+    if action == "screen-capture-targets" {
+        reject_extra(&mut arguments)?;
+        let address = address.expect("only the remote form lists targets");
+        return Ok(Command::RemoteScreenCaptureTargets { address });
+    }
+    if action == "input-screen-capture-status" {
+        reject_extra(&mut arguments)?;
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::ScreenCaptureStatus { path },
+            (None, Some(address)) => Command::RemoteScreenCaptureStatus { address },
+            (None, None) => unreachable!("a screen capture command names a target"),
+        });
+    }
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let name = nonblank(&mut arguments, "input name")?;
+    let mut config = ScreenCaptureConfig::new(screen_capture_target(&mut arguments)?);
+    let mut rest = Vec::new();
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--match" => {
+                let value = required(&mut arguments, "title match")?;
+                let title_match =
+                    TitleMatch::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                        field: "title match (exact, contains, or any)",
+                        value,
+                    })?;
+                window_rule(&mut config)?.title_match = title_match;
+            }
+            "--window-id" => {
+                let id = number(&required(&mut arguments, "window id")?, "window id")?;
+                window_rule(&mut config)?.window_id = Some(id);
+            }
+            "--crop" => config.crop = screen_capture_crop(required(&mut arguments, "crop")?)?,
+            "--cursor" => {
+                let value = required(&mut arguments, "cursor")?;
+                config.cursor = on_off(value, "cursor (on or off)")?;
+            }
+            "--fps" => config.fps = number(&required(&mut arguments, "fps")?, "fps")?,
+            "--stall" => {
+                let value = required(&mut arguments, "stall slate")?;
+                config.slate = fm_types::network_stream::StallSlate::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "stall slate (freeze or black)",
+                        value,
+                    },
+                )?;
+            }
+            _ => rest.push(option),
+        }
+    }
+    config.validate().map_err(ArgsError::InvalidScreenCapture)?;
+    let config = Box::new(config);
+    match (path, address) {
+        (Some(path), _) => {
+            reject_extra(&mut rest.into_iter())?;
+            Ok(Command::ScreenCaptureInputAdd {
+                path,
+                input,
+                name,
+                config,
+            })
+        }
+        (None, Some(address)) => {
+            let (key, expected_revision) = command_options(rest.into_iter())?;
+            Ok(Command::RemoteScreenCaptureInputAdd {
+                address,
+                input,
+                name,
+                config,
+                key,
+                expected_revision,
+            })
+        }
+        (None, None) => unreachable!("a screen capture command names a target"),
+    }
+}
+
+/// The window rule of a window capture, which the window-only options
+/// change.
+/// Parses `screen <index>` or `window <app> <title>`.
+fn screen_capture_target(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<ScreenCaptureTarget, ArgsError> {
+    let kind = required(arguments, "capture target (screen or window)")?;
+    match kind.as_str() {
+        "screen" => Ok(ScreenCaptureTarget::Screen {
+            index: number(&required(arguments, "screen index")?, "screen index")?,
+        }),
+        "window" => Ok(ScreenCaptureTarget::Window(WindowRule::exact(
+            required(arguments, "window application")?,
+            required(arguments, "window title")?,
+            None,
+        ))),
+        _ => Err(ArgsError::InvalidChoice {
+            field: "capture target (screen or window)",
+            value: kind,
+        }),
+    }
+}
+
+/// Parses `--crop <left>,<top>,<right>,<bottom>`.
+fn screen_capture_crop(value: String) -> Result<ScreenCaptureCrop, ArgsError> {
+    let insets: Vec<&str> = value.split(',').collect();
+    let [left, top, right, bottom] = insets.as_slice() else {
+        return Err(ArgsError::InvalidNumber {
+            field: "crop (left,top,right,bottom)",
+            value,
+        });
+    };
+    Ok(ScreenCaptureCrop {
+        left: number(left, "crop left")?,
+        top: number(top, "crop top")?,
+        right: number(right, "crop right")?,
+        bottom: number(bottom, "crop bottom")?,
+    })
+}
+
+/// Parses an `on` or `off` option value.
+fn on_off(value: String, field: &'static str) -> Result<bool, ArgsError> {
+    match value.as_str() {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(ArgsError::InvalidChoice { field, value }),
+    }
+}
+
+fn window_rule(config: &mut ScreenCaptureConfig) -> Result<&mut WindowRule, ArgsError> {
+    match &mut config.target {
+        ScreenCaptureTarget::Window(rule) => Ok(rule),
+        ScreenCaptureTarget::Screen { .. } => Err(ArgsError::InvalidScreenCapture(
+            ScreenCaptureError::InvalidWindowRule,
+        )),
+    }
 }
 
 /// Parses `remote-input-remove <address> <input> [--key <key>]

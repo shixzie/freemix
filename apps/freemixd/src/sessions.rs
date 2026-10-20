@@ -680,6 +680,11 @@ pub(super) fn run(
     // Document pages render off this loop too (IN-014).
     let documents = store.documents().cloned().unwrap_or_default();
     let document_pages = crate::documents::PageWorker::spawn(Arc::clone(&documents))?;
+    // What the server can capture is listed off this loop too (IN-011).
+    let screen_capture_targets = crate::screen_capture_targets::ScreenCaptureTargets::spawn(
+        crate::screen_capture_targets::enumerator(native.is_some()),
+        crate::screen_capture_targets::REUSE_FOR,
+    )?;
     let runtime = Runtime {
         server,
         authority,
@@ -690,6 +695,7 @@ pub(super) fn run(
         system_audio_devices: &system_audio_devices,
         web_access: web.map(WebGateway::access),
         document_pages: &document_pages,
+        screen_capture_targets: &screen_capture_targets,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
@@ -996,6 +1002,27 @@ pub(super) fn run(
         }
         // A listed device answer waits while its peer resynchronizes or
         // cannot take it yet; a peer that left drops it.
+        for (id, answer) in screen_capture_targets.take_finished() {
+            let Some(index) = peers.iter().position(|peer| peer.id == id) else {
+                continue;
+            };
+            let peer = &mut peers[index];
+            if close[index] {
+                continue;
+            }
+            if peer.phase != Phase::Active || peer.held_result.is_some() {
+                screen_capture_targets.defer(id, answer);
+                continue;
+            }
+            match peer.queue(
+                &WireMessage::ScreenCaptureTargets(answer.clone()),
+                Accounting::Session,
+            ) {
+                Ok(()) => {}
+                Err(refusal) if refusal.transient() => screen_capture_targets.defer(id, answer),
+                Err(_) => close[index] = true,
+            }
+        }
         for (id, answer) in system_audio_devices.take_finished() {
             let Some(index) = peers.iter().position(|peer| peer.id == id) else {
                 continue;
@@ -1495,6 +1522,8 @@ struct Runtime<'a> {
     web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
     /// Answers document page requests off this loop (IN-014).
     document_pages: &'a crate::documents::PageWorker,
+    /// Lists what the server can capture off this loop (IN-011).
+    screen_capture_targets: &'a crate::screen_capture_targets::ScreenCaptureTargets,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
@@ -1854,6 +1883,13 @@ impl Runtime<'_> {
             }
             // The server's system audio devices (AU-011, Protocol 2.68) are
             // listed off this loop and sent on a later pass.
+            // What the server can capture (IN-011) is listed off this loop
+            // and sent on a later pass.
+            WireMessage::ScreenCaptureTargetsRequest(request) => {
+                self.screen_capture_targets
+                    .submit(peer.id, request.request_id);
+                Ok(())
+            }
             WireMessage::SystemAudioDevicesRequest(request) => {
                 self.system_audio_devices
                     .submit(peer.id, request.request_id);

@@ -1520,6 +1520,7 @@ dependencies = [
  "fm-codec-ffmpeg",
  "fm-types",
  "linuxvideo",
+ "x11rb",
 ]
 
 [[package]]
@@ -2025,6 +2026,7 @@ dependencies = [
  "time",
  "tungstenite",
  "winit",
+ "x11rb",
 ]
 
 [[package]]

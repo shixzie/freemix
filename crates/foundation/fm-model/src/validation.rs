@@ -945,6 +945,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                 }
             }
             InputKind::Document(document) => validate_document(entity, document, errors),
+            InputKind::ScreenCapture(config) => validate_screen_capture(entity, config, errors),
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -1016,6 +1017,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
     validate_system_audio_count(project, errors);
     validate_slideshow_count(project, errors);
     validate_document_count(project, errors);
+    validate_screen_capture_count(project, errors);
 }
 
 /// The validation field of an image (`kind.image`) or slideshow
@@ -1080,6 +1082,34 @@ fn validate_document(
     }
 }
 
+/// IN-011: a screen capture input names a usable target and settings.
+fn validate_screen_capture(
+    entity: Option<EntityRef>,
+    config: &fm_types::screen_capture::ScreenCaptureConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Err(error) = config.validate() {
+        errors.push(ValidationError {
+            entity,
+            field: match error {
+                fm_types::screen_capture::ScreenCaptureError::InvalidScreen => {
+                    "kind.screen_capture.screen"
+                }
+                fm_types::screen_capture::ScreenCaptureError::InvalidWindowRule => {
+                    "kind.screen_capture.window"
+                }
+                fm_types::screen_capture::ScreenCaptureError::InvalidCrop => {
+                    "kind.screen_capture.crop"
+                }
+                fm_types::screen_capture::ScreenCaptureError::InvalidFps => {
+                    "kind.screen_capture.fps"
+                }
+            },
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
 /// IN-014: a bounded number of document inputs keeps every snapshot's
 /// follow-on records and the page renderer's work bounded.
 fn validate_document_count(project: &Project, errors: &mut Vec<ValidationError>) {
@@ -1092,6 +1122,23 @@ fn validate_document_count(project: &Project, errors: &mut Vec<ValidationError>)
         errors.push(ValidationError {
             entity: Some(EntityRef::Input(input.id)),
             field: "kind.document",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+/// IN-011: a bounded number of screen capture inputs keeps every snapshot
+/// that carries them inside one line.
+fn validate_screen_capture_count(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(input) = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::ScreenCapture(_)))
+        .nth(fm_types::screen_capture::MAX_SCREEN_CAPTURE_INPUTS)
+    {
+        errors.push(ValidationError {
+            entity: Some(EntityRef::Input(input.id)),
+            field: "kind.screen_capture",
             kind: ValidationErrorKind::OutOfRange,
         });
     }

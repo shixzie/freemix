@@ -551,6 +551,7 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
         "image" => super::still::parse_image_input(&mut object)?,
         "slideshow" => super::still::parse_slideshow_input(&mut object)?,
         "document" => super::document::parse_document_input(&mut object)?,
+        "screen_capture" => super::screen_capture::parse_screen_capture_input(&mut object)?,
         "scene" => InputKind::Scene {
             scene_id: SceneId::new(object.nonzero_u128("scene_id")?),
             audio_source: object.optional_input_id("audio_source")?,
@@ -1445,7 +1446,7 @@ impl Object {
             .map_err(|_| syntax(format!("field `{field}` exceeds u32")))
     }
 
-    fn u16(&mut self, field: &str) -> Result<u16, DecodeError> {
+    pub(crate) fn u16(&mut self, field: &str) -> Result<u16, DecodeError> {
         u16::try_from(self.number(field)?)
             .map_err(|_| syntax(format!("field `{field}` exceeds u16")))
     }

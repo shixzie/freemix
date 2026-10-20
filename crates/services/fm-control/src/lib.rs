@@ -32,6 +32,7 @@ mod paged;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
+mod screen_capture;
 mod script;
 mod shortcut;
 mod still;
@@ -607,6 +608,13 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                             .insert(status.input.to_domain(), (**status).clone());
                     }
                 }
+                control.screen_capture_states.retain(|input, _| {
+                    control
+                        .engine
+                        .show()
+                        .screen_capture_inputs()
+                        .any(|(candidate, _)| candidate == *input)
+                });
                 // A disabled LiveLAN forgets its last report (see
                 // `refresh_snapshot`).
                 if !control.engine.show().live_lan().enabled {
@@ -620,6 +628,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                     &control.network_states,
                     &control.capture_states,
                     &control.system_audio_states,
+                    &control.screen_capture_states,
                     &control.live_lan_status,
                 );
 
@@ -912,6 +921,9 @@ pub struct ControlService<A = Policy> {
     /// Each document input's status as clients last heard it (IN-014): a
     /// page a cue or shortcut moved is published on the next frame.
     paged_published: BTreeMap<InputId, fm_protocol::PagedStatus>,
+    /// Each screen capture input's status as the media plane last reported
+    /// it (IN-011).
+    screen_capture_states: BTreeMap<InputId, fm_protocol::ScreenCaptureStatus>,
     /// The `LiveLAN` stream's status as the media plane last reported it
     /// (OR-017); clients see it through [`live_lan::wire_status`].
     live_lan_status: fm_protocol::LiveLanStatus,
@@ -970,6 +982,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             &fm_protocol::LiveLanStatus::default(),
         );
         Self {
@@ -1000,6 +1013,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             system_audio_states: BTreeMap::new(),
             paged_sources: BTreeMap::new(),
             paged_published: BTreeMap::new(),
+            screen_capture_states: BTreeMap::new(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
             held_publications: None,
         }
@@ -1061,6 +1075,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             system_audio_states: self.system_audio_states.clone(),
             paged_sources: self.paged_sources.clone(),
             paged_published: self.paged_published.clone(),
+            screen_capture_states: self.screen_capture_states.clone(),
             live_lan_status: self.live_lan_status.clone(),
             held_publications: Some(Vec::new()),
         }
@@ -1361,6 +1376,70 @@ impl<A: AuthorizationHook> ControlService<A> {
             revision,
             generation,
             RuntimeLifecycleEvent::LiveLanStatus(after),
+        )?;
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    /// Every screen capture input with its configuration, ascending, for
+    /// the media plane that captures it (IN-011).
+    #[must_use]
+    pub fn screen_capture_inputs(&self) -> Vec<(InputId, fm_protocol::ScreenCaptureConfig)> {
+        self.engine
+            .show()
+            .screen_capture_inputs()
+            .map(|(input, config)| (input, config.clone()))
+            .collect()
+    }
+
+    /// Screen capture input `input`'s status as last reported (IN-011), or
+    /// `None` when nothing reported on it.
+    #[must_use]
+    pub fn screen_capture_status(
+        &self,
+        input: InputId,
+    ) -> Option<&fm_protocol::ScreenCaptureStatus> {
+        self.screen_capture_states.get(&input)
+    }
+
+    /// Records screen capture input `input`'s status as the media plane
+    /// observes it (IN-011), its error bounded to one wire line. A change
+    /// refreshes the snapshot and returns the published
+    /// `screen_capture_status` runtime event; an unchanged status, or an
+    /// input that is not a screen capture input, returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_screen_capture_status(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        status: &fm_protocol::ScreenCaptureStatus,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        self.check_server(server)?;
+        let status = screen_capture::wire_status(status);
+        if !self
+            .engine
+            .show()
+            .screen_capture_inputs()
+            .any(|(candidate, _)| candidate == input)
+            || self.screen_capture_states.get(&input) == Some(&status)
+        {
+            return Ok(None);
+        }
+        self.screen_capture_states.insert(input, status.clone());
+        self.refresh_snapshot();
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        let event = self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::ScreenCaptureStatus {
+                input: WireInputId::from_domain(input),
+                status: Box::new(status),
+            },
         )?;
         let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
         Ok(Some(event))
@@ -2446,6 +2525,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &self.network_states,
             &self.capture_states,
             &self.system_audio_states,
+            &self.screen_capture_states,
             &self.live_lan_status,
         );
     }
@@ -3261,6 +3341,7 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         LiveInputSource::SystemAudio(config) => EngineInputSource::SystemAudio(config.clone()),
         LiveInputSource::Image(config) => EngineInputSource::Image(config.clone()),
         LiveInputSource::Slideshow(config) => EngineInputSource::Slideshow(config.clone()),
+        LiveInputSource::ScreenCapture(config) => EngineInputSource::ScreenCapture(config.clone()),
     }
 }
 
@@ -3283,6 +3364,7 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         EngineInputSource::SystemAudio(config) => LiveInputSource::SystemAudio(config.clone()),
         EngineInputSource::Image(config) => LiveInputSource::Image(config.clone()),
         EngineInputSource::Slideshow(config) => LiveInputSource::Slideshow(config.clone()),
+        EngineInputSource::ScreenCapture(config) => LiveInputSource::ScreenCapture(config.clone()),
     }
 }
 
@@ -4067,6 +4149,10 @@ fn accepted_event_payload(
                     )),
                     _ => None,
                 },
+                screen_capture: match source {
+                    EngineInputSource::ScreenCapture(config) => Some(config.clone()),
+                    _ => None,
+                },
             }),
             EngineEvent::InputRemoved { input } => Some(EventPayload::InputRemoved {
                 input: WireInputId::from_domain(*input),
@@ -4143,6 +4229,7 @@ fn snapshot_record(
     network_states: &BTreeMap<InputId, fm_protocol::NetworkStreamStatus>,
     capture_states: &BTreeMap<InputId, fm_protocol::CaptureStatus>,
     system_audio_states: &BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
+    screen_capture_states: &BTreeMap<InputId, fm_protocol::ScreenCaptureStatus>,
     live_lan_status: &fm_protocol::LiveLanStatus,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
@@ -4225,6 +4312,7 @@ fn snapshot_record(
         network_streams: network_stream::wire_entries(engine.show(), network_states),
         capture_inputs: capture::wire_entries(engine.show(), capture_states),
         system_audio_inputs: system_audio::wire_entries(engine.show(), system_audio_states),
+        screen_capture_inputs: screen_capture::wire_entries(engine.show(), screen_capture_states),
         stream_targets: stream_target::wire_entries(engine.show()),
         live_lan: live_lan::wire_entry(engine.show()),
         live_lan_status: live_lan::wire_status(engine.show(), live_lan_status),

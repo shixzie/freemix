@@ -96,6 +96,9 @@ impl FfmpegAcquirer {
                 path: path.clone(),
             }),
             audio_only: false,
+            letterbox: false,
+            environment: Vec::new(),
+            feeder: None,
         }
     }
 }

@@ -98,6 +98,10 @@ use freemixd::{ReadinessRecord, StatusReadinessRecord};
 // preflight and its constants are used in every build.
 mod clock_retry;
 mod cue_clock;
+#[cfg(feature = "native-media")]
+mod desktop_capture;
+#[cfg(feature = "native-media")]
+mod desktop_windows;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
 mod documents;
@@ -120,6 +124,8 @@ mod native_documents;
 mod native_files;
 #[cfg(feature = "native-media")]
 mod native_live_lan;
+#[cfg(feature = "native-media")]
+mod native_screen_capture;
 #[cfg(feature = "native-media")]
 mod native_slides;
 #[cfg(feature = "native-media")]
@@ -153,6 +159,7 @@ mod recorder_status;
 mod recording_session;
 mod scene_preview;
 mod scene_render;
+mod screen_capture_targets;
 #[cfg(feature = "native-media")]
 mod source_wait;
 mod status_listener;
@@ -776,6 +783,8 @@ struct NativeDaemon {
     network: native_streams::NativeNetworkStreams,
     /// System audio inputs and their audio-only receivers (AU-011).
     system_audio: native_system_audio::NativeSystemAudio,
+    /// Screen and window capture inputs and their desktop watch (IN-011).
+    screen_capture: native_screen_capture::NativeScreenCapture,
     /// Local camera and capture-card inputs and their device backend
     /// (IN-001); `None` without a capture backend.
     captures: Option<native_captures::NativeCaptures>,
@@ -5018,6 +5027,10 @@ impl NativeDaemon {
         for input in system_audio.inputs() {
             master.attach_pushed_audio(input)?;
         }
+        let screen_capture = start_native_screen_capture(stored);
+        for input in screen_capture.inputs() {
+            master.attach_pushed_audio(input)?;
+        }
         let captures = start_native_captures(stored)?;
         for input in captures
             .iter()
@@ -5116,6 +5129,7 @@ impl NativeDaemon {
             files,
             network,
             system_audio,
+            screen_capture,
             captures,
             catalogue: native_catalogue::catalogue_keys(stored.project()),
             stills: Vec::new(),
@@ -5255,6 +5269,14 @@ impl NativeDaemon {
                 .set_system_audio_status(server, input, &status)
                 .map_err(|error| {
                     AppFailure(format!("system audio input {input} status: {error}"))
+                })?;
+        }
+        // Screen capture inputs (IN-011): each input's capture status.
+        for (input, status) in self.screen_capture.statuses(Instant::now()) {
+            control
+                .set_screen_capture_status(server, input, &status)
+                .map_err(|error| {
+                    AppFailure(format!("screen capture input {input} status: {error}"))
                 })?;
         }
         // Capture inputs (IN-001): each input's acquisition status, and the
@@ -6835,6 +6857,10 @@ impl NativeDaemon {
             .sync(&control.system_audio_inputs(), |input| {
                 control.input_lifecycle(input).closed
             });
+        self.screen_capture
+            .sync(&control.screen_capture_inputs(), |input| {
+                control.input_lifecycle(input).closed
+            });
         if let Some(captures) = &mut self.captures {
             let inputs = control
                 .capture_inputs()
@@ -6916,12 +6942,14 @@ impl NativeDaemon {
             .map(|captures| captures.pull(projected.frame.get()))
             .unwrap_or_default();
         let system_audio = self.system_audio.pull(projected.frame.get());
+        let screen_capture = self.screen_capture.pull(projected.frame.get());
         for pulled in self
             .network
             .pull(projected.frame.get())
             .into_iter()
             .chain(captured)
             .chain(system_audio)
+            .chain(screen_capture)
         {
             if let Some(frame) = pulled.video {
                 self.runtime.ingest_live_video_frame_blocking(
@@ -7777,6 +7805,38 @@ fn start_native_system_audio(stored: &StoredProject) -> native_system_audio::Nat
     )
 }
 
+/// Starts watching the desktop for every screen capture input of `stored`
+/// (IN-011). A target that is not on the desktop waits for it; none stops
+/// the daemon.
+#[cfg(feature = "native-media")]
+fn start_native_screen_capture(
+    stored: &StoredProject,
+) -> native_screen_capture::NativeScreenCapture {
+    let project = stored.project();
+    let settings = project.settings();
+    let inputs = project
+        .inputs()
+        .iter()
+        .filter_map(|input| match &input.kind {
+            InputKind::ScreenCapture(config) => Some(native_screen_capture::ScreenCaptureInput {
+                input: input.id,
+                config: config.clone(),
+                closed: project.input_lifecycle(input.id).closed,
+            }),
+            _ => None,
+        })
+        .collect();
+    let dimensions = settings.video.dimensions;
+    native_screen_capture::NativeScreenCapture::start(
+        desktop_capture::DesktopBackend::platform(),
+        inputs,
+        settings.frame_rate,
+        native_clock_domain(),
+        (dimensions.width(), dimensions.height()),
+        settings.audio.sample_rate,
+    )
+}
+
 /// Starts the media-file inputs of `stored` that play through their engine
 /// transport (every local-video media input no Stinger names) and swaps each
 /// one's resolved source for a live source seeded with its startup picture.
@@ -8611,9 +8671,13 @@ fn resolve_native_sources(
             InputKind::Device { .. } | InputKind::Scene { .. } | InputKind::Title(_) => continue,
             // A network stream starts on a blank picture; its receiver
             // ingests every picture after it (IN-015). A system audio
-            // input keeps its blank picture (AU-011), and a document's
-            // page worker ingests its page (IN-014).
-            InputKind::NetworkStream(_) | InputKind::SystemAudio(_) | InputKind::Document(_) => {
+            // input keeps its blank picture (AU-011), a document's page
+            // worker ingests its page (IN-014), and a screen capture
+            // ingests its captures after it (IN-011).
+            InputKind::NetworkStream(_)
+            | InputKind::SystemAudio(_)
+            | InputKind::Document(_)
+            | InputKind::ScreenCapture(_) => {
                 let dimensions = settings.video.dimensions;
                 native_streams::startup_picture(
                     (dimensions.width(), dimensions.height()),
@@ -15124,6 +15188,19 @@ fn sync_project_inputs(
                         id: input,
                         name,
                         kind: fm_model::InputKind::Slideshow(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::ScreenCapture(config) => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::ScreenCapture(*config),
                         required_capabilities: Vec::new(),
                     })
                     .map_err(|error| {

@@ -6,6 +6,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=native/CameraHelper.swift");
+    println!("cargo:rerun-if-changed=native/ScreenCaptureHelper.swift");
     println!("cargo:rerun-if-changed=native/Info.plist");
     println!("cargo:rerun-if-env-changed=TARGET");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
@@ -97,6 +98,64 @@ fn main() {
         )
     });
     println!("cargo:rustc-env=FREEMIX_CAMERA_HELPER={}", helper.display());
+
+    let screen_helper = compile_screen_capture_helper(
+        &manifest_dir.join("native/ScreenCaptureHelper.swift"),
+        &out_dir.join("freemix-screen-capture-helper"),
+        &swift_target,
+        &module_cache,
+    );
+    println!(
+        "cargo:rustc-env=FREEMIX_SCREEN_CAPTURE_HELPER={}",
+        screen_helper.display()
+    );
+}
+
+/// Compiles the `ScreenCaptureKit` screen and window capture helper
+/// (IN-011).
+fn compile_screen_capture_helper(
+    source: &Path,
+    helper: &Path,
+    swift_target: &str,
+    module_cache: &Path,
+) -> PathBuf {
+    let frameworks = ["ScreenCaptureKit", "CoreGraphics", "CoreMedia", "CoreVideo"];
+    let mut command = Command::new("xcrun");
+    command
+        .arg("--sdk")
+        .arg("macosx")
+        .arg("swiftc")
+        .arg("-O")
+        .arg("-target")
+        .arg(swift_target)
+        .arg("-module-cache-path")
+        .arg(module_cache)
+        .arg(source)
+        .arg("-o")
+        .arg(helper);
+    for framework in frameworks {
+        command.arg("-framework").arg(framework);
+    }
+    let output = command.output().unwrap_or_else(|error| {
+        panic!(
+            "failed to invoke xcrun to compile {}: {error}. Install or select Xcode Command Line Tools (for example, run `xcode-select --install`)",
+            source.display()
+        )
+    });
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "Swift screen capture helper compilation failed with status {}.\nstdout:\n{}\nstderr:\n{}\nVerify that Xcode Command Line Tools and the macOS SDK are installed and selected",
+            output.status, stdout, stderr
+        );
+    }
+    helper.canonicalize().unwrap_or_else(|error| {
+        panic!(
+            "Swift compiler reported success but the screen capture helper at {} could not be resolved: {error}",
+            helper.display()
+        )
+    })
 }
 
 fn required_path(name: &str) -> PathBuf {

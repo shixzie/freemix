@@ -203,7 +203,10 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
         | (
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
-        ) => true,
+        )
+        | (StudioIntent::RequestScreenCaptureTargets, StudioIntent::RequestScreenCaptureTargets) => {
+            true
+        }
         // The thumbnail feed is latest-wins: the newer on/off replaces one
         // still queued.
         (
@@ -1261,6 +1264,7 @@ fn run_worker(
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
+                | StudioIntent::RequestScreenCaptureTargets
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1295,7 +1299,8 @@ fn run_worker(
                     | SessionEvent::SystemAudioDevices { .. }
                     | SessionEvent::WebAccess { .. }
                     | SessionEvent::SlideshowSlides { .. }
-                    | SessionEvent::PagedPage { .. },
+                    | SessionEvent::PagedPage { .. }
+                    | SessionEvent::ScreenCaptureTargets { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1356,6 +1361,7 @@ fn run_worker(
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
+                | StudioIntent::RequestScreenCaptureTargets
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1472,6 +1478,15 @@ fn handle_preview_request(
         }
         return true;
     }
+    // And the screens and windows the server can capture (IN-011).
+    if matches!(request, StudioIntent::RequestScreenCaptureTargets) {
+        if recovery.active() {
+            runtime.want_screen_capture_targets();
+        } else {
+            runtime.request_screen_capture_targets();
+        }
+        return true;
+    }
     let request_id = match &request {
         StudioIntent::TitlePreview(request) => request.request_id.clone(),
         StudioIntent::ScenePreview(request) => request.request_id.clone(),
@@ -1510,6 +1525,7 @@ fn handle_worker_intent(
         | StudioIntent::WebAccess(_)
         | StudioIntent::RequestSlideshowSlides { .. }
         | StudioIntent::PagedPage(_)
+        | StudioIntent::RequestScreenCaptureTargets
         | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
@@ -1817,7 +1833,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::SystemAudioDevices { .. }
                         | SessionEvent::WebAccess { .. }
                         | SessionEvent::SlideshowSlides { .. }
-                        | SessionEvent::PagedPage { .. } => Some(true),
+                        | SessionEvent::PagedPage { .. }
+                        | SessionEvent::ScreenCaptureTargets { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -2369,6 +2386,7 @@ fn receive_command_event(
                 | SessionEvent::WebAccess { .. }
                 | SessionEvent::SlideshowSlides { .. }
                 | SessionEvent::PagedPage { .. }
+                | SessionEvent::ScreenCaptureTargets { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2879,6 +2897,9 @@ fn intent_payload(
         }
         StudioIntent::WebAccess(_) => {
             return Err("A web access request is not a command".to_owned());
+        }
+        StudioIntent::RequestScreenCaptureTargets => {
+            return Err("A screen capture targets request is not a command".to_owned());
         }
         StudioIntent::InputThumbnails { .. } => {
             return Err("An input thumbnail subscription is not a command".to_owned());
@@ -3633,6 +3654,7 @@ mod tests {
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
+            screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
@@ -6484,6 +6506,12 @@ mod tests {
         assert!(!coalesce_adjacent_intent(
             &mut polls,
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::CancelPairing)
+        ));
+        assert!(intent_payload(StudioIntent::RequestScreenCaptureTargets, None).is_err());
+        let mut targets = StudioIntent::RequestScreenCaptureTargets;
+        assert!(coalesce_adjacent_intent(
+            &mut targets,
+            StudioIntent::RequestScreenCaptureTargets
         ));
         let mut system_audio = StudioIntent::RequestSystemAudioDevices;
         assert!(coalesce_adjacent_intent(

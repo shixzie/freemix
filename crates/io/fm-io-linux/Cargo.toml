@@ -11,6 +11,10 @@ fm-types = { path = "../../foundation/fm-types" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 linuxvideo = "0.3.5"
+x11rb = { version = "0.13.2", features = ["randr"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = { version = "0.13.2", features = ["randr"] }
 
 [lints]
 workspace = true

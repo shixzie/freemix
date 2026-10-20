@@ -457,6 +457,7 @@ fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
         system_audio_inputs: Vec::new(),
+        screen_capture_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),

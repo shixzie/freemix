@@ -2844,7 +2844,7 @@ fn input_add_and_remove_project_events_snapshots_history_and_journal() {
     assert!(matches!(
         added.output.events.as_slice(),
         [EventMessage {
-            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None, system_audio: None, still: None },
+            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None, system_audio: None, still: None, screen_capture: None },
             edit_history: EditHistoryStatus {
                 undo_depth: 1,
                 next_undo: Some(1),
@@ -7496,6 +7496,157 @@ fn system_audio_inputs_replicate_with_their_status() {
     assert_eq!(control.system_audio_inputs(), []);
     assert_eq!(control.snapshot().snapshot.system_audio_inputs, []);
     assert_eq!(control.system_audio_status(input(5)), None);
+}
+
+/// IN-011: a screen capture input added live replicates as `input_added`
+/// with its configuration and is listed for the media plane; its status
+/// becomes a `screen_capture_status` runtime event and the snapshot's
+/// entry (without the error text); an undone add drops both, and adds past
+/// the bound are refused.
+#[test]
+#[allow(clippy::too_many_lines)] // one add, status, bound, and undo round trip
+fn screen_capture_inputs_replicate_with_their_status() {
+    use fm_protocol::{
+        MAX_SCREEN_CAPTURE_INPUTS, ScreenCaptureConfig, ScreenCaptureState, ScreenCaptureStatus,
+        ScreenCaptureTarget, WindowRule,
+    };
+
+    let mut control = service(16, 16);
+    let admin = principal(Role::Admin);
+    let config = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::exact(
+        "Keynote", "Deck", None,
+    )));
+    let added = control
+        .submit(
+            &admin,
+            command(
+                "add",
+                "add-key",
+                CommandPayload::AddInput {
+                    input: WireInputId::from_domain(input(5)),
+                    name: "Slides".to_owned(),
+                    source: LiveInputSource::ScreenCapture(Box::new(config.clone())),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        added.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputAdded {
+                screen_capture: Some(added),
+                system_audio: None,
+                network_stream: None,
+                capture: None,
+                ..
+            },
+            ..
+        }] if **added == config
+    ));
+    assert_wire_exact(&control, &added);
+    assert_eq!(
+        control.screen_capture_inputs(),
+        [(input(5), config.clone())]
+    );
+    let entries = &control.snapshot().snapshot.screen_capture_inputs;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].config, config);
+    assert_eq!(entries[0].status, ScreenCaptureStatus::default());
+
+    let status = ScreenCaptureStatus {
+        state: ScreenCaptureState::TargetGone,
+        reopens: 1,
+        width: 0,
+        height: 0,
+        window_id: None,
+        last_error: Some(format!("{}\nsecond line", "x".repeat(400))),
+    };
+    let event = control
+        .set_screen_capture_status(&server_identity(), input(5), &status)
+        .unwrap()
+        .expect("a changed status is published");
+    let RuntimeLifecycleEvent::ScreenCaptureStatus {
+        status: published, ..
+    } = &event.event
+    else {
+        panic!("{event:?}");
+    };
+    let error = published.last_error.as_deref().unwrap();
+    assert!(
+        error.len() <= fm_protocol::MAX_SCREEN_CAPTURE_ERROR_BYTES && !error.contains('\n'),
+        "{error:?}"
+    );
+    assert!(fm_protocol::encode_line(&WireMessage::RuntimeEvent(event.clone())).is_ok());
+    // Unchanged, or not a screen capture input: nothing.
+    assert!(
+        control
+            .set_screen_capture_status(&server_identity(), input(5), &status)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        control
+            .set_screen_capture_status(&server_identity(), input(1), &status)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        control
+            .screen_capture_status(input(5))
+            .map(|status| status.state),
+        Some(ScreenCaptureState::TargetGone)
+    );
+    let entry = &control.snapshot().snapshot.screen_capture_inputs[0];
+    assert_eq!(entry.status.state, ScreenCaptureState::TargetGone);
+    assert_eq!(entry.status.reopens, 1);
+    assert_eq!(
+        entry.status.last_error, None,
+        "a snapshot carries no error text"
+    );
+
+    // Adds past the bound are refused.
+    for value in 6..u128::try_from(MAX_SCREEN_CAPTURE_INPUTS).unwrap() + 5 {
+        control
+            .submit(
+                &admin,
+                command(
+                    &format!("add-{value}"),
+                    &format!("add-{value}-key"),
+                    CommandPayload::AddInput {
+                        input: WireInputId::from_domain(input(value)),
+                        name: format!("Screen {value}"),
+                        source: LiveInputSource::ScreenCapture(Box::default()),
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        control.screen_capture_inputs().len(),
+        MAX_SCREEN_CAPTURE_INPUTS
+    );
+    let refused = control
+        .submit(
+            &admin,
+            command(
+                "add-over",
+                "add-over-key",
+                CommandPayload::AddInput {
+                    input: WireInputId::from_domain(input(40)),
+                    name: "One too many".to_owned(),
+                    source: LiveInputSource::ScreenCapture(Box::default()),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(refused.output.events.is_empty(), "{refused:?}");
+    assert_eq!(
+        control.screen_capture_inputs().len(),
+        MAX_SCREEN_CAPTURE_INPUTS
+    );
 }
 
 /// Protocol 2.57 (OR-017): the `LiveLAN` configuration is a padlocked,

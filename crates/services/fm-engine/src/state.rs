@@ -50,6 +50,8 @@ pub enum EngineInputSource {
     Image(Box<fm_types::still::ImageInputConfig>),
     /// A slideshow (IN-009).
     Slideshow(Box<fm_types::still::SlideshowConfig>),
+    /// A screen or window capture (IN-011).
+    ScreenCapture(Box<fm_types::screen_capture::ScreenCaptureConfig>),
 }
 
 impl EngineInputSource {
@@ -80,6 +82,9 @@ impl EngineInputSource {
             Self::Image(config) => return fm_model::InputSourceSpec::Image((**config).clone()),
             Self::Slideshow(config) => {
                 return fm_model::InputSourceSpec::Slideshow((**config).clone());
+            }
+            Self::ScreenCapture(config) => {
+                return fm_model::InputSourceSpec::ScreenCapture((**config).clone());
             }
         };
         fm_model::InputSourceSpec::Generator {
@@ -1668,6 +1673,19 @@ impl ShowState {
             .iter()
             .filter_map(|(input, source)| match source {
                 fm_model::InputSourceSpec::Network(config) => Some((*input, config)),
+                _ => None,
+            })
+    }
+
+    /// Every screen capture input and its configuration, ascending by input
+    /// (IN-011).
+    pub fn screen_capture_inputs(
+        &self,
+    ) -> impl Iterator<Item = (InputId, &fm_types::screen_capture::ScreenCaptureConfig)> {
+        self.input_sources
+            .iter()
+            .filter_map(|(input, source)| match source {
+                fm_model::InputSourceSpec::ScreenCapture(config) => Some((*input, config)),
                 _ => None,
             })
     }

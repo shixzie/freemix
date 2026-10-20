@@ -135,6 +135,7 @@ fn the_added_event_carries_one_kind() {
         capture: None,
         still: None,
         system_audio: Some(Box::new(monitor())),
+        screen_capture: None,
     });
     let line = round_trip(&added);
     assert!(
@@ -149,6 +150,7 @@ fn the_added_event_carries_one_kind() {
         capture: Some(Box::new(fm_protocol::CaptureInputConfig::new("cam"))),
         still: None,
         system_audio: Some(Box::new(monitor())),
+        screen_capture: None,
     });
     assert!(encode_line(&both).is_err());
 }
@@ -373,6 +375,7 @@ fn snapshot(system_audio_inputs: Vec<SystemAudioEntry>) -> WireMessage {
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
         system_audio_inputs,
+        screen_capture_inputs: Vec::new(),
         capture_inputs: Vec::new(),
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),

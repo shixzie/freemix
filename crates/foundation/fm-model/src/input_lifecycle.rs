@@ -299,7 +299,8 @@ pub enum GeneratorVideo {
 
 /// An input source that can be named on the wire and swapped live: a
 /// generator, a media file, a capture device, a network stream, a system
-/// audio source, a still picture, or a slideshow.
+/// audio source, a still picture, a slideshow, or a screen or window
+/// capture.
 ///
 /// Scene, alias, title, mix-feed, and plain colour inputs have no
 /// replaceable source.
@@ -326,6 +327,8 @@ pub enum InputSourceSpec {
     /// presentation, IN-014). A new or replaced document starts on its
     /// first page.
     Document { asset_uri: String },
+    /// A screen or window capture (IN-011): its target and settings.
+    ScreenCapture(fm_types::screen_capture::ScreenCaptureConfig),
 }
 
 /// Why a source specification is unusable.
@@ -345,6 +348,8 @@ pub enum InputSourceError {
     InvalidSystemAudio,
     /// An image or slideshow configuration is unusable (IN-008, IN-009).
     InvalidStill(fm_types::still::StillInputError),
+    /// A screen capture target or setting is unusable (IN-011).
+    InvalidScreenCapture,
 }
 
 impl InputSourceError {
@@ -359,6 +364,7 @@ impl InputSourceError {
             Self::InvalidNetworkStream => "invalid_network_stream",
             Self::InvalidSystemAudio => "invalid_system_audio",
             Self::InvalidStill(error) => error.code(),
+            Self::InvalidScreenCapture => "invalid_screen_capture",
         }
     }
 }
@@ -375,6 +381,7 @@ impl fmt::Display for InputSourceError {
             Self::InvalidNetworkStream => "the network stream URL or settings are unusable",
             Self::InvalidSystemAudio => "the system audio device name is unusable",
             Self::InvalidStill(error) => return error.fmt(formatter),
+            Self::InvalidScreenCapture => "the screen capture target or settings are unusable",
         })
     }
 }
@@ -553,6 +560,9 @@ impl InputSourceSpec {
                     Err(InputSourceError::UnsupportedMediaType)
                 }
             }
+            Self::ScreenCapture(config) => config
+                .validate()
+                .map_err(|_| InputSourceError::InvalidScreenCapture),
         }
     }
 
@@ -586,6 +596,7 @@ impl InputSourceSpec {
             InputKind::Document(document) => Some(Self::Document {
                 asset_uri: document.asset_uri.clone(),
             }),
+            InputKind::ScreenCapture(config) => Some(Self::ScreenCapture(config.clone())),
             InputKind::Color
             | InputKind::Scene { .. }
             | InputKind::Alias { .. }
@@ -626,6 +637,7 @@ impl InputSourceSpec {
             Self::Document { asset_uri } => {
                 InputKind::Document(crate::DocumentInput::new(asset_uri.clone(), 0))
             }
+            Self::ScreenCapture(config) => InputKind::ScreenCapture(config.clone()),
         }
     }
 

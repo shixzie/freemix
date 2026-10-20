@@ -226,6 +226,9 @@ pub enum Intake {
     /// A `slideshow_slides` reply updated a replicated slideshow listing
     /// (IN-009).
     SlideshowSlidesApplied,
+    /// A `screen_capture_targets` reply updated the replicated list of what
+    /// the server can capture (IN-011).
+    ScreenCaptureTargetsApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -697,6 +700,10 @@ impl Client {
                 self.model.apply_web_access(message);
                 Ok(Intake::WebAccessApplied)
             }
+            WireMessage::ScreenCaptureTargets(message) => {
+                self.model.apply_screen_capture_inventory(message.inventory);
+                Ok(Intake::ScreenCaptureTargetsApplied)
+            }
             WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
@@ -704,6 +711,7 @@ impl Client {
             | WireMessage::SlideshowSlidesRequest(_)
             | WireMessage::PagedPageRequest(_)
             | WireMessage::PagedPage(_)
+            | WireMessage::ScreenCaptureTargetsRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -1894,6 +1902,10 @@ impl Client {
             }
             RuntimeLifecycleEvent::CaptureDevices(inventory) => {
                 self.model.apply_capture_inventory(inventory.clone());
+            }
+            RuntimeLifecycleEvent::ScreenCaptureStatus { input, status } => {
+                self.model
+                    .apply_runtime_screen_capture_status(input.to_domain(), (**status).clone())?;
             }
             RuntimeLifecycleEvent::SystemAudioStatus { input, status } => {
                 self.model

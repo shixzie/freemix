@@ -843,6 +843,140 @@ pub fn system_audio_inputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Lists the screen capture inputs of the daemon at `address` with their
+/// latest status (IN-011).
+pub fn screen_capture_inputs(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let view = remote
+        .client
+        .model()
+        .view()
+        .ok_or_else(|| RemoteFailure("remote project view is unavailable".into()))?;
+    print_screen_capture_inputs(view.screen_capture_inputs.iter().cloned());
+    Ok(())
+}
+
+/// The target of a screen capture configuration, as the CLI prints it.
+fn screen_capture_target(config: &fm_protocol::ScreenCaptureConfig) -> String {
+    match &config.target {
+        fm_protocol::ScreenCaptureTarget::Screen { index } => format!("screen:{index}"),
+        fm_protocol::ScreenCaptureTarget::Window(rule) => format!(
+            "window(app={:?}, title={:?}, match={}, id={})",
+            rule.app,
+            rule.title,
+            rule.title_match.token(),
+            rule.window_id
+                .map_or_else(|| "none".to_owned(), |id| id.to_string())
+        ),
+    }
+}
+
+/// Prints one `ScreenCaptureInput(...)` line per screen capture input, or
+/// `ScreenCaptureInputs=none`.
+pub(crate) fn print_screen_capture_inputs(
+    entries: impl IntoIterator<Item = fm_protocol::ScreenCaptureEntry>,
+) {
+    let mut any = false;
+    for entry in entries {
+        any = true;
+        let crop = entry.config.crop;
+        println!(
+            "ScreenCaptureInput(input={}, target={}, crop={},{},{},{}, cursor={}, fps={}, stall={}, state={}, size={}x{}, reopens={}, last_error={})",
+            entry.input,
+            screen_capture_target(&entry.config),
+            crop.left,
+            crop.top,
+            crop.right,
+            crop.bottom,
+            if entry.config.cursor { "on" } else { "off" },
+            entry.config.fps,
+            entry.config.slate.token(),
+            entry.status.state.token(),
+            entry.status.width,
+            entry.status.height,
+            entry.status.reopens,
+            quoted_or_none(entry.status.last_error.as_deref()),
+        );
+    }
+    if !any {
+        println!("ScreenCaptureInputs=none");
+    }
+}
+
+/// Lists the screens and windows the daemon's host can capture (IN-011).
+pub fn screen_capture_targets(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-screen-capture-{}", unique_client_id()?);
+    remote.write(&WireMessage::ScreenCaptureTargetsRequest(
+        fm_protocol::ScreenCaptureTargetsRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    let reply = loop {
+        match remote.read_until(deadline)? {
+            WireMessage::ScreenCaptureTargets(reply) if reply.request_id == request_id => {
+                break reply;
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(
+                    RemoteFailure("expected screen_capture_targets from daemon".into()).into(),
+                );
+            }
+        }
+    };
+    print_screen_capture_targets(&reply.inventory);
+    Ok(())
+}
+
+/// Prints a `ScreenCaptureTargets(...)` header, then a `Screen(...)` line
+/// per screen and a `Window(...)` line per window.
+fn print_screen_capture_targets(inventory: &fm_protocol::ScreenCaptureInventory) {
+    println!(
+        "ScreenCaptureTargets(supported={}, backend={}, screens={}, windows={}, error={})",
+        if inventory.supported { "on" } else { "off" },
+        if inventory.backend.is_empty() {
+            "none"
+        } else {
+            inventory.backend.as_str()
+        },
+        inventory.screens.len(),
+        inventory.windows.len(),
+        quoted_or_none(inventory.error.as_deref()),
+    );
+    for screen in &inventory.screens {
+        println!(
+            "Screen(index={}, name={:?}, primary={}, position={},{}, size={}x{})",
+            screen.index,
+            screen.name,
+            if screen.primary { "on" } else { "off" },
+            screen.x,
+            screen.y,
+            screen.width,
+            screen.height,
+        );
+    }
+    for window in &inventory.windows {
+        println!(
+            "Window(id={}, app={:?}, title={:?}, pid={}, position={},{}, size={}x{})",
+            window.id,
+            window.app,
+            window.title,
+            window
+                .pid
+                .map_or_else(|| "unknown".to_owned(), |pid| pid.to_string()),
+            window.x,
+            window.y,
+            window.width,
+            window.height,
+        );
+    }
+}
+
 /// Prints one `SystemAudioInput(...)` line per system audio input, or
 /// `SystemAudioInputs=none`.
 pub(crate) fn print_system_audio_inputs(

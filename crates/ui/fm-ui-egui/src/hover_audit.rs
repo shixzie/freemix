@@ -324,6 +324,24 @@ fn model(variant: Variant) -> ClientModel {
                 last_error: Some("No such file or directory".into()),
             },
         }],
+        // IN-011: a window capture whose window closed, so its tile badge
+        // and details are audited.
+        screen_capture_inputs: vec![fm_protocol::ScreenCaptureEntry {
+            input: wire(6),
+            config: fm_protocol::ScreenCaptureConfig::new(
+                fm_protocol::ScreenCaptureTarget::Window(fm_protocol::WindowRule::exact(
+                    "Keynote",
+                    "Quarterly deck",
+                    None,
+                )),
+            ),
+            status: fm_protocol::ScreenCaptureStatus {
+                state: fm_protocol::ScreenCaptureState::TargetGone,
+                reopens: 1,
+                last_error: Some("no Keynote window titled \"Quarterly deck\" is open".into()),
+                ..fm_protocol::ScreenCaptureStatus::default()
+            },
+        }],
         // OR-006: the two roster targets' settings (a running local HLS
         // ladder and a stopped keyed RTMP destination with a backup), so
         // the rows' Retry / Edit / Remove keys and the destination dialog
@@ -1495,6 +1513,7 @@ fn slideshow_model() -> ClientModel {
             network_stream: None,
             capture: None,
             system_audio: None,
+            screen_capture: None,
             still: Some(Box::new(WireStillSource::Slideshow(config))),
         },
     );
@@ -1598,6 +1617,149 @@ fn still_scenes(locale: Locale) -> Vec<Scene> {
             "viewer/media-slideshow",
             media(),
             ready_over(&slideshow, false),
+        ),
+    ]
+}
+
+/// What the fixture server can capture (IN-011): two screens and three
+/// application windows, one of them untitled.
+pub(crate) fn screen_capture_inventory() -> fm_protocol::ScreenCaptureInventory {
+    use fm_protocol::{ScreenInfo, WindowInfo};
+    let window = |id, app: &str, title: &str| WindowInfo {
+        id,
+        app: app.into(),
+        title: title.into(),
+        pid: Some(4_000 + u32::try_from(id).unwrap_or(0)),
+        x: 40,
+        y: 30,
+        width: 1_280,
+        height: 720,
+    };
+    fm_protocol::ScreenCaptureInventory {
+        supported: true,
+        backend: "x11".into(),
+        screens: vec![
+            ScreenInfo {
+                index: 0,
+                name: "DP-1".into(),
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+                primary: true,
+            },
+            ScreenInfo {
+                index: 1,
+                name: "HDMI-1".into(),
+                x: 1_920,
+                y: 0,
+                width: 1_280,
+                height: 1_024,
+                primary: false,
+            },
+        ],
+        windows: vec![
+            window(41, "Keynote", "Quarterly deck"),
+            window(42, "Firefox", "Live scores - Mozilla Firefox"),
+            window(43, "Terminal", ""),
+        ],
+        error: None,
+    }
+}
+
+/// `state` with `inventory` as what the server can capture.
+fn with_screen_capture_inventory(
+    mut state: StudioUiState,
+    inventory: Option<fm_protocol::ScreenCaptureInventory>,
+) -> StudioUiState {
+    if let Some(view) = state.view.as_mut() {
+        view.screen_capture_inventory = inventory;
+    }
+    state
+}
+
+/// The screen capture form (IN-011) with the server's targets: a screen,
+/// a picked window followed by its exact title, by a title text, and by
+/// its application; a target that is not open; a listing not yet known;
+/// and a server that cannot capture its desktop.
+fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::input_catalogue::{AddInputDraft, NewInputKind};
+    use fm_protocol::TitleMatch;
+    let operator = ready(true, Variant::default());
+    let inventory = screen_capture_inventory();
+    let shell = |configure: &dyn Fn(&mut AddInputDraft)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_add_input(&operator);
+        if let Some(draft) = shell.add_input.as_mut() {
+            draft.kind = NewInputKind::ScreenCapture;
+            configure(draft);
+        }
+        shell
+    };
+    let listed = || with_screen_capture_inventory(operator.clone(), Some(inventory.clone()));
+    let deck = inventory.windows[0].clone();
+    let follow = |title_match: TitleMatch| {
+        let deck = deck.clone();
+        move |draft: &mut AddInputDraft| {
+            draft.screen_capture.choose_window(&deck);
+            if let Some(rule) = draft.screen_capture.rule_mut() {
+                rule.title_match = title_match;
+            }
+        }
+    };
+    vec![
+        Scene::console(
+            "dialog/add-input-screen-capture-screen",
+            shell(&|_| {}),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-window",
+            shell(&follow(TitleMatch::Exact)),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-contains",
+            shell(&|draft| {
+                follow(TitleMatch::Contains)(draft);
+                if let Some(rule) = draft.screen_capture.rule_mut() {
+                    rule.title = "deck".into();
+                    rule.window_id = None;
+                }
+                draft.screen_capture.config.crop.top = 28;
+                draft.screen_capture.config.slate = fm_types::network_stream::StallSlate::Black;
+            }),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-any",
+            shell(&follow(TitleMatch::Any)),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-missing",
+            shell(&|draft| {
+                draft.screen_capture.config.target = fm_protocol::ScreenCaptureTarget::Window(
+                    fm_protocol::WindowRule::exact("Slides", "Opening", None),
+                );
+            }),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-unknown",
+            shell(&|_| {}),
+            with_screen_capture_inventory(operator.clone(), None),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-unsupported",
+            shell(&|_| {}),
+            with_screen_capture_inventory(
+                operator.clone(),
+                Some(fm_protocol::ScreenCaptureInventory::unsupported(
+                    "Wayland session: silent screen capture needs X11; log in to an X11 session",
+                )),
+            ),
         ),
     ]
 }
@@ -2859,6 +3021,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(capture_scenes(locale));
     scenes.extend(system_audio_scenes(locale));
     scenes.extend(still_scenes(locale));
+    scenes.extend(screen_capture_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
@@ -4192,6 +4355,76 @@ pub fn check_system_audio(language: Language) {
             .any(|tooltip| tooltip.contains(&text))
         {
             let _ = writeln!(failures, "no system audio tooltip shows {text:?}");
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+/// Audits the screen and window capture form of the Add input dialog
+/// (IN-011) in `language` under the console rules, and requires the help
+/// of the kind key, Refresh targets, every listed screen and window, the
+/// three ways to follow a window, the title field, the crop, the pointer,
+/// the rate cap, and both stall slates to have been shown.
+pub fn check_screen_capture(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, screen_capture_scenes(locale));
+    dump("hover-screen-capture", language, &controls);
+    println!("{}", report(language, &findings));
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    let mut required: Vec<String> = [
+        Msg::KindScreenCaptureHover,
+        Msg::ScRefreshHover,
+        Msg::ScMatchExactHover,
+        Msg::ScMatchContainsHover,
+        Msg::ScMatchAnyHover,
+        Msg::ScTitleHover,
+        Msg::ScCropHover,
+        Msg::ScCursorHover,
+        Msg::ScFpsHover,
+        Msg::ScStallFreezeHover,
+        Msg::ScStallBlackHover,
+    ]
+    .into_iter()
+    .map(|msg| locale.text(msg).to_owned())
+    .collect();
+    let inventory = screen_capture_inventory();
+    for screen in &inventory.screens {
+        required.push(locale.format(
+            Msg::ScScreenOptionHover,
+            &[
+                ("number", Arg::from(u64::from(screen.index) + 1)),
+                (
+                    "size",
+                    Arg::Str(&format!("{}x{}", screen.width, screen.height)),
+                ),
+                ("x", Arg::Str(&screen.x.to_string())),
+                ("y", Arg::Str(&screen.y.to_string())),
+            ],
+        ));
+    }
+    for window in &inventory.windows {
+        required.push(locale.format(
+            Msg::ScWindowOptionHover,
+            &[
+                ("app", Arg::Str(&window.app)),
+                ("title", Arg::Str(&window.title)),
+                (
+                    "size",
+                    Arg::Str(&format!("{}x{}", window.width, window.height)),
+                ),
+            ],
+        ));
+    }
+    for text in required {
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|tooltip| tooltip.contains(&text))
+        {
+            let _ = writeln!(failures, "no screen capture tooltip shows {text:?}");
         }
     }
     assert!(failures.is_empty(), "{failures}");

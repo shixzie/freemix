@@ -476,6 +476,9 @@ pub(crate) fn apply(
                 Some(InputSourceSpec::Slideshow(_)) => {
                     crate::engine::check_slideshow_room(state)?;
                 }
+                Some(InputSourceSpec::ScreenCapture(_)) => {
+                    crate::engine::check_screen_capture_room(state)?;
+                }
                 Some(InputSourceSpec::Network(config)) => {
                     crate::engine::check_network_stream_room(state)?;
                     crate::engine::check_listen_port(state, input, config)?;
@@ -626,6 +629,11 @@ pub(crate) fn apply(
                 && !matches!(current, InputSourceSpec::Document { .. })
             {
                 crate::engine::check_document_room(state)?;
+            }
+            if matches!(source, InputSourceSpec::ScreenCapture(_))
+                && !matches!(current, InputSourceSpec::ScreenCapture(_))
+            {
+                crate::engine::check_screen_capture_room(state)?;
             }
             match (current.is_media(), source.is_media()) {
                 (false, true) => {

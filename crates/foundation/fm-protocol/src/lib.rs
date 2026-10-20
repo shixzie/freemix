@@ -17,6 +17,7 @@ mod output_failure;
 mod paged;
 mod recorder_status;
 mod scene_layer;
+pub mod screen_capture;
 mod script;
 mod shortcut;
 mod source_sync;
@@ -186,6 +187,16 @@ pub use scene_layer::{
     SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,
     SceneLayerOperation, WireChromaKey, WireFillKey, WireKeyDespill, WireKeyRefinement,
     WireLayerCrop, WireLayerEffect, WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey,
+};
+pub use screen_capture::{
+    DEFAULT_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_APP_BYTES, MAX_SCREEN_CAPTURE_CROP,
+    MAX_SCREEN_CAPTURE_ERROR_BYTES, MAX_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_INPUTS,
+    MAX_SCREEN_CAPTURE_SCREEN_INDEX, MAX_SCREEN_CAPTURE_SCREEN_NAME_BYTES,
+    MAX_SCREEN_CAPTURE_SCREENS, MAX_SCREEN_CAPTURE_TITLE_BYTES, MAX_SCREEN_CAPTURE_WINDOWS,
+    MIN_SCREEN_CAPTURE_FPS, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureEntry,
+    ScreenCaptureError, ScreenCaptureInventory, ScreenCaptureState, ScreenCaptureStatus,
+    ScreenCaptureTarget, ScreenCaptureTargetsMessage, ScreenCaptureTargetsRequest, ScreenInfo,
+    TitleMatch, WindowInfo, WindowRule, bound_screen_capture_error,
 };
 pub use script::{
     MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange,

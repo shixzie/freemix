@@ -85,5 +85,8 @@ half = "2.7.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3.20"
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13.2"
+
 [lints]
 workspace = true

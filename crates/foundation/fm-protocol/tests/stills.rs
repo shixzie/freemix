@@ -280,6 +280,7 @@ fn still_states_and_slideshow_pages_name_project_assets_only() {
         name: "Logo".into(),
         network_stream: None,
         system_audio: None,
+        screen_capture: None,
         capture: None,
         still: Some(Box::new(WireStillSource::Image(ImageInputConfig::new(
             "asset://logo.png",

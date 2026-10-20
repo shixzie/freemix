@@ -684,6 +684,7 @@ fn append_inputs(
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
             | InputKind::SystemAudio(_)
+            | InputKind::ScreenCapture(_)
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
             | InputKind::Title(_) => input.kind.clone(),

@@ -16,6 +16,8 @@
 //! - [`fake`]: a deterministic fake backend for tests and diagnostics.
 //! - [`system_audio`]: the `PulseAudio` and ALSA capture devices a system
 //!   audio input can open (AU-011).
+//! - [`screen_capture`]: the screens and windows of the X11 desktop and
+//!   their capture through `ffmpeg -f x11grab` (IN-011).
 //!
 //! Everything but [`v4l2`] is portable, so the state machines are tested
 //! without hardware on every platform.
@@ -27,6 +29,7 @@ pub mod fake;
 pub mod ffmpeg;
 pub mod monitor;
 pub mod probe;
+pub mod screen_capture;
 pub mod supervisor;
 pub mod sysfs;
 pub mod system_audio;

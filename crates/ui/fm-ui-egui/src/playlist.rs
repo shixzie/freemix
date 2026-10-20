@@ -2107,6 +2107,7 @@ mod tests {
     }
 
     /// A synchronized model with inputs Camera and Slides and `playlist`.
+    #[allow(clippy::too_many_lines)] // one field per snapshot record
     fn model(playlist: Option<PlaylistStatus>) -> ClientModel {
         let project = ProjectId::new(NonZeroU128::new(1).unwrap());
         let fade = FadeToBlackState {
@@ -2123,6 +2124,7 @@ mod tests {
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
+            screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),

@@ -192,6 +192,7 @@ fn durable_events_carry_the_config_and_settings() {
         name: "Camera".into(),
         network_stream: None,
         system_audio: None,
+        screen_capture: None,
         capture: Some(Box::new(CaptureInputConfig {
             stable_key: "v4l2:usb-1#Cam".into(),
             settings: settings(),
@@ -215,6 +216,7 @@ fn durable_events_carry_the_config_and_settings() {
             "udp://@:9000",
         ))),
         system_audio: None,
+        screen_capture: None,
         capture: Some(Box::new(CaptureInputConfig::new("cam"))),
         still: None,
     });
@@ -512,7 +514,7 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     assert_eq!(decoded.capture_inputs, entries);
     assert!(
         line.ends_with(
-            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
                 .replace('~', "%7E")
                 .as_str()
         ),
@@ -623,6 +625,7 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         display_output_states: Vec::new(),
         network_streams: Vec::new(),
         system_audio_inputs: Vec::new(),
+        screen_capture_inputs: Vec::new(),
         capture_inputs,
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),

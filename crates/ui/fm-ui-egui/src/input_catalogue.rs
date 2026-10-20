@@ -105,6 +105,8 @@ pub enum NewInputKind {
     Slideshow,
     /// A media list input: files played one after another (IN-006).
     MediaList,
+    /// A screen or application window of the server's desktop (IN-011).
+    ScreenCapture,
 }
 
 impl NewInputKind {
@@ -124,6 +126,7 @@ impl NewInputKind {
             Self::Image => Msg::NameImage,
             Self::Slideshow => Msg::NameSlideshow,
             Self::MediaList => Msg::NameMediaList,
+            Self::ScreenCapture => Msg::NameScreenCapture,
         }
     }
 
@@ -137,6 +140,7 @@ impl NewInputKind {
             Self::Image => Msg::KindImageKey,
             Self::Slideshow => Msg::KindSlideshowKey,
             Self::MediaList => Msg::KindMediaListKey,
+            Self::ScreenCapture => Msg::KindScreenCaptureKey,
         }
     }
 
@@ -150,6 +154,7 @@ impl NewInputKind {
             Self::Image => Msg::KindImageHover,
             Self::Slideshow => Msg::KindSlideshowHover,
             Self::MediaList => Msg::KindMediaListHover,
+            Self::ScreenCapture => Msg::KindScreenCaptureHover,
         }
     }
 }
@@ -481,6 +486,8 @@ pub(crate) struct AddInputDraft {
     pub(crate) slideshow: crate::still_input_ui::SlideshowDraft,
     /// The media list form (IN-006).
     pub(crate) media_list: crate::media_list_ui::MediaListDraft,
+    /// The screen and window capture form (IN-011).
+    pub(crate) screen_capture: crate::screen_capture_ui::ScreenCaptureDraft,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -523,6 +530,7 @@ impl AddInputDraft {
                     }),
             ),
             media_list: crate::media_list_ui::MediaListDraft::default(),
+            screen_capture: crate::screen_capture_ui::ScreenCaptureDraft::default(),
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -560,6 +568,9 @@ impl AddInputDraft {
             }
             // Created by `media_list create`, never `input_add`.
             NewInputKind::MediaList => return Err(self.media_list.items().err().unwrap_or("")),
+            NewInputKind::ScreenCapture => {
+                LiveInputSource::ScreenCapture(Box::new(self.screen_capture.config()?))
+            }
         })
     }
 
@@ -591,6 +602,10 @@ impl AddInputDraft {
             NewInputKind::MediaList => {
                 let reason = self.media_list.items().err()?;
                 (Msg::MlFiles, reason, self.media_list.text.trim().is_empty())
+            }
+            NewInputKind::ScreenCapture => {
+                let problem = self.screen_capture.checked().err()?;
+                (problem.field.label(), problem.reason, problem.prompt)
             }
         };
         Some(FieldProblem {
@@ -1159,6 +1174,7 @@ impl StudioShell {
                                 NewInputKind::Image,
                                 NewInputKind::Slideshow,
                                 NewInputKind::MediaList,
+                                NewInputKind::ScreenCapture,
                             ] {
                                 let selected = draft.kind == kind;
                                 let response = ui
@@ -1175,6 +1191,9 @@ impl StudioShell {
                                     }
                                     if kind == NewInputKind::SystemAudio {
                                         intents.push(StudioIntent::RequestSystemAudioDevices);
+                                    }
+                                    if kind == NewInputKind::ScreenCapture {
+                                        intents.push(StudioIntent::RequestScreenCaptureTargets);
                                     }
                                 }
                             }
@@ -1243,6 +1262,26 @@ impl StudioShell {
                         if draft.kind == NewInputKind::MediaList {
                             ui.add_space(6.0);
                             crate::media_list_ui::draw_form(ui, l, &mut draft.media_list);
+                        }
+                        if draft.kind == NewInputKind::ScreenCapture {
+                            ui.add_space(6.0);
+                            let outcome = crate::screen_capture_ui::draw_screen_capture_form(
+                                ui,
+                                l,
+                                state,
+                                "studio-add-input",
+                                &mut draft.screen_capture,
+                            );
+                            if outcome.rescan {
+                                intents.push(StudioIntent::RequestScreenCaptureTargets);
+                            }
+                            // The window's application is the suggested name.
+                            if outcome.picked.is_some() && !draft.name_edited {
+                                let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+                                if let Some(name) = draft.screen_capture.suggested_name(&taken) {
+                                    draft.name = name;
+                                }
+                            }
                         }
                         if draft.kind == NewInputKind::Capture {
                             ui.add_space(6.0);
@@ -1649,16 +1688,17 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 );
             }
         }
-        // A stream shows nothing until it connects.
-        // A capture input shows nothing until its device starts.
-        NewInputKind::Network | NewInputKind::Capture => {
+        // A stream shows nothing until it connects, a capture input until
+        // its device starts, and a screen capture's picture comes from the
+        // server's desktop.
+        NewInputKind::Network | NewInputKind::Capture | NewInputKind::ScreenCapture => {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                l.text(if draft.kind == NewInputKind::Capture {
-                    Msg::StreamStarting
-                } else {
-                    Msg::ConnConnecting
+                l.text(match draft.kind {
+                    NewInputKind::Capture => Msg::StreamStarting,
+                    NewInputKind::ScreenCapture => Msg::ThumbScreenCapture,
+                    _ => Msg::ConnConnecting,
                 }),
                 FontId::new(10.0, FontFamily::Proportional),
                 muted_color(),
@@ -1762,6 +1802,7 @@ mod tests {
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
+            screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),

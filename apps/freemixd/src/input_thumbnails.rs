@@ -390,6 +390,7 @@ impl LeafContext<'_> {
                 | InputKind::Title(_)
                 | InputKind::NetworkStream(_)
                 | InputKind::Device { .. }
+                | InputKind::ScreenCapture(_)
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
                 | InputKind::Document(_)
@@ -437,7 +438,9 @@ impl LeafContext<'_> {
                     title_render::flatten_over_black(&keyed)
                 }
             }
-            InputKind::NetworkStream(_) | InputKind::Device { .. } => {
+            InputKind::NetworkStream(_)
+            | InputKind::Device { .. }
+            | InputKind::ScreenCapture(_) => {
                 synthetic_picture(id, width, height, self.elapsed)
             }
             InputKind::Image(image) => stills.image(

@@ -73,6 +73,7 @@ mod playlist;
 mod preferences;
 mod preset_files;
 mod scene_designer;
+mod screen_capture_ui;
 mod scripts;
 mod source_sync_ui;
 mod still_input_ui;
@@ -246,6 +247,10 @@ pub enum StudioIntent {
     /// Protocol 2.71); the answer updates
     /// [`fm_ui_model::ClientView::web_access`].
     WebAccess(fm_protocol::WebAccessAction),
+    /// Asks the server for the screens and windows it can capture
+    /// (IN-011); the reply updates
+    /// [`fm_ui_model::ClientView::screen_capture_inventory`].
+    RequestScreenCaptureTargets,
     /// Turns the live input thumbnail feed on while the input bank is
     /// shown and off when it is not (Protocol 2.59); the thumbnails arrive
     /// in [`StudioUiState::input_thumbnails`].
@@ -3076,11 +3081,13 @@ mod tests {
             display_inventory: None,
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
+            screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             still_inputs: std::collections::BTreeMap::new(),
             capture_inventory: None,
             system_audio_inventory: None,
             web_access: None,
+            screen_capture_inventory: None,
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {

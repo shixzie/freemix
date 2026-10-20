@@ -1768,3 +1768,21 @@ Package Rotation (add media list), `SLIDESHOW` with the folder
 `Advanced`, and `Vectorscope`; the animation capture follows round 7; the
 pop-out capture drags the Program panel's grip out of its dock; and the
 reference capture presses `?` with the saved shortcut in the project.
+
+### Screen capture (IN-011)
+
+| File | What it shows |
+| --- | --- |
+| `studio-screen-capture-program.png` | A native daemon on Xvfb `:141` captures an `ffplay` test pattern window titled `Quarterly Review - Slides` (input 10, bank slot 3, `Slides`, a window rule: app `ffplay`, title contains `Quarterly Review`, cursor off, 30 fps) onto Program, beside a whole-screen capture of the same desktop (input 11, `Desktop`, letterboxed). Both tiles carry the `LIVE` capture badge. |
+
+The daemon runs `freemixd serve demo.freemix --native-media --listen
+127.0.0.1:7411` with `DISPLAY=:141`, and Studio connects from Xvfb `:142`.
+The show is `freemix-cli new` with inputs 1 and 2 replaced by solids (the
+native daemon refuses the default simulated sine audio), then:
+
+```sh
+freemix-cli input-add-screen-capture demo.freemix 10 "Slides" window ffplay "Quarterly Review" \
+    --match contains --cursor off --fps 30 --stall black
+freemix-cli input-add-screen-capture demo.freemix 11 "Desktop" screen 0
+freemix-cli preview demo.freemix 10 && freemix-cli cut demo.freemix && freemix-cli preview demo.freemix 1
+```

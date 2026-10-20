@@ -406,6 +406,11 @@ impl StudioShell {
             .view
             .as_ref()
             .and_then(|view| view.capture_input(input));
+        // A screen capture input's state (IN-011).
+        let screen_capture = state
+            .view
+            .as_ref()
+            .and_then(|view| view.screen_capture_input(input));
         // A system audio input's capture state (AU-011).
         let system_audio = state
             .view
@@ -419,7 +424,7 @@ impl StudioShell {
                 wire,
                 &state.input_thumbnails,
                 std::time::Instant::now(),
-                stream.is_some() || capture.is_some(),
+                stream.is_some() || capture.is_some() || screen_capture.is_some(),
             )
         } else {
             None
@@ -443,6 +448,8 @@ impl StudioShell {
             crate::capture_input_ui::capture_badge(l, &entry.status).is_some()
         }) || system_audio.is_some_and(|entry| {
             crate::system_audio_ui::system_audio_badge(l, &entry.status).is_some()
+        }) || screen_capture.is_some_and(|entry| {
+            crate::screen_capture_ui::screen_capture_badge(l, &entry.status).is_some()
         });
         if ui.is_rect_visible(rect) {
             paint_tile(
@@ -495,6 +502,16 @@ impl StudioShell {
                 &entry.status,
             );
         }
+        if let Some(entry) = screen_capture
+            && ui.is_rect_visible(rect)
+        {
+            crate::screen_capture_ui::paint_screen_capture_badge(
+                ui.painter(),
+                Rect::from_min_size(rect.min, Vec2::new(width, thumb_height)),
+                l,
+                &entry.status,
+            );
+        }
         let shortcut = if index < 8 {
             format!("  [{}]", index + 1)
         } else {
@@ -522,6 +539,10 @@ impl StudioShell {
         if let Some(entry) = system_audio {
             status.push_str(" · ");
             status.push_str(&crate::system_audio_ui::system_audio_details(l, entry));
+        }
+        if let Some(entry) = screen_capture {
+            status.push_str(" · ");
+            status.push_str(&crate::screen_capture_ui::screen_capture_details(l, entry));
         }
         let hover = format!(
             "{status}\n{}\n{source}\n{}",

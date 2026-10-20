@@ -8961,4 +8961,161 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::FxCloseHover,
         t("Cierra la ventana FX; la cadena se queda en el canal"),
     ),
+    // Entradas de captura de pantalla y de ventana (IN-011).
+    (Msg::NameScreenCapture, t("Captura de pantalla")),
+    (Msg::KindScreenCaptureKey, t("VENTANA / PANTALLA")),
+    (
+        Msg::KindScreenCaptureHover,
+        t(
+            "Muestra una pantalla del escritorio del servidor o una ventana de una aplicación, capturadas en el servidor; la ventana se sigue por su aplicación y su título, así que se vuelve a encontrar cuando se cierra y se reabre",
+        ),
+    ),
+    (Msg::ScTarget, t("Qué capturar")),
+    (Msg::ScRefresh, t("Actualizar destinos")),
+    (
+        Msg::ScRefreshHover,
+        t(
+            "Pide al servidor que vuelva a listar sus pantallas y ventanas abiertas, por ejemplo tras abrir la ventana que quiere capturar",
+        ),
+    ),
+    (
+        Msg::ScListUnknown,
+        t("Preguntando al servidor qué puede capturar…"),
+    ),
+    (
+        Msg::ScListUnsupported,
+        t("Este servidor no puede capturar su escritorio: {reason}"),
+    ),
+    (
+        Msg::ScListError,
+        t("El servidor no pudo listar su escritorio: {error}"),
+    ),
+    (
+        Msg::ScListScreens,
+        plural("{count} pantalla", "{count} pantallas"),
+    ),
+    (
+        Msg::ScListWindows,
+        plural("{count} ventana", "{count} ventanas"),
+    ),
+    (
+        Msg::ScListCount,
+        t("El servidor lista {screens} y {windows} ({backend})"),
+    ),
+    (Msg::ScGroupScreens, t("Pantallas")),
+    (Msg::ScGroupWindows, t("Ventanas de aplicaciones")),
+    (
+        Msg::ScNoWindows,
+        t("No hay ventanas de aplicaciones abiertas en el servidor"),
+    ),
+    (
+        Msg::ScScreenOption,
+        t("Pantalla {number} · {name} · {size}"),
+    ),
+    (Msg::ScScreenPrimary, t("pantalla principal")),
+    (
+        Msg::ScScreenOptionHover,
+        t("Captura toda la pantalla {number} ({size}, en {x}, {y} del escritorio)"),
+    ),
+    (Msg::ScWindowOption, t("{app} · {title}")),
+    (Msg::ScWindowUntitled, t("{app} (sin título)")),
+    (
+        Msg::ScWindowOptionHover,
+        t(
+            "Captura la ventana de {app} titulada \"{title}\" ({size}); se sigue por su aplicación y su título",
+        ),
+    ),
+    (
+        Msg::ScChosenMissing,
+        t("Ahora no está abierto en el servidor: {target}. Se captura en cuanto aparezca"),
+    ),
+    (Msg::ScFollow, t("Seguir la ventana por")),
+    (Msg::ScMatchExact, t("Título exacto")),
+    (
+        Msg::ScMatchExactHover,
+        t("Captura la ventana de esta aplicación cuyo título es exactamente el de abajo"),
+    ),
+    (Msg::ScMatchContains, t("El título contiene")),
+    (
+        Msg::ScMatchContainsHover,
+        t(
+            "Captura la primera ventana de esta aplicación cuyo título contiene el texto de abajo, sin distinguir mayúsculas; útil cuando el título cambia, como el nombre de un documento",
+        ),
+    ),
+    (Msg::ScMatchAny, t("Cualquier ventana de la aplicación")),
+    (
+        Msg::ScMatchAnyHover,
+        t("Captura la primera ventana que muestre esta aplicación, sea cual sea su título"),
+    ),
+    (Msg::ScApp, t("Aplicación: {app}")),
+    (Msg::ScTitle, t("Título de la ventana")),
+    (
+        Msg::ScTitleHover,
+        t(
+            "El título de ventana que se sigue, hasta 128 bytes; al editarlo se deja de seguir la ventana elegida arriba hasta que aparezca una ventana con este título",
+        ),
+    ),
+    (Msg::ScCrop, t("Recorte (píxeles quitados de cada borde)")),
+    (Msg::ScCropLeft, t("Borde izquierdo")),
+    (Msg::ScCropTop, t("Borde superior")),
+    (Msg::ScCropRight, t("Borde derecho")),
+    (Msg::ScCropBottom, t("Borde inferior")),
+    (
+        Msg::ScCropHover,
+        t(
+            "Píxeles que se quitan de este borde de la pantalla o ventana antes de encajarla en la imagen (0 a 16384); por ejemplo la altura de una barra de título",
+        ),
+    ),
+    (Msg::ScCursor, t("Mostrar el puntero del ratón")),
+    (
+        Msg::ScCursorHover,
+        t("Dibuja el puntero del ratón del servidor en la imagen capturada"),
+    ),
+    (Msg::ScFps, t("Límite de imágenes por segundo")),
+    (
+        Msg::ScFpsHover,
+        t(
+            "Cuántas imágenes por segundo capturar como máximo, de 1 a 60; nunca más que la cadencia del programa",
+        ),
+    ),
+    (Msg::ScStall, t("Mientras no esté el destino")),
+    (Msg::ScStallFreeze, t("Mantener la última imagen")),
+    (
+        Msg::ScStallFreezeHover,
+        t(
+            "Sigue mostrando la última imagen capturada mientras la ventana está cerrada o la pantalla desconectada",
+        ),
+    ),
+    (Msg::ScStallBlack, t("Mostrar negro")),
+    (
+        Msg::ScStallBlackHover,
+        t("Muestra negro mientras la ventana está cerrada o la pantalla desconectada"),
+    ),
+    (
+        Msg::ScReasonTitle,
+        t("escriba el título de ventana que se sigue"),
+    ),
+    (
+        Msg::ScReasonRule,
+        t(
+            "use un nombre de aplicación y un título de 128 bytes como máximo, sin saltos de línea ni espacios en los extremos",
+        ),
+    ),
+    (
+        Msg::ScReasonCrop,
+        t("use bordes de recorte de 0 a 16384 píxeles"),
+    ),
+    (Msg::ScReasonFps, t("use de 1 a 60 imágenes por segundo")),
+    (Msg::ScBadgeGone, t("SIN DESTINO")),
+    (Msg::ScBadgeUnsupported, t("NO ADMITIDO")),
+    (Msg::ScDetail, t("Captura de {target}: {state}")),
+    (Msg::ScDetailSize, t("capturando {size}")),
+    (Msg::ScTargetScreen, t("la pantalla {number}")),
+    (Msg::ScTargetWindow, t("la ventana de {app} \"{title}\"")),
+    (
+        Msg::ScTargetContains,
+        t("la ventana de {app} cuyo título contiene \"{title}\""),
+    ),
+    (Msg::ScTargetAny, t("cualquier ventana de {app}")),
+    (Msg::ThumbScreenCapture, t("Capturado en el servidor")),
 ];

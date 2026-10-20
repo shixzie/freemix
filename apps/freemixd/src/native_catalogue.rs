@@ -75,6 +75,9 @@ pub(crate) enum NativeSourceKey {
     /// A system audio input (AU-011): a changed device restarts its
     /// receiver without a new source.
     SystemAudio,
+    /// A screen capture input (IN-011): a changed target or setting
+    /// restarts its capture without a new source.
+    ScreenCapture,
     Scene {
         scene: SceneId,
         audio: Option<InputId>,
@@ -100,6 +103,7 @@ impl NativeSourceKey {
             InputKind::Media { asset_uri, .. } => Self::Media(asset_uri.clone()),
             InputKind::NetworkStream(_) => Self::Network,
             InputKind::SystemAudio(_) => Self::SystemAudio,
+            InputKind::ScreenCapture(_) => Self::ScreenCapture,
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -146,6 +150,12 @@ impl NativeSourceKey {
                 "system audio input {input} cannot be added: {}",
                 super::native_system_audio::UNSUPPORTED
             )),
+            Self::ScreenCapture => {
+                let backend = crate::desktop_capture::DesktopBackend::platform();
+                backend
+                    .unsupported_reason()
+                    .map(|reason| format!("screen capture input {input} cannot be added: {reason}"))
+            }
             Self::Title => Some(format!(
                 "title input {input} cannot be added while the native media runtime runs; stop \
                  the daemon and use freemix-cli"
@@ -492,10 +502,11 @@ impl NativeDaemon {
                     Some(frame)
                 }
                 // A document's page worker ingests its page once rendered
-                // (IN-014).
+                // (IN-014); a screen capture its captures (IN-011).
                 NativeSourceKey::Network
                 | NativeSourceKey::SystemAudio
-                | NativeSourceKey::Document(_) => {
+                | NativeSourceKey::Document(_)
+                | NativeSourceKey::ScreenCapture => {
                     let frame = native_streams::startup_picture(
                         size,
                         settings.frame_rate,

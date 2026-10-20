@@ -53,8 +53,10 @@ highest-value remaining items, ranked:
    adapter for non-receiver sources, no Web page view, and the
    Windows/macOS live paths do not exist yet.
 8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
-   `AU-001`).** Live capture hot-plug, system audio inputs, and device listing
-   are Linux-only; the roadmap requires the vertical slice on all Tier-1 OSes
+   `AU-001`, `IN-011`).** Live capture hot-plug, system audio inputs, and device
+   listing are Linux-only, and screen/window capture runs only on Linux X11
+   (its Windows `gdigrab` and macOS ScreenCaptureKit backends are
+   compile-checked, never run); the roadmap requires the vertical slice on all Tier-1 OSes
    before more breadth.
 9. **Titles that start at the take, with a browser title editor (`GX-001`,
    `GX-006`).** Tickers and scene clocks still run from frame zero, and the
@@ -2017,6 +2019,78 @@ Remaining gaps:
 - there is no evidence from a real PulseAudio or PipeWire server.
 
 `AU-011` remains planned.
+
+Current implementation boundary for screen and window capture inputs
+(`IN-011`): Protocol 2.78 (schema 67) adds an input kind that shows one
+screen of the server's desktop or one application window. A window is
+followed by a rule (application plus exact title, a title it contains, or
+any title) with an id hint, so it is found again after it closes and
+reopens. The input carries crop insets, a pointer toggle, a frame rate cap,
+and a stall slate (hold the last picture or show black); a show holds at
+most 8. The add is undoable, the source is replaceable, and the kind is
+persisted exactly. `screen_capture_targets_request` lists the server's
+screens and windows (bounded, exact, strict), and every input's state
+reaches clients as `screen_capture_status` (with `target_gone` and
+`unsupported`) and the snapshot's `screen_capture_inputs`.
+
+The native daemon lists the desktop off the frame loop twice a second and
+follows each target: a resize, move, or crop restarts the capture on the new
+rectangle; a closed window reports `target_gone` and shows the slate; a
+matching window that appears is captured again. Capture reuses the
+supervised `FFmpeg` device receiver (jitter buffer, 500–3000 ms restart
+backoff that never gives up, stall slates), letterboxed into the program
+picture.
+
+- **Linux X11** (working and tested): `x11rb` lists RandR monitors and
+  client windows (EWMH client lists, or the root's mapped children with
+  `WM_CLASS` when no window manager runs) and `ffmpeg -f x11grab` captures a
+  window or a screen region, clipped to the visible desktop. Tests run a
+  private `Xvfb`: the listing, crop, letterboxed pixels, resize detection,
+  closure to `target_gone`, a reopened window found by an any-title rule
+  with a stale id, a whole-screen capture, an unreachable display, and a
+  native daemon process showing a window on Program, losing it to the black
+  slate, and following a new window.
+- **Linux Wayland:** detected and reported `unsupported` with the advice to
+  use an X11 session (under XWayland only X11 windows are listed). Wayland
+  allows capture only through the interactive xdg-desktop-portal
+  ScreenCast, which a headless server cannot answer.
+- **Windows** (compile-checked for `x86_64-pc-windows-msvc`, not run): a
+  long-lived PowerShell child lists `Screen.AllScreens` and visible,
+  non-minimized top-level windows (`EnumWindows`, process name, title,
+  rectangle); `ffmpeg -f gdigrab -i desktop` captures the target's desktop
+  rectangle (so a covering window is captured too). The record parser and the
+  `gdigrab` arguments are tested on every platform.
+- **macOS** (compile-checked with the stub `xcrun`, not run): `build.rs`
+  compiles `ScreenCaptureHelper.swift` against ScreenCaptureKit; its `list`
+  command prints the same records and its `capture` command writes
+  fixed-size BGRA pictures (repeating the latest while nothing changes)
+  into `ffmpeg -f rawvideo -i pipe:0` through the receiver's new feeder
+  process. The feeder path is tested on Linux with `ffmpeg` standing in for
+  the helper. Capture needs the Screen Recording permission.
+
+A simulated daemon answers a fixed simulated desktop and shows a synthetic
+picture. Studio's Add input dialog has a Window / screen capture kind with a
+refreshable picker grouped as Screens and Application windows (application
+and title), the follow rule, crop, pointer, rate cap, and stall slate, with
+English and Spanish help in the hover audit; the tile shows OPENING / LIVE /
+TARGET GONE / REOPENING n / UNSUPPORTED / FAILED with its details. The CLI
+adds `input-add-screen-capture`, `input-screen-capture-status`, their
+`remote-` forms, and `remote-screen-capture-targets`.
+
+Remaining gaps:
+- capture audio: a screen capture input is silent; per-application audio is
+  not captured (pair it with a system audio input, `AU-011`, for desktop
+  sound);
+- Wayland capture through xdg-desktop-portal/PipeWire is not implemented;
+- Windows and macOS paths are compile-checked only; no run on either OS, no
+  Windows Graphics Capture (covered windows), and no signed macOS helper;
+- X11 captures only on-screen pixels, so a covered window shows what covers
+  it; minimized windows are not listed;
+- Studio's Replace source dialog does not edit a screen capture input (the
+  wire and CLI replacement source do);
+- coordinates are in points on macOS; HiDPI scaling is not applied.
+
+`IN-011` remains planned.
 
 Current implementation boundary for secondary mixes (`IN-023`): `fm-switcher`
 provides a deterministic `MixBank` with Main plus fifteen addressable

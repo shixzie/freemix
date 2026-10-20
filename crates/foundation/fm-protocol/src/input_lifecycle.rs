@@ -173,6 +173,8 @@ pub enum WireInputSource {
     Image(crate::ImageInputConfig),
     /// A slideshow (IN-009): `slideshow:<settings>`.
     Slideshow(Box<crate::SlideshowConfig>),
+    /// A screen or window capture (IN-011).
+    ScreenCapture(crate::ScreenCaptureConfig),
 }
 
 /// One requested item of a batch import.

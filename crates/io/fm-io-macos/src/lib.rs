@@ -5,6 +5,7 @@
 
 pub mod audio;
 pub mod protocol;
+pub mod screen_capture;
 
 pub use audio::{
     AudioError, AudioIdKind, AudioTelemetry, MacosAudioAdapter, MacosAudioAvailability,

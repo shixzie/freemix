@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.77 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.78 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2877,6 +2877,88 @@ shows a PDF or a presentation one page at a time, stepped with the generic
   `project-import-media` and `input-import-batch` create document inputs
   for documents.
 - 2.76 is refused.
+
+Protocol 2.78 adds screen and window capture inputs (IN-011): an input that
+shows one screen of the server's desktop or one application window,
+captured on the server.
+
+- `payload=input_add` gains `kind=screen_capture` with `target=screen|window`;
+  a screen names `screen` (its zero-based index, at most 63); a window names
+  `app` and `title` (each at most 64 and 128 bytes of one trimmed line
+  without control characters), `title_match=exact|contains|any`, and an
+  optional `window_id` hint (a canonical nonzero decimal). An `exact` or
+  `contains` rule names a non-empty title; an `any` rule names an
+  application. Then `crop` (`<left>.<top>.<right>.<bottom>` insets of 0 to
+  16384 target pixels), `cursor` (`0|1`), `fps` (1 to 60, a cap: never above
+  the program rate), and `stall=freeze|black` (what the input shows while
+  its target is gone). At most 8 per show (field issue
+  `too_many_screen_capture_inputs`, `conflict`); a bad configuration is
+  refused with field issue `invalid_screen_capture` naming `screen`,
+  `title`, `crop`, or `fps`.
+- A window is followed by its rule: while the window with the hinted id
+  lives and belongs to the rule's application it is captured; otherwise the
+  first listed window the rule matches (application compared ignoring ASCII
+  case; `contains` compares the title ignoring case) is.
+- `event=input_added` carries the same `kind=screen_capture` and fields; one
+  kind at most.
+- `input_replace_source` accepts `screen_capture:<compact>` with the compact
+  form `<crop>~<cursor>~<fps>~<stall>~screen~<index>` or
+  `<crop>~<cursor>~<fps>~<stall>~window~<title_match>~<id|->~<app length>~<title length>:<app><title>`.
+- `runtime_event` `event=screen_capture_status` carries `input`,
+  `state=idle|opening|live|target_gone|reopening|unsupported|failed`,
+  `attempt` and `next_in_ms` exactly when `reopening`, `reopens`, `width`
+  and `height` of the captured target (zero when none), an optional
+  `window_id` of the window captured, and an optional one-line `last_error`
+  of at most 160 bytes (for `target_gone`, which target is missing).
+- Each snapshot gains `screen_capture_inputs`, after `system_audio_inputs`:
+  a comma-separated, strictly ascending list of
+  `<input>~<state>~<attempt>~<next_in_ms>~<reopens>~<width>~<height>~<window id|->~<compact>`
+  without error text.
+- A client sends `screen_capture_targets_request` with `request_id` and
+  receives `screen_capture_targets` with the same `request_id`, `supported`
+  (`0|1`), `backend` (`x11`, `gdigrab`, `screencapturekit`, `simulated`, or
+  empty), an optional `error` (why nothing can be captured, or why the
+  listing failed), `screens`, and `windows`. `screens` is a comma-separated
+  list, strictly ascending by index, of
+  `<index>~<primary>~<x>~<y>~<width>~<height>~<length>:<name>`; `windows` a
+  comma-separated list, each id once, of
+  `<id>~<pid|->~<x>~<y>~<width>~<height>~<app length>~<title length>:<app><title>`.
+  Positions are signed. At most 16 screens and 48 windows; `supported=0`
+  carries empty lists.
+- Native `freemixd` lists the desktop on a worker thread twice a second and
+  follows every input's target through it: a moved, resized, or cropped
+  target restarts its capture on the new rectangle; a closed window reports
+  `target_gone` and shows the input's stall slate; a matching window that
+  appears is captured again. On Linux it reads the X11 display of `DISPLAY`
+  through `x11rb` (RandR monitors; client windows from
+  `_NET_CLIENT_LIST_STACKING`, `_NET_CLIENT_LIST`, or the root's mapped
+  children with `WM_CLASS`) and captures through `ffmpeg -f x11grab`
+  (window captures clipped to the visible desktop, since X11 reads only
+  on-screen pixels). A Wayland session without XWayland, or no `DISPLAY`, is
+  `unsupported`: Wayland allows capture only through the interactive
+  xdg-desktop-portal, which a headless server cannot answer; under XWayland
+  only X11 windows are listed. On Windows it lists through a long-lived
+  PowerShell child (`EnumWindows`, `Screen.AllScreens`) and captures desktop
+  rectangles through `ffmpeg -f gdigrab`; on macOS a ScreenCaptureKit helper
+  lists and writes raw BGRA pictures into `ffmpeg -f rawvideo`. Every
+  capture is letterboxed into the program picture. A simulated daemon
+  answers a fixed simulated desktop and shows a synthetic picture. A daemon
+  that cannot capture refuses a live add with `runtime_unsupported`.
+- Audio: a screen capture input is silent. Pair it with a system audio
+  input (AU-011) for the desktop's sound.
+- Durability: an input kind `{"type": "screen_capture", "target":
+  {"kind": "screen", "index"} | {"kind": "window", "app", "title",
+  "title_match", "window_id"}, "crop": {"left", "top", "right", "bottom"},
+  "cursor", "fps", "stall"}` (schema 67).
+- Studio's Add input dialog gains a Window / screen capture kind with the
+  target picker (Screens, then Application windows by application and
+  title, asked for when the form opens and on Refresh targets), how a window
+  is followed, crop, pointer, rate cap, and stall slate; the tile shows
+  OPENING / LIVE / TARGET GONE / REOPENING n / UNSUPPORTED / FAILED with its
+  details. The CLI adds `input-add-screen-capture`,
+  `input-screen-capture-status`, their `remote-` forms, and
+  `remote-screen-capture-targets`.
+- 2.77 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

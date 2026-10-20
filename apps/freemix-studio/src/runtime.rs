@@ -107,6 +107,8 @@ struct WantedLists {
     system_audio_devices: bool,
     /// The web gateway status (RC-007, Protocol 2.71).
     web_access: bool,
+    /// The screens and windows the server can capture (IN-011).
+    screen_capture_targets: bool,
 }
 
 /// A synchronous Studio control runtime. All clocks and waits are caller-owned.
@@ -372,6 +374,33 @@ impl StudioRuntime {
                 .is_ok()
     }
 
+    /// Records that the UI wants the capture targets without asking now
+    /// (the session is recovering); the next (re)connect asks for them.
+    pub(crate) const fn want_screen_capture_targets(&mut self) {
+        self.wanted.screen_capture_targets = true;
+    }
+
+    /// Asks the server for the screens and windows it can capture
+    /// (IN-011); the reply updates the replicated target list. Returns
+    /// whether the request went out; one that cannot be sent is dropped,
+    /// and the next (re)connect asks again.
+    pub(crate) fn request_screen_capture_targets(&mut self) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.wanted.screen_capture_targets = true;
+        let request_id = format!(
+            "studio-screen-capture-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_screen_capture_targets_request(fm_protocol::ScreenCaptureTargetsRequest {
+                    request_id,
+                })
+                .is_ok()
+    }
+
     /// Turns the live input thumbnail feed on or off (Protocol 2.59) and
     /// remembers the choice, so a (re)connect subscribes again while it is
     /// on. Returns whether the request went out; one that cannot be sent now
@@ -556,6 +585,7 @@ impl StudioRuntime {
         self.requery_capture_devices();
         self.requery_system_audio_devices();
         self.requery_web_access();
+        self.requery_screen_capture_targets();
         self.resubscribe_input_thumbnails();
         Ok(event)
     }
@@ -605,6 +635,22 @@ impl StudioRuntime {
                 .is_some()
         {
             self.request_system_audio_devices();
+        }
+    }
+
+    /// Asks for the capture targets again after a (re)connect when the UI
+    /// wanted them or they were known: windows open and close while
+    /// disconnected.
+    fn requery_screen_capture_targets(&mut self) {
+        if self.wanted.screen_capture_targets
+            || self
+                .session
+                .client()
+                .model()
+                .screen_capture_inventory()
+                .is_some()
+        {
+            self.request_screen_capture_targets();
         }
     }
 

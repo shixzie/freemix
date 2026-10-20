@@ -177,6 +177,19 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             validate_request_id(&message.request_id)?;
             record.field_str("request_id", &message.request_id)?;
         }
+        WireMessage::ScreenCaptureTargetsRequest(message) => {
+            record.kind("screen_capture_targets_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+        }
+        WireMessage::ScreenCaptureTargets(message) => {
+            record.kind("screen_capture_targets");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::screen_capture::encode_inventory(&message.inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::SystemAudioDevices(message) => {
             record.kind("system_audio_devices");
             validate_request_id(&message.request_id)?;
@@ -805,6 +818,12 @@ fn encode_input_catalogue_command(
                     &crate::WireStillSource::Slideshow((**config).clone()),
                     &mut |name, value| record.field_string(name, value),
                 ),
+                LiveInputSource::ScreenCapture(config) => {
+                    record.field("kind", "screen_capture")?;
+                    super::screen_capture::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })
+                }
             }
         }
         CommandPayload::RemoveInput { input } => {
@@ -1779,6 +1798,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::system_audio::encode_entries(&message.system_audio_inputs)?,
     )?;
     record.field_string(
+        "screen_capture_inputs",
+        super::screen_capture::encode_entries(&message.screen_capture_inputs)?,
+    )?;
+    record.field_string(
         "stream_targets",
         super::stream_target::encode_entries(&message.stream_targets)?,
     )?;
@@ -2252,18 +2275,19 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             capture,
             system_audio,
             still,
+            screen_capture,
         } => {
             validate_new_input_name(name)?;
             record.field("event", "input_added")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
-            match (network_stream, capture, system_audio, still) {
-                (None, None, None, Some(source)) => {
+            match (network_stream, capture, system_audio, still, screen_capture) {
+                (None, None, None, Some(source), None) => {
                     super::still::encode_source(source, &mut |name, value| {
                         record.field_string(name, value)
                     })?;
                 }
-                (Some(config), None, None, None) => {
+                (Some(config), None, None, None, None) => {
                     record.field("kind", "network_stream")?;
                     super::network_stream::encode_config(
                         config,
@@ -2271,19 +2295,25 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                         &mut |name, value| record.field_string(name, value),
                     )?;
                 }
-                (None, Some(config), None, None) => {
+                (None, Some(config), None, None, None) => {
                     record.field("kind", "capture")?;
                     super::capture::encode_config(config, &mut |name, value| {
                         record.field_string(name, value)
                     })?;
                 }
-                (None, None, Some(config), None) => {
+                (None, None, Some(config), None, None) => {
                     record.field("kind", "system_audio")?;
                     super::system_audio::encode_config(config, &mut |name, value| {
                         record.field_string(name, value)
                     })?;
                 }
-                (None, None, None, None) => {}
+                (None, None, None, None, Some(config)) => {
+                    record.field("kind", "screen_capture")?;
+                    super::screen_capture::encode_config(config, &mut |name, value| {
+                        record.field_string(name, value)
+                    })?;
+                }
+                (None, None, None, None, None) => {}
                 _ => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
@@ -2842,16 +2872,7 @@ fn encode_runtime_event(
             domain,
             manual_transition,
             fade_to_black,
-        } => {
-            record.field("event", "realized")?;
-            record.field_str("domain", domain)?;
-            encode_manual_status(record, *manual_transition, ManualStatusFields::Unqualified)?;
-            encode_fade_to_black_state(
-                record,
-                *fade_to_black,
-                FadeToBlackStateFields::Unqualified,
-            )?;
-        }
+        } => encode_realized(record, domain, *manual_transition, *fade_to_black)?,
         RuntimeLifecycleEvent::Failed { error, disposition } => {
             record.field("event", "failed")?;
             record.field("disposition", failure_disposition(*disposition))?;
@@ -2885,6 +2906,12 @@ fn encode_runtime_event(
             record.field("event", "slideshow_page")?;
             record.field("input", input)?;
             super::still::encode_page_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::ScreenCaptureStatus { input, status } => {
+            record.field("event", "screen_capture_status")?;
+            super::screen_capture::encode_status(*input, status, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }
@@ -2943,6 +2970,18 @@ enum ManualStatusFields {
     Desired,
     Realized,
     Unqualified,
+}
+
+fn encode_realized(
+    record: &mut Record,
+    domain: &str,
+    manual_transition: ManualTransitionStatus,
+    fade_to_black: FadeToBlackState,
+) -> Result<(), CodecError> {
+    record.field("event", "realized")?;
+    record.field_str("domain", domain)?;
+    encode_manual_status(record, manual_transition, ManualStatusFields::Unqualified)?;
+    encode_fade_to_black_state(record, fade_to_black, FadeToBlackStateFields::Unqualified)
 }
 
 fn encode_manual_status(

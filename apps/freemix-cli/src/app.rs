@@ -1588,6 +1588,51 @@ pub fn run(command: Command) -> AppResult<()> {
         }
         Command::RemoteCaptureStatus { address } => remote::capture_inputs(address)?,
         Command::RemoteCaptureDevices { address } => remote::capture_devices(address)?,
+        Command::ScreenCaptureInputAdd {
+            path,
+            input,
+            name,
+            config,
+        } => {
+            add_input_with_kind(
+                &path,
+                input_id(input)?,
+                name,
+                InputKind::ScreenCapture(*config),
+            )?;
+        }
+        Command::RemoteScreenCaptureInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::ScreenCapture(config),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::ScreenCaptureStatus { path } => {
+            let project = inspect_engine(&path)?;
+            // Nothing captures a project's screens: every input is idle.
+            remote::print_screen_capture_inputs(project.engine.show().screen_capture_inputs().map(
+                |(input, config)| fm_protocol::ScreenCaptureEntry {
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    config: config.clone(),
+                    status: fm_protocol::ScreenCaptureStatus::default(),
+                },
+            ));
+        }
+        Command::RemoteScreenCaptureStatus { address } => remote::screen_capture_inputs(address)?,
+        Command::RemoteScreenCaptureTargets { address } => {
+            remote::screen_capture_targets(address)?;
+        }
         Command::SystemAudioInputAdd {
             path,
             input,
@@ -5828,6 +5873,7 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::SystemAudio(_) => "system-audio",
         InputKind::Image(_) => "image",
         InputKind::Slideshow(_) => "slideshow",
+        InputKind::ScreenCapture(_) => "screen-capture",
         InputKind::Scene { .. } => "scene",
         InputKind::Simulated(_) => "simulated",
         InputKind::Alias { .. } => "alias",
@@ -6198,6 +6244,8 @@ Usage:
   freemix-cli input-add-image <show.freemix> <nonzero-input-id> <name> <asset://key|/absolute/picture> [--fit fit|fill|stretch|1:1]
   freemix-cli input-add-slideshow <show.freemix> <nonzero-input-id> <name> <--folder <asset://folder|/absolute/folder> | --picture <asset://key|/absolute/picture>[|caption]...> [slideshow options]
     slideshow options: [--fit fit|fill|stretch|1:1] [--slide-frames <1..=1000000>] [--fade-frames <1..=3600>|--cut] [--ken-burns] [--random <seed>] [--no-loop] [--manual]; host pictures and folders are copied into the project
+  freemix-cli input-add-screen-capture <show.freemix> <nonzero-input-id> <name> <screen <index>|window <app> <title>> [--match exact|contains|any] [--window-id <id>] [--crop <left>,<top>,<right>,<bottom>] [--cursor on|off] [--fps <1-60>] [--stall freeze|black]
+  freemix-cli input-screen-capture-status <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
     also prints one SourceSync line per live source clock: drift, ratio, buffer, and recovery counts
@@ -6219,6 +6267,9 @@ Usage:
   freemix-cli remote-input-add-image <127.0.0.1:port> <input> <name> <asset://key|/absolute/picture on the server> [--fit fit|fill|stretch|1:1] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add-slideshow <127.0.0.1:port> <input> <name> <--folder <folder> | --picture <picture>[|caption]...> [slideshow options] [--key <key>] [--expect <revision>]
   freemix-cli remote-page-navigate <127.0.0.1:port> <input> <next|previous|first|last|goto <page from 1>> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-add-screen-capture <127.0.0.1:port> <input> <name> <screen <index>|window <app> <title>> [capture options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-screen-capture-status <127.0.0.1:port>
+  freemix-cli remote-screen-capture-targets <127.0.0.1:port>
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>|system-audio:<pulse|alsa>:<device>> [--key <key>] [--expect <revision>]

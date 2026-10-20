@@ -1879,6 +1879,7 @@ impl Project {
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
                 | InputKind::Document(_)
+                | InputKind::ScreenCapture(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
@@ -4401,6 +4402,10 @@ pub enum InputKind {
     /// presentation converted to PDF, and the page on screen. A paged
     /// input: it renders its own picture and is silent.
     Document(DocumentInput),
+    /// A local screen or application window captured on the server
+    /// (IN-011): the target (a screen, or a window rule), crop, cursor,
+    /// rate cap, and the slate shown while the target is gone.
+    ScreenCapture(fm_types::screen_capture::ScreenCaptureConfig),
     Scene {
         scene_id: SceneId,
         audio_source: Option<InputId>,

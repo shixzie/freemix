@@ -199,6 +199,21 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             validate_request_id(&request_id)?;
             WireMessage::SystemAudioDevicesRequest(crate::SystemAudioDevicesRequest { request_id })
         }
+        "screen_capture_targets_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::ScreenCaptureTargetsRequest(crate::ScreenCaptureTargetsRequest {
+                request_id,
+            })
+        }
+        "screen_capture_targets" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::ScreenCaptureTargets(crate::ScreenCaptureTargetsMessage {
+                request_id,
+                inventory: super::screen_capture::decode_inventory(&mut fields)?,
+            })
+        }
         "system_audio_devices" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;
@@ -1431,6 +1446,9 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
                 value: kind,
             }),
         },
+        "screen_capture" => Ok(LiveInputSource::ScreenCapture(Box::new(
+            super::screen_capture::decode_config(fields)?,
+        ))),
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,
@@ -1864,6 +1882,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         capture_inputs: super::capture::decode_entries(&fields.required("capture_inputs")?)?,
         system_audio_inputs: super::system_audio::decode_entries(
             &fields.required("system_audio_inputs")?,
+        )?,
+        screen_capture_inputs: super::screen_capture::decode_entries(
+            &fields.required("screen_capture_inputs")?,
         )?,
         stream_targets: super::stream_target::decode_entries(&fields.required("stream_targets")?)?,
         live_lan: super::live_lan::decode_entry(&fields.required("live_lan")?)?,
@@ -2466,8 +2487,8 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_added" => {
             let input = fields.canonical_input("input")?;
             let name = decode_new_input_name(fields)?;
-            let (mut network_stream, mut capture, mut system_audio, mut still) =
-                (None, None, None, None);
+            let (mut network_stream, mut capture, mut system_audio, mut still, mut screen_capture) =
+                (None, None, None, None, None);
             match fields.optional("kind").as_deref() {
                 None => {}
                 Some("network_stream") => {
@@ -2485,6 +2506,9 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 Some(kind @ ("image" | "slideshow")) => {
                     still = super::still::decode_project_source(kind, fields)?.map(Box::new);
                 }
+                Some("screen_capture") => {
+                    screen_capture = Some(Box::new(super::screen_capture::decode_config(fields)?));
+                }
                 Some(other) => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
@@ -2499,6 +2523,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 capture,
                 system_audio,
                 still,
+                screen_capture,
             }
         }
         "input_removed" => EventPayload::InputRemoved {
@@ -2962,6 +2987,22 @@ fn decode_durable_gap(fields: &mut Fields) -> Result<DurableGap, CodecError> {
     Ok(gap)
 }
 
+/// Decodes `input_availability`'s `offline` field: `-` or a reason token.
+fn decode_offline_reason(
+    fields: &mut Fields,
+) -> Result<Option<crate::InputOfflineReason>, CodecError> {
+    let value = fields.required("offline")?;
+    if value == "-" {
+        return Ok(None);
+    }
+    crate::InputOfflineReason::from_token(&value)
+        .map(Some)
+        .ok_or(CodecError::InvalidField {
+            field: "offline",
+            value,
+        })
+}
+
 #[allow(clippy::too_many_lines)]
 fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, CodecError> {
     let server = decode_server_identity(fields)?;
@@ -2994,19 +3035,7 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         }
         "input_availability" => RuntimeLifecycleEvent::InputAvailability {
             input: fields.canonical_input("input")?,
-            offline: {
-                let value = fields.required("offline")?;
-                if value == "-" {
-                    None
-                } else {
-                    Some(crate::InputOfflineReason::from_token(&value).ok_or(
-                        CodecError::InvalidField {
-                            field: "offline",
-                            value,
-                        },
-                    )?)
-                }
-            },
+            offline: decode_offline_reason(fields)?,
         },
         "superseded" => RuntimeLifecycleEvent::Superseded {
             by_revision: fields.parse_required("by_revision")?,
@@ -3034,6 +3063,13 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
             input: fields.canonical_input("input")?,
             status: Box::new(super::still::decode_page_status(fields)?),
         },
+        "screen_capture_status" => {
+            let (input, status) = super::screen_capture::decode_status(fields)?;
+            RuntimeLifecycleEvent::ScreenCaptureStatus {
+                input,
+                status: Box::new(status),
+            }
+        }
         "system_audio_status" => {
             let (input, status) = super::system_audio::decode_status(fields)?;
             RuntimeLifecycleEvent::SystemAudioStatus {

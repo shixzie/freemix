@@ -13,6 +13,7 @@ mod media_list;
 mod media_playback;
 mod network_stream;
 mod scene_animation;
+mod screen_capture;
 mod script;
 mod shortcut;
 mod still;

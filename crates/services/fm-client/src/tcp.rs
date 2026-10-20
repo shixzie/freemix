@@ -419,6 +419,11 @@ pub enum SessionEvent {
     PagedPage {
         message: fm_protocol::PagedPageMessage,
     },
+    /// The daemon answered a screen capture targets request (IN-011). The
+    /// list is also in the replicated model.
+    ScreenCaptureTargets {
+        message: fm_protocol::ScreenCaptureTargetsMessage,
+    },
     /// One valid input thumbnail arrived for `input` (Protocol 2.59); the
     /// decoded image is available from
     /// [`TcpSession::latest_input_thumbnails`].
@@ -860,6 +865,26 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::CaptureDevicesRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks what the daemon can capture as screen capture inputs (IN-011).
+    /// The answer arrives later as [`SessionEvent::ScreenCaptureTargets`]
+    /// naming the same `request_id`; the daemon may answer only the newest
+    /// of several requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_screen_capture_targets_request(
+        &mut self,
+        request: fm_protocol::ScreenCaptureTargetsRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::ScreenCaptureTargetsRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1604,6 +1629,10 @@ impl TcpSession {
                 self.intake(WireMessage::SlideshowSlides(message.clone()))?;
                 Ok(SessionEvent::SlideshowSlides { message })
             }
+            WireMessage::ScreenCaptureTargets(message) => {
+                self.intake(WireMessage::ScreenCaptureTargets(message.clone()))?;
+                Ok(SessionEvent::ScreenCaptureTargets { message })
+            }
             // Title, playlist, grade, title animation, title layout, scene
             // animation, scene layout, and animation preset states complete a
             // snapshot while
@@ -1646,7 +1675,8 @@ impl TcpSession {
             | WireMessage::SystemAudioDevicesRequest(_)
             | WireMessage::WebAccessRequest(_)
             | WireMessage::SlideshowSlidesRequest(_)
-            | WireMessage::PagedPageRequest(_) => {
+            | WireMessage::PagedPageRequest(_)
+            | WireMessage::ScreenCaptureTargetsRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

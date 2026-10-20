@@ -3957,6 +3957,10 @@ fn apply_input_catalogue_mutation(
                 config.validate().map_err(still_rejection)?;
                 check_slideshow_room(state)?;
             }
+            if let EngineInputSource::ScreenCapture(config) = &source {
+                config.validate().map_err(screen_capture_rejection)?;
+                check_screen_capture_room(state)?;
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
@@ -3997,6 +4001,36 @@ fn capture_rejection(error: fm_types::capture::CaptureError) -> Rejection {
     };
     Rejection::new(RejectionCode::InvalidCommand, message.clone())
         .with_field(FieldIssue::new(field, code, message))
+}
+
+/// Refuses an unusable screen capture target or setting (IN-011).
+pub(crate) fn screen_capture_rejection(
+    error: fm_types::screen_capture::ScreenCaptureError,
+) -> Rejection {
+    let message = error.to_string();
+    Rejection::new(RejectionCode::InvalidCommand, message.clone()).with_field(FieldIssue::new(
+        error.field(),
+        error.code(),
+        message,
+    ))
+}
+
+/// Refuses another screen capture input once the show holds
+/// [`fm_types::screen_capture::MAX_SCREEN_CAPTURE_INPUTS`] (IN-011).
+pub(crate) fn check_screen_capture_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state.screen_capture_inputs().count();
+    if count >= fm_types::screen_capture::MAX_SCREEN_CAPTURE_INPUTS {
+        let message =
+            format!("the show already has {count} screen capture inputs, the most it may hold");
+        return Err(
+            Rejection::new(RejectionCode::Conflict, message.clone()).with_field(FieldIssue::new(
+                "kind",
+                "too_many_screen_capture_inputs",
+                message,
+            )),
+        );
+    }
+    Ok(())
 }
 
 /// Refuses an unusable system audio device name (AU-011).

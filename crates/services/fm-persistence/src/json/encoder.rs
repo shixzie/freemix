@@ -773,6 +773,9 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
         InputKind::Document(document) => {
             super::document::write_document_input(output, document);
         }
+        InputKind::ScreenCapture(config) => {
+            super::screen_capture::write_screen_capture_input(output, config);
+        }
         InputKind::Scene {
             scene_id,
             audio_source,

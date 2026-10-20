@@ -897,7 +897,9 @@ impl EditHistoryStatus {
 /// [`crate::NetworkStreamConfig`]), `kind=capture` plus `device` and the
 /// settings fields (see [`crate::CaptureInputConfig`]), or
 /// `kind=system_audio` plus `backend` and `device` (Protocol 2.55, see
-/// [`crate::SystemAudioConfig`]). Generator audio is always silent.
+/// [`crate::SystemAudioConfig`]), or `kind=screen_capture` plus the
+/// capture fields (IN-011, see [`crate::screen_capture`]). Generator audio
+/// is always silent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LiveInputSource {
     Solid {
@@ -918,6 +920,8 @@ pub enum LiveInputSource {
     /// A slideshow (IN-009): `kind=slideshow` plus `slideshow` (see
     /// [`crate::SlideshowConfig`]).
     Slideshow(Box<crate::SlideshowConfig>),
+    /// A screen or window capture and its settings (IN-011).
+    ScreenCapture(Box<crate::ScreenCaptureConfig>),
 }
 
 /// Most fields one title carries; equals the title domain bound.
@@ -2493,6 +2497,9 @@ pub struct SnapshotMessage {
     /// Every system audio input, ascending, with its device and latest
     /// status (Protocol 2.55, AU-011).
     pub system_audio_inputs: Vec<crate::SystemAudioEntry>,
+    /// Every screen capture input, ascending, with its configuration and
+    /// latest status (IN-011).
+    pub screen_capture_inputs: Vec<crate::ScreenCaptureEntry>,
     /// Every configured stream destination in authored order, without its
     /// stream key (Protocol 2.52, OR-006).
     pub stream_targets: Vec<crate::StreamTargetEntry>,
@@ -2548,6 +2555,9 @@ pub enum EventPayload {
         /// The picture or slideshow of an added image or slideshow input
         /// (IN-008, IN-009); `None` for any other source.
         still: Option<Box<crate::WireStillSource>>,
+        /// The configuration of an added screen capture input (IN-011);
+        /// `None` for any other source.
+        screen_capture: Option<Box<crate::ScreenCaptureConfig>>,
     },
     /// An input left the show together with its Master strip and padlock.
     /// It was neither Program nor Preview nor otherwise on air; a settled-off
@@ -2879,6 +2889,11 @@ pub enum RuntimeLifecycleEvent {
     SlideshowPage {
         input: WireInputId,
         status: Box<crate::SlideshowPageStatus>,
+    },
+    /// A screen capture input's status changed (IN-011).
+    ScreenCaptureStatus {
+        input: WireInputId,
+        status: Box<crate::ScreenCaptureStatus>,
     },
     /// The capture devices the daemon can open changed (Protocol 2.47).
     CaptureDevices(crate::CaptureInventory),
@@ -3283,4 +3298,8 @@ pub enum WireMessage {
     SlideshowSlidesRequest(crate::SlideshowSlidesRequest),
     /// Answers a [`crate::SlideshowSlidesRequest`] (IN-009).
     SlideshowSlides(crate::SlideshowSlidesMessage),
+    /// Asks what the server can capture as screen capture inputs (IN-011).
+    ScreenCaptureTargetsRequest(crate::ScreenCaptureTargetsRequest),
+    /// Answers a [`crate::ScreenCaptureTargetsRequest`] (IN-011).
+    ScreenCaptureTargets(crate::ScreenCaptureTargetsMessage),
 }

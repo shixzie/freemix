@@ -18,6 +18,7 @@ mod recorder_status;
 mod refusal;
 mod scene_layer;
 mod scene_layout;
+mod screen_capture;
 mod script;
 mod shortcut;
 mod source_sync;

@@ -497,6 +497,9 @@ pub struct ProjectSnapshot {
     /// Every system audio input, ascending, with its device and status
     /// (Protocol 2.55).
     pub system_audio_inputs: Vec<fm_protocol::SystemAudioEntry>,
+    /// Every screen capture input, ascending, with its configuration and
+    /// status (IN-011).
+    pub screen_capture_inputs: Vec<fm_protocol::ScreenCaptureEntry>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -613,6 +616,7 @@ impl ProjectSnapshot {
             network_streams: message.network_streams,
             capture_inputs: message.capture_inputs,
             system_audio_inputs: message.system_audio_inputs,
+            screen_capture_inputs: message.screen_capture_inputs,
             stream_targets: message.stream_targets,
             live_lan: message.live_lan,
             live_lan_status: message.live_lan_status,
@@ -646,6 +650,8 @@ pub enum DurableChange {
         /// The picture or slideshow of an added image or slideshow input
         /// (IN-008, IN-009).
         still: Option<Box<fm_protocol::WireStillSource>>,
+        /// The configuration of an added screen capture input (IN-011).
+        screen_capture: Option<Box<fm_protocol::ScreenCaptureConfig>>,
     },
     /// An input removed with its strip and padlock.
     InputRemoved {
@@ -906,6 +912,7 @@ impl DurableProjectEvent {
                 capture,
                 system_audio,
                 still,
+                screen_capture,
             } => DurableChange::InputAdded {
                 input: input.to_domain(),
                 name,
@@ -913,6 +920,7 @@ impl DurableProjectEvent {
                 capture,
                 system_audio,
                 still,
+                screen_capture,
             },
             EventPayload::CaptureSettingsChanged { input, settings } => {
                 DurableChange::CaptureSettingsChanged {
@@ -1263,6 +1271,9 @@ pub struct ProjectState {
     still_inputs: BTreeMap<InputId, StillInputStatus>,
     /// `still_state` records the snapshot announced that have not arrived.
     still_states_pending: u16,
+    /// Every screen capture input's configuration and latest status
+    /// (IN-011).
+    screen_capture_inputs: BTreeMap<InputId, fm_protocol::ScreenCaptureEntry>,
     /// Every configured stream destination in authored order (Protocol
     /// 2.52).
     stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -1323,6 +1334,12 @@ impl ProjectState {
     #[must_use]
     pub const fn stills_complete(&self) -> bool {
         self.still_states_pending == 0
+    }
+    /// Screen capture input `input`'s configuration and latest status
+    /// (IN-011).
+    #[must_use]
+    pub fn screen_capture_input(&self, input: InputId) -> Option<&fm_protocol::ScreenCaptureEntry> {
+        self.screen_capture_inputs.get(&input)
     }
 
     /// Returns every configured display-output slot (Protocol 2.42).
@@ -1864,6 +1881,12 @@ pub struct ClientView {
     /// Every image and slideshow input's source, slide on air, and fetched
     /// listing, ascending by input (IN-008, IN-009).
     pub still_inputs: BTreeMap<InputId, StillInputStatus>,
+    /// Every screen capture input, ascending, with its configuration and
+    /// latest status (IN-011).
+    pub screen_capture_inputs: Vec<fm_protocol::ScreenCaptureEntry>,
+    /// What the server can capture as it last listed it (IN-011); `None`
+    /// until a `screen_capture_targets` reply arrives.
+    pub screen_capture_inventory: Option<fm_protocol::ScreenCaptureInventory>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -1913,6 +1936,15 @@ impl ClientView {
     #[must_use]
     pub fn system_audio_input(&self, input: InputId) -> Option<&fm_protocol::SystemAudioEntry> {
         self.system_audio_inputs
+            .iter()
+            .find(|entry| entry.input.to_domain() == input)
+    }
+
+    /// Screen capture input `input`'s configuration and latest status, if
+    /// it is a screen capture input (IN-011).
+    #[must_use]
+    pub fn screen_capture_input(&self, input: InputId) -> Option<&fm_protocol::ScreenCaptureEntry> {
+        self.screen_capture_inputs
             .iter()
             .find(|entry| entry.input.to_domain() == input)
     }
@@ -2608,6 +2640,9 @@ pub struct ClientModel {
     /// The latest web access answer (Protocol 2.71). Runtime state that
     /// survives resynchronization.
     web_access: Option<fm_protocol::WebAccessMessage>,
+    /// What the server can capture as last listed (IN-011). Runtime state
+    /// that survives resynchronization.
+    screen_capture_inventory: Option<fm_protocol::ScreenCaptureInventory>,
 }
 
 impl ClientModel {
@@ -2629,6 +2664,7 @@ impl ClientModel {
             capture_inventory: None,
             system_audio_inventory: None,
             web_access: None,
+            screen_capture_inventory: None,
         }
     }
 
@@ -2641,6 +2677,41 @@ impl ClientModel {
     #[must_use]
     pub const fn web_access(&self) -> Option<&fm_protocol::WebAccessMessage> {
         self.web_access.as_ref()
+    }
+
+    /// Records what the server can capture from a `screen_capture_targets`
+    /// reply (IN-011).
+    pub fn apply_screen_capture_inventory(
+        &mut self,
+        inventory: fm_protocol::ScreenCaptureInventory,
+    ) {
+        self.screen_capture_inventory = Some(inventory);
+    }
+
+    /// Returns what the server can capture as last listed (IN-011).
+    #[must_use]
+    pub const fn screen_capture_inventory(&self) -> Option<&fm_protocol::ScreenCaptureInventory> {
+        self.screen_capture_inventory.as_ref()
+    }
+
+    /// Records a screen capture input's status from a
+    /// `screen_capture_status` runtime event (IN-011). Runtime events never
+    /// move the durable cursor; a status for an input the model does not
+    /// know as a screen capture input is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_screen_capture_status(
+        &mut self,
+        input: InputId,
+        status: fm_protocol::ScreenCaptureStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if let Some(entry) = state.screen_capture_inputs.get_mut(&input) {
+            entry.status = status;
+        }
+        Ok(())
     }
 
     /// Records the system audio capture devices from a
@@ -2914,6 +2985,13 @@ impl ClientModel {
                 .filter(|(input, _)| state.inputs.contains(input))
                 .map(|(input, entry)| (*input, entry.clone()))
                 .collect(),
+            screen_capture_inventory: self.screen_capture_inventory.clone(),
+            screen_capture_inputs: state
+                .screen_capture_inputs
+                .values()
+                .filter(|entry| state.inputs.contains(&entry.input.to_domain()))
+                .cloned()
+                .collect(),
             stream_targets: state.stream_targets.clone(),
             live_lan: state.live_lan,
             live_lan_status: state.live_lan_status(),
@@ -3174,6 +3252,11 @@ impl ClientModel {
                 .collect(),
             still_inputs: BTreeMap::new(),
             still_states_pending: snapshot.still_states,
+            screen_capture_inputs: snapshot
+                .screen_capture_inputs
+                .into_iter()
+                .map(|entry| (entry.input.to_domain(), entry))
+                .collect(),
             stream_targets: snapshot.stream_targets,
             live_lan: snapshot.live_lan,
             live_lan_status: snapshot.live_lan_status,
@@ -4930,6 +5013,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.capture_inputs.remove(&input);
     state.system_audio_inputs.remove(&input);
     state.still_inputs.remove(&input);
+    state.screen_capture_inputs.remove(&input);
     state
         .input_audio_strips
         .retain(|strip| strip.input != input);
@@ -4993,6 +5077,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             capture,
             system_audio,
             still,
+            screen_capture,
         } => {
             if let Some(source) = still {
                 state.still_inputs.insert(
@@ -5001,6 +5086,16 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                         source: *source,
                         status: fm_protocol::SlideshowPageStatus::default(),
                         listing: None,
+                    },
+                );
+            }
+            if let Some(config) = screen_capture {
+                state.screen_capture_inputs.insert(
+                    input,
+                    fm_protocol::ScreenCaptureEntry {
+                        input: fm_protocol::WireInputId::from_domain(input),
+                        config: *config,
+                        status: fm_protocol::ScreenCaptureStatus::default(),
                     },
                 );
             }
@@ -5135,6 +5230,32 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                         state.system_audio_inputs.remove(&input);
                     }
                 }
+                match source {
+                    fm_protocol::WireInputSource::ScreenCapture(config) => {
+                        let entry = state.screen_capture_inputs.entry(input).or_insert_with(|| {
+                            fm_protocol::ScreenCaptureEntry {
+                                input: fm_protocol::WireInputId::from_domain(input),
+                                config: config.clone(),
+                                status: fm_protocol::ScreenCaptureStatus::default(),
+                            }
+                        });
+                        entry.config = config.clone();
+                    }
+                    _ => {
+                        state.screen_capture_inputs.remove(&input);
+                    }
+                }
+            }
+            if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
+                &operation
+                && let Some(original) = state.screen_capture_inputs.get(&source.to_domain())
+            {
+                let copy = fm_protocol::ScreenCaptureEntry {
+                    input: *input,
+                    config: original.config.clone(),
+                    status: fm_protocol::ScreenCaptureStatus::default(),
+                };
+                state.screen_capture_inputs.insert(input.to_domain(), copy);
             }
             if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
                 &operation

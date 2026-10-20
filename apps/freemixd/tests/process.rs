@@ -2135,6 +2135,80 @@ fn a_simulated_daemon_lists_no_system_audio_devices() {
     }
 }
 
+/// IN-011: a simulated daemon stands in for a desktop. It answers each
+/// target list request, by its own request id, with its simulated screen
+/// and two application windows, and accepts a window capture input added
+/// live, which the snapshot lists with its configuration.
+#[test]
+fn a_simulated_daemon_lists_simulated_capture_targets_and_adds_a_window_capture() {
+    use fm_protocol::{
+        ScreenCaptureConfig, ScreenCaptureTarget, ScreenCaptureTargetsRequest, WindowRule,
+    };
+
+    let directory = TestDirectory::new("screen-capture-targets");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Admin, None);
+    client.receive_snapshot();
+    for request_id in ["targets-1", "targets-2"] {
+        client.send(&WireMessage::ScreenCaptureTargetsRequest(
+            ScreenCaptureTargetsRequest {
+                request_id: request_id.into(),
+            },
+        ));
+        let answer = loop {
+            if let WireMessage::ScreenCaptureTargets(answer) = client.receive() {
+                break answer;
+            }
+        };
+        assert_eq!(answer.request_id, request_id);
+        assert!(answer.inventory.supported);
+        assert_eq!(answer.inventory.backend, "simulated");
+        assert_eq!(answer.inventory.screens.len(), 1);
+        assert_eq!(answer.inventory.windows.len(), 2);
+    }
+
+    let config = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::exact(
+        "Slides",
+        "Keynote deck",
+        Some(1),
+    )));
+    client.send(&command(
+        "add-slides",
+        "add-slides-key",
+        CommandPayload::AddInput {
+            input: input(7),
+            name: "Slides".into(),
+            source: fm_protocol::LiveInputSource::ScreenCapture(Box::new(config.clone())),
+        },
+    ));
+    let added = loop {
+        match client.receive() {
+            WireMessage::Event(event) => break event,
+            WireMessage::CommandResult(result) => {
+                assert!(
+                    matches!(result, CommandResult::Accepted { .. }),
+                    "{result:?}"
+                );
+            }
+            _ => {}
+        }
+    };
+    assert!(matches!(
+        added.payload,
+        EventPayload::InputAdded { input: id, screen_capture: Some(ref added), .. }
+            if id == input(7) && **added == config
+    ));
+    let snapshot = snapshot_of(&daemon, Role::Viewer);
+    let [entry] = snapshot.screen_capture_inputs.as_slice() else {
+        panic!("{:?}", snapshot.screen_capture_inputs);
+    };
+    assert_eq!(entry.input, input(7));
+    assert_eq!(entry.config, config);
+}
+
 /// OR-011, Protocol 2.42: a daemon without a display presenter keeps
 /// display-output slots as replicated, validated project configuration;
 /// every configured slot waits with `no-presenter`, the inventory says
@@ -5799,7 +5873,7 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
     let added = durable_event_at(&mut admin, 1);
     assert!(matches!(
         added.payload,
-        EventPayload::InputAdded { input: id, ref name, network_stream: None, capture: None, system_audio: None, still: None } if id == input(3) && name == "Guest"
+        EventPayload::InputAdded { input: id, ref name, network_stream: None, capture: None, system_audio: None, still: None, screen_capture: None } if id == input(3) && name == "Guest"
     ));
     let with_guest = snapshot_of(&daemon, Role::Viewer);
     assert_eq!(input_ids(&with_guest), vec![input(1), input(2), input(3)]);

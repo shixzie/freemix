@@ -7,7 +7,9 @@
 //!   is a comma-separated list of `<id>~<name>` (empty for none).
 //! * A source is `solid:<rrggbbaa>`, `bars`, either optionally followed by
 //!   `:<tone hz>`, or `media:<uri>`, `device:<key>`, `network:<endpoint>`,
-//!   or `system_audio:<pulse|alsa>:<device>` (Protocol 2.55).
+//!   `system_audio:<pulse|alsa>:<device>` (Protocol 2.55), or
+//!   `screen_capture:<compact config>` (IN-011, see
+//!   `codec::screen_capture`).
 //! * `items` (`input_import_batch`) is a comma-separated list of
 //!   `<input>~<name|->~<uri>`.
 //! * `added` (event) is a comma-separated list of `<input>~<name>`, and
@@ -216,6 +218,10 @@ pub(super) fn encode_source(source: &WireInputSource) -> Result<String, CodecErr
         WireInputSource::Slideshow(config) => super::still::encode_source_token(
             &crate::WireStillSource::Slideshow((**config).clone()),
         )?,
+        WireInputSource::ScreenCapture(config) => format!(
+            "screen_capture:{}",
+            escape_bounded(&super::screen_capture::encode_compact(config)?)?
+        ),
         WireInputSource::SystemAudio(config) => {
             config
                 .validate()
@@ -282,6 +288,14 @@ pub(super) fn decode_source(value: &str) -> Result<WireInputSource, CodecError> 
             }
             None => return Err(invalid("source", value)),
         },
+        "screen_capture" => {
+            let compact = unescape(rest)?;
+            let (config, after) = super::screen_capture::decode_compact("source", &compact)?;
+            if !after.is_empty() {
+                return Err(invalid("source", value));
+            }
+            WireInputSource::ScreenCapture(config)
+        }
         "system_audio" => {
             let (backend, device) = rest
                 .split_once(':')

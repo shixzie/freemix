@@ -780,6 +780,7 @@ fn serve_streams_snapshot_peer(
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
+            screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: engine.clone(),
             revision: 1,
@@ -1616,6 +1617,10 @@ std::thread_local! {
     /// (AU-011).
     static SNAPSHOT_SYSTEM_AUDIO_INPUTS: std::cell::RefCell<Vec<fm_protocol::SystemAudioEntry>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Screen capture inputs the fake daemon's snapshot lists on this
+    /// thread (IN-011).
+    static SNAPSHOT_SCREEN_CAPTURE_INPUTS: std::cell::RefCell<Vec<fm_protocol::ScreenCaptureEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     /// Stream destinations the fake daemon's snapshot lists on this thread
     /// (OR-006).
     static SNAPSHOT_STREAM_TARGETS: std::cell::RefCell<Vec<fm_protocol::StreamTargetEntry>> =
@@ -1678,6 +1683,8 @@ fn write_handshake_snapshot(
             display_output_states: Vec::new(),
             network_streams: SNAPSHOT_NETWORK_STREAMS.with(|cell| cell.borrow().clone()),
             system_audio_inputs: SNAPSHOT_SYSTEM_AUDIO_INPUTS.with(|cell| cell.borrow().clone()),
+            screen_capture_inputs: SNAPSHOT_SCREEN_CAPTURE_INPUTS
+                .with(|cell| cell.borrow().clone()),
             capture_inputs: SNAPSHOT_CAPTURE_INPUTS.with(|cell| cell.borrow().clone()),
             engine: engine.clone(),
             revision,
@@ -1800,6 +1807,7 @@ fn write_handshake_version_with_fade_to_black(
             display_output_states: Vec::new(),
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
+            screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             engine: engine.clone(),
             revision,
@@ -12687,6 +12695,7 @@ fn remote_network_stream_commands_send_exact_payloads() {
             name: "Camera 9".into(),
             network_stream: Some(Box::new(config.redacted())),
             system_audio: None,
+            screen_capture: None,
             capture: None,
             still: None,
         },
@@ -13099,6 +13108,7 @@ fn remote_srt_and_rtmp_commands_send_secret_edits() {
             name: "SRT 9".into(),
             network_stream: Some(Box::new(config.redacted())),
             system_audio: None,
+            screen_capture: None,
             capture: None,
             still: None,
         },
@@ -13450,6 +13460,7 @@ fn remote_capture_commands_send_exact_payloads() {
             name: "Camera 9".into(),
             network_stream: None,
             system_audio: None,
+            screen_capture: None,
             capture: Some(Box::new(config.clone())),
             still: None,
         },
@@ -13799,6 +13810,7 @@ fn remote_system_audio_commands_send_exact_payloads() {
             name: "Loopback".into(),
             network_stream: None,
             system_audio: Some(Box::new(config.clone())),
+            screen_capture: None,
             capture: None,
             still: None,
         },
@@ -13865,6 +13877,268 @@ fn remote_system_audio_commands_send_exact_payloads() {
             " hw:0",
         ]),
         "invalid system audio input",
+    );
+}
+
+/// IN-011: local screen and window capture inputs are validated,
+/// persisted with their target, crop, cursor, rate, and slate, and listed
+/// idle.
+#[test]
+fn local_screen_capture_inputs_persist_and_list_idle() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    let listed = invoke_bounded(&["input-screen-capture-status", context.project_path()]);
+    assert_success(&listed);
+    assert!(
+        stdout(&listed).contains("ScreenCaptureInputs=none"),
+        "{}",
+        stdout(&listed)
+    );
+    assert_success(&invoke_bounded(&[
+        "input-add-screen-capture",
+        context.project_path(),
+        "40",
+        "Slides",
+        "window",
+        "Keynote",
+        "Deck",
+        "--match",
+        "contains",
+        "--crop",
+        "0,28,0,0",
+        "--cursor",
+        "off",
+        "--fps",
+        "25",
+        "--stall",
+        "black",
+    ]));
+    assert_success(&invoke_bounded(&[
+        "input-add-screen-capture",
+        context.project_path(),
+        "41",
+        "Desktop",
+        "screen",
+        "0",
+    ]));
+    for (arguments, message) in [
+        (vec!["42", "Bad", "region", "0"], "capture target"),
+        (
+            vec!["42", "Bad", "screen", "64"],
+            "invalid screen capture input",
+        ),
+        (
+            vec!["42", "Bad", "screen", "0", "--fps", "61"],
+            "invalid screen capture input",
+        ),
+        (
+            vec!["42", "Bad", "screen", "0", "--match", "any"],
+            "invalid screen capture input",
+        ),
+        (vec!["42", "Bad", "screen", "0", "--crop", "1,2,3"], "crop"),
+        (
+            vec!["42", "Bad", "screen", "0", "--cursor", "maybe"],
+            "cursor",
+        ),
+        (
+            vec!["42", "Bad", "window", "", ""],
+            "invalid screen capture input",
+        ),
+        (vec!["42", "Bad", "screen", "0", "--key", "k"], "--key"),
+    ] {
+        let mut full = vec!["input-add-screen-capture", context.project_path()];
+        full.extend(arguments);
+        assert_failure_contains(&invoke_bounded(&full), message);
+    }
+    let listed = invoke_bounded(&["input-screen-capture-status", context.project_path()]);
+    assert_success(&listed);
+    let text = stdout(&listed);
+    for line in [
+        "ScreenCaptureInput(input=40, target=window(app=\"Keynote\", title=\"Deck\", \
+         match=contains, id=none), crop=0,28,0,0, cursor=off, fps=25, stall=black, state=idle, \
+         size=0x0, reopens=0, last_error=none)",
+        "ScreenCaptureInput(input=41, target=screen:0, crop=0,0,0,0, cursor=on, fps=30, \
+         stall=freeze, state=idle, size=0x0, reopens=0, last_error=none)",
+    ] {
+        assert!(
+            text.lines().any(|candidate| candidate == line),
+            "{line}\n{text}"
+        );
+    }
+    let inputs = invoke_bounded(&["inputs", context.project_path()]);
+    assert_success(&inputs);
+    assert!(
+        stdout(&inputs).contains("name=\"Slides\" kind=screen-capture"),
+        "{}",
+        stdout(&inputs)
+    );
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let kinds = stored
+        .project()
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::ScreenCapture(_)))
+        .count();
+    assert_eq!(kinds, 2);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// IN-011: `remote-input-add-screen-capture` sends the exact add,
+/// `remote-input-screen-capture-status` lists the daemon's screen capture
+/// inputs with their status, and `remote-screen-capture-targets` lists
+/// what the daemon's host can capture.
+#[test]
+#[allow(clippy::too_many_lines)] // three remote commands against fake peers
+fn remote_screen_capture_commands_send_exact_payloads() {
+    use fm_protocol::{
+        ScreenCaptureConfig, ScreenCaptureEntry, ScreenCaptureState, ScreenCaptureStatus,
+        ScreenCaptureTarget, TitleMatch, WindowRule,
+    };
+    let config = ScreenCaptureConfig {
+        target: ScreenCaptureTarget::Window(WindowRule {
+            app: "Keynote".into(),
+            title: "Deck".into(),
+            title_match: TitleMatch::Exact,
+            window_id: Some(4_242),
+        }),
+        ..ScreenCaptureConfig::default()
+    };
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-screen-capture-add",
+        payload: CommandPayload::AddInput {
+            input: input(9),
+            name: "Deck capture".into(),
+            source: fm_protocol::LiveInputSource::ScreenCapture(Box::new(config.clone())),
+        },
+        event: EventPayload::InputAdded {
+            input: input(9),
+            name: "Deck capture".into(),
+            network_stream: None,
+            system_audio: None,
+            still: None,
+            screen_capture: Some(Box::new(config.clone())),
+            capture: None,
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-input-add-screen-capture",
+        &server.address(),
+        "9",
+        "Deck capture",
+        "window",
+        "Keynote",
+        "Deck",
+        "--window-id",
+        "4242",
+        "--key",
+        "remote-screen-capture-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+
+    let entries = vec![ScreenCaptureEntry {
+        input: input(1),
+        config,
+        status: ScreenCaptureStatus {
+            state: ScreenCaptureState::TargetGone,
+            reopens: 2,
+            ..ScreenCaptureStatus::default()
+        },
+    }];
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        SNAPSHOT_SCREEN_CAPTURE_INPUTS.with(|cell| *cell.borrow_mut() = entries);
+        let engine = EngineIdentity {
+            engine_id: "screen-capture-engine".into(),
+            state_epoch: 1,
+            log_id: "screen-capture-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    });
+    let output = invoke(&["remote-input-screen-capture-status", &server.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(
+        text.contains(
+            "ScreenCaptureInput(input=1, target=window(app=\"Keynote\", title=\"Deck\", \
+             match=exact, id=4242), crop=0,0,0,0, cursor=on, fps=30, stall=freeze, \
+             state=target_gone, size=0x0, reopens=2, last_error=none)"
+        ),
+        "{text}"
+    );
+    server.finish();
+
+    let targets = FakeRemoteServer::start_test_peer(move |stream| {
+        let engine = EngineIdentity {
+            engine_id: "screen-capture-engine".into(),
+            state_epoch: 1,
+            log_id: "screen-capture-log".into(),
+        };
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_viewer(read_message(&mut reader));
+        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        let WireMessage::ScreenCaptureTargetsRequest(request) = read_message(&mut reader) else {
+            panic!("expected a screen capture targets request");
+        };
+        assert!(request.request_id.starts_with("cli-screen-capture-"));
+        write_message(
+            &mut writer,
+            &WireMessage::ScreenCaptureTargets(fm_protocol::ScreenCaptureTargetsMessage {
+                request_id: request.request_id,
+                inventory: fm_protocol::ScreenCaptureInventory {
+                    supported: true,
+                    backend: "x11".into(),
+                    screens: vec![fm_protocol::ScreenInfo {
+                        index: 0,
+                        name: "DP-1".into(),
+                        x: 0,
+                        y: 0,
+                        width: 1_920,
+                        height: 1_080,
+                        primary: true,
+                    }],
+                    windows: vec![fm_protocol::WindowInfo {
+                        id: 4_242,
+                        app: "Keynote".into(),
+                        title: "Deck".into(),
+                        pid: Some(501),
+                        x: 10,
+                        y: -4,
+                        width: 1_280,
+                        height: 720,
+                    }],
+                    error: None,
+                },
+            }),
+        );
+    });
+    let output = invoke(&["remote-screen-capture-targets", &targets.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    for line in [
+        "ScreenCaptureTargets(supported=on, backend=x11, screens=1, windows=1, error=none)",
+        "Screen(index=0, name=\"DP-1\", primary=on, position=0,0, size=1920x1080)",
+        "Window(id=4242, app=\"Keynote\", title=\"Deck\", pid=501, position=10,-4, \
+         size=1280x720)",
+    ] {
+        assert!(
+            text.lines().any(|candidate| candidate == line),
+            "{line}\n{text}"
+        );
+    }
+    targets.finish();
+    assert_failure_contains(
+        &invoke_bounded(&["remote-screen-capture-targets", "127.0.0.1:9", "extra"]),
+        "extra",
     );
 }
 
@@ -15019,6 +15293,7 @@ fn remote_image_add_and_page_navigate_send_exact_payloads() {
             name: "Logo".into(),
             network_stream: None,
             system_audio: None,
+            screen_capture: None,
             capture: None,
             still: Some(Box::new(fm_protocol::WireStillSource::Image(
                 fm_types::still::ImageInputConfig::new(
