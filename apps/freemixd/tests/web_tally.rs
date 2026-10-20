@@ -2444,6 +2444,8 @@ fn web_pages_fire_with_the_input_selected_on_them() {
     assert_eq!(armed_targets.selected, Some(input(3)));
     // The run keeps the targets its GO bound.
     assert_eq!(change.state.targets, Some(bound));
+}
+
 /// A small real PNG.
 fn png_bytes(seed: u8) -> Vec<u8> {
     let image = image::RgbaImage::from_fn(24, 12, |x, y| {
