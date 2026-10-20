@@ -61,6 +61,8 @@ fn key(name: &str, command: bool, shift: bool, alt: bool) -> WireShortcutKey {
         command,
         shift,
         alt,
+        then: None,
+        scope: None,
     }
 }
 
@@ -524,4 +526,52 @@ fn shortcut_set_carries_an_optional_position_exactly() {
         ))
         .is_err()
     );
+}
+
+/// Protocol 2.83: a key may be a chord (`+` and its second stroke) and may
+/// be scoped to one console panel (`@` and the panel).
+#[test]
+fn chorded_and_scoped_keys_round_trip_exactly_and_strictly() {
+    let mut chord = spec(WireShortcutAction::Script { script: 2 });
+    chord.key = Some(WireShortcutKey {
+        then: Some(Box::new(key("1", false, false, false))),
+        scope: Some("cues".to_owned()),
+        ..key("K", true, false, false)
+    });
+    let message = command(CommandPayload::SetShortcut {
+        shortcut: 4,
+        spec: Box::new(chord),
+        position: None,
+    });
+    let line = round_trip(&message);
+    assert!(line.contains("\tkey=K.1.0.0%2B1.0.0.0%40cues\t"), "{line}");
+
+    for (to, valid) in [
+        ("key=K.1.0.0%2B1.0.0.0", true),
+        ("key=K.1.0.0%40mixer", true),
+        ("key=K.1.0.0%2B1.0.0.0%40timeline", false),
+        ("key=K.1.0.0%2B1.0.0", false),
+        ("key=K.1.0.0%2B", false),
+        ("key=K.1.0.0%2B1.0.0.0%2B2.0.0.0", false),
+        ("key=K.1.0.0%40", false),
+        ("key=K.1.0.0%40cues%40mixer", false),
+        ("key=%2B1.0.0.0", false),
+    ] {
+        let changed = line.replacen("key=K.1.0.0%2B1.0.0.0%40cues", to, 1);
+        assert_eq!(decode_line(&changed).is_ok(), valid, "{to}");
+    }
+
+    // Clashes: the same first stroke where either is a single stroke or
+    // both end on the same second stroke, in overlapping scopes.
+    let chord = |then: &str, scope: Option<&str>| WireShortcutKey {
+        then: Some(Box::new(key(then, false, false, false))),
+        scope: scope.map(str::to_owned),
+        ..key("K", true, false, false)
+    };
+    let alone = key("K", true, false, false);
+    assert!(alone.clashes(&chord("1", None)));
+    assert!(chord("1", None).clashes(&chord("1", Some("cues"))));
+    assert!(!chord("1", None).clashes(&chord("2", None)));
+    assert!(!chord("1", Some("mixer")).clashes(&chord("1", Some("cues"))));
+    assert!(!alone.clashes(&key("K", true, true, false)));
 }

@@ -12,6 +12,8 @@ fn key(name: &str, command: bool, shift: bool, alt: bool) -> WireShortcutKey {
         command,
         shift,
         alt,
+        then: None,
+        scope: None,
     }
 }
 
@@ -824,4 +826,233 @@ fn set_console_key_binds_the_next_press_locally() {
         Some(LocalRefusal::Reserved("B"))
     );
     assert_eq!(shell.shortcut_key_overrides().get(project(), 3), None);
+}
+
+fn bound(id: u64, key: WireShortcutKey) -> ShortcutStatus {
+    ShortcutStatus {
+        id,
+        spec: ShortcutSpec {
+            name: format!("S{id}"),
+            enabled: true,
+            key: Some(key),
+            osc: None,
+            action: WireShortcutAction::Script { script: 1 },
+        },
+    }
+}
+
+fn chord_key(first: WireShortcutKey, then: WireShortcutKey) -> WireShortcutKey {
+    WireShortcutKey {
+        then: Some(Box::new(then)),
+        ..first
+    }
+}
+
+fn scoped(key: WireShortcutKey, panel: &str) -> WireShortcutKey {
+    WireShortcutKey {
+        scope: Some(panel.into()),
+        ..key
+    }
+}
+
+/// Ctrl+K then 1 fires its shortcut; Ctrl+K alone only waits, the next
+/// key ends the wait whatever it is, and a wait past the timeout lapses.
+#[test]
+fn a_chord_fires_on_its_second_key_and_lapses() {
+    let shortcuts = vec![
+        bound(
+            1,
+            chord_key(key("K", true, false, false), key("1", false, false, false)),
+        ),
+        bound(
+            2,
+            chord_key(key("K", true, false, false), key("2", false, false, false)),
+        ),
+        bound(3, key("F9", false, false, false)),
+    ];
+    let overrides = ShortcutKeyOverrides::default();
+    let keys = ConsoleKeys {
+        shortcuts: &shortcuts,
+        overrides: &overrides,
+        project: None,
+    };
+    let ctrl_k = key_event(Key::K, press(true, false, false), false);
+    let one = key_event(Key::Num1, Modifiers::NONE, false);
+    let two = key_event(Key::Num2, Modifiers::NONE, false);
+    let shift = key_event(Key::ShiftLeft, press(false, true, false), false);
+    let mut chord = None;
+
+    // Ctrl+K waits (and is swallowed); a modifier alone keeps waiting.
+    let mut events = vec![ctrl_k.clone(), shift.clone()];
+    assert_eq!(
+        take_presses(&mut events, keys, None, &mut chord, 0.0),
+        Vec::<u64>::new()
+    );
+    assert_eq!(events, vec![shift]);
+    assert_eq!(
+        chord.as_ref().map(|pending| key_text(&pending.first)),
+        Some("Ctrl+K".to_owned())
+    );
+    // Then 2 fires the second chord: "2" is a console key alone, but not
+    // after Ctrl+K.
+    let mut events = vec![two.clone()];
+    assert_eq!(
+        take_presses(&mut events, keys, None, &mut chord, 1.0),
+        vec![2]
+    );
+    assert_eq!(events, Vec::new());
+    assert_eq!(chord, None);
+
+    // Both strokes in one frame.
+    let mut events = vec![ctrl_k.clone(), one.clone()];
+    assert_eq!(
+        take_presses(&mut events, keys, None, &mut chord, 3.0),
+        vec![1]
+    );
+
+    // A key no chord ends with ends the wait, swallowed, firing nothing.
+    let f9 = key_event(Key::F9, Modifiers::NONE, false);
+    let mut events = vec![ctrl_k.clone(), f9.clone()];
+    assert_eq!(
+        take_presses(&mut events, keys, None, &mut chord, 4.0),
+        Vec::<u64>::new()
+    );
+    assert_eq!(events, Vec::new());
+    assert_eq!(chord, None);
+
+    // Past the timeout the wait lapses and the key is the console's again.
+    let mut events = vec![ctrl_k];
+    take_presses(&mut events, keys, None, &mut chord, 5.0);
+    assert!(chord.is_some());
+    let mut events = vec![one.clone()];
+    assert_eq!(
+        take_presses(
+            &mut events,
+            keys,
+            None,
+            &mut chord,
+            5.0 + CHORD_TIMEOUT + 0.1
+        ),
+        Vec::<u64>::new()
+    );
+    assert_eq!(events, vec![one]);
+    assert_eq!(chord, None);
+    // A single key still fires at once.
+    let mut events = vec![f9];
+    assert_eq!(
+        take_presses(&mut events, keys, None, &mut chord, 9.0),
+        vec![3]
+    );
+}
+
+/// A key scoped to a panel answers only while that panel has the focus,
+/// so two panels may give one key to different shortcuts.
+#[test]
+fn a_scoped_key_answers_only_in_its_panel() {
+    let shortcuts = vec![
+        bound(1, scoped(key("M", false, false, false), "mixer")),
+        bound(2, scoped(key("M", false, false, false), "cues")),
+        bound(3, key("F9", false, false, false)),
+    ];
+    let overrides = ShortcutKeyOverrides::default();
+    let keys = ConsoleKeys {
+        shortcuts: &shortcuts,
+        overrides: &overrides,
+        project: None,
+    };
+    let m = key_event(Key::M, Modifiers::NONE, false);
+    let f9 = key_event(Key::F9, Modifiers::NONE, false);
+    let mut chord = None;
+    for (panel, fired) in [
+        (Some("mixer"), vec![1, 3]),
+        (Some("cues"), vec![2, 3]),
+        (Some("titles"), vec![3]),
+        (None, vec![3]),
+    ] {
+        let mut events = vec![m.clone(), f9.clone()];
+        assert_eq!(
+            take_presses(&mut events, keys, panel, &mut chord, 0.0),
+            fired,
+            "{panel:?}"
+        );
+        // An unanswered M stays for the console.
+        assert_eq!(events.len(), 2 - fired.len(), "{panel:?}");
+    }
+}
+
+#[test]
+fn key_scopes_name_the_console_panels() {
+    assert_eq!(
+        crate::dock::PanelId::ALL.map(crate::dock::PanelId::key),
+        fm_protocol::SHORTCUT_SCOPES
+    );
+    let key = scoped(
+        chord_key(key("K", true, false, false), key("1", false, false, false)),
+        "cues",
+    );
+    assert_eq!(key_text(&key), "Ctrl+K, 1");
+    let words = key_words(Locale::ENGLISH, &key, false);
+    assert!(words.starts_with("Ctrl+K, 1 in "), "{words}");
+    let spanish = key_words(
+        Locale::new(fm_ui_model::i18n::Language::Spanish),
+        &key,
+        false,
+    );
+    assert!(spanish.contains(" en "), "{spanish}");
+}
+
+/// Add second key captures the next press as the chord's second stroke;
+/// a new first stroke keeps the second and the scope.
+#[test]
+fn add_second_key_makes_the_key_a_chord() {
+    let state = shortcuts_fixture(true);
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    shell.open_user_shortcuts(&state);
+    let frame = |shell: &mut StudioShell, event: Event| {
+        context.begin_pass(egui::RawInput {
+            events: vec![event],
+            ..Default::default()
+        });
+        let mut intents = Vec::new();
+        shell.draw_user_shortcuts_window(&context, &state, &mut intents);
+        let _ = context.end_pass();
+        intents
+    };
+    shell.user_shortcuts.capturing = true;
+    shell.user_shortcuts.capturing_then = true;
+    assert_eq!(
+        frame(&mut shell, key_event(Key::Num1, Modifiers::NONE, false)),
+        Vec::new()
+    );
+    let draft = shell.user_shortcuts.draft.clone().unwrap();
+    assert_eq!(key_text(draft.key.as_ref().unwrap()), "F9, 1");
+    shell
+        .user_shortcuts
+        .draft
+        .as_mut()
+        .unwrap()
+        .key
+        .as_mut()
+        .unwrap()
+        .scope = Some("cues".into());
+    shell.user_shortcuts.capturing = true;
+    shell.user_shortcuts.capturing_then = false;
+    frame(
+        &mut shell,
+        key_event(Key::K, press(true, false, false), false),
+    );
+    let key = shell.user_shortcuts.draft.clone().unwrap().key.unwrap();
+    assert_eq!(key_text(&key), "Ctrl+K, 1");
+    assert_eq!(key.scope.as_deref(), Some("cues"));
+    assert_eq!(
+        save_block(
+            &state,
+            &audit_shortcuts(),
+            1,
+            shell.user_shortcuts.draft.as_ref().unwrap(),
+            true
+        ),
+        None
+    );
 }

@@ -1,7 +1,9 @@
 //! User shortcuts (Protocol 2.72, RC-004).
 //!
 //! A project holds up to [`MAX_SHORTCUTS`] named shortcuts. Each has an
-//! optional key (a key name and its modifiers), an optional OSC name (the
+//! optional key (a key name and its modifiers; since 2.83 optionally a
+//! chord's second stroke and the console panel the key is scoped to), an
+//! optional OSC name (the
 //! shortcut answers `/freemix/user/<name>`), whether it is enabled, and
 //! what it does ([`WireShortcutAction`]): cue actions run together on one
 //! frame, a cue list operation, or a project script run. `shortcut_set`
@@ -48,7 +50,29 @@ pub const MAX_SHORTCUT_OSC_BYTES: usize = 32;
 /// The OSC address prefix a shortcut's OSC name follows.
 pub const SHORTCUT_OSC_PREFIX: &str = "/freemix/user/";
 
+/// The console panels a shortcut key may be scoped to (Protocol 2.83):
+/// a scoped key answers only while that panel has the console's focus.
+pub const SHORTCUT_SCOPES: [&str; 12] = [
+    "preview",
+    "transitions",
+    "program",
+    "inputs",
+    "mixer",
+    "outputs",
+    "overlays",
+    "stingers",
+    "titles",
+    "playlist",
+    "media",
+    "cues",
+];
+
 /// A key and the modifiers held with it; `command` is Ctrl (Cmd on macOS).
+///
+/// Since Protocol 2.83 a key may be a chord, `then` naming the second
+/// stroke pressed after it (Ctrl+K, then 1), and may be scoped to one
+/// console panel. The second stroke is a plain stroke: no `then` or
+/// `scope` of its own.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WireShortcutKey {
     /// 1 to [`MAX_SHORTCUT_KEY_BYTES`] ASCII letters and digits.
@@ -56,6 +80,54 @@ pub struct WireShortcutKey {
     pub command: bool,
     pub shift: bool,
     pub alt: bool,
+    /// A chord's second stroke.
+    pub then: Option<Box<WireShortcutKey>>,
+    /// The panel (one of [`SHORTCUT_SCOPES`]) the key answers in; `None`
+    /// answers anywhere on the console.
+    pub scope: Option<String>,
+}
+
+impl WireShortcutKey {
+    /// A key pressed alone with these modifiers, anywhere on the console.
+    #[must_use]
+    pub fn stroke(key: impl Into<String>, command: bool, shift: bool, alt: bool) -> Self {
+        Self {
+            key: key.into(),
+            command,
+            shift,
+            alt,
+            then: None,
+            scope: None,
+        }
+    }
+
+    /// Whether the first strokes of `self` and `other` are the same key
+    /// with the same modifiers.
+    #[must_use]
+    pub fn same_stroke(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.command == other.command
+            && self.shift == other.shift
+            && self.alt == other.alt
+    }
+
+    /// Whether `self` and `other` cannot both be bound in one project: the
+    /// same first stroke where either is a single stroke or both chords
+    /// end on the same second stroke, in overlapping scopes (either
+    /// unscoped, or the same panel).
+    #[must_use]
+    pub fn clashes(&self, other: &Self) -> bool {
+        let strokes = self.same_stroke(other)
+            && match (&self.then, &other.then) {
+                (Some(mine), Some(theirs)) => mine.same_stroke(theirs),
+                _ => true,
+            };
+        let scopes = match (&self.scope, &other.scope) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => true,
+        };
+        strokes && scopes
+    }
 }
 
 /// A cue list operation a shortcut performs.
@@ -150,9 +222,20 @@ pub fn shortcut_name_is_valid(name: &str) -> bool {
 /// Whether `key` names a valid key.
 #[must_use]
 pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
-    !key.key.is_empty()
-        && key.key.len() <= MAX_SHORTCUT_KEY_BYTES
-        && key.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    let stroke = |key: &WireShortcutKey| {
+        !key.key.is_empty()
+            && key.key.len() <= MAX_SHORTCUT_KEY_BYTES
+            && key.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    };
+    stroke(key)
+        && key
+            .then
+            .as_deref()
+            .is_none_or(|then| stroke(then) && then.then.is_none() && then.scope.is_none())
+        && key
+            .scope
+            .as_deref()
+            .is_none_or(|scope| SHORTCUT_SCOPES.contains(&scope))
 }
 
 /// Whether `name` is a valid OSC name. A lone `-` is not: the `osc` field

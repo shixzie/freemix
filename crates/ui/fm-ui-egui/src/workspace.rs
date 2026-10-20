@@ -1280,6 +1280,22 @@ impl StudioShell {
         frame: &PanelFrame,
         intents: &mut Vec<StudioIntent>,
     ) {
+        // A press inside the panel gives it the focus scoped project
+        // shortcut keys answer in (RC-004).
+        let area = ui.max_rect();
+        let layer = ui.layer_id();
+        if ui.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|pos| area.contains(pos))
+        }) && ui
+            .input(|input| input.pointer.interact_pos())
+            .is_some_and(|pos| ui.ctx().layer_id_at(pos) == Some(layer))
+        {
+            self.focused_panel = Some(panel);
+        }
         if let PanelId::Preview | PanelId::Program = panel {
             self.draw_monitor_panel(ui, panel, state, frame);
             return;

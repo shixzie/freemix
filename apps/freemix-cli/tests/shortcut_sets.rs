@@ -91,10 +91,14 @@ fn set(shortcuts: &str) -> String {
 }
 
 const INTRO: &str = "{\"name\": \"Intro\", \"enabled\": true, \
-     \"key\": {\"key\": \"F9\", \"command\": false, \"shift\": true, \"alt\": false}, \
+     \"key\": {\"key\": \"F9\", \"command\": false, \"shift\": true, \"alt\": false, \
+     \"then\": null, \"scope\": null}, \
      \"osc\": \"intro\", \"action\": \"actions:overlay_on.1.1/take.2.cut.0\"}";
-const OPEN: &str = "{\"name\": \"Open\", \"enabled\": false, \"key\": null, \"osc\": null, \
-     \"action\": \"cue:1:go:-\"}";
+/// Ctrl+K then 1, in the Cues panel.
+const OPEN: &str = "{\"name\": \"Open\", \"enabled\": false, \"key\": {\"key\": \"K\", \
+     \"command\": true, \"shift\": false, \"alt\": false, \"then\": {\"key\": \"1\", \
+     \"command\": false, \"shift\": false, \"alt\": false}, \"scope\": \"cues\"}, \
+     \"osc\": null, \"action\": \"cue:1:go:-\"}";
 
 /// The shortcut lines of `shortcuts` output.
 fn listed(output: &str) -> Vec<&str> {
@@ -123,7 +127,8 @@ fn a_shortcut_set_is_imported_listed_exported_and_carried_to_another_project() {
     let expected = [
         "Shortcut(id=1, name=\"Intro\", enabled=true, key=Shift+F9, \
          osc=/freemix/user/intro, action=\"actions:overlay_on.1.1/take.2.cut.0\")",
-        "Shortcut(id=2, name=\"Open\", enabled=false, key=-, osc=-, action=\"cue:1:go:-\")",
+        "Shortcut(id=2, name=\"Open\", enabled=false, key=Ctrl+K,1@cues, osc=-, \
+         action=\"cue:1:go:-\")",
     ];
     assert_eq!(listed(&succeed(&["shortcuts", &first])), expected);
 

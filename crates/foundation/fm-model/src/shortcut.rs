@@ -24,8 +24,11 @@
 //! fired, like the command it stands for.
 //!
 //! Keys are stored as a key name (`egui`'s [`Key::name`], ASCII letters and
-//! digits) and the modifiers held with it. Two enabled-or-not shortcuts may
-//! not share a key or an OSC name.
+//! digits) and the modifiers held with it. A key may be a chord (a second
+//! stroke pressed after the first, Ctrl+K then 1) and may be scoped to one
+//! console panel ([`SHORTCUT_SCOPES`]), answering only while that panel has
+//! the console's focus. Two enabled-or-not shortcuts may not share an OSC
+//! name or hold clashing keys ([`ShortcutKey::clashes`]).
 //!
 //! [`Key::name`]: https://docs.rs/egui/latest/egui/enum.Key.html#method.name
 
@@ -50,8 +53,25 @@ pub const MAX_SHORTCUT_OSC_BYTES: usize = 32;
 /// built-in one.
 pub const SHORTCUT_OSC_PREFIX: &str = "/freemix/user/";
 
+/// The console panels a shortcut key may be scoped to.
+pub const SHORTCUT_SCOPES: [&str; 12] = [
+    "preview",
+    "transitions",
+    "program",
+    "inputs",
+    "mixer",
+    "outputs",
+    "overlays",
+    "stingers",
+    "titles",
+    "playlist",
+    "media",
+    "cues",
+];
+
 /// A key and the modifiers held with it. `command` is Ctrl on Windows and
-/// Linux and Cmd on macOS.
+/// Linux and Cmd on macOS. A chord names its second stroke in `then`, a
+/// plain stroke (no `then` or `scope` of its own).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ShortcutKey {
     /// The key's name: 1 to [`MAX_SHORTCUT_KEY_BYTES`] ASCII letters and
@@ -60,6 +80,11 @@ pub struct ShortcutKey {
     pub command: bool,
     pub shift: bool,
     pub alt: bool,
+    /// A chord's second stroke.
+    pub then: Option<Box<ShortcutKey>>,
+    /// The panel (one of [`SHORTCUT_SCOPES`]) the key answers in; `None`
+    /// answers anywhere on the console.
+    pub scope: Option<String>,
 }
 
 impl ShortcutKey {
@@ -71,20 +96,63 @@ impl ShortcutKey {
             command: false,
             shift: false,
             alt: false,
+            then: None,
+            scope: None,
         }
     }
 
-    /// Whether the key name is within its bounds.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
+    fn stroke_is_valid(&self) -> bool {
         !self.key.is_empty()
             && self.key.len() <= MAX_SHORTCUT_KEY_BYTES
             && self.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
     }
+
+    /// Whether the key names are within their bounds, a second stroke is
+    /// plain, and the scope is a known panel.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.stroke_is_valid()
+            && self.then.as_deref().is_none_or(|then| {
+                then.stroke_is_valid() && then.then.is_none() && then.scope.is_none()
+            })
+            && self
+                .scope
+                .as_deref()
+                .is_none_or(|scope| SHORTCUT_SCOPES.contains(&scope))
+    }
+
+    /// Whether the first strokes of `self` and `other` are the same key
+    /// with the same modifiers.
+    #[must_use]
+    pub fn same_stroke(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.command == other.command
+            && self.shift == other.shift
+            && self.alt == other.alt
+    }
+
+    /// Whether `self` and `other` cannot both be bound: the same first
+    /// stroke where either is a single stroke or both chords end on the
+    /// same second stroke, in overlapping scopes (either unscoped, or the
+    /// same panel).
+    #[must_use]
+    pub fn clashes(&self, other: &Self) -> bool {
+        let strokes = self.same_stroke(other)
+            && match (&self.then, &other.then) {
+                (Some(mine), Some(theirs)) => mine.same_stroke(theirs),
+                _ => true,
+            };
+        let scopes = match (&self.scope, &other.scope) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => true,
+        };
+        strokes && scopes
+    }
 }
 
 impl fmt::Display for ShortcutKey {
-    /// The key as the console shows it: `Ctrl+Shift+Alt+F5`.
+    /// The key as the console shows it: `Ctrl+Shift+Alt+F5`, a chord
+    /// `Ctrl+K, 1`, and a scoped key followed by ` in <panel>`.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.command {
             formatter.write_str("Ctrl+")?;
@@ -95,7 +163,14 @@ impl fmt::Display for ShortcutKey {
         if self.alt {
             formatter.write_str("Alt+")?;
         }
-        formatter.write_str(&self.key)
+        formatter.write_str(&self.key)?;
+        if let Some(then) = &self.then {
+            write!(formatter, ", {then}")?;
+        }
+        if let Some(scope) = &self.scope {
+            write!(formatter, " in {scope}")?;
+        }
+        Ok(())
     }
 }
 
@@ -180,7 +255,7 @@ pub enum ShortcutError {
     InvalidTarget,
     TooManyShortcuts,
     DuplicateId(u64),
-    /// Shortcuts `first` and `second` share a key.
+    /// Shortcuts `first` and `second` hold clashing keys.
     DuplicateKey {
         first: u64,
         second: u64,
@@ -359,7 +434,9 @@ pub fn validate_shortcuts(shortcuts: &[Shortcut]) -> Result<(), ShortcutError> {
         }
         validate_shortcut_definition(shortcut)?;
         if let Some(key) = &shortcut.key
-            && let Some(other) = earlier.iter().find(|other| other.key.as_ref() == Some(key))
+            && let Some(other) = earlier
+                .iter()
+                .find(|other| other.key.as_ref().is_some_and(|other| other.clashes(key)))
         {
             return Err(ShortcutError::DuplicateKey {
                 first: other.id,

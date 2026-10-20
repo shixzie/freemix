@@ -119,8 +119,8 @@ pub use script::{
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,
-    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, Shortcut, ShortcutAction,
-    ShortcutCueOperation, ShortcutError, ShortcutKey, shortcut_name_is_valid,
+    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, SHORTCUT_SCOPES, Shortcut,
+    ShortcutAction, ShortcutCueOperation, ShortcutError, ShortcutKey, shortcut_name_is_valid,
     shortcut_osc_is_valid, validate_shortcut_action, validate_shortcut_definition,
     validate_shortcuts,
 };

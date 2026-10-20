@@ -1,5 +1,6 @@
 //! RC-004: the project's user shortcuts round-trip exactly and strictly in
-//! `project.json`; bounds, duplicate ids, keys, and OSC names, and waits in
+//! `project.json` (a key's chord stroke and panel scope since schema 70);
+//! bounds, duplicate ids, clashing keys, duplicate OSC names, and waits in
 //! an action list are project validation.
 
 use std::{
@@ -92,6 +93,8 @@ fn shortcuts() -> Vec<Shortcut> {
                 command: false,
                 shift: true,
                 alt: false,
+                then: None,
+                scope: None,
             }),
             osc: Some("intro".into()),
             action: ShortcutAction::Actions(vec![
@@ -128,7 +131,15 @@ fn shortcuts() -> Vec<Shortcut> {
             id: 5,
             name: "Back".into(),
             enabled: true,
-            key: Some(ShortcutKey::plain("B")),
+            // Ctrl+K then 1, in the Cues panel.
+            key: Some(ShortcutKey {
+                key: "K".into(),
+                command: true,
+                shift: false,
+                alt: false,
+                then: Some(Box::new(ShortcutKey::plain("1"))),
+                scope: Some("cues".into()),
+            }),
             osc: None,
             action: ShortcutAction::Cue {
                 list: 1,
@@ -152,15 +163,16 @@ fn shortcuts_round_trip_exactly_and_strictly() {
         text.contains(
             ",\n    \"shortcuts\": [\n      {\"id\": 4, \"name\": \"Intro \\\"lower\\\"\", \
              \"enabled\": true, \"key\": {\"key\": \"F9\", \"command\": false, \"shift\": true, \
-             \"alt\": false}, \"osc\": \"intro\", \"action\": {\"type\": \"actions\", \
+             \"alt\": false, \"then\": null, \"scope\": null}, \"osc\": \"intro\", \"action\": {\"type\": \"actions\", \
              \"actions\": [{\"type\": \"overlay_on\", \"channel\": 1, \"input\": 4}, {\"type\": \
              \"audio_mute\", \"input\": 2, \"muted\": true}]}},\n      {\"id\": 2, \"name\": \
              \"Open\", \"enabled\": true, \"key\": null, \"osc\": null, \"action\": {\"type\": \
              \"cue\", \"list\": 1, \"operation\": \"go\", \"cue\": null}},\n      {\"id\": 3, \
              \"name\": \"Scores\", \"enabled\": false, \"key\": null, \"osc\": \"scores\", \
              \"action\": {\"type\": \"script\", \"script\": 2}},\n      {\"id\": 5, \"name\": \
-             \"Back\", \"enabled\": true, \"key\": {\"key\": \"B\", \"command\": false, \
-             \"shift\": false, \"alt\": false}, \"osc\": null, \"action\": {\"type\": \"cue\", \
+             \"Back\", \"enabled\": true, \"key\": {\"key\": \"K\", \"command\": true, \
+             \"shift\": false, \"alt\": false, \"then\": {\"key\": \"1\", \"command\": false, \
+             \"shift\": false, \"alt\": false}, \"scope\": \"cues\"}, \"osc\": null, \"action\": {\"type\": \"cue\", \
              \"list\": 1, \"operation\": \"back\"}}\n    ],\n    \"media_lists\": [],\n    \"title_timelines\": []\n  },"
         ),
         "{text}"
@@ -174,8 +186,17 @@ fn shortcuts_round_trip_exactly_and_strictly() {
         ("\"osc\": \"scores\"", "\"osc\": 7"),
         ("\"command\": false, \"shift\": true", "\"shift\": true"),
         (
-            "\"alt\": false}, \"osc\": \"intro\"",
-            "\"alt\": false, \"meta\": false}, \"osc\": \"intro\"",
+            "\"scope\": null}, \"osc\": \"intro\"",
+            "\"scope\": null, \"meta\": false}, \"osc\": \"intro\"",
+        ),
+        (
+            "\"then\": null, \"scope\": null}, \"osc\": \"intro\"",
+            "\"then\": null}, \"osc\": \"intro\"",
+        ),
+        ("\"scope\": \"cues\"", "\"scope\": 7"),
+        (
+            "\"alt\": false}, \"scope\": \"cues\"",
+            "\"alt\": false, \"then\": null}, \"scope\": \"cues\"",
         ),
         ("\"operation\": \"go\"", "\"operation\": \"jump\""),
         (
@@ -200,13 +221,16 @@ fn shortcuts_round_trip_exactly_and_strictly() {
         ("{\"id\": 2, \"name\"", "{\"id\": 4, \"name\""),
         ("{\"id\": 2, \"name\"", "{\"id\": 0, \"name\""),
         ("\"name\": \"Open\"", "\"name\": \"  \""),
+        // Ctrl+K alone clashes with the Ctrl+K chord in every panel.
         (
-            "\"key\": \"B\", \"command\": false, \"shift\": false",
             "\"key\": \"F9\", \"command\": false, \"shift\": true",
+            "\"key\": \"K\", \"command\": true, \"shift\": false",
         ),
         ("\"osc\": \"scores\"", "\"osc\": \"intro\""),
         ("\"osc\": \"scores\"", "\"osc\": \"Scores\""),
-        ("\"key\": \"B\"", "\"key\": \"Page Up\""),
+        ("\"key\": \"K\"", "\"key\": \"Page Up\""),
+        ("\"key\": \"1\"", "\"key\": \"\""),
+        ("\"scope\": \"cues\"", "\"scope\": \"timeline\""),
         (
             "{\"type\": \"audio_mute\", \"input\": 2, \"muted\": true}",
             "{\"type\": \"delay\", \"millis\": 200}",

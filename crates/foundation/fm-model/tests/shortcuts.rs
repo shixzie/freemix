@@ -79,6 +79,8 @@ fn a_definition_is_bounded() {
             command: true,
             shift: true,
             alt: true,
+            then: None,
+            scope: None,
         }
         .to_string(),
         "Ctrl+Shift+Alt+F9"
@@ -304,4 +306,70 @@ fn project() -> fm_model::Project {
             },
         },
     )
+}
+
+/// A chord's second stroke is a plain stroke, a scope is a known panel,
+/// and keys clash only where their strokes and scopes overlap.
+#[test]
+fn chords_and_scopes_are_bounded_and_clash_only_where_they_overlap() {
+    let chord = |then: &str, scope: Option<&str>| ShortcutKey {
+        command: true,
+        then: Some(Box::new(ShortcutKey::plain(then))),
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain("K")
+    };
+    assert!(chord("1", Some("cues")).is_valid());
+    assert!(!chord("1", Some("timeline")).is_valid());
+    assert!(!chord("", None).is_valid());
+    let mut nested = chord("1", None);
+    nested.then = Some(Box::new(chord("2", None)));
+    assert!(!nested.is_valid());
+    assert_eq!(chord("1", Some("cues")).to_string(), "Ctrl+K, 1 in cues");
+
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, chord("1", None)),
+            with_key(2, chord("2", None)),
+            with_key(3, chord("1", Some("mixer"))),
+        ]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 3
+        })
+    );
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, chord("1", Some("cues"))),
+            with_key(2, chord("1", Some("mixer"))),
+            with_key(
+                3,
+                ShortcutKey {
+                    scope: Some("titles".into()),
+                    command: true,
+                    ..ShortcutKey::plain("K")
+                }
+            ),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, chord("1", None)),
+            with_key(
+                2,
+                ShortcutKey {
+                    command: true,
+                    ..ShortcutKey::plain("K")
+                }
+            ),
+        ]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
 }

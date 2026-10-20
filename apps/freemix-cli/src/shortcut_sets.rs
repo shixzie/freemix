@@ -144,18 +144,31 @@ pub(crate) fn local(path: &Path, command: ShortcutSetCommand) -> AppResult<()> {
 }
 
 /// `Ctrl+Shift+Alt+F9`: a key as the console writes it.
+/// `Ctrl+Shift+Alt+F9`, a chord `Ctrl+K,1`, a scoped key `M@mixer`.
 fn key_text(key: &fm_protocol::WireShortcutKey) -> String {
-    let mut text = String::new();
-    for (held, name) in [
-        (key.command, "Ctrl+"),
-        (key.shift, "Shift+"),
-        (key.alt, "Alt+"),
-    ] {
-        if held {
-            text.push_str(name);
+    let stroke = |key: &fm_protocol::WireShortcutKey| {
+        let mut text = String::new();
+        for (held, name) in [
+            (key.command, "Ctrl+"),
+            (key.shift, "Shift+"),
+            (key.alt, "Alt+"),
+        ] {
+            if held {
+                text.push_str(name);
+            }
         }
+        text.push_str(&key.key);
+        text
+    };
+    let mut text = stroke(key);
+    if let Some(then) = &key.then {
+        text.push(',');
+        text.push_str(&stroke(then));
     }
-    text.push_str(&key.key);
+    if let Some(scope) = &key.scope {
+        text.push('@');
+        text.push_str(scope);
+    }
     text
 }
 

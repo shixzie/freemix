@@ -2,17 +2,22 @@
 //! files (RC-004).
 //!
 //! ```text
-//! {"schema_version": 67, "kind": "shortcut_set", "name": "Studio A",
+//! {"schema_version": 70, "kind": "shortcut_set", "name": "Studio A",
 //!  "shortcuts": [
 //!    {"name": "Intro", "enabled": true,
-//!     "key": {"key": "F9", "command": false, "shift": true, "alt": false},
+//!     "key": {"key": "K", "command": true, "shift": false, "alt": false,
+//!             "then": {"key": "1", "command": false, "shift": false,
+//!                      "alt": false},
+//!             "scope": "cues"},
 //!     "osc": "intro", "action": "actions:overlay_on.1.4/record.1.1"},
 //!    {"name": "Open", "enabled": true, "key": null, "osc": null,
 //!     "action": "cue:1:go:-"}]}
 //! ```
 //!
 //! A set holds 1 to [`MAX_SHORTCUTS`] shortcuts without their project ids,
-//! with unique names, keys, and OSC names. `action` is written in the
+//! with unique names and OSC names and keys that do not clash
+//! ([`WireShortcutKey::clashes`]; a key's `then` is a chord's second
+//! stroke and `scope` the console panel it answers in). `action` is written in the
 //! protocol's shortcut action notation
 //! ([`fm_protocol::shortcut_action_text`]); the inputs, cue lists, and
 //! scripts it names are the exporting project's ids and are checked when
@@ -79,7 +84,9 @@ fn check_set(set: &ShortcutSetFile) -> Result<(), PresetFileError> {
             )));
         }
         if let Some(key) = &shortcut.key
-            && let Some(other) = earlier.iter().find(|other| other.key.as_ref() == Some(key))
+            && let Some(other) = earlier
+                .iter()
+                .find(|other| other.key.as_ref().is_some_and(|other| other.clashes(key)))
         {
             return Err(invalid(format!(
                 "shortcuts {:?} and {:?} share a key",
@@ -124,14 +131,25 @@ fn write_shortcut(output: &mut String, shortcut: &ShortcutSpec) {
         .expect("writing to a string");
     match &shortcut.key {
         Some(key) => {
-            output.push_str("{\"key\": \"");
-            escape_string(output, &key.key);
-            write!(
-                output,
-                "\", \"command\": {}, \"shift\": {}, \"alt\": {}}}",
-                key.command, key.shift, key.alt
-            )
-            .expect("writing to a string");
+            write_stroke(output, key);
+            output.push_str(", \"then\": ");
+            match &key.then {
+                Some(then) => {
+                    write_stroke(output, then);
+                    output.push('}');
+                }
+                None => output.push_str("null"),
+            }
+            output.push_str(", \"scope\": ");
+            match &key.scope {
+                Some(scope) => {
+                    output.push('"');
+                    escape_string(output, scope);
+                    output.push('"');
+                }
+                None => output.push_str("null"),
+            }
+            output.push('}');
         }
         None => output.push_str("null"),
     }
@@ -187,14 +205,40 @@ fn parse_shortcut(value: Value) -> Result<ShortcutSpec, PresetFileError> {
     })
 }
 
+/// Writes `{"key": .., "command": .., "shift": .., "alt": ..` (open).
+fn write_stroke(output: &mut String, key: &WireShortcutKey) {
+    output.push_str("{\"key\": \"");
+    escape_string(output, &key.key);
+    write!(
+        output,
+        "\", \"command\": {}, \"shift\": {}, \"alt\": {}",
+        key.command, key.shift, key.alt
+    )
+    .expect("writing to a string");
+}
+
+fn parse_stroke(object: &mut Object) -> Result<WireShortcutKey, PresetFileError> {
+    Ok(WireShortcutKey::stroke(
+        object.string("key")?,
+        object.boolean("command")?,
+        object.boolean("shift")?,
+        object.boolean("alt")?,
+    ))
+}
+
 fn parse_key(value: Value) -> Result<WireShortcutKey, PresetFileError> {
     let mut object = Object::new(value, "shortcut key")?;
-    let key = WireShortcutKey {
-        key: object.string("key")?,
-        command: object.boolean("command")?,
-        shift: object.boolean("shift")?,
-        alt: object.boolean("alt")?,
-    };
+    let mut key = parse_stroke(&mut object)?;
+    key.then = parse_optional(object.take("then")?, |value| {
+        let mut object = Object::new(value, "shortcut key stroke")?;
+        let stroke = parse_stroke(&mut object)?;
+        object.finish()?;
+        Ok::<_, PresetFileError>(Box::new(stroke))
+    })?;
+    key.scope = parse_optional(object.take("scope")?, |value| match value {
+        Value::String(scope) => Ok(scope),
+        _ => Err(syntax("shortcut key scope must be a string or null")),
+    })?;
     object.finish()?;
     Ok(key)
 }
@@ -282,7 +326,9 @@ pub struct ShortcutImportPlan {
 
 /// Whether `candidate` keeps a key or OSC name `other` already has.
 fn clashes(candidate: &ShortcutSpec, other: &ShortcutSpec) -> Option<bool> {
-    if candidate.key.is_some() && candidate.key == other.key {
+    if let (Some(mine), Some(theirs)) = (&candidate.key, &other.key)
+        && mine.clashes(theirs)
+    {
         Some(true)
     } else if candidate.osc.is_some() && candidate.osc == other.osc {
         Some(false)

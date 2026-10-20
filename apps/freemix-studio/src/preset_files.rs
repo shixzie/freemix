@@ -187,6 +187,8 @@ mod tests {
                 command: true,
                 shift: false,
                 alt: false,
+                then: None,
+                scope: None,
             }),
             osc: Some("open".into()),
             action: fm_protocol::WireShortcutAction::Script { script: 4 },

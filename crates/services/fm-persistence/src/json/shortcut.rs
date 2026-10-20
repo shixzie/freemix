@@ -1,9 +1,11 @@
-//! The project's user shortcuts in `project.json` (RC-004, schema 63).
+//! The project's user shortcuts in `project.json` (RC-004, schema 63; a
+//! key's `then` and `scope` since schema 70).
 //!
 //! ```text
 //! "shortcuts": [
 //!   {"id": 1, "name": "Intro", "enabled": true,
-//!    "key": {"key": "F9", "command": false, "shift": true, "alt": false},
+//!    "key": {"key": "F9", "command": false, "shift": true, "alt": false,
+//!            "then": null, "scope": null},
 //!    "osc": "intro",
 //!    "action": {"type": "actions", "actions": [
 //!      {"type": "overlay_on", "channel": 1, "input": 4},
@@ -14,6 +16,9 @@
 //!    "action": {"type": "script", "script": 2}}
 //! ]
 //! ```
+//!
+//! A chord's `then` is its second stroke, `{"key", "command", "shift",
+//! "alt"}`; `scope` is `null` or the console panel the key answers in.
 //!
 //! An `actions` action holds cue actions in the cue list form (see
 //! [`super::cue`]). A `cue` action's `operation` is `go` (with `cue`, a cue
@@ -48,14 +53,25 @@ fn write_shortcut(output: &mut String, shortcut: &Shortcut) {
         .expect("writing to a string cannot fail");
     match &shortcut.key {
         Some(key) => {
-            output.push_str("{\"key\": \"");
-            escape_string(output, &key.key);
-            write!(
-                output,
-                "\", \"command\": {}, \"shift\": {}, \"alt\": {}}}",
-                key.command, key.shift, key.alt
-            )
-            .expect("writing to a string cannot fail");
+            write_stroke(output, key);
+            output.push_str(", \"then\": ");
+            match &key.then {
+                Some(then) => {
+                    write_stroke(output, then);
+                    output.push('}');
+                }
+                None => output.push_str("null"),
+            }
+            output.push_str(", \"scope\": ");
+            match &key.scope {
+                Some(scope) => {
+                    output.push('"');
+                    escape_string(output, scope);
+                    output.push('"');
+                }
+                None => output.push_str("null"),
+            }
+            output.push('}');
         }
         None => output.push_str("null"),
     }
@@ -133,14 +149,42 @@ fn parse_shortcut(value: Value) -> Result<Shortcut, DecodeError> {
     })
 }
 
-fn parse_key(value: Value) -> Result<ShortcutKey, DecodeError> {
-    let mut object = Object::new(value, "shortcut key")?;
-    let key = ShortcutKey {
+/// Writes `{"key": .., "command": .., "shift": .., "alt": ..` (open).
+fn write_stroke(output: &mut String, key: &ShortcutKey) {
+    output.push_str("{\"key\": \"");
+    escape_string(output, &key.key);
+    write!(
+        output,
+        "\", \"command\": {}, \"shift\": {}, \"alt\": {}",
+        key.command, key.shift, key.alt
+    )
+    .expect("writing to a string cannot fail");
+}
+
+fn parse_stroke(object: &mut Object) -> Result<ShortcutKey, DecodeError> {
+    Ok(ShortcutKey {
         key: object.string("key")?,
         command: object.boolean("command")?,
         shift: object.boolean("shift")?,
         alt: object.boolean("alt")?,
-    };
+        then: None,
+        scope: None,
+    })
+}
+
+fn parse_key(value: Value) -> Result<ShortcutKey, DecodeError> {
+    let mut object = Object::new(value, "shortcut key")?;
+    let mut key = parse_stroke(&mut object)?;
+    key.then = parse_optional(object.take("then")?, |value| {
+        let mut object = Object::new(value, "shortcut key stroke")?;
+        let stroke = parse_stroke(&mut object)?;
+        object.finish()?;
+        Ok(Box::new(stroke))
+    })?;
+    key.scope = parse_optional(object.take("scope")?, |value| match value {
+        Value::String(scope) => Ok(scope),
+        _ => Err(syntax("shortcut key scope must be a string or null")),
+    })?;
     object.finish()?;
     Ok(key)
 }

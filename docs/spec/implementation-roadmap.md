@@ -27,10 +27,11 @@ highest-value remaining items, ranked:
    daemon's audio path, and hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
-   edited and dispatched in Studio (keys and OSC); still missing are Studio-local
-   key overrides, Web operator buttons, scoped/chorded keys, dynamic targets,
-   mouse bindings, and import/export of a shortcut set (see the RC-004
-   boundary below). This is a P0 row.
+   edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
+   import/export from Studio and the CLI, Studio-local per-console key
+   overrides, Web operator page buttons, and panel-scoped and chorded keys
+   (Protocol 2.83, schema 70); still missing are dynamic targets and mouse
+   bindings (see the RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -976,11 +977,32 @@ fires under the console keys' gates (no dialog, menu, keyboard-owning panel,
 or text field; key repeat never re-fires), Studio's loopback OSC listener
 answers `/freemix/user/<name>`, and a fire the session cannot send is
 announced in a toast like a server refusal. Keys are stored in the project, so
-a show carries its keys to every console. Still missing, so RC-004 remains
-planned: Studio-local per-operator key overrides, Web operator page buttons,
-local/global scopes and multi-key chords, dynamic input/value targets
-(the `fm-automation` templates are not wired), mouse bindings, and import or
-export of a shortcut set apart from the project.
+a show carries its keys to every console.
+
+Since then: a shortcut set travels apart from the project as a strict
+`.fmshortcuts` file (`fm-preset-file`, the project schema, actions in the
+protocol's action notation), exported and imported from Edit ▸ Shortcuts…
+and from the CLI (`shortcuts`, `shortcut-export`, `shortcut-import`, each
+also `remote-`); an import replaces shortcuts by name, adds the rest under
+fresh ids, skips identical ones, and refuses wholesale (nothing sent) a set
+that would clash, swap keys, take a console key, or overflow the project,
+ordering its `shortcut_set` edits so every step is valid. An operator can
+give a project shortcut another key, or no key, on this console only: the
+override lives in Studio's preferences (`shortcut.key.<project>.<shortcut>`),
+never in the project, wins over another shortcut's project key here, and
+is shown as "(this console)" in the list and the keyboard reference. The
+Web operator page shows a button per project shortcut and fires it with
+`shortcut_fire`, disabled (with the reason) when the session lacks the
+permission of any action it runs or the shortcut is disabled, mirroring the
+authority's check. Protocol 2.83 / schema 70 add chords (a second stroke
+after the first, Ctrl+K then 1, which may be a key the console uses alone)
+and keys scoped to one console panel (answering only while that panel,
+the last clicked, has the focus); keys clash only where strokes and scopes
+overlap. Still missing, so RC-004 remains planned: dynamic input/value
+targets ("the input on Preview", "the selected input"; the `fm-automation`
+templates are not wired, though a Take with no input already takes the
+current Preview), scoping a key to a pop-out window apart from its panel,
+chorded or scoped console key overrides, and mouse bindings.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

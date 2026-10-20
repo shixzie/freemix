@@ -791,6 +791,8 @@ pub(crate) fn audit_shortcuts() -> Vec<fm_protocol::ShortcutStatus> {
         command: false,
         shift: false,
         alt,
+        then: None,
+        scope: None,
     };
     vec![
         ShortcutStatus {
@@ -3006,6 +3008,33 @@ fn scenes(language: Language) -> Vec<Scene> {
             ready(true, Variant::default()),
         ),
         (
+            "dialog/user-shortcuts-chord",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                edit_shortcut_draft(shell, &|draft| {
+                    draft.key = Some(fm_protocol::WireShortcutKey {
+                        then: Some(Box::new(fm_protocol::WireShortcutKey::stroke(
+                            "1", false, false, false,
+                        ))),
+                        scope: Some("cues".into()),
+                        ..fm_protocol::WireShortcutKey::stroke("K", true, false, false)
+                    });
+                });
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-chord-capturing",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                shell.user_shortcuts.capturing = true;
+                shell.user_shortcuts.capturing_then = true;
+            },
+            ready(true, Variant::default()),
+        ),
+        (
             "dialog/user-shortcuts-console-key",
             &|shell| {
                 shell.user_shortcuts.open = true;
@@ -3019,6 +3048,8 @@ fn scenes(language: Language) -> Vec<Scene> {
                         command: true,
                         shift: false,
                         alt: false,
+                        then: None,
+                        scope: None,
                     }),
                 );
                 shell.shortcut_keys.set(project, 3, None);
@@ -3056,6 +3087,8 @@ fn scenes(language: Language) -> Vec<Scene> {
                         command: false,
                         shift: false,
                         alt: false,
+                        then: None,
+                        scope: None,
                     });
                     draft.osc = Some("open".into());
                 });

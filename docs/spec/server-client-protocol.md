@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.82 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.83 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3077,6 +3077,36 @@ Protocol 2.82 completes the strip DSP chain and adds loudness metering
   mixer strip shows its short-term loudness and Master its integrated
   loudness under the keys.
 - 2.81 is refused.
+
+Protocol 2.83 adds chorded and panel-scoped user shortcut keys (RC-004,
+schema 70).
+
+- A shortcut `key` (in `shortcut_set`, `shortcut_changed`, and
+  `shortcut_state`) is `-` or `<stroke>[+<stroke>][@<scope>]`, each stroke
+  `<key>.<command>.<shift>.<alt>` as before. The second stroke makes a
+  chord, pressed after the first (Ctrl+K, then 1:
+  `K.1.0.0+1.0.0.0`); `scope` is one of `preview`, `transitions`,
+  `program`, `inputs`, `mixer`, `outputs`, `overlays`, `stingers`,
+  `titles`, `playlist`, `media`, or `cues`, the console panel the key
+  answers in. Anything else in the field is refused.
+- Two keys clash (refused `conflict`, field `key` / `key_in_use`) when
+  their first strokes are the same and either is a single stroke or both
+  end on the same second stroke, and their scopes overlap (either
+  unscoped, or the same panel). One key may therefore serve different
+  shortcuts in different panels, and `Ctrl+K, 1` and `Ctrl+K, 2` coexist,
+  but `Ctrl+K` alone and a `Ctrl+K` chord do not.
+- Durability (schema 70): a shortcut's `"key"` object gains required
+  `"then": null | {"key", "command", "shift", "alt"}` and `"scope": null |
+  panel` after `"alt"`. `.fmshortcuts` shortcut set files (schema 70) carry
+  the same key object.
+- Studio's Shortcuts window adds Add second key / Remove second key and an
+  "Answers in" panel picker. A chord's first key waits up to two seconds
+  for its second (shown at the bottom of the console); the next key press
+  ends the wait and is never read by anything else, so the second stroke
+  may be a key the console uses alone. A scoped key answers only while its
+  panel has the focus (the panel last clicked). Console key overrides stay
+  single, unscoped keys in Studio's preferences, never on the wire.
+- 2.82 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

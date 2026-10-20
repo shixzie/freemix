@@ -8749,6 +8749,43 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::UserShortcutReasonOverrideLimit,
         t("esta consola no guarda más teclas propias"),
     ),
+    (Msg::UserShortcutSetThen, t("Añadir segunda tecla")),
+    (
+        Msg::UserShortcutSetThenHover,
+        t(
+            "Convertir la tecla en un acorde: capturar una segunda tecla pulsada después de esta (Ctrl+K y luego 1). La segunda puede ser cualquier tecla, incluso una que la consola usa sola",
+        ),
+    ),
+    (Msg::UserShortcutClearThen, t("Quitar segunda tecla")),
+    (
+        Msg::UserShortcutClearThenHover,
+        t("Volver a una sola tecla, sin la segunda"),
+    ),
+    (
+        Msg::UserShortcutThenCapturing,
+        t("Pulse ahora la segunda tecla (Esc conserva la anterior)"),
+    ),
+    (Msg::UserShortcutScopeLabel, t("Responde en")),
+    (
+        Msg::UserShortcutScopeHover,
+        t(
+            "Dónde dispara la tecla el atajo: en toda la consola, o solo mientras un panel tiene el foco (el último panel en que hizo clic). Paneles distintos pueden usar la misma tecla",
+        ),
+    ),
+    (Msg::UserShortcutScopeAnywhere, t("En toda la consola")),
+    (Msg::UserShortcutInPanel, t("{keys} en {panel}")),
+    (
+        Msg::UserShortcutChordPending,
+        t("{keys} pulsada: pulse la segunda tecla"),
+    ),
+    (
+        Msg::UserShortcutReasonNoFirstKey,
+        t("el atajo aún no tiene tecla"),
+    ),
+    (
+        Msg::UserShortcutReasonNoThen,
+        t("la tecla no tiene segunda tecla"),
+    ),
     (Msg::CueActSlideNext, t("Diapositiva siguiente")),
     (Msg::CueActSlidePrevious, t("Diapositiva anterior")),
     (Msg::CueActSlideFirst, t("Primera diapositiva")),

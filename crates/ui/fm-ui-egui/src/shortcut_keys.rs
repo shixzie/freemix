@@ -45,13 +45,12 @@ impl ShortcutKeyOverrides {
 
     /// Gives `shortcut` in `project` the key `key` (or no key) on this
     /// console. Returns `false`, changing nothing, when the key is not a
-    /// valid shortcut key or the console already keeps
+    /// valid single, unscoped shortcut key or the console already keeps
     /// [`MAX_KEY_OVERRIDES`] others.
     pub fn set(&mut self, project: ProjectId, shortcut: u64, key: Option<WireShortcutKey>) -> bool {
-        if key
-            .as_ref()
-            .is_some_and(|key| !fm_protocol::shortcut_key_is_valid(key))
-            || shortcut == 0
+        if key.as_ref().is_some_and(|key| {
+            !fm_protocol::shortcut_key_is_valid(key) || key.then.is_some() || key.scope.is_some()
+        }) || shortcut == 0
         {
             return false;
         }
@@ -155,6 +154,8 @@ pub fn parse_key_text(text: &str) -> Option<WireShortcutKey> {
         command,
         shift,
         alt,
+        then: None,
+        scope: None,
     };
     fm_protocol::shortcut_key_is_valid(&key).then_some(key)
 }
@@ -175,6 +176,8 @@ mod tests {
             command,
             shift,
             alt,
+            then: None,
+            scope: None,
         }
     }
 
@@ -194,6 +197,13 @@ mod tests {
         // Not a key a shortcut may hold, or shortcut id zero.
         assert!(!overrides.set(project(7), 3, Some(key("F+", false, false, false))));
         assert!(!overrides.set(project(7), 0, None));
+        // A console key is a single key that answers anywhere.
+        let mut chord = key("K", true, false, false);
+        chord.then = Some(Box::new(key("1", false, false, false)));
+        assert!(!overrides.set(project(7), 3, Some(chord)));
+        let mut scoped = key("K", true, false, false);
+        scoped.scope = Some("cues".into());
+        assert!(!overrides.set(project(7), 3, Some(scoped)));
         assert_eq!(overrides.len(), 1);
     }
 

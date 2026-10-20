@@ -2,8 +2,10 @@
 //!
 //! * `shortcut` is a nonzero canonical id; `name` the shortcut name
 //!   (validated by [`crate::shortcut_name_is_valid`]); `enabled` `0` or `1`.
-//! * `key` is `-` for none or `<key>.<command 0|1>.<shift 0|1>.<alt 0|1>`,
-//!   `key` 1 to 16 ASCII letters and digits.
+//! * `key` is `-` for none or `<stroke>[+<stroke>][@<scope>]` (the second
+//!   stroke and the scope since 2.83), each stroke
+//!   `<key>.<command 0|1>.<shift 0|1>.<alt 0|1>` with `key` 1 to 16 ASCII
+//!   letters and digits, and `scope` one of [`crate::SHORTCUT_SCOPES`].
 //! * `osc` is `-` for none or the OSC name (1 to 32 lowercase ASCII
 //!   letters, digits, `-`, and `_`).
 //! * `action` is `actions:<tokens>` (1 to 16 `/`-separated cue action
@@ -135,37 +137,65 @@ fn parse_flag(value: &str) -> Option<bool> {
     }
 }
 
+fn encode_stroke(key: &WireShortcutKey) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        key.key,
+        flag(key.command),
+        flag(key.shift),
+        flag(key.alt)
+    )
+}
+
 fn encode_key(key: Option<&WireShortcutKey>) -> String {
     key.map_or_else(
         || "-".to_owned(),
         |key| {
-            format!(
-                "{}.{}.{}.{}",
-                key.key,
-                flag(key.command),
-                flag(key.shift),
-                flag(key.alt)
-            )
+            let mut text = encode_stroke(key);
+            if let Some(then) = &key.then {
+                text.push('+');
+                text.push_str(&encode_stroke(then));
+            }
+            if let Some(scope) = &key.scope {
+                text.push('@');
+                text.push_str(scope);
+            }
+            text
         },
     )
+}
+
+fn decode_stroke(stroke: &str) -> Option<WireShortcutKey> {
+    let parts: Vec<&str> = stroke.split('.').collect();
+    let [key, command, shift, alt] = parts.as_slice() else {
+        return None;
+    };
+    Some(WireShortcutKey::stroke(
+        *key,
+        parse_flag(command)?,
+        parse_flag(shift)?,
+        parse_flag(alt)?,
+    ))
 }
 
 fn decode_key(value: &str) -> Result<Option<WireShortcutKey>, CodecError> {
     if value == "-" {
         return Ok(None);
     }
-    let parts: Vec<&str> = value.split('.').collect();
-    let [key, command, shift, alt] = parts.as_slice() else {
-        return Err(invalid("key", value));
+    let bad = || invalid("key", value);
+    let (strokes, scope) = match value.split_once('@') {
+        Some((strokes, scope)) => (strokes, Some(scope.to_owned())),
+        None => (value, None),
     };
-    let key = WireShortcutKey {
-        key: (*key).to_owned(),
-        command: parse_flag(command).ok_or_else(|| invalid("key", value))?,
-        shift: parse_flag(shift).ok_or_else(|| invalid("key", value))?,
-        alt: parse_flag(alt).ok_or_else(|| invalid("key", value))?,
+    let (first, then) = match strokes.split_once('+') {
+        Some((first, then)) => (first, Some(Box::new(decode_stroke(then).ok_or_else(bad)?))),
+        None => (strokes, None),
     };
+    let mut key = decode_stroke(first).ok_or_else(bad)?;
+    key.then = then;
+    key.scope = scope;
     if !shortcut_key_is_valid(&key) {
-        return Err(invalid("key", value));
+        return Err(bad());
     }
     Ok(Some(key))
 }

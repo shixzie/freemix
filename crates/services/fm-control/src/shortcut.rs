@@ -48,6 +48,8 @@ pub fn wire_key(key: &ShortcutKey) -> WireShortcutKey {
         command: key.command,
         shift: key.shift,
         alt: key.alt,
+        then: key.then.as_deref().map(|then| Box::new(wire_key(then))),
+        scope: key.scope.clone(),
     }
 }
 
@@ -59,6 +61,8 @@ pub fn domain_key(key: &WireShortcutKey) -> ShortcutKey {
         command: key.command,
         shift: key.shift,
         alt: key.alt,
+        then: key.then.as_deref().map(|then| Box::new(domain_key(then))),
+        scope: key.scope.clone(),
     }
 }
 

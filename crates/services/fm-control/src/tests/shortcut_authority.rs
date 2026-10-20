@@ -120,6 +120,8 @@ fn spec(shortcut: u64, action: WireShortcutAction) -> ShortcutSpec {
             command: false,
             shift: false,
             alt: false,
+            then: None,
+            scope: None,
         }),
         osc: Some(format!("s{shortcut}")),
         action,

@@ -1643,6 +1643,11 @@ pub struct StudioShell {
     /// This console's own keys for project shortcuts, a console
     /// preference (RC-004).
     shortcut_keys: ShortcutKeyOverrides,
+    /// The panel the operator last clicked, which scoped project shortcut
+    /// keys answer in (RC-004).
+    focused_panel: Option<dock::PanelId>,
+    /// A project shortcut chord's first key, waiting for its second.
+    chord: Option<user_shortcuts::PendingChord>,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
     stream_targets: stream_targets::StreamTargetsUi,
     /// Tab drags, native window placement, and the layout name dialog.
@@ -2190,6 +2195,8 @@ impl Default for StudioShell {
             scripts: scripts::ScriptsWindow::default(),
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),
+            focused_panel: None,
+            chord: None,
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
         }

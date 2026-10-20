@@ -52,6 +52,8 @@ fn key(name: &str, shift: bool) -> WireShortcutKey {
         command: false,
         shift,
         alt: false,
+        then: None,
+        scope: None,
     }
 }
 
@@ -110,7 +112,12 @@ fn sample() -> ShortcutSetFile {
             ShortcutSpec {
                 name: "Scores".to_owned(),
                 enabled: true,
-                key: Some(key("S", false)),
+                // Ctrl+K then 1, in the Cues panel.
+                key: Some(WireShortcutKey {
+                    then: Some(Box::new(key("1", false))),
+                    scope: Some("cues".to_owned()),
+                    ..WireShortcutKey::stroke("K", true, false, false)
+                }),
                 osc: None,
                 action: WireShortcutAction::Script { script: 2 },
             },
@@ -128,12 +135,15 @@ fn a_shortcut_set_encodes_exactly_and_round_trips() {
             "{{\"schema_version\": {SCHEMA_VERSION}, \"kind\": \"shortcut_set\", \
              \"name\": \"Studio \\\"A\\\"\", \"shortcuts\": [\n  \
              {{\"name\": \"Intro\", \"enabled\": true, \"key\": {{\"key\": \"F9\", \
-             \"command\": false, \"shift\": true, \"alt\": false}}, \"osc\": \"intro\", \
+             \"command\": false, \"shift\": true, \"alt\": false, \"then\": null, \
+             \"scope\": null}}, \"osc\": \"intro\", \
              \"action\": \"actions:overlay_on.1.4/take.3.cut.0\"}},\n  \
              {{\"name\": \"Open\", \"enabled\": false, \"key\": null, \"osc\": null, \
              \"action\": \"cue:1:go:2\"}},\n  \
-             {{\"name\": \"Scores\", \"enabled\": true, \"key\": {{\"key\": \"S\", \
-             \"command\": false, \"shift\": false, \"alt\": false}}, \"osc\": null, \
+             {{\"name\": \"Scores\", \"enabled\": true, \"key\": {{\"key\": \"K\", \
+             \"command\": true, \"shift\": false, \"alt\": false, \"then\": {{\"key\": \"1\", \
+             \"command\": false, \"shift\": false, \"alt\": false}}, \"scope\": \"cues\"}}, \
+             \"osc\": null, \
              \"action\": \"script:2\"}}\n]}}\n"
         )
     );
@@ -179,11 +189,30 @@ fn a_shortcut_set_is_refused_unless_strict_and_valid() {
             "{action}"
         );
     }
-    // A key name no shortcut may hold.
-    let bad_key = text.replacen("\"key\": \"S\"", "\"key\": \"S+\"", 1);
+    // A key name no shortcut may hold, or a panel no key may be scoped to.
+    for (from, to) in [
+        ("\"key\": \"K\"", "\"key\": \"K+\""),
+        ("\"key\": \"1\"", "\"key\": \"\""),
+        ("\"scope\": \"cues\"", "\"scope\": \"timeline\""),
+    ] {
+        let bad = text.replacen(from, to, 1);
+        assert!(
+            matches!(
+                decode_shortcut_set_file(&bad),
+                Err(PresetFileError::Invalid(_))
+            ),
+            "{to}"
+        );
+    }
+    // A second stroke is a plain stroke.
+    let nested = text.replacen(
+        "\"alt\": false}, \"scope\": \"cues\"",
+        "\"alt\": false, \"then\": null}, \"scope\": \"cues\"",
+        1,
+    );
     assert!(matches!(
-        decode_shortcut_set_file(&bad_key),
-        Err(PresetFileError::Invalid(_))
+        decode_shortcut_set_file(&nested),
+        Err(PresetFileError::Malformed { .. })
     ));
     // Names, keys, and OSC names unique within the set.
     let mut twice = sample();
@@ -193,7 +222,8 @@ fn a_shortcut_set_is_refused_unless_strict_and_valid() {
         Err(PresetFileError::Invalid(message)) if message.contains("used twice")
     ));
     let mut shared_key = sample();
-    shared_key.shortcuts[2].key = Some(key("F9", true));
+    // Ctrl+K alone clashes with the Ctrl+K chord.
+    shared_key.shortcuts[0].key = Some(WireShortcutKey::stroke("K", true, false, false));
     assert!(matches!(
         encode_shortcut_set_file(&shared_key),
         Err(PresetFileError::Invalid(message)) if message.contains("share a key")
@@ -310,4 +340,47 @@ fn an_import_after_the_largest_id_takes_the_lowest_free_one() {
     let existing = vec![status(u64::MAX, spec("Last", None, None))];
     let plan = plan_shortcut_import(&existing, &[spec("New", None, None)]).unwrap();
     assert_eq!(plan.sets[0].id, 1);
+}
+
+/// Chords that end on different strokes, and one key in different panels,
+/// import side by side; a chord's first stroke alone or the same key in an
+/// overlapping scope does not.
+#[test]
+fn chords_and_scoped_keys_clash_only_where_they_overlap() {
+    let chord = |then: &str, scope: Option<&str>| WireShortcutKey {
+        then: Some(Box::new(key(then, false))),
+        scope: scope.map(str::to_owned),
+        ..WireShortcutKey::stroke("K", true, false, false)
+    };
+    let scoped = |name: &str, scope: &str| WireShortcutKey {
+        scope: Some(scope.to_owned()),
+        ..key(name, false)
+    };
+    let existing = vec![
+        status(1, spec("One", Some(chord("1", None)), None)),
+        status(2, spec("Mute", Some(scoped("M", "mixer")), None)),
+    ];
+    let plan = plan_shortcut_import(
+        &existing,
+        &[
+            spec("Two", Some(chord("2", None)), None),
+            spec("Mark", Some(scoped("M", "cues")), None),
+        ],
+    )
+    .unwrap();
+    assert_eq!(plan.added, 2);
+    for clash in [
+        WireShortcutKey::stroke("K", true, false, false),
+        chord("1", Some("cues")),
+        key("M", false),
+        scoped("M", "mixer"),
+    ] {
+        assert!(
+            matches!(
+                plan_shortcut_import(&existing, &[spec("New", Some(clash.clone()), None)]),
+                Err(ShortcutImportError::KeyTaken { .. })
+            ),
+            "{clash:?}"
+        );
+    }
 }

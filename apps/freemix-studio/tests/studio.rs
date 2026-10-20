@@ -2782,6 +2782,8 @@ fn console_keys_for_project_shortcuts_round_trip_and_save_debounced() {
             command: true,
             shift: false,
             alt: true,
+            then: None,
+            scope: None,
         })
     ));
     assert!(overrides.set(project, 4, None));
