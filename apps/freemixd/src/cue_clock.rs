@@ -118,6 +118,15 @@ impl CueClock {
         })
     }
 
+    /// Simulated pacing only: follows the engine cursor on a pass the
+    /// clock waits for the frame loop to settle (a timed transition the
+    /// session loop's simulated pacer realizes at wall time), so a
+    /// waiting cue that becomes pending is anchored where those frames end,
+    /// not before them as if they had been rendered at once.
+    pub(super) fn track(&mut self, control: &ControlService<Policy>) {
+        self.previous_cursor = Some(control.frame_cursor());
+    }
+
     /// Returns the advance to execute now, if any (see [`Self::due`]).
     ///
     /// A retry waits for `retry_window` (no session command waiting this

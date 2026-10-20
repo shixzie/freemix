@@ -1396,7 +1396,7 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
             if program == input(1) && preview == input(3)
     ));
     for kind in ["fade", "alpha_fade", "slide", "zoom", "wipe"] {
-        let (_, event) = page_command(
+        let (revision, event) = page_command(
             &mut page,
             &format!("op-auto-{kind}"),
             None,
@@ -1407,6 +1407,9 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
             matches!(event, EventPayload::DesiredSwitcher { .. }),
             "{kind}: {event:?}"
         );
+        // The frame loop realizes the transition after its answer; the
+        // next one is accepted once it has ended.
+        realized(&mut page, revision);
     }
     let (_, event) = page_command(&mut page, "op-cut", None, "payload=cut").unwrap();
     assert!(matches!(event, EventPayload::DesiredSwitcher { .. }));

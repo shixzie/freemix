@@ -3257,6 +3257,25 @@ fn configure_and_fire_stinger(client: &mut Client) {
         client.next_result(),
         CommandResult::Accepted { revision: 2, .. }
     ));
+    // The frame loop plays the stinger's second frame after the answer; a
+    // slot is reconfigured only once it has ended.
+    await_switcher_realized(client, 2);
+}
+
+/// Reads until the switcher realization of `revision`: a timed transition
+/// completing on the frame loop after its command was answered.
+fn await_switcher_realized(client: &mut Client, revision: u64) {
+    loop {
+        if let WireMessage::RuntimeEvent(runtime) = client.receive()
+            && runtime.revision == revision
+            && matches!(
+                &runtime.event,
+                RuntimeLifecycleEvent::Realized { domain, .. } if domain == "switcher"
+            )
+        {
+            return;
+        }
+    }
 }
 
 fn replace_live_stinger(client: &mut Client) {
@@ -3404,6 +3423,113 @@ fn zoom_command_settles_and_survives_daemon_restart() {
     drop(client);
     daemon.wait_success();
     assert_eq!(store.load().unwrap(), persisted);
+}
+
+/// The simulated daemon realizes a timed transition on its frame loop, as
+/// the native daemon does: the command is answered on its first frame,
+/// another client's edit is accepted on a frame inside it and its Cut
+/// refused as in flight, the switcher realization arrives once the
+/// transition has played at the show's frame rate, and the journal
+/// replays every command onto the frame it was committed at.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn simulated_daemon_realizes_a_timed_transition_on_its_frame_loop() {
+    let directory = TestDirectory::new("simulated-frame-loop");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut operator = daemon.connect();
+    let mut other = daemon.connect();
+    for (client, role) in [(&mut operator, Role::Operator), (&mut other, Role::Admin)] {
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client.handshake_as(role, None);
+        client.receive_snapshot();
+    }
+
+    // 50 frames at 25 fps: two seconds of fade.
+    let sent = Instant::now();
+    operator.send(&command(
+        "fade",
+        "fade-key",
+        CommandPayload::Fade {
+            duration_frames: 50,
+        },
+    ));
+    let answered = loop {
+        match operator.receive() {
+            WireMessage::CommandResult(result) => {
+                assert!(
+                    matches!(result, CommandResult::Accepted { revision: 1, .. }),
+                    "{result:?}"
+                );
+                break sent.elapsed();
+            }
+            WireMessage::RuntimeEvent(runtime) => assert!(
+                !matches!(runtime.event, RuntimeLifecycleEvent::Realized { .. }),
+                "the fade was realized before it was answered: {runtime:?}"
+            ),
+            _ => {}
+        }
+    };
+    assert!(
+        answered < Duration::from_millis(1_000),
+        "the fade was answered after {answered:?}, not on its first frame"
+    );
+
+    other.send(&command(
+        "rename",
+        "rename-key",
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: "Renamed mid fade".into(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut other, "rename"), 2);
+    other.send(&command("cut", "cut-key", CommandPayload::Cut));
+    assert!(
+        matches!(
+            other.next_result(),
+            CommandResult::Rejected { ref code, current_revision: 2, .. } if code == "conflict"
+        ),
+        "a Cut during the fade is refused as in flight"
+    );
+    let mid = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(mid.desired_program, input(2));
+    assert_eq!(mid.realized_program, input(1), "the fade is still running");
+
+    await_switcher_realized(&mut operator, 1);
+    let realized = sent.elapsed();
+    assert!(
+        realized >= Duration::from_millis(1_800),
+        "the fade's 50 frames were realized in {realized:?}"
+    );
+    let ended = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(ended.realized_program, input(2));
+    other.send(&command("cut-after", "cut-after-key", CommandPayload::Cut));
+    assert_eq!(accepted_revision(&mut other, "cut-after"), 3);
+    await_switcher_realized(&mut other, 3);
+    drop(operator);
+    drop(other);
+    // Killed: recovery replays every command onto the frame it was
+    // committed at, landing on each acknowledged position.
+    daemon.stop();
+    let restarted = Daemon::start(&project_path);
+    let snapshot = snapshot_of(&restarted, Role::Viewer);
+    assert_eq!(snapshot.revision, 3);
+    assert_eq!(snapshot.realized_program, input(1));
+    restarted.wait_success();
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(persisted.position().revision, 3);
+    assert_eq!(persisted.position().frames_rendered, 51);
+    assert_eq!(
+        persisted.runtime_routing().realized_program_id,
+        Some(domain_input(1))
+    );
+    assert_eq!(persisted.project().inputs()[0].name, "Renamed mid fade");
 }
 
 #[test]
@@ -6772,17 +6898,38 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut graphics = daemon.connect();
     graphics.handshake_as(Role::Graphics, None);
     title_sync(&mut graphics);
-    graphics.send(&command(
-        "save-again",
-        "save-again-key",
-        CommandPayload::SetTitleFields {
-            input: input(4),
-            base_revision: 4,
-            require: TitleAirRequirement::OffAir,
-            fields: title_color(5, 6, 7),
-        },
-    ));
-    assert_eq!(accepted_revision(&mut graphics, "save-again"), 5);
+    // The frame loop plays the overlay's six-frame fade out after the
+    // take off air is answered; the title is on air until it ends, so the
+    // save is refused as on air until then.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for attempt in 0.. {
+        let id = format!("save-again-{attempt}");
+        graphics.send(&command(
+            &id,
+            &format!("{id}-key"),
+            CommandPayload::SetTitleFields {
+                input: input(4),
+                base_revision: 4,
+                require: TitleAirRequirement::OffAir,
+                fields: title_color(5, 6, 7),
+            },
+        ));
+        match graphics.next_result() {
+            CommandResult::Accepted { revision, .. } => {
+                assert_eq!(revision, 5);
+                break;
+            }
+            CommandResult::Rejected { fields, .. }
+                if fields.iter().any(|field| field.code == "title_on_air")
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other @ CommandResult::Rejected { .. } => {
+                panic!("expected the save to be accepted once off air, got {other:?}")
+            }
+        }
+    }
     drop(graphics);
     daemon.stop();
 

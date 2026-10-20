@@ -11971,10 +11971,11 @@ impl IdleReplayBudget {
 /// cursor each command was committed at, and replay ticks the engine up to
 /// it, exactly as the pacer did; the command itself then realizes nothing
 /// (its projection still settles where the daemon's did). A simulated
-/// daemon realizes a command's frames within it and renders idle frames
-/// only to catch a client's playlist control up to the show's wall-clock
-/// frame (`playlist_clock::PlaylistClock::catch_up`); replay ticks those
-/// the same way.
+/// daemon realizes the rest of a command's transition on its own
+/// wall-clock frame loop the same way, and renders idle frames only to
+/// catch a client's playlist control or a clock's advance up to the
+/// show's wall-clock frame (`playlist_clock::PlaylistClock::catch_up`,
+/// `catch_up_simulated_advance`); replay ticks all of those the same way.
 ///
 /// A replay that still lands elsewhere is reported by the position check.
 fn replay_idle_frames(
@@ -13644,7 +13645,14 @@ fn execute_authority_command(
     }
     let imported = import_host_media(&mut control, store, principal, command, now);
     let command = imported.command.as_ref().unwrap_or(command);
-    let execution = execute_durable_command(
+    // As on the native daemon, the command realizes only its first frame
+    // and is answered then; the session loop's simulated pacer realizes
+    // the rest of a timed transition or title phase at the show's frame
+    // rate (see `sessions::SimulatedPacer`). A clock's advance first
+    // realizes the idle frames wall time has already played, so its first
+    // frame is the one it is due on.
+    catch_up_simulated_advance(&mut control, server, &command.payload)?;
+    let execution = execute_durable_command_with_ticks(
         &mut control,
         store,
         durable,
@@ -13652,12 +13660,48 @@ fn execute_authority_command(
         server,
         command,
         now,
+        None,
+        Realize::First,
+        |control, server| Ok(control.tick(server)?.runtime_events),
     )?;
     imported.discard_unused(store, durable.project());
     // Imported, duplicated, replaced and reopened media inputs play from a
     // synthetic source as soon as they exist (IN-026).
     attach_synthetic_media(&mut control, durable.project())?;
     Ok(durable_delivery(execution))
+}
+
+/// Simulated daemon only: before a clock's `playlist_advance` or
+/// `cue_advance` for `frame` executes, ticks the engine idle until `frame`
+/// is the next frame it renders. The simulated engine renders no idle frames, so its cursor
+/// trails the show's wall-clock frame the clock fired at; those frames were
+/// played already and are realized at once (never onto another pending
+/// boundary or waiting cue), and the advance's own first frame is `frame`.
+/// Its journal record names the frame it was committed at, so replay ticks
+/// the same frames.
+fn catch_up_simulated_advance(
+    control: &mut ControlService<Policy>,
+    server: &ServerIdentity,
+    payload: &CommandPayload,
+) -> AppResult<()> {
+    let (CommandPayload::PlaylistAdvance { frame } | CommandPayload::CueAdvance { frame, .. }) =
+        *payload
+    else {
+        return Ok(());
+    };
+    // The cursor is the next frame to render: it stops on `frame`, and on
+    // any other boundary or cue frame before it, unrendered.
+    let mut target = frame;
+    if let Some(boundary) = control.playlist_advance_frame() {
+        target = target.min(boundary);
+    }
+    if let Some((_, due)) = control.cue_advance_frame() {
+        target = target.min(due);
+    }
+    while control.frame_cursor() < target {
+        control.tick(server)?;
+    }
+    Ok(())
 }
 
 /// Executes one command through the native realization path, with the
@@ -14556,6 +14600,9 @@ fn refuse_staged_command(
     })
 }
 
+/// Executes `command` realizing every frame it projects at once: the
+/// tests' way to drive a command to where it settles.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn execute_durable_command(
     control: &mut ControlService<Policy>,
@@ -14584,12 +14631,14 @@ fn execute_durable_command(
 /// [`execute_durable_command_with_ticks`] realizes before it returns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Realize {
-    /// Every one: the simulated daemon, whose frames have no wall time.
+    /// Every one: tests that drive a command to where it settles.
+    #[cfg(test)]
     All,
     /// Only its first, so the command is realized on the frame right after
-    /// its append and answered then; the native frame loop realizes the
-    /// rest (a timed transition, a title phase) one frame per pacer tick,
-    /// serving every session in between.
+    /// its append and answered then; the frame loop realizes the rest (a
+    /// timed transition, a title phase) one frame per pacer tick, serving
+    /// every session in between: the native pacer, or the simulated
+    /// daemon's wall-clock pacer in the session loop.
     First,
     /// None: journal replay, which ticks up to each recorded command's
     /// first frame itself (see [`replay_idle_frames`]).
@@ -14604,6 +14653,7 @@ impl Realize {
     fn now(self, projected: u64, accepted: bool) -> u64 {
         match self {
             _ if !accepted => 0,
+            #[cfg(test)]
             Self::All => projected,
             Self::First => projected.min(1),
             Self::None => 0,
@@ -24645,7 +24695,9 @@ mod tests {
                 "fade-key",
                 CommandPayload::Fade { duration_frames: 4 },
             ),
-            test_command("cut", "cut-key", CommandPayload::Cut),
+            // Accepted on the fade's second frame, which the frame loop
+            // would realize next (a Cut there is refused as in flight).
+            test_command("rename-third", "rename-third-key", rename("Third")),
         ]
     }
 
@@ -24753,12 +24805,12 @@ mod tests {
                 ("rename-second", Some(2)),
                 ("stale", None),
                 ("fade", Some(3)),
-                ("cut", Some(4)),
+                ("rename-third", Some(4)),
             ]
         );
         assert_eq!(durable.position(), sequential.position());
         assert_eq!(durable.project(), sequential.project());
-        assert_eq!(durable.project().inputs()[0].name, "Second");
+        assert_eq!(durable.project().inputs()[0].name, "Third");
         assert_eq!(control.borrow().diagnostics().current_revision, 4);
         assert_eq!(durable_revisions(&subscription), [1, 2, 3, 4]);
     }
@@ -24954,6 +25006,10 @@ mod tests {
                 alone.result,
                 CommandResult::Accepted { revision: 1, .. }
             ));
+            // The frame loop realizes the rest of the fade before the group.
+            while control.borrow().work_in_flight() {
+                control.borrow_mut().tick(&server).unwrap();
+            }
             let before_group = durable.clone();
             let log = store.journal_path().join("journal.db-wal");
             let log_before = std::fs::metadata(&log).unwrap().len();

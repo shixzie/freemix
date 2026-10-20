@@ -3306,7 +3306,8 @@ frame 0 (the pose jumps, as in title playback); zero-length phases keep the
 channel transition; overlay commands and Program show the Hold pose. Poses are
 a pure function of the frame since the phase start, so cuts and dropped frames
 land on the exact pose. Snapshots report work in flight while a title
-animates, the simulated daemon realizes a whole phase inside its command, and
+animates, both daemons realize a phase on their frame loop after the
+command's first frame (the simulated one at wall-clock pace), and
 native freemixd renders every projected pose and holds a frame until its pose
 is ingested (bounded wait, late poses counted). Protocol 2.27 reports the
 phase in `title_state`. The daemon refreshes only clock and ticker titles on
@@ -3920,7 +3921,7 @@ down, offers Start/Stop/Pause-Resume/Previous/Next and a per-row jump or
 start-from key under the transition permission, and edits the list (add,
 remove, reorder, enable/skip, duration, transition, loop mode) under
 `edit_project` while the playlist is stopped or finished.
-Remaining gaps: the clocks wait while the native frame loop realizes a
+Remaining gaps: the clocks wait while either daemon's frame loop realizes a
 transition or title phase, so a boundary falling inside one is cut on the
 first frame after it (its scheduled start, and so every later boundary, is
 kept); a SIGKILL still loses up to one second of idle progress (the marker

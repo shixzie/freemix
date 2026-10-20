@@ -312,8 +312,8 @@ stage 3):
   a take on another channel during Out is refused as on air. The pose is a
   pure function of the frame since the phase start, so dropped frames land
   on the exact pose. A title command's projection spans its whole phase:
-  the simulated daemon realizes it within the command, the native daemon
-  realizes the take frame within it and the rest on its frame loop.
+  either daemon realizes the take frame within the command and the rest
+  on its frame loop.
 - Generic overlay commands and Program cuts show titles in the Hold pose.
 
 Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
@@ -694,9 +694,9 @@ phases, presets, and animation revision as a title template:
   frame to play it on. A scene shown any other way (nested in another
   scene, a multiview tile, an overlay) holds. Phase playback is runtime
   state: it is not persisted, does not block snapshots, and a snapshot
-  replicates no phase. The simulated daemon realizes a command's scene
-  phases within that command's ticks; the native daemon recompiles the
-  scene composition every frame while a scene is mid-phase.
+  replicates no phase. Either daemon realizes a command's scene phases on
+  its frame loop after the command's first frame; the native daemon
+  recompiles the scene composition every frame while a scene is mid-phase.
 - Editors draw the replicated layout as outlines posed by the draft clip
   (Studio's Animation window) and, from Protocol 2.32, under them the
   server's exact scene preview. `freemix-cli scene-render-frame` renders
@@ -3226,7 +3226,13 @@ timing of command results and what a session may send meanwhile do.
   `runtime_event` `realized` in domain `switcher` for the command's
   revision, published on the frame the transition (or Fade to Black)
   completes; overlay and title commands report theirs as before.
-  The simulated daemon still realizes a command's frames within it.
+  The simulated daemon (no native media) behaves the same: it renders no
+  idle frames, but realizes such work after the command's first frame at
+  the show's frame rate on its own wall-clock frame loop, so clients see
+  the same answers, refusals, and realization events from both. A
+  simulated playlist or cue clock's advance first realizes the idle frames
+  wall time already played, so its own first frame is the one it is due
+  on.
 - While such work runs every session is served as between commands:
   monitor frames of both taps, meters, events, heartbeats, and other
   sessions' commands, one per scheduler pass as before. A command accepted

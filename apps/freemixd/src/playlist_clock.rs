@@ -9,8 +9,9 @@
 //!   wall time does not move its frame cursor. Once a playlist boundary is
 //!   pending the clock anchors the engine cursor to the wall clock, and when
 //!   wall time reaches the boundary frame it submits the advance. Executing
-//!   it ticks the engine up to the boundary, so the entry's input reaches
-//!   Program on the scheduled frame and its transition runs to completion.
+//!   it ticks the engine idle up to the boundary, so the entry's input
+//!   reaches Program on the scheduled frame; its transition then runs on
+//!   the session loop's simulated frame loop, during which the clock waits.
 //!   A client's playlist control first catches the engine up to the
 //!   anchored wall-clock frame (see [`PlaylistClock::catch_up`]), so a Pause
 //!   holds the entry where the show had played it to.
@@ -130,6 +131,15 @@ impl PlaylistClock {
             retry,
             reached,
         })
+    }
+
+    /// Simulated pacing only: follows the engine cursor on a pass the
+    /// clock waits for the frame loop to settle (a timed transition the
+    /// session loop's simulated pacer realizes at wall time), so a
+    /// playlist boundary that becomes pending is anchored where those frames end,
+    /// not before them as if they had been rendered at once.
+    pub(super) fn track(&mut self, control: &ControlService<Policy>) {
+        self.previous_cursor = Some(control.frame_cursor());
     }
 
     /// Returns the advance to execute now, if any (see [`Self::due`]).

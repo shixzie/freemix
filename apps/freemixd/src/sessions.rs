@@ -707,8 +707,9 @@ pub(super) fn run(
         thumbnail_refresh: std::cell::RefCell::new(false),
     };
     let mut native = native;
-    // Only the native pacer realizes frames between commands, so only it has
-    // idle progress to record.
+    // Only the native pacer realizes idle frames between commands, so only
+    // it has idle progress to record (the simulated pacer realizes only the
+    // frames of work a command's durable projection already settles past).
     let mut progress = native
         .is_some()
         .then(|| crate::NativeProgress::new(durable));
@@ -730,6 +731,7 @@ pub(super) fn run(
         item_pictures,
     )?;
     let mut thumbnail_grades = crate::grading::GradeCache::default();
+    let mut simulated_pacer = SimulatedPacer::default();
     let mut simulated_monitor = if native.is_none() {
         Some(SimulatedMonitorWorker::spawn(
             authority.clone(),
@@ -1087,12 +1089,19 @@ pub(super) fn run(
         // refused advance of either clock is retried only on a pass no
         // peer's command was ready for (the journal-idle check is the
         // clock's), so retries never take a client's frame or command turn.
-        // While the native frame loop is still realizing a command's
-        // transition or title phase, the clocks (and media end triggers)
+        // While either daemon's frame loop (the native pacer, or the
+        // simulated one) is still realizing a command's transition or
+        // title phase, the clocks (and media end triggers)
         // wait for it to end, as they waited while a command realized those
         // frames itself: a boundary that falls inside is cut on the first
         // frame after it.
-        let settling = native.is_some() && control.borrow().work_in_flight();
+        let settling = control.borrow().work_in_flight();
+        if settling && native.is_none() {
+            // The simulated clocks still follow the show's frame while
+            // they wait, so the frames the pacer realizes count as the
+            // wall time they took.
+            runtime.track_simulated_clocks();
+        }
         if !settling
             && let Err(error) = runtime.playlist_clock.borrow_mut().poll(
                 control,
@@ -1148,14 +1157,20 @@ pub(super) fn run(
         }
         // The control borrow ends before a failure shuts the peers down,
         // which borrows it again.
-        let ticked = native
-            .as_deref_mut()
-            .map(|native| native.tick_if_due(&mut control.borrow_mut(), authority));
-        if let Some(Err(error)) = ticked {
+        let ticked = match native.as_deref_mut() {
+            Some(native) => native.tick_if_due(&mut control.borrow_mut(), authority),
+            None => simulated_pacer.poll(
+                &mut control.borrow_mut(),
+                authority,
+                durable.project().settings().frame_rate,
+                Instant::now(),
+            ),
+        };
+        if let Err(error) = ticked {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
-        let settling = native.is_some() && control.borrow().work_in_flight();
+        let settling = control.borrow().work_in_flight();
         if !settling
             && let Err(error) = runtime.end_triggers.borrow_mut().poll(
                 control,
@@ -1300,6 +1315,45 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
+    }
+}
+
+/// The simulated daemon's frame loop: it renders no idle frames, but once
+/// a command has realized the first frame of a timed transition, Fade to
+/// Black, overlay motion, or title phase (and been answered then), this
+/// realizes the rest at the show's frame rate, as the native pacer does,
+/// so every session keeps being served and the switcher realization is
+/// published when the work ends. A command committed meanwhile lands on
+/// the frame the work has reached, which its journal record names.
+#[derive(Debug, Default)]
+struct SimulatedPacer {
+    /// The frame cursor and the instant the work in flight was first seen.
+    anchor: Option<(u64, Instant)>,
+}
+
+impl SimulatedPacer {
+    /// Realizes the frames wall time has reached since the work in flight
+    /// was first seen, stopping as soon as it settles.
+    fn poll(
+        &mut self,
+        control: &mut fm_control::ControlService<fm_auth::Policy>,
+        server: &fm_protocol::ServerIdentity,
+        rate: fm_types::FrameRate,
+        now: Instant,
+    ) -> crate::AppResult<()> {
+        if !control.work_in_flight() {
+            self.anchor = None;
+            return Ok(());
+        }
+        let (frame, at) = *self.anchor.get_or_insert((control.frame_cursor(), now));
+        let target = crate::playlist_clock::wall_frame(frame, at, now, rate);
+        while control.frame_cursor() < target && control.work_in_flight() {
+            control.tick(server)?;
+        }
+        if !control.work_in_flight() {
+            self.anchor = None;
+        }
+        Ok(())
     }
 }
 
@@ -1603,6 +1657,15 @@ struct Runtime<'a> {
 }
 
 impl Runtime<'_> {
+    /// A simulated daemon's pass that waits for the frame loop to settle:
+    /// its playlist and cue clocks follow the frames the pacer realizes
+    /// (see [`crate::playlist_clock::PlaylistClock::track`]).
+    fn track_simulated_clocks(&self) {
+        let control = self.control.borrow();
+        self.playlist_clock.borrow_mut().track(&control);
+        self.cue_clock.borrow_mut().track(&control);
+    }
+
     /// Simulated runtime: the engine's cursor trails the show's wall clock,
     /// so a client's playlist control first catches up to the show's frame
     /// (a Pause then holds the entry where it had played to). The native
