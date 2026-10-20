@@ -5,7 +5,8 @@
 //! thread, where the newest shared-memory buffer of each pass is copied out
 //! (older ones go straight back) and every other buffer is returned at
 //! once. The reader waits on a condition variable for the next picture,
-//! the stream reaching `streaming`, or its end ([`VideoStream::wait`]).
+//! the stream reaching `streaming` or pausing after it, or its end
+//! ([`VideoStream::wait`]).
 //! The copy keeps every pointer libpipewire hands out inside the callback
 //! that receives it.
 
@@ -44,8 +45,10 @@ pub enum StreamEnd {
 /// What happened since the last [`VideoStream::wait`].
 #[derive(Debug, Default)]
 pub struct Update {
-    /// The stream reached `streaming`.
-    pub streaming: bool,
+    /// The stream reached `streaming` (`Some(true)`), or paused after
+    /// streaming (`Some(false)`: the desktop stopped sending pictures, and
+    /// may resume), whichever happened last.
+    pub streaming: Option<bool>,
     /// The newest picture, if one arrived.
     pub frame: Option<Frame>,
     /// The stream ended.
@@ -58,8 +61,30 @@ struct State {
     frame: Option<Frame>,
     /// A picture's buffer handed back for reuse.
     spare: Vec<u8>,
-    streaming: bool,
+    /// The stream is `streaming` now.
+    live: bool,
+    /// The last change of `live` not yet taken.
+    change: Option<bool>,
     end: Option<StreamEnd>,
+}
+
+impl State {
+    /// Follows the stream to state `new`; returns whether the reader is
+    /// due a wake-up. Only `paused` after `streaming` is a change: a
+    /// stream passes through `paused` on its way to `streaming` too.
+    fn follow(&mut self, new: c_int) -> bool {
+        let live = match new {
+            sys::STATE_STREAMING => true,
+            sys::STATE_PAUSED if self.live => false,
+            _ => return false,
+        };
+        if live == self.live {
+            return false;
+        }
+        self.live = live;
+        self.change = Some(live);
+        true
+    }
 }
 
 /// What the callbacks share with the reader. Lives (boxed) at least as
@@ -119,7 +144,8 @@ unsafe fn text(text: *const c_char, fallback: &str) -> String {
         .into_owned()
 }
 
-/// `state_changed`: errors and the stream's end, and `streaming`.
+/// `state_changed`: errors and the stream's end, and `streaming` and
+/// `paused`.
 unsafe extern "C" fn on_state(data: *mut c_void, _old: c_int, new: c_int, error: *const c_char) {
     // SAFETY: `data` is the `Shared` registered with this listener, alive
     // until the stream is destroyed.
@@ -132,9 +158,11 @@ unsafe extern "C" fn on_state(data: *mut c_void, _old: c_int, new: c_int, error:
                 "the shared stream failed: {message}"
             )));
         }
-        sys::STATE_STREAMING => {
-            shared.state().streaming = true;
-            shared.wake.notify_all();
+        sys::STATE_STREAMING | sys::STATE_PAUSED => {
+            let wake = shared.state().follow(new);
+            if wake {
+                shared.wake.notify_all();
+            }
         }
         // Only reached again after connecting: the shared node went away.
         sys::STATE_UNCONNECTED => shared.end(StreamEnd::Ended("the shared stream ended".into())),
@@ -406,8 +434,7 @@ impl VideoStream {
         let socket = descriptor_target(fd);
         // SAFETY: the context is valid and `fd` is open (owned by `remote`
         // until the call returns); on success the core owns it.
-        self.core =
-            unsafe { (api.context_connect_fd)(self.context, fd, std::ptr::null_mut(), 0) };
+        self.core = unsafe { (api.context_connect_fd)(self.context, fd, std::ptr::null_mut(), 0) };
         if self.core.is_null() {
             // libpipewire documents that it closes the descriptor on error,
             // but (0.3 through 1.4 at least) none of its failure paths do:
@@ -479,7 +506,7 @@ impl VideoStream {
                 self.stream,
                 sys::DIRECTION_INPUT,
                 node,
-                sys::FLAGS_AUTOCONNECT_MAP_BUFFERS,
+                sys::FLAGS_AUTOCONNECT_MAP_BUFFERS_DONT_RECONNECT,
                 params.as_mut_ptr(),
                 1,
             )
@@ -492,7 +519,8 @@ impl VideoStream {
         Ok(())
     }
 
-    /// Waits up to `timeout` for a picture, `streaming`, or the end, and
+    /// Waits up to `timeout` for a picture, `streaming` or a pause, or the
+    /// end, and
     /// takes what happened.
     #[must_use]
     pub fn wait(&self, timeout: Duration) -> Update {
@@ -501,11 +529,11 @@ impl VideoStream {
             .shared
             .wake
             .wait_timeout_while(state, timeout, |state| {
-                !state.streaming && state.frame.is_none() && state.end.is_none()
+                state.change.is_none() && state.frame.is_none() && state.end.is_none()
             })
             .unwrap_or_else(PoisonError::into_inner);
         Update {
-            streaming: std::mem::take(&mut state.streaming),
+            streaming: state.change.take(),
             frame: state.frame.take(),
             end: state.end.take(),
         }
@@ -553,6 +581,26 @@ impl Drop for VideoStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pause_after_streaming_is_a_change_and_one_before_is_not() {
+        let mut state = State::default();
+        // Connecting passes through `paused` on its way to `streaming`.
+        assert!(!state.follow(sys::STATE_PAUSED));
+        assert_eq!(state.change, None);
+        assert!(state.follow(sys::STATE_STREAMING));
+        assert!(!state.follow(sys::STATE_STREAMING), "no change");
+        assert_eq!(state.change.take(), Some(true));
+        // The desktop stops sending: paused after streaming.
+        assert!(state.follow(sys::STATE_PAUSED));
+        assert!(!state.follow(sys::STATE_PAUSED), "no change");
+        assert_eq!(state.change.take(), Some(false));
+        // Paused and resumed before the reader looked: the last one wins.
+        assert!(state.follow(sys::STATE_STREAMING));
+        assert!(state.follow(sys::STATE_PAUSED));
+        assert_eq!(state.change.take(), Some(false));
+        assert!(!state.follow(sys::STATE_ERROR));
+    }
 
     #[test]
     fn a_descriptor_is_told_apart_from_a_closed_or_reused_number() {

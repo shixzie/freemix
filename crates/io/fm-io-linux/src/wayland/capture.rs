@@ -8,7 +8,9 @@
 //! desktop refuses or stops is `denied` and is not asked for again; a
 //! target that goes away (a closed window, an ended stream) is
 //! `target_gone` for a second and asked for again (with the restore token,
-//! usually without a dialog); a failure is retried with backoff
+//! usually without a dialog); a stream the desktop pauses is
+//! `target_gone` until it resumes, without asking again; a failure is
+//! retried with backoff
 //! (`reopening`). The owner polls [`PortalCapture::status`],
 //! [`PortalCapture::take_picture`], and
 //! [`PortalCapture::take_restore_token`]; none of them waits on the
@@ -301,6 +303,9 @@ impl Sink<'_> {
         status.width = picture.width;
         status.height = picture.height;
         status.state = ScreenCaptureState::Live;
+        if status.last_error.as_deref() == Some(super::PAUSED_ON_DESKTOP) {
+            status.last_error = None;
+        }
         match converted {
             Some(converted) => {
                 if status.last_error.as_deref() == Some(CROP_KEEPS_NOTHING) {
@@ -340,8 +345,22 @@ impl ShareSink for Sink<'_> {
     }
 
     fn streaming(&mut self) {
-        self.shared
-            .set(|status| status.state = ScreenCaptureState::Live);
+        self.shared.set(|status| {
+            status.state = ScreenCaptureState::Live;
+            if status.last_error.as_deref() == Some(super::PAUSED_ON_DESKTOP) {
+                status.last_error = None;
+            }
+        });
+    }
+
+    fn paused(&mut self) {
+        // Nothing comes until the desktop resumes: the slate shows, as for
+        // a target gone, but the share is kept.
+        self.pending = None;
+        self.shared.set(|status| {
+            status.state = ScreenCaptureState::TargetGone;
+            status.last_error = Some(super::PAUSED_ON_DESKTOP.to_owned());
+        });
     }
 
     fn frame(&mut self, picture: &SourcePicture<'_>) {
@@ -409,6 +428,8 @@ mod tests {
         Await,
         Grant(Option<&'static str>),
         Frame(u32, u32, [u8; 3]),
+        Pause,
+        Resume,
         End(ShareEnd),
     }
 
@@ -443,6 +464,8 @@ mod tests {
                             layout: PixelLayout::Bgrx,
                         });
                     }
+                    Step::Pause => sink.paused(),
+                    Step::Resume => sink.streaming(),
                     Step::End(end) => return end,
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -602,6 +625,33 @@ mod tests {
         drop(requests);
         // The last grant kept no token: forgotten.
         assert_eq!(capture.take_restore_token(), Some(None));
+    }
+
+    #[test]
+    fn a_paused_stream_shows_the_slate_until_it_resumes_without_asking_again() {
+        let (capture, requests) = start(
+            vec![vec![
+                Step::Grant(Some("token")),
+                Step::Frame(4, 2, [255, 0, 0]),
+                Step::Pause,
+                Step::Pause,
+                Step::Pause,
+                Step::Pause,
+                Step::Pause,
+                Step::Resume,
+            ]],
+            None,
+        );
+        settle(&capture, |status| status.state == ScreenCaptureState::Live);
+        settle(&capture, |status| {
+            status.state == ScreenCaptureState::TargetGone
+                && status.last_error.as_deref() == Some(super::super::PAUSED_ON_DESKTOP)
+        });
+        settle(&capture, |status| {
+            status.state == ScreenCaptureState::Live && status.last_error.is_none()
+        });
+        assert_eq!(capture.status().reopens, 0);
+        assert_eq!(requests.lock().unwrap().len(), 1, "the share was kept");
     }
 
     #[test]

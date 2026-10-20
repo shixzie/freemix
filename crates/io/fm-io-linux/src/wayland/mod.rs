@@ -70,6 +70,9 @@ pub const DENIED_CANCELLED: &str = "sharing was cancelled in the sharing dialog 
 /// The desktop refused without a dialog answer.
 pub const DENIED_REFUSED: &str = "the server's desktop refused to share a screen or window; pick \
      again to ask once more";
+/// The desktop paused a share that was running.
+pub const PAUSED_ON_DESKTOP: &str = "the server's desktop paused the shared stream; it shows \
+     again when the desktop resumes it";
 /// The desktop ended a share that was running.
 pub const STOPPED_ON_DESKTOP: &str = "sharing was stopped on the server's desktop; pick again to \
      share once more";
@@ -149,6 +152,9 @@ pub trait ShareSink {
     /// The shared stream runs. A desktop may send its first picture only
     /// once something on it changes.
     fn streaming(&mut self);
+    /// The shared stream paused after streaming: the desktop stopped
+    /// sending pictures and may resume ([`Self::streaming`] again).
+    fn paused(&mut self);
     /// One shared picture.
     fn frame(&mut self, picture: &SourcePicture<'_>);
     /// Called between pictures, at least every tenth of a second while a
@@ -213,6 +219,7 @@ mod tests {
             DENIED_CANCELLED,
             DENIED_REFUSED,
             STOPPED_ON_DESKTOP,
+            PAUSED_ON_DESKTOP,
             NO_WINDOW_SHARING,
             NO_SCREEN_SHARING,
             NO_EMBEDDED_CURSOR,

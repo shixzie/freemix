@@ -333,8 +333,38 @@ fn a_granted_share_asks_with_the_restore_token_and_keeps_the_new_one() {
             );
         }
 
-        // The desktop stops sharing: the session's Closed signal.
+        // The desktop stops sharing: the session's Closed signal. A stream
+        // that ends first waits a little for it.
         assert!(!portal.closed());
+        let started = std::time::Instant::now();
+        assert!(!portal.closed_within(Duration::from_millis(200)).await);
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        let session = script.lock().unwrap().session.clone().unwrap();
+        server
+            .object_server()
+            .at(&session, FakeSession)
+            .await
+            .unwrap();
+        let emitter = SignalEmitter::new(&server, session).unwrap();
+        FakeSession::closed(&emitter, HashMap::new()).await.unwrap();
+        assert!(
+            portal.closed_within(Duration::from_secs(5)).await,
+            "the Closed signal is waited for"
+        );
+        assert!(!portal.closed(), "seen once");
+
+        // A second share: its Closed signal is seen by the check that
+        // never waits too.
+        let grant = portal
+            .share(
+                &request(SourceKind::Window, None),
+                &capabilities,
+                &|| false,
+                &mut || {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(grant.node_id, 42);
         let session = script.lock().unwrap().session.clone().unwrap();
         server
             .object_server()
@@ -444,6 +474,7 @@ impl fm_io_linux::wayland::ShareSink for Silent {
     }
     fn granted(&mut self, _: Option<String>, _: Option<&str>) {}
     fn streaming(&mut self) {}
+    fn paused(&mut self) {}
     fn frame(&mut self, _: &fm_io_linux::wayland::SourcePicture<'_>) {}
     fn idle(&mut self) {}
     fn stopping(&self) -> bool {

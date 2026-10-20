@@ -5,7 +5,10 @@
 //! loads libpipewire at run time) and offers raw video in the 4-byte
 //! layouts [`PixelLayout`] reads, at any size and rate. No DMA-BUF
 //! modifiers are offered, so the compositor copies into shared memory
-//! buffers. Between pictures the stop check, the portal's session check,
+//! buffers. The stream is linked to that node only: when the node goes
+//! away the stream fails instead of being relinked to another source, and
+//! a stream the desktop pauses is reported paused until it resumes.
+//! Between pictures the stop check, the portal's session check,
 //! and the rate cap's idle call run; only the newest picture of each pass
 //! is read.
 
@@ -72,8 +75,10 @@ pub fn stream(
         if let Some(end) = check() {
             return end;
         }
-        if update.streaming {
-            sink.streaming();
+        match update.streaming {
+            Some(true) => sink.streaming(),
+            Some(false) => sink.paused(),
+            None => {}
         }
         if let Some(frame) = update.frame {
             if let Some(layout) = layout(frame.format) {

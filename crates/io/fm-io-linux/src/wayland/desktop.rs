@@ -75,7 +75,23 @@ impl PortalBackend for DesktopPortal {
         };
         sink.granted(grant.restore_token.clone(), grant.note);
         let end = stream(grant, &mut portal, sink);
+        let end = stopped_on_desktop(end, || {
+            async_io::block_on(portal.closed_within(super::portal::CLOSE_GRACE))
+        });
         async_io::block_on(portal.close());
+        end
+    }
+}
+
+/// A stream that ended or failed is sharing stopped on the desktop when
+/// the portal closes the session meanwhile (`closed`, which waits a
+/// little: its signal can arrive after the stream's end). Taken for a
+/// target gone instead, it would be asked for again with the restore
+/// token, quietly undoing the operator's stop.
+fn stopped_on_desktop(end: ShareEnd, closed: impl FnOnce() -> bool) -> ShareEnd {
+    if matches!(end, ShareEnd::Ended(_) | ShareEnd::Failed(_)) && closed() {
+        ShareEnd::Denied(super::STOPPED_ON_DESKTOP.into())
+    } else {
         end
     }
 }
@@ -134,5 +150,30 @@ pub fn inventory(address: Option<&str>) -> ScreenCaptureInventory {
         } else {
             None
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stream_that_ends_as_the_session_closes_is_stopped_on_the_desktop() {
+        let gone = || ShareEnd::Ended("the shared stream ended".into());
+        let failed = || ShareEnd::Failed("PipeWire: target not found".into());
+        let stopped = ShareEnd::Denied(super::super::STOPPED_ON_DESKTOP.into());
+        assert_eq!(stopped_on_desktop(gone(), || true), stopped);
+        assert_eq!(stopped_on_desktop(failed(), || true), stopped);
+        // No `Closed` signal: the target went away, asked for again.
+        assert_eq!(stopped_on_desktop(gone(), || false), gone());
+        assert_eq!(stopped_on_desktop(failed(), || false), failed());
+        // Other ends do not wait for the signal.
+        for end in [
+            ShareEnd::Stopped,
+            ShareEnd::Denied("no".into()),
+            ShareEnd::Unsupported("no".into()),
+        ] {
+            assert_eq!(stopped_on_desktop(end.clone(), || panic!("waited")), end);
+        }
     }
 }

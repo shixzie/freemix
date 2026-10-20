@@ -12,7 +12,9 @@
 //!
 //! The session lives as long as the [`Portal`]: [`Portal::closed`] polls,
 //! without waiting, whether the desktop closed it (the operator stopped
-//! sharing on the desktop), and [`Portal::close`] ends it.
+//! sharing on the desktop), [`Portal::closed_within`] waits a while for
+//! that (a stream can end before the signal arrives), and
+//! [`Portal::close`] ends it.
 
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
@@ -37,6 +39,9 @@ pub const SESSION: &str = "org.freedesktop.portal.Session";
 pub const PERSIST_UNTIL_REVOKED: u32 = 2;
 /// How long a call that shows no dialog may take.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a share whose stream ended waits for the session's `Closed`
+/// signal before it takes the end for a target gone.
+pub const CLOSE_GRACE: Duration = Duration::from_secs(1);
 /// How often a wait checks whether to stop.
 const POLL: Duration = Duration::from_millis(100);
 
@@ -426,6 +431,33 @@ impl Portal {
             }
             None => false,
         }
+    }
+
+    /// Whether the desktop closes the session within `timeout`: a stream
+    /// that ended may have ended because sharing was stopped on the
+    /// desktop, whose `Closed` signal travels the session bus and can
+    /// arrive after the stream's end.
+    pub async fn closed_within(&mut self, timeout: Duration) -> bool {
+        let Some(closed) = &mut self.closed else {
+            return false;
+        };
+        let seen = future::or(
+            async {
+                // A `Closed` signal, or the connection is gone.
+                closed.next().await;
+                true
+            },
+            async {
+                Timer::after(timeout).await;
+                false
+            },
+        )
+        .await;
+        if seen {
+            self.closed = None;
+            self.session = None;
+        }
+        seen
     }
 
     /// Ends the session, if one is open.

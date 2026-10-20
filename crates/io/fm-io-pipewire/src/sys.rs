@@ -131,11 +131,15 @@ pub struct ProxyEvents {
 /// `enum pw_stream_state` values.
 pub const STATE_ERROR: c_int = -1;
 pub const STATE_UNCONNECTED: c_int = 0;
+pub const STATE_PAUSED: c_int = 2;
 pub const STATE_STREAMING: c_int = 3;
 /// `SPA_DIRECTION_INPUT`.
 pub const DIRECTION_INPUT: c_int = 0;
-/// `PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS`.
-pub const FLAGS_AUTOCONNECT_MAP_BUFFERS: c_int = (1 << 0) | (1 << 2);
+/// `PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
+/// PW_STREAM_FLAG_DONT_RECONNECT`: linked to the shared node and nothing
+/// else, so a node that goes away fails the stream ("target not found")
+/// instead of the session manager linking it to another video source.
+pub const FLAGS_AUTOCONNECT_MAP_BUFFERS_DONT_RECONNECT: c_int = (1 << 0) | (1 << 2) | (1 << 7);
 /// `SPA_CHUNK_FLAG_CORRUPTED`.
 pub const CHUNK_CORRUPTED: i32 = 1;
 
