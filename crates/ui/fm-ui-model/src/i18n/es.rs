@@ -9472,6 +9472,37 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::ScAudioLineFailed, t("{source} falló: {reason}")),
     (Msg::ScAudioNoReason, t("sin motivo indicado")),
+    (Msg::ScAudioBadgeOpening, t("AUDIO ABRIENDO")),
+    (Msg::ScAudioBadgeLive, t("AUDIO EN VIVO")),
+    (Msg::ScAudioBadgeNoStream, t("SIN FLUJO")),
+    (Msg::ScAudioBadgeUnsupported, t("AUDIO NO ADMITIDO")),
+    (Msg::ScAudioBadgeFailed, t("AUDIO FALLÓ")),
+    (
+        Msg::ScAudioBadgeOpeningHover,
+        t(
+            "La captura está abriendo su sonido; la tira del mezclador de esta entrada queda en silencio hasta que el sonido esté en vivo",
+        ),
+    ),
+    (
+        Msg::ScAudioBadgeLiveHover,
+        t(
+            "El sonido se captura con la imagen y alimenta la tira propia de esta entrada en el mezclador",
+        ),
+    ),
+    (
+        Msg::ScAudioBadgeNoStreamHover,
+        t(
+            "La aplicación todavía no reproduce sonido; su sonido se captura en cuanto empiece a reproducirlo",
+        ),
+    ),
+    (
+        Msg::ScAudioBadgeUnsupportedHover,
+        t("Este servidor no puede capturar este sonido; la imagen se sigue capturando"),
+    ),
+    (
+        Msg::ScAudioBadgeFailedHover,
+        t("Falló la captura del sonido; la imagen se sigue capturando"),
+    ),
     (
         Msg::ScReasonTitle,
         t("escriba el título de ventana que se sigue"),

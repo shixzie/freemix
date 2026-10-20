@@ -21,7 +21,10 @@
 //! the target, the captured size, the reopen count, the last error, and the
 //! audio state (starting, live, no audio stream yet, unsupported here,
 //! failed) with its reason, and the tile menu's Pick target again asks the
-//! server's desktop anew.
+//! server's desktop anew. The audio state also has a badge of its own on
+//! the tile and on the input's mixer strip (AUDIO OPENING, AUDIO LIVE, NO
+//! STREAM, AUDIO UNSUPPORTED, AUDIO FAILED; none while the audio is off),
+//! whose hover gives the state, its reason, and what it means.
 
 use egui::{Color32, RichText, Ui};
 use fm_protocol::{
@@ -745,6 +748,102 @@ pub(crate) fn audio_line(
     Some(line)
 }
 
+/// The audio state badge of a screen capture input (its text, colour,
+/// and hover help: the state's line with its reason, then what the state
+/// means), or `None` while its audio is off.
+pub(crate) fn audio_badge(
+    l: Locale,
+    audio: ScreenCaptureAudio,
+    status: &ScreenCaptureStatus,
+) -> Option<(String, Color32, String)> {
+    let line = audio_line(l, audio, status)?;
+    let (text, color, meaning) = match status.audio {
+        ScreenCaptureAudioState::Off => return None,
+        ScreenCaptureAudioState::Opening => (
+            Msg::ScAudioBadgeOpening,
+            muted_color(),
+            Msg::ScAudioBadgeOpeningHover,
+        ),
+        ScreenCaptureAudioState::Live => (
+            Msg::ScAudioBadgeLive,
+            Color32::from_rgb(30, 150, 70),
+            Msg::ScAudioBadgeLiveHover,
+        ),
+        ScreenCaptureAudioState::NoStream => (
+            Msg::ScAudioBadgeNoStream,
+            AMBER,
+            Msg::ScAudioBadgeNoStreamHover,
+        ),
+        ScreenCaptureAudioState::Unsupported => (
+            Msg::ScAudioBadgeUnsupported,
+            ERROR,
+            Msg::ScAudioBadgeUnsupportedHover,
+        ),
+        ScreenCaptureAudioState::Failed => {
+            (Msg::ScAudioBadgeFailed, ERROR, Msg::ScAudioBadgeFailedHover)
+        }
+    };
+    Some((
+        l.text(text).to_owned(),
+        color,
+        format!("{line}\n{}", l.text(meaning)),
+    ))
+}
+
+/// Whether `entry` shows an audio state badge (its audio is not off).
+pub(crate) fn shows_audio_badge(entry: &ScreenCaptureEntry) -> bool {
+    entry.status.audio != ScreenCaptureAudioState::Off
+}
+
+/// The audio state badge as a small key `width` wide (at least its text)
+/// with its hover help; nothing while the audio is off.
+pub(crate) fn audio_badge_key(
+    ui: &mut Ui,
+    l: Locale,
+    entry: &ScreenCaptureEntry,
+    size: egui::Vec2,
+) -> Option<egui::Response> {
+    let (text, color, hover) = audio_badge(l, entry.config.audio, &entry.status)?;
+    Some(
+        ui.add(
+            egui::Button::new(
+                RichText::new(text)
+                    .size(crate::theme::legible(9.0))
+                    .strong()
+                    .color(Color32::WHITE),
+            )
+            .fill(color)
+            .truncate()
+            .min_size(size),
+        )
+        .on_hover_text(hover),
+    )
+}
+
+/// The audio badge on an input tile: in the picture's bottom leading
+/// corner, clear of the capture state badge in the trailing one.
+pub(crate) fn tile_audio_badge(
+    ui: &mut Ui,
+    thumb: egui::Rect,
+    l: Locale,
+    entry: &ScreenCaptureEntry,
+) -> Option<egui::Response> {
+    if !shows_audio_badge(entry) {
+        return None;
+    }
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(thumb.min.x + 6.0, thumb.max.y - 15.0 - 8.0),
+        egui::vec2((thumb.width() / 2.0 - 10.0).max(24.0), 15.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
+    audio_badge_key(&mut child, l, entry, egui::vec2(0.0, 15.0))
+}
+
 /// The tile badge for a screen capture status: its text and colour, or
 /// `None` while nothing captures (idle).
 pub(crate) fn screen_capture_badge(
@@ -1072,5 +1171,89 @@ mod tests {
             status: status(ScreenCaptureAudioState::NoStream, None),
         };
         assert!(screen_capture_details(l, &entry).ends_with(&waiting));
+    }
+
+    #[test]
+    fn every_audio_state_but_off_has_its_own_badge_and_help() {
+        let entries = crate::hover_audit::screen_capture_audio_entries();
+        for language in Language::ALL {
+            let l = Locale::new(language);
+            let mut texts = Vec::new();
+            for entry in &entries {
+                assert!(shows_audio_badge(entry));
+                let (text, _, hover) = audio_badge(l, entry.config.audio, &entry.status).unwrap();
+                let line = audio_line(l, entry.config.audio, &entry.status).unwrap();
+                assert!(hover.starts_with(&line), "{hover}");
+                assert_eq!(hover.lines().count(), 2, "{hover}");
+                texts.push(text);
+            }
+            texts.dedup();
+            assert_eq!(texts.len(), entries.len(), "{texts:?}");
+            let mut off = entries[1].clone();
+            off.status.audio = ScreenCaptureAudioState::Off;
+            assert!(!shows_audio_badge(&off));
+            assert_eq!(audio_badge(l, off.config.audio, &off.status), None);
+        }
+        let l = Locale::new(Language::English);
+        let (text, color, hover) =
+            audio_badge(l, entries[3].config.audio, &entries[3].status).unwrap();
+        assert_eq!(text, "AUDIO UNSUPPORTED");
+        assert_eq!(color, ERROR);
+        assert!(
+            hover.contains("per-application audio needs Windows 10 2004 or later"),
+            "{hover}"
+        );
+        let (text, _, hover) = audio_badge(
+            Locale::new(Language::Spanish),
+            entries[2].config.audio,
+            &entries[2].status,
+        )
+        .unwrap();
+        assert_eq!(text, "SIN FLUJO");
+        assert!(hover.contains("todavía no reproduce sonido"), "{hover}");
+    }
+
+    /// The console draws the audio badge on input 6's tile and on its
+    /// mixer strip (beside its SYNC key).
+    #[test]
+    fn the_tile_and_the_strip_show_the_audio_badge() {
+        let state = crate::hover_audit::screen_capture_audio_fixture();
+        let mut shell = crate::StudioShell::default();
+        let context = egui::Context::default();
+        context.all_styles_mut(|style| style.debug.show_interactive_widgets = true);
+        for _ in 0..3 {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1920.0, 1080.0),
+                )),
+                ..egui::RawInput::default()
+            });
+            let mut ui = Ui::new(
+                context.clone(),
+                egui::Id::new("audio-badge"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let _ = shell.draw(&mut ui, &state);
+            drop(ui);
+            let _ = context.end_pass();
+        }
+        let badges = context.viewport(|viewport| {
+            let widgets = &viewport.prev_pass.widgets;
+            widgets
+                .layers()
+                .flat_map(|(_, rects)| rects.iter().copied())
+                .filter(|widget| widget.sense.interactive())
+                .filter(|widget| {
+                    widgets
+                        .info(widget.id)
+                        .and_then(|info| info.label.clone())
+                        .is_some_and(|label| label == "AUDIO UNSUPPORTED")
+                })
+                .count()
+        });
+        assert_eq!(badges, 2);
     }
 }

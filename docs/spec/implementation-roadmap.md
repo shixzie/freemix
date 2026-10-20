@@ -2229,10 +2229,14 @@ English and Spanish help in the hover audit; on a Wayland server it offers
 A screen or A window instead of the picker. The tile shows OPENING / PICK ON
 SERVER / LIVE / TARGET GONE / REOPENING n / DENIED / UNSUPPORTED / FAILED
 with its details, and its menu's Pick target again sends a
-`screen_capture_pick_request`. Replace source on a screen capture input
-opens the same form at the input's current target, crop, pointer, rate cap,
-stall slate, and audio, asks the server for its targets, and sends the
-edited capture as the replacement source (audited in both languages). The CLI
+`screen_capture_pick_request`; the captured sound's state has its own badge
+on the tile and on the input's mixer strip (AUDIO OPENING / AUDIO LIVE / NO
+STREAM / AUDIO UNSUPPORTED / AUDIO FAILED, none while the audio is off; on
+the strip beside the SYNC key), its hover giving the state, the reason, and
+what it means. Replace source on a screen capture input opens the same form
+at the input's current target, crop, pointer, rate cap, stall slate, and
+audio, asks the server for its targets, and sends the edited capture as the
+replacement source (audited in both languages). The CLI
 adds `input-add-screen-capture`, `input-screen-capture-status`, their
 `remote-` forms, and `remote-screen-capture-targets`.
 

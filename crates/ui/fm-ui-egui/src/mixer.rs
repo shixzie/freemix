@@ -712,7 +712,12 @@ pub(crate) fn draw_mixer(
     let mut layout = strip_layout(panel, strip_count, *details);
     // Live source clock keys (AU-004) take a row from every fader, so the
     // strips stay level.
-    let sync_row = crate::source_sync_ui::any_strip(state);
+    // A screen capture input's audio state badge (IN-011) shares the row.
+    let sync_row = crate::source_sync_ui::any_strip(state)
+        || view.input_audio_strips.iter().any(|strip| {
+            view.screen_capture_input(strip.input)
+                .is_some_and(crate::screen_capture_ui::shows_audio_badge)
+        });
     if sync_row {
         layout.fader_height =
             (layout.fader_height - crate::source_sync_ui::SYNC_ROW_HEIGHT).max(MIN_FADER_HEIGHT);
@@ -746,8 +751,17 @@ pub(crate) fn draw_mixer(
                                 let holds = ballistics.update(key, channels, dt_ms).to_vec();
                                 let target = StripDspTarget::Input(status.input);
                                 let sync = if sync_row {
-                                    crate::source_sync_ui::sample_for(state, status.input)
-                                        .map_or(SyncRow::Blank, SyncRow::Key)
+                                    SyncRow::Row {
+                                        sync: crate::source_sync_ui::sample_for(
+                                            state,
+                                            status.input,
+                                        ),
+                                        audio: view.screen_capture_input(status.input).filter(
+                                            |entry| {
+                                                crate::screen_capture_ui::shows_audio_badge(entry)
+                                            },
+                                        ),
+                                    }
                                 } else {
                                     SyncRow::Absent
                                 };
@@ -1075,12 +1089,14 @@ fn stale_badge(ui: &mut Ui, text: &str) {
 /// An input strip's live source clock row (AU-004).
 #[derive(Clone, Copy)]
 enum SyncRow<'a> {
-    /// No strip shows a clock row.
+    /// No strip shows a clock or capture audio row.
     Absent,
-    /// Other strips show one; this input has no loop.
-    Blank,
-    /// This input's loop.
-    Key(&'a SourceSyncSample),
+    /// The row: this input's loop and its screen capture audio state
+    /// (IN-011), either or both absent (a blank row keeps strips level).
+    Row {
+        sync: Option<&'a SourceSyncSample>,
+        audio: Option<&'a fm_protocol::ScreenCaptureEntry>,
+    },
 }
 
 /// Whether strip controls are enabled, and why not.
@@ -2070,15 +2086,46 @@ fn draw_input_strip(
             }
         });
         loudness_box(ui, loudness.as_ref(), false, feed.stale);
+        let row_height = crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0;
         match sync {
-            SyncRow::Key(sample) => {
+            SyncRow::Row {
+                sync: Some(sample),
+                audio: Some(entry),
+            } => {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    let half = (layout.inner_width() - 3.0) / 2.0;
+                    crate::source_sync_ui::strip_badge(ui, sample, &input_name, half);
+                    crate::screen_capture_ui::audio_badge_key(
+                        ui,
+                        l,
+                        entry,
+                        Vec2::new(half, row_height),
+                    );
+                });
+            }
+            SyncRow::Row {
+                sync: Some(sample),
+                audio: None,
+            } => {
                 crate::source_sync_ui::strip_badge(ui, sample, &input_name, layout.inner_width());
             }
-            SyncRow::Blank => {
-                ui.allocate_space(Vec2::new(
-                    layout.inner_width(),
-                    crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0,
-                ));
+            SyncRow::Row {
+                sync: None,
+                audio: Some(entry),
+            } => {
+                crate::screen_capture_ui::audio_badge_key(
+                    ui,
+                    l,
+                    entry,
+                    Vec2::new(layout.inner_width(), row_height),
+                );
+            }
+            SyncRow::Row {
+                sync: None,
+                audio: None,
+            } => {
+                ui.allocate_space(Vec2::new(layout.inner_width(), row_height));
             }
             SyncRow::Absent => {}
         }

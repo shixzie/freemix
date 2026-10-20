@@ -1670,6 +1670,63 @@ pub(crate) fn screen_capture_inventory() -> fm_protocol::ScreenCaptureInventory 
     }
 }
 
+/// Input 6 of the audit show capturing its Keynote window with its
+/// application's sound in each audio state but off, the reason given for
+/// the unsupported and failed states.
+pub(crate) fn screen_capture_audio_entries() -> Vec<fm_protocol::ScreenCaptureEntry> {
+    use fm_protocol::ScreenCaptureAudioState as Audio;
+    [
+        (Audio::Opening, None),
+        (Audio::Live, None),
+        (Audio::NoStream, None),
+        (
+            Audio::Unsupported,
+            Some("per-application audio needs Windows 10 2004 or later"),
+        ),
+        (Audio::Failed, Some("parec exited with status 1")),
+    ]
+    .into_iter()
+    .map(|(audio, error)| fm_protocol::ScreenCaptureEntry {
+        input: wire(6),
+        config: fm_protocol::ScreenCaptureConfig {
+            audio: fm_protocol::ScreenCaptureAudio::Application,
+            ..fm_protocol::ScreenCaptureConfig::new(fm_protocol::ScreenCaptureTarget::Window(
+                fm_protocol::WindowRule::exact("Keynote", "Quarterly deck", Some(41)),
+            ))
+        },
+        status: fm_protocol::ScreenCaptureStatus {
+            state: fm_protocol::ScreenCaptureState::Live,
+            width: 1_280,
+            height: 720,
+            audio,
+            audio_error: error.map(str::to_owned),
+            ..fm_protocol::ScreenCaptureStatus::default()
+        },
+    })
+    .collect()
+}
+
+/// The audit console with input 6's window capture live and its
+/// application's sound unsupported, and a drift loop on its strip, so its
+/// tile and strip show the audio badge (the strip beside its SYNC key).
+pub(crate) fn screen_capture_audio_fixture() -> StudioUiState {
+    let mut state = ready(true, Variant::default());
+    let entry = screen_capture_audio_entries().swap_remove(3);
+    if let Some(view) = state.view.as_mut() {
+        view.screen_capture_inputs = vec![entry];
+    }
+    if let Some(sync) = state.source_sync.as_mut()
+        && let Some(sample) = sync.sources.first().copied()
+    {
+        sync.sources.push(fm_protocol::SourceSyncSample {
+            input: wire(6),
+            kind: fm_protocol::SourceSyncKind::ScreenCapture,
+            ..sample
+        });
+    }
+    state
+}
+
 /// `state` with `inventory` as what the server can capture.
 fn with_screen_capture_inventory(
     mut state: StudioUiState,
@@ -1686,6 +1743,7 @@ fn with_screen_capture_inventory(
 /// its application; a target that is not open; a listing not yet known;
 /// a server that cannot capture its desktop; and a Wayland server whose own
 /// dialog picks a screen or a window (one that cannot share windows).
+#[allow(clippy::too_many_lines)] // one list of scenes
 fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
     use crate::input_catalogue::{AddInputDraft, NewInputKind};
     use fm_protocol::TitleMatch;
@@ -1787,6 +1845,31 @@ fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
                 )),
             ),
         ),
+        // The capture audio badge (IN-011) on input 6's tile and mixer
+        // strip, beside its SYNC key, and every audio state's badge.
+        Scene::console(
+            "console/screen-capture-audio-badge",
+            {
+                let mut shell = StudioShell::default();
+                shell.set_locale(locale);
+                shell
+            },
+            screen_capture_audio_fixture(),
+        ),
+        Scene {
+            name: "badge/screen-capture-audio-states".into(),
+            draw: Box::new(move |ui| {
+                crate::l10n::set_locale(ui.ctx(), locale);
+                for entry in screen_capture_audio_entries() {
+                    crate::screen_capture_ui::audio_badge_key(
+                        ui,
+                        locale,
+                        &entry,
+                        egui::vec2(120.0, 16.0),
+                    );
+                }
+            }),
+        },
         Scene::console(
             "dialog/replace-source-screen-capture-window",
             replace(fm_protocol::ScreenCaptureConfig {
@@ -4668,6 +4751,11 @@ pub fn check_screen_capture(language: Language) {
         Msg::ScAudioAppHover,
         Msg::ScPortalScreenHover,
         Msg::ScPortalWindowHover,
+        Msg::ScAudioBadgeOpeningHover,
+        Msg::ScAudioBadgeLiveHover,
+        Msg::ScAudioBadgeNoStreamHover,
+        Msg::ScAudioBadgeUnsupportedHover,
+        Msg::ScAudioBadgeFailedHover,
     ]
     .into_iter()
     .map(|msg| locale.text(msg).to_owned())

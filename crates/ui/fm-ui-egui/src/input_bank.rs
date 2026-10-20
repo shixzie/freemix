@@ -512,6 +512,17 @@ impl StudioShell {
                 &entry.status,
             );
         }
+        // Its captured sound's state has a badge of its own (IN-011).
+        if let Some(entry) = screen_capture
+            && ui.is_rect_visible(rect)
+        {
+            crate::screen_capture_ui::tile_audio_badge(
+                ui,
+                Rect::from_min_size(rect.min, Vec2::new(width, thumb_height)),
+                l,
+                entry,
+            );
+        }
         let shortcut = if index < 8 {
             format!("  [{}]", index + 1)
         } else {
