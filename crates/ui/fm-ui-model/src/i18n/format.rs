@@ -242,7 +242,8 @@ impl Locale {
     }
 
     /// A key or key combination as printed on this language's keyboards
-    /// (`Ctrl+Shift+A` reads `Ctrl+Mayús+A` in Spanish). A whole catalog
+    /// (`Ctrl+Shift+A` reads `Ctrl+Mayús+A` in Spanish), and a shortcut's
+    /// mouse button in words (`MouseBack` reads `Mouse back`). A whole catalog
     /// text such as [`Msg::KeyClick`] is translated first; then each key
     /// name word (`Shift`, `Enter`, `Space`, …) is replaced, so separators
     /// and single-character keys (`+`, `-`, `=`, `·`) pass through.
@@ -261,9 +262,18 @@ impl Locale {
         let combo = self.tr(combo);
         let platform: &[(&str, &str)] = if mac { &[("Ctrl", "Cmd")] } else { &[] };
         let names: &[(&str, &str)] = match self.language {
-            Language::English if platform.is_empty() => return combo.to_owned(),
-            Language::English => &[],
+            Language::English if platform.is_empty() && !combo.contains("Mouse") => {
+                return combo.to_owned();
+            }
+            Language::English => &[
+                ("MouseMiddle", "Middle click"),
+                ("MouseBack", "Mouse back"),
+                ("MouseForward", "Mouse forward"),
+            ],
             Language::Spanish => &[
+                ("MouseMiddle", "Clic central"),
+                ("MouseBack", "Ratón atrás"),
+                ("MouseForward", "Ratón adelante"),
                 ("Shift", "Mayús"),
                 ("Enter", "Intro"),
                 ("Return", "Intro"),

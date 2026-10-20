@@ -8670,18 +8670,20 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::UserShortcutKeyNone, t("Sin tecla")),
     (
         Msg::UserShortcutKeyCapturing,
-        t("Pulse la tecla ahora (Esc conserva la anterior)"),
+        t("Pulse la tecla o el botón del ratón ahora (Esc conserva la anterior)"),
     ),
     (
         Msg::UserShortcutKeyHover,
         t(
-            "La tecla que dispara este atajo en esta consola, con Ctrl (Cmd en macOS), Mayús y Alt tal como se pulsaron",
+            "La tecla o el botón del ratón (central, atrás o adelante) que dispara este atajo en esta consola, con Ctrl (Cmd en macOS), Mayús y Alt tal como se pulsaron",
         ),
     ),
     (Msg::UserShortcutSetKey, t("Asignar tecla")),
     (
         Msg::UserShortcutSetKeyHover,
-        t("Captura la siguiente tecla que pulse, con sus modificadores, como tecla de este atajo"),
+        t(
+            "Captura la siguiente tecla o botón del ratón (central, atrás o adelante) que pulse, con sus modificadores, como tecla de este atajo",
+        ),
     ),
     (Msg::UserShortcutClearKey, t("Quitar tecla")),
     (
@@ -8699,7 +8701,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutKeyUnsupported,
         t(
-            "Esa tecla no puede ser tecla de atajo (Control en macOS o una tecla del portapapeles); pulse otra",
+            "Esa tecla no puede ser tecla de atajo (Control en macOS, una tecla del portapapeles o un botón del ratón como segunda tecla de un acorde); pulse otra",
         ),
     ),
     (Msg::UserShortcutOscLabel, t("Nombre OSC")),
@@ -8961,13 +8963,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::UserShortcutLocalNone, t("Sin tecla en esta consola")),
     (
         Msg::UserShortcutLocalCapturing,
-        t("Pulse ahora la tecla de esta consola (Esc conserva la anterior)"),
+        t("Pulse ahora la tecla o el botón del ratón de esta consola (Esc conserva la anterior)"),
     ),
     (Msg::UserShortcutSetLocal, t("Tecla de la consola")),
     (
         Msg::UserShortcutSetLocalHover,
         t(
-            "Capturar la próxima tecla que pulse como tecla de este atajo solo en esta consola; el proyecto y las demás consolas conservan la suya",
+            "Capturar la próxima tecla o botón del ratón (central, atrás o adelante) que pulse como tecla de este atajo solo en esta consola; el proyecto y las demás consolas conservan la suya",
         ),
     ),
     (Msg::UserShortcutUseProject, t("Usar la tecla del proyecto")),
@@ -9023,7 +9025,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutScopeHover,
         t(
-            "Dónde dispara la tecla el atajo: en toda la consola, o solo mientras un panel tiene el foco (el último panel en que hizo clic). Paneles distintos pueden usar la misma tecla",
+            "Dónde dispara la tecla el atajo: en toda la consola, solo mientras un panel tiene el foco (el último panel en que hizo clic) o solo mientras la ventana propia de un panel desacoplado tiene el foco. Paneles o ventanas distintos pueden usar la misma tecla",
         ),
     ),
     (Msg::UserShortcutScopeAnywhere, t("En toda la consola")),
@@ -9039,6 +9041,24 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutReasonNoThen,
         t("la tecla no tiene segunda tecla"),
+    ),
+    (
+        Msg::UserShortcutReasonMouseChord,
+        t("un botón del ratón es una pulsación sola, nunca parte de un acorde"),
+    ),
+    (
+        Msg::UserShortcutScopeWindow,
+        t("Ventana de {panel} (desacoplada)"),
+    ),
+    (
+        Msg::UserShortcutScopeWindowHover,
+        t(
+            "Disparar solo mientras este panel está desacoplado en su propia ventana y esa ventana tiene el foco; la ventana principal de la consola nunca responde a la tecla",
+        ),
+    ),
+    (
+        Msg::UserShortcutInWindow,
+        t("{keys} en la ventana de {panel}"),
     ),
     (Msg::CueActSlideNext, t("Diapositiva siguiente")),
     (Msg::CueActSlidePrevious, t("Diapositiva anterior")),

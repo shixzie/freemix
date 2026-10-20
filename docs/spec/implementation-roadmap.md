@@ -41,12 +41,13 @@ highest-value remaining items, ranked:
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
    import/export from Studio and the CLI, Studio-local per-console key
    overrides, Web operator page buttons, and panel-scoped and chorded keys
-   (Protocol 2.83, schema 70), and dynamic input targets (the input on
+   (Protocol 2.83, schema 70), dynamic input targets (the input on
    Preview, on Program, or selected on the firing console; Protocol 2.88,
    schema 73) with a selection from the Web pages, OSC, and the CLI and a
-   run's bound targets in the cue status (Protocol 2.89); still missing are
-   mouse bindings and dynamic value targets (see the RC-004 boundary
-   below). This is a P0 row.
+   run's bound targets in the cue status (Protocol 2.89), and mouse-button
+   keys and keys scoped to a pop-out window (Protocol 2.93, schema 75); still
+   missing are dynamic value targets and chorded or scoped console key
+   overrides (see the RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1042,10 +1043,23 @@ input while none is selected; the tally page sends its own input with GO and
 Arm GO; the CLI's `go`, `cue-arm`, and new `shortcut-fire` take
 `--selected <input>`; and Studio's OSC takes an optional `i` input number on
 `/freemix/user/<name>` and `/freemix/cue/go` (a second `i` on
-`/freemix/cue/arm`), else Studio's own selection. Still missing, so RC-004
-remains planned: dynamic value targets, scoping a key to a pop-out window
-apart from its panel, chorded or scoped console key overrides, and mouse
-bindings.
+`/freemix/cue/arm`), else Studio's own selection.
+Protocol 2.93 / schema 75 add mouse bindings and pop-out window scopes: a
+key may name the middle, back, or forward mouse button
+(`MouseMiddle`, `MouseBack`, `MouseForward`) with Ctrl/Cmd, Shift, and Alt,
+a single stroke never part of a chord, and may be scoped to a panel's
+pop-out window (`<panel>-window`), answering only while that native window
+has the system's focus. Buttons clash with keys and chords exactly as keys
+do, and a window scope overlaps the whole console and its own panel but no
+other panel or window. Studio's Set key and Set console key capture a
+button; the "Answers in" picker lists each panel's window (English and
+Spanish, with hover help); each popped-out panel's native window now fires
+the project shortcuts answering in it (unscoped, its panel's, and its
+window's), and the main window never fires a window-scoped key. Still
+missing, so RC-004 remains planned: dynamic value targets, window scopes
+for the Colour, Animation, and Designer tool windows (which read no console
+keys) and for a pop-out the platform embeds in the main window, mouse
+buttons as a chord's stroke, and chorded or scoped console key overrides.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

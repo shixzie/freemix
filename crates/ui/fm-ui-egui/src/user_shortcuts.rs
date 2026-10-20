@@ -8,11 +8,17 @@
 //! the project, so a show carries its keys to every console.
 //!
 //! The window lists the shortcuts and edits one at a time as a draft. "Set
-//! key" captures the next key pressed (with Ctrl or Cmd, Shift, and Alt);
+//! key" captures the next key or mouse button pressed (with Ctrl or Cmd,
+//! Shift, and Alt; the middle, back, and forward buttons, a single press
+//! never part of a chord);
 //! a key the console already uses for one of its own commands, or another
 //! shortcut's key or OSC name, is flagged and holds Save. Save sends the
 //! whole shortcut (`shortcut_set`, a padlocked, undoable project edit);
 //! Delete removes it (`shortcut_remove`).
+//!
+//! A key "answers in" the whole console, one panel (while it has the
+//! focus), or one panel's pop-out window (while that window has the
+//! system's focus; each popped-out panel's window reads its own presses).
 //!
 //! A key press fires an enabled shortcut (`shortcut_fire`, an operator
 //! control) under the console keys' own gates: never while a dialog, a
@@ -24,7 +30,7 @@
 
 use core::fmt::Write as _;
 
-use egui::{Button, ComboBox, Event, Key, Modifiers, RichText, TextEdit, Ui};
+use egui::{Button, ComboBox, Event, Key, Modifiers, PointerButton, RichText, TextEdit, Ui};
 use fm_preset_file::shortcuts::{ShortcutImportError, ShortcutImportPlan, plan_shortcut_import};
 use fm_protocol::{
     CueListSpec, CueListStatus, CueRunStatus, MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_NAME_BYTES,
@@ -290,9 +296,63 @@ fn stroke_text(key: &WireShortcutKey) -> String {
     text
 }
 
-/// The console panel a key scope names.
-pub(crate) fn scope_panel(scope: &str) -> Option<crate::dock::PanelId> {
-    crate::dock::PanelId::from_key(scope)
+/// Where a scoped key answers: one console panel, or that panel's pop-out
+/// window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AnswerScope {
+    Panel(crate::dock::PanelId),
+    Window(crate::dock::PanelId),
+}
+
+impl AnswerScope {
+    /// Every scope the editor offers: each panel, then each panel's window.
+    pub(crate) fn all() -> impl Iterator<Item = Self> {
+        crate::dock::PanelId::ALL
+            .into_iter()
+            .map(Self::Panel)
+            .chain(crate::dock::PanelId::ALL.into_iter().map(Self::Window))
+    }
+
+    /// The scope a key's `scope` names.
+    pub(crate) fn of(scope: &str) -> Option<Self> {
+        match scope.strip_suffix(fm_protocol::SHORTCUT_WINDOW_SUFFIX) {
+            Some(panel) => crate::dock::PanelId::from_key(panel).map(Self::Window),
+            None => crate::dock::PanelId::from_key(scope).map(Self::Panel),
+        }
+    }
+
+    /// The key's `scope` text.
+    pub(crate) fn key(self) -> String {
+        match self {
+            Self::Panel(panel) => panel.key().to_owned(),
+            Self::Window(panel) => {
+                format!("{}{}", panel.key(), fm_protocol::SHORTCUT_WINDOW_SUFFIX)
+            }
+        }
+    }
+
+    /// The scope as the editor's picker names it.
+    fn label(self, l: Locale) -> String {
+        match self {
+            Self::Panel(panel) => l.text(panel.title()).to_owned(),
+            Self::Window(panel) => l.format(
+                Msg::UserShortcutScopeWindow,
+                &[("panel", Arg::Str(l.text(panel.title())))],
+            ),
+        }
+    }
+}
+
+/// The shortcut key name of a mouse button a shortcut may take: the
+/// middle button and the side buttons (egui's extra buttons 1 and 2, back
+/// and forward). The primary and secondary buttons stay the console's.
+pub(crate) const fn mouse_button_name(button: PointerButton) -> Option<&'static str> {
+    match button {
+        PointerButton::Middle => Some("MouseMiddle"),
+        PointerButton::Extra1 => Some("MouseBack"),
+        PointerButton::Extra2 => Some("MouseForward"),
+        PointerButton::Primary | PointerButton::Secondary => None,
+    }
 }
 
 /// What a key press during "Set key" means.
@@ -322,12 +382,26 @@ pub(crate) const fn modifier_only(key: Key) -> bool {
     )
 }
 
-/// Takes every key press and typed text from `events` (nothing else reads
-/// them while a capture is on) and returns what the first new press
-/// means, if any came.
+/// Takes every key press, typed text, and press of a mouse button a
+/// shortcut may take from `events` (nothing else reads them while a capture
+/// is on) and returns what the first new press means, if any came.
 pub(crate) fn capture(events: &mut Vec<Event>) -> Option<Captured> {
     let mut captured = None;
     events.retain(|event| match event {
+        Event::PointerButton {
+            button,
+            pressed,
+            modifiers,
+            ..
+        } => {
+            let Some(name) = mouse_button_name(*button) else {
+                return true;
+            };
+            if *pressed && captured.is_none() {
+                captured = Some(captured_stroke(name, *modifiers));
+            }
+            false
+        }
         Event::Key {
             key,
             pressed,
@@ -350,13 +424,21 @@ fn captured_key(key: Key, modifiers: Modifiers) -> Captured {
     if key == Key::Escape && !modifiers.any() {
         return Captured::Cancel;
     }
+    if matches!(key, Key::Copy | Key::Cut | Key::Paste) {
+        return Captured::Unsupported;
+    }
+    captured_stroke(key.name(), modifiers)
+}
+
+/// A captured key or mouse button `name` with `modifiers`.
+fn captured_stroke(name: &str, modifiers: Modifiers) -> Captured {
     // macOS's Control key (Ctrl without Cmd) has no place in a shortcut,
     // which names Ctrl on Linux and Windows and Cmd on macOS.
-    if (modifiers.ctrl && !modifiers.command) || matches!(key, Key::Copy | Key::Cut | Key::Paste) {
+    if modifiers.ctrl && !modifiers.command {
         return Captured::Unsupported;
     }
     let named = WireShortcutKey {
-        key: key.name().to_owned(),
+        key: name.to_owned(),
         command: modifiers.command,
         shift: modifiers.shift,
         alt: modifiers.alt,
@@ -435,20 +517,39 @@ impl<'a> ConsoleKeys<'a> {
         })
     }
 
-    /// The keys here a press can start, with their shortcuts: answering in
-    /// `panel` (unscoped, or scoped to it) and not shadowing a console key.
+    /// The keys here a press can start, with their shortcuts: answering
+    /// where `focus` is and not shadowing a console key.
     fn live(
         self,
-        panel: Option<&'a str>,
+        focus: KeyFocus<'a>,
     ) -> impl Iterator<Item = (&'a ShortcutStatus, &'a WireShortcutKey)> {
         self.shortcuts.iter().filter_map(move |shortcut| {
             let (key, _) = self.key(shortcut)?;
-            (key.scope
-                .as_deref()
-                .is_none_or(|scope| Some(scope) == panel)
-                && reserved_by(key).is_none())
-            .then_some((shortcut, key))
+            (focus.answers(key.scope.as_deref()) && reserved_by(key).is_none())
+                .then_some((shortcut, key))
         })
+    }
+}
+
+/// Where a press lands: the panel with the console's focus, and the panel
+/// whose pop-out window read the press (`None` in the main window).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct KeyFocus<'a> {
+    pub(crate) panel: Option<&'a str>,
+    pub(crate) window: Option<&'a str>,
+}
+
+impl KeyFocus<'_> {
+    /// Whether a key scoped to `scope` answers here: unscoped, scoped to
+    /// the focused panel, or scoped to the pop-out window that read it.
+    fn answers(self, scope: Option<&str>) -> bool {
+        let Some(scope) = scope else {
+            return true;
+        };
+        match scope.strip_suffix(fm_protocol::SHORTCUT_WINDOW_SUFFIX) {
+            Some(window) => self.window == Some(window),
+            None => self.panel == Some(scope),
+        }
     }
 }
 
@@ -472,18 +573,20 @@ fn is_stroke(stroke: &WireShortcutKey, key: Key, modifiers: Modifiers) -> bool {
     Key::from_name(&stroke.key) == Some(key) && modifiers.matches_exact(pattern(stroke))
 }
 
-/// Removes this frame's presses of shortcut keys from `events`, so nothing
-/// else reads them, and returns the shortcuts the new presses name, in
-/// order. A key that starts a chord waits for its second key in `chord`
-/// (up to [`CHORD_TIMEOUT`] after it, at `now`); the next key press then
-/// ends the chord, firing the shortcut it completes, if any, and is never
-/// read by anything else. Keys scoped to a panel answer only while
-/// `panel` is that panel. The repeats of a held key are swallowed without
-/// firing again.
+/// Removes this frame's presses of shortcut keys and mouse buttons from
+/// `events`, so nothing else reads them, and returns the shortcuts the new
+/// presses name, in order. A key that starts a chord waits for its second
+/// key in `chord` (up to [`CHORD_TIMEOUT`] after it, at `now`); the next
+/// key press then ends the chord, firing the shortcut it completes, if
+/// any, and is never read by anything else. A shortcut's mouse button
+/// fires at once (ending any waiting chord); other pointer events stay.
+/// Keys scoped to a panel answer only while `focus` has that panel, and
+/// keys scoped to a pop-out window only in that window. The repeats of a
+/// held key are swallowed without firing again.
 pub(crate) fn take_presses(
     events: &mut Vec<Event>,
     keys: ConsoleKeys<'_>,
-    panel: Option<&str>,
+    focus: KeyFocus<'_>,
     chord: &mut Option<PendingChord>,
     now: f64,
 ) -> Vec<u64> {
@@ -495,6 +598,23 @@ pub(crate) fn take_presses(
         *chord = None;
     }
     events.retain(|event| {
+        if let Event::PointerButton {
+            button,
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        {
+            let Some((shortcut, _)) = mouse_button_name(*button).and_then(|name| {
+                keys.live(focus)
+                    .find(|(_, bound)| bound.key == name && modifiers.matches_exact(pattern(bound)))
+            }) else {
+                return true;
+            };
+            *chord = None;
+            fired.push(shortcut.id);
+            return false;
+        }
         let Event::Key {
             key,
             pressed: true,
@@ -512,7 +632,7 @@ pub(crate) fn take_presses(
             if *repeat && is_stroke(&pending.first, *key, *modifiers) {
                 return false;
             }
-            if let Some((shortcut, _)) = keys.live(panel).find(|(_, bound)| {
+            if let Some((shortcut, _)) = keys.live(focus).find(|(_, bound)| {
                 bound.same_stroke(&pending.first)
                     && bound
                         .then
@@ -526,7 +646,7 @@ pub(crate) fn take_presses(
             return false;
         }
         let mut starts = keys
-            .live(panel)
+            .live(focus)
             .filter(|(_, bound)| is_stroke(bound, *key, *modifiers));
         let Some((shortcut, bound)) = starts.next() else {
             return true;
@@ -959,6 +1079,11 @@ impl StudioShell {
         window.follow(replicated(state));
         if window.capturing {
             match context.input_mut(|input| capture(&mut input.events)) {
+                // A mouse button is never a chord's second stroke.
+                Some(Captured::Key(stroke)) if window.capturing_then && stroke.is_mouse() => {
+                    window.capturing = false;
+                    window.unsupported = true;
+                }
                 Some(Captured::Key(stroke)) => {
                     if let Some(draft) = &mut window.draft {
                         draft.key = Some(match (draft.key.take(), window.capturing_then) {
@@ -967,10 +1092,11 @@ impl StudioShell {
                                 key.then = Some(Box::new(stroke));
                                 key
                             }
-                            // A new first stroke keeps the second and the
-                            // scope.
+                            // A new first stroke keeps the second (unless
+                            // it is a mouse button, a single press) and
+                            // the scope.
                             (Some(key), false) => WireShortcutKey {
-                                then: key.then,
+                                then: key.then.filter(|_| !stroke.is_mouse()),
                                 scope: key.scope,
                                 ..stroke
                             },
@@ -1023,13 +1149,17 @@ impl StudioShell {
         }
     }
 
-    /// Fires the shortcuts this frame's key presses name, under the console
-    /// keys' gates (no dialog, menu, keyboard-owning panel, or text field
-    /// has the keyboard); a fire this session cannot send is announced.
+    /// Fires the shortcuts this frame's key and mouse button presses name,
+    /// under the console keys' gates (no dialog, menu, keyboard-owning
+    /// panel, or text field has the keyboard); a fire this session cannot
+    /// send is announced. `popout` is the panel whose pop-out window `ui`
+    /// draws (its presses answer that panel and that window), or `None` in
+    /// the main window (the focused panel's).
     pub(crate) fn fire_user_shortcut_keys(
         &mut self,
         ui: &mut Ui,
         state: &StudioUiState,
+        popout: Option<crate::dock::PanelId>,
         intents: &mut Vec<StudioIntent>,
     ) {
         if self.console_keys_blocked(ui.ctx()) || ui.ctx().egui_wants_keyboard_input() {
@@ -1040,11 +1170,14 @@ impl StudioShell {
             self.chord = None;
             return;
         }
-        let panel = self.focused_panel.map(crate::dock::PanelId::key);
+        let focus = KeyFocus {
+            panel: popout.or(self.focused_panel).map(crate::dock::PanelId::key),
+            window: popout.map(crate::dock::PanelId::key),
+        };
         let chord = &mut self.chord;
         let fired = ui.input_mut(|input| {
             let now = input.time;
-            take_presses(&mut input.events, keys, panel, chord, now)
+            take_presses(&mut input.events, keys, focus, chord, now)
         });
         if let Some(pending) = &self.chord {
             let l = self.locale;
@@ -1376,13 +1509,17 @@ pub(crate) enum LocalRefusal {
     Limit,
 }
 
-/// A key in the console's words with the panel it answers in, marked
+/// A key in the console's words with the panel or window it answers in, marked
 /// when it is this console's own.
 fn key_words(l: Locale, key: &WireShortcutKey, local: bool) -> String {
     let mut keys = l.keys(&key_text(key));
-    if let Some(panel) = key.scope.as_deref().and_then(scope_panel) {
+    if let Some(scope) = key.scope.as_deref().and_then(AnswerScope::of) {
+        let (message, panel) = match scope {
+            AnswerScope::Panel(panel) => (Msg::UserShortcutInPanel, panel),
+            AnswerScope::Window(panel) => (Msg::UserShortcutInWindow, panel),
+        };
         keys = l.format(
-            Msg::UserShortcutInPanel,
+            message,
             &[
                 ("keys", Arg::Str(&keys)),
                 ("panel", Arg::Str(l.text(panel.title()))),
@@ -1737,6 +1874,13 @@ fn draw_editor(
                         .key
                         .is_none()
                         .then_some(Msg::UserShortcutReasonNoFirstKey.en())
+                })
+                .or_else(|| {
+                    draft
+                        .key
+                        .as_ref()
+                        .is_some_and(WireShortcutKey::is_mouse)
+                        .then_some(Msg::UserShortcutReasonMouseChord.en())
                 });
             if ui
                 .add_enabled(
@@ -1750,7 +1894,8 @@ fn draw_editor(
             }
         }
     });
-    // Where the key answers: anywhere, or in one panel.
+    // Where the key answers: anywhere, in one panel, or in one panel's
+    // pop-out window.
     ui.horizontal_wrapped(|ui| {
         form_label(ui, l.text(Msg::UserShortcutScopeLabel));
         let scope_block = edit.or_else(|| {
@@ -1763,11 +1908,11 @@ fn draw_editor(
             .key
             .as_ref()
             .and_then(|key| key.scope.as_deref())
-            .and_then(scope_panel);
-        let name = |panel: Option<crate::dock::PanelId>| {
-            panel.map_or_else(
-                || l.text(Msg::UserShortcutScopeAnywhere),
-                |panel| l.text(panel.title()),
+            .and_then(AnswerScope::of);
+        let name = |scope: Option<AnswerScope>| {
+            scope.map_or_else(
+                || l.text(Msg::UserShortcutScopeAnywhere).to_owned(),
+                |scope| scope.label(l),
             )
         };
         let mut chosen = current;
@@ -1776,11 +1921,14 @@ fn draw_editor(
                 .selected_text(name(current))
                 .width(220.0)
                 .show_ui(ui, |ui| {
-                    for panel in core::iter::once(None)
-                        .chain(crate::dock::PanelId::ALL.into_iter().map(Some))
-                    {
-                        ui.selectable_value(&mut chosen, panel, name(panel))
-                            .on_hover_text(l.text(Msg::UserShortcutScopeHover));
+                    for scope in core::iter::once(None).chain(AnswerScope::all().map(Some)) {
+                        let hover = if matches!(scope, Some(AnswerScope::Window(_))) {
+                            Msg::UserShortcutScopeWindowHover
+                        } else {
+                            Msg::UserShortcutScopeHover
+                        };
+                        ui.selectable_value(&mut chosen, scope, name(scope))
+                            .on_hover_text(l.text(hover));
                     }
                 })
                 .response
@@ -1792,7 +1940,7 @@ fn draw_editor(
         if chosen != current
             && let Some(key) = &mut draft.key
         {
-            key.scope = chosen.map(|panel| panel.key().to_owned());
+            key.scope = chosen.map(AnswerScope::key);
         }
     });
     if let Some(key) = &draft.key {

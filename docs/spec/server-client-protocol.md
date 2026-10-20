@@ -3544,6 +3544,33 @@ operator reset (AU-005). The project schema is unchanged.
   `<input|master>`. The Web page shows no loudness.
 - 2.91 is refused.
 
+Protocol 2.93 adds mouse-button user shortcut keys and pop-out window
+scopes (RC-004, schema 75).
+
+- A stroke's `<key>` may name a mouse button: `MouseMiddle`, `MouseBack`,
+  or `MouseForward` (the middle button and the two side buttons), with
+  modifiers as a key has them (`MouseBack.1.0.0` is Ctrl+back). A mouse
+  button is a single stroke: a key whose first or second stroke is a
+  button and that has a second stroke is refused.
+- A `scope` may also be a panel's pop-out window, the panel name followed
+  by `-window` (`K.0.0.0@mixer-window`); the key answers only while that
+  panel's own window has the system's focus.
+- Keys clash as before, a button like a key, where their scopes overlap:
+  either unscoped, or both naming the same panel (the panel itself or its
+  pop-out window). `MouseBack@mixer` and `MouseBack@mixer-window` clash;
+  `MouseBack@cues-window` and `MouseBack@mixer-window` do not.
+- Durability (schema 75): the shortcut `"key"` object is unchanged; its
+  `"key"` may name a button (with `"then": null`) and its `"scope"` a
+  pop-out window. `.fmshortcuts` files (schema 75) carry the same.
+- Studio's Set key (and Set console key) captures the middle, back, and
+  forward buttons with their modifiers; the "Answers in" picker lists each
+  panel's window after the panels. Each popped-out panel's native window
+  fires the shortcuts answering in it (unscoped, its panel's, and its
+  window's); the main window never fires a window-scoped key. A console key
+  override may be a button. The primary and secondary buttons stay the
+  console's.
+- 2.92 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

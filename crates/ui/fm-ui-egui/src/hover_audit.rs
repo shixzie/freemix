@@ -189,8 +189,13 @@ fn lifecycle(value: u128) -> fm_protocol::InputLifecycleStatus {
 /// A synchronized show that exercises every console region: five sources
 /// and a title, two outputs and stream targets, two Stinger slots, an
 /// overlay on air with a queue, undo and redo history, and a playlist.
-#[allow(clippy::too_many_lines)] // one protocol fixture
 fn model(variant: Variant) -> ClientModel {
+    model_with(variant, audit_shortcuts())
+}
+
+/// [`model`] with `shortcuts` as the project's shortcuts.
+#[allow(clippy::too_many_lines)] // one protocol fixture
+fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> ClientModel {
     let Variant {
         manual,
         locked,
@@ -468,7 +473,7 @@ fn model(variant: Variant) -> ClientModel {
         paged_states: 1,
         cue_list_states: 2,
         script_states: 2,
-        shortcut_states: 3,
+        shortcut_states: u16::try_from(shortcuts.len()).unwrap(),
         still_states: 0,
         media_list_states: 1,
         input_categories: vec![
@@ -720,7 +725,7 @@ fn model(variant: Variant) -> ClientModel {
             })
             .unwrap();
     }
-    for shortcut in audit_shortcuts() {
+    for shortcut in shortcuts {
         model
             .apply_shortcut_state(fm_protocol::ShortcutStateMessage {
                 revision: 10,
@@ -802,6 +807,15 @@ fn edit_shortcut_draft(shell: &mut StudioShell, edit: &dyn Fn(&mut fm_protocol::
 #[cfg(test)]
 pub(crate) fn shortcuts_fixture(operator: bool) -> StudioUiState {
     ready(operator, Variant::default())
+}
+
+/// [`shortcuts_fixture`] for an operator, with `extra` shortcuts after the
+/// audit's.
+#[cfg(test)]
+pub(crate) fn shortcuts_fixture_with(extra: Vec<fm_protocol::ShortcutStatus>) -> StudioUiState {
+    let mut shortcuts = audit_shortcuts();
+    shortcuts.extend(extra);
+    ready_over(&model_with(Variant::default(), shortcuts), true)
 }
 
 /// RC-004: the project's shortcuts. Shortcut 1 runs cue actions from F9
@@ -3337,6 +3351,20 @@ fn scenes(language: Language) -> Vec<Scene> {
                         ))),
                         scope: Some("cues".into()),
                         ..fm_protocol::WireShortcutKey::stroke("K", true, false, false)
+                    });
+                });
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-mouse-window",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                edit_shortcut_draft(shell, &|draft| {
+                    draft.key = Some(fm_protocol::WireShortcutKey {
+                        scope: Some("mixer-window".into()),
+                        ..fm_protocol::WireShortcutKey::stroke("MouseBack", true, false, false)
                     });
                 });
             },

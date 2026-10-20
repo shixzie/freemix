@@ -1630,7 +1630,7 @@ impl StudioShell {
                         .show(ui, |ui| {
                             self.draw_panel_body(ui, panel, state, frame, intents);
                         });
-                    self.native_window_keys(ui, class, state, frame.manual, intents);
+                    self.native_window_keys(ui, panel, class, state, frame.manual, intents);
                     (window_outcome(ui, class, header.dock_back), header)
                 });
             if self.dock_ui.focus.remove(&panel) {
@@ -1832,10 +1832,13 @@ impl StudioShell {
         self.dock_ui.spawned.remove(&PopKey::Tool(tool));
     }
 
-    /// The console keys, read in a native window that has the keyboard.
+    /// The console keys, then the project's shortcut keys and mouse
+    /// buttons answering in `panel` and its window (RC-004), read in
+    /// `panel`'s native pop-out window while it has the keyboard.
     fn native_window_keys(
         &mut self,
         ui: &mut Ui,
+        panel: PanelId,
         class: ViewportClass,
         state: &StudioUiState,
         manual: ManualTransitionAvailability,
@@ -1849,6 +1852,7 @@ impl StudioShell {
         self.handle_preference_keys(ui);
         self.toggle_windows_on_keys(ui, state);
         intents.extend(self.keyboard_intents(ui, state, manual));
+        self.fire_user_shortcut_keys(ui, state, Some(panel), intents);
         crate::theme::paint_focus_ring(ui.ctx());
     }
 

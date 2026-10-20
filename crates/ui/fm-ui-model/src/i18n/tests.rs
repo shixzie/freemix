@@ -338,4 +338,15 @@ fn key_combinations_use_the_keyboard_names_of_the_language() {
     assert_eq!(ES.keys(Msg::KeyTabEnter.en()), "Tab · Intro");
     // A word that merely contains a key name is left alone.
     assert_eq!(ES.keys("Shifted"), "Shifted");
+    // A shortcut's mouse button reads in words (RC-004).
+    assert_eq!(
+        Locale::ENGLISH.keys_on("Ctrl+MouseBack", false),
+        "Ctrl+Mouse back"
+    );
+    assert_eq!(Locale::ENGLISH.keys_on("MouseMiddle", true), "Middle click");
+    assert_eq!(
+        ES.keys_on("Shift+MouseForward", false),
+        "Mayús+Ratón adelante"
+    );
+    assert_eq!(Locale::ENGLISH.keys_on("Mouse", false), "Mouse");
 }

@@ -2046,7 +2046,7 @@ impl StudioShell {
         self.toggle_windows_on_keys(ui, state);
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
         // The project's own keys come after the console's (RC-004).
-        self.fire_user_shortcut_keys(ui, state, &mut intents);
+        self.fire_user_shortcut_keys(ui, state, None, &mut intents);
         self.restore_tiles_on_escape(ui);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
         // prediction however long a frame gap really is; toasts and meter
