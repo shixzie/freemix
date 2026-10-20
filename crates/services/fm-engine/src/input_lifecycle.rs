@@ -459,6 +459,9 @@ pub(crate) fn apply(
             if state.capture_settings(*source).is_some() {
                 crate::engine::check_capture_room(state)?;
             }
+            if state.media_list(*source).is_some() {
+                crate::media_list::check_room(state)?;
+            }
             // A copy is one more input of its kind: system audio inputs and
             // network streams stay bounded, and a listener's copy would
             // take its port twice.

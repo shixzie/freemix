@@ -662,3 +662,40 @@ fn a_snapshot_round_trip_keeps_the_list() {
         engine.media_list_status(input(LIST))
     );
 }
+
+#[test]
+fn duplicating_a_list_input_respects_the_media_list_limit() {
+    let mut engine = engine();
+    for index in 0..fm_model::MAX_MEDIA_LISTS {
+        let id = 100 + u128::try_from(index).unwrap();
+        let outcome = execute(
+            &mut engine,
+            &format!("create-{id}"),
+            EngineCommand::MediaList(EngineMediaListCommand {
+                input: input(id),
+                operation: EngineMediaListOperation::Create {
+                    name: format!("List {id}"),
+                    items: items(),
+                    options: MediaListOptions::default(),
+                },
+            }),
+        );
+        assert!(
+            outcome.receipt.accepted().is_some(),
+            "{:?}",
+            outcome.receipt
+        );
+    }
+    let outcome = execute(
+        &mut engine,
+        "duplicate",
+        EngineCommand::InputLifecycle(fm_engine::EngineInputLifecycleEdit::Duplicate {
+            source: input(100),
+            input: input(999),
+            name: None,
+        }),
+    );
+    let rejection = &outcome.receipt.rejected().expect("refused").rejection;
+    assert_eq!(rejection.fields[0].code, "too_many_media_lists");
+    assert_eq!(engine.show().media_lists().len(), fm_model::MAX_MEDIA_LISTS);
+}

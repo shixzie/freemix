@@ -181,6 +181,23 @@ fn activation(state: &ShowState, input: InputId, item: &MediaListItem, play: boo
     }
 }
 
+/// Refuses another media list once the show holds
+/// [`fm_model::MAX_MEDIA_LISTS`]: a new list or a list input's duplicate.
+pub(crate) fn check_room(state: &ShowState) -> Result<(), Rejection> {
+    if state.media_lists().len() >= fm_model::MAX_MEDIA_LISTS {
+        return Err(rejection(
+            RejectionCode::Conflict,
+            "input",
+            "too_many_media_lists",
+            format!(
+                "a show holds at most {} media lists",
+                fm_model::MAX_MEDIA_LISTS
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Plans `command` against `state`; `playing` says whether the list's
 /// transport plays (or waits for data, or is opening to play).
 ///
@@ -205,17 +222,7 @@ pub(crate) fn plan(
                 format!("input {input} already exists"),
             ));
         }
-        if state.media_lists().len() >= fm_model::MAX_MEDIA_LISTS {
-            return Err(rejection(
-                RejectionCode::Conflict,
-                "input",
-                "too_many_media_lists",
-                format!(
-                    "a show holds at most {} media lists",
-                    fm_model::MAX_MEDIA_LISTS
-                ),
-            ));
-        }
+        check_room(state)?;
         let list =
             MediaList::new(items.clone(), *options).map_err(|error| list_rejection(&error))?;
         let item = list
