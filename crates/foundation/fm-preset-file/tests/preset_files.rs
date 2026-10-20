@@ -107,7 +107,7 @@ fn animation_preset_files_are_exact_and_strict() {
     write_animation_preset_file(&path, &file).unwrap();
     assert_eq!(read_animation_preset_file(&path).unwrap(), file);
 
-    for schema in [59, 61] {
+    for schema in [60, 62] {
         let other = encoded.replacen(
             "\"schema_version\": 61",
             &format!("\"schema_version\": {schema}"),
@@ -117,7 +117,7 @@ fn animation_preset_files_are_exact_and_strict() {
             decode_animation_preset_file(&other),
             Err(PresetFileError::UnsupportedSchema {
                 found,
-                supported: 60
+                supported: 61
             }) if found == schema
         ));
     }

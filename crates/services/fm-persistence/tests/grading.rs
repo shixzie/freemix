@@ -296,7 +296,7 @@ fn schema_45_and_47_manifests_are_refused() {
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
 
     // The previous schema is refused outright; there is no migration path.
-    for found in [59, 61] {
+    for found in [60, 62] {
         fs::write(
             store.manifest_path(),
             encoded.replacen(
@@ -311,7 +311,7 @@ fn schema_45_and_47_manifests_are_refused() {
             Err(StoreError::Validation(
                 ProjectValidationError::UnsupportedSchema {
                     found: f,
-                    supported: 60
+                    supported: 61
                 }
             )) if f == found
         ));
