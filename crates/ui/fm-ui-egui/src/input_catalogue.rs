@@ -1662,6 +1662,42 @@ const BARS: [Color32; 8] = [
     Color32::from_rgb(0, 0, 0),
 ];
 
+/// A media list names its first file until the server decodes it.
+fn media_list_first_file(draft: &AddInputDraft) -> Option<&str> {
+    (draft.kind == NewInputKind::MediaList)
+        .then(|| {
+            draft
+                .media_list
+                .text
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+        })
+        .flatten()
+        .map(|line| line.rsplit(['/', '\\']).next().unwrap_or(line))
+}
+
+/// What the new input will be heard as: generators and pictures are silent,
+/// a screen capture names the audio it captures, and the kinds whose sound
+/// comes from their source say nothing.
+fn preview_audio_badge(l: Locale, draft: &AddInputDraft) -> Option<String> {
+    match draft.kind {
+        NewInputKind::Solid
+        | NewInputKind::Bars
+        | NewInputKind::Image
+        | NewInputKind::Slideshow => Some(l.text(Msg::PreviewSilent).to_owned()),
+        NewInputKind::ScreenCapture => Some(match draft.screen_capture.config.audio {
+            fm_protocol::ScreenCaptureAudio::None => l.text(Msg::PreviewSilent).to_owned(),
+            fm_protocol::ScreenCaptureAudio::System => l.text(Msg::ScAudioSystem).to_uppercase(),
+            fm_protocol::ScreenCaptureAudio::Application => l.text(Msg::ScAudioApp).to_uppercase(),
+        }),
+        NewInputKind::Network
+        | NewInputKind::Capture
+        | NewInputKind::SystemAudio
+        | NewInputKind::MediaList => None,
+    }
+}
+
 /// A 16:9 picture of the new source, tagged with its identifier.
 fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<InputId>) {
     let l = l10n::locale(ui.ctx());
@@ -1710,18 +1746,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
         | NewInputKind::Image
         | NewInputKind::Slideshow
         | NewInputKind::MediaList => {
-            // A media list names its first file until the server decodes it.
-            let first_file = (draft.kind == NewInputKind::MediaList)
-                .then(|| {
-                    draft
-                        .media_list
-                        .text
-                        .lines()
-                        .map(str::trim)
-                        .find(|line| !line.is_empty())
-                })
-                .flatten()
-                .map(|line| line.rsplit(['/', '\\']).next().unwrap_or(line));
+            let first_file = media_list_first_file(draft);
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
@@ -1757,13 +1782,15 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
         );
         painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
     }
-    painter.text(
-        pos2(rect.max.x - 6.0, rect.max.y - 6.0),
-        Align2::RIGHT_BOTTOM,
-        l.text(Msg::PreviewSilent),
-        FontId::new(9.0, FontFamily::Proportional),
-        Color32::from_white_alpha(170),
-    );
+    if let Some(badge) = preview_audio_badge(l, draft) {
+        painter.text(
+            pos2(rect.max.x - 6.0, rect.max.y - 6.0),
+            Align2::RIGHT_BOTTOM,
+            badge,
+            FontId::new(9.0, FontFamily::Proportional),
+            Color32::from_white_alpha(170),
+        );
+    }
     painter.rect_stroke(
         rect,
         CornerRadius::same(3),

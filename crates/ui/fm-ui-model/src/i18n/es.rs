@@ -2220,7 +2220,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AddInputIntro,
         t(
-            "Añade al final del banco una entrada generada en vivo, un flujo de red, una cámara, el audio del sistema, una imagen fija, una presentación o una lista de medios, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
+            "Añade al final del banco una entrada generada en vivo, un flujo de red, una cámara, el audio del sistema, una imagen fija, una presentación, una lista de medios o una captura de ventana o de pantalla, con un canal de mezclador predeterminado. Las entradas de medios se añaden sin conexión.",
         ),
     ),
     (Msg::AddInputKind, t("Tipo")),
@@ -6534,6 +6534,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DocMessageHover,
         t("Lo que el servidor informa sobre este documento"),
     ),
+    (
+        Msg::DocServerConverterMissing,
+        t("instale LibreOffice en el servidor o exporte la presentación a PDF"),
+    ),
+    (
+        Msg::DocServerKeynote,
+        t("exporte la presentación de Keynote a PDF (Archivo > Exportar a > PDF)"),
+    ),
     (Msg::DocPrevious, t("Página anterior")),
     (
         Msg::DocPreviousHover,
@@ -7415,7 +7423,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Fotogramas de espera antes de que se ejecuten las acciones restantes del cue"),
     ),
     (Msg::CueParamOn, t("Activo")),
-    (Msg::CueFramesUnit, t("fotogramas")),
+    (Msg::CueFramesUnit, t("fr")),
     (
         Msg::CueViewOnly,
         t("Solo un operador con permiso de transición puede disparar cues"),
@@ -8466,6 +8474,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("El atajo {name} ya responde a este nombre OSC"),
     ),
     (Msg::UserShortcutOscOnly, t("Solo OSC")),
+    (Msg::UserShortcutOscHint, t("Ninguno (opcional)")),
     (Msg::UserShortcutActionLabel, t("Ejecuta")),
     (
         Msg::UserShortcutKindActions,

@@ -183,12 +183,19 @@ fn draw_card(
         let (label, tone) = state_chip(status.state);
         status_chip(ui, l.text(label), tone, 104.0).on_hover_text(l.text(Msg::DocStateHover));
     });
-    if let Some(title) = &status.title {
+    // A title that only repeats the input's name says nothing more.
+    if let Some(title) = status
+        .title
+        .as_ref()
+        .filter(|title| title.trim() != name.trim())
+    {
         ui.label(caption(title.as_str()))
             .on_hover_text(l.text(Msg::DocTitleHover));
     }
     if let Some(message) = &status.message {
-        ui.add(egui::Label::new(caption(message.as_str())).wrap())
+        // The server's known advice in the console's language, as a sentence.
+        let message = sentence(l.tr(message));
+        ui.add(egui::Label::new(caption(message)).wrap())
             .on_hover_text(l.text(Msg::DocMessageHover));
     }
 
@@ -228,7 +235,20 @@ fn draw_card(
         }
     });
 
-    // The thumbnail strip around the current page.
+    // The thumbnail strip around the current page: the page on screen is
+    // framed in the accent, and in red only while the input is on Program.
+    let on_air = state
+        .view
+        .as_ref()
+        .is_some_and(|view| crate::tally_state(input, view.switcher).is_realized_program());
+    let current_stroke = egui::Stroke::new(
+        2.0,
+        if on_air {
+            crate::theme::PROGRAM
+        } else {
+            crate::theme::accent_color()
+        },
+    );
     if status.state == DocumentState::Ready && status.count > 0 {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
@@ -247,7 +267,7 @@ fn draw_card(
                 }
                 .min_size(THUMBNAIL_SIZE);
                 if page == status.page {
-                    button = button.stroke(egui::Stroke::new(2.0, crate::theme::PROGRAM));
+                    button = button.stroke(current_stroke);
                 }
                 let response = ui.add_enabled(block.is_none(), button).hint(
                     &l.format(Msg::DocThumbnailHover, &[("page", Arg::from(page + 1))]),
@@ -290,6 +310,14 @@ fn draw_card(
         .show(ui, |ui| {
             ui.add(egui::Label::new(caption(notes)).wrap());
         });
+}
+
+/// `text` with its first letter in upper case.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// The texture of one answered thumbnail, uploaded once per answer.

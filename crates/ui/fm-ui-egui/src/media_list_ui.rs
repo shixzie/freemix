@@ -696,7 +696,19 @@ pub(crate) fn draw_list(
                 })
             })
         });
-        let width = ui.available_width() - 64.0;
+        // The field leaves room for the Append key in every language.
+        let key_text = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    l.text(Msg::MlAdd).to_owned(),
+                    egui::FontId::proportional(crate::theme::legible(11.0)),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        });
+        let key_width = key_text + 2.0 * ui.spacing().button_padding.x;
+        let width = ui.available_width() - key_width - ui.spacing().item_spacing.x - 2.0;
         let field = ui
             .add_enabled(
                 edit.is_none(),

@@ -969,10 +969,6 @@ fn loudness_box(ui: &mut Ui, meter: Option<&AudioLoudnessMeter>, master: bool, s
             }
             .or(meter.momentary_millilufs.map(|value| ("M", value)))
         });
-        let text = shown.map_or_else(
-            || "LUFS --".to_owned(),
-            |(scale, value)| format!("{scale} {}", format_loudness(l, Some(value))),
-        );
         let hot = meter
             .and_then(|meter| meter.true_peak_millidbtp)
             .is_some_and(|peak| peak > -1_000);
@@ -983,14 +979,43 @@ fn loudness_box(ui: &mut Ui, meter: Option<&AudioLoudnessMeter>, master: bool, s
         } else {
             text_color()
         };
-        let galley = crate::theme::elided(
-            painter,
-            &text,
-            FontId::new(10.0, FontFamily::Monospace),
-            color,
-            rect.width() - 4.0,
-        );
-        painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+        if let Some((scale, value)) = shown {
+            // The scale and unit dim at the left, the figure at the right;
+            // the unit is dropped when the strip is too narrow for both.
+            let figure = painter.layout_no_wrap(
+                format_loudness(l, Some(value)),
+                FontId::new(10.0, FontFamily::Monospace),
+                color,
+            );
+            let legend_font = FontId::new(crate::theme::legible(8.5), FontFamily::Proportional);
+            let mut legend =
+                painter.layout_no_wrap(format!("{scale} LUFS"), legend_font.clone(), muted_color());
+            if legend.size().x + figure.size().x + 12.0 > rect.width() {
+                legend = painter.layout_no_wrap(scale.to_owned(), legend_font, muted_color());
+            }
+            painter.galley(
+                pos2(rect.left() + 4.0, rect.center().y - legend.size().y / 2.0),
+                legend,
+                muted_color(),
+            );
+            painter.galley(
+                pos2(
+                    rect.right() - 4.0 - figure.size().x,
+                    rect.center().y - figure.size().y / 2.0,
+                ),
+                figure,
+                color,
+            );
+        } else {
+            let galley = crate::theme::elided(
+                painter,
+                "LUFS --",
+                FontId::new(10.0, FontFamily::Monospace),
+                color,
+                rect.width() - 4.0,
+            );
+            painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+        }
     }
     response.on_hover_text(loudness_hover(l, meter, master));
 }

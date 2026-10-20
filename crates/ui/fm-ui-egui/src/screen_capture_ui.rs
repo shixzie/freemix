@@ -509,9 +509,18 @@ pub(crate) fn draw_screen_capture_form(
             RichText::new(l.format(Msg::ScApp, &[("app", Arg::Str(&rule.app))]))
                 .size(crate::theme::legible(11.0)),
         );
+        ui.add_space(4.0);
         ui.label(section_label(l.text(Msg::ScFollow)));
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
+            let width = option_key_width(
+                ui,
+                &[
+                    l.text(Msg::ScMatchExact),
+                    l.text(Msg::ScMatchContains),
+                    l.text(Msg::ScMatchAny),
+                ],
+            );
             for (title_match, label, hover) in [
                 (TitleMatch::Exact, Msg::ScMatchExact, Msg::ScMatchExactHover),
                 (
@@ -523,7 +532,7 @@ pub(crate) fn draw_screen_capture_form(
             ] {
                 let selected = rule.title_match == title_match;
                 if ui
-                    .add(kind_key(l.text(label), selected))
+                    .add(option_key(l.text(label), selected, width))
                     .on_hover_text(l.text(hover))
                     .clicked()
                     && !selected
@@ -601,8 +610,9 @@ pub(crate) fn draw_screen_capture_form(
     });
     ui.add_space(4.0);
     ui.label(section_label(l.text(Msg::ScStall)));
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
+        let width = option_key_width(ui, &[l.text(Msg::ScStallFreeze), l.text(Msg::ScStallBlack)]);
         for (slate, label, hover) in [
             (
                 StallSlate::Freeze,
@@ -613,7 +623,7 @@ pub(crate) fn draw_screen_capture_form(
         ] {
             let selected = draft.config.slate == slate;
             if ui
-                .add(kind_key(l.text(label), selected))
+                .add(option_key(l.text(label), selected, width))
                 .on_hover_text(l.text(hover))
                 .clicked()
             {
@@ -625,7 +635,15 @@ pub(crate) fn draw_screen_capture_form(
     ui.label(section_label(l.text(Msg::ScAudio)));
     let window = matches!(draft.config.target, ScreenCaptureTarget::Window(_));
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
+        let width = option_key_width(
+            ui,
+            &[
+                l.text(Msg::ScAudioNone),
+                l.text(Msg::ScAudioSystem),
+                l.text(Msg::ScAudioApp),
+            ],
+        );
         for (audio, label, hover) in [
             (
                 ScreenCaptureAudio::None,
@@ -646,7 +664,7 @@ pub(crate) fn draw_screen_capture_form(
             let selected = draft.config.audio == audio;
             let enabled = audio != ScreenCaptureAudio::Application || window;
             if ui
-                .add_enabled(enabled, kind_key(l.text(label), selected))
+                .add_enabled(enabled, option_key(l.text(label), selected, width))
                 .hint(l.text(hover), Msg::ScAudioAppScreenHover.en())
                 .clicked()
             {
@@ -660,6 +678,44 @@ pub(crate) fn draw_screen_capture_form(
         .filter(|problem| problem.field == ScreenCaptureField::Audio);
     hint_slot(ui, problem.map(|problem| field_error(l, problem.reason)));
     outcome
+}
+
+/// Space between the keys of one option row.
+const OPTION_KEY_SPACING: f32 = 6.0;
+/// Columns of the option rows.
+const OPTION_COLUMNS: f32 = 3.0;
+
+/// The column width that puts every key of an option row on one line, or
+/// `None` when one of `labels` would not fit (the row then wraps keys of
+/// the usual width).
+fn option_key_width(ui: &Ui, labels: &[&str]) -> Option<f32> {
+    // Every option row is laid out in three columns, so the keys of the
+    // two- and three-key rows line up.
+    let count = OPTION_COLUMNS;
+    // A point to spare so rounding never pushes the last key to a new line.
+    let width = ((ui.available_width() - OPTION_KEY_SPACING * (count - 1.0)) / count - 1.0).floor();
+    let font = egui::FontId::proportional(crate::theme::legible(11.5));
+    let widest = ui.fonts_mut(|fonts| {
+        labels
+            .iter()
+            .map(|label| {
+                fonts
+                    .layout_no_wrap((*label).to_owned(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .fold(0.0_f32, f32::max)
+    });
+    (widest + 2.0 * ui.spacing().button_padding.x + 4.0 <= width).then_some(width)
+}
+
+/// A kind key of `width` when the row fits on one line.
+fn option_key(label: &str, selected: bool, width: Option<f32>) -> egui::Button<'static> {
+    let key = kind_key(label, selected);
+    match width {
+        Some(width) => key.min_size(egui::Vec2::new(width, 28.0)),
+        None => key,
+    }
 }
 
 /// The tooltip line of a screen capture input's audio, or `None` while

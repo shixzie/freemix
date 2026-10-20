@@ -812,6 +812,21 @@ fn stage_key(ui: &mut Ui, on: &mut bool, stage: Msg, (enabled, reason): (bool, &
 
 /// A horizontal gain-reduction meter: the reduction grows from the left
 /// in amber, red past 12 dB.
+/// A gain reduction readout with one decimal: `-3.5 dB`, and `0.0 dB` (not
+/// `-0.0 dB`) while the stage reduces less than 0.05 dB.
+fn gr_readout(l: Locale, reduction_millidb: u32) -> String {
+    let tenths = reduction_millidb.saturating_add(50) / 100;
+    let value = l.decimal(f64::from(tenths) / 10.0, 1);
+    if tenths == 0 {
+        format!("{value} dB")
+    } else {
+        format!("-{value} dB")
+    }
+}
+
+/// Room for the `GR` legend at the left of a gain reduction meter.
+const GR_LEGEND_WIDTH: f32 = 20.0;
+
 fn gr_meter(ui: &mut Ui, stage: Msg, reduction_millidb: Option<u32>) {
     let l = l10n::locale(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(Vec2::new(150.0, 14.0), Sense::hover());
@@ -837,14 +852,16 @@ fn gr_meter(ui: &mut Ui, stage: Msg, reduction_millidb: Option<u32>) {
             #[allow(clippy::cast_precision_loss)] // bounded by the wire
             let db = reduction as f32 / 1_000.0;
             let fraction = (db / GR_FULL_SCALE_DB).clamp(0.0, 1.0);
+            // The bar starts after the legend, so the reduction never hides it.
+            let bar = Rect::from_min_max(pos2(rect.min.x + GR_LEGEND_WIDTH, rect.min.y), rect.max);
             let fill =
-                Rect::from_min_size(rect.min, Vec2::new(rect.width() * fraction, rect.height()));
+                Rect::from_min_size(bar.min, Vec2::new(bar.width() * fraction, bar.height()));
             painter.rect_filled(
                 fill.shrink(1.0),
                 CornerRadius::same(1),
                 if db > 12.0 { PROGRAM } else { AMBER },
             );
-            let readout = format!("-{} dB", l.decimal(f64::from(db), 1));
+            let readout = gr_readout(l, reduction);
             painter.text(
                 rect.right_center() - Vec2::new(4.0, 0.0),
                 Align2::RIGHT_CENTER,
@@ -1051,10 +1068,13 @@ fn draw_dynamics(
 }
 
 /// The chain's BS.1770 loudness and true peak (AU-005), as `audio_meters`
-/// last reported it.
+/// last reported it: one readout box per value, the scale and unit dim
+/// beside a bright figure.
 fn draw_loudness(ui: &mut Ui, meter: Option<&fm_protocol::AudioLoudnessMeter>) {
     let l = l10n::locale(ui.ctx());
-    ui.horizontal_wrapped(|ui| {
+    let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+    ui.with_layout(row, |ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
         ui.label(
             RichText::new(l.text(Msg::FxLoudnessLabel).to_uppercase())
                 .size(crate::theme::legible(10.0))
@@ -1094,15 +1114,40 @@ fn draw_loudness(ui: &mut Ui, meter: Option<&fm_protocol::AudioLoudnessMeter>) {
                 Msg::FxTruePeakHover,
             ),
         ] {
-            ui.label(
-                RichText::new(format!("{scale} {text} {unit}"))
-                    .monospace()
-                    .size(crate::theme::legible(10.0))
-                    .color(text_color()),
-            )
-            .on_hover_text(l.text(hover));
+            loudness_readout(ui, scale, &text, unit).on_hover_text(l.text(hover));
         }
     });
+}
+
+/// One loudness readout box: `scale` and `unit` dim around the bright
+/// `value`.
+fn loudness_readout(ui: &mut Ui, scale: &str, value: &str, unit: &str) -> egui::Response {
+    let dim = |text: &str| {
+        RichText::new(text)
+            .monospace()
+            .size(crate::theme::legible(9.5))
+            .color(muted_color())
+    };
+    egui::Frame::new()
+        .fill(MONITOR_BLACK)
+        .stroke(Stroke::new(1.0, border_color()))
+        .corner_radius(CornerRadius::same(2))
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(dim(scale));
+                ui.label(
+                    RichText::new(value)
+                        .monospace()
+                        .size(crate::theme::legible(10.5))
+                        .color(text_color()),
+                );
+                ui.label(dim(unit));
+            });
+        })
+        .response
+        .interact(Sense::hover())
 }
 
 #[cfg(test)]

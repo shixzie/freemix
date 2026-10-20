@@ -225,10 +225,13 @@ pub(crate) fn strip_badge(ui: &mut Ui, sample: &SourceSyncSample, name: &str, wi
             .min_size(Vec2::new(width, SYNC_ROW_HEIGHT - 4.0)),
         )
         .on_hover_text(badge_hover(l, sample, name));
+    // Each detail stays on one line: the popup grows to the longest, so a
+    // count never wraps away from its label.
     egui::Popup::menu(&response).show(|ui| {
         ui.label(RichText::new(name).strong());
+        ui.separator();
         for line in detail_lines(l, sample) {
-            ui.label(RichText::new(line).size(legible(10.0)));
+            ui.add(egui::Label::new(RichText::new(line).size(legible(10.0))).extend());
         }
     });
 }

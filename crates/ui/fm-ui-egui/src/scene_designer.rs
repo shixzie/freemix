@@ -2239,10 +2239,20 @@ fn auto_key_fields(
         if button.clicked() {
             request = Some(AutoKeySample::Dominant);
         }
-        ui.add_enabled_ui(reason.is_none(), |ui| {
-            ui.toggle_value(sampler.eyedropper, l.text(Msg::DesignEyedropper))
-                .hint(l.text(Msg::DesignEyedropperHover), reason.unwrap_or(""));
-        });
+        // A key like Auto key beside it, lit in the accent while picking.
+        let mut pick = small_button(l.text(Msg::DesignEyedropper));
+        if *sampler.eyedropper {
+            pick = pick
+                .fill(crate::theme::ACCENT_FILL)
+                .stroke(Stroke::new(1.0, accent_color()));
+        }
+        if ui
+            .add_enabled(reason.is_none(), pick)
+            .hint(l.text(Msg::DesignEyedropperHover), reason.unwrap_or(""))
+            .clicked()
+        {
+            *sampler.eyedropper = !*sampler.eyedropper;
+        }
     });
     let Ok((image, texture)) = picture else {
         return;
@@ -2484,9 +2494,15 @@ fn chroma_fields(
             ([0, 255, 0], Msg::ColourGreen, Msg::DesignKeyGreenHover),
             ([0, 0, 255], Msg::ColourBlue, Msg::DesignKeyBlueHover),
         ] {
-            let on = colour == rgb;
+            // Keys like Auto key and Pick colour, lit while they match.
+            let mut key = small_button(l.text(text));
+            if colour == rgb {
+                key = key
+                    .fill(crate::theme::ACCENT_FILL)
+                    .stroke(Stroke::new(1.0, accent_color()));
+            }
             if ui
-                .add_enabled(lock.is_none(), egui::Button::selectable(on, l.text(text)))
+                .add_enabled(lock.is_none(), key)
                 .hint(l.text(hover), lock.unwrap_or(""))
                 .clicked()
             {

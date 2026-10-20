@@ -1257,6 +1257,46 @@ fn row_text(l: Locale, keys: ConsoleKeys<'_>, shortcut: &ShortcutStatus) -> Stri
     text
 }
 
+/// A picker row on two lines: the name (dim with `(off)` while the
+/// shortcut is off), then its key in the console's words, so a long chord
+/// or panel never wraps into the name.
+fn row_job(l: Locale, keys: ConsoleKeys<'_>, shortcut: &ShortcutStatus) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let (name, name_color) = if shortcut.spec.enabled {
+        (shortcut.spec.name.clone(), text_color())
+    } else {
+        (
+            l.format(
+                Msg::UserShortcutListOff,
+                &[("name", Arg::Str(&shortcut.spec.name))],
+            ),
+            muted_color(),
+        )
+    };
+    job.append(
+        &name,
+        0.0,
+        egui::TextFormat::simple(
+            egui::FontId::proportional(crate::theme::legible(12.5)),
+            name_color,
+        ),
+    );
+    let key = keys.key(shortcut).map_or_else(
+        || l.text(Msg::UserShortcutKeyNone).to_owned(),
+        |(key, local)| key_words(l, key, local),
+    );
+    job.append(
+        &format!("\n{key}"),
+        0.0,
+        egui::TextFormat::simple(
+            egui::FontId::monospace(crate::theme::legible(10.0)),
+            muted_color(),
+        ),
+    );
+    job.wrap.max_width = LIST_WIDTH - 12.0;
+    job
+}
+
 fn draw_list(
     ui: &mut Ui,
     state: &StudioUiState,
@@ -1268,8 +1308,20 @@ fn draw_list(
     ui.label(section_label(l.text(Msg::UserShortcutsTitle)));
     for shortcut in shortcuts {
         let selected = window.selected == Some(shortcut.id);
-        if ui
-            .selectable_label(selected, row_text(l, keys, shortcut))
+        let row = ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+            ui.add(Button::selectable(selected, row_job(l, keys, shortcut)))
+        });
+        // Screen readers hear the row on one line.
+        row.inner.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Button,
+                true,
+                selected,
+                row_text(l, keys, shortcut),
+            )
+        });
+        if row
+            .inner
             .on_hover_text(l.format(
                 Msg::UserShortcutListHover,
                 &[("name", Arg::Str(&shortcut.spec.name))],
@@ -1764,6 +1816,7 @@ fn draw_editor(
                 edit.is_none(),
                 TextEdit::singleline(&mut text)
                     .char_limit(MAX_SHORTCUT_OSC_BYTES)
+                    .hint_text(l.text(Msg::UserShortcutOscHint))
                     .desired_width(180.0),
             )
             .hint(l.text(Msg::UserShortcutOscHover), edit.unwrap_or(""));
