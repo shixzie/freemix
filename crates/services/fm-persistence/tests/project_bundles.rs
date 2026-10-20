@@ -1566,3 +1566,43 @@ fn append_keeps_scene_layer_grades_under_the_fresh_scene_ids() {
     assert_eq!(grading.grades[0].grade, graded_with_lut(1, -100));
     assert!(appended.project().validate().is_ok());
 }
+
+/// A key/fill key (SW-008) takes its matte from another input: appending
+/// a scene whose layer carries one remaps the key input with the layer's
+/// source, so the appended key never reads the target's unrelated input
+/// that happens to hold the source project's id.
+#[test]
+fn append_remaps_key_fill_key_inputs() {
+    let temp = TestDirectory::new("append-key-fill");
+    let store = temp.store("show.freemix");
+    let mut project = media_project(1, &[(1, "asset://fill.mov"), (2, "asset://key.mov")]);
+    let mut keyed = layer("keyed", SourceRef::Input(input_id(1)));
+    keyed.key = Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey::linear(
+        input_id(2),
+    )));
+    project.add_scene(Scene {
+        id: scene_id(1),
+        name: "Keyed".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![keyed],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let project = stored(project);
+    store.save(&project).unwrap();
+    write_asset(&store, "fill.mov", b"fill");
+    write_asset(&store, "key.mov", b"key");
+
+    let (appended, report) = store.append_project(&project, &store).unwrap();
+    assert_eq!(
+        report.inputs,
+        [(input_id(1), input_id(3)), (input_id(2), input_id(4))]
+    );
+    let scene = appended.project().scenes().last().unwrap();
+    assert_ne!(scene.id, scene_id(1));
+    assert_eq!(scene.layers[0].source, SourceRef::Input(input_id(3)));
+    assert_eq!(
+        scene.layers[0].key.and_then(fm_model::LayerKey::key_input),
+        Some(input_id(4))
+    );
+    assert!(appended.project().validate().is_ok());
+}

@@ -2,13 +2,13 @@
 //!
 //! Every input and scene of the source project is appended under fresh ids
 //! allocated above the target's highest id, in source order. Scene layers,
-//! scene-input links, and scene audio sources are remapped to the fresh ids,
-//! and per-input audio strips travel with their inputs. Name clashes are
-//! resolved with ` (2)`, ` (3)`, ... suffixes and reported. Referenced media
-//! is copied into the target bundle's assets, reusing identical files and
-//! renaming keys that would clash with different contents. A folder
-//! slideshow's pictures are copied into a folder that did not exist in the
-//! target (`slides`, else `slides-2`, ...). Title templates,
+//! their key/fill key inputs, scene-input links, and scene audio sources are
+//! remapped to the fresh ids, and per-input audio strips travel with their
+//! inputs. Name clashes are resolved with ` (2)`, ` (3)`, ... suffixes and
+//! reported. Referenced media is copied into the target bundle's assets,
+//! reusing identical files and renaming keys that would clash with different
+//! contents. A folder slideshow's pictures are copied into a folder that did
+//! not exist in the target (`slides`, else `slides-2`, ...). Title templates,
 //! their fonts, and title images keep their exact keys: a clash with
 //! different contents, or a title asset missing from the source, refuses the
 //! append before anything is copied.
@@ -612,6 +612,10 @@ fn append_scenes(
                 SourceRef::Input(id) => SourceRef::Input(input_map[&id]),
                 SourceRef::Scene(id) => SourceRef::Scene(scene_map[&id]),
             };
+            // A key/fill key's matte input travels with the layer (SW-008).
+            if let Some(fm_model::LayerKey::Fill(fill)) = &mut layer.key {
+                fill.key_input = input_map[&fill.key_input];
+            }
         }
         project.add_scene(Scene {
             id: scene_map[&scene.id],
