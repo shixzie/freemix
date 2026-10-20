@@ -233,10 +233,15 @@ impl Value {
     /// truncated or malformed. Bytes past the pod are ignored.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
+        Self::decode_nested(bytes, 0)
+    }
+
+    /// [`Self::decode`] for a value `depth` objects deep.
+    fn decode_nested(bytes: &[u8], depth: usize) -> Option<Self> {
         let size = usize::try_from(word(bytes, 0)?).ok()?;
         let type_ = word(bytes, 4)?;
         let body = bytes.get(8..8usize.checked_add(size)?)?;
-        decode_body(type_, body)
+        decode_body(type_, body, depth)
     }
 
     /// The value, or a choice's first (current or default) value.
@@ -254,7 +259,12 @@ fn word(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_ne_bytes(bytes.try_into().ok()?))
 }
 
-fn decode_body(type_: u32, body: &[u8]) -> Option<Value> {
+/// How many objects deep a pod may nest. A video format is one object
+/// whose properties are values or choices; anything far deeper is refused
+/// rather than decoded by recursing until the stack overflows.
+const MAX_OBJECT_DEPTH: usize = 8;
+
+fn decode_body(type_: u32, body: &[u8], depth: usize) -> Option<Value> {
     Some(match type_ {
         types::ID => Value::Id(word(body, 0)?),
         types::INT => Value::Int(i32::from_ne_bytes(word(body, 0)?.to_ne_bytes())),
@@ -276,7 +286,7 @@ fn decode_body(type_: u32, body: &[u8]) -> Option<Value> {
             }
             let values = elements
                 .chunks_exact(child_size)
-                .map(|element| decode_body(child_type, element))
+                .map(|element| decode_body(child_type, element, depth))
                 .collect::<Option<Vec<_>>>()?;
             if values.is_empty() {
                 return None;
@@ -284,13 +294,16 @@ fn decode_body(type_: u32, body: &[u8]) -> Option<Value> {
             Value::Choice { kind, values }
         }
         types::OBJECT => {
+            let depth = depth
+                .checked_add(1)
+                .filter(|depth| *depth <= MAX_OBJECT_DEPTH)?;
             let mut properties = Vec::new();
             let mut at = 8;
             while at < body.len() {
                 let key = word(body, at)?;
                 let value_size = usize::try_from(word(body, at + 8)?).ok()?;
                 let value = body.get(at + 8..)?;
-                properties.push((key, Value::decode(value)?));
+                properties.push((key, Value::decode_nested(value, depth)?));
                 // The last property's padding may be left off.
                 at = at
                     .checked_add(16)?
@@ -578,6 +591,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Objects nested in objects `levels` deep around one `Id`.
+    fn nested_objects(levels: usize) -> Vec<u8> {
+        let mut lengths = Vec::with_capacity(levels);
+        // The `Id` leaf: its header and one word padded to eight bytes.
+        let mut inner = 16_usize;
+        for _ in 0..levels {
+            lengths.push(inner);
+            inner += 24;
+        }
+        let mut pod = Vec::with_capacity(inner);
+        for inner in lengths.iter().rev() {
+            let body = u32::try_from(16 + inner).unwrap();
+            for word in [body, types::OBJECT, types::OBJECT_FORMAT, 0, 1, 0] {
+                pod.extend_from_slice(&word.to_ne_bytes());
+            }
+        }
+        for word in [4, types::ID, 7, 0] {
+            pod.extend_from_slice(&word.to_ne_bytes());
+        }
+        pod
+    }
+
+    /// A peer's pod nests objects at most a few deep; a deeper one (any
+    /// depth a buffer can hold) is refused instead of recursing until the
+    /// stream thread's stack overflows.
+    #[test]
+    fn deeply_nested_objects_are_refused_without_overflowing() {
+        let Some(Value::Object(outer)) = Value::decode(&nested_objects(2)) else {
+            panic!("two nested objects decode");
+        };
+        assert!(matches!(outer.properties[..], [(1, Value::Object(_))]));
+        assert_eq!(Value::decode(&nested_objects(200_000)), None);
     }
 
     #[test]
