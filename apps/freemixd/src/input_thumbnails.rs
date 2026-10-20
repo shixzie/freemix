@@ -103,6 +103,19 @@ const WORKER_STEP: Duration = Duration::from_millis(50);
 
 /// Most media list item pictures rendered in one worker step.
 const ITEM_RENDERS_PER_STEP: usize = 1;
+/// The wait before a media list item picture that did not decode is tried
+/// again, doubling with each further failure up to [`MAX_ITEM_RETRY`].
+const MIN_ITEM_RETRY: Duration = Duration::from_secs(2);
+const MAX_ITEM_RETRY: Duration = Duration::from_secs(300);
+
+/// The wait before an item picture that failed `failures` times is tried
+/// again.
+fn item_retry_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    MIN_ITEM_RETRY
+        .saturating_mul(1 << doublings)
+        .min(MAX_ITEM_RETRY)
+}
 
 /// What one thumbnail record shows: an input's own picture, or one of its
 /// media list items' (IN-006).
@@ -137,6 +150,10 @@ struct ItemEntry {
     /// `None` when the item has no picture (its file did not decode).
     encoded: Option<(u16, u16, Vec<u8>)>,
     native: bool,
+    /// How many times in a row the picture did not decode, and when it is
+    /// tried again (a file still being copied in, or briefly locked).
+    failures: u32,
+    retry_at: Option<Instant>,
 }
 
 /// What one worker step renders from.
@@ -304,7 +321,7 @@ impl ThumbnailRenderer {
                 emit(input.id.into(), bytes);
             }
         }
-        self.step_items(work, refresh, emit);
+        self.step_items(work, now, refresh, emit);
         let project = &work.project;
         let known = |input: &InputId| project.inputs().iter().any(|known| known.id == *input);
         self.entries.retain(|input, _| known(input));
@@ -313,10 +330,12 @@ impl ThumbnailRenderer {
 
     /// Renders the pictures of media list items that are new or whose file
     /// or in mark changed (at most [`ITEM_RENDERS_PER_STEP`]), sends each
-    /// once, and sends every item again on `refresh`.
+    /// once, and sends every item again on `refresh`. An item whose picture
+    /// did not decode is tried again after a backoff ([`item_retry_delay`]).
     fn step_items(
         &mut self,
         work: &ThumbnailWork,
+        now: Instant,
         refresh: bool,
         emit: &mut dyn FnMut(ThumbnailKey, Vec<u8>),
     ) {
@@ -332,23 +351,36 @@ impl ThumbnailRenderer {
                     item.mark_in,
                     work.grades.input(input.id).cloned(),
                 );
-                let stale = self
-                    .items
-                    .get(&key)
-                    .is_none_or(|entry| entry.version != version);
-                if stale {
+                let previous = self.items.get(&key);
+                let changed = previous.is_none_or(|entry| entry.version != version);
+                let retry = previous
+                    .is_some_and(|entry| entry.retry_at.is_some_and(|retry_at| now >= retry_at));
+                if changed || retry {
                     if rendered == ITEM_RENDERS_PER_STEP {
                         continue;
                     }
                     rendered += 1;
+                    let failed_before = if changed {
+                        0
+                    } else {
+                        previous.map_or(0, |entry| entry.failures)
+                    };
                     let (picture, native) = self.item_picture(input.id, item, work);
                     let encoded = picture.and_then(|picture| encode_thumbnail(&picture));
+                    let (failures, retry_at) = if encoded.is_none() && native {
+                        let failures = failed_before.saturating_add(1);
+                        (failures, Some(now + item_retry_delay(failures)))
+                    } else {
+                        (0, None)
+                    };
                     self.items.insert(
                         key,
                         ItemEntry {
                             version,
                             encoded,
                             native,
+                            failures,
+                            retry_at,
                         },
                     );
                 } else if !refresh {
@@ -1951,6 +1983,69 @@ mod tests {
             items_of(&step_all(&mut renderer, &listed, start, true)) == [1],
             "a missing file has no picture to send"
         );
+    }
+
+    /// Decodes nothing for its first `failures` calls, then a red picture.
+    struct Flaky(std::sync::atomic::AtomicU32);
+
+    impl ItemPictures for Flaky {
+        fn picture(
+            &self,
+            _path: &std::path::Path,
+            _frame: u64,
+            (width, height): (u32, u32),
+        ) -> Option<ImageFrame> {
+            let left = self.0.load(std::sync::atomic::Ordering::Relaxed);
+            if left > 0 {
+                self.0.store(left - 1, std::sync::atomic::Ordering::Relaxed);
+                return None;
+            }
+            let pixels = [200, 0, 0, 255].repeat(usize::try_from(width * height).ok()?);
+            ImageFrame::new(width, height, usize::try_from(width).ok()? * 4, pixels).ok()
+        }
+    }
+
+    /// An item whose picture did not decode (a file still being copied in)
+    /// is tried again after a backoff that doubles, and is sent once it
+    /// decodes.
+    #[test]
+    fn a_failed_item_picture_is_retried_with_backoff() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = fm_persistence::ProjectStore::new(directory.path().join("p.freemix")).unwrap();
+        let assets = store.assets_root();
+        std::fs::create_dir_all(assets.join("media")).unwrap();
+        std::fs::write(assets.join("media/a.mov"), b"clip").unwrap();
+        let listed = list_project(&[(1, "asset://media/a.mov", 0)]);
+        let titles = Arc::new(TitleAssets::load(&store, &listed));
+        let start = Instant::now();
+        let at = |delay: Duration| start + delay;
+        let pictures = Arc::new(Flaky(std::sync::atomic::AtomicU32::new(2)));
+        let mut renderer = ThumbnailRenderer::new(server(), start, titles)
+            .with_item_pictures(Some(pictures.clone()));
+        let listed = work(listed, 1);
+        assert!(items_of(&step_all(&mut renderer, &listed, start, false)).is_empty());
+        // Not before the first retry time.
+        let soon = MIN_ITEM_RETRY - Duration::from_millis(1);
+        assert!(items_of(&step_all(&mut renderer, &listed, at(soon), false)).is_empty());
+        assert_eq!(pictures.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // The first retry fails too; the next waits twice as long.
+        assert!(items_of(&step_all(&mut renderer, &listed, at(MIN_ITEM_RETRY), false)).is_empty());
+        assert_eq!(pictures.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        let second = MIN_ITEM_RETRY + MIN_ITEM_RETRY * 2;
+        assert!(
+            items_of(&step_all(
+                &mut renderer,
+                &listed,
+                at(second - Duration::from_millis(1)),
+                false
+            ))
+            .is_empty()
+        );
+        let decoded = step_all(&mut renderer, &listed, at(second), false);
+        assert_eq!(items_of(&decoded), [1]);
+        // Decoded: never tried again.
+        assert!(items_of(&step_all(&mut renderer, &listed, at(second * 10), false)).is_empty());
+        assert_eq!(item_retry_delay(30), MAX_ITEM_RETRY);
     }
 
     /// An item's picture carries its list input's grade, so a grade edit
