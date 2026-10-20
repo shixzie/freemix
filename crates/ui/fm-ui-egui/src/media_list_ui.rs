@@ -514,7 +514,7 @@ pub(crate) fn draw_list(
                             || response.lost_focus()
                             || (response.changed() && !response.dragged() && !response.has_focus())
                     };
-                    let mark_out = (mark_out > 0).then_some(mark_out.max(mark_in + 1));
+                    let mark_out = edited_mark_out(mark_in, mark_out);
                     if (committed(&in_response) || committed(&out_response))
                         && (mark_in, mark_out) != (item.mark_in, item.mark_out)
                     {
@@ -613,12 +613,27 @@ pub(crate) fn draw_form(ui: &mut Ui, l: Locale, draft: &mut MediaListDraft) {
     });
 }
 
+/// The out mark of an edit: none for zero (play to the file's end), else
+/// at least one frame past the in mark. A typed in mark as large as
+/// `u64::MAX` saturates rather than overflowing.
+fn edited_mark_out(mark_in: u64, mark_out: u64) -> Option<u64> {
+    (mark_out > 0).then_some(mark_out.max(mark_in.saturating_add(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn none(_: &Path) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn an_out_mark_follows_the_in_mark_without_overflowing() {
+        assert_eq!(edited_mark_out(10, 0), None);
+        assert_eq!(edited_mark_out(10, 5), Some(11));
+        assert_eq!(edited_mark_out(10, 50), Some(50));
+        assert_eq!(edited_mark_out(u64::MAX, 7), Some(u64::MAX));
     }
 
     #[test]
