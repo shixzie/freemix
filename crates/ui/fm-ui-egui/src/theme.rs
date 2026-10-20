@@ -384,6 +384,17 @@ pub(crate) fn section_label(text: &str) -> RichText {
         .color(text_dim_color())
 }
 
+/// Space above a form section's label, so a section reads as its own group
+/// rather than as one more line of the field above it.
+pub(crate) const FORM_SECTION_GAP: f32 = 6.0;
+
+/// A form section's label (`PICTURE FILE`, `PLACEMENT`) with the shared gap
+/// above it.
+pub(crate) fn form_section(ui: &mut Ui, text: &str) -> Response {
+    ui.add_space(FORM_SECTION_GAP);
+    ui.label(section_label(text))
+}
+
 /// Nominal text size of console captions and hint lines under a control.
 pub(crate) const CAPTION_SIZE: f32 = 10.5;
 /// Nominal text size of small field labels beside a control (`POS`,
@@ -424,6 +435,16 @@ pub(crate) fn card() -> Frame {
 pub(crate) fn section_header(ui: &mut Ui, title: &str, trailing: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.label(section_label(title));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
+    });
+}
+
+/// A dock panel's header row: only the trailing status and keys. The dock
+/// tab above already names the panel, and a second `INPUT BANK` /
+/// `AUDIO MIXER` under the tab reads as a stutter.
+pub(crate) fn panel_header(ui: &mut Ui, trailing: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(18.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
     });
 }
@@ -597,6 +618,28 @@ pub(crate) fn status_chip_painted(
 ) {
     let color = tone.color();
     let solid = tone == Tone::OnAir;
+    // An idle chip (`OFF`, `STOPPED`, `OFF AIR`) is an unlit inset, not a
+    // grey outlined box: beside the console's keys an outlined grey chip
+    // reads as a disabled button. High contrast keeps the outline.
+    if tone == Tone::Idle && !high_contrast() {
+        painter.rect_filled(rect, CornerRadius::same(3), MONITOR_BLACK);
+        let galley = elided(
+            painter,
+            crate::l10n::locale(painter.ctx()).tr(text),
+            FontId::new(
+                legible(9.5).min(rect.height() - 4.0),
+                FontFamily::Proportional,
+            ),
+            text_dim_color(),
+            rect.width() - 8.0,
+        );
+        painter.galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            text_dim_color(),
+        );
+        return;
+    }
     painter.rect_filled(
         rect,
         CornerRadius::same(3),
@@ -698,12 +741,55 @@ pub(crate) fn console_button(
 /// Smallest side of a pointer target, in points (WCAG 2.5.8 target size).
 pub(crate) const MIN_TARGET: f32 = 24.0;
 
-/// The `×` close key of dialogs and toasts: a 24 x 24 target that shows its
-/// frame on hover and keyboard focus.
-pub(crate) fn close_key(size: f32) -> egui::Button<'static> {
-    egui::Button::new(RichText::new("×").size(size).color(text_dim_color()))
-        .frame_when_inactive(false)
-        .min_size(Vec2::splat(MIN_TARGET))
+/// The `×` close key of dialogs, windows, and toasts: a 24 x 24 target that
+/// shows its frame on hover and keyboard focus. The cross is painted, as on
+/// the dock tiles' close keys, rather than typed: the console font's `×` is
+/// a few pixels across and read as a speck beside the tile keys. `size` is
+/// the nominal glyph size the caller asked for; the cross spans most of it.
+pub(crate) const fn close_key(size: f32) -> CloseKey {
+    CloseKey { size }
+}
+
+/// The widget [`close_key`] returns.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CloseKey {
+    size: f32,
+}
+
+impl egui::Widget for CloseKey {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let response = ui.add(
+            egui::Button::new("")
+                .frame_when_inactive(false)
+                .min_size(Vec2::splat(MIN_TARGET)),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "×")
+        });
+        if ui.is_rect_visible(response.rect) {
+            let color = if response.hovered() || response.has_focus() {
+                text_color()
+            } else {
+                text_dim_color()
+            };
+            let half = (self.size * 0.36).clamp(4.0, 6.0);
+            let centre = response.rect.center();
+            let stroke = Stroke::new(1.5, color);
+            let painter = ui.painter();
+            painter.line_segment(
+                [centre + Vec2::splat(-half), centre + Vec2::splat(half)],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    centre + Vec2::new(half, -half),
+                    centre + Vec2::new(-half, half),
+                ],
+                stroke,
+            );
+        }
+        response
+    }
 }
 
 /// A progressive-disclosure key: a right-pointing triangle and `label` while

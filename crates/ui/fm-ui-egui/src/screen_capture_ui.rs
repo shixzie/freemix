@@ -517,8 +517,7 @@ pub(crate) fn draw_screen_capture_form(
             RichText::new(l.format(Msg::ScApp, &[("app", Arg::Str(&rule.app))]))
                 .size(crate::theme::legible(11.0)),
         );
-        ui.add_space(4.0);
-        ui.label(section_label(l.text(Msg::ScFollow)));
+        crate::theme::form_section(ui, l.text(Msg::ScFollow));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
             let size = option_key_size(
@@ -582,8 +581,7 @@ pub(crate) fn draw_screen_capture_form(
         }
     }
 
-    ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::ScCrop)));
+    crate::theme::form_section(ui, l.text(Msg::ScCrop));
     // Four equal columns, each edge's name over its field, so the row
     // never wraps whatever the language.
     ui.horizontal(|ui| {
@@ -633,8 +631,7 @@ pub(crate) fn draw_screen_capture_form(
         )
         .on_hover_text(l.text(Msg::ScFpsHover));
     });
-    ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::ScStall)));
+    crate::theme::form_section(ui, l.text(Msg::ScStall));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
         let size = option_key_size(ui, &[l.text(Msg::ScStallFreeze), l.text(Msg::ScStallBlack)]);
@@ -655,8 +652,7 @@ pub(crate) fn draw_screen_capture_form(
             }
         }
     });
-    ui.add_space(4.0);
-    ui.label(section_label(l.text(Msg::ScAudio)));
+    crate::theme::form_section(ui, l.text(Msg::ScAudio));
     let window = matches!(draft.config.target, ScreenCaptureTarget::Window(_));
     // A Wayland server's sharing dialog gives no application audio.
     let portal = inventory.is_some_and(ScreenCaptureInventory::picks_on_desktop);

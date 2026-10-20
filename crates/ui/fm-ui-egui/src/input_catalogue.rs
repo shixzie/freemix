@@ -1162,44 +1162,58 @@ impl StudioShell {
                         );
                         ui.add_space(8.0);
                         ui.label(section_label(l.text(Msg::AddInputKind)));
-                        // Four kinds wrap rather than widen the dialog.
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
-                            for kind in [
+                        // The kinds sit in three equal columns across the
+                        // dialog: an even grid, not two ragged columns
+                        // with a gap at the right.
+                        let gap = 8.0;
+                        let column = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
+                        for row in [
+                            [
                                 NewInputKind::Solid,
                                 NewInputKind::Bars,
                                 NewInputKind::Network,
+                            ],
+                            [
                                 NewInputKind::Capture,
                                 NewInputKind::SystemAudio,
+                                NewInputKind::ScreenCapture,
+                            ],
+                            [
                                 NewInputKind::Image,
                                 NewInputKind::Slideshow,
                                 NewInputKind::MediaList,
-                                NewInputKind::ScreenCapture,
-                            ] {
-                                let selected = draft.kind == kind;
-                                let response = ui
-                                    .add(kind_key(l.text(kind.key_label()), selected))
-                                    .on_hover_text(l.text(kind.description()));
-                                if response.clicked() && !selected {
-                                    let taken: Vec<&str> =
-                                        taken.iter().map(String::as_str).collect();
-                                    draft.set_kind(kind, &taken);
-                                    // The capture and system audio forms list
-                                    // the server's devices.
-                                    if kind == NewInputKind::Capture {
-                                        intents.push(StudioIntent::RequestCaptureDevices);
-                                    }
-                                    if kind == NewInputKind::SystemAudio {
-                                        intents.push(StudioIntent::RequestSystemAudioDevices);
-                                    }
-                                    if kind == NewInputKind::ScreenCapture {
-                                        intents.push(StudioIntent::RequestScreenCaptureTargets);
+                            ],
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(gap, 6.0);
+                                for kind in row {
+                                    let selected = draft.kind == kind;
+                                    let response = ui
+                                        .add(
+                                            kind_key(l.text(kind.key_label()), selected)
+                                                .min_size(Vec2::new(column, 28.0)),
+                                        )
+                                        .on_hover_text(l.text(kind.description()));
+                                    if response.clicked() && !selected {
+                                        let taken: Vec<&str> =
+                                            taken.iter().map(String::as_str).collect();
+                                        draft.set_kind(kind, &taken);
+                                        // The capture and system audio forms list
+                                        // the server's devices.
+                                        if kind == NewInputKind::Capture {
+                                            intents.push(StudioIntent::RequestCaptureDevices);
+                                        }
+                                        if kind == NewInputKind::SystemAudio {
+                                            intents.push(StudioIntent::RequestSystemAudioDevices);
+                                        }
+                                        if kind == NewInputKind::ScreenCapture {
+                                            intents.push(StudioIntent::RequestScreenCaptureTargets);
+                                        }
                                     }
                                 }
-                            }
-                        });
-                        ui.add_space(6.0);
-                        ui.label(section_label(l.text(Msg::AddInputName)));
+                            });
+                        }
+                        crate::theme::form_section(ui, l.text(Msg::AddInputName));
                         let edit = ui
                             .add(
                                 egui::TextEdit::singleline(&mut draft.name)

@@ -297,7 +297,7 @@ fn dropped_paths(ui: &Ui) -> Vec<std::path::PathBuf> {
 
 /// The Fit / Fill / Stretch / 1:1 keys.
 fn draw_fit(ui: &mut Ui, l: Locale, fit: &mut OutputScaling) {
-    ui.label(section_label(l.text(Msg::StFit)));
+    crate::theme::form_section(ui, l.text(Msg::StFit));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::new(6.0, 6.0);
         for (choice, label, hover) in FITS {
@@ -398,7 +398,7 @@ pub(crate) fn draw_slideshow_form(ui: &mut Ui, l: Locale, draft: &mut SlideshowD
     });
     let problem = draft.checked().err();
     if draft.folder_mode {
-        ui.label(section_label(l.text(Msg::StFolder)));
+        crate::theme::form_section(ui, l.text(Msg::StFolder));
         path_field(
             ui,
             l,
@@ -411,7 +411,7 @@ pub(crate) fn draw_slideshow_form(ui: &mut Ui, l: Locale, draft: &mut SlideshowD
             problem.filter(|problem| problem.field == StillField::Folder),
         );
     } else {
-        ui.label(section_label(l.text(Msg::StPictures)));
+        crate::theme::form_section(ui, l.text(Msg::StPictures));
         let edit = ui
             .add(
                 egui::TextEdit::multiline(&mut draft.pictures)
@@ -434,7 +434,7 @@ pub(crate) fn draw_slideshow_form(ui: &mut Ui, l: Locale, draft: &mut SlideshowD
             }),
         );
     }
-    ui.label(section_label(l.text(Msg::StTiming)));
+    crate::theme::form_section(ui, l.text(Msg::StTiming));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::new(6.0, 6.0);
         ui.label(RichText::new(l.text(Msg::StSlideSeconds)).color(text_color()));
