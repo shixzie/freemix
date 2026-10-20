@@ -15092,3 +15092,282 @@ fn remote_image_add_and_page_navigate_send_exact_payloads() {
         "invalid picture input",
     );
 }
+
+/// A 16x9 binary PPM: a green screen with a red shirt in columns 6..10
+/// from row 3 down (SW-008 auto key fixtures).
+fn write_green_screen_ppm(path: &Path) {
+    let mut bytes = b"P6\n# auto key fixture\n16 9\n255\n".to_vec();
+    for y in 0..9 {
+        for x in 0..16 {
+            if (6..10).contains(&x) && y >= 3 {
+                bytes.extend_from_slice(&[210, 60, 50]);
+            } else {
+                bytes.extend_from_slice(&[30, 190, 60]);
+            }
+        }
+    }
+    fs::write(path, bytes).unwrap();
+}
+
+/// SW-008: `scene-layer-auto-key` keys the layer's simulated green input
+/// out completely to the scene background, keeps the layer's matte
+/// refinement, and keys a saved picture's dominant green or the colour at
+/// a picked point; a grey pick and a picture without a backing are refused
+/// and leave the key alone.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn local_scene_layer_auto_key_samples_the_input_and_keys_it() {
+    let root = unique_test_root();
+    let project = root.join("autokey.freemix");
+    let picture = root.join("screen.ppm");
+    let grey = root.join("grey.ppm");
+    let keyed = root.join("keyed.ppm");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    macro_rules! apply {
+        ($arguments:expr) => {{
+            let output = invoke_bounded($arguments);
+            assert_success(&output);
+            stdout(&output)
+        }};
+    }
+
+    apply!(&["new", path]);
+    let mut source = manifest(&project);
+    replace_once(&mut source, "\"width\": 1920,", "\"width\": 16,");
+    replace_once(&mut source, "\"height\": 1080,", "\"height\": 8,");
+    fs::write(project.join("project.json"), source).unwrap();
+    apply!(&["input-replace-solid", path, "1", "30", "190", "60", "255"]);
+    apply!(&["scene-input-add", path, "3", "11", "Program"]);
+    apply!(&["scene-layer-add", path, "11", "1", "0", "Layer"]);
+    apply!(&["preview", path, "3"]);
+    apply!(&["cut", path]);
+    apply!(&[
+        "scene-layer-key",
+        path,
+        "11",
+        "0",
+        "luma",
+        "10",
+        "255",
+        "0",
+        "off",
+        "--choke",
+        "2"
+    ]);
+
+    let printed = apply!(&["scene-layer-auto-key", path, "11", "0"]);
+    assert!(
+        printed.contains(
+            "auto key: backing=green colour=30,190,60 similarity=8 smoothness=16 spill=128 \
+             despill=green:128 samples=128 agreeing=128"
+        ),
+        "{printed}"
+    );
+    let scenes = stdout(&invoke(&["scenes", path]));
+    assert!(
+        scenes.contains(
+            "key=chroma(rgb=30,190,60 similarity=8 smoothness=16 spill=128)\
+             +refine(clip=0,255 choke=2 edge_softness=0 despill=green:128)"
+        ),
+        "{scenes}"
+    );
+    apply!(&[
+        "render",
+        path,
+        keyed.to_str().unwrap(),
+        "--width",
+        "16",
+        "--height",
+        "8",
+    ]);
+    assert_solid_ppm(&keyed, 16, 8, [0, 0, 0]);
+
+    // A saved picture: its dominant green, then the red shirt picked.
+    write_green_screen_ppm(&picture);
+    let picture_path = picture.to_str().unwrap();
+    let printed = apply!(&[
+        "scene-layer-auto-key",
+        path,
+        "11",
+        "0",
+        "--picture",
+        picture_path
+    ]);
+    assert!(
+        printed.contains("backing=green colour=30,190,60") && printed.contains("agreeing=120"),
+        "{printed}"
+    );
+    let printed = apply!(&[
+        "scene-layer-auto-key",
+        path,
+        "11",
+        "0",
+        "--picture",
+        picture_path,
+        "--point",
+        "7",
+        "6"
+    ]);
+    assert!(
+        printed.contains("backing=other colour=210,60,50") && printed.contains("despill=off"),
+        "{printed}"
+    );
+    let scenes = stdout(&invoke(&["scenes", path]));
+    assert!(
+        scenes.contains("key=chroma(rgb=210,60,50 similarity=8 smoothness=16 spill=128)"),
+        "{scenes}"
+    );
+
+    // Refusals change nothing.
+    let mut bytes = b"P6\n4 4\n255\n".to_vec();
+    bytes.extend(std::iter::repeat_n(128_u8, 4 * 4 * 3));
+    fs::write(&grey, bytes).unwrap();
+    let grey_path = grey.to_str().unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-auto-key",
+            path,
+            "11",
+            "0",
+            "--picture",
+            grey_path,
+            "--point",
+            "1",
+            "1",
+        ]),
+        "too grey to key",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-auto-key",
+            path,
+            "11",
+            "0",
+            "--picture",
+            grey_path,
+        ]),
+        "no green or blue background found",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-auto-key",
+            path,
+            "11",
+            "0",
+            "--picture",
+            picture_path,
+            "--point",
+            "16",
+            "0",
+        ]),
+        "outside the 16x9 picture",
+    );
+    assert_failure_contains(
+        &invoke(&["scene-layer-auto-key", path, "11", "0", "--picture", path]),
+        "cannot read",
+    );
+    assert_eq!(stdout(&invoke(&["scenes", path])), scenes);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// SW-008: `remote-scene-layer-auto-key` sends the key derived from a saved
+/// picture as one live `scene_layer_key_set` edit with the given matte
+/// refinement and the auto key's despill.
+#[test]
+fn remote_scene_layer_auto_key_is_one_live_key_edit() {
+    use fm_protocol::{
+        SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireKeyDespill, WireKeyRefinement,
+        WireLayerKey, WireSceneId, WireSceneLayerId, WireSceneLayout,
+    };
+    let root = unique_test_root();
+    fs::create_dir_all(&root).unwrap();
+    let picture = root.join("screen.ppm");
+    write_green_screen_ppm(&picture);
+    let scene = WireSceneId::new(core::num::NonZeroU128::new(11).unwrap());
+    let edit = |operation| SceneLayerEdit {
+        scene,
+        layer: WireSceneLayerId::new(core::num::NonZeroU32::new(3).unwrap()),
+        operation,
+        continues: false,
+        gesture: 0,
+    };
+    let layout = || {
+        Box::new(WireSceneLayout {
+            width: 1_920,
+            height: 1_080,
+            layers: Vec::new(),
+        })
+    };
+    let key = SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(WireChromaKey {
+        red: 30,
+        green: 190,
+        blue: 60,
+        similarity: 8,
+        smoothness: 16,
+        spill: 128,
+        refinement: WireKeyRefinement {
+            clip_black: 0,
+            clip_white: 255,
+            choke: 1,
+            edge_softness: 2,
+            despill: WireKeyDespill::Green { strength: 128 },
+        },
+    })));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let remote_edit = RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-auto-key",
+        payload: CommandPayload::SceneLayer(edit(key.clone())),
+        event: EventPayload::SceneLayoutChanged {
+            edit: edit(key),
+            layout: layout(),
+        },
+        domain: "project",
+    };
+    let worker = thread::spawn(move || {
+        serve_layout_edit(&listener, &remote_edit, vec![(scene, *layout())]);
+    });
+    let server = FakeRemoteServer { address, worker };
+    let output = invoke(&[
+        "remote-scene-layer-auto-key",
+        &server.address(),
+        "11",
+        "3",
+        "--picture",
+        picture.to_str().unwrap(),
+        "--choke",
+        "1",
+        "--edge-softness",
+        "2",
+        "--key",
+        "remote-auto-key",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("backing=green colour=30,190,60"));
+    server.finish();
+
+    // The picture is required, and the despill is the auto key's.
+    assert_failure_contains(
+        &invoke(&["remote-scene-layer-auto-key", "127.0.0.1:9", "11", "3"]),
+        "--picture",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "remote-scene-layer-auto-key",
+            "127.0.0.1:9",
+            "11",
+            "3",
+            "--picture",
+            picture.to_str().unwrap(),
+            "--despill",
+            "green",
+            "9",
+        ]),
+        "--despill",
+    );
+    let _ = fs::remove_dir_all(root);
+}
