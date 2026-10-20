@@ -1157,7 +1157,10 @@ mod clock_tests {
         assert_eq!(clock.at.monotonic, ClockTime::from_nanos(2_000_000_000));
         assert_eq!(clock.at.utc, utc(12, 0, 0));
         assert_eq!(clock.taken_at, Some(ClockTime::from_nanos(1_000_000_000)));
-        assert_eq!(time.scene_time_ms(), 2_000);
+        // Scene time counts from the take (GX-001): 25 frames at 25/1.
+        assert_eq!(time.scene_time_ms(), 1_000);
+        // A title not shown rests at scene time zero.
+        assert_eq!(at(50, utc(12, 0, 0), None).scene_time_ms(), 0);
         let ntsc = TitleTime {
             rate: FrameRate::new(30_000, 1_001).unwrap(),
             ..at(30, utc(12, 0, 0), None)

@@ -4002,9 +4002,30 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert_eq!(
             encoded,
-            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
+            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
+        // Protocol 2.75: where the title is shown and the frame its
+        // timeline started on (GX-001).
+        for (shown, token) in [
+            (fm_protocol::TitleShownOn::Air, "air"),
+            (fm_protocol::TitleShownOn::Preview, "preview"),
+        ] {
+            let WireMessage::TitleState(mut timed) = message.clone() else {
+                unreachable!()
+            };
+            timed.timeline = Some(fm_protocol::TitleTimelineStatus {
+                shown,
+                since_frame: 1_234,
+            });
+            let timed = WireMessage::TitleState(timed);
+            let line = encode_line(&timed).unwrap();
+            assert!(
+                line.contains(&format!("\tshown={token}\tsince_frame=1234\t")),
+                "{line}"
+            );
+            assert_eq!(decode_line(&line).unwrap(), timed);
+        }
         let empty = state(Vec::new());
         let encoded_empty = encode_line(&empty).unwrap();
         assert!(encoded_empty.ends_with("\tfields=\tfield_names=\n"));
@@ -4045,6 +4066,17 @@ mod titles {
                 invalid("phase_frame", "20/20"),
             ),
             ("phase=in", "phase=hold", invalid("phase_frame", "3/20")),
+            ("shown=none", "shown=program", invalid("shown", "program")),
+            (
+                "since_frame=0",
+                "since_frame=7",
+                invalid("since_frame", "7"),
+            ),
+            (
+                "since_frame=0",
+                "since_frame=00",
+                invalid("since_frame", "00"),
+            ),
         ] {
             assert_eq!(
                 decode_line(&encoded.replace(from, to)),
@@ -4063,6 +4095,14 @@ mod titles {
         assert_eq!(
             decode_line(&encoded.replace("\tphase_frames=20", "")),
             Err(CodecError::MissingField("phase_frames"))
+        );
+        assert_eq!(
+            decode_line(&encoded.replace("\tshown=none", "")),
+            Err(CodecError::MissingField("shown"))
+        );
+        assert_eq!(
+            decode_line(&encoded.replace("\tsince_frame=0", "")),
+            Err(CodecError::MissingField("since_frame"))
         );
     }
 

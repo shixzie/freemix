@@ -1493,7 +1493,12 @@ mod daemon_tests {
          -> (Option<TitleAirPhase>, u8) {
             let mut frame = engine.clone().tick().unwrap();
             titles.observe_frame(&frame);
-            let pose = frame.titles.first().map(|title| title.frame.sample);
+            // The pose the engine projects for the title: its take's, or
+            // its In on Preview once the take has left (GX-001).
+            let pose = super::projected_poses(&frame)
+                .into_iter()
+                .find(|(input, _)| *input == id(2))
+                .map(|(_, pose)| pose);
             let deadline = Instant::now() + WAIT;
             loop {
                 for (input, picture) in titles.take_completed() {
