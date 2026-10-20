@@ -367,6 +367,10 @@ pub enum SessionEvent {
     AudioMeters {
         meters: AudioMetersMessage,
     },
+    /// Every title input's animation phase (Protocol 2.90), lossy.
+    TitlePhases {
+        phases: fm_protocol::TitlePhasesMessage,
+    },
     StreamStatus {
         status: StreamStatusMessage,
     },
@@ -1606,6 +1610,7 @@ impl TcpSession {
                 self.validate_audio_meters(&meters)?;
                 Ok(SessionEvent::AudioMeters { meters })
             }
+            WireMessage::TitlePhases(phases) => Ok(SessionEvent::TitlePhases { phases }),
             WireMessage::StreamStatus(status) => {
                 self.validate_stream_status(&status)?;
                 Ok(SessionEvent::StreamStatus { status })

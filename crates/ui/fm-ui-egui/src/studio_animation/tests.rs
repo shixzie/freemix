@@ -183,6 +183,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
                 field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Name".into(),
                 value: TitleFieldValue::Text("Ana".into()),
+                exposed: true,
             }],
         })
         .unwrap();

@@ -99,6 +99,7 @@ impl AnimationTarget for WireTitleElementId {
             width,
             height,
             clip: clip.map(Box::new),
+            fields: Vec::new(),
         }
     }
 }

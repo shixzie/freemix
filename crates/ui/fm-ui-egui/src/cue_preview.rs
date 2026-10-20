@@ -1328,6 +1328,7 @@ mod tests {
             field: field(value),
             name: name.into(),
             value: value_of,
+            exposed: true,
         };
         Show {
             inputs: (1..=5).map(id).collect(),

@@ -1997,6 +1997,7 @@ impl Remote {
                         | EventPayload::GradeChanged(_)
                         | EventPayload::AnimationPresetChanged(_)
                         | EventPayload::TitleAnimationChanged { .. }
+                        | EventPayload::TitleExposureChanged { .. }
                         | EventPayload::SceneAnimationChanged { .. }
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }

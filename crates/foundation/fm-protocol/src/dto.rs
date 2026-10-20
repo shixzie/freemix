@@ -1322,12 +1322,23 @@ pub const MAX_TITLE_PREVIEW_PART_BYTES: usize = 32 * 1024;
 /// Most parts of one preview: a worst-case 640x360 four-channel QOI stream
 /// (`640 * 360 * 5 + 22` bytes) fits.
 pub const MAX_TITLE_PREVIEW_PARTS: u16 = 36;
+/// Largest exact title preview a Web session may ask for (Protocol 2.90):
+/// a worst-case 320x180 QOI stream is at most nine parts.
+pub const MAX_WEB_TITLE_PREVIEW_WIDTH: u16 = 320;
+pub const MAX_WEB_TITLE_PREVIEW_HEIGHT: u16 = 180;
 
 /// A read-only request to render one title exactly as the authority would
 /// (Protocol 2.29): its persisted field values in `sample`, scaled to
 /// `width` x `height`. `clip`, when present, is an unsaved draft rendered
 /// instead of the template's animation. Not a command: it has no
 /// idempotency, revision, or durability.
+///
+/// `fields` (Protocol 2.90) are unsaved draft values rendered instead of
+/// the persisted ones, strictly ascending by field id; empty renders the
+/// persisted values. Wire key `fields`, absent when empty. A Web session
+/// may ask for at most [`MAX_WEB_TITLE_PREVIEW_WIDTH`] x
+/// [`MAX_WEB_TITLE_PREVIEW_HEIGHT`] and may name only fields its template
+/// exposes to the browser.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitlePreviewRequest {
     pub protocol: crate::ProtocolVersion,
@@ -1337,6 +1348,7 @@ pub struct TitlePreviewRequest {
     pub width: u16,
     pub height: u16,
     pub clip: Option<Box<WireTitleClip>>,
+    pub fields: Vec<TitleFieldUpdate>,
 }
 
 /// One part of the answer to a [`TitlePreviewRequest`].
@@ -1467,6 +1479,44 @@ pub struct TitleFieldStatus {
     pub field: WireTitleFieldId,
     pub name: String,
     pub value: TitleFieldValue,
+    /// Whether the template exposes the field to browser clients (Protocol
+    /// 2.90). A Web session is never sent a hidden field at all, so every
+    /// field it sees is exposed.
+    pub exposed: bool,
+}
+
+/// Whether one template field is exposed to the browser title editor
+/// (Protocol 2.90).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitleFieldExposure {
+    pub field: WireTitleFieldId,
+    pub exposed: bool,
+}
+
+/// One title input's animation phase and timeline in a
+/// [`TitlePhasesMessage`], under the same invariants as a `title_state`'s
+/// phase fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitlePhaseStatus {
+    pub input: WireInputId,
+    pub phase: TitlePhase,
+    pub phase_frame: u64,
+    pub phase_frames: u64,
+    pub timeline: Option<TitleTimelineStatus>,
+}
+
+/// Every title input's animation phase at engine frame `frame` (Protocol
+/// 2.90): a lossy, latest-wins status record (`title_phases`), so clients
+/// follow In, Hold, and Out between snapshots. Sent to Web sessions and to
+/// raw Studio sessions that may view status when a phase or timeline
+/// changes and about once a second while any title is shown; a Web
+/// session gets at most four a second. `titles` is strictly ascending by
+/// input, at most [`crate::MAX_LIST_ITEMS`]. Wire encoding: `frame`, and
+/// `titles=<input>:<phase>:<phase_frame>:<phase_frames>:<shown>:<since_frame>,...`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitlePhasesMessage {
+    pub frame: u64,
+    pub titles: Vec<TitlePhaseStatus>,
 }
 
 /// Where a title is in its on-air animation (Protocol 2.27). Wire encoding:
@@ -1732,6 +1782,16 @@ pub enum CommandPayload {
     /// Takes a title off the single overlay channel that shows it.
     TitleOffAir {
         input: WireInputId,
+    },
+    /// Shows or hides one template field in the browser title editor
+    /// (Protocol 2.90, GX-006). Wire payload `title_field_exposure`. The
+    /// flag belongs to the title's template, so every title input sharing
+    /// it changes. Needs `EditProject`; refused from Web sessions. Not
+    /// undoable.
+    SetTitleFieldExposure {
+        input: WireInputId,
+        field: WireTitleFieldId,
+        exposed: bool,
     },
     /// Replaces the playlist's entries and loop mode while it is stopped or
     /// finished. A project edit.
@@ -2648,6 +2708,17 @@ pub enum EventPayload {
         fields: Vec<TitleFieldUpdate>,
         overlays: Vec<OverlayStatus>,
     },
+    /// A title template changed which fields the browser title editor may
+    /// show (Protocol 2.90). `inputs` are every title input sharing the
+    /// template, ascending; `fields` is the template's complete exposure
+    /// afterwards, strictly ascending by field id. A Web session gets only
+    /// the exposed fields (a hidden field's id is never sent to it) and
+    /// resynchronizes to learn a newly exposed field's name and value.
+    /// Wire encoding: `inputs=<id>,...` and `fields=<field>:<0|1>,...`.
+    TitleExposureChanged {
+        inputs: Vec<WireInputId>,
+        fields: Vec<TitleFieldExposure>,
+    },
     /// A cue list was created or edited (or the edit undone or redone):
     /// the whole list afterwards (Protocol 2.50).
     CueListChanged(Box<crate::CueListStatus>),
@@ -3285,6 +3356,9 @@ pub enum WireMessage {
     DiagnosticsResponse(DiagnosticsResponse),
     Error(ErrorMessage),
     TitleState(TitleStateMessage),
+    /// Every title input's animation phase (Protocol 2.90), a lossy
+    /// latest-wins status record.
+    TitlePhases(TitlePhasesMessage),
     PlaylistState(PlaylistStateMessage),
     GradeState(GradeStateMessage),
     TitleAnimationState(TitleAnimationStateMessage),

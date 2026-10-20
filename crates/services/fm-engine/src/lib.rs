@@ -83,8 +83,8 @@ pub use state::{
 };
 pub use stream_target::EngineStreamTargetSpec;
 pub use title_animation::{
-    EngineTitleAnimationEdit, EngineTitleTemplate, TitleAnimationChange, TitleClipBound,
-    title_template_inputs,
+    EngineTitleAnimationEdit, EngineTitleExposureEdit, EngineTitleTemplate, TitleAnimationChange,
+    TitleClipBound, title_template_inputs,
 };
 pub use title_timeline::EngineTitleShown;
 

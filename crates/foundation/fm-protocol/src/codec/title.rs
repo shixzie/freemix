@@ -23,8 +23,8 @@ use core::num::NonZeroU128;
 use crate::{
     CodecError, MAX_LIST_ITEMS, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES,
     MAX_TITLE_FIELDS, MAX_TITLE_NAME_BYTES, MAX_TITLE_TEXT_CHARS, TitleAirRequirement,
-    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleShownOn, TitleSummary, TitleTimelineStatus,
-    WireInputId, WireTitleFieldId,
+    TitleFieldExposure, TitleFieldUpdate, TitleFieldValue, TitlePhase, TitlePhaseStatus,
+    TitleShownOn, TitleSummary, TitleTimelineStatus, WireInputId, WireTitleFieldId,
 };
 
 use super::value::{parse_canonical_input, parse_canonical_u64};
@@ -32,6 +32,7 @@ use super::{decode_rgba, encode_rgba};
 
 const FIELDS: &str = "fields";
 const FIELD_NAMES: &str = "field_names";
+const FIELD_EXPOSED: &str = "field_exposed";
 const TITLES: &str = "titles";
 
 /// Enforces the field-list invariants shared by the encoder and decoder:
@@ -449,5 +450,177 @@ pub(super) fn decode_title_summaries(
         })
         .collect::<Result<Vec<_>, CodecError>>()?;
     validate_title_summaries(&titles, inputs)?;
+    Ok(titles)
+}
+
+/// Encodes which fields the browser may show (Protocol 2.90) positionally,
+/// one `1` (exposed) or `0` (hidden) per field.
+pub(super) fn encode_title_field_exposure(exposed: impl IntoIterator<Item = bool>) -> String {
+    exposed
+        .into_iter()
+        .map(|exposed| if exposed { '1' } else { '0' })
+        .collect()
+}
+
+/// Strictly decodes exactly `count` positional exposure flags.
+pub(super) fn decode_title_field_exposure(
+    value: &str,
+    count: usize,
+) -> Result<Vec<bool>, CodecError> {
+    let invalid = || CodecError::InvalidField {
+        field: FIELD_EXPOSED,
+        value: value.to_owned(),
+    };
+    if value.len() != count {
+        return Err(invalid());
+    }
+    value
+        .bytes()
+        .map(|flag| match flag {
+            b'1' => Ok(true),
+            b'0' => Ok(false),
+            _ => Err(invalid()),
+        })
+        .collect()
+}
+
+/// Encodes a template's exposure list (Protocol 2.90) as comma-separated
+/// `<field>:<0|1>` items, strictly ascending by field.
+pub(super) fn encode_title_exposure_list(
+    fields: &[TitleFieldExposure],
+) -> Result<String, CodecError> {
+    validate_title_exposure_list(fields)?;
+    Ok(fields
+        .iter()
+        .map(|item| format!("{}:{}", item.field, u8::from(item.exposed)))
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+fn validate_title_exposure_list(fields: &[TitleFieldExposure]) -> Result<(), CodecError> {
+    if fields.len() > MAX_TITLE_FIELDS {
+        return Err(CodecError::TooManyItems(FIELDS));
+    }
+    if let Some(pair) = fields
+        .windows(2)
+        .find(|pair| pair[0].field >= pair[1].field)
+    {
+        return Err(CodecError::InvalidField {
+            field: FIELDS,
+            value: pair[1].field.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Strictly decodes a template's exposure list.
+pub(super) fn decode_title_exposure_list(
+    value: &str,
+) -> Result<Vec<TitleFieldExposure>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_TITLE_FIELDS + 1).count() > MAX_TITLE_FIELDS {
+        return Err(CodecError::TooManyItems(FIELDS));
+    }
+    let fields = value
+        .split(',')
+        .map(|entry| {
+            let invalid = || CodecError::InvalidField {
+                field: FIELDS,
+                value: entry.to_owned(),
+            };
+            let (field, exposed) = entry.split_once(':').ok_or_else(invalid)?;
+            Ok(TitleFieldExposure {
+                field: parse_canonical_nonzero(field)
+                    .map(WireTitleFieldId::new)
+                    .ok_or_else(invalid)?,
+                exposed: match exposed {
+                    "1" => true,
+                    "0" => false,
+                    _ => return Err(invalid()),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, CodecError>>()?;
+    validate_title_exposure_list(&fields)?;
+    Ok(fields)
+}
+
+/// Encodes one title phase list item:
+/// `<input>:<phase>:<phase_frame>:<phase_frames>:<shown>:<since_frame>`.
+fn encode_title_phase_status(status: &TitlePhaseStatus) -> Result<String, CodecError> {
+    validate_title_phase(status.phase, status.phase_frame, status.phase_frames)?;
+    Ok(format!(
+        "{}:{}:{}:{}:{}:{}",
+        status.input,
+        encode_title_phase(status.phase),
+        status.phase_frame,
+        status.phase_frames,
+        encode_title_shown(status.timeline),
+        status.timeline.map_or(0, |timeline| timeline.since_frame),
+    ))
+}
+
+fn validate_title_phase_list(titles: &[TitlePhaseStatus]) -> Result<(), CodecError> {
+    if titles.len() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems(TITLES));
+    }
+    for pair in titles.windows(2) {
+        if pair[0].input.get() >= pair[1].input.get() {
+            return Err(CodecError::InvalidField {
+                field: TITLES,
+                value: pair[1].input.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Encodes a `title_phases` list (Protocol 2.90), strictly ascending by
+/// input.
+pub(super) fn encode_title_phases(titles: &[TitlePhaseStatus]) -> Result<String, CodecError> {
+    validate_title_phase_list(titles)?;
+    Ok(titles
+        .iter()
+        .map(encode_title_phase_status)
+        .collect::<Result<Vec<_>, _>>()?
+        .join(","))
+}
+
+/// Strictly decodes a `title_phases` list.
+pub(super) fn decode_title_phases(value: &str) -> Result<Vec<TitlePhaseStatus>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems(TITLES));
+    }
+    let titles = value
+        .split(',')
+        .map(|entry| {
+            let invalid = || CodecError::InvalidField {
+                field: TITLES,
+                value: entry.to_owned(),
+            };
+            let parts: Vec<&str> = entry.split(':').collect();
+            let [input, phase, phase_frame, phase_frames, shown, since_frame] = parts[..] else {
+                return Err(invalid());
+            };
+            let phase = decode_title_phase(phase).map_err(|_| invalid())?;
+            let phase_frame = parse_canonical_u64(phase_frame).ok_or_else(invalid)?;
+            let phase_frames = parse_canonical_u64(phase_frames).ok_or_else(invalid)?;
+            validate_title_phase(phase, phase_frame, phase_frames).map_err(|_| invalid())?;
+            let since_frame = parse_canonical_u64(since_frame).ok_or_else(invalid)?;
+            Ok(TitlePhaseStatus {
+                input: parse_canonical_input(input).ok_or_else(invalid)?,
+                phase,
+                phase_frame,
+                phase_frames,
+                timeline: decode_title_timeline(shown, since_frame).map_err(|_| invalid())?,
+            })
+        })
+        .collect::<Result<Vec<_>, CodecError>>()?;
+    validate_title_phase_list(&titles)?;
     Ok(titles)
 }

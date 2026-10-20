@@ -47,8 +47,9 @@ use super::scene_layout::{
     parse_canonical_scene,
 };
 use super::title::{
-    decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
-    decode_title_timeline, parse_title_air_requirement, validate_title_name, validate_title_phase,
+    decode_title_field_exposure, decode_title_field_names, decode_title_fields, decode_title_phase,
+    decode_title_phases, decode_title_summaries, decode_title_timeline,
+    parse_title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{
     decode_auto_transition_kind, decode_favorite, decode_favorite_slot, decode_favorites,
@@ -140,6 +141,10 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
+        "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
+            frame: fields.canonical_required("frame")?,
+            titles: decode_title_phases(&fields.required("titles")?)?,
+        }),
         "playlist_state" => WireMessage::PlaylistState(decode_playlist_state_record(&mut fields)?),
         "grade_state" => WireMessage::GradeState(decode_grade_state(&mut fields)?),
         "title_animation_state" => {
@@ -807,7 +812,7 @@ fn decode_command_payload(
         "manual_commit" => CommandPayload::CommitManualTransition,
         "manual_cancel" => CommandPayload::CancelManualTransition,
         edit @ ("undo" | "redo" | "edit_lock") => decode_edit_command(fields, edit)?,
-        title @ ("title_fields" | "title_take" | "title_off_air") => {
+        title @ ("title_fields" | "title_take" | "title_off_air" | "title_field_exposure") => {
             decode_title_command(fields, title)?
         }
         name if name.starts_with("title_animation_") => {
@@ -941,6 +946,21 @@ fn decode_title_command(fields: &mut Fields, name: &str) -> Result<CommandPayloa
             base_revision: fields.canonical_required("base_revision")?,
             fields: decode_title_fields(&fields.required("fields")?)?,
         },
+        "title_field_exposure" => {
+            let value = fields.required("field")?;
+            let field = parse_canonical_u128(&value)
+                .and_then(NonZeroU128::new)
+                .map(crate::WireTitleFieldId::new)
+                .ok_or(CodecError::InvalidField {
+                    field: "field",
+                    value,
+                })?;
+            CommandPayload::SetTitleFieldExposure {
+                input,
+                field,
+                exposed: fields.boolean("exposed")?,
+            }
+        }
         _ => CommandPayload::TitleOffAir { input },
     })
 }
@@ -1312,6 +1332,17 @@ fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewReque
         .optional("clip")
         .map(|clip| decode_clip(&clip).map(Box::new))
         .transpose()?;
+    // Drafts (Protocol 2.90) are absent rather than empty.
+    let draft = match fields.optional("fields") {
+        None => Vec::new(),
+        Some(value) if value.is_empty() => {
+            return Err(CodecError::InvalidField {
+                field: "fields",
+                value,
+            });
+        }
+        Some(value) => decode_title_fields(&value)?,
+    };
     Ok(TitlePreviewRequest {
         protocol: head.protocol,
         request_id: head.request_id,
@@ -1320,6 +1351,7 @@ fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewReque
         width: head.width,
         height: head.height,
         clip,
+        fields: draft,
     })
 }
 
@@ -1387,8 +1419,7 @@ fn decode_title_preview_frame(fields: &mut Fields) -> Result<TitlePreviewFrameMe
 fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecError> {
     let name = fields.required("name")?;
     validate_title_name(&name)?;
-    let values = decode_title_fields(&fields.required("fields")?)?;
-    let names = decode_title_field_names(&fields.required("field_names")?, values.len())?;
+    let statuses = decode_title_field_statuses(fields)?;
     let phase = decode_title_phase(&fields.required("phase")?)?;
     let phase_frame = fields.canonical_required("phase_frame")?;
     let phase_frames = fields.canonical_required("phase_frames")?;
@@ -1405,16 +1436,27 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
         phase_frame,
         phase_frames,
         timeline,
-        fields: values
-            .into_iter()
-            .zip(names)
-            .map(|(update, name)| TitleFieldStatus {
-                field: update.field,
-                name,
-                value: update.value,
-            })
-            .collect(),
+        fields: statuses,
     })
+}
+
+/// A title's complete field state from its `fields`, `field_names`, and
+/// `field_exposed` (Protocol 2.90) values.
+fn decode_title_field_statuses(fields: &mut Fields) -> Result<Vec<TitleFieldStatus>, CodecError> {
+    let values = decode_title_fields(&fields.required("fields")?)?;
+    let names = decode_title_field_names(&fields.required("field_names")?, values.len())?;
+    let exposed = decode_title_field_exposure(&fields.required("field_exposed")?, values.len())?;
+    Ok(values
+        .into_iter()
+        .zip(names)
+        .zip(exposed)
+        .map(|((update, name), exposed)| TitleFieldStatus {
+            field: update.field,
+            name,
+            value: update.value,
+            exposed,
+        })
+        .collect())
 }
 
 fn decode_new_input_name(fields: &mut Fields) -> Result<String, CodecError> {
@@ -2709,6 +2751,14 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             fields: decode_title_fields(&fields.required("fields")?)?,
             overlays: decode_overlays(fields, "overlays")?,
         },
+        "title_exposure_changed" => {
+            let inputs = parse_input_ids(&fields.required("inputs")?)?;
+            validate_animation_inputs(&inputs)?;
+            EventPayload::TitleExposureChanged {
+                inputs,
+                fields: super::title::decode_title_exposure_list(&fields.required("fields")?)?,
+            }
+        }
         "cue_list_changed" => {
             EventPayload::CueListChanged(Box::new(super::cue::decode_list(fields)?))
         }

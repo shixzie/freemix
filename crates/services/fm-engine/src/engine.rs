@@ -423,6 +423,10 @@ pub enum EngineCommand {
     /// Edits a title template's animation (see
     /// [`crate::EngineTitleAnimationEdit`]). A project edit.
     TitleAnimation(crate::EngineTitleAnimationEdit),
+    /// Shows or hides one title template field in the browser title editor
+    /// (see [`crate::EngineTitleExposureEdit`]). A project edit that is not
+    /// undoable.
+    TitleExposure(crate::EngineTitleExposureEdit),
     /// Edits a scene's layer animation (see
     /// [`crate::EngineSceneAnimationEdit`]). A project edit.
     SceneAnimation(crate::EngineSceneAnimationEdit),
@@ -685,6 +689,12 @@ pub enum EngineEvent {
     /// `input`'s template; the animation afterwards is read from
     /// [`ShowState::title`].
     TitleAnimationChanged {
+        input: InputId,
+    },
+    /// A title template field was shown or hidden in the browser title
+    /// editor for `input`'s template; the exposure afterwards is read from
+    /// [`ShowState::title`].
+    TitleExposureChanged {
         input: InputId,
     },
     /// A scene animation edit (or its undo or redo) was accepted for
@@ -3571,6 +3581,13 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::TitleExposure(edit) = &self.command {
+            crate::title_animation::apply_exposure(state, edit)?;
+            events.push(EngineEvent::TitleExposureChanged { input: edit.input });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SceneAnimation(edit) = &self.command {
             crate::scene_animation::apply(state, edit, self.scene_clip_bound)?;
             events.push(EngineEvent::SceneAnimationChanged { input: edit.input });
@@ -4140,6 +4157,7 @@ impl EngineMutation {
             }
             EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
+            | EngineCommand::TitleExposure(_)
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
@@ -4750,6 +4768,7 @@ fn apply_runtime(
             | EngineCommand::SetTitleFields { .. }
             | EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
+            | EngineCommand::TitleExposure(_)
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::SceneLayer(_)
             | EngineCommand::AudioMixer(_)
@@ -4941,6 +4960,7 @@ fn apply_runtime(
         }
         EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
+        | EngineCommand::TitleExposure(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::SceneLayer(_)
         | EngineCommand::AudioMixer(_)
@@ -5138,6 +5158,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RealizeTitle(_)
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
+        | EngineCommand::TitleExposure(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::SceneLayer(_)
         | EngineCommand::AudioMixer(_)

@@ -3473,11 +3473,13 @@ mod titles {
                         field: field(NAME),
                         name: "Name".into(),
                         value: TitleFieldValue::Text("Ana".into()),
+                        exposed: true,
                     },
                     TitleFieldStatus {
                         field: field(SCORE),
                         name: "Score".into(),
                         value: TitleFieldValue::Number(9),
+                        exposed: true,
                     },
                 ],
             }]
@@ -4324,6 +4326,154 @@ fn title_animation_edits_refuse_clips_without_a_wire_encoding() {
     for state in states {
         encode_line(&WireMessage::TitleAnimationState(state)).unwrap();
     }
+}
+
+/// GX-006 (Protocol 2.90): a field's browser exposure is a template-wide
+/// project edit Graphics may make; it publishes `title_exposure_changed`
+/// for every title sharing the template, shows in `title_state`, and is not
+/// undoable.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_field_exposure_is_a_template_wide_project_edit() {
+    use fm_engine::EngineTitle;
+    use fm_protocol::{TitleFieldExposure, WireTitleFieldId};
+    use fm_titles::{
+        Color, FieldDefinition, FieldId, FieldValue, TemplateId, TitleAnimation, TitleFieldSet,
+        TitleTemplate,
+    };
+
+    let definition = |id: u128, name: &str| FieldDefinition {
+        id: FieldId::new(NonZeroU128::new(id).unwrap()),
+        name: name.into(),
+        default: FieldValue::Text(name.into()),
+        exposed: true,
+    };
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(9).unwrap()),
+        name: "Lower".into(),
+        width: 32,
+        height: 18,
+        background: Color::TRANSPARENT,
+        fields: vec![definition(1, "Name"), definition(2, "Secret")],
+        elements: Vec::new(),
+        animation: TitleAnimation::default(),
+    };
+    let mut show = ShowState::new(
+        "show",
+        named_inputs([input(1), input(2), input(3), input(4)]),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    for title in [input(3), input(4)] {
+        show.set_title(
+            title,
+            EngineTitle::new("Lower", TitleFieldSet::from_template(&template).unwrap())
+                .with_template("titles/lower.fmtitle", template.clone()),
+        )
+        .unwrap();
+    }
+    let mut control = ControlService::new(
+        Engine::new(
+            show,
+            FrameRate::new(60, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        ),
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 8,
+            max_subscribers: 4,
+            subscriber_queue: 8,
+        },
+    );
+    let field = |id: u128| WireTitleFieldId::new(NonZeroU128::new(id).unwrap());
+    let hide = CommandPayload::SetTitleFieldExposure {
+        input: WireInputId::from_domain(input(3)),
+        field: field(2),
+        exposed: false,
+    };
+    assert_eq!(
+        control.required_classes(&hide).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            command("o", "o", hide.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+
+    let hidden = control
+        .submit(&principal(Role::Graphics), command("h", "h", hide), 0)
+        .unwrap();
+    assert!(hidden.is_accepted(), "{:?}", hidden.output.result);
+    assert_eq!(
+        hidden.output.events[0].payload,
+        EventPayload::TitleExposureChanged {
+            inputs: vec![
+                WireInputId::from_domain(input(3)),
+                WireInputId::from_domain(input(4)),
+            ],
+            fields: vec![
+                TitleFieldExposure {
+                    field: field(1),
+                    exposed: true,
+                },
+                TitleFieldExposure {
+                    field: field(2),
+                    exposed: false,
+                },
+            ],
+        }
+    );
+    assert_wire_exact(&control, &hidden);
+    // Both titles sharing the template report it; values do not change.
+    for state in control.title_states() {
+        let flags: Vec<bool> = state.fields.iter().map(|status| status.exposed).collect();
+        assert_eq!(flags, [true, false], "{state:?}");
+        assert_eq!(state.field_revision, 0);
+    }
+    let template_now = control.title_template(input(4)).unwrap();
+    assert!(!template_now.template.fields[1].exposed);
+    // Not undoable: nothing entered the history.
+    assert_eq!(hidden.output.events[0].edit_history.undo_depth, 0);
+
+    let unknown = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "u",
+                "u",
+                CommandPayload::SetTitleFieldExposure {
+                    input: WireInputId::from_domain(input(3)),
+                    field: field(7),
+                    exposed: true,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
+    let not_title = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "n",
+                "n",
+                CommandPayload::SetTitleFieldExposure {
+                    input: WireInputId::from_domain(input(1)),
+                    field: field(1),
+                    exposed: true,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&not_title), Some("not_found"));
 }
 
 /// GX-011 stage 4a: title animation edits are `EditProject`, revision

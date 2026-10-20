@@ -94,9 +94,10 @@ pub use dto::{
     ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
     StreamRealizedState, StreamStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
-    TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitlePhase,
-    TitleShownOn, TitleStateMessage, TitleSummary, TitleTimelineStatus, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    TitleAirRequirement, TitleFieldExposure, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue,
+    TitlePhase, TitlePhaseStatus, TitlePhasesMessage, TitleShownOn, TitleStateMessage,
+    TitleSummary, TitleTimelineStatus, WireInputId, WireMessage, WireOutputId,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
     WireTitleFieldId, choose_handshake_outcome,
 };
 pub use dto::{
@@ -122,9 +123,10 @@ pub use dto::{
     MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_CANVAS_SIDE, MAX_TITLE_ELEMENT_NAME_BYTES,
     MAX_TITLE_LAYOUT_BYTES, MAX_TITLE_LAYOUT_ELEMENTS, MAX_TITLE_PREVIEW_HEIGHT,
     MAX_TITLE_PREVIEW_PART_BYTES, MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH,
-    TitleAnimationStateMessage, TitleLayoutStateMessage, TitlePreviewFrameMessage,
-    TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
-    WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
+    MAX_WEB_TITLE_PREVIEW_HEIGHT, MAX_WEB_TITLE_PREVIEW_WIDTH, TitleAnimationStateMessage,
+    TitleLayoutStateMessage, TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest,
+    TitlePreviewSample, WireTitleClip, WireTitleElementId, WireTitleElementKind,
+    WireTitleElementOutline, WireTitleLayout,
 };
 pub use fm_command::{
     FaultDetail, IdKind, InputUse, MAX_FAULT_MESSAGE_BYTES, MAX_REFUSAL_FIELD_BYTES, RefusalReason,

@@ -726,6 +726,13 @@ pub enum DurableChange {
         inputs: Vec<InputId>,
         animation: TitleAnimationStatus,
     },
+    /// A title template's browser exposure after an edit (Protocol 2.90):
+    /// every title input sharing the template and the template's exposure
+    /// by field.
+    TitleExposureChanged {
+        inputs: Vec<InputId>,
+        fields: Vec<fm_protocol::TitleFieldExposure>,
+    },
     /// A scene's layer animation after an edit, undo, or redo (Protocol
     /// 2.31): every Scene input showing the scene (ascending) and the
     /// animation they all show.
@@ -1058,6 +1065,15 @@ impl DurableProjectEvent {
                 DurableChange::AnimationPresetChanged(change)
             }
             payload @ EventPayload::TitleAnimationChanged { .. } => title_animation_change(payload),
+            EventPayload::TitleExposureChanged { inputs, fields } => {
+                DurableChange::TitleExposureChanged {
+                    inputs: inputs
+                        .into_iter()
+                        .map(fm_protocol::WireInputId::to_domain)
+                        .collect(),
+                    fields,
+                }
+            }
             EventPayload::SceneAnimationChanged {
                 inputs,
                 animation_revision,
@@ -4867,6 +4883,12 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::TitleAnimationChanged { .. } => {
             return validate_animation_change(change, state);
         }
+        DurableChange::TitleExposureChanged { inputs, .. } => {
+            return match inputs.iter().find(|input| state.title(**input).is_none()) {
+                Some(input) => Err(ModelError::UnknownTitle(*input)),
+                None => Ok(()),
+            };
+        }
         DurableChange::SceneAnimationChanged { inputs, animation } => {
             return validate_scene_animation_change(inputs, animation, state);
         }
@@ -5677,6 +5699,19 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             for title in &mut state.titles {
                 if inputs.contains(&title.input) {
                     title.animation = Some(animation.clone());
+                }
+            }
+        }
+        DurableChange::TitleExposureChanged { inputs, fields } => {
+            for title in state
+                .titles
+                .iter_mut()
+                .filter(|title| inputs.contains(&title.input))
+            {
+                for status in &mut title.fields {
+                    if let Some(item) = fields.iter().find(|item| item.field == status.field) {
+                        status.exposed = item.exposed;
+                    }
                 }
             }
         }

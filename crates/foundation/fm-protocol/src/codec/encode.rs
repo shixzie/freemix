@@ -43,8 +43,9 @@ use super::scene_layout::{
     encode_layout_scenes, encode_scene_clip, encode_scene_layers, encode_scene_list,
 };
 use super::title::{
-    encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_shown,
-    encode_title_summaries, title_air_requirement, validate_title_name, validate_title_phase,
+    encode_title_field_exposure, encode_title_field_names, encode_title_fields, encode_title_phase,
+    encode_title_phases, encode_title_shown, encode_title_summaries, title_air_requirement,
+    validate_title_name, validate_title_phase,
 };
 use super::transition::{encode_favorite, encode_favorites, validate_favorite_slot};
 use super::value::{
@@ -114,6 +115,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::Error(message) => encode_error_message(&mut record, message)?,
         WireMessage::TitleState(message) => encode_title_state(&mut record, message)?,
+        WireMessage::TitlePhases(message) => encode_title_phases_record(&mut record, message)?,
         WireMessage::PlaylistState(message) => {
             encode_playlist_state_record(&mut record, message)?;
         }
@@ -445,7 +447,8 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::RemoveInput { .. }) => encode_input_catalogue_command(record, payload)?,
         payload @ (CommandPayload::SetTitleFields { .. }
         | CommandPayload::TakeTitle { .. }
-        | CommandPayload::TitleOffAir { .. }) => encode_title_command(record, payload)?,
+        | CommandPayload::TitleOffAir { .. }
+        | CommandPayload::SetTitleFieldExposure { .. }) => encode_title_command(record, payload)?,
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => encode_playlist_command(record, payload)?,
@@ -900,6 +903,16 @@ fn encode_title_command(record: &mut Record, payload: &CommandPayload) -> Result
             record.field("payload", "title_off_air")?;
             record.field("input", input)
         }
+        CommandPayload::SetTitleFieldExposure {
+            input,
+            field,
+            exposed,
+        } => {
+            record.field("payload", "title_field_exposure")?;
+            record.field("input", input)?;
+            record.field("field", field)?;
+            record.field("exposed", u8::from(*exposed))
+        }
         _ => unreachable!("only title commands are delegated"),
     }
 }
@@ -1262,6 +1275,9 @@ fn encode_title_preview_request(
     message: &TitlePreviewRequest,
 ) -> Result<(), CodecError> {
     let clip = message.clip.as_deref().map(encode_clip).transpose()?;
+    let fields = (!message.fields.is_empty())
+        .then(|| encode_title_fields(&message.fields))
+        .transpose()?;
     encode_preview_head(
         record,
         "title_preview_request",
@@ -1273,6 +1289,9 @@ fn encode_title_preview_request(
     )?;
     if let Some(clip) = clip {
         record.field_string("clip", clip)?;
+    }
+    if let Some(fields) = fields {
+        record.field_string("fields", fields)?;
     }
     Ok(())
 }
@@ -1368,16 +1387,7 @@ fn encode_playlist_command(
 fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Result<(), CodecError> {
     validate_title_name(&message.name)?;
     validate_title_phase(message.phase, message.phase_frame, message.phase_frames)?;
-    let updates = message
-        .fields
-        .iter()
-        .map(|status| TitleFieldUpdate {
-            field: status.field,
-            value: status.value.clone(),
-        })
-        .collect::<Vec<_>>();
-    let fields = encode_title_fields(&updates)?;
-    let names = encode_title_field_names(message.fields.iter().map(|status| status.name.as_str()))?;
+    let (fields, names, exposed) = encode_title_field_statuses(&message.fields)?;
     record.kind("title_state");
     record.field("revision", message.revision)?;
     record.field("input", message.input)?;
@@ -1392,7 +1402,38 @@ fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Resul
         message.timeline.map_or(0, |timeline| timeline.since_frame),
     )?;
     record.field_string("fields", fields)?;
-    record.field_string("field_names", names)
+    record.field_string("field_names", names)?;
+    record.field_string("field_exposed", exposed)
+}
+
+/// A title's complete field state as its `fields`, `field_names`, and
+/// `field_exposed` (Protocol 2.90) values.
+fn encode_title_field_statuses(
+    statuses: &[crate::TitleFieldStatus],
+) -> Result<(String, String, String), CodecError> {
+    let updates = statuses
+        .iter()
+        .map(|status| TitleFieldUpdate {
+            field: status.field,
+            value: status.value.clone(),
+        })
+        .collect::<Vec<_>>();
+    Ok((
+        encode_title_fields(&updates)?,
+        encode_title_field_names(statuses.iter().map(|status| status.name.as_str()))?,
+        encode_title_field_exposure(statuses.iter().map(|status| status.exposed)),
+    ))
+}
+
+/// One lossy `title_phases` record (Protocol 2.90).
+fn encode_title_phases_record(
+    record: &mut Record,
+    message: &crate::TitlePhasesMessage,
+) -> Result<(), CodecError> {
+    let titles = encode_title_phases(&message.titles)?;
+    record.kind("title_phases");
+    record.field("frame", message.frame)?;
+    record.field_string("titles", titles)
 }
 
 fn encode_manual_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
@@ -2444,6 +2485,13 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("field_revision", field_revision)?;
             record.field_string("fields", fields)?;
             encode_overlays(record, "overlays", overlays)?;
+        }
+        EventPayload::TitleExposureChanged { inputs, fields } => {
+            super::animation::validate_animation_inputs(inputs)?;
+            let fields = super::title::encode_title_exposure_list(fields)?;
+            record.field("event", "title_exposure_changed")?;
+            record.field_string("inputs", input_ids(inputs)?)?;
+            record.field_string("fields", fields)?;
         }
         payload @ EventPayload::PlaylistChanged { .. } => encode_playlist_changed(record, payload)?,
         EventPayload::CueListChanged(list) => {

@@ -719,6 +719,7 @@ impl Client {
             | WireMessage::Heartbeat(_)
             | WireMessage::AudioMeters(_)
             | WireMessage::StreamStatus(_)
+            | WireMessage::TitlePhases(_)
             | WireMessage::RecorderStatus(_)
             | WireMessage::SourceSyncStatus(_)
             | WireMessage::MonitorFrame(_)
@@ -2035,6 +2036,7 @@ impl Client {
             | CommandPayload::SetTitleFields { .. }
             | CommandPayload::TakeTitle { .. }
             | CommandPayload::TitleOffAir { .. }
+            | CommandPayload::SetTitleFieldExposure { .. }
             | CommandPayload::SetPlaylist { .. }
             | CommandPayload::PlaylistControl { .. }
             | CommandPayload::PlaylistAdvance { .. }

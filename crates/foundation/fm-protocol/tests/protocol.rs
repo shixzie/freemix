@@ -4033,6 +4033,7 @@ mod titles {
             field: field(id),
             name: name.to_owned(),
             value,
+            exposed: true,
         }
     }
 
@@ -4046,9 +4047,18 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert_eq!(
             encoded,
-            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
+            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\tfield_exposed=11\n"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
+        // Protocol 2.90: which fields the browser title editor may show.
+        let WireMessage::TitleState(mut hidden) = message.clone() else {
+            unreachable!()
+        };
+        hidden.fields[1].exposed = false;
+        let hidden = WireMessage::TitleState(hidden);
+        let line = encode_line(&hidden).unwrap();
+        assert!(line.ends_with("\tfield_exposed=10\n"), "{line}");
+        assert_eq!(decode_line(&line).unwrap(), hidden);
         // Protocol 2.81: where the title is shown and the frame its
         // timeline started on (GX-001).
         for (shown, token) in [
@@ -4072,7 +4082,7 @@ mod titles {
         }
         let empty = state(Vec::new());
         let encoded_empty = encode_line(&empty).unwrap();
-        assert!(encoded_empty.ends_with("\tfields=\tfield_names=\n"));
+        assert!(encoded_empty.ends_with("\tfields=\tfield_names=\tfield_exposed=\n"));
         assert_eq!(decode_line(&encoded_empty).unwrap(), empty);
 
         let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
@@ -4094,6 +4104,21 @@ mod titles {
                 "field_names=11%3AName%2C%20first%2C5%3AScore",
                 "field_names=11%3AName%2C%20first%2C1%3A%20",
                 invalid("field_names", " "),
+            ),
+            (
+                "field_exposed=11",
+                "field_exposed=1",
+                invalid("field_exposed", "1"),
+            ),
+            (
+                "field_exposed=11",
+                "field_exposed=111",
+                invalid("field_exposed", "111"),
+            ),
+            (
+                "field_exposed=11",
+                "field_exposed=12",
+                invalid("field_exposed", "12"),
             ),
             ("name=Lower%20third", "name=%20", invalid("name", " ")),
             ("revision=9", "revision=09", invalid("revision", "09")),
@@ -4131,6 +4156,10 @@ mod titles {
         assert_eq!(
             decode_line(&encoded.replace("\tfield_names=11%3AName%2C%20first%2C5%3AScore", "")),
             Err(CodecError::MissingField("field_names"))
+        );
+        assert_eq!(
+            decode_line(&encoded.replace("\tfield_exposed=11", "")),
+            Err(CodecError::MissingField("field_exposed"))
         );
         assert_eq!(
             decode_line(&encoded.replace("\tphase=in", "")),

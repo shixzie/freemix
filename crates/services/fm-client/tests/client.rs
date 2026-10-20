@@ -1752,6 +1752,7 @@ mod titles {
                 field: field(1),
                 name: "Name".into(),
                 value: TitleFieldValue::Text("Ana".into()),
+                exposed: true,
             }],
         }
     }
@@ -2094,6 +2095,7 @@ mod playlists {
                 field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Name".into(),
                 value: TitleFieldValue::Text("Ana".into()),
+                exposed: true,
             }],
         }
     }

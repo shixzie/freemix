@@ -3046,6 +3046,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetTitleFieldExposure { .. }
         | CommandPayload::SetShortcut { .. }
         | CommandPayload::RemoveShortcut { .. }
         | CommandPayload::SetPlaylist { .. }
@@ -3295,6 +3296,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetTitleFields { .. }
         | CommandPayload::TakeTitle { .. }
         | CommandPayload::TitleOffAir { .. }) => title_engine_command(payload),
+        payload @ CommandPayload::SetTitleFieldExposure { .. } => {
+            title_animation::title_exposure_engine_command(payload)
+        }
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => playlist::playlist_engine_command(payload),
@@ -3483,16 +3487,19 @@ fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
                     .fields
                     .values()
                     .iter()
-                    .map(|(field, value)| TitleFieldStatus {
-                        field: WireTitleFieldId::new(field.get()),
-                        name: title
+                    .map(|(field, value)| {
+                        let definition = title
                             .fields
                             .definitions()
                             .iter()
                             .find(|definition| definition.id == *field)
-                            .map(|definition| definition.name.clone())
-                            .expect("every title value has a definition"),
-                        value: wire_title_value(value),
+                            .expect("every title value has a definition");
+                        TitleFieldStatus {
+                            field: WireTitleFieldId::new(field.get()),
+                            name: definition.name.clone(),
+                            value: wire_title_value(value),
+                            exposed: definition.exposed,
+                        }
                     })
                     .collect(),
             }
@@ -4254,6 +4261,14 @@ fn accepted_event_payload(
         Some(*input)
     }) {
         return title_animation::title_animation_changed(engine, input);
+    }
+    if let Some(input) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::TitleExposureChanged { input } = &event.payload else {
+            return None;
+        };
+        Some(*input)
+    }) {
+        return title_animation::title_exposure_changed(engine, input);
     }
     if let Some(input) = outcome.events.iter().find_map(|event| {
         let EngineEvent::SceneAnimationChanged { input } = &event.payload else {

@@ -7452,6 +7452,7 @@ mod tests {
                     field: title_field(),
                     name: "Name".into(),
                     value: TitleFieldValue::Text("Ana".into()),
+                    exposed: true,
                 }],
             }
         }
@@ -8258,6 +8259,7 @@ mod tests {
                 width: 64,
                 height: 36,
                 clip: None,
+                fields: Vec::new(),
             };
             let mut pending = PendingIntents::new();
             pending

@@ -1655,6 +1655,7 @@ fn title_previews_are_requested_assembled_and_atomic() {
         width,
         height,
         clip: None,
+        fields: Vec::new(),
     };
 
     let (release_tx, release_rx) = mpsc::channel();

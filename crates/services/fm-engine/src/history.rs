@@ -150,6 +150,7 @@ impl EngineCommand {
             | Self::SetPlaylist { .. }
             | Self::Grade(_)
             | Self::TitleAnimation(_)
+            | Self::TitleExposure(_)
             | Self::SceneAnimation(_)
             | Self::SceneLayer(_)
             | Self::AnimationPreset(_)

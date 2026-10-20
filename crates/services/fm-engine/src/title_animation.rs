@@ -27,7 +27,8 @@ use std::sync::Arc;
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_titles::{
-    AnimationEditError, ElementId, TitleAirTiming, TitleAnimation, TitleClip, TitleTemplate,
+    AnimationEditError, ElementId, FieldId, TitleAirTiming, TitleAnimation, TitleClip,
+    TitleTemplate,
     fm_animation::{AnimationPreset, ClipError, Phase},
 };
 use fm_types::InputId;
@@ -272,6 +273,54 @@ pub fn title_template_inputs(state: &ShowState, input: InputId) -> Vec<InputId> 
         })
         .map(|(input, _)| *input)
         .collect()
+}
+
+/// Shows or hides one field of a title template in the browser title
+/// editor (GX-006, Protocol 2.90). The flag is the template's, so every
+/// title input sharing it changes. Not undoable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineTitleExposureEdit {
+    pub input: InputId,
+    pub field: FieldId,
+    pub exposed: bool,
+}
+
+/// Applies an exposure edit to `input`'s template and to the field set of
+/// every title input sharing it. Setting the flag it already has is
+/// accepted and changes nothing.
+pub(crate) fn apply_exposure(
+    state: &mut ShowState,
+    edit: &EngineTitleExposureEdit,
+) -> Result<(), Rejection> {
+    let current = template_of(state, edit.input)?;
+    let mut template = (*current.template).clone();
+    let Some(definition) = template
+        .fields
+        .iter_mut()
+        .find(|definition| definition.id == edit.field)
+    else {
+        return Err(rejection(
+            RejectionCode::NotFound,
+            "field",
+            "unknown_field",
+            format!(
+                "title {} template has no field {}",
+                edit.input,
+                edit.field.get()
+            ),
+        ));
+    };
+    definition.exposed = edit.exposed;
+    let template = Arc::new(template);
+    for input in title_template_inputs(state, edit.input) {
+        if let Some(title) = state.title_mut(input) {
+            title.fields.set_exposed(edit.field, edit.exposed);
+            if let Some(shared) = title.template.as_mut() {
+                shared.template = Arc::clone(&template);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Applies one checked edit: every title input sharing the template takes

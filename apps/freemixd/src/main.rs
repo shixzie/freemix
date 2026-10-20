@@ -14994,6 +14994,7 @@ fn command_base_ticks(
         | CommandPayload::RunScript { .. }
         | CommandPayload::StopScript { .. }
         | CommandPayload::SetTitleAnimation { .. }
+        | CommandPayload::SetTitleFieldExposure { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
         | CommandPayload::SetSceneAnimation { .. }

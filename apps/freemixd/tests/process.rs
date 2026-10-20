@@ -6796,6 +6796,7 @@ fn assert_title_state(
                     blue: color.2,
                     alpha: 255,
                 },
+                exposed: true,
             }],
         }
     );
@@ -7684,6 +7685,7 @@ fn title_animation_edits_preview_exactly_and_persist_through_restart() {
         width: 64,
         height: 36,
         clip: None,
+        fields: Vec::new(),
     };
     viewer.send(&WireMessage::TitlePreviewRequest(viewer_preview));
     loop {
@@ -7772,6 +7774,7 @@ fn title_animation_edits_preview_exactly_and_persist_through_restart() {
             width: 640,
             height: 360,
             clip: None,
+            fields: Vec::new(),
         },
     );
     assert_eq!(
@@ -7804,6 +7807,7 @@ fn title_animation_edits_preview_exactly_and_persist_through_restart() {
             width: 320,
             height: 180,
             clip: Some(Box::new(to_wire(&draft.animation.clip))),
+            fields: Vec::new(),
         },
     );
     assert!(image.draft);

@@ -503,6 +503,23 @@ impl TitleFieldSet {
         &self.definitions
     }
 
+    /// Marks `field` exposed to (or hidden from) the browser title editor,
+    /// following its template. Values and the revision do not change.
+    /// Returns `false` when the set has no such field.
+    pub fn set_exposed(&mut self, field: FieldId, exposed: bool) -> bool {
+        match self
+            .definitions
+            .iter_mut()
+            .find(|definition| definition.id == field)
+        {
+            Some(definition) => {
+                definition.exposed = exposed;
+                true
+            }
+            None => false,
+        }
+    }
+
     #[must_use]
     pub fn field_type(&self, field: FieldId) -> Option<FieldType> {
         self.field_types.get(&field).copied()

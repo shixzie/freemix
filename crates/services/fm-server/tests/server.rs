@@ -789,6 +789,7 @@ fn title_previews_need_edit_project_and_have_their_own_rate() {
         width: 64,
         height: 36,
         clip: None,
+        fields: Vec::new(),
     };
 
     let mut operator = session_for(Role::Operator, AuthRole::Operator);
@@ -861,6 +862,7 @@ fn scene_previews_need_edit_project_and_share_the_preview_rate() {
         width: 64,
         height: 36,
         clip: None,
+        fields: Vec::new(),
     };
 
     let mut operator = session_for(Role::Operator, AuthRole::Operator);

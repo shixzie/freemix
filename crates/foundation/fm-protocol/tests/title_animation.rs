@@ -392,6 +392,7 @@ fn request(sample: TitlePreviewSample, clip: Option<WireTitleClip>) -> WireMessa
         width: 640,
         height: 360,
         clip: clip.map(Box::new),
+        fields: Vec::new(),
     })
 }
 

@@ -503,11 +503,13 @@ fn model(variant: Variant) -> ClientModel {
                     field: field(1),
                     name: "Name".into(),
                     value: TitleFieldValue::Text("Ana".into()),
+                    exposed: true,
                 },
                 TitleFieldStatus {
                     field: field(2),
                     name: "Score".into(),
                     value: TitleFieldValue::Number(4),
+                    exposed: true,
                 },
                 TitleFieldStatus {
                     field: field(3),
@@ -518,6 +520,7 @@ fn model(variant: Variant) -> ClientModel {
                         blue: 0x33,
                         alpha: 0xFF,
                     },
+                    exposed: true,
                 },
                 TitleFieldStatus {
                     field: field(4),
@@ -525,6 +528,7 @@ fn model(variant: Variant) -> ClientModel {
                     value: TitleFieldValue::Image {
                         asset_uri: "asset://logo.png".into(),
                     },
+                    exposed: true,
                 },
             ],
         })

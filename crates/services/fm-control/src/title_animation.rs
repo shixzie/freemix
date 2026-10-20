@@ -7,7 +7,7 @@ use fm_engine::{
 };
 use fm_protocol::{
     CommandPayload, EventPayload, MAX_TITLE_ANIMATION_BYTES, TitleAnimationStateMessage,
-    WireInputId, WireTitleClip, WireTitleElementId, title_clip_wire_bytes,
+    TitleFieldExposure, WireInputId, WireTitleClip, WireTitleElementId, title_clip_wire_bytes,
 };
 use fm_titles::fm_animation::{Clip, ClipError, Track, TrackKey};
 use fm_titles::{ElementId, TitleAnimation, TitleClip};
@@ -221,6 +221,52 @@ pub fn title_animation_changed(engine: &Engine, input: InputId) -> EventPayload 
             .collect(),
         animation_revision: animation.revision,
         clip: Box::new(title_clip_to_wire(&animation.clip)),
+    }
+}
+
+/// Maps `title_field_exposure` (Protocol 2.90).
+pub fn title_exposure_engine_command(payload: &CommandPayload) -> EngineCommand {
+    let CommandPayload::SetTitleFieldExposure {
+        input,
+        field,
+        exposed,
+    } = payload
+    else {
+        unreachable!("only title exposure commands are delegated")
+    };
+    EngineCommand::TitleExposure(fm_engine::EngineTitleExposureEdit {
+        input: input.to_domain(),
+        field: fm_titles::FieldId::new(field.get()),
+        exposed: *exposed,
+    })
+}
+
+/// The `title_exposure_changed` payload for an accepted exposure edit of
+/// `input`'s template in the post-command `engine`: every input sharing the
+/// template and the template's whole exposure, ascending by field.
+pub fn title_exposure_changed(engine: &Engine, input: InputId) -> EventPayload {
+    let mut fields: Vec<TitleFieldExposure> = engine
+        .show()
+        .title(input)
+        .map(|title| {
+            title
+                .fields
+                .definitions()
+                .iter()
+                .map(|definition| TitleFieldExposure {
+                    field: fm_protocol::WireTitleFieldId::new(definition.id.get()),
+                    exposed: definition.exposed,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    fields.sort_by_key(|item| item.field);
+    EventPayload::TitleExposureChanged {
+        inputs: title_template_inputs(engine.show(), input)
+            .into_iter()
+            .map(WireInputId::from_domain)
+            .collect(),
+        fields,
     }
 }
 
