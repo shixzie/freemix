@@ -1093,10 +1093,11 @@ details.
 | --- | --- |
 | `studio-round9-workspace.png` | 1920x1080 mid-show on the Cues tab. Every mixer strip and Master shows a `S LUFS` / `I LUFS` readout under its meter: a dim legend beside a bright figure, or `LUFS --` with no reading. The bank now holds Flood Briefing (PDF), Guest Talk (PPTX), Presenter Laptop (window capture) and Guest Green Screen. |
 | `studio-round9-workspace-720.png` | The same show at 1280x720 with the side group on Overlays. |
-| `studio-round9-strip-fx.png` | Anchor Mic's FX window. It shows `Ø INVERT` lit beside HIGH-PASS, the EXPANDER stage on, and `GR` meters with their figures (`0.0 dB`, not `-0.0 dB`) clear of the legend. A LOUDNESS row of boxed M / S / I / TP readouts closes the window. |
-| `studio-round9-media-list.png` | The Media tab maximized. Rundown Clips lists each item with a thumbnail beside its name and In/Out fields. |
-| `studio-round9-documents.png` | The same tab scrolled to DOCUMENTS. Flood Briefing is `READY` on page 2 of 5, with ◀ / ▶, page thumbnails (the current one ringed in the accent while off air) and PRESENTER NOTES. Guest Talk is `UNAVAILABLE`, with the server's advice as a sentence and its own notes. |
-| `studio-round9-add-screen-capture.png` | Add input › `WINDOW / SCREEN` with the Slides · Keynote deck window chosen. Follow-by, While-gone and Captured audio are aligned rows of three option keys, and `Application audio` is selected. The sample's corner badge reads `APPLICATION AUDIO`. |
+| `studio-round9-strip-fx.png` | Anchor Mic's FX window. It shows `Ø INVERT` lit beside HIGH-PASS, the EXPANDER stage on, and `GR` meters with their figures (`0.0 dB`, not `-0.0 dB`) clear of the legend. A LOUDNESS row of boxed M / S / I / TP readouts closes the window. The stage settings read `THR`, `RNG`, `ATK`, `HLD`, `REL`, `RATIO`, `KNEE`, `MAKEUP` and `CEIL`; in Spanish `UMB`, `RANGO`, `ATQ`, `MANT`, `LIB`, `PROP`, `CODO`, `COMP` and `TECHO`, with `RG` meters. |
+| `studio-round9-media-list.png` | The Media tab maximized. Rundown Clips lists each item with a thumbnail beside its name and In/Out fields. The current item's Out reads its file's length (`599`, as the transport's Out); the others read `END` (`FIN`). |
+| `studio-round9-documents.png` | The same tab scrolled to DOCUMENTS. Flood Briefing is `READY` on page 2 of 5, with FIRST ◀ / ▶ LAST, page thumbnails (the current one ringed in the accent while off air) and PRESENTER NOTES. Guest Talk is `UNAVAILABLE`, with the server's advice as a sentence and its own notes. |
+| `studio-round9-add-screen-capture.png` | Add input › `WINDOW / SCREEN` with the Slides · Keynote deck window chosen. Follow-by, While-gone and Captured audio are aligned rows of three option keys, and `Application audio` is selected. The sample's corner badge reads `APPLICATION AUDIO`. The crop is four equal columns, each edge's name over its field. In Spanish the keys keep their columns: `Cualquier ventana de la aplicación` and `Mantener la última imagen` break onto two lines inside their keys. |
+| `studio-round9-add-tile-720.png` | The bank at 1280x720 scrolled to its add tile. The hint names screen captures (`camera · stream · screen · audio · image · list`) and wraps, centred, on the narrow tile. |
 | `studio-round9-shortcuts.png` | Edit › Project shortcuts after importing a four-shortcut set. Picker rows are two lines (name, then key in mono): `Shift+F12 (this console)`, `Ctrl+K, 2 in Cues`, and `Weather wall (off)` dimmed. Jump to cold open is selected, showing the chord key cap, `Remove second key`, `ANSWERS IN Cues`, the OSC hint `None (optional)`, the THIS CONSOLE row, and the SHORTCUT SET FILE export/import row. |
 | `studio-round9-auto-key.png` | The layer designer on Guest Key after `Auto key`: Chroma, the key colour sampled from the green screen, and `Pick colour` lit as an armed toggle over the source picture. |
 | `studio-round9-sync-lamp.png` | A native daemon with Field Feed on Program and Venue Return on Preview. Hovering the status bar `SYNC` lamp opens its popup: a summary, then one non-wrapping line per source. |
@@ -1104,7 +1105,7 @@ details.
 | `studio-round9-*-es.png` | Workspace, strip FX, media list, documents, Add input (window/screen), shortcuts, auto key and both SYNC views with `--lang es`. The Spanish shortcuts capture shows Lower third on with a `Mayús+F12` console key over its project key `Mayús+F10`. |
 | `web-round9-titles.png` | `/titles` at 1920x1080 with a draft on Role: the editor column capped at 64rem, a field-level Revert, and CHANGES TO SEND listing the old and new text. |
 | `web-round9-titles-720.png` | The same at 1280x720. |
-| `web-round9-operator.png` | `/operator` at 1920x1080 (full page) with the SHORTCUTS card. |
+| `web-round9-operator.png` | `/operator` at 1920x1080 (full page) with the SHORTCUTS card, which is only as tall as its buttons. |
 | `web-round9-operator-shortcuts.png` | The SHORTCUTS card on its own. A shortcut disabled in the project is greyed and says `OFF` under its name. |
 | `web-round9-operator-phone.png` | The operator page at 390x844 (2x) scrolled to SHORTCUTS. |
 | `web-round9-*-es.png` | The same pages with `#lang=es`. |
@@ -1151,26 +1152,44 @@ fixes):
   letter beside the wide badges. The name keeps room for a word, and the
   badges stack.
 
+Fixed after the first round 9 pass (the strip FX, media list, documents,
+Add input window/screen and operator captures were re-taken at Protocol
+2.87, schema 72, and `studio-round9-add-tile-720.png` was added):
+
+- The strip FX stage abbreviations come from the catalog, with Spanish
+  forms. The gate hold reads `HLD` (English `HOLD` is the animation
+  phase).
+- Document cards have FIRST and LAST keys (page_navigate first / last).
+- Media list Out fields read `0` for an unmarked item, the wire's "to the
+  file's end". In did show each item's mark. The current item's Out now
+  shows its file's length once the list's transport has opened it, and
+  leaving it untouched keeps the item unmarked. The other items read
+  `END`: the server reports only the open file's length, not each item's.
+- The screen capture option keys keep three columns in Spanish, breaking a
+  long label onto two lines inside its key. The crop is four equal
+  columns.
+- The operator SHORTCUTS card sizes to its content.
+- The add tile hint names screen captures and wraps on narrow tiles; its
+  hover names every kind.
+- On a Wayland server (screen capture backend `portal`), the form disables
+  `Application audio` with a hover reason, and a draft that had it falls
+  back to system audio. Not captured: the simulated daemon lists X11-style
+  targets.
+
 Still open:
 
-- Strip FX stage abbreviations (`THR`, `ATK`, `REL`, `RNG`, `KNEE`,
-  `CEIL`) are not translated.
 - The layer designer canvas reads `OUTLINES ONLY` on the simulated daemon.
 - The PPTX needs LibreOffice on the server. Without it, its tile reads
   `no thumbnail` and the card says `UNAVAILABLE` (expected, but it is what
   the capture shows).
 - The native SYNC lamp is amber in these captures because of loopback UDP
   overruns, not a product fault.
-- Document cards have no First/Last keys, unlike slideshows.
-- The bank's add tile hint (`camera · stream · audio · image · list`) does
-  not mention screen captures. It is painted unclipped, so a longer hint
-  needs a layout check at 1280x720 first.
-- Media list item In/Out fields read `0` until the server probes the file.
-- In Spanish, `Cualquier ventana de la aplicación` is too wide for the
-  three-column screen capture keys, so the Follow-by row falls back to
-  natural widths and wraps. The crop row's last field also wraps.
-- On the operator page, the SHORTCUTS card stretches to the row's height on
-  wide screens (the captures crop it).
+- Media list items other than the current one read `END` for an unmarked
+  Out: showing their lengths needs a per-item duration from the server.
+- A two-line screen capture option key centres its label block but not
+  each line.
+- The workspace, shortcuts, auto key, SYNC and `/titles` captures are from
+  the first pass (Protocol 2.84, schema 71); the fixes do not change them.
 
 ## Reproducing
 
@@ -1903,7 +1922,8 @@ files are generated:
 - `greenscreen.png` is a 1920x1080 green field with a drawn presenter.
 
 `desk.fmshortcuts` is a schema 71 shortcut set named News Desk with four
-shortcuts:
+shortcuts (the re-takes at schema 72 used the same set and
+`lower-third.fmtitle` with `schema_version` set to 72):
 
 | Shortcut | Key | Action |
 | --- | --- | --- |
@@ -1926,7 +1946,9 @@ then run the rundown as in round 8. The captures then click, in turn:
    on Lower third on.
 6. Ctrl+Shift+L, Guest Key, `Auto key`, then `Pick colour` (auto key).
 
-The 1280x720 capture is the workspace right after the rundown.
+The 1280x720 capture is the workspace right after the rundown. The add
+tile capture is the same 1280x720 console with the bank scrolled to its
+end, cropped to the bank panel.
 
 The SYNC captures are separate. They use:
 
