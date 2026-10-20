@@ -14,7 +14,9 @@
 //!   glide linearly with a one-pole smoother (about 20 ms), and the filters
 //!   are retuned every [`SUB_BLOCK`] samples *without* clearing their
 //!   history ([`crate::Biquad::retune`]). A disabled band glides to 0 dB,
-//!   where it is transparent.
+//!   where it is transparent. A band's shape (shelf or peak) changes the
+//!   same way: the band glides to 0 dB, where every shape is the identity,
+//!   takes its new shape there, and glides back to its gain.
 //! - Dynamics thresholds, ranges, ratios, knees, makeup, and the limiter
 //!   ceiling glide the same way; attack, hold, and release take effect at
 //!   once (they shape the detector, not the signal).
@@ -154,7 +156,10 @@ impl Fade {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BandGlide {
+    /// The shape the band's filter has now.
     kind: EqBandKind,
+    /// A new shape the band takes once its gain has glided to 0 dB.
+    pending_kind: Option<EqBandKind>,
     log_frequency: Glide,
     gain_db: Glide,
     q: Glide,
@@ -306,6 +311,7 @@ impl LiveStripDsp {
             let band = &settings.eq.bands[index];
             BandGlide {
                 kind: band.kind,
+                pending_kind: None,
                 log_frequency: Glide::settled(hz_log(band.frequency_hz)),
                 gain_db: Glide::settled(band_target_gain(settings, index)),
                 q: Glide::settled(milli(band.q_milli)),
@@ -482,11 +488,20 @@ impl LiveStripDsp {
         }
         self.high_pass_log_frequency.target = hz_log(settings.high_pass.frequency_hz);
         for (index, (glide, band)) in self.bands.iter_mut().zip(&settings.eq.bands).enumerate() {
-            // A shape change is discrete: it takes effect at the next retune.
-            glide.kind = band.kind;
             glide.log_frequency.target = hz_log(band.frequency_hz);
-            glide.gain_db.target = band_target_gain(settings, index);
             glide.q.target = milli(band.q_milli);
+            // Every shape is the identity at 0 dB: a band already there
+            // takes its new shape at once, any other glides there first.
+            #[allow(clippy::float_cmp)]
+            let transparent = glide.gain_db.current == 0.0;
+            if band.kind == glide.kind || transparent {
+                glide.kind = band.kind;
+                glide.pending_kind = None;
+                glide.gain_db.target = band_target_gain(settings, index);
+            } else {
+                glide.pending_kind = Some(band.kind);
+                glide.gain_db.target = 0.0;
+            }
         }
         self.gate_threshold.target = db(gate.threshold_millidb);
         self.gate_range.target = udb(gate.range_millidb);
@@ -501,7 +516,7 @@ impl LiveStripDsp {
         for (fade, on) in self.fades.iter_mut().zip(stage_switches(settings)) {
             fade.set(on);
         }
-        // Retune shape changes at once so the coefficients match the kind.
+        // Retune a shape taken at once so the coefficients match it.
         for (coefficients, band) in self.band_coefficients.iter_mut().zip(&self.bands) {
             if let Ok(updated) = band_coefficients_of(self.sample_rate_hz, band) {
                 *coefficients = updated;
@@ -534,7 +549,11 @@ impl LiveStripDsp {
         ] {
             glide.current = glide.target;
         }
-        for band in &mut self.bands {
+        for (index, band) in self.bands.iter_mut().enumerate() {
+            if let Some(kind) = band.pending_kind.take() {
+                band.kind = kind;
+                band.gain_db.target = band_target_gain(&self.settings, index);
+            }
             band.log_frequency.current = band.log_frequency.target;
             band.gain_db.current = band.gain_db.target;
             band.q.current = band.q.target;
@@ -609,9 +628,19 @@ impl LiveStripDsp {
         }
         for index in 0..STRIP_EQ_BAND_COUNT {
             let band = &mut self.bands[index];
-            let moved = band.log_frequency.step(coefficient, 1.0e-4)
+            let mut moved = band.log_frequency.step(coefficient, 1.0e-4)
                 | band.gain_db.step(coefficient, 1.0e-3)
                 | band.q.step(coefficient, 1.0e-4);
+            // At 0 dB (where every shape is the identity) a pending shape is
+            // taken and the band glides back to its gain.
+            #[allow(clippy::float_cmp)]
+            if band.gain_db.current == 0.0
+                && let Some(kind) = band.pending_kind.take()
+            {
+                band.kind = kind;
+                band.gain_db.target = band_target_gain(&self.settings, index);
+                moved = true;
+            }
             if (moved || force)
                 && let Ok(updated) = band_coefficients_of(self.sample_rate_hz, band)
             {
@@ -864,6 +893,42 @@ mod tests {
             slope < 0.4 * core::f32::consts::TAU * 1_000.0 / 48_000.0 * 1.2,
             "{slope}"
         );
+    }
+
+    #[test]
+    fn changing_a_band_shape_mid_stream_does_not_click() {
+        let mut settings = StripDspSettings::DEFAULT;
+        settings.eq.enabled = true;
+        for band in &mut settings.eq.bands {
+            band.enabled = false;
+        }
+        settings.eq.bands[0].enabled = true;
+        settings.eq.bands[0].kind = EqBandKind::LowShelf;
+        settings.eq.bands[0].frequency_hz = 200;
+        settings.eq.bands[0].gain_millidb = 18_000;
+        let mut dsp = LiveStripDsp::new(48_000.0, 1, &settings).unwrap();
+        let input = sine(60.0, 0.05, 96_000);
+        let mut planes = vec![input[..48_000].to_vec()];
+        dsp.process(48_000, &mut InPlacePlanes(&mut planes));
+        let settled = peak(&planes[0][40_000..]);
+        assert!(settled > 0.3, "the low shelf boosts: {settled}");
+
+        settings.eq.bands[0].kind = EqBandKind::HighShelf;
+        dsp.set_settings(&settings).unwrap();
+        let mut after = vec![input[48_000..].to_vec()];
+        dsp.process(48_000, &mut InPlacePlanes(&mut after));
+        // Around the edit, no step beyond the boosted sine's own steepest.
+        let mut joined = planes[0][47_999..].to_vec();
+        joined.extend_from_slice(&after[0][..256]);
+        let natural = settled * core::f32::consts::TAU * 60.0 / 48_000.0;
+        let slope = joined
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(slope < natural * 1.2, "{slope} vs {natural}");
+        // Settled on the new shape: a high shelf leaves 60 Hz alone.
+        let settled = peak(&after[0][40_000..]);
+        assert!((settled - 0.05).abs() < 0.01, "{settled}");
     }
 
     #[test]
