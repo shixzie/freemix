@@ -254,9 +254,17 @@ fn save_project_with(path: &Path, targets: impl FnOnce(OutputId) -> Vec<StreamTa
 /// One in-test RTMP ingest: an `FFmpeg` listener that accepts one publisher
 /// and writes what it receives to an FLV file, flushing every packet so the
 /// file grows while the stream runs.
+///
+/// A loaded host can take seconds to start `FFmpeg`, and a destination that
+/// connects before it listens is refused; [`Sink::spawn`] returns once the
+/// port listens. A listener serves one connection, so one that a refused or
+/// abandoned publish made exit is started again by [`Sink::revive`].
 struct Sink {
     child: Child,
     output: PathBuf,
+    port: u16,
+    target: u128,
+    generation: u32,
 }
 
 impl Sink {
@@ -280,7 +288,61 @@ impl Sink {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        Self { child, output }
+        let mut sink = Self {
+            child,
+            output,
+            port,
+            target,
+            generation,
+        };
+        sink.wait_listening();
+        sink
+    }
+
+    /// Waits until the listener's port is in the LISTEN state, without
+    /// connecting to it (a connection would be its one publisher). Only
+    /// Linux exposes that; elsewhere a fixed settle time stands in.
+    fn wait_listening(&mut self) {
+        if !cfg!(target_os = "linux") {
+            thread::sleep(Duration::from_millis(500));
+            return;
+        }
+        let wanted = format!(":{:04X}", self.port);
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        loop {
+            let listening = ["/proc/net/tcp", "/proc/net/tcp6"].iter().any(|table| {
+                fs::read_to_string(table).is_ok_and(|table| {
+                    table.lines().skip(1).any(|line| {
+                        let mut fields = line.split_whitespace();
+                        let local = fields.nth(1).unwrap_or_default();
+                        let state = fields.nth(1).unwrap_or_default();
+                        local.ends_with(&wanted) && state == "0A"
+                    })
+                })
+            });
+            if listening {
+                return;
+            }
+            assert!(
+                matches!(self.child.try_wait(), Ok(None)),
+                "the RTMP ingest on port {} exited before listening",
+                self.port
+            );
+            assert!(
+                Instant::now() < deadline,
+                "the RTMP ingest on port {} never listened",
+                self.port
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Starts the listener again when it exited without receiving anything.
+    fn revive(&mut self) {
+        if self.bytes() == 0 && !matches!(self.child.try_wait(), Ok(None)) {
+            let directory = self.output.parent().unwrap().to_path_buf();
+            *self = Self::spawn(&directory, self.port, self.target, self.generation);
+        }
     }
 
     fn bytes(&self) -> u64 {
@@ -796,6 +858,7 @@ fn five_destinations_run_together_fail_alone_and_never_touch_the_recording() {
     client.idle(Duration::from_millis(500));
     client.command("start-all", CommandPayload::StreamStartAll);
     client.wait_for("every destination live and delivering", |client| {
+        sinks.values_mut().for_each(Sink::revive);
         ALL.iter().all(|target| {
             client.state(*target) == Some(StreamRealizedState::Live) && client.muxed(*target) > 0
         }) && sinks.values().all(|sink| sink.bytes() > 0)
