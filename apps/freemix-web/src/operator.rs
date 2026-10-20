@@ -1,7 +1,7 @@
 //! Transport-free phone and tablet operator surface: Preview and Program
 //! buses, Cut and automatic transitions, Fade to Black, the two program
 //! recorders, stream destinations, per-input audio mute, and a button per
-//! project shortcut (RC-004).
+//! project shortcut (RC-004), fired with the input selected on the page.
 //!
 //! Every control derives its state from the replicated [`ClientView`] and the
 //! session's granted permissions, and a disabled control always carries an
@@ -163,6 +163,9 @@ pub enum OperatorBlock {
     NoAudioStrip,
     /// The project shortcut is disabled.
     ShortcutDisabled,
+    /// The shortcut acts on the selected input and the page selects none
+    /// (RC-004).
+    NoSelection,
 }
 
 impl OperatorBlock {
@@ -178,6 +181,9 @@ impl OperatorBlock {
             Self::NotInShow => "No longer in the show".to_owned(),
             Self::NoAudioStrip => "Waiting for this input's audio state".to_owned(),
             Self::ShortcutDisabled => "This shortcut is disabled".to_owned(),
+            Self::NoSelection => {
+                "This shortcut acts on the selected input: select an input first".to_owned()
+            }
         }
     }
 }
@@ -244,6 +250,8 @@ pub fn duration_frames(milliseconds: u32, numerator: u32, denominator: u32) -> u
 pub struct OperatorSurface<'a> {
     view: Option<&'a ClientView>,
     permissions: &'a [String],
+    /// The input selected on the page (RC-004).
+    selected: Option<InputId>,
 }
 
 impl<'a> OperatorSurface<'a> {
@@ -251,7 +259,29 @@ impl<'a> OperatorSurface<'a> {
     /// `permissions` are the session's granted permissions.
     #[must_use]
     pub const fn new(view: Option<&'a ClientView>, permissions: &'a [String]) -> Self {
-        Self { view, permissions }
+        Self {
+            view,
+            permissions,
+            selected: None,
+        }
+    }
+
+    /// The surface with `selected` as the input selected on the page
+    /// (RC-004): the input a shortcut action on the selected input acts on,
+    /// sent with every shortcut fire. The page selects an input by tapping
+    /// its tile in the Shortcuts section, and again to clear it.
+    #[must_use]
+    pub const fn with_selection(mut self, selected: Option<InputId>) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// The page's selected input while it is still in the show; a removed
+    /// input is no longer selected.
+    #[must_use]
+    pub fn selection(&self) -> Option<InputId> {
+        let view = self.view?;
+        self.selected.filter(|input| view.inputs.contains(input))
     }
 
     /// Whether the control is enabled, or why it is not: a lost session
@@ -374,9 +404,11 @@ impl<'a> OperatorSurface<'a> {
     /// Whether project shortcut `shortcut`'s button is enabled, or why it
     /// is not: a lost session, the `transition` permission every fire
     /// needs, a disabled shortcut, then the permission of each cue action
-    /// it runs, in order. A cue list GO or a script also needs whatever its
-    /// cues or verbs need, which the daemon checks when it is fired,
-    /// refusing the whole fire.
+    /// it runs, in order, then a selection when an action acts on the
+    /// selected input (RC-004). A cue list GO or a script also needs
+    /// whatever its cues or verbs need (and a GO a selection when its cues
+    /// act on the selected input), which the daemon checks when it is
+    /// fired, refusing the whole fire.
     ///
     /// # Errors
     ///
@@ -400,18 +432,28 @@ impl<'a> OperatorSurface<'a> {
         {
             return Err(OperatorBlock::MissingPermission(missing));
         }
+        if let WireShortcutAction::Actions(actions) = &shortcut.spec.action
+            && self.selection().is_none()
+            && actions
+                .iter()
+                .any(|action| action.target() == Some(fm_types::InputTarget::Selected))
+        {
+            return Err(OperatorBlock::NoSelection);
+        }
         Ok(())
     }
 
-    /// The `shortcut_fire` an enabled shortcut button sends.
+    /// The `shortcut_fire` an enabled shortcut button sends, carrying the
+    /// page's selected input (RC-004) when it has one.
     #[must_use]
     pub fn shortcut_command(&self, shortcut: &ShortcutStatus) -> Option<CommandPayload> {
         self.shortcut_gate(shortcut).ok()?;
         Some(CommandPayload::FireShortcut {
             shortcut: shortcut.id,
-            // The browser page selects no input: an action on the selected
-            // input is refused (RC-004).
-            targets: fm_protocol::WireTargetBindings::default(),
+            targets: fm_protocol::WireTargetBindings {
+                selected: self.selection().map(WireInputId::from_domain),
+                ..fm_protocol::WireTargetBindings::NONE
+            },
         })
     }
 

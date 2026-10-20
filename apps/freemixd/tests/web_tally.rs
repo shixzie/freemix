@@ -635,6 +635,16 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     ));
     assert!(page.contains("[\"payload\", \"cue_disarm\"], [\"list\", cues.id]"));
     assert!(page.contains("if (parts[5] === \"-\") return null;"));
+    // Protocol 2.89: the state has a seventh part (the run's bound
+    // targets), and an armed GO may name its own.
+    assert!(page.contains("if (parts.length !== 7) throw new Error(\"malformed cue state\");"));
+    // RC-004: a GO or arm carries this tally's input as the selected
+    // input, explained in English and Spanish hover help.
+    assert!(page.contains("return input ? [[\"selected\", input]] : [];"));
+    assert_eq!(page.matches("...selectedField()]);").count(), 3);
+    assert!(page.contains("ui.go.title = own ? tr(\"goSelectedHover\""));
+    assert!(page.contains("goSelectedHover: \"GO: fire the cue on standby (G). Its actions on the selected input act on {input}, this tally's input\""));
+    assert!(page.contains("goSelectedHover: \"GO: disparar el cue en espera (G). Sus acciones sobre la entrada seleccionada actúan sobre {input}, la entrada de este tally\""));
     assert!(page.contains("id=\"arm-delay\""));
     assert!(page.contains("id=\"arm\""));
     assert!(page.contains("id=\"disarm\""));
@@ -1141,6 +1151,22 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "id=\"shortcut-buttons\"",
     ] {
         assert!(page.contains(reason), "{reason}");
+    }
+    // RC-004: the page selects an input (its tile under "Selected input",
+    // marked by an accent bar, with English and Spanish hover help) and
+    // every shortcut fire carries it; a shortcut acting on the selected
+    // input is held without one (freemix-web's OperatorBlock::NoSelection).
+    for selection in [
+        "id=\"select-bus\"",
+        "[\"shortcut\", id], ...(selected ? [[\"selected\", selected]] : [])",
+        "token.split(\".\").includes(\"selected\")",
+        "noSelection: \"This shortcut acts on the selected input: select an input first\"",
+        "selectTile: \"Select {input}: shortcut actions on the selected input act on it\"",
+        "selectTile: \"Seleccionar {input}: las acciones de atajo sobre la entrada seleccionada actúan sobre ella\"",
+        "button.title = hover;",
+        "[data-selected=\"1\"]::after",
+    ] {
+        assert!(page.contains(selection), "{selection}");
     }
     // A daemon that reports realized recorder state (`recorder_status`,
     // Protocol 2.66; the native daemon) is shown as such, with the running
@@ -2253,4 +2279,138 @@ fn operator_page_fires_project_shortcuts_within_the_session_role() {
         panic!("an Audio page may not fire shortcuts");
     };
     assert_eq!(code, "permission_denied");
+}
+
+/// RC-004: a web page's fire names the input selected on it. A shortcut
+/// fire from the operator page keys the selected input, and one without a
+/// selection is refused; a tally page's GO binds its input for the run,
+/// which the cue status reports (Protocol 2.89), and an arm reports the
+/// targets it bound.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn web_pages_fire_with_the_input_selected_on_them() {
+    use fm_protocol::{
+        CueListSpec, ShortcutSpec, WireCue, WireCueAction, WireOverlayChannelId, WireShortcutAction,
+    };
+
+    let directory = TestDirectory::new("web-selection");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    admin.send(&command(
+        "set-shortcut",
+        CommandPayload::SetShortcut {
+            shortcut: 1,
+            spec: Box::new(ShortcutSpec {
+                name: "Key selected".into(),
+                enabled: true,
+                key: None,
+                osc: None,
+                action: WireShortcutAction::Actions(vec![WireCueAction::OverlayOn {
+                    channel: WireOverlayChannelId::new(1).unwrap(),
+                    input: fm_types::InputTarget::Selected,
+                }]),
+            }),
+            position: None,
+        },
+    ));
+    admin.accepted("set-shortcut");
+    admin.send(&command(
+        "set-cues",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(CueListSpec {
+                name: "Show".into(),
+                cues: vec![
+                    WireCue {
+                        id: 10,
+                        name: "Take selected".into(),
+                        auto_follow: false,
+                        actions: vec![WireCueAction::Take {
+                            input: Some(fm_types::InputTarget::Selected),
+                            effect: fm_protocol::TransitionFavoriteEffect::Cut,
+                            duration_frames: 0,
+                        }],
+                    },
+                    WireCue {
+                        id: 20,
+                        name: "Preview selected".into(),
+                        auto_follow: false,
+                        actions: vec![WireCueAction::Preview {
+                            input: fm_types::InputTarget::Selected,
+                        }],
+                    },
+                ],
+            }),
+            position: None,
+        },
+    ));
+    admin.accepted("set-cues");
+
+    let (mut page, _, _, _) = web_session(daemon.web, Role::Operator);
+    let Err((code, _)) = page_command(
+        &mut page,
+        "fire-unselected",
+        None,
+        "payload=shortcut_fire\tshortcut=1",
+    ) else {
+        panic!("a fire acting on the selected input needs a selection");
+    };
+    assert_eq!(code, "invalid_command");
+    match page_command(
+        &mut page,
+        "fire-selected",
+        None,
+        "payload=shortcut_fire\tshortcut=1\tselected=3",
+    ) {
+        Ok((_, EventPayload::ShortcutFired(change))) => assert!(
+            change
+                .overlays
+                .iter()
+                .any(|overlay| overlay.source == Some(input(3))),
+            "{:?}",
+            change.overlays
+        ),
+        other => panic!("expected the shortcut to key input 3: {other:?}"),
+    }
+
+    // The tally page's GO selects its own input; the run reports the
+    // inputs it bound.
+    let Err((code, _)) = page_command(&mut page, "go-unselected", None, "payload=cue_go\tlist=7")
+    else {
+        panic!("a GO acting on the selected input needs a selection");
+    };
+    assert_eq!(code, "invalid_command");
+    let (_, event) = page_command(
+        &mut page,
+        "go-selected",
+        None,
+        "payload=cue_go\tlist=7\tselected=2",
+    )
+    .unwrap();
+    let EventPayload::CueRunChanged(change) = event else {
+        panic!("a GO replicates the run state: {event:?}");
+    };
+    let bound = change.state.targets.expect("the GO bound its targets");
+    assert_eq!(bound.selected, Some(input(2)));
+    assert!(bound.preview.is_some() && bound.program.is_some());
+    assert_eq!(change.state.armed, None);
+
+    let (_, event) = page_command(
+        &mut page,
+        "arm-selected",
+        None,
+        "payload=cue_arm\tlist=7\tcue=20\tin_ms=60000\tselected=3",
+    )
+    .unwrap();
+    let EventPayload::CueRunChanged(change) = event else {
+        panic!("an arm replicates the run state: {event:?}");
+    };
+    let armed = change.state.armed.expect("cue 20 is armed");
+    assert_eq!(armed.cue, 20);
+    let armed_targets = armed.targets.expect("the arm bound its targets");
+    assert_eq!(armed_targets.selected, Some(input(3)));
+    // The run keeps the targets its GO bound.
+    assert_eq!(change.state.targets, Some(bound));
 }

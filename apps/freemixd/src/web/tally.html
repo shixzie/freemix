@@ -187,6 +187,10 @@
       armLabel: "Arm the cue on standby to fire by itself after the chosen delay, like GO",
       disarm: "Disarm",
       disarmLabel: "Cancel the armed GO so it never fires",
+      goSelectedHover: "GO: fire the cue on standby (G). Its actions on the selected input act on {input}, this tally's input",
+      goNoSelectionHover: "GO: fire the cue on standby (G). Choose this tally's input first: a cue acting on the selected input is refused without one",
+      armSelectedHover: "Arm the cue on standby to fire by itself after the chosen delay. Its actions on the selected input act on {input}, this tally's input",
+      armNoSelectionHover: "Arm the cue on standby to fire by itself after the chosen delay. Choose this tally's input first: a cue acting on the selected input is refused without one",
       fullscreen: "Full screen",
       fullscreenLabel: "Toggle full-screen tally (F)",
       otherLanguage: "ES",
@@ -309,6 +313,10 @@
       armLabel: "Armar el cue en espera para que se dispare solo tras el retardo elegido, igual que GO",
       disarm: "Desarmar",
       disarmLabel: "Cancelar el GO armado para que nunca se dispare",
+      goSelectedHover: "GO: disparar el cue en espera (G). Sus acciones sobre la entrada seleccionada actúan sobre {input}, la entrada de este tally",
+      goNoSelectionHover: "GO: disparar el cue en espera (G). Elija antes la entrada de este tally: un cue que actúa sobre la entrada seleccionada se rechaza sin ella",
+      armSelectedHover: "Armar el cue en espera para que se dispare solo tras el retardo elegido. Sus acciones sobre la entrada seleccionada actúan sobre {input}, la entrada de este tally",
+      armNoSelectionHover: "Armar el cue en espera para que se dispare solo tras el retardo elegido. Elija antes la entrada de este tally: un cue que actúa sobre la entrada seleccionada se rechaza sin ella",
       fullscreen: "Pantalla completa",
       fullscreenLabel: "Alternar el tally a pantalla completa (F)",
       otherLanguage: "EN",
@@ -606,14 +614,28 @@
     const standby = required(record, "state").split(":")[0];
     return standby === "-" ? "" : standby;
   }
-  // The state's sixth part: `<cue>.<due frame>` or `-`.
+  // The state's sixth part: `<cue>.<due frame>`, followed since Protocol
+  // 2.89 by `.<preview>.<program>.<selected>` when the armed GO bound
+  // dynamic targets, or `-`. The seventh part is the run's bound targets.
   function cueArmed(record) {
     const parts = required(record, "state").split(":");
-    if (parts.length !== 6) throw new Error("malformed cue state");
+    if (parts.length !== 7) throw new Error("malformed cue state");
     if (parts[5] === "-") return null;
-    const [cue, due] = parts[5].split(".");
-    if (!cue || !/^\d+$/.test(due || "")) throw new Error("malformed armed cue");
+    const [cue, due, ...bound] = parts[5].split(".");
+    if (!cue || !/^\d+$/.test(due || "") || (bound.length !== 0 && bound.length !== 3)) {
+      throw new Error("malformed armed cue");
+    }
     return { cue, due: Number(due) };
+  }
+  // This tally's input (RC-004): a GO or arm sent from this page carries it
+  // as the input selected on this console, so a cue action on the selected
+  // input acts on it.
+  function tallySelection() {
+    return !choosing && show.inputs.some((input) => input.id === selected) ? selected : "";
+  }
+  function selectedField() {
+    const input = tallySelection();
+    return input ? [["selected", input]] : [];
   }
   function noteCueFrame(record) {
     const frame = Number(required(record, "frame"));
@@ -1266,6 +1288,10 @@
       button.hidden = state === "hidden";
       button.disabled = state !== "enabled";
     }
+    // Hover help: what "selected" means for a GO or arm from here (RC-004).
+    const own = tallySelection() ? show.inputs.find((candidate) => candidate.id === tallySelection()) : null;
+    ui.go.title = own ? tr("goSelectedHover", { input: own.label }) : tr("goNoSelectionHover");
+    ui.arm.title = own ? tr("armSelectedHover", { input: own.label }) : tr("armNoSelectionHover");
   }
   // The cue line: the armed GO and its countdown, else the cue on standby.
   // Returns the list GO drives (null when there is none or not live).
@@ -1422,7 +1448,8 @@
     const cues = goList();
     if (ui.go.hidden || ui.go.disabled || !cues) return;
     goRetry = null;
-    const id = sendCommand([["payload", "cue_go"], ["list", cues.id], ["expected_revision", String(link.revision)]]);
+    const id = sendCommand([["payload", "cue_go"], ["list", cues.id], ["expected_revision", String(link.revision)],
+      ...selectedField()]);
     goSent = { id, list: cues.id, cue: cues.standby, retried: false };
   }
   function settleGoRetry() {
@@ -1431,7 +1458,8 @@
     goRetry = null;
     const cues = goList();
     if (retry.cue && cues && cues.id === retry.list && cues.standby === retry.cue) {
-      const id = sendCommand([["payload", "cue_go"], ["list", retry.list], ["cue", retry.cue], ["expected_revision", String(link.revision)]]);
+      const id = sendCommand([["payload", "cue_go"], ["list", retry.list], ["cue", retry.cue], ["expected_revision", String(link.revision)],
+        ...selectedField()]);
       goSent = { id, list: retry.list, cue: retry.cue, retried: true };
     } else {
       ui.status.textContent = tr("goStandbyChanged");
@@ -1444,7 +1472,8 @@
     const cues = goList();
     if (ui.arm.hidden || ui.arm.disabled || !cues || !cues.standby) return;
     const delay = Number(ui.armDelay.value) || DEFAULT_ARM_DELAY_S;
-    sendCommand([["payload", "cue_arm"], ["list", cues.id], ["cue", cues.standby], ["in_ms", String(delay * 1000)]]);
+    sendCommand([["payload", "cue_arm"], ["list", cues.id], ["cue", cues.standby], ["in_ms", String(delay * 1000)],
+      ...selectedField()]);
   }
   function disarm() {
     const cues = goList();

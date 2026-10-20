@@ -47,6 +47,12 @@
   [data-light="program"] { background: var(--program) !important; border-color: #ff8a8a !important; }
   [data-light="preview"] { background: var(--preview) !important; border-color: #8af0a3 !important; }
   [data-pending="1"] { box-shadow: inset 0 0 0 3px var(--warn); }
+  /* The input selected on this page (RC-004): an accent bar under its tile. */
+  [data-selected="1"] { position: relative; }
+  [data-selected="1"]::after { content: ""; position: absolute; left: .5rem; right: .5rem; bottom: .3rem;
+    height: 4px; border-radius: 2px; background: var(--focus); }
+  #select-bus button[aria-pressed="true"] { background: #0d2a4a; border-color: var(--focus); }
+  #selected-note { margin: .4rem 0 .6rem; font-size: .85rem; color: var(--muted); }
   [data-offline="1"] { text-decoration: line-through; }
   .take { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
   .take button { min-height: 72px; font-size: 1.35rem; letter-spacing: .06em; }
@@ -199,6 +205,11 @@
 
   <section class="fit" aria-labelledby="shortcuts-heading">
     <h2 id="shortcuts-heading" data-i18n="shortcuts">Shortcuts</h2>
+    <fieldset id="selection">
+      <legend data-i18n="selectLegend">Selected input</legend>
+      <div id="select-bus" class="bus" role="group" data-i18n-label="selectBus" aria-label="Select the input shortcuts act on as the selected input"></div>
+      <p id="selected-note" aria-live="polite"></p>
+    </fieldset>
     <div id="shortcut-buttons" class="bus" role="group" data-i18n-label="shortcutsLabel" aria-label="Project shortcuts"></div>
     <p id="no-shortcuts" class="why" hidden style="color:var(--muted)" data-i18n="noShortcuts">This show has no shortcuts.</p>
     <p id="why-shortcuts" class="why" aria-live="polite"></p>
@@ -414,6 +425,16 @@
       shortcutOff: "Off",
       fireShortcut: "Fire shortcut {name}",
       commandShortcut: "Shortcut {name}",
+      selectLegend: "Selected input",
+      selectBus: "Select the input shortcuts act on as the selected input",
+      selectTile: "Select {input}: shortcut actions on the selected input act on it",
+      selectedTile: "{input} is selected: shortcut actions on the selected input act on it. Tap again to clear",
+      selectedMark: "{input} is the selected input for shortcuts",
+      selectedNote: "Selected: {input}",
+      selectedNone: "No input selected. Tap an input to select it for shortcuts that act on the selected input.",
+      fireShortcutSelected: "Fire {name}; actions on the selected input act on {input}",
+      fireShortcutPlain: "Fire {name}",
+      noSelection: "This shortcut acts on the selected input: select an input first",
       programAudio: "Program audio",
       metersLabel: "Program audio level meters",
       meterWaiting: "Waiting for audio meters (the daemon sends them only with native media).",
@@ -605,6 +626,16 @@
       shortcutOff: "Desactivado",
       fireShortcut: "Disparar el atajo {name}",
       commandShortcut: "Atajo {name}",
+      selectLegend: "Entrada seleccionada",
+      selectBus: "Seleccionar la entrada sobre la que actúan los atajos como entrada seleccionada",
+      selectTile: "Seleccionar {input}: las acciones de atajo sobre la entrada seleccionada actúan sobre ella",
+      selectedTile: "{input} está seleccionada: las acciones de atajo sobre la entrada seleccionada actúan sobre ella. Toque de nuevo para quitarla",
+      selectedMark: "{input} es la entrada seleccionada para los atajos",
+      selectedNote: "Seleccionada: {input}",
+      selectedNone: "Ninguna entrada seleccionada. Toque una entrada para seleccionarla para los atajos que actúan sobre la entrada seleccionada.",
+      fireShortcutSelected: "Disparar {name}; las acciones sobre la entrada seleccionada actúan sobre {input}",
+      fireShortcutPlain: "Disparar {name}",
+      noSelection: "Este atajo actúa sobre la entrada seleccionada: seleccione antes una entrada",
       programAudio: "Audio de Programa",
       metersLabel: "Medidores de nivel del audio de Programa",
       meterWaiting: "Esperando los medidores de audio (el daemon solo los envía con medios nativos).",
@@ -696,6 +727,7 @@
     kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
     recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
     shortcuts: $("shortcut-buttons"), noShortcuts: $("no-shortcuts"), whyShortcuts: $("why-shortcuts"),
+    selectBus: $("select-bus"), selectedNote: $("selected-note"),
     whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
     whyAudio: $("why-audio"), recorderNote: $("recorder-note"), language: $("language"),
     meters: $("meters"), meterScale: $("meter-scale"), meterNote: $("meter-note"),
@@ -1517,8 +1549,26 @@
         const needed = Object.hasOwn(ACTION_PERMISSION, verb) ? ACTION_PERMISSION[verb] : PERMISSION.transition;
         if (needed && !link.permissions.includes(needed)) return tr("permission", { name: needed });
       }
+      // An action on the selected input (RC-004) needs one selected here.
+      if (!selectedInput() && shortcut.action.slice("actions:".length).split("/")
+        .some((token) => token.split(".").includes("selected"))) return tr("noSelection");
     }
     return "";
+  }
+
+  // The input selected on this page (RC-004), like the input tile last
+  // clicked in Studio: tapping a tile under "Selected input" selects it,
+  // tapping it again clears it. Every shortcut fire carries it as
+  // `selected`, so a shortcut action on the selected input acts on it.
+  // Mirrors freemix-web's OperatorSurface::selection: an input that left
+  // the show is no longer selected.
+  let chosenInput = "";
+  function selectedInput() {
+    return chosenInput && show.inputs.some((input) => input.id === chosenInput) ? chosenInput : "";
+  }
+  function selectInput(id) {
+    chosenInput = selectedInput() === id ? "" : id;
+    render();
   }
 
   // Mirrors freemix-web's duration_frames.
@@ -1638,7 +1688,9 @@
       button.dataset.pending = show.desired.preview === id && light !== "preview" ? "1" : "0";
       button.setAttribute("aria-pressed", String(show.desired.preview === id));
       button.setAttribute("aria-label", busLabel(input, light));
+      button.dataset.selected = selectedInput() === id ? "1" : "0";
       setDisabled(button, reason);
+      if (!reason && selectedInput() === id) button.title = tr("selectedMark", { input: input.label });
     });
     // Program is status only; while not live it is unknown, never stale.
     ui.whyProgram.textContent = live ? "" : tr("notLive");
@@ -1672,6 +1724,27 @@
 
     renderOutputs();
 
+    const selected = live ? selectedInput() : "";
+    if (live && chosenInput && !selected) chosenInput = "";
+    syncChildren(ui.selectBus, ids, (id) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.addEventListener("click", () => selectInput(id));
+      return button;
+    }, (button, id) => {
+      const input = inputOf(id);
+      const on = selected === id;
+      button.textContent = input.label;
+      button.dataset.offline = input.offline ? "1" : "0";
+      button.dataset.selected = on ? "1" : "0";
+      button.setAttribute("aria-pressed", String(on));
+      const hover = tr(on ? "selectedTile" : "selectTile", { input: input.label });
+      button.setAttribute("aria-label", hover);
+      button.title = hover;
+    });
+    const selectedLabel = selected ? inputOf(selected).label : "";
+    ui.selectedNote.textContent = live
+      ? (selected ? tr("selectedNote", { input: selectedLabel }) : tr("selectedNone")) : "";
     const shortcutIds = live ? show.shortcuts.map((shortcut) => shortcut.id) : [];
     syncChildren(ui.shortcuts, shortcutIds, (id) => {
       const button = document.createElement("button");
@@ -1691,7 +1764,12 @@
         button.append(off);
       }
       button.setAttribute("aria-label", tr("fireShortcut", { name: shortcut.name }));
-      setDisabled(button, shortcutGate(shortcut));
+      const blocked = shortcutGate(shortcut);
+      setDisabled(button, blocked);
+      if (!blocked) {
+        button.title = selected ? tr("fireShortcutSelected", { name: shortcut.name, input: selectedLabel })
+          : tr("fireShortcutPlain", { name: shortcut.name });
+      }
     });
     ui.noShortcuts.hidden = !live || show.shortcuts.length > 0;
     ui.whyShortcuts.textContent = live && show.shortcuts.length > 0
@@ -1971,7 +2049,9 @@
   function fireShortcut(id) {
     const shortcut = show.shortcuts.find((candidate) => candidate.id === id);
     if (!shortcut || shortcutGate(shortcut)) return;
-    sendCommand(tr("commandShortcut", { name: shortcut.name }), [["payload", "shortcut_fire"], ["shortcut", id]]);
+    const selected = selectedInput();
+    sendCommand(tr("commandShortcut", { name: shortcut.name }),
+      [["payload", "shortcut_fire"], ["shortcut", id], ...(selected ? [["selected", selected]] : [])]);
   }
   function toggleRecorder(slot) {
     const on = show.recordings[slot - 1];

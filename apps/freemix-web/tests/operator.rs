@@ -651,3 +651,86 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
     let offline = OperatorSurface::new(None, &granted_operator);
     assert_eq!(offline.shortcut_gate(&overlay), Err(OperatorBlock::NotLive));
 }
+
+/// RC-004: the page fires a shortcut with the input selected on it. A
+/// shortcut acting on the selected input is held until an input is
+/// selected; the fire carries the selection, and a selection of an input no
+/// longer in the show is dropped.
+#[test]
+fn shortcut_buttons_fire_with_the_input_selected_on_the_page() {
+    use fm_protocol::{WireCueAction, WireShortcutAction, WireTargetBindings};
+    let show = Show::default();
+    let on_selected = shortcut(
+        1,
+        true,
+        WireShortcutAction::Actions(vec![WireCueAction::Preview {
+            input: fm_types::InputTarget::Selected,
+        }]),
+    );
+    let fixed = shortcut(
+        2,
+        true,
+        WireShortcutAction::Actions(vec![WireCueAction::Preview {
+            input: fm_types::InputTarget::Fixed(wire(SLIDES)),
+        }]),
+    );
+    let operator = ready(Role::Operator, &show);
+    let granted_operator = granted(&operator);
+    let view = operator.model().view();
+
+    let none = OperatorSurface::new(view.as_ref(), &granted_operator);
+    assert_eq!(none.selection(), None);
+    assert_eq!(
+        none.shortcut_gate(&on_selected),
+        Err(OperatorBlock::NoSelection)
+    );
+    assert_eq!(
+        OperatorBlock::NoSelection.reason(),
+        "This shortcut acts on the selected input: select an input first"
+    );
+    assert_eq!(none.shortcut_command(&on_selected), None);
+    // A shortcut naming fixed inputs needs no selection and sends none.
+    assert_eq!(
+        none.shortcut_command(&fixed),
+        Some(CommandPayload::FireShortcut {
+            shortcut: 2,
+            targets: WireTargetBindings::default()
+        })
+    );
+
+    let camera =
+        OperatorSurface::new(view.as_ref(), &granted_operator).with_selection(Some(input(CAMERA)));
+    assert_eq!(camera.selection(), Some(input(CAMERA)));
+    assert_eq!(camera.shortcut_gate(&on_selected), Ok(()));
+    let selected = Some(CommandPayload::FireShortcut {
+        shortcut: 1,
+        targets: WireTargetBindings {
+            selected: Some(wire(CAMERA)),
+            ..WireTargetBindings::NONE
+        },
+    });
+    assert_eq!(camera.shortcut_command(&on_selected), selected);
+    // Every fire carries the selection; the authority ignores it unless an
+    // action acts on the selected input.
+    assert_eq!(
+        camera.shortcut_command(&fixed),
+        Some(CommandPayload::FireShortcut {
+            shortcut: 2,
+            targets: WireTargetBindings {
+                selected: Some(wire(CAMERA)),
+                ..WireTargetBindings::NONE
+            },
+        })
+    );
+
+    // An input that left the show is no longer selected.
+    let gone =
+        OperatorSurface::new(view.as_ref(), &granted_operator).with_selection(Some(input(99)));
+    assert_eq!(gone.selection(), None);
+    assert_eq!(
+        gone.shortcut_gate(&on_selected),
+        Err(OperatorBlock::NoSelection)
+    );
+    let offline = OperatorSurface::new(None, &granted_operator).with_selection(Some(input(CAMERA)));
+    assert_eq!(offline.selection(), None);
+}
