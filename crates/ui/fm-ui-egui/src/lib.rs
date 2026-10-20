@@ -150,7 +150,8 @@ pub use transitions::{
     t_bar_intents, t_bar_key_gesture,
 };
 pub use user_shortcuts::{
-    ShortcutIntent, fire_block as user_shortcut_fire_block, key_text as user_shortcut_key_text,
+    ImportRefusal as ShortcutImportRefusal, ShortcutIntent, fire_block as user_shortcut_fire_block,
+    import_plan as user_shortcut_import_plan, key_text as user_shortcut_key_text,
 };
 pub use web_access::{web_access_block_reason, web_access_intent};
 

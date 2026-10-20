@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 fm-animation = { path = "../fm-animation" }
 fm-grade = { path = "../fm-grade" }
+fm-protocol = { path = "../fm-protocol" }
 fm-types = { path = "../fm-types" }
 
 [lints]

@@ -311,6 +311,53 @@ pub fn script(
     Ok(())
 }
 
+/// Lists, exports, or imports the shortcut set of the daemon at `address`
+/// (RC-004). An import sends one undoable `shortcut_set` per change, in
+/// the plan's order.
+pub fn shortcuts(
+    address: SocketAddr,
+    command: crate::args::ShortcutSetCommand,
+) -> RemoteResult<()> {
+    use crate::args::ShortcutSetCommand;
+    let role = match command {
+        ShortcutSetCommand::Import { .. } => Role::Graphics,
+        _ => Role::Viewer,
+    };
+    let mut remote = Remote::connect(address, role)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    let existing = state.shortcuts().to_vec();
+    match command {
+        ShortcutSetCommand::List => {
+            crate::shortcut_sets::print_shortcuts(&existing);
+            Ok(())
+        }
+        ShortcutSetCommand::Export { file, name } => crate::shortcut_sets::export(
+            &existing,
+            &file,
+            crate::shortcut_sets::set_name(name, state.show_name()),
+            "remote-shortcut-export",
+        ),
+        ShortcutSetCommand::Import { file } => {
+            let plan = crate::shortcut_sets::plan(&existing, &file)?;
+            for set in &plan.sets {
+                let payload = CommandPayload::SetShortcut {
+                    shortcut: set.id,
+                    spec: Box::new(set.spec.clone()),
+                    position: None,
+                };
+                let key = implicit_key(&payload)?;
+                remote.execute(payload, key, None, CommandCompletion::Shortcut)?;
+            }
+            crate::shortcut_sets::print_import("remote-shortcut-import", &plan);
+            Ok(())
+        }
+    }
+}
+
 /// Resolves a script name against the daemon at `address`.
 pub fn script_id(address: SocketAddr, name: &str) -> RemoteResult<Option<u64>> {
     let remote = Remote::connect(address, Role::Viewer)?;
@@ -1482,6 +1529,7 @@ pub fn execute(
     let role = match completion {
         _ if fires => Role::Admin,
         CommandCompletion::Project
+        | CommandCompletion::Shortcut
         | CommandCompletion::Padlock
         | CommandCompletion::Playlist { edit: true }
         | CommandCompletion::Cue { edit: true }
@@ -1545,6 +1593,9 @@ enum CommandCompletion {
     Script {
         run: bool,
     },
+    /// A shortcut edit (RC-004): completes on `shortcut_changed` or
+    /// `shortcut_removed` and switcher realization.
+    Shortcut,
     /// A favourite transition assignment: a transition-class project edit
     /// that completes on `transition_favorite_changed` and project
     /// realization.
@@ -1615,6 +1666,9 @@ impl CommandCompletion {
             CommandPayload::RunScript { .. } | CommandPayload::StopScript { .. } => {
                 Self::Script { run: true }
             }
+            CommandPayload::SetShortcut { .. } | CommandPayload::RemoveShortcut { .. } => {
+                Self::Shortcut
+            }
             _ => Self::Switcher,
         }
     }
@@ -1635,7 +1689,9 @@ impl CommandCompletion {
             | Self::TitleTake { .. }
             | Self::Playlist { edit: false }
             | Self::Cue { edit: false }
-            | Self::Script { run: true } => domain == "switcher",
+            | Self::Script { run: true }
+            // The authority realizes shortcut edits with the switcher.
+            | Self::Shortcut => domain == "switcher",
             Self::History => matches!(domain, "project" | "switcher"),
         }
     }
@@ -1877,7 +1933,9 @@ impl Remote {
                         | EventPayload::ShortcutChanged(_)
                         | EventPayload::ShortcutRemoved { .. } => matches!(
                             completion,
-                            CommandCompletion::Project | CommandCompletion::History
+                            CommandCompletion::Project
+                                | CommandCompletion::History
+                                | CommandCompletion::Shortcut
                         ),
                         // The CLI never fires a shortcut.
                         EventPayload::ShortcutFired(_) => false,

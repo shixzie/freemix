@@ -25,6 +25,7 @@
 use core::fmt::Write as _;
 
 use egui::{Button, ComboBox, Event, Key, Modifiers, RichText, TextEdit, Ui};
+use fm_preset_file::shortcuts::{ShortcutImportError, ShortcutImportPlan, plan_shortcut_import};
 use fm_protocol::{
     CueListSpec, CueListStatus, CueRunStatus, MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_NAME_BYTES,
     MAX_SHORTCUT_OSC_BYTES, MAX_SHORTCUTS, ShortcutSpec, ShortcutStatus, WireCue, WireCueAction,
@@ -33,6 +34,7 @@ use fm_protocol::{
 
 use crate::gating::Hint;
 use crate::l10n::{self, Arg, Locale, Msg};
+use crate::preset_files::PresetFileRequest;
 use crate::theme::{
     ACCENT_FILL, ERROR, accent_color, caption, empty_state, field_label, muted_color,
     section_label, small_button, text_color,
@@ -566,6 +568,85 @@ pub fn save_block(
 }
 
 // ---------------------------------------------------------------------------
+// Shortcut set files
+// ---------------------------------------------------------------------------
+
+/// Why a shortcut set cannot be imported here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ImportRefusal {
+    /// The session cannot edit the project (a reason's English text).
+    Blocked(&'static str),
+    /// The merged set would break a bound or clash.
+    Plan(ShortcutImportError),
+    /// Shortcut `name` would take `keys`, one of the console's own keys.
+    Reserved { name: String, keys: &'static str },
+}
+
+impl ImportRefusal {
+    /// The refusal in `l`'s words.
+    #[must_use]
+    pub fn text(&self, l: Locale) -> String {
+        match self {
+            Self::Blocked(reason) => l.tr(reason).to_owned(),
+            Self::Plan(ShortcutImportError::TooMany { total }) => l.format(
+                Msg::UserShortcutImportTooMany,
+                &[("count", Arg::Plain(*total as u64))],
+            ),
+            Self::Plan(ShortcutImportError::KeyTaken { imported, existing }) => l.format(
+                Msg::UserShortcutImportKeyTaken,
+                &[
+                    ("imported", Arg::Str(imported)),
+                    ("existing", Arg::Str(existing)),
+                ],
+            ),
+            Self::Plan(ShortcutImportError::OscTaken { imported, existing }) => l.format(
+                Msg::UserShortcutImportOscTaken,
+                &[
+                    ("imported", Arg::Str(imported)),
+                    ("existing", Arg::Str(existing)),
+                ],
+            ),
+            Self::Plan(ShortcutImportError::Swap { first, second }) => l.format(
+                Msg::UserShortcutImportSwap,
+                &[("first", Arg::Str(first)), ("second", Arg::Str(second))],
+            ),
+            Self::Plan(ShortcutImportError::NoFreeId) => {
+                l.text(Msg::UserShortcutImportNoId).to_owned()
+            }
+            Self::Reserved { name, keys } => l.format(
+                Msg::UserShortcutImportReserved,
+                &[("name", Arg::Str(name)), ("keys", Arg::Str(&l.keys(keys)))],
+            ),
+        }
+    }
+}
+
+/// The `shortcut_set` edits that merge `imported` (a decoded `.fmshortcuts`
+/// set) into the replicated project, or why it cannot be merged: the
+/// session's edit gate, a key the console keeps for itself, then the
+/// merge's own bounds and clashes (see
+/// [`fm_preset_file::shortcuts::plan_shortcut_import`]).
+///
+/// # Errors
+///
+/// [`ImportRefusal`] when nothing may be imported.
+pub fn import_plan(
+    state: &StudioUiState,
+    imported: &[ShortcutSpec],
+) -> Result<ShortcutImportPlan, ImportRefusal> {
+    if let Some(reason) = crate::cues::edit_block(state) {
+        return Err(ImportRefusal::Blocked(reason));
+    }
+    if let Some((name, keys)) = imported.iter().find_map(|spec| {
+        let keys = reserved_by(spec.key.as_ref()?)?;
+        Some((spec.name.clone(), keys))
+    }) {
+        return Err(ImportRefusal::Reserved { name, keys });
+    }
+    plan_shortcut_import(replicated(state), imported).map_err(ImportRefusal::Plan)
+}
+
+// ---------------------------------------------------------------------------
 // The window
 // ---------------------------------------------------------------------------
 
@@ -583,6 +664,10 @@ pub(crate) struct ShortcutsWindow {
     pub(crate) capturing: bool,
     /// The last capture pressed a key a shortcut cannot name.
     unsupported: bool,
+    /// The `.fmshortcuts` path typed in the set file row.
+    pub(crate) file_path: String,
+    /// Set exports and imports waiting for the host.
+    pub(crate) file_requests: Vec<PresetFileRequest>,
 }
 
 impl ShortcutsWindow {
@@ -818,6 +903,101 @@ fn draw_contents(
         row.response.rect.y_range(),
         ui.visuals().widgets.noninteractive.bg_stroke,
     );
+    ui.separator();
+    draw_file_row(ui, state, window, shortcuts);
+}
+
+/// Sharing the shortcuts through a `.fmshortcuts` file: export them all,
+/// or import a set into the project.
+fn draw_file_row(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    window: &mut ShortcutsWindow,
+    shortcuts: &[ShortcutStatus],
+) {
+    let l = l10n::locale(ui.ctx());
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(section_label(l.text(Msg::UserShortcutFile)))
+            .on_hover_text(l.text(Msg::UserShortcutFileHover));
+        ui.add(
+            TextEdit::singleline(&mut window.file_path)
+                .hint_text(l.text(Msg::UserShortcutPathHint))
+                .desired_width(300.0),
+        )
+        .on_hover_text(l.text(Msg::UserShortcutPathHover));
+        let export = export_block(&window.file_path, shortcuts);
+        if ui
+            .add_enabled(
+                export.is_none(),
+                small_button(l.text(Msg::UserShortcutExport)),
+            )
+            .hint(l.text(Msg::UserShortcutExportHover), export.unwrap_or(""))
+            .clicked()
+        {
+            window.export_set(state, shortcuts);
+        }
+        let import = import_block(state, &window.file_path);
+        if ui
+            .add_enabled(
+                import.is_none(),
+                small_button(l.text(Msg::UserShortcutImport)),
+            )
+            .hint(l.text(Msg::UserShortcutImportHover), import.unwrap_or(""))
+            .clicked()
+        {
+            window.import_set();
+        }
+    });
+}
+
+/// Why the shortcuts cannot be exported to `path`, if they cannot: no
+/// path, then no shortcuts. Exporting is not an edit, so a viewer may.
+fn export_block(path: &str, shortcuts: &[ShortcutStatus]) -> Option<&'static str> {
+    if path.trim().is_empty() {
+        Some(Msg::AnimReasonNoPath.en())
+    } else if shortcuts.is_empty() {
+        Some(Msg::UserShortcutReasonNoShortcuts.en())
+    } else {
+        None
+    }
+}
+
+/// Why a set cannot be imported from `path`, if it cannot: the edit gate,
+/// then no path.
+fn import_block(state: &StudioUiState, path: &str) -> Option<&'static str> {
+    crate::cues::edit_block(state)
+        .or_else(|| path.trim().is_empty().then_some(Msg::AnimReasonNoPath.en()))
+}
+
+impl ShortcutsWindow {
+    /// Asks the host to write `shortcuts` to the typed path, named after
+    /// the show (or `Shortcuts`).
+    pub(crate) fn export_set(&mut self, state: &StudioUiState, shortcuts: &[ShortcutStatus]) {
+        let name = state
+            .project_state
+            .as_ref()
+            .map(fm_ui_model::ProjectState::show_name)
+            .map(str::trim)
+            .filter(|name| {
+                !name.is_empty()
+                    && name.len() <= fm_preset_file::shortcuts::MAX_SHORTCUT_SET_NAME_BYTES
+            })
+            .unwrap_or("Shortcuts")
+            .to_owned();
+        self.file_requests.push(PresetFileRequest::ExportShortcuts {
+            path: self.file_path.trim().into(),
+            name,
+            shortcuts: shortcuts.iter().map(|found| found.spec.clone()).collect(),
+        });
+    }
+
+    /// Asks the host to read the set at the typed path.
+    pub(crate) fn import_set(&mut self) {
+        self.file_requests.push(PresetFileRequest::ImportShortcuts {
+            path: self.file_path.trim().into(),
+        });
+    }
 }
 
 /// A list row's text: the name, then its key in the console's words.

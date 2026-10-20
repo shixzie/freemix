@@ -170,6 +170,26 @@ fn decode_key(value: &str) -> Result<Option<WireShortcutKey>, CodecError> {
     Ok(Some(key))
 }
 
+/// A shortcut action in the `action` field's notation (`actions:<tokens>`,
+/// `cue:<list>:go:<cue|->`, `cue:<list>:<stop|back|skip|reset>`, or
+/// `script:<script>`), which shortcut set files reuse.
+#[must_use]
+pub fn shortcut_action_text(action: &WireShortcutAction) -> String {
+    encode_action(action)
+}
+
+/// Parses a shortcut action written by [`shortcut_action_text`], checking
+/// its structural bounds.
+///
+/// # Errors
+///
+/// Refuses unknown notation and an action out of bounds.
+pub fn parse_shortcut_action_text(text: &str) -> Result<WireShortcutAction, CodecError> {
+    let action = decode_action(text)?;
+    validate_action(&action)?;
+    Ok(action)
+}
+
 fn encode_action(action: &WireShortcutAction) -> String {
     match action {
         WireShortcutAction::Actions(actions) => format!(

@@ -1,5 +1,6 @@
-//! Sharing presets between projects: `.fmpreset` animation presets and
-//! `.fmgrade` grades (GX-011, SW-019).
+//! Sharing presets between projects: `.fmpreset` animation presets,
+//! `.fmgrade` grades (GX-011, SW-019), and `.fmshortcuts` shortcut sets
+//! (RC-004, see [`shortcuts`]).
 //!
 //! This crate is pure format code (strict JSON and plain file reads and
 //! writes), so both the project store and client applications such as
@@ -35,6 +36,7 @@
 pub mod grade;
 pub mod json;
 pub mod motion;
+pub mod shortcuts;
 
 use std::{
     fmt::{self, Write as _},
@@ -233,11 +235,16 @@ fn header(output: &mut String, kind: &str, name: &str) {
 
 /// Parses the document root, checking the size, schema, and kind.
 fn root(source: &str, kind: &'static str) -> Result<Object, PresetFileError> {
+    root_within(source, kind, MAX_PRESET_FILE_BYTES)
+}
+
+/// [`root`] for a document at most `maximum` bytes.
+fn root_within(source: &str, kind: &'static str, maximum: u64) -> Result<Object, PresetFileError> {
     let length = u64::try_from(source.len()).unwrap_or(u64::MAX);
-    if length > MAX_PRESET_FILE_BYTES {
+    if length > maximum {
         return Err(PresetFileError::TooLarge {
             bytes: length,
-            maximum: MAX_PRESET_FILE_BYTES,
+            maximum,
         });
     }
     let mut root = Object::new(json::Reader::new(source).document()?, "preset document")?;

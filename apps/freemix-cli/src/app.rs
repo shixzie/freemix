@@ -1928,6 +1928,8 @@ pub fn run(command: Command) -> AppResult<()> {
             }));
         }
         Command::RemoteScripts { address } => remote::scripts(address)?,
+        Command::Shortcuts { path, command } => crate::shortcut_sets::local(&path, command)?,
+        Command::RemoteShortcuts { address, command } => remote::shortcuts(address, command)?,
         Command::Script {
             path,
             command,
@@ -6077,6 +6079,15 @@ Usage:
       and assigns it by reference, --grade assigns a library grade.
   freemix-cli grade-clear <show.freemix> <input-id|layer <scene-id> <layer-id>|program>
   freemix-cli grade-import-lut <show.freemix> <file.cube> [--name <name>]
+  freemix-cli shortcuts <show.freemix>
+  freemix-cli remote-shortcuts <127.0.0.1:port>
+  freemix-cli shortcut-export <show.freemix> <file.fmshortcuts> [--name <set name>]
+  freemix-cli remote-shortcut-export <127.0.0.1:port> <file.fmshortcuts> [--name <set name>]
+  freemix-cli shortcut-import <show.freemix> <file.fmshortcuts>
+  freemix-cli remote-shortcut-import <127.0.0.1:port> <file.fmshortcuts>
+      Lists, exports, or imports the project's shortcut set (RC-004). An
+      import redefines shortcuts it names by an existing name and adds the
+      rest; it imports nothing when a key or OSC name would clash.
   freemix-cli grade-export <show.freemix> <grade-id> <file.fmgrade> [--replace-lut]
   freemix-cli grade-import <show.freemix> <file.fmgrade> [--name <name>]
   freemix-cli preset-export <show.freemix> <preset-id> <file.fmpreset>

@@ -1639,6 +1639,7 @@ version = "0.1.0"
 dependencies = [
  "fm-animation",
  "fm-grade",
+ "fm-protocol",
  "fm-types",
 ]
 
@@ -1920,6 +1921,7 @@ dependencies = [
  "fm-model",
  "fm-persistence",
  "fm-presentations",
+ "fm-preset-file",
  "fm-protocol",
  "fm-script",
  "fm-sim",

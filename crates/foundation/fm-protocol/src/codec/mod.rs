@@ -36,7 +36,7 @@ pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
 pub use refusal::{decode_refusal_reason, encode_refusal_reason};
 pub use scene_layout::scene_layout_wire_bytes;
-pub use shortcut::validate_shortcut_spec;
+pub use shortcut::{parse_shortcut_action_text, shortcut_action_text, validate_shortcut_spec};
 
 use core::fmt;
 

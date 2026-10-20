@@ -1,6 +1,7 @@
 //! Sharing presets between projects through files (GX-011, SW-019):
 //! `.fmpreset` animation presets from the Animation window's "My presets"
-//! row and `.fmgrade` grades from the Colour window.
+//! row, `.fmgrade` grades from the Colour window, and `.fmshortcuts`
+//! shortcut sets from the Shortcuts window (RC-004).
 //!
 //! This crate does no I/O: each export or import becomes a
 //! [`PresetFileRequest`] the host takes with
@@ -8,7 +9,11 @@
 //! uses `fm-persistence`), and answers with
 //! [`StudioShell::receive_preset_file`], which toasts the outcome and
 //! returns the commands an import sends: `animation_preset_add` for a
-//! preset, and `grade_lut_import` plus `grade_library_add` for a grade.
+//! preset, `grade_lut_import` plus `grade_library_add` for a grade, and
+//! one `shortcut_set` per new or redefined shortcut for a shortcut set
+//! (planned by `fm_preset_file::shortcuts::plan_shortcut_import`, which
+//! refuses the whole set when a key or OSC name would clash; a key the
+//! console keeps for itself is refused here too).
 //! Imported names that are taken get a numeric suffix (`Name (2)`, and
 //! `Name (3)` for a taken `Name (2)`), as `fm_preset_file::unused_name`
 //! picks it. A grade export that would overwrite an existing sibling
@@ -22,13 +27,14 @@ use std::sync::Arc;
 use fm_animation::{Phase, PhaseMotion};
 use fm_grade::{Grade, GradeLut};
 use fm_preset_file::unused_name;
-use fm_protocol::{CommandPayload, MAX_GRADE_LUT_IMPORT_BYTES};
+use fm_protocol::{CommandPayload, MAX_GRADE_LUT_IMPORT_BYTES, ShortcutSpec};
 use fm_ui_model::grade_editor::{
     GradeCommand, library_name_problem, lut_name_problem, lut_uri, next_library_id, next_lut_id,
 };
 use fm_ui_model::i18n::{Arg, Msg};
 
 use crate::toasts::ToastKind;
+use crate::user_shortcuts::ShortcutIntent;
 use crate::{StudioIntent, StudioShell, StudioUiState};
 
 /// The LUT of a grade being exported, as the project registers it.
@@ -65,6 +71,14 @@ pub enum PresetFileRequest {
     },
     /// Reads a `.fmgrade` file into the grade library.
     ImportGrade { path: PathBuf },
+    /// Writes the project's shortcuts to a `.fmshortcuts` file (RC-004).
+    ExportShortcuts {
+        path: PathBuf,
+        name: String,
+        shortcuts: Vec<ShortcutSpec>,
+    },
+    /// Reads a `.fmshortcuts` file into the project's shortcuts.
+    ImportShortcuts { path: PathBuf },
 }
 
 impl PresetFileRequest {
@@ -75,12 +89,23 @@ impl PresetFileRequest {
             Self::ExportAnimation { path, .. }
             | Self::ImportAnimation { path }
             | Self::ExportGrade { path, .. }
-            | Self::ImportGrade { path } => path,
+            | Self::ImportGrade { path }
+            | Self::ExportShortcuts { path, .. }
+            | Self::ImportShortcuts { path } => path,
         }
     }
 
-    const fn is_grade(&self) -> bool {
-        matches!(self, Self::ExportGrade { .. } | Self::ImportGrade { .. })
+    /// The toast that says the file failed.
+    const fn failed(&self) -> Msg {
+        match self {
+            Self::ExportGrade { .. } | Self::ImportGrade { .. } => Msg::ColorGradeFileFailed,
+            Self::ExportShortcuts { .. } | Self::ImportShortcuts { .. } => {
+                Msg::UserShortcutFileFailed
+            }
+            Self::ExportAnimation { .. } | Self::ImportAnimation { .. } => {
+                Msg::AnimPresetFileFailed
+            }
+        }
     }
 }
 
@@ -121,6 +146,8 @@ pub enum PresetFileAnswer {
         grade: Box<Grade>,
         lut: Option<ImportedLut>,
     },
+    /// A `.fmshortcuts` was read.
+    Shortcuts(Vec<ShortcutSpec>),
     /// A grade export was refused because its LUT would overwrite the
     /// existing `.cube` file `path`; nothing was written.
     LutFileExists { path: PathBuf },
@@ -144,6 +171,7 @@ impl StudioShell {
     pub fn take_preset_file_requests(&mut self) -> Vec<PresetFileRequest> {
         let mut requests = std::mem::take(&mut self.animation.file_requests);
         requests.append(&mut self.color.grade_file_requests);
+        requests.append(&mut self.user_shortcuts.file_requests);
         requests
     }
 
@@ -160,11 +188,7 @@ impl StudioShell {
         let l = self.locale;
         let file = request.path().display().to_string();
         let file_arg = ("file", Arg::Str(&file));
-        let failed = if request.is_grade() {
-            Msg::ColorGradeFileFailed
-        } else {
-            Msg::AnimPresetFileFailed
-        };
+        let failed = request.failed();
         let mut intents = Vec::new();
         match (request, answer) {
             (_, PresetFileAnswer::Failed(error)) => {
@@ -272,6 +296,46 @@ impl StudioShell {
                 }
                 Err(message) => self.toasts.push(ToastKind::Error, message),
             },
+            (
+                PresetFileRequest::ExportShortcuts { shortcuts, .. },
+                PresetFileAnswer::Exported { .. },
+            ) => {
+                self.toasts.push(
+                    ToastKind::Success,
+                    l.format(
+                        Msg::UserShortcutExported,
+                        &[("count", Arg::Count(shortcuts.len() as u64)), file_arg],
+                    ),
+                );
+            }
+            (PresetFileRequest::ImportShortcuts { .. }, PresetFileAnswer::Shortcuts(imported)) => {
+                match crate::user_shortcuts::import_plan(state, &imported) {
+                    Ok(plan) => {
+                        self.toasts.push(
+                            ToastKind::Pending,
+                            l.format(
+                                Msg::UserShortcutImporting,
+                                &[
+                                    file_arg,
+                                    ("added", Arg::Plain(plan.added as u64)),
+                                    ("replaced", Arg::Plain(plan.replaced as u64)),
+                                    ("unchanged", Arg::Plain(plan.unchanged as u64)),
+                                ],
+                            ),
+                        );
+                        intents.extend(plan.sets.into_iter().map(|set| {
+                            StudioIntent::Shortcut(ShortcutIntent::Set {
+                                shortcut: set.id,
+                                spec: Box::new(set.spec),
+                            })
+                        }));
+                    }
+                    Err(error) => self.toasts.push(
+                        ToastKind::Error,
+                        l.format(failed, &[file_arg, ("error", Arg::Str(&error.text(l)))]),
+                    ),
+                }
+            }
             // An answer of the wrong kind is the host's mistake.
             (_, _) => self.toasts.push(
                 ToastKind::Error,

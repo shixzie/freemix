@@ -1417,6 +1417,16 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Lists, exports, or imports a local project's shortcut set (RC-004).
+    Shortcuts {
+        path: PathBuf,
+        command: ShortcutSetCommand,
+    },
+    /// Lists, exports, or imports a running daemon's shortcut set (RC-004).
+    RemoteShortcuts {
+        address: SocketAddr,
+        command: ShortcutSetCommand,
+    },
     /// A script edit or run sent to a running daemon (RC-011).
     RemoteScript {
         address: SocketAddr,
@@ -1717,6 +1727,18 @@ pub enum ScriptCommand {
     Stop {
         run: Option<u64>,
     },
+}
+
+/// One shortcut set command (RC-004).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ShortcutSetCommand {
+    /// Prints every shortcut.
+    List,
+    /// Writes every shortcut to the `.fmshortcuts` file `file`, under the
+    /// set name `name` (the show name by default).
+    Export { file: PathBuf, name: Option<String> },
+    /// Merges the set in the `.fmshortcuts` file `file` into the project.
+    Import { file: PathBuf },
 }
 
 /// A script named on the command line: its id, or else its exact name.
@@ -2233,6 +2255,12 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-cue-arm"
         | "cue-disarm"
         | "remote-cue-disarm") => parse_cue(cue, arguments),
+        shortcut @ ("shortcuts"
+        | "remote-shortcuts"
+        | "shortcut-export"
+        | "remote-shortcut-export"
+        | "shortcut-import"
+        | "remote-shortcut-import") => parse_shortcut_set(shortcut, arguments),
         script @ ("scripts"
         | "remote-scripts"
         | "script-set"
@@ -6843,6 +6871,51 @@ fn unescape(value: &str) -> String {
     out
 }
 
+/// Parses the shortcut set commands (RC-004), each taking a project path
+/// or, in its `remote-` form, a daemon address first: `shortcuts`,
+/// `shortcut-export <file> [--name <name>]`, and `shortcut-import <file>`.
+fn parse_shortcut_set(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let (base, remote) = command
+        .strip_prefix("remote-")
+        .map_or((command, false), |base| (base, true));
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let command = match base {
+        "shortcuts" => ShortcutSetCommand::List,
+        "shortcut-export" => {
+            let file = required_path(&mut arguments, "shortcut set file")?;
+            let mut name = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--name" if name.is_none() => {
+                        name = Some(nonblank(&mut arguments, "shortcut set name")?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            ShortcutSetCommand::Export { file, name }
+        }
+        _ => ShortcutSetCommand::Import {
+            file: required_path(&mut arguments, "shortcut set file")?,
+        },
+    };
+    reject_extra(&mut arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::Shortcuts { path, command },
+        (None, Some(address)) => Command::RemoteShortcuts { address, command },
+        (None, None) => unreachable!("a shortcut command names a project or an address"),
+    })
+}
+
 /// Parses the project script commands (RC-011), each taking a project path
 /// or, in its `remote-` form, a daemon address first:
 ///
@@ -8723,6 +8796,57 @@ mod tests {
             Err(ArgsError::MissingValue("--name"))
         );
         assert!(parse(strings(&["grade-export", "s", "two", "w.fmgrade"])).is_err());
+    }
+
+    #[test]
+    fn parses_local_and_remote_shortcut_set_commands() {
+        assert_eq!(
+            parse(strings(&["shortcuts", "s"])),
+            Ok(Command::Shortcuts {
+                path: "s".into(),
+                command: ShortcutSetCommand::List,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "shortcut-export",
+                "s",
+                "a.fmshortcuts",
+                "--name",
+                "A"
+            ])),
+            Ok(Command::Shortcuts {
+                path: "s".into(),
+                command: ShortcutSetCommand::Export {
+                    file: "a.fmshortcuts".into(),
+                    name: Some("A".into()),
+                },
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-shortcut-import",
+                "127.0.0.1:9123",
+                "a.fmshortcuts"
+            ])),
+            Ok(Command::RemoteShortcuts {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                command: ShortcutSetCommand::Import {
+                    file: "a.fmshortcuts".into(),
+                },
+            })
+        );
+        assert_eq!(
+            parse(strings(&["remote-shortcuts", "127.0.0.1:9123"])),
+            Ok(Command::RemoteShortcuts {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                command: ShortcutSetCommand::List,
+            })
+        );
+        assert!(parse(strings(&["shortcut-import", "s"])).is_err());
+        assert!(parse(strings(&["shortcut-import", "s", "a", "b"])).is_err());
+        assert!(parse(strings(&["shortcut-export", "s", "a", "--wat"])).is_err());
+        assert!(parse(strings(&["shortcuts", "s", "extra"])).is_err());
     }
 
     #[test]

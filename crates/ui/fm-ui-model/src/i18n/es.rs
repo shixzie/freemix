@@ -8618,6 +8618,84 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Último disparo en el fotograma {frame}: {count} acciones",
         ),
     ),
+    (Msg::UserShortcutFile, t("Archivo de atajos")),
+    (
+        Msg::UserShortcutFileHover,
+        t(
+            "Compartir los atajos del proyecto con otro proyecto o consola mediante un archivo .fmshortcuts",
+        ),
+    ),
+    (
+        Msg::UserShortcutPathHint,
+        t("Ruta a un archivo .fmshortcuts"),
+    ),
+    (
+        Msg::UserShortcutPathHover,
+        t(
+            "La ruta de un archivo .fmshortcuts en este equipo, para exportar los atajos o importar un conjunto",
+        ),
+    ),
+    (Msg::UserShortcutExport, t("Exportar conjunto")),
+    (
+        Msg::UserShortcutExportHover,
+        t(
+            "Escribir todos los atajos del proyecto, tal como están guardados, en el archivo .fmshortcuts de la ruta",
+        ),
+    ),
+    (Msg::UserShortcutImport, t("Importar conjunto")),
+    (
+        Msg::UserShortcutImportHover,
+        t(
+            "Leer el archivo .fmshortcuts de la ruta en el proyecto: un atajo con un nombre que el proyecto ya usa lo reemplaza, los demás se añaden, y no se importa nada si una tecla o un nombre OSC chocaran",
+        ),
+    ),
+    (
+        Msg::UserShortcutExported,
+        plural(
+            "{count} atajo exportado a {file}",
+            "{count} atajos exportados a {file}",
+        ),
+    ),
+    (
+        Msg::UserShortcutImporting,
+        t(
+            "Importando atajos desde {file}: {added} nuevos, {replaced} reemplazados, {unchanged} sin cambios",
+        ),
+    ),
+    (
+        Msg::UserShortcutFileFailed,
+        t("Archivo de atajos {file}: {error}"),
+    ),
+    (
+        Msg::UserShortcutImportReserved,
+        t("el atajo {name} usa {keys}, una de las teclas propias de la consola"),
+    ),
+    (
+        Msg::UserShortcutReasonNoShortcuts,
+        t("el proyecto no tiene atajos"),
+    ),
+    (
+        Msg::UserShortcutImportTooMany,
+        t("el proyecto tendría {count} atajos; caben 64 como máximo"),
+    ),
+    (
+        Msg::UserShortcutImportKeyTaken,
+        t("el atajo importado {imported} usa la tecla de {existing}"),
+    ),
+    (
+        Msg::UserShortcutImportOscTaken,
+        t("el atajo importado {imported} usa el nombre OSC de {existing}"),
+    ),
+    (
+        Msg::UserShortcutImportSwap,
+        t(
+            "{first} y {second} intercambiarían una tecla o un nombre OSC; borre uno de ellos primero",
+        ),
+    ),
+    (
+        Msg::UserShortcutImportNoId,
+        t("no queda ningún id de atajo libre"),
+    ),
     (Msg::CueActSlideNext, t("Diapositiva siguiente")),
     (Msg::CueActSlidePrevious, t("Diapositiva anterior")),
     (Msg::CueActSlideFirst, t("Primera diapositiva")),

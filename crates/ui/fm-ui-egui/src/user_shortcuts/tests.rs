@@ -489,3 +489,175 @@ fn set_key_binds_the_next_press() {
         None
     );
 }
+
+fn imported(name: &str, key: Option<WireShortcutKey>, osc: Option<&str>) -> ShortcutSpec {
+    ShortcutSpec {
+        name: name.into(),
+        enabled: true,
+        key,
+        osc: osc.map(Into::into),
+        action: WireShortcutAction::Script { script: 1 },
+    }
+}
+
+#[test]
+fn an_imported_set_becomes_one_set_per_new_or_redefined_shortcut() {
+    let state = shortcuts_fixture(true);
+    let mut shell = StudioShell::default();
+    let request = PresetFileRequest::ImportShortcuts {
+        path: "desk.fmshortcuts".into(),
+    };
+    let mut redefined = audit_shortcuts()[1].spec.clone();
+    redefined.key = Some(key("F11", false, false, false));
+    let set = vec![
+        // Unchanged, redefined by name, and new.
+        audit_shortcuts()[0].spec.clone(),
+        redefined.clone(),
+        imported(
+            "Break",
+            Some(key("F10", false, false, false)),
+            Some("break"),
+        ),
+    ];
+    let intents = shell.receive_preset_file(
+        &state,
+        &request,
+        crate::PresetFileAnswer::Shortcuts(set.clone()),
+    );
+    assert_eq!(
+        intents,
+        vec![
+            StudioIntent::Shortcut(ShortcutIntent::Set {
+                shortcut: 2,
+                spec: Box::new(redefined),
+            }),
+            StudioIntent::Shortcut(ShortcutIntent::Set {
+                shortcut: 4,
+                spec: Box::new(set[2].clone()),
+            }),
+        ]
+    );
+    let said = toasts(&shell);
+    assert!(
+        said[0].contains("1 new, 1 replaced, 1 unchanged"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn an_imported_set_that_clashes_or_takes_a_console_key_imports_nothing() {
+    let state = shortcuts_fixture(true);
+    // Another name on shortcut 1's F9.
+    assert_eq!(
+        import_plan(
+            &state,
+            &[imported(
+                "Break",
+                Some(key("F9", false, false, false)),
+                None
+            )]
+        ),
+        Err(ImportRefusal::Plan(ShortcutImportError::KeyTaken {
+            imported: "Break".into(),
+            existing: "Lower third".into(),
+        }))
+    );
+    // The console's own Cut key.
+    assert_eq!(
+        import_plan(
+            &state,
+            &[imported("Cut", Some(key("C", false, false, false)), None)]
+        ),
+        Err(ImportRefusal::Reserved {
+            name: "Cut".into(),
+            keys: "C",
+        })
+    );
+    // A viewer may not edit the project.
+    let viewer = shortcuts_fixture(false);
+    assert!(matches!(
+        import_plan(&viewer, &[imported("Break", None, None)]),
+        Err(ImportRefusal::Blocked(_))
+    ));
+    // A refused import is toasted and sends nothing.
+    let mut shell = StudioShell::default();
+    let request = PresetFileRequest::ImportShortcuts {
+        path: "desk.fmshortcuts".into(),
+    };
+    let intents = shell.receive_preset_file(
+        &state,
+        &request,
+        crate::PresetFileAnswer::Shortcuts(vec![imported("Break", None, Some("lower-third"))]),
+    );
+    assert_eq!(intents, Vec::new());
+    let said = toasts(&shell);
+    assert!(
+        said[0].contains("Break") && said[0].contains("OSC name of Lower third"),
+        "{said:?}"
+    );
+    // Every refusal reads in Spanish too.
+    let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+    for refusal in [
+        ImportRefusal::Plan(ShortcutImportError::NoFreeId),
+        ImportRefusal::Plan(ShortcutImportError::TooMany { total: 65 }),
+        ImportRefusal::Plan(ShortcutImportError::Swap {
+            first: "A".into(),
+            second: "B".into(),
+        }),
+        ImportRefusal::Reserved {
+            name: "Cut".into(),
+            keys: "C",
+        },
+    ] {
+        assert_ne!(
+            refusal.text(spanish),
+            refusal.text(Locale::ENGLISH),
+            "{refusal:?}"
+        );
+    }
+}
+
+#[test]
+fn the_set_file_row_exports_what_is_saved_and_imports_only_with_edit_rights() {
+    let state = shortcuts_fixture(true);
+    let shortcuts = audit_shortcuts();
+    assert_eq!(
+        export_block(" ", &shortcuts),
+        Some(Msg::AnimReasonNoPath.en())
+    );
+    assert_eq!(
+        export_block("desk.fmshortcuts", &[]),
+        Some(Msg::UserShortcutReasonNoShortcuts.en())
+    );
+    assert_eq!(export_block("desk.fmshortcuts", &shortcuts), None);
+    assert_eq!(import_block(&state, "desk.fmshortcuts"), None);
+    assert_eq!(import_block(&state, ""), Some(Msg::AnimReasonNoPath.en()));
+    let viewer = shortcuts_fixture(false);
+    assert!(import_block(&viewer, "desk.fmshortcuts").is_some());
+    // A viewer may still export.
+    assert_eq!(export_block("desk.fmshortcuts", replicated(&viewer)), None);
+
+    let mut shell = StudioShell::default();
+    shell.user_shortcuts.file_path = " desk.fmshortcuts ".into();
+    shell.user_shortcuts.export_set(&state, &shortcuts);
+    shell.user_shortcuts.import_set();
+    let show = state.project_state.as_ref().unwrap().show_name().to_owned();
+    assert_eq!(
+        shell.take_preset_file_requests(),
+        vec![
+            PresetFileRequest::ExportShortcuts {
+                path: "desk.fmshortcuts".into(),
+                name: if show.trim().is_empty() {
+                    "Shortcuts".into()
+                } else {
+                    show
+                },
+                shortcuts: shortcuts.into_iter().map(|found| found.spec).collect(),
+            },
+            PresetFileRequest::ImportShortcuts {
+                path: "desk.fmshortcuts".into(),
+            },
+        ]
+    );
+    assert_eq!(shell.take_preset_file_requests(), Vec::new());
+}

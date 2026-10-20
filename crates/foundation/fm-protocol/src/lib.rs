@@ -52,7 +52,8 @@ pub use codec::{
     MAX_STREAM_DETAIL_BYTES, MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS,
     MAX_STREAM_SAMPLES, cue_action_token, cue_name_is_valid, decode_line, decode_refusal_reason,
     encode_line, encode_refusal_reason, motion_wire_bytes, parse_cue_action_token,
-    scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes, validate_shortcut_spec,
+    parse_shortcut_action_text, scene_clip_wire_bytes, scene_layout_wire_bytes,
+    shortcut_action_text, title_clip_wire_bytes, validate_shortcut_spec,
 };
 pub use cue::{
     CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,

@@ -1,6 +1,7 @@
 //! Host side of preset sharing (GX-011, SW-019): writes and reads the
 //! `.fmpreset` and `.fmgrade` files the Animation and Colour windows ask
-//! for, with the strict `fm-preset-file` codecs.
+//! for, and the `.fmshortcuts` files of the Shortcuts window (RC-004),
+//! with the strict `fm-preset-file` codecs.
 //!
 //! A grade export embeds its LUT's `.cube` text read from the supervised
 //! project bundle (`assets/luts/<id>.cube`), or writes it beside the
@@ -13,6 +14,7 @@
 
 use std::path::Path;
 
+use fm_preset_file::shortcuts::{ShortcutSetFile, read_shortcut_set_file, write_shortcut_set_file};
 use fm_preset_file::{
     AnimationPresetFile, ExportedGradeLut, GradeExportLut, PresetFileError,
     read_animation_preset_file, read_grade_preset_file, write_animation_preset_file,
@@ -112,6 +114,24 @@ pub(crate) fn carry_out(request: &PresetFileRequest, bundle: Option<&Path>) -> P
             },
             Err(error) => failed(&error),
         },
+        PresetFileRequest::ExportShortcuts {
+            path,
+            name,
+            shortcuts,
+        } => match write_shortcut_set_file(
+            path,
+            &ShortcutSetFile {
+                name: name.clone(),
+                shortcuts: shortcuts.clone(),
+            },
+        ) {
+            Ok(()) => PresetFileAnswer::Exported { lut: None },
+            Err(error) => failed(&error),
+        },
+        PresetFileRequest::ImportShortcuts { path } => match read_shortcut_set_file(path) {
+            Ok(set) => PresetFileAnswer::Shortcuts(set.shortcuts),
+            Err(error) => failed(&error),
+        },
     }
 }
 
@@ -153,6 +173,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    #[test]
+    fn shortcut_sets_round_trip_through_files() {
+        let directory = scratch("shortcuts");
+        let path = directory.join("desk.fmshortcuts");
+        let shortcuts = vec![fm_protocol::ShortcutSpec {
+            name: "Open".into(),
+            enabled: true,
+            key: Some(fm_protocol::WireShortcutKey {
+                key: "F2".into(),
+                command: true,
+                shift: false,
+                alt: false,
+            }),
+            osc: Some("open".into()),
+            action: fm_protocol::WireShortcutAction::Script { script: 4 },
+        }];
+        let export = PresetFileRequest::ExportShortcuts {
+            path: path.clone(),
+            name: "Desk".into(),
+            shortcuts: shortcuts.clone(),
+        };
+        assert_eq!(
+            carry_out(&export, None),
+            PresetFileAnswer::Exported { lut: None }
+        );
+        assert_eq!(
+            carry_out(&PresetFileRequest::ImportShortcuts { path }, None),
+            PresetFileAnswer::Shortcuts(shortcuts)
+        );
+        let missing = directory.join("missing.fmshortcuts");
+        assert!(matches!(
+            carry_out(&PresetFileRequest::ImportShortcuts { path: missing }, None),
+            PresetFileAnswer::Failed(_)
+        ));
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

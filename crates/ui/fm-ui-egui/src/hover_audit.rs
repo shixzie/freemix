@@ -2988,6 +2988,15 @@ fn scenes(language: Language) -> Vec<Scene> {
             ready(true, Variant::default()),
         ),
         (
+            "dialog/user-shortcuts-file",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                shell.user_shortcuts.file_path = "desk.fmshortcuts".into();
+            },
+            ready(true, Variant::default()),
+        ),
+        (
             "dialog/user-shortcuts-capturing",
             &|shell| {
                 shell.user_shortcuts.open = true;
