@@ -20,7 +20,7 @@ use fm_protocol::{
     encode_refusal_reason,
 };
 
-const PREFIX: &str = "command\tprotocol=2.83\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.84\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -83,7 +83,7 @@ fn spec() -> ScriptSpec {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 83));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 84));
 }
 
 #[test]

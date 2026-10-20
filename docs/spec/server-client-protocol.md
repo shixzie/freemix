@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.83 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.84 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3107,6 +3107,45 @@ schema 70).
   panel has the focus (the panel last clicked). Console key overrides stay
   single, unscoped keys in Studio's preferences, never on the wire.
 - 2.82 is refused.
+
+Protocol 2.84 lets a screen or window capture input capture sound (IN-011):
+none, the server's whole system output, or the sound of the application
+owning the captured window. Schema 71.
+
+- Screen capture config fields gain a required `audio=none|system|app`
+  after `stall`. `app` needs `target=window` (a screen has no application);
+  a screen naming it is refused with field issue `invalid_screen_capture`
+  naming `audio`. `input_added` carries it too.
+- The compact form gains `<audio>` after `<stall>`:
+  `<crop>~<cursor>~<fps>~<stall>~<audio>~screen~<index>` or
+  `<crop>~<cursor>~<fps>~<stall>~<audio>~window~<title_match>~<id|->~<app length>~<title length>:<app><title>`.
+- `screen_capture_status` gains a required
+  `audio=off|opening|live|no_stream|unsupported|failed` after `last_error`
+  and an optional one-line `audio_error` of at most 160 bytes (never with
+  `audio=off`). `no_stream`: the application plays no sound stream yet (the
+  strip is silent and capture starts when one appears); `unsupported`: this
+  server cannot capture that sound (such as per-application audio on
+  Windows before 10 2004 or macOS before 13), the picture still captured.
+- Snapshot `screen_capture_inputs` entries gain `<audio state>` after the
+  window id: `<input>~<state>~<attempt>~<next_in_ms>~<reopens>~<width>~<height>~<window id|->~<audio state>~<compact>`,
+  without error texts.
+- `source_sync_status` samples gain the kind `screen_capture`: a capture
+  with sound reports its drift loop like any live source.
+- The sound feeds the input's own mixer strip (AFV, meters, strip DSP,
+  delay) and is read by the same capture child as the picture, sharing its
+  jitter buffer and drift loop. Native Linux reads system audio from
+  `@DEFAULT_MONITOR@` (`ffmpeg -f pulse`) and application audio through a
+  daemon tap that records each PulseAudio/PipeWire playback stream of the
+  window's process tree (`_NET_WM_PID`, or the application id when no
+  process is known) with `parec --monitor-stream`, without moving it;
+  Windows uses WASAPI loopback and process loopback helpers, macOS the
+  ScreenCaptureKit helper's audio (both compile-checked only).
+- Durability: the `screen_capture` input kind gains a required `"audio":
+  "none|system|app"` (schema 71).
+- Studio's capture form gains an Audio selector and the capture's status
+  line shows the audio state; the CLI's screen capture commands gain
+  `--audio`.
+- 2.83 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

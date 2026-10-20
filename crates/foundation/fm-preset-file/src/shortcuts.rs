@@ -2,7 +2,7 @@
 //! files (RC-004).
 //!
 //! ```text
-//! {"schema_version": 70, "kind": "shortcut_set", "name": "Studio A",
+//! {"schema_version": 71, "kind": "shortcut_set", "name": "Studio A",
 //!  "shortcuts": [
 //!    {"name": "Intro", "enabled": true,
 //!     "key": {"key": "K", "command": true, "shift": false, "alt": false,
