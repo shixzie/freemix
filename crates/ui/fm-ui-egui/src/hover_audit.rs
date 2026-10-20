@@ -1723,6 +1723,21 @@ fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
             listed(),
         ),
         Scene::console(
+            "dialog/add-input-screen-capture-window-app-audio",
+            shell(&|draft| {
+                follow(TitleMatch::Exact)(draft);
+                draft.screen_capture.config.audio = fm_protocol::ScreenCaptureAudio::Application;
+            }),
+            listed(),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-system-audio",
+            shell(&|draft| {
+                draft.screen_capture.config.audio = fm_protocol::ScreenCaptureAudio::System;
+            }),
+            listed(),
+        ),
+        Scene::console(
             "dialog/add-input-screen-capture-contains",
             shell(&|draft| {
                 follow(TitleMatch::Contains)(draft);
@@ -4500,7 +4515,9 @@ pub fn check_system_audio(language: Language) {
 /// (IN-011) in `language` under the console rules, and requires the help
 /// of the kind key, Refresh targets, every listed screen and window, the
 /// three ways to follow a window, the title field, the crop, the pointer,
-/// the rate cap, and both stall slates to have been shown.
+/// the rate cap, both stall slates, and the three audio choices (with the
+/// reason Application audio is unavailable for a screen) to have been
+/// shown.
 pub fn check_screen_capture(language: Language) {
     let locale = Locale::new(language);
     let (findings, controls) = audit(language, screen_capture_scenes(locale));
@@ -4522,10 +4539,18 @@ pub fn check_screen_capture(language: Language) {
         Msg::ScFpsHover,
         Msg::ScStallFreezeHover,
         Msg::ScStallBlackHover,
+        Msg::ScAudioNoneHover,
+        Msg::ScAudioSystemHover,
+        Msg::ScAudioAppHover,
     ]
     .into_iter()
     .map(|msg| locale.text(msg).to_owned())
     .collect();
+    required.push(crate::l10n::disabled_text(
+        locale,
+        locale.text(Msg::ScAudioAppHover),
+        Msg::ScAudioAppScreenHover.en(),
+    ));
     let inventory = screen_capture_inventory();
     for screen in &inventory.screens {
         required.push(locale.format(

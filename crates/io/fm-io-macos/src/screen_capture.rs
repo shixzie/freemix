@@ -6,7 +6,12 @@
 //! records [`ScreenCaptureInventory::from_records`] reads; its `capture`
 //! command writes raw BGRA pictures of a fixed size to standard output,
 //! which the daemon pipes into `ffmpeg -f rawvideo`. The arguments of one
-//! capture are built by [`capture_arguments`].
+//! capture are built by [`capture_arguments`]. Its `audio` command
+//! ([`audio_arguments`]) captures sound with `ScreenCaptureKit`
+//! (`capturesAudio`, macOS 13 or later, excluding the helper's own
+//! process): a display's whole system output, or one application's sound,
+//! written as raw interleaved 48 kHz stereo `f32le` to standard output with
+//! `FMAUDIO` status lines on standard error, for the daemon's audio tap.
 //!
 //! Capturing needs the Screen Recording permission (System Settings,
 //! Privacy & Security) for the process that runs the server; without it
@@ -66,6 +71,24 @@ pub fn capture_arguments(
         fps.to_string(),
         u8::from(cursor).to_string(),
     ]
+}
+
+/// What one helper audio capture reads: the whole system output through a
+/// display (by its listed index), or one application (by its process id).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HelperAudio {
+    Display(u16),
+    App(u32),
+}
+
+/// The helper arguments capturing `audio`.
+#[must_use]
+pub fn audio_arguments(audio: HelperAudio) -> Vec<String> {
+    let (flag, id) = match audio {
+        HelperAudio::Display(index) => ("--display", u64::from(index)),
+        HelperAudio::App(pid) => ("--app", u64::from(pid)),
+    };
+    vec!["audio".to_owned(), flag.to_owned(), id.to_string()]
 }
 
 /// The inventory one helper listing describes. A listing without its
@@ -154,6 +177,18 @@ mod tests {
             [
                 "capture", "display", "1", "0", "0", "1920", "1080", "60", "0"
             ]
+        );
+    }
+
+    #[test]
+    fn audio_arguments_name_the_display_or_application() {
+        assert_eq!(
+            audio_arguments(HelperAudio::Display(1)),
+            ["audio", "--display", "1"]
+        );
+        assert_eq!(
+            audio_arguments(HelperAudio::App(4_120)),
+            ["audio", "--app", "4120"]
         );
     }
 

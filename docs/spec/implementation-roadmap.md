@@ -2115,6 +2115,48 @@ picture.
   process. The feeder path is tested on Linux with `ffmpeg` standing in for
   the helper. Capture needs the Screen Recording permission.
 
+Screen capture audio (Protocol 2.84, schema 71): each input names its
+`audio` — `none`, `system` (the server's whole output), or `app` (a window
+target only: the sound of the application owning the window, its process
+and the processes it started). The sound feeds the input's own mixer strip
+(AFV, meters, strip DSP) and is captured by the same capture child as the
+picture, so picture and sound share one jitter buffer and the receiver's
+drift loop (AU-004, reported as a `screen_capture` live source). The input's
+status carries the audio state (`off`, `opening`, `live`, `no_stream` while
+the application plays no stream yet, `unsupported` with the reason, such as
+an OS version without per-application capture, and `failed`) and an
+`audio_error`.
+
+- **Linux** (working and tested against a private PulseAudio 16 server):
+  system audio is `ffmpeg -f pulse -i @DEFAULT_MONITOR@` as the capture
+  child's second input. Application audio is a daemon-side tap: every half
+  second `pactl list sink-inputs` lists the playback streams; each stream
+  whose `application.process.id` is the window's `_NET_WM_PID` or one of its
+  descendants (or, when the window system names no process, as on Wayland,
+  whose application id, portal app id, or binary names the window's
+  application) is recorded with `parec --monitor-stream`, which neither
+  moves nor re-routes it, so the application stays audible. The streams are
+  mixed behind 30 ms jitter buffers, paced on the host's monotonic clock
+  (the one the picture is grabbed on), and served as 48 kHz stereo `f32le`
+  on a Unix socket in an owner-only directory that the capture child reads.
+  Audio is keyed only by process or application id, never by the picture
+  backend. Tests: a tap follows only its application's tone (a second
+  application playing at once is excluded), finds a stream a child process
+  starts later, reports `no_stream` while silent, leaves both streams on
+  their sink (the sink monitor still hears both), and reports a missing
+  server; a native daemon process meters the window application's tone on
+  its strip (silent while only another application plays), meters a
+  screen's system audio, reports the drift loop, and returns to
+  `no_stream` when the application stops.
+- **Windows** (compile-checked, not run): a PowerShell helper with inline
+  C# runs WASAPI shared-mode loopback on the default render endpoint
+  (system) or process loopback with `INCLUDE_TARGET_PROCESS_TREE`
+  (application, Windows 10 2004 or later; older builds report
+  `unsupported`), served through the same tap on loopback TCP.
+- **macOS** (compile-checked, not run): the `ScreenCaptureKit` helper's
+  `audio` command (`capturesAudio`, `excludesCurrentProcessAudio`) for a
+  display or one application (macOS 13 or later), served through the tap.
+
 A simulated daemon answers a fixed simulated desktop and shows a synthetic
 picture. Studio's Add input dialog has a Window / screen capture kind with a
 refreshable picker grouped as Screens and Application windows (application
@@ -2125,9 +2167,11 @@ adds `input-add-screen-capture`, `input-screen-capture-status`, their
 `remote-` forms, and `remote-screen-capture-targets`.
 
 Remaining gaps:
-- capture audio: a screen capture input is silent; per-application audio is
-  not captured (pair it with a system audio input, `AU-011`, for desktop
-  sound);
+- capture audio: PipeWire's `pipewire-pulse` monitor-stream support and the
+  Windows and macOS helpers are not run here; the tap's jitter buffer adds
+  about 30–60 ms to application audio against the picture (the strip's
+  delay can compensate), and the tap absorbs a stream clock's drift by
+  dropping or padding at its buffer bounds rather than resampling;
 - Wayland capture through xdg-desktop-portal/PipeWire is not implemented;
 - Windows and macOS paths are compile-checked only; no run on either OS, no
   Windows Graphics Capture (covered windows), and no signed macOS helper;

@@ -75,6 +75,10 @@ fn source_sync_status_is_exact() {
         correction_mppm: -MAX_SOURCE_SYNC_MPPM,
         ..sample(10)
     };
+    let screen = SourceSyncSample {
+        kind: SourceSyncKind::ScreenCapture,
+        ..sample(12)
+    };
     for (sources, field) in [
         (Vec::new(), String::new()),
         (vec![sample(7)], ENTRY.to_owned()),
@@ -84,6 +88,10 @@ fn source_sync_status_is_exact() {
                 "{ENTRY}%3B9%3Astream%3Apriming%3A48000%3A48000%3A0%3A0%3A81250%3A80000%3A0%3A2%3A3%3A4%3A5%3A6\
                  %3B10%3Asystem_audio%3Arecovering%3A44100%3A48000%3A1000000000%3A-1000000000%3A81250%3A80000%3A1%3A2%3A3%3A4%3A5%3A6"
             ),
+        ),
+        (
+            vec![screen],
+            ENTRY.replacen("7%3Acapture", "12%3Ascreen_capture", 1),
         ),
     ] {
         let message = message(sources);

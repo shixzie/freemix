@@ -1,7 +1,7 @@
 //! Live source clock drift telemetry (Protocol 2.76, `AU-004`).
 //!
 //! Every live source a native daemon ingests (capture inputs, network
-//! streams, system audio inputs) runs on its own clock. Its receiver converts
+//! streams, system audio inputs, screen captures with audio) runs on its own clock. Its receiver converts
 //! its audio into the engine clock with a drift-correcting resampler and
 //! keeps its pictures following that audio. One [`SourceSyncSample`] reports
 //! one source's loop: the estimated drift and the applied correction (which
@@ -28,11 +28,18 @@ pub enum SourceSyncKind {
     Stream,
     /// A system audio input.
     SystemAudio,
+    /// A screen or window capture input with audio (IN-011).
+    ScreenCapture,
 }
 
 impl SourceSyncKind {
     /// Every kind in wire order.
-    pub const ALL: [Self; 3] = [Self::Capture, Self::Stream, Self::SystemAudio];
+    pub const ALL: [Self; 4] = [
+        Self::Capture,
+        Self::Stream,
+        Self::SystemAudio,
+        Self::ScreenCapture,
+    ];
 
     /// The wire token.
     #[must_use]
@@ -41,6 +48,7 @@ impl SourceSyncKind {
             Self::Capture => "capture",
             Self::Stream => "stream",
             Self::SystemAudio => "system_audio",
+            Self::ScreenCapture => "screen_capture",
         }
     }
 

@@ -6,7 +6,8 @@
 //!          | {"kind": "window", "app": "XTerm", "title": "build",
 //!             "title_match": "exact|contains|any", "window_id": null | 41943047},
 //!  "crop": {"left": 0, "top": 0, "right": 0, "bottom": 0},
-//!  "cursor": true, "fps": 30, "stall": "freeze|black"}
+//!  "cursor": true, "fps": 30, "stall": "freeze|black",
+//!  "audio": "none|system|app"}
 //! ```
 //!
 //! Every field is required; bounds are those of
@@ -17,7 +18,8 @@ use core::fmt::Write as _;
 use fm_model::InputKind;
 use fm_types::network_stream::StallSlate;
 use fm_types::screen_capture::{
-    ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureTarget, TitleMatch, WindowRule,
+    ScreenCaptureAudio, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureTarget, TitleMatch,
+    WindowRule,
 };
 
 use super::{DecodeError, Object, Value, syntax, unknown_enum};
@@ -52,7 +54,7 @@ pub(crate) fn write_screen_capture_input(output: &mut String, config: &ScreenCap
     write!(
         output,
         ", \"crop\": {{\"left\": {}, \"top\": {}, \"right\": {}, \"bottom\": {}}}, \
-         \"cursor\": {}, \"fps\": {}, \"stall\": \"{}\"}}",
+         \"cursor\": {}, \"fps\": {}, \"stall\": \"{}\", \"audio\": \"{}\"}}",
         crop.left,
         crop.top,
         crop.right,
@@ -60,6 +62,7 @@ pub(crate) fn write_screen_capture_input(output: &mut String, config: &ScreenCap
         config.cursor,
         config.fps,
         config.slate.token(),
+        config.audio.token(),
     )
     .expect("writing to a string cannot fail");
 }
@@ -113,12 +116,18 @@ pub(crate) fn parse_screen_capture_input(object: &mut Object) -> Result<InputKin
         StallSlate::from_token(&token)
             .ok_or_else(|| unknown_enum("screen capture stall", &token))?
     };
+    let audio = {
+        let token = object.string("audio")?;
+        ScreenCaptureAudio::from_token(&token)
+            .ok_or_else(|| unknown_enum("screen capture audio", &token))?
+    };
     let config = ScreenCaptureConfig {
         target,
         crop: crop_value,
         cursor,
         fps,
         slate,
+        audio,
     };
     config
         .validate()

@@ -2,14 +2,15 @@
 //! [`crate::screen_capture`].
 //!
 //! * Config fields: `target`, `screen` or `app`/`title`/`title_match`/
-//!   optional `window_id`, `crop`, `cursor`, `fps`, `stall`.
+//!   optional `window_id`, `crop`, `cursor`, `fps`, `stall`, `audio`.
 //! * A compact config (the replacement source and snapshot entries) is
-//!   `<left>.<top>.<right>.<bottom>~<cursor>~<fps>~<stall>~screen~<index>`
-//!   or `...~window~<title_match>~<window_id|->~<app length>~<title
-//!   length>:<app><title>`.
+//!   `<crop>~<cursor>~<fps>~<stall>~<audio>~screen~<index>` or
+//!   `<crop>~<cursor>~<fps>~<stall>~<audio>~window~<title_match>~`
+//!   `<window_id|->~<app length>~<title length>:<app><title>`, where
+//!   `<crop>` is `<left>.<top>.<right>.<bottom>`.
 //! * A snapshot's `screen_capture_inputs` is a comma-separated, strictly
 //!   ascending list of `<input>~<state>~<attempt>~<next_in_ms>~<reopens>~
-//!   <width>~<height>~<window_id|->~<compact config>`.
+//!   <width>~<height>~<window_id|->~<audio state>~<compact config>`.
 
 use core::fmt::Write as _;
 
@@ -17,9 +18,10 @@ use fm_types::network_stream::StallSlate;
 use fm_types::screen_capture::{
     MAX_SCREEN_CAPTURE_APP_BYTES, MAX_SCREEN_CAPTURE_ERROR_BYTES, MAX_SCREEN_CAPTURE_INPUTS,
     MAX_SCREEN_CAPTURE_SCREEN_NAME_BYTES, MAX_SCREEN_CAPTURE_SCREENS,
-    MAX_SCREEN_CAPTURE_TITLE_BYTES, MAX_SCREEN_CAPTURE_WINDOWS, ScreenCaptureConfig,
-    ScreenCaptureCrop, ScreenCaptureInventory, ScreenCaptureState, ScreenCaptureStatus,
-    ScreenCaptureTarget, ScreenInfo, TitleMatch, WindowInfo, WindowRule, is_screen_capture_text,
+    MAX_SCREEN_CAPTURE_TITLE_BYTES, MAX_SCREEN_CAPTURE_WINDOWS, ScreenCaptureAudio,
+    ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureInventory,
+    ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget, ScreenInfo, TitleMatch,
+    WindowInfo, WindowRule, is_screen_capture_text,
 };
 
 use crate::{CodecError, ScreenCaptureEntry, WireInputId};
@@ -96,6 +98,14 @@ fn slate(field: &'static str, value: &str) -> Result<StallSlate, CodecError> {
     StallSlate::from_token(value).ok_or_else(|| invalid(field, value))
 }
 
+fn audio(field: &'static str, value: &str) -> Result<ScreenCaptureAudio, CodecError> {
+    ScreenCaptureAudio::from_token(value).ok_or_else(|| invalid(field, value))
+}
+
+fn audio_state(field: &'static str, value: &str) -> Result<ScreenCaptureAudioState, CodecError> {
+    ScreenCaptureAudioState::from_token(value).ok_or_else(|| invalid(field, value))
+}
+
 fn title_match(field: &'static str, value: &str) -> Result<TitleMatch, CodecError> {
     TitleMatch::from_token(value).ok_or_else(|| invalid(field, value))
 }
@@ -129,7 +139,8 @@ pub(super) fn encode_config(
     push("crop", encode_crop(config.crop))?;
     push("cursor", u8::from(config.cursor).to_string())?;
     push("fps", config.fps.to_string())?;
-    push("stall", config.slate.token().to_owned())
+    push("stall", config.slate.token().to_owned())?;
+    push("audio", config.audio.token().to_owned())
 }
 
 /// Decodes a config's fields.
@@ -157,6 +168,7 @@ pub(super) fn decode_config(
         cursor: flag("cursor", &fields.required("cursor")?)?,
         fps: canonical("fps", &fields.required("fps")?)?,
         slate: slate("stall", &fields.required("stall")?)?,
+        audio: audio("audio", &fields.required("audio")?)?,
     };
     check_config(&config)?;
     Ok(config)
@@ -166,11 +178,12 @@ pub(super) fn decode_config(
 pub(super) fn encode_compact(config: &ScreenCaptureConfig) -> Result<String, CodecError> {
     check_config(config)?;
     let mut text = format!(
-        "{}~{}~{}~{}~",
+        "{}~{}~{}~{}~{}~",
         encode_crop(config.crop),
         u8::from(config.cursor),
         config.fps,
-        config.slate.token()
+        config.slate.token(),
+        config.audio.token()
     );
     match &config.target {
         ScreenCaptureTarget::Screen { index } => {
@@ -220,7 +233,8 @@ pub(super) fn decode_compact<'t>(
     text: &'t str,
 ) -> Result<(ScreenCaptureConfig, &'t str), CodecError> {
     let bad = || invalid(field, text);
-    let ([crop, cursor, fps, stall_token, kind], after) = split_parts::<5>(text).ok_or_else(bad)?;
+    let ([crop, cursor, fps, stall_token, audio_token, kind], after) =
+        split_parts::<6>(text).ok_or_else(bad)?;
     let (target, rest) = match kind {
         "screen" => {
             let end = after.find(',').unwrap_or(after.len());
@@ -259,6 +273,7 @@ pub(super) fn decode_compact<'t>(
         cursor: flag(field, cursor)?,
         fps: canonical(field, fps)?,
         slate: slate(field, stall_token)?,
+        audio: audio(field, audio_token)?,
     };
     check_config(&config)?;
     Ok((config, rest))
@@ -321,6 +336,9 @@ fn check_status(field: &'static str, status: &ScreenCaptureStatus) -> Result<(),
     if let ScreenCaptureState::Reopening { attempt: 0, .. } = status.state {
         return Err(invalid(field, "reopening attempt 0"));
     }
+    if status.audio == ScreenCaptureAudioState::Off && status.audio_error.is_some() {
+        return Err(invalid(field, "audio_error while audio is off"));
+    }
     Ok(())
 }
 
@@ -332,6 +350,7 @@ pub(super) fn encode_status(
     push: &mut Push<'_>,
 ) -> Result<(), CodecError> {
     check_error("last_error", status.last_error.as_deref())?;
+    check_error("audio_error", status.audio_error.as_deref())?;
     check_status("state", status)?;
     let (state, attempt, next_in_ms) = state_parts(status.state);
     push("input", input.to_string())?;
@@ -348,6 +367,10 @@ pub(super) fn encode_status(
     }
     if let Some(error) = &status.last_error {
         push("last_error", error.clone())?;
+    }
+    push("audio", status.audio.token().to_owned())?;
+    if let Some(error) = &status.audio_error {
+        push("audio_error", error.clone())?;
     }
     Ok(())
 }
@@ -377,8 +400,11 @@ pub(super) fn decode_status(
             None => None,
         },
         last_error: fields.optional("last_error"),
+        audio: audio_state("audio", &fields.required("audio")?)?,
+        audio_error: fields.optional("audio_error"),
     };
     check_error("last_error", status.last_error.as_deref())?;
+    check_error("audio_error", status.audio_error.as_deref())?;
     check_status("window_id", &status)?;
     Ok((input, status))
 }
@@ -399,6 +425,9 @@ pub(super) fn encode_entries(entries: &[ScreenCaptureEntry]) -> Result<String, C
         if entry.status.last_error.is_some() {
             return Err(invalid(ENTRIES, "last_error"));
         }
+        if entry.status.audio_error.is_some() {
+            return Err(invalid(ENTRIES, "audio_error"));
+        }
         check_status(ENTRIES, &entry.status)?;
         let (state, attempt, next_in_ms) = state_parts(entry.status.state);
         if !encoded.is_empty() {
@@ -406,7 +435,7 @@ pub(super) fn encode_entries(entries: &[ScreenCaptureEntry]) -> Result<String, C
         }
         write!(
             encoded,
-            "{}~{state}~{attempt}~{next_in_ms}~{}~{}~{}~{}~{}",
+            "{}~{state}~{attempt}~{next_in_ms}~{}~{}~{}~{}~{}~{}",
             entry.input,
             entry.status.reopens,
             entry.status.width,
@@ -415,6 +444,7 @@ pub(super) fn encode_entries(entries: &[ScreenCaptureEntry]) -> Result<String, C
                 .status
                 .window_id
                 .map_or_else(|| "-".to_owned(), |id| id.to_string()),
+            entry.status.audio.token(),
             encode_compact(&entry.config)?,
         )
         .expect("writing to a string cannot fail");
@@ -446,9 +476,10 @@ pub(super) fn decode_entries(value: &str) -> Result<Vec<ScreenCaptureEntry>, Cod
                 width,
                 height,
                 id,
+                audio,
             ],
             after,
-        ) = split_parts::<8>(rest).ok_or_else(|| invalid(ENTRIES, rest))?;
+        ) = split_parts::<9>(rest).ok_or_else(|| invalid(ENTRIES, rest))?;
         let input = parse_canonical_input(input).ok_or_else(|| invalid(ENTRIES, rest))?;
         if entries
             .last()
@@ -468,6 +499,8 @@ pub(super) fn decode_entries(value: &str) -> Result<Vec<ScreenCaptureEntry>, Cod
             height: canonical(ENTRIES, height)?,
             window_id: window_id(ENTRIES, id)?,
             last_error: None,
+            audio: audio_state(ENTRIES, audio)?,
+            audio_error: None,
         };
         check_status(ENTRIES, &status)?;
         let (config, after) = decode_compact(ENTRIES, after)?;

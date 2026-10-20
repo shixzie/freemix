@@ -3,17 +3,19 @@
 //! `screen_capture_status` runtime event, the snapshot's
 //! `screen_capture_inputs`, the `screen_capture:` replacement source, and
 //! the `screen_capture_targets_request` / `screen_capture_targets`
-//! exchange — exactly, and strictly.
+//! exchange — exactly, and strictly — including each input's audio (none,
+//! system, or the window's application) and its audio state.
 
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, InputLifecycleOperation, LiveInputSource,
     MAX_SCREEN_CAPTURE_ERROR_BYTES, MAX_SCREEN_CAPTURE_INPUTS, MAX_SCREEN_CAPTURE_TITLE_BYTES,
-    MAX_SCREEN_CAPTURE_WINDOWS, RuntimeEventMessage, RuntimeLifecycleEvent, ScreenCaptureConfig,
-    ScreenCaptureCrop, ScreenCaptureEntry, ScreenCaptureInventory, ScreenCaptureState,
-    ScreenCaptureStatus, ScreenCaptureTarget, ScreenCaptureTargetsMessage,
-    ScreenCaptureTargetsRequest, ScreenInfo, ServerIdentity, TitleMatch, WindowInfo, WindowRule,
-    WireInputId, WireInputSource, WireMessage, decode_line, encode_line,
+    MAX_SCREEN_CAPTURE_WINDOWS, RuntimeEventMessage, RuntimeLifecycleEvent, ScreenCaptureAudio,
+    ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureEntry,
+    ScreenCaptureInventory, ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget,
+    ScreenCaptureTargetsMessage, ScreenCaptureTargetsRequest, ScreenInfo, ServerIdentity,
+    TitleMatch, WindowInfo, WindowRule, WireInputId, WireInputSource, WireMessage, decode_line,
+    encode_line,
 };
 use fm_types::network_stream::StallSlate;
 
@@ -107,6 +109,7 @@ fn slides() -> ScreenCaptureConfig {
         cursor: false,
         fps: 25,
         slate: StallSlate::Black,
+        audio: ScreenCaptureAudio::Application,
     }
 }
 
@@ -130,7 +133,7 @@ fn the_add_command_has_an_exact_wire_form_and_is_strict() {
         format!(
             "{prefix}\tpayload=input_add\tinput=5\tname=Slides\tkind=screen_capture\ttarget=window\
              \tapp=Keynote\ttitle=Deck%7E1%2C%20final\ttitle_match=contains\twindow_id=4242\
-             \tcrop=0.28.0.2\tcursor=0\tfps=25\tstall=black\n"
+             \tcrop=0.28.0.2\tcursor=0\tfps=25\tstall=black\taudio=app\n"
         )
     );
     let screen = round_trip(&add(ScreenCaptureConfig::new(
@@ -138,10 +141,25 @@ fn the_add_command_has_an_exact_wire_form_and_is_strict() {
     )));
     assert!(
         screen.ends_with(
-            "\tkind=screen_capture\ttarget=screen\tscreen=1\tcrop=0.0.0.0\tcursor=1\tfps=30\tstall=freeze\n"
+            "\tkind=screen_capture\ttarget=screen\tscreen=1\tcrop=0.0.0.0\tcursor=1\tfps=30\tstall=freeze\taudio=none\n"
         ),
         "{screen}"
     );
+    // Desktop audio fits a screen; an application's audio needs a window.
+    let desktop = ScreenCaptureConfig {
+        audio: ScreenCaptureAudio::System,
+        ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 1 })
+    };
+    assert!(round_trip(&add(desktop)).ends_with("\tstall=freeze\taudio=system\n"));
+    let screen_app = ScreenCaptureConfig {
+        audio: ScreenCaptureAudio::Application,
+        ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 1 })
+    };
+    assert!(encode_line(&add(screen_app)).is_err());
+    refused(&screen.replacen("audio=none", "audio=app", 1));
+    refused(&line.replacen("audio=app", "audio=application", 1));
+    refused(&line.replacen("audio=app", "audio=App", 1));
+    refused(&line.replacen("\taudio=app", "", 1));
     // Without an id hint the window rule still round-trips.
     let mut unhinted = slides();
     if let ScreenCaptureTarget::Window(rule) = &mut unhinted.target {
@@ -208,6 +226,7 @@ fn the_added_event_carries_one_kind() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // every picture and audio state, exactly and strictly
 fn status_events_are_exact_and_bounded() {
     let gone = runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
         input: input(5),
@@ -218,13 +237,15 @@ fn status_events_are_exact_and_bounded() {
             height: 0,
             window_id: None,
             last_error: Some("no Keynote window titled \"Deck\" is open".into()),
+            audio: ScreenCaptureAudioState::Off,
+            audio_error: None,
         }),
     });
     let line = round_trip(&gone);
     assert!(
         line.ends_with(
             "\tevent=screen_capture_status\tinput=5\tstate=target_gone\treopens=2\twidth=0\theight=0\
-             \tlast_error=no%20Keynote%20window%20titled%20%22Deck%22%20is%20open\n"
+             \tlast_error=no%20Keynote%20window%20titled%20%22Deck%22%20is%20open\taudio=off\n"
         ),
         "{line}"
     );
@@ -237,14 +258,68 @@ fn status_events_are_exact_and_bounded() {
             height: 720,
             window_id: Some(4_242),
             last_error: None,
+            audio: ScreenCaptureAudioState::Live,
+            audio_error: None,
         }),
     }));
     assert!(
         live_line.ends_with(
-            "\tinput=5\tstate=live\treopens=0\twidth=1280\theight=720\twindow_id=4242\n"
+            "\tinput=5\tstate=live\treopens=0\twidth=1280\theight=720\twindow_id=4242\taudio=live\n"
         ),
         "{live_line}"
     );
+    // Every audio state round-trips, with its reason when it has one.
+    for audio in ScreenCaptureAudioState::ALL {
+        let audio_error = (audio != ScreenCaptureAudioState::Off)
+            .then(|| "per-application audio needs Windows 10 version 2004 or later".to_owned());
+        let line = round_trip(&runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
+            input: input(5),
+            status: Box::new(ScreenCaptureStatus {
+                state: ScreenCaptureState::Live,
+                audio,
+                audio_error,
+                ..ScreenCaptureStatus::default()
+            }),
+        }));
+        assert!(
+            line.contains(&format!("\taudio={}", audio.token())),
+            "{line}"
+        );
+    }
+    let waiting = round_trip(&runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
+        input: input(5),
+        status: Box::new(ScreenCaptureStatus {
+            state: ScreenCaptureState::Live,
+            audio: ScreenCaptureAudioState::NoStream,
+            audio_error: Some("no stream".into()),
+            ..ScreenCaptureStatus::default()
+        }),
+    }));
+    assert!(
+        waiting.ends_with("\taudio=no_stream\taudio_error=no%20stream\n"),
+        "{waiting}"
+    );
+    refused(&waiting.replacen("audio=no_stream", "audio=waiting", 1));
+    refused(&waiting.replacen("audio=no_stream", "audio=off", 1));
+    refused(&waiting.replacen("\taudio=no_stream", "", 1));
+    refused(&waiting.replacen("audio_error=no%20stream", "audio_error=", 1));
+    let off_with_error = runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
+        input: input(5),
+        status: Box::new(ScreenCaptureStatus {
+            audio_error: Some("stale".into()),
+            ..ScreenCaptureStatus::default()
+        }),
+    });
+    assert!(encode_line(&off_with_error).is_err());
+    let long_audio = runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
+        input: input(5),
+        status: Box::new(ScreenCaptureStatus {
+            audio: ScreenCaptureAudioState::Failed,
+            audio_error: Some("e".repeat(MAX_SCREEN_CAPTURE_ERROR_BYTES + 1)),
+            ..ScreenCaptureStatus::default()
+        }),
+    });
+    assert!(encode_line(&long_audio).is_err());
     let reopening = round_trip(&runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
         input: input(5),
         status: Box::new(ScreenCaptureStatus {
@@ -304,7 +379,12 @@ fn the_replacement_source_round_trips() {
     for config in [
         slides(),
         ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 2 }),
+        ScreenCaptureConfig {
+            audio: ScreenCaptureAudio::System,
+            ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 2 })
+        },
     ] {
+        let audio = config.audio.token();
         let replace = command(CommandPayload::InputLifecycle(
             InputLifecycleOperation::ReplaceSource {
                 input: input(2),
@@ -318,7 +398,19 @@ fn the_replacement_source_round_trips() {
                 .replacen("%257Ewindow%257E", "%257Eregion%257E", 1)
                 .replacen("%257Escreen%257E", "%257Eregion%257E", 1),
         );
+        refused(&line.replacen(&format!("%257E{audio}%257E"), "%257Eloud%257E", 1));
     }
+    // A screen never takes an application's audio.
+    let screen_app = command(CommandPayload::InputLifecycle(
+        InputLifecycleOperation::ReplaceSource {
+            input: input(2),
+            source: WireInputSource::ScreenCapture(ScreenCaptureConfig::new(
+                ScreenCaptureTarget::Screen { index: 2 },
+            )),
+        },
+    ));
+    let line = round_trip(&screen_app);
+    refused(&line.replacen("%257Enone%257Escreen", "%257Eapp%257Escreen", 1));
 }
 
 fn entry(
@@ -344,6 +436,7 @@ fn snapshot_entries_round_trip_and_are_bounded() {
                 width: 1_280,
                 height: 720,
                 window_id: Some(4_242),
+                audio: ScreenCaptureAudioState::NoStream,
                 ..ScreenCaptureStatus::default()
             },
         ),
@@ -372,8 +465,9 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     let value = unescape(value);
     assert_eq!(
         value,
-        "5~live~0~0~0~1280~720~4242~0.28.0.2~0~25~black~window~contains~4242~7~13:KeynoteDeck~1, final,\
-         7~reopening~2~1000~2~0~0~-~0.0.0.0~1~30~freeze~screen~0"
+        "5~live~0~0~0~1280~720~4242~no_stream~0.28.0.2~0~25~black~app~window~contains~4242~7~13:\
+         KeynoteDeck~1, final,\
+         7~reopening~2~1000~2~0~0~-~off~0.0.0.0~1~30~freeze~none~screen~0"
     );
     // Ascending, without error text, and bounded.
     let mut descending = entries.clone();
@@ -382,6 +476,11 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     let mut with_error = entries.clone();
     with_error[0].status.last_error = Some("boom".into());
     assert!(encode_line(&snapshot(with_error)).is_err());
+    let mut with_audio_error = entries.clone();
+    with_audio_error[0].status.audio_error = Some("boom".into());
+    assert!(encode_line(&snapshot(with_audio_error)).is_err());
+    refused(&line.replacen("%7Eno_stream%7E", "%7Ewaiting%7E", 1));
+    refused(&line.replacen("%7Eno_stream%7E", "%7E", 1));
     let too_many = (1..=u128::try_from(MAX_SCREEN_CAPTURE_INPUTS).unwrap() + 1)
         .map(|value| {
             entry(

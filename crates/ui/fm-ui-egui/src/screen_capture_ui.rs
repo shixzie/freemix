@@ -8,18 +8,23 @@
 //! window follows it by its application and exact title (and its id while
 //! it lives); the operator may follow it by a title that contains a text,
 //! or by any window of the application, instead. Crop insets, the mouse
-//! pointer, a frame rate cap, and what Program shows while the target is
-//! gone complete the form. The tile badge reads the input's latest
-//! `screen_capture_status` (OPENING, LIVE, TARGET GONE, REOPENING n,
-//! UNSUPPORTED, FAILED); the tile's tooltip carries the target, the
-//! captured size, the reopen count, and the last error.
+//! pointer, a frame rate cap, what Program shows while the target is gone,
+//! and the Audio captured with the picture complete the form: None, System
+//! audio (everything the server plays), or Application audio (only the
+//! sound of the application owning the window, offered for a window
+//! target). Captured sound feeds the input's own mixer strip. The tile
+//! badge reads the input's latest `screen_capture_status` (OPENING, LIVE,
+//! TARGET GONE, REOPENING n, UNSUPPORTED, FAILED); the tile's tooltip
+//! carries the target, the captured size, the reopen count, the last error,
+//! and the audio state (starting, live, no audio stream yet, unsupported
+//! here, failed) with its reason.
 
 use egui::{Color32, RichText, Ui};
 use fm_protocol::{
     MAX_SCREEN_CAPTURE_CROP, MAX_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_TITLE_BYTES,
-    MIN_SCREEN_CAPTURE_FPS, ScreenCaptureConfig, ScreenCaptureEntry, ScreenCaptureError,
-    ScreenCaptureInventory, ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget,
-    ScreenInfo, TitleMatch, WindowInfo, WindowRule,
+    MIN_SCREEN_CAPTURE_FPS, ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig,
+    ScreenCaptureEntry, ScreenCaptureError, ScreenCaptureInventory, ScreenCaptureState,
+    ScreenCaptureStatus, ScreenCaptureTarget, ScreenInfo, TitleMatch, WindowInfo, WindowRule,
 };
 use fm_types::network_stream::StallSlate;
 
@@ -45,6 +50,7 @@ pub(crate) enum ScreenCaptureField {
     Title,
     Crop,
     Fps,
+    Audio,
 }
 
 impl ScreenCaptureField {
@@ -54,16 +60,21 @@ impl ScreenCaptureField {
             Self::Title => Msg::ScTitle,
             Self::Crop => Msg::ScCrop,
             Self::Fps => Msg::ScFps,
+            Self::Audio => Msg::ScAudio,
         }
     }
 }
 
 impl ScreenCaptureDraft {
-    /// Captures `screen`.
+    /// Captures `screen`. A screen has no application, so application
+    /// audio falls back to system audio.
     pub(crate) fn choose_screen(&mut self, screen: &ScreenInfo) {
         self.config.target = ScreenCaptureTarget::Screen {
             index: screen.index,
         };
+        if self.config.audio == ScreenCaptureAudio::Application {
+            self.config.audio = ScreenCaptureAudio::System;
+        }
     }
 
     /// Follows `window` by its application and title (keeping how the
@@ -141,6 +152,9 @@ impl ScreenCaptureDraft {
             }
             ScreenCaptureError::InvalidFps => {
                 FieldProblem::error(ScreenCaptureField::Fps, Msg::ScReasonFps.en())
+            }
+            ScreenCaptureError::InvalidAudio => {
+                FieldProblem::error(ScreenCaptureField::Audio, Msg::ScReasonAudio.en())
             }
         })?;
         Ok(self.config.clone())
@@ -532,7 +546,72 @@ pub(crate) fn draw_screen_capture_form(
             }
         }
     });
+    ui.add_space(4.0);
+    ui.label(section_label(l.text(Msg::ScAudio)));
+    let window = matches!(draft.config.target, ScreenCaptureTarget::Window(_));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (audio, label, hover) in [
+            (
+                ScreenCaptureAudio::None,
+                Msg::ScAudioNone,
+                Msg::ScAudioNoneHover,
+            ),
+            (
+                ScreenCaptureAudio::System,
+                Msg::ScAudioSystem,
+                Msg::ScAudioSystemHover,
+            ),
+            (
+                ScreenCaptureAudio::Application,
+                Msg::ScAudioApp,
+                Msg::ScAudioAppHover,
+            ),
+        ] {
+            let selected = draft.config.audio == audio;
+            let enabled = audio != ScreenCaptureAudio::Application || window;
+            if ui
+                .add_enabled(enabled, kind_key(l.text(label), selected))
+                .hint(l.text(hover), Msg::ScAudioAppScreenHover.en())
+                .clicked()
+            {
+                draft.config.audio = audio;
+            }
+        }
+    });
+    let problem = draft
+        .checked()
+        .err()
+        .filter(|problem| problem.field == ScreenCaptureField::Audio);
+    hint_slot(ui, problem.map(|problem| field_error(l, problem.reason)));
     outcome
+}
+
+/// The tooltip line of a screen capture input's audio, or `None` while
+/// its audio is off.
+pub(crate) fn audio_line(
+    l: Locale,
+    audio: ScreenCaptureAudio,
+    status: &ScreenCaptureStatus,
+) -> Option<String> {
+    let source = l.text(match audio {
+        ScreenCaptureAudio::Application => Msg::ScAudioApp,
+        ScreenCaptureAudio::None | ScreenCaptureAudio::System => Msg::ScAudioSystem,
+    });
+    let reason = status
+        .audio_error
+        .as_deref()
+        .unwrap_or_else(|| l.text(Msg::ScAudioNoReason));
+    let args = [("source", Arg::Str(source)), ("reason", Arg::Str(reason))];
+    let line = match status.audio {
+        ScreenCaptureAudioState::Off => return None,
+        ScreenCaptureAudioState::Opening => l.format(Msg::ScAudioLineOpening, &args[..1]),
+        ScreenCaptureAudioState::Live => l.format(Msg::ScAudioLineLive, &args[..1]),
+        ScreenCaptureAudioState::NoStream => l.format(Msg::ScAudioLineNoStream, &args[..1]),
+        ScreenCaptureAudioState::Unsupported => l.format(Msg::ScAudioLineUnsupported, &args),
+        ScreenCaptureAudioState::Failed => l.format(Msg::ScAudioLineFailed, &args),
+    };
+    Some(line)
 }
 
 /// The tile badge for a screen capture status: its text and colour, or
@@ -604,6 +683,7 @@ pub(crate) fn screen_capture_details(l: Locale, entry: &ScreenCaptureEntry) -> S
     if let Some(error) = &status.last_error {
         lines.push(l.format(Msg::CardLastError, &[("error", Arg::Str(error))]));
     }
+    lines.extend(audio_line(l, entry.config.audio, status));
     lines.join(" · ")
 }
 
@@ -698,8 +778,19 @@ mod tests {
         draft.config.fps = 0;
         assert_eq!(draft.checked().unwrap_err().field, ScreenCaptureField::Fps);
         draft.config.fps = 30;
+        // Application audio for a window; a screen falls back to system.
+        draft.config.audio = ScreenCaptureAudio::Application;
+        assert_eq!(
+            draft.config().unwrap().audio,
+            ScreenCaptureAudio::Application
+        );
         draft.choose_screen(&inventory.screens[0]);
         assert!(draft.rule_mut().is_none());
+        assert_eq!(draft.config.audio, ScreenCaptureAudio::System);
+        draft.config.audio = ScreenCaptureAudio::Application;
+        let problem = draft.checked().unwrap_err();
+        assert_eq!(problem.field, ScreenCaptureField::Audio);
+        assert_eq!(problem.reason, Msg::ScReasonAudio.en());
     }
 
     #[test]
@@ -760,6 +851,7 @@ mod tests {
                 height: 0,
                 window_id: None,
                 last_error: Some("no Keynote window titled \"Deck\" is open".into()),
+                ..ScreenCaptureStatus::default()
             },
         };
         assert_eq!(
@@ -780,5 +872,69 @@ mod tests {
             ..ScreenCaptureStatus::default()
         };
         assert!(screen_capture_details(l, &live).contains("capturing 1280x720"));
+        assert!(!screen_capture_details(l, &live).contains("audio"));
+    }
+
+    #[test]
+    fn audio_states_read_clearly_in_both_languages() {
+        let l = Locale::new(Language::English);
+        let es = Locale::new(Language::Spanish);
+        let status = |audio, error: Option<&str>| ScreenCaptureStatus {
+            state: ScreenCaptureState::Live,
+            audio,
+            audio_error: error.map(str::to_owned),
+            ..ScreenCaptureStatus::default()
+        };
+        let app = ScreenCaptureAudio::Application;
+        assert_eq!(
+            audio_line(l, app, &status(ScreenCaptureAudioState::Off, None)),
+            None
+        );
+        assert_eq!(
+            audio_line(l, app, &status(ScreenCaptureAudioState::Live, None)).as_deref(),
+            Some("Application audio: live")
+        );
+        assert_eq!(
+            audio_line(
+                l,
+                ScreenCaptureAudio::System,
+                &status(ScreenCaptureAudioState::Opening, None)
+            )
+            .as_deref(),
+            Some("System audio: starting")
+        );
+        let waiting = audio_line(l, app, &status(ScreenCaptureAudioState::NoStream, None)).unwrap();
+        assert!(waiting.contains("no audio stream yet"), "{waiting}");
+        let unsupported = audio_line(
+            l,
+            app,
+            &status(
+                ScreenCaptureAudioState::Unsupported,
+                Some("per-application audio needs Windows 10 2004 or later"),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            unsupported,
+            "Application audio unsupported here: per-application audio needs Windows 10 2004 or later"
+        );
+        let failed = audio_line(l, app, &status(ScreenCaptureAudioState::Failed, None)).unwrap();
+        assert_eq!(failed, "Application audio failed: no reason given");
+        let spanish =
+            audio_line(es, app, &status(ScreenCaptureAudioState::NoStream, None)).unwrap();
+        assert_ne!(spanish, waiting);
+        let entry = ScreenCaptureEntry {
+            input: fm_protocol::WireInputId::from_domain(fm_types::InputId::new(
+                core::num::NonZeroU128::new(5).unwrap(),
+            )),
+            config: ScreenCaptureConfig {
+                audio: app,
+                ..ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::exact(
+                    "Keynote", "Deck", None,
+                )))
+            },
+            status: status(ScreenCaptureAudioState::NoStream, None),
+        };
+        assert!(screen_capture_details(l, &entry).ends_with(&waiting));
     }
 }

@@ -33,7 +33,7 @@ const MAX_PACTL_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 /// The environment `pactl` keeps besides `PATH`, matching the system audio
 /// capture child: `PulseAudio` finds its server and cookie through these.
-const AUDIO_SERVER_ENVIRONMENT: &[&str] = &[
+pub(crate) const AUDIO_SERVER_ENVIRONMENT: &[&str] = &[
     "HOME",
     "XDG_RUNTIME_DIR",
     "PULSE_SERVER",
@@ -115,7 +115,11 @@ impl SystemAudioLister {
 
 /// Runs `pactl` with `args`, returning its standard output, or why it
 /// failed: not installed, no server, or no answer within `timeout`.
-fn run_pactl(program: &OsString, args: &[&str], timeout: Duration) -> Result<String, String> {
+pub(crate) fn run_pactl(
+    program: &OsString,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
     let mut command = Command::new(program);
     command
         .args(args)

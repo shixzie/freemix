@@ -93,6 +93,7 @@ impl FfmpegAcquirer {
             },
             audio: request.audio.as_ref().map(|path| DeviceAudioInput {
                 format: self.audio_demuxer.clone(),
+                options: Vec::new(),
                 path: path.clone(),
             }),
             audio_only: false,

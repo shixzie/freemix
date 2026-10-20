@@ -16,18 +16,53 @@
 //!
 //! Every backend produces the same [`DesktopListing`] and resolves targets
 //! with the same rules ([`fm_io_linux::screen_capture::resolve`]).
+//!
+//! A capture's sound ([`DesktopBackend::audio_plan`]) is planned per
+//! platform beside its picture:
+//!
+//! - **Linux:** system audio is the `PulseAudio`/`PipeWire` default
+//!   output's monitor, read by the capture child itself; application audio
+//!   is an [`AudioTap`](fm_io_linux::capture_audio::AudioTap) recording the
+//!   window process's own playback streams. The sound is keyed by the
+//!   window's process (or, without one, its application id), never by the
+//!   picture backend, so any desktop listing that names a process works.
+//! - **Windows:** a tap running a WASAPI loopback (system) or process
+//!   loopback (application, Windows 10 2004 or later) helper.
+//! - **macOS:** a tap running the `ScreenCaptureKit` helper's audio
+//!   capture (macOS 13 or later).
 
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
-use fm_codec_ffmpeg::network_input::DeviceInput;
+use fm_codec_ffmpeg::network_input::{DeviceAudioInput, DeviceInput};
+use fm_io_linux::capture_audio::TapSource;
 use fm_io_linux::screen_capture::{CaptureRegion, DesktopListing, Resolution};
-use fm_protocol::{ScreenCaptureConfig, ScreenCaptureInventory};
+use fm_protocol::{ScreenCaptureAudio, ScreenCaptureConfig, ScreenCaptureInventory, WindowInfo};
 use fm_types::FrameRate;
 
 /// Why a platform without a backend cannot capture.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) const NO_BACKEND: &str = "screen and window capture is not supported on this platform";
+
+/// Why application audio cannot be captured without a window.
+pub(crate) const NO_WINDOW_APP: &str = "application audio needs a window capture";
+
+/// How a capture's sound is captured.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AudioPlan {
+    /// The capture is silent.
+    Silent,
+    /// The capture child opens this audio input itself, keeping these
+    /// environment variables.
+    Device {
+        input: DeviceAudioInput,
+        environment: Vec<String>,
+    },
+    /// A tap gathers the sound and serves it to the capture child.
+    Tap(TapSource),
+    /// The sound cannot be captured here, and why.
+    Unsupported(String),
+}
 
 /// A desktop listing function, run on a worker thread.
 pub(crate) type Lister = Box<dyn FnMut() -> DesktopListing + Send>;
@@ -211,6 +246,90 @@ impl DesktopBackend {
             },
         }
     }
+}
+
+impl DesktopBackend {
+    /// How the sound `config` asks for is captured beside `region`, whose
+    /// window (if a window is captured) the listing describes as `window`.
+    pub(crate) fn audio_plan(
+        &self,
+        config: &ScreenCaptureConfig,
+        region: &CaptureRegion,
+        window: Option<&WindowInfo>,
+    ) -> AudioPlan {
+        // Only some platforms place their audio by the captured region.
+        let _ = region;
+        let audio = config.audio;
+        if audio == ScreenCaptureAudio::None {
+            return AudioPlan::Silent;
+        }
+        if audio == ScreenCaptureAudio::Application && window.is_none() {
+            return AudioPlan::Unsupported(NO_WINDOW_APP.to_owned());
+        }
+        match self {
+            Self::X11 { .. } => linux_audio_plan(audio, window),
+            #[cfg(windows)]
+            Self::Windows => crate::desktop_windows::audio_plan(audio, window),
+            #[cfg(target_os = "macos")]
+            Self::Macos { helper } => macos_audio_plan(helper, audio, region, window),
+            Self::Unsupported(reason) => AudioPlan::Unsupported(reason.clone()),
+            #[cfg(test)]
+            Self::Fake(_) => linux_audio_plan(audio, window),
+        }
+    }
+}
+
+/// The Linux plan: the default output's monitor for system audio, the
+/// window process's own streams for application audio.
+fn linux_audio_plan(audio: ScreenCaptureAudio, window: Option<&WindowInfo>) -> AudioPlan {
+    use fm_io_linux::capture_audio::{AppAudioKey, audio_server_environment, pulse_system_audio};
+    match audio {
+        ScreenCaptureAudio::None => AudioPlan::Silent,
+        ScreenCaptureAudio::System => AudioPlan::Device {
+            input: pulse_system_audio(),
+            environment: audio_server_environment(),
+        },
+        ScreenCaptureAudio::Application => {
+            let Some(window) = window else {
+                return AudioPlan::Unsupported(NO_WINDOW_APP.to_owned());
+            };
+            AudioPlan::Tap(TapSource::pulse_application(AppAudioKey {
+                pid: window.pid,
+                app: window.app.clone(),
+            }))
+        }
+    }
+}
+
+/// The macOS plan: the `ScreenCaptureKit` helper's audio capture.
+#[cfg(target_os = "macos")]
+fn macos_audio_plan(
+    helper: &std::path::Path,
+    audio: ScreenCaptureAudio,
+    region: &CaptureRegion,
+    window: Option<&WindowInfo>,
+) -> AudioPlan {
+    use fm_io_linux::capture_audio::ProducerCommand;
+    use fm_io_macos::screen_capture::{HelperAudio, audio_arguments};
+    let target = match audio {
+        ScreenCaptureAudio::None => return AudioPlan::Silent,
+        // The system output is the same through any display; a window's
+        // capture reads it through the first.
+        ScreenCaptureAudio::System => HelperAudio::Display(region.screen.unwrap_or(0)),
+        ScreenCaptureAudio::Application => {
+            match window.and_then(|window| window.pid).filter(|pid| *pid != 0) {
+                Some(pid) => HelperAudio::App(pid),
+                None => {
+                    return AudioPlan::Unsupported("the window's process is unknown".to_owned());
+                }
+            }
+        }
+    };
+    AudioPlan::Tap(TapSource::Command(ProducerCommand {
+        program: helper.to_path_buf(),
+        args: audio_arguments(target),
+        environment: Vec::new(),
+    }))
 }
 
 /// How `config`'s target resolves in `listing` on `backend`.

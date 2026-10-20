@@ -22,7 +22,7 @@ behavior.
 | IN-008 | P0 | Still image and solid color/bars | Load common image formats, respect alpha/orientation/color profile, generate colors/bars without per-frame CPU upload |
 | IN-009 | P1 | Photo/slideshow input | Folder/list, duration, transition, pan/zoom, random/ordered playback, live list edits, optional thumbnail suppression, and filename fallback for very large sets |
 | IN-010 | P1 | Image sequence and stinger input | Decode alpha sequence/video, configure cut point, preload, and play deterministically |
-| IN-011 | P1 | Local display/window/application capture with optional audio | Enumerate targets, crop, cursor toggle, and survive resize/target closure (Linux X11 implemented; Windows/macOS compile-checked; Wayland reported unsupported; audio via a paired system audio input) |
+| IN-011 | P1 | Local display/window/application capture with optional audio | Enumerate targets, crop, cursor toggle, and survive resize/target closure (Linux X11 implemented; Windows/macOS compile-checked; Wayland reported unsupported; optional system or per-application audio on the input's own strip, Linux PulseAudio tested, Windows WASAPI and macOS ScreenCaptureKit audio compile-checked) |
 | IN-012 | P1 | Remote desktop capture agent | Pair, choose screen/window, receive A/V, report latency/loss, and provide tally |
 | IN-013 | P1 | Browser input | Navigate, interact, zoom, transparent background, custom CSS, browser audio, HTML5 media, cookies/profile isolation, and refresh-on-activate |
 | IN-014 | P2 | Presentation input | Import/render PowerPoint-compatible slides or use a documented PDF/image fallback; next/previous and notes metadata |

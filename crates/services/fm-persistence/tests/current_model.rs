@@ -2950,13 +2950,15 @@ fn image_and_slideshow_inputs_round_trip_exactly_and_reject_malformed_values() {
 }
 
 /// IN-011: a screen or window capture input round-trips its target, crop,
-/// cursor, rate, and stall slate exactly, and a missing, unknown, or
-/// unusable value is refused.
+/// cursor, rate, stall slate, and audio exactly, and a missing, unknown, or
+/// unusable value (such as a screen taking an application's audio) is
+/// refused.
 #[test]
 fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
     use fm_types::network_stream::StallSlate;
     use fm_types::screen_capture::{
-        ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureTarget, TitleMatch, WindowRule,
+        ScreenCaptureAudio, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureTarget,
+        TitleMatch, WindowRule,
     };
 
     let temp = TestDirectory::new("screen-capture");
@@ -2980,8 +2982,12 @@ fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         cursor: false,
         fps: 25,
         slate: StallSlate::Black,
+        audio: ScreenCaptureAudio::Application,
     };
-    let desktop = ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 1 });
+    let desktop = ScreenCaptureConfig {
+        audio: ScreenCaptureAudio::System,
+        ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 1 })
+    };
     project
         .replace_input_source(window, InputKind::ScreenCapture(slides.clone()), Vec::new())
         .unwrap();
@@ -3014,9 +3020,9 @@ fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
     assert_eq!(kind(window), InputKind::ScreenCapture(slides));
     assert_eq!(kind(screen), InputKind::ScreenCapture(desktop));
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    let window_object = "{\"type\": \"screen_capture\", \"target\": {\"kind\": \"window\", \"app\": \"Keynote\", \"title\": \"Deck \\\"final\\\"\", \"title_match\": \"contains\", \"window_id\": 4242}, \"crop\": {\"left\": 1, \"top\": 28, \"right\": 3, \"bottom\": 2}, \"cursor\": false, \"fps\": 25, \"stall\": \"black\"}";
+    let window_object = "{\"type\": \"screen_capture\", \"target\": {\"kind\": \"window\", \"app\": \"Keynote\", \"title\": \"Deck \\\"final\\\"\", \"title_match\": \"contains\", \"window_id\": 4242}, \"crop\": {\"left\": 1, \"top\": 28, \"right\": 3, \"bottom\": 2}, \"cursor\": false, \"fps\": 25, \"stall\": \"black\", \"audio\": \"app\"}";
     assert!(encoded.contains(window_object), "{encoded}");
-    let screen_object = "{\"type\": \"screen_capture\", \"target\": {\"kind\": \"screen\", \"index\": 1}, \"crop\": {\"left\": 0, \"top\": 0, \"right\": 0, \"bottom\": 0}, \"cursor\": true, \"fps\": 30, \"stall\": \"freeze\"}";
+    let screen_object = "{\"type\": \"screen_capture\", \"target\": {\"kind\": \"screen\", \"index\": 1}, \"crop\": {\"left\": 0, \"top\": 0, \"right\": 0, \"bottom\": 0}, \"cursor\": true, \"fps\": 30, \"stall\": \"freeze\", \"audio\": \"system\"}";
     assert!(encoded.contains(screen_object), "{encoded}");
 
     for (from, to) in [
@@ -3034,9 +3040,13 @@ fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         ("\"fps\": 25", "\"fps\": 61"),
         ("\"stall\": \"black\"", "\"stall\": \"slate\""),
         (
-            "\"stall\": \"black\"}",
-            "\"stall\": \"black\", \"extra\": true}",
+            "\"audio\": \"app\"}",
+            "\"audio\": \"app\", \"extra\": true}",
         ),
+        ("\"audio\": \"app\"", "\"audio\": \"application\""),
+        (", \"audio\": \"app\"", ""),
+        ("\"audio\": \"system\"", "\"audio\": \"app\""),
+        ("\"audio\": \"system\"", "\"audio\": null"),
     ] {
         let invalid = encoded.replacen(from, to, 1);
         assert_ne!(invalid, encoded, "{from}");

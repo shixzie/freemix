@@ -4,8 +4,10 @@
 //! desktop) or one application window, captured on the server. Its
 //! [`ScreenCaptureConfig`] names the [`ScreenCaptureTarget`], the
 //! [`ScreenCaptureCrop`] trimmed from the target's edges, whether the mouse
-//! cursor is drawn, a capture rate cap, and the slate shown while the
-//! target is gone.
+//! cursor is drawn, a capture rate cap, the slate shown while the target is
+//! gone, and the [`ScreenCaptureAudio`] captured beside the picture: none,
+//! the whole system output, or (for a window) the sound of the application
+//! that owns the window.
 //!
 //! A window is named by a [`WindowRule`] rather than by its window-system
 //! id alone: the application (X11 class, macOS bundle or owner name,
@@ -171,6 +173,42 @@ impl ScreenCaptureTarget {
     }
 }
 
+/// The sound a screen capture input captures beside its picture, which
+/// feeds the input's own mixer strip.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ScreenCaptureAudio {
+    /// The input is silent.
+    #[default]
+    None,
+    /// The server's whole system output (desktop audio): the default
+    /// output's monitor on Linux, WASAPI loopback on Windows,
+    /// `ScreenCaptureKit` display audio on macOS.
+    System,
+    /// Only the sound of the application that owns the captured window
+    /// (its process and the processes it started). A window target only.
+    Application,
+}
+
+impl ScreenCaptureAudio {
+    pub const ALL: [Self; 3] = [Self::None, Self::System, Self::Application];
+
+    /// The audio's token: `none`, `system`, or `app`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::System => "system",
+            Self::Application => "app",
+        }
+    }
+
+    /// The audio a token names.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|value| value.token() == token)
+    }
+}
+
 /// Pixels trimmed from each edge of the target before it is scaled to the
 /// program picture. Insets follow the target's edges, so a crop that hides
 /// a window's title bar keeps hiding it when the window is resized.
@@ -234,6 +272,8 @@ pub struct ScreenCaptureConfig {
     /// What the input shows while its target is gone or capture fails:
     /// the last picture or opaque black.
     pub slate: StallSlate,
+    /// The sound captured beside the picture.
+    pub audio: ScreenCaptureAudio,
 }
 
 impl Default for ScreenCaptureConfig {
@@ -244,13 +284,14 @@ impl Default for ScreenCaptureConfig {
             cursor: true,
             fps: DEFAULT_SCREEN_CAPTURE_FPS,
             slate: StallSlate::Freeze,
+            audio: ScreenCaptureAudio::None,
         }
     }
 }
 
 impl ScreenCaptureConfig {
-    /// A capture of `target` with the default crop, cursor, rate, and
-    /// slate.
+    /// A silent capture of `target` with the default crop, cursor, rate,
+    /// and slate.
     #[must_use]
     pub fn new(target: ScreenCaptureTarget) -> Self {
         Self {
@@ -282,6 +323,11 @@ impl ScreenCaptureConfig {
         }
         if !(MIN_SCREEN_CAPTURE_FPS..=MAX_SCREEN_CAPTURE_FPS).contains(&self.fps) {
             return Err(ScreenCaptureError::InvalidFps);
+        }
+        if self.audio == ScreenCaptureAudio::Application
+            && !matches!(self.target, ScreenCaptureTarget::Window(_))
+        {
+            return Err(ScreenCaptureError::InvalidAudio);
         }
         Ok(())
     }
@@ -326,6 +372,8 @@ pub enum ScreenCaptureError {
     InvalidCrop,
     /// The rate cap is outside its bounds.
     InvalidFps,
+    /// Application audio names a screen target, which has no application.
+    InvalidAudio,
 }
 
 impl ScreenCaptureError {
@@ -337,6 +385,7 @@ impl ScreenCaptureError {
             Self::InvalidWindowRule => "invalid_window_rule",
             Self::InvalidCrop => "invalid_crop",
             Self::InvalidFps => "invalid_fps",
+            Self::InvalidAudio => "invalid_audio",
         }
     }
 
@@ -348,6 +397,7 @@ impl ScreenCaptureError {
             Self::InvalidWindowRule => "title",
             Self::InvalidCrop => "crop",
             Self::InvalidFps => "fps",
+            Self::InvalidAudio => "audio",
         }
     }
 }
@@ -362,6 +412,9 @@ impl fmt::Display for ScreenCaptureError {
             }
             Self::InvalidCrop => "a screen capture crop trims at most 16384 pixels from an edge",
             Self::InvalidFps => "a screen capture rate cap is 1 to 60 frames per second",
+            Self::InvalidAudio => {
+                "application audio needs a window capture: a screen has no application"
+            }
         })
     }
 }
@@ -409,6 +462,59 @@ impl ScreenCaptureState {
     }
 }
 
+/// The state of a screen capture input's audio capture.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum ScreenCaptureAudioState {
+    /// No audio is captured: the input is silent, closed, or its picture
+    /// is not being captured.
+    #[default]
+    Off,
+    /// The audio capture is starting.
+    Opening,
+    /// The audio capture delivers sound (which may be silence).
+    Live,
+    /// The application owning the window plays no sound stream yet: the
+    /// strip is silent and the capture starts as soon as one appears.
+    NoStream,
+    /// This server cannot capture this audio (per-application capture
+    /// needs Windows 10 2004 or macOS 13, for example); the error says
+    /// why. The picture is still captured.
+    Unsupported,
+    /// The audio capture failed (such as no audio server); it is retried
+    /// with the picture's next restart and the error says why.
+    Failed,
+}
+
+impl ScreenCaptureAudioState {
+    pub const ALL: [Self; 6] = [
+        Self::Off,
+        Self::Opening,
+        Self::Live,
+        Self::NoStream,
+        Self::Unsupported,
+        Self::Failed,
+    ];
+
+    /// The state's token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Opening => "opening",
+            Self::Live => "live",
+            Self::NoStream => "no_stream",
+            Self::Unsupported => "unsupported",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// The state a token names.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|value| value.token() == token)
+    }
+}
+
 /// A screen capture input's status.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ScreenCaptureStatus {
@@ -424,6 +530,12 @@ pub struct ScreenCaptureStatus {
     pub window_id: Option<u64>,
     /// The last error, bounded to [`MAX_SCREEN_CAPTURE_ERROR_BYTES`].
     pub last_error: Option<String>,
+    /// The audio capture's state ([`ScreenCaptureAudioState::Off`] for a
+    /// silent input).
+    pub audio: ScreenCaptureAudioState,
+    /// Why the audio is not live, bounded to
+    /// [`MAX_SCREEN_CAPTURE_ERROR_BYTES`].
+    pub audio_error: Option<String>,
 }
 
 /// `text` as one line of at most `max` bytes: control characters replaced
@@ -790,6 +902,29 @@ mod tests {
         for fps in [0, 61] {
             let config = ScreenCaptureConfig { fps, ..screen(0) };
             assert_eq!(config.validate(), Err(ScreenCaptureError::InvalidFps));
+        }
+        // Application audio needs a window; system audio fits either.
+        for audio in ScreenCaptureAudio::ALL {
+            let config = ScreenCaptureConfig { audio, ..screen(0) };
+            let expected = if audio == ScreenCaptureAudio::Application {
+                Err(ScreenCaptureError::InvalidAudio)
+            } else {
+                Ok(())
+            };
+            assert_eq!(config.validate(), expected, "{audio:?}");
+            let config = ScreenCaptureConfig {
+                audio,
+                ..window(WindowRule::exact("XTerm", "build", None))
+            };
+            assert_eq!(config.validate(), Ok(()));
+            assert_eq!(ScreenCaptureAudio::from_token(audio.token()), Some(audio));
+        }
+        assert_eq!(ScreenCaptureAudio::from_token("App"), None);
+        for state in ScreenCaptureAudioState::ALL {
+            assert_eq!(
+                ScreenCaptureAudioState::from_token(state.token()),
+                Some(state)
+            );
         }
     }
 

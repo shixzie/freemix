@@ -57,6 +57,7 @@ const fn kind_word(kind: SourceSyncKind) -> Msg {
         SourceSyncKind::Capture => Msg::SyncKindCapture,
         SourceSyncKind::Stream => Msg::SyncKindStream,
         SourceSyncKind::SystemAudio => Msg::SyncKindSystemAudio,
+        SourceSyncKind::ScreenCapture => Msg::SyncKindScreenCapture,
     }
 }
 

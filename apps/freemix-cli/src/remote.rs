@@ -928,7 +928,7 @@ pub(crate) fn print_screen_capture_inputs(
         any = true;
         let crop = entry.config.crop;
         println!(
-            "ScreenCaptureInput(input={}, target={}, crop={},{},{},{}, cursor={}, fps={}, stall={}, state={}, size={}x{}, reopens={}, last_error={})",
+            "ScreenCaptureInput(input={}, target={}, crop={},{},{},{}, cursor={}, fps={}, stall={}, audio={}, state={}, size={}x{}, reopens={}, last_error={}, audio_state={}, audio_error={})",
             entry.input,
             screen_capture_target(&entry.config),
             crop.left,
@@ -938,11 +938,14 @@ pub(crate) fn print_screen_capture_inputs(
             if entry.config.cursor { "on" } else { "off" },
             entry.config.fps,
             entry.config.slate.token(),
+            entry.config.audio.token(),
             entry.status.state.token(),
             entry.status.width,
             entry.status.height,
             entry.status.reopens,
             quoted_or_none(entry.status.last_error.as_deref()),
+            entry.status.audio.token(),
+            quoted_or_none(entry.status.audio_error.as_deref()),
         );
     }
     if !any {

@@ -6258,7 +6258,7 @@ Usage:
   freemix-cli input-add-image <show.freemix> <nonzero-input-id> <name> <asset://key|/absolute/picture> [--fit fit|fill|stretch|1:1]
   freemix-cli input-add-slideshow <show.freemix> <nonzero-input-id> <name> <--folder <asset://folder|/absolute/folder> | --picture <asset://key|/absolute/picture>[|caption]...> [slideshow options]
     slideshow options: [--fit fit|fill|stretch|1:1] [--slide-frames <1..=1000000>] [--fade-frames <1..=3600>|--cut] [--ken-burns] [--random <seed>] [--no-loop] [--manual]; host pictures and folders are copied into the project
-  freemix-cli input-add-screen-capture <show.freemix> <nonzero-input-id> <name> <screen <index>|window <app> <title>> [--match exact|contains|any] [--window-id <id>] [--crop <left>,<top>,<right>,<bottom>] [--cursor on|off] [--fps <1-60>] [--stall freeze|black]
+  freemix-cli input-add-screen-capture <show.freemix> <nonzero-input-id> <name> <screen <index>|window <app> <title>> [--match exact|contains|any] [--window-id <id>] [--crop <left>,<top>,<right>,<bottom>] [--cursor on|off] [--fps <1-60>] [--stall freeze|black] [--audio none|system|app]
   freemix-cli input-screen-capture-status <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>

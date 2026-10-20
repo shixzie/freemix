@@ -1120,6 +1120,9 @@ fn validate_screen_capture(
                 fm_types::screen_capture::ScreenCaptureError::InvalidFps => {
                     "kind.screen_capture.fps"
                 }
+                fm_types::screen_capture::ScreenCaptureError::InvalidAudio => {
+                    "kind.screen_capture.audio"
+                }
             },
             kind: ValidationErrorKind::OutOfRange,
         });

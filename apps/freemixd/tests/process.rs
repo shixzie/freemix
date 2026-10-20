@@ -2097,11 +2097,13 @@ fn a_simulated_daemon_lists_no_system_audio_devices() {
 /// IN-011: a simulated daemon stands in for a desktop. It answers each
 /// target list request, by its own request id, with its simulated screen
 /// and two application windows, and accepts a window capture input added
-/// live, which the snapshot lists with its configuration.
+/// live with its application's audio, which the snapshot lists with its
+/// configuration (and the audio off, since nothing is captured).
 #[test]
 fn a_simulated_daemon_lists_simulated_capture_targets_and_adds_a_window_capture() {
     use fm_protocol::{
-        ScreenCaptureConfig, ScreenCaptureTarget, ScreenCaptureTargetsRequest, WindowRule,
+        ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureTarget,
+        ScreenCaptureTargetsRequest, WindowRule,
     };
 
     let directory = TestDirectory::new("screen-capture-targets");
@@ -2129,11 +2131,14 @@ fn a_simulated_daemon_lists_simulated_capture_targets_and_adds_a_window_capture(
         assert_eq!(answer.inventory.windows.len(), 2);
     }
 
-    let config = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::exact(
-        "Slides",
-        "Keynote deck",
-        Some(1),
-    )));
+    let config = ScreenCaptureConfig {
+        audio: ScreenCaptureAudio::Application,
+        ..ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::exact(
+            "Slides",
+            "Keynote deck",
+            Some(1),
+        )))
+    };
     client.send(&command(
         "add-slides",
         "add-slides-key",
@@ -2166,6 +2171,7 @@ fn a_simulated_daemon_lists_simulated_capture_targets_and_adds_a_window_capture(
     };
     assert_eq!(entry.input, input(7));
     assert_eq!(entry.config, config);
+    assert_eq!(entry.status.audio, ScreenCaptureAudioState::Off);
 }
 
 /// OR-011, Protocol 2.42: a daemon without a display presenter keeps

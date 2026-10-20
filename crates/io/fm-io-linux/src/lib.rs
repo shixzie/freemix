@@ -18,6 +18,10 @@
 //!   audio input can open (AU-011).
 //! - [`screen_capture`]: the screens and windows of the X11 desktop and
 //!   their capture through `ffmpeg -f x11grab` (IN-011).
+//! - [`capture_audio`]: the sound captured beside a screen or window
+//!   capture: the system output's monitor, an application's own
+//!   `PulseAudio`/`PipeWire` streams, or a platform helper, served to the
+//!   capture child on a private socket (IN-011).
 //!
 //! Everything but [`v4l2`] is portable, so the state machines are tested
 //! without hardware on every platform.
@@ -25,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 pub mod acquire;
+pub mod capture_audio;
 pub mod fake;
 pub mod ffmpeg;
 pub mod monitor;

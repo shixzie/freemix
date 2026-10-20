@@ -11,8 +11,11 @@
 //! zero-based index); for a window `app`, `title`, `title_match`
 //! (`exact|contains|any`), and an optional `window_id` hint; then `crop`
 //! (`<left>.<top>.<right>.<bottom>` insets in target pixels), `cursor`
-//! (`0|1`), `fps` (1 to 60), and `stall` (`freeze|black`, what the input
-//! shows while its target is gone). See [`ScreenCaptureConfig`].
+//! (`0|1`), `fps` (1 to 60), `stall` (`freeze|black`, what the input
+//! shows while its target is gone), and `audio` (`none|system|app`: no
+//! sound, the server's whole system output, or the sound of the
+//! application owning the window, which only a window target may name).
+//! See [`ScreenCaptureConfig`].
 //!
 //! The add is an undoable project edit that honours the project padlock;
 //! `event=input_added` carries `kind=screen_capture` and the config
@@ -28,9 +31,11 @@
 //! (`idle|opening|live|target_gone|reopening|unsupported|failed`),
 //! `attempt` and `next_in_ms` (only for `reopening`), `reopens`, `width`
 //! and `height` (the captured target's size, zero when none), an optional
-//! `window_id`, and an optional `last_error`. A snapshot carries
-//! `screen_capture_inputs`: every screen capture input, ascending, with its
-//! config and latest status (without the error text).
+//! `window_id`, an optional `last_error`, `audio`
+//! (`off|opening|live|no_stream|unsupported|failed`, the audio capture's
+//! [`ScreenCaptureAudioState`]), and an optional `audio_error`. A snapshot
+//! carries `screen_capture_inputs`: every screen capture input, ascending,
+//! with its config and latest status (without the error texts).
 //!
 //! A client lists what the server can capture with
 //! `screen_capture_targets_request` (`request_id`) and receives
@@ -54,9 +59,10 @@ pub use fm_types::screen_capture::{
     MAX_SCREEN_CAPTURE_ERROR_BYTES, MAX_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_INPUTS,
     MAX_SCREEN_CAPTURE_SCREEN_INDEX, MAX_SCREEN_CAPTURE_SCREEN_NAME_BYTES,
     MAX_SCREEN_CAPTURE_SCREENS, MAX_SCREEN_CAPTURE_TITLE_BYTES, MAX_SCREEN_CAPTURE_WINDOWS,
-    MIN_SCREEN_CAPTURE_FPS, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureError,
-    ScreenCaptureInventory, ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget,
-    ScreenInfo, TitleMatch, WindowInfo, WindowRule, bound_screen_capture_error,
+    MIN_SCREEN_CAPTURE_FPS, ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig,
+    ScreenCaptureCrop, ScreenCaptureError, ScreenCaptureInventory, ScreenCaptureState,
+    ScreenCaptureStatus, ScreenCaptureTarget, ScreenInfo, TitleMatch, WindowInfo, WindowRule,
+    bound_screen_capture_error,
 };
 
 use crate::WireInputId;

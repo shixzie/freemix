@@ -252,6 +252,10 @@ pub struct DeviceFeeder {
 pub struct DeviceAudioInput {
     /// The `ffmpeg` input format, such as `alsa`.
     pub format: String,
+    /// Demuxer options given before `-i`, as name and value pairs (such as
+    /// `sample_rate` and `ch_layout` for raw samples read from a socket,
+    /// IN-011).
+    pub options: Vec<(String, String)>,
     /// The audio device, such as `hw:CARD=C920,DEV=0`.
     pub path: String,
 }
@@ -1370,9 +1374,11 @@ fn device_arguments(
             "1024".into(),
             "-f".into(),
             audio.format.clone(),
-            "-i".into(),
-            audio.path.clone(),
         ]);
+        for (name, value) in &audio.options {
+            args.extend([format!("-{name}"), value.clone()]);
+        }
+        args.extend(["-i".into(), audio.path.clone()]);
     }
     let rate = config.frame_rate;
     let deinterlace = device
@@ -2412,6 +2418,7 @@ mod tests {
             field_order: Some("tff"),
             audio: Some(DeviceAudioInput {
                 format: "alsa".into(),
+                options: Vec::new(),
                 path: "hw:CARD=Cam,DEV=0".into(),
             }),
             audio_only: false,
@@ -2480,6 +2487,7 @@ mod tests {
         if let Some(device) = &mut both.device {
             device.audio = Some(DeviceAudioInput {
                 format: "alsa".into(),
+                options: Vec::new(),
                 path: "default".into(),
             });
         }

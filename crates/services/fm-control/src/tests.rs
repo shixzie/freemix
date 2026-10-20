@@ -7509,8 +7509,8 @@ fn system_audio_inputs_replicate_with_their_status() {
 #[allow(clippy::too_many_lines)] // one add, status, bound, and undo round trip
 fn screen_capture_inputs_replicate_with_their_status() {
     use fm_protocol::{
-        MAX_SCREEN_CAPTURE_INPUTS, ScreenCaptureConfig, ScreenCaptureState, ScreenCaptureStatus,
-        ScreenCaptureTarget, WindowRule,
+        MAX_SCREEN_CAPTURE_INPUTS, ScreenCaptureAudioState, ScreenCaptureConfig,
+        ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget, WindowRule,
     };
 
     let mut control = service(16, 16);
@@ -7563,6 +7563,8 @@ fn screen_capture_inputs_replicate_with_their_status() {
         height: 0,
         window_id: None,
         last_error: Some(format!("{}\nsecond line", "x".repeat(400))),
+        audio: ScreenCaptureAudioState::NoStream,
+        audio_error: Some(format!("{}\tno stream", "y".repeat(300))),
     };
     let event = control
         .set_screen_capture_status(&server_identity(), input(5), &status)
@@ -7579,6 +7581,13 @@ fn screen_capture_inputs_replicate_with_their_status() {
         error.len() <= fm_protocol::MAX_SCREEN_CAPTURE_ERROR_BYTES && !error.contains('\n'),
         "{error:?}"
     );
+    let audio_error = published.audio_error.as_deref().unwrap();
+    assert!(
+        audio_error.len() <= fm_protocol::MAX_SCREEN_CAPTURE_ERROR_BYTES
+            && !audio_error.contains('\t'),
+        "{audio_error:?}"
+    );
+    assert_eq!(published.audio, ScreenCaptureAudioState::NoStream);
     assert!(fm_protocol::encode_line(&WireMessage::RuntimeEvent(event.clone())).is_ok());
     // Unchanged, or not a screen capture input: nothing.
     assert!(

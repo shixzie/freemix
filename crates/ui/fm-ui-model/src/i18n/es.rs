@@ -388,6 +388,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::SyncKindCapture, t("captura")),
     (Msg::SyncKindStream, t("emisión de red")),
     (Msg::SyncKindSystemAudio, t("audio del sistema")),
+    (Msg::SyncKindScreenCapture, t("captura de pantalla")),
     (Msg::SyncStatePriming, t("llenando")),
     (Msg::SyncStateRunning, t("en marcha")),
     (Msg::SyncStateRecovering, t("recuperándose")),
@@ -9277,6 +9278,50 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ScStallBlackHover,
         t("Muestra negro mientras la ventana está cerrada o la pantalla desconectada"),
     ),
+    (Msg::ScAudio, t("Audio capturado")),
+    (Msg::ScAudioNone, t("Sin audio")),
+    (
+        Msg::ScAudioNoneHover,
+        t("Captura solo la imagen; la tira del mezclador de esta entrada queda en silencio"),
+    ),
+    (Msg::ScAudioSystem, t("Audio del sistema")),
+    (
+        Msg::ScAudioSystemHover,
+        t(
+            "Captura todo lo que reproduce el servidor (audio de escritorio) en la tira propia de esta entrada en el mezclador, sincronizado con la imagen",
+        ),
+    ),
+    (Msg::ScAudioApp, t("Audio de la aplicación")),
+    (
+        Msg::ScAudioAppHover,
+        t(
+            "Captura solo el sonido de la aplicación dueña de la ventana capturada en la tira propia de esta entrada en el mezclador, sincronizado con la imagen; la aplicación se sigue oyendo en el servidor",
+        ),
+    ),
+    (
+        Msg::ScAudioAppScreenHover,
+        t("el audio de la aplicación necesita una ventana; elija arriba una ventana de aplicación"),
+    ),
+    (
+        Msg::ScReasonAudio,
+        t(
+            "el audio de la aplicación necesita una ventana; elija una ventana u otra opción de audio",
+        ),
+    ),
+    (Msg::ScAudioLineOpening, t("{source}: iniciando")),
+    (Msg::ScAudioLineLive, t("{source}: en vivo")),
+    (
+        Msg::ScAudioLineNoStream,
+        t(
+            "{source}: todavía sin flujo de audio; la tira queda en silencio hasta que la aplicación reproduzca sonido",
+        ),
+    ),
+    (
+        Msg::ScAudioLineUnsupported,
+        t("{source} no admitido aquí: {reason}"),
+    ),
+    (Msg::ScAudioLineFailed, t("{source} falló: {reason}")),
+    (Msg::ScAudioNoReason, t("sin motivo indicado")),
     (
         Msg::ScReasonTitle,
         t("escriba el título de ventana que se sigue"),

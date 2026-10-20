@@ -13881,9 +13881,10 @@ fn remote_system_audio_commands_send_exact_payloads() {
 }
 
 /// IN-011: local screen and window capture inputs are validated,
-/// persisted with their target, crop, cursor, rate, and slate, and listed
-/// idle.
+/// persisted with their target, crop, cursor, rate, slate, and audio, and
+/// listed idle; application audio needs a window target.
 #[test]
+#[allow(clippy::too_many_lines)] // one add, refusal table, listing, and persistence check
 fn local_screen_capture_inputs_persist_and_list_idle() {
     let context = ContractContext::new();
     assert_success(&invoke_bounded(&["new", context.project_path()]));
@@ -13912,6 +13913,8 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         "25",
         "--stall",
         "black",
+        "--audio",
+        "app",
     ]));
     assert_success(&invoke_bounded(&[
         "input-add-screen-capture",
@@ -13920,6 +13923,16 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         "Desktop",
         "screen",
         "0",
+    ]));
+    assert_success(&invoke_bounded(&[
+        "input-add-screen-capture",
+        context.project_path(),
+        "43",
+        "Desktop sound",
+        "screen",
+        "0",
+        "--audio",
+        "system",
     ]));
     for (arguments, message) in [
         (vec!["42", "Bad", "region", "0"], "capture target"),
@@ -13945,6 +13958,14 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
             "invalid screen capture input",
         ),
         (vec!["42", "Bad", "screen", "0", "--key", "k"], "--key"),
+        (
+            vec!["42", "Bad", "screen", "0", "--audio", "app"],
+            "application audio needs a window capture",
+        ),
+        (
+            vec!["42", "Bad", "screen", "0", "--audio", "loud"],
+            "audio (none, system, or app)",
+        ),
     ] {
         let mut full = vec!["input-add-screen-capture", context.project_path()];
         full.extend(arguments);
@@ -13955,10 +13976,14 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
     let text = stdout(&listed);
     for line in [
         "ScreenCaptureInput(input=40, target=window(app=\"Keynote\", title=\"Deck\", \
-         match=contains, id=none), crop=0,28,0,0, cursor=off, fps=25, stall=black, state=idle, \
-         size=0x0, reopens=0, last_error=none)",
+         match=contains, id=none), crop=0,28,0,0, cursor=off, fps=25, stall=black, audio=app, \
+         state=idle, size=0x0, reopens=0, last_error=none, audio_state=off, audio_error=none)",
         "ScreenCaptureInput(input=41, target=screen:0, crop=0,0,0,0, cursor=on, fps=30, \
-         stall=freeze, state=idle, size=0x0, reopens=0, last_error=none)",
+         stall=freeze, audio=none, state=idle, size=0x0, reopens=0, last_error=none, \
+         audio_state=off, audio_error=none)",
+        "ScreenCaptureInput(input=43, target=screen:0, crop=0,0,0,0, cursor=on, fps=30, \
+         stall=freeze, audio=system, state=idle, size=0x0, reopens=0, last_error=none, \
+         audio_state=off, audio_error=none)",
     ] {
         assert!(
             text.lines().any(|candidate| candidate == line),
@@ -13979,7 +14004,19 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         .iter()
         .filter(|input| matches!(input.kind, InputKind::ScreenCapture(_)))
         .count();
-    assert_eq!(kinds, 2);
+    assert_eq!(kinds, 3);
+    let slides_audio = stored
+        .project()
+        .inputs()
+        .iter()
+        .find_map(|input| match &input.kind {
+            InputKind::ScreenCapture(config) if input.name == "Slides" => Some(config.audio),
+            _ => None,
+        });
+    assert_eq!(
+        slides_audio,
+        Some(fm_types::screen_capture::ScreenCaptureAudio::Application)
+    );
     fs::remove_dir_all(context.root).unwrap();
 }
 
@@ -13991,8 +14028,8 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
 #[allow(clippy::too_many_lines)] // three remote commands against fake peers
 fn remote_screen_capture_commands_send_exact_payloads() {
     use fm_protocol::{
-        ScreenCaptureConfig, ScreenCaptureEntry, ScreenCaptureState, ScreenCaptureStatus,
-        ScreenCaptureTarget, TitleMatch, WindowRule,
+        ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureEntry,
+        ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget, TitleMatch, WindowRule,
     };
     let config = ScreenCaptureConfig {
         target: ScreenCaptureTarget::Window(WindowRule {
@@ -14001,6 +14038,7 @@ fn remote_screen_capture_commands_send_exact_payloads() {
             title_match: TitleMatch::Exact,
             window_id: Some(4_242),
         }),
+        audio: ScreenCaptureAudio::Application,
         ..ScreenCaptureConfig::default()
     };
     let server = FakeRemoteServer::start_edit(RemoteEdit {
@@ -14032,6 +14070,8 @@ fn remote_screen_capture_commands_send_exact_payloads() {
         "Deck",
         "--window-id",
         "4242",
+        "--audio",
+        "app",
         "--key",
         "remote-screen-capture-add",
         "--expect",
@@ -14044,8 +14084,9 @@ fn remote_screen_capture_commands_send_exact_payloads() {
         input: input(1),
         config,
         status: ScreenCaptureStatus {
-            state: ScreenCaptureState::TargetGone,
+            state: ScreenCaptureState::Live,
             reopens: 2,
+            audio: ScreenCaptureAudioState::NoStream,
             ..ScreenCaptureStatus::default()
         },
     }];
@@ -14068,7 +14109,8 @@ fn remote_screen_capture_commands_send_exact_payloads() {
         text.contains(
             "ScreenCaptureInput(input=1, target=window(app=\"Keynote\", title=\"Deck\", \
              match=exact, id=4242), crop=0,0,0,0, cursor=on, fps=30, stall=freeze, \
-             state=target_gone, size=0x0, reopens=2, last_error=none)"
+             audio=app, state=live, size=0x0, reopens=2, last_error=none, \
+             audio_state=no_stream, audio_error=none)"
         ),
         "{text}"
     );

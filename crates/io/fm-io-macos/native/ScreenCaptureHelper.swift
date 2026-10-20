@@ -17,9 +17,20 @@
 //     with a non-zero status when the target disappears or capture stops,
 //     and quietly when standard output closes.
 //
-// Exit statuses: 2 permission or start failure, 3 listing timeout,
-// 4 stream stopped, 5 target not found, 64 usage.
+//   freemix-screen-capture-helper audio --display <index> | --app <pid>
+//     Captures sound with ScreenCaptureKit (macOS 13+): the whole system
+//     output through a display, or only the application with that process
+//     id, never the helper's own sound. Writes raw interleaved 48 kHz
+//     stereo Float32 little-endian samples to standard output, and status
+//     lines `FMAUDIO<TAB><live|no_stream|unsupported|error><TAB><detail>`
+//     to standard error. While the application is not running it reports
+//     no_stream and looks again every second.
+//
+// Exit statuses: 2 permission or start failure, 3 listing timeout (and,
+// for audio, unsupported on this macOS), 4 stream stopped, 5 target not
+// found, 64 usage.
 
+import CoreAudio
 import CoreGraphics
 import CoreMedia
 import CoreVideo
@@ -255,16 +266,187 @@ private func capture(_ arguments: [String]) -> Never {
     }
 }
 
+private func audioStatus(_ state: String, _ detail: String = "") {
+    let line = detail.isEmpty ? "FMAUDIO\t\(state)\n" : "FMAUDIO\t\(state)\t\(field(detail))\n"
+    FileHandle.standardError.write(Data(line.utf8))
+}
+
+private func audioFail(_ message: String, code: Int32) -> Never {
+    audioStatus(code == 3 ? "unsupported" : "error", message)
+    exit(code)
+}
+
+/// The shareable content, or nil (with the reason reported) when it is
+/// refused or times out.
+private func audioContent() -> SCShareableContent? {
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = ContentBox()
+    SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { content, error in
+        box.content = content
+        box.error = error
+        semaphore.signal()
+    }
+    if semaphore.wait(timeout: .now() + .seconds(10)) == .timedOut {
+        audioStatus("error", "listing the desktop timed out")
+        return nil
+    }
+    if box.content == nil {
+        let reason = box.error.map { String(describing: $0) } ?? "no shareable content"
+        audioFail("screen recording is not permitted for the server: \(reason)", code: 2)
+    }
+    return box.content
+}
+
+/// Writes each audio buffer as interleaved stereo Float32: the first two
+/// channels (a mono buffer on both), planar or interleaved.
+private final class Sound: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+    func stream(
+        _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of type: SCStreamOutputType
+    ) {
+        guard CMSampleBufferIsValid(sampleBuffer), CMSampleBufferDataIsReady(sampleBuffer),
+            let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+            let basic = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+            basic.mFormatFlags & kAudioFormatFlagIsFloat != 0, basic.mBitsPerChannel == 32
+        else { return }
+        if #available(macOS 13.0, *) {
+            guard type == .audio else { return }
+        }
+        var needed = 0
+        CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: &needed, bufferListOut: nil, bufferListSize: 0,
+            blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
+            blockBufferOut: nil)
+        guard needed > 0 else { return }
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: needed, alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { storage.deallocate() }
+        let list = storage.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var block: CMBlockBuffer?
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: nil, bufferListOut: list,
+            bufferListSize: needed, blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &block)
+        guard status == noErr else { return }
+        let buffers = UnsafeMutableAudioBufferListPointer(list)
+        let frames = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frames > 0, buffers.count > 0 else { return }
+        let planar = basic.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
+        var samples = [Float](repeating: 0, count: frames * 2)
+        if planar {
+            let left = buffers[0]
+            let right = buffers[min(1, buffers.count - 1)]
+            guard let leftData = left.mData, let rightData = right.mData else { return }
+            let leftSamples = leftData.assumingMemoryBound(to: Float.self)
+            let rightSamples = rightData.assumingMemoryBound(to: Float.self)
+            let available = min(
+                frames, Int(left.mDataByteSize) / 4, Int(right.mDataByteSize) / 4)
+            for frame in 0..<available {
+                samples[frame * 2] = leftSamples[frame]
+                samples[frame * 2 + 1] = rightSamples[frame]
+            }
+        } else {
+            let buffer = buffers[0]
+            guard let data = buffer.mData else { return }
+            let channels = max(1, Int(buffer.mNumberChannels))
+            let interleaved = data.assumingMemoryBound(to: Float.self)
+            let available = min(frames, Int(buffer.mDataByteSize) / (4 * channels))
+            for frame in 0..<available {
+                samples[frame * 2] = interleaved[frame * channels]
+                samples[frame * 2 + 1] = interleaved[frame * channels + min(1, channels - 1)]
+            }
+        }
+        // Apple platforms are little-endian: the floats are written as is.
+        samples.withUnsafeBytes { bytes in writeAll(Data(bytes)) }
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        audioFail("audio capture stopped: \(error)", code: 4)
+    }
+}
+
+private func audio(_ arguments: [String]) -> Never {
+    guard arguments.count == 4, ["--display", "--app"].contains(arguments[2]),
+        let id = UInt32(arguments[3])
+    else {
+        audioFail("usage: audio --display <index> | --app <pid>", code: 64)
+    }
+    guard #available(macOS 13.0, *) else {
+        audioFail("audio capture needs macOS 13 or later", code: 3)
+    }
+    var filter: SCContentFilter?
+    while filter == nil {
+        guard let content = audioContent() else {
+            sleep(1)
+            continue
+        }
+        let displays = orderedDisplays(content)
+        if arguments[2] == "--display" {
+            guard Int(id) < displays.count else {
+                audioFail("screen \(id + 1) is not connected", code: 5)
+            }
+            filter = SCContentFilter(display: displays[Int(id)], excludingWindows: [])
+        } else if let application = content.applications.first(where: {
+            $0.processID == pid_t(bitPattern: id)
+        }), let display = displays.first {
+            filter = SCContentFilter(
+                display: display, including: [application], exceptingWindows: [])
+        } else {
+            audioStatus("no_stream", "the application is not running")
+            sleep(1)
+        }
+    }
+    guard let filter else { exit(1) }
+
+    let configuration = SCStreamConfiguration()
+    configuration.capturesAudio = true
+    configuration.excludesCurrentProcessAudio = true
+    configuration.sampleRate = 48_000
+    configuration.channelCount = 2
+    // The pictures are not used: keep them tiny and rare.
+    configuration.width = 2
+    configuration.height = 2
+    configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+    configuration.queueDepth = 3
+
+    let sound = Sound()
+    let stream = SCStream(filter: filter, configuration: configuration, delegate: sound)
+    do {
+        try stream.addStreamOutput(
+            sound, type: .audio,
+            sampleHandlerQueue: DispatchQueue(label: "freemix.screen-capture.audio"))
+    } catch {
+        audioFail("audio capture could not start: \(error)", code: 2)
+    }
+    let started = DispatchSemaphore(value: 0)
+    let start = StartBox()
+    stream.startCapture { error in
+        start.error = error
+        started.signal()
+    }
+    started.wait()
+    if let error = start.error {
+        audioFail("audio capture could not start: \(error)", code: 2)
+    }
+    audioStatus("live")
+    withExtendedLifetime((stream, sound)) {
+        dispatchMain()
+    }
+}
+
 signal(SIGPIPE, SIG_IGN)
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else {
-    fail("usage: freemix-screen-capture-helper list | capture ...", code: 64)
+    fail("usage: freemix-screen-capture-helper list | capture ... | audio ...", code: 64)
 }
 switch arguments[1] {
 case "list":
     list()
 case "capture":
     capture(arguments)
+case "audio":
+    audio(arguments)
 default:
     fail("unknown command \(arguments[1])", code: 64)
 }

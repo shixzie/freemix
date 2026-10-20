@@ -10,10 +10,19 @@
 //! rule opens. `screen_capture_targets_request` lists the display's screen
 //! and windows.
 //!
-//! The test needs `FFmpeg`, `Xvfb`, and a native GPU adapter (a software
-//! Vulkan driver such as lavapipe suffices). Without them it is skipped,
-//! unless `FM_REQUIRE_FFMPEG=1` or `FM_REQUIRE_NATIVE_MEDIA=1` makes that a
-//! failure.
+//! With a private `PulseAudio` server, a window capture with application
+//! audio follows the sound of the process owning the window
+//! (`_NET_WM_PID`): its strip is silent and its audio `no_stream` while that
+//! application plays nothing (even though another application does), and
+//! its strip meters the application's tone once it plays, with the drift
+//! loop reported as a `screen_capture` live source. A screen capture with
+//! system audio meters everything the default output plays.
+//!
+//! The tests need `FFmpeg`, `Xvfb`, and a native GPU adapter (a software
+//! Vulkan driver such as lavapipe suffices); the audio test also needs
+//! `pulseaudio`, `pactl`, and `parec`. Without them they are skipped,
+//! unless `FM_REQUIRE_FFMPEG=1`, `FM_REQUIRE_NATIVE_MEDIA=1`, or
+//! `FM_REQUIRE_PULSEAUDIO=1` makes that a failure.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -32,11 +41,11 @@ use fm_model::{
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, ClientType, HandshakeRequest, HeartbeatMessage,
+    AudioMetersMessage, CURRENT_PROTOCOL_VERSION, ClientType, HandshakeRequest, HeartbeatMessage,
     MonitorFrameAssembler, MonitorImage, MonitorTap, Role, RuntimeLifecycleEvent,
-    ScreenCaptureConfig, ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget,
-    ScreenCaptureTargetsRequest, ServerIdentity, TitleMatch, WindowRule, WireInputId, WireMessage,
-    decode_line, encode_line,
+    ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureState,
+    ScreenCaptureStatus, ScreenCaptureTarget, ScreenCaptureTargetsRequest, ServerIdentity,
+    SourceSyncKind, TitleMatch, WindowRule, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::network_stream::StallSlate;
 use fm_types::{
@@ -143,6 +152,11 @@ struct TestWindow {
 
 impl TestWindow {
     fn open(display: &str, title: &str, rgb: u32) -> Self {
+        Self::open_owned(display, title, rgb, None)
+    }
+
+    /// A window whose `_NET_WM_PID` names `pid`, when given.
+    fn open_owned(display: &str, title: &str, rgb: u32, pid: Option<u32>) -> Self {
         let (connection, screen) = x11rb::connect(Some(display)).unwrap();
         let root = connection.setup().roots[screen].root;
         let window = connection.generate_id().unwrap();
@@ -180,6 +194,17 @@ impl TestWindow {
                 title.as_bytes(),
             )
             .unwrap();
+        if let Some(pid) = pid {
+            let atom = connection
+                .intern_atom(false, b"_NET_WM_PID")
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom;
+            connection
+                .change_property32(PropMode::REPLACE, window, atom, AtomEnum::CARDINAL, &[pid])
+                .unwrap();
+        }
         connection.map_window(window).unwrap();
         connection.flush().unwrap();
         connection.sync().unwrap();
@@ -280,13 +305,26 @@ impl Drop for NativeDaemon {
 }
 
 fn start_native(project: &Path, display: &str) -> Result<NativeDaemon, String> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_freemixd"))
+    start_native_with(project, display, &[])
+}
+
+fn start_native_with(
+    project: &Path,
+    display: &str,
+    environment: &[(&str, String)],
+) -> Result<NativeDaemon, String> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_freemixd"));
+    command
         .arg("serve")
         .arg(project)
         .arg("--native-media")
         .env("DISPLAY", display)
         .env_remove("WAYLAND_DISPLAY")
-        .env_remove("XDG_SESSION_TYPE")
+        .env_remove("XDG_SESSION_TYPE");
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -427,6 +465,16 @@ impl Client {
         what: &str,
         wanted: impl Fn(&ScreenCaptureStatus) -> bool,
     ) -> ScreenCaptureStatus {
+        self.status_of(slides(), what, wanted)
+    }
+
+    /// Waits for a status of `wanted_input` that satisfies `wanted`.
+    fn status_of(
+        &mut self,
+        wanted_input: WireInputId,
+        what: &str,
+        wanted: impl Fn(&ScreenCaptureStatus) -> bool,
+    ) -> ScreenCaptureStatus {
         self.wait_for(what, |_, message| {
             let WireMessage::RuntimeEvent(event) = message else {
                 return None;
@@ -434,8 +482,16 @@ impl Client {
             let RuntimeLifecycleEvent::ScreenCaptureStatus { input, status } = event.event else {
                 return None;
             };
-            (input == slides() && wanted(&status)).then_some(*status)
+            (input == wanted_input && wanted(&status)).then_some(*status)
         })
+    }
+
+    /// Waits for a meter sample that satisfies `wanted`.
+    fn meters(&mut self, what: &str, wanted: impl Fn(&AudioMetersMessage) -> bool) {
+        self.wait_for(what, |_, message| match message {
+            WireMessage::AudioMeters(meters) if wanted(&meters) => Some(()),
+            _ => None,
+        });
     }
 
     /// Waits until the centre of Program satisfies `wanted`.
@@ -559,4 +615,318 @@ fn native_daemon_captures_a_window_and_follows_it_through_closure() {
     client.shows("the blue window on Program", blue);
     drop(daemon);
     reopened.close();
+}
+
+/// The loudest channel of `input`'s strip, in millionths.
+fn strip_peak(meters: &AudioMetersMessage, input: WireInputId) -> u32 {
+    meters
+        .inputs
+        .iter()
+        .filter(|strip| strip.input == input)
+        .flat_map(|strip| strip.channels.iter())
+        .map(|channel| channel.peak_millionths)
+        .max()
+        .unwrap_or(0)
+}
+
+/// A private `PulseAudio` server with a null sink as its default output.
+struct Pulse {
+    child: Child,
+    dir: tempfile::TempDir,
+}
+
+impl Pulse {
+    fn start() -> Option<Self> {
+        let available = ["pulseaudio", "pactl", "parec"].iter().all(|tool| {
+            Command::new(tool)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok()
+        });
+        if !available {
+            assert!(
+                std::env::var_os("FM_REQUIRE_PULSEAUDIO").is_none(),
+                "FM_REQUIRE_PULSEAUDIO is set but PulseAudio is unavailable"
+            );
+            return None;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("native");
+        let child = Command::new("pulseaudio")
+            .args([
+                "-n",
+                "--daemonize=no",
+                "--exit-idle-time=-1",
+                "--disallow-exit",
+                "--use-pid-file=no",
+                "-L",
+                "module-null-sink sink_name=fmtest rate=48000",
+                "-L",
+            ])
+            .arg(format!(
+                "module-native-protocol-unix socket={} auth-anonymous=1",
+                socket.display()
+            ))
+            // A private server: no session bus and no desktop.
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", dir.path())
+            .env("XDG_RUNTIME_DIR", dir.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pulse = Self { child, dir };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !Command::new("pactl")
+            .arg("info")
+            .env("PULSE_SERVER", pulse.server())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            assert!(Instant::now() < deadline, "pulseaudio did not start");
+            thread::sleep(Duration::from_millis(50));
+        }
+        Some(pulse)
+    }
+
+    fn server(&self) -> String {
+        format!("unix:{}", self.dir.path().join("native").display())
+    }
+
+    /// An application playing a `hertz` tone after `delay_s` seconds,
+    /// from a child of a shell whose process is the application's.
+    fn play(&self, hertz: u32, delay_s: f32) -> Player {
+        let pid_file = self.dir.path().join(format!("player-{hertz}.pid"));
+        let script = format!(
+            "sleep {delay_s}; ffmpeg -hide_banner -loglevel error -re -f lavfi \
+             -i sine=f={hertz}:r=48000 -ac 2 -f pulse -device fmtest tone{hertz} & \
+             echo $! > '{}'; wait",
+            pid_file.display()
+        );
+        let shell = Command::new("sh")
+            .args(["-c", &script])
+            .env("PULSE_SERVER", self.server())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Player { shell, pid_file }
+    }
+}
+
+impl Drop for Pulse {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A playing application: the shell and the `ffmpeg` it started.
+struct Player {
+    shell: Child,
+    pid_file: std::path::PathBuf,
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        // The player this test's shell started, by its own process id.
+        if let Ok(pid) = std::fs::read_to_string(&self.pid_file) {
+            let _ = Command::new("kill").args(["-KILL", pid.trim()]).status();
+        }
+        let _ = self.shell.kill();
+        let _ = self.shell.wait();
+    }
+}
+
+/// Input 2 captures the player's window with its application's audio on
+/// Program; input 3 captures the screen with the system audio on Preview.
+fn save_audio_project(path: &Path) {
+    let store = ProjectStore::new(path).unwrap();
+    let frame_rate = FrameRate::new(25, 1).unwrap();
+    let mut project = Project::new(
+        ProjectId::new(NonZeroU128::new(67).unwrap()),
+        "Native screen capture audio",
+        ProjectSettings {
+            frame_rate,
+            video: VideoFormat {
+                dimensions: VideoDimensions::new(320, 180).unwrap(),
+                frame_rate,
+                pixel_format: PixelFormat::Rgba8,
+                scan: ScanMode::Progressive,
+                color: ColorMetadata::default(),
+            },
+            audio: AudioFormat {
+                sample_rate: SampleRate::new(48_000).unwrap(),
+                sample_format: SampleFormat::F32,
+                channels: ChannelLayout::stereo(),
+            },
+        },
+    );
+    project.add_input(Input {
+        id: input(1),
+        name: "Solid".into(),
+        kind: InputKind::Simulated(SimulatedInput::new(
+            SimulatedVideo::Solid(SolidColor::new(12, 34, 56, 255)),
+            SimulatedAudio::Silence,
+        )),
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input(2),
+        name: "Player".into(),
+        kind: InputKind::ScreenCapture(ScreenCaptureConfig {
+            target: ScreenCaptureTarget::Window(WindowRule {
+                app: CLASS.into(),
+                title: "Player".into(),
+                title_match: TitleMatch::Exact,
+                window_id: None,
+            }),
+            audio: ScreenCaptureAudio::Application,
+            fps: 25,
+            ..ScreenCaptureConfig::default()
+        }),
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input(3),
+        name: "Desktop".into(),
+        kind: InputKind::ScreenCapture(ScreenCaptureConfig {
+            audio: ScreenCaptureAudio::System,
+            fps: 25,
+            ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 0 })
+        }),
+        required_capabilities: Vec::new(),
+    });
+    project.set_main_mix(MainMix::new(input(2), input(3)));
+    // The desktop's strip is heard (and metered) off Program too.
+    assert!(project.set_input_audio_strip(
+        input(3),
+        fm_model::InputAudioStripState {
+            follow_video: false,
+            ..fm_model::InputAudioStripState::default()
+        },
+    ));
+    let stored = StoredProject::from_project(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(input(2)),
+            realized_program_id: Some(input(2)),
+            desired_preview_id: Some(input(3)),
+            realized_preview_id: Some(input(3)),
+        },
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+}
+
+/// A tone peaks near 125 000 millionths (`lavfi` sine at 1/8 scale).
+const TONE_PEAK: u32 = 40_000;
+/// Silence, with room for dither.
+const QUIET_PEAK: u32 = 2_000;
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn native_daemon_captures_window_and_system_audio() {
+    if !tools_available() {
+        eprintln!("native screen capture audio skipped: ffmpeg or Xvfb unavailable");
+        return;
+    }
+    let Some(pulse) = Pulse::start() else {
+        eprintln!("native screen capture audio skipped: PulseAudio unavailable");
+        return;
+    };
+    let xvfb = Xvfb::start();
+    // Another application plays at once; the followed one only later.
+    let _other = pulse.play(1_000, 0.0);
+    let followed = pulse.play(440, 6.0);
+    let window = TestWindow::open_owned(
+        &xvfb.display,
+        "Player",
+        0x00ff_0000,
+        Some(followed.shell.id()),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-screen-capture-audio.freemix");
+    save_audio_project(&project_path);
+    let daemon = match start_native_with(
+        &project_path,
+        &xvfb.display,
+        &[("PULSE_SERVER", pulse.server())],
+    ) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native screen capture audio skipped: {error}");
+            return;
+        }
+    };
+    let player = WireInputId::from_domain(input(2));
+    let desktop = WireInputId::from_domain(input(3));
+    let (mut client, snapshot) = Client::connect(daemon.address);
+    assert_eq!(
+        snapshot
+            .screen_capture_inputs
+            .iter()
+            .map(|entry| (entry.input, entry.config.audio))
+            .collect::<Vec<_>>(),
+        [
+            (player, ScreenCaptureAudio::Application),
+            (desktop, ScreenCaptureAudio::System)
+        ]
+    );
+
+    // The followed application plays nothing yet: its strip is silent
+    // although another application plays, and the desktop's system audio
+    // hears that other application.
+    client.status_of(player, "the window live, waiting for its sound", |status| {
+        status.state == ScreenCaptureState::Live
+            && status.audio == ScreenCaptureAudioState::NoStream
+    });
+    client.status_of(desktop, "the desktop audio live", |status| {
+        status.state == ScreenCaptureState::Live && status.audio == ScreenCaptureAudioState::Live
+    });
+    client.meters("the other application on the desktop strip", |meters| {
+        strip_peak(meters, desktop) > TONE_PEAK && strip_peak(meters, player) < QUIET_PEAK
+    });
+
+    // The followed application starts playing: its strip carries it.
+    client.status_of(player, "the application's audio live", |status| {
+        status.audio == ScreenCaptureAudioState::Live
+    });
+    client.meters("the application's tone on its strip", |meters| {
+        strip_peak(meters, player) > TONE_PEAK
+    });
+    // Picture and sound share one drift loop, reported as a live source.
+    client.wait_for("the capture's drift loop", |_, message| match message {
+        WireMessage::SourceSyncStatus(status) => status
+            .sources
+            .iter()
+            .any(|sample| sample.input == player && sample.kind == SourceSyncKind::ScreenCapture)
+            .then_some(()),
+        _ => None,
+    });
+    client.shows("the player window on Program", red);
+
+    // The application stops: the strip falls silent and waits again.
+    drop(followed);
+    client.status_of(player, "waiting for its sound again", |status| {
+        status.audio == ScreenCaptureAudioState::NoStream
+    });
+    client.meters("the strip silent again", |meters| {
+        strip_peak(meters, player) < QUIET_PEAK
+    });
+    drop(daemon);
+    window.close();
 }

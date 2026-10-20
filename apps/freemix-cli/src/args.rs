@@ -6454,7 +6454,10 @@ fn parse_remote_page_navigate(
 /// The target is `screen <index>` or `window <app> <title>`; the options
 /// are `--match exact|contains|any`, `--window-id <id>`,
 /// `--crop <left>,<top>,<right>,<bottom>`, `--cursor on|off`,
-/// `--fps <1-60>`, and `--stall freeze|black`.
+/// `--fps <1-60>`, `--stall freeze|black`, and `--audio none|system|app`
+/// (the sound captured with the picture into the input's own mixer strip:
+/// none, the whole system output, or only the window's application, which
+/// needs a window target).
 fn parse_screen_capture(
     command: &str,
     mut arguments: impl Iterator<Item = String>,
@@ -6515,6 +6518,14 @@ fn parse_screen_capture(
                         value,
                     },
                 )?;
+            }
+            "--audio" => {
+                let value = required(&mut arguments, "audio")?;
+                config.audio = fm_types::screen_capture::ScreenCaptureAudio::from_token(&value)
+                    .ok_or(ArgsError::InvalidChoice {
+                        field: "audio (none, system, or app)",
+                        value,
+                    })?;
             }
             _ => rest.push(option),
         }

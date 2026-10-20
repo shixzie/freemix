@@ -22,8 +22,20 @@
 //! `XWayland`, or a platform without a backend) reports `unsupported` with
 //! the reason, and a live add of a screen capture input is refused there.
 //!
-//! A screen capture input has no sound: it pushes silence to its Master
-//! strip (application audio can be added with a system audio input).
+//! A screen capture input's sound ([`ScreenCaptureConfig::audio`]) feeds
+//! its own Master strip: none (the strip gets silence), the whole system
+//! output, or the sound of the application owning the captured window. The
+//! sound is captured by the same capture child as the picture (see
+//! [`crate::desktop_capture::AudioPlan`]): read directly where `ffmpeg`
+//! can (the `PulseAudio`/`PipeWire` default output's monitor), or served by
+//! an [`AudioTap`] that gathers the application's streams (or a platform
+//! helper's sound) and paces it on the host clock the picture is grabbed
+//! on. Picture and sound then share one jitter buffer and the receiver's
+//! drift loop (AU-004), whose telemetry is reported as a `screen_capture`
+//! live source. The audio's own state (`off`, `opening`, `live`,
+//! `no_stream`, `unsupported`, `failed`) travels in the input's status
+//! beside the picture's. A tap outlives capture restarts of the same
+//! window (a resize reconnects the capture child to the same tap).
 //! A closed input (IN-026) stops its capture and shows a blank picture
 //! until it reopens.
 //!
@@ -40,14 +52,19 @@ use std::time::{Duration, Instant};
 
 use fm_codec_ffmpeg::network_input::{NetworkInputConfig, NetworkReceiver, Picture, PulledFrame};
 use fm_frame::{ClockDomainId, SampleRate};
+use fm_io_linux::capture_audio::{AudioTap, TapSource, TapState};
 use fm_io_linux::screen_capture::{CaptureRegion, DesktopListing, Resolution, capture_settings};
-use fm_protocol::{ScreenCaptureConfig, ScreenCaptureState, ScreenCaptureStatus};
+use fm_protocol::{
+    ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureState, ScreenCaptureStatus,
+    bound_screen_capture_error,
+};
 use fm_types::network_stream::{NetworkStreamState, NetworkStreamStatus, StallSlate};
 use fm_types::{FrameRate, InputId};
 
-use crate::desktop_capture::DesktopBackend;
+use crate::desktop_capture::{AudioPlan, DesktopBackend};
 use crate::native_files::{blank_picture, output_timing};
 use crate::native_streams::{Format, PulledStream};
+use crate::native_sync::{SourceKind, SyncLog, wire_sample};
 
 /// Longest a changed error text waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -93,6 +110,15 @@ struct Source {
     reported: Option<(ScreenCaptureStatus, Instant)>,
     /// The reopen count of the receiver connection last seen live.
     live_connection: Option<u32>,
+    /// How the captured target's sound is captured.
+    audio: AudioPlan,
+    /// The tap serving the sound, and the source it gathers; kept across
+    /// capture restarts while the source stays the same.
+    tap: Option<(TapSource, AudioTap)>,
+    /// Why the tap could not start, if it could not.
+    tap_error: Option<String>,
+    /// When its clock drift was last logged (AU-004).
+    sync_log: SyncLog,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,6 +140,10 @@ impl Source {
             pending: None,
             reported: None,
             live_connection: None,
+            audio: AudioPlan::Silent,
+            tap: None,
+            tap_error: None,
+            sync_log: SyncLog::default(),
         }
     }
 
@@ -123,6 +153,9 @@ impl Source {
         self.receiver = None;
         self.start_error = None;
         self.live_connection = None;
+        self.audio = AudioPlan::Silent;
+        self.tap = None;
+        self.tap_error = None;
         if had_capture && self.config.slate == StallSlate::Black {
             self.pending = Some(Pending::Black);
         }
@@ -312,7 +345,18 @@ impl NativeScreenCapture {
             source.resolved = Some(generation);
             match crate::desktop_capture::resolve(&self.backend, &listing, &source.config) {
                 Resolution::Found(region) => {
-                    if source.target == Target::Captured(region) && source.receiver.is_some() {
+                    let window = region.window_id.and_then(|id| {
+                        listing
+                            .inventory
+                            .windows
+                            .iter()
+                            .find(|window| window.id == id)
+                    });
+                    let audio = self.backend.audio_plan(&source.config, &region, window);
+                    if source.target == Target::Captured(region)
+                        && source.receiver.is_some()
+                        && source.audio == audio
+                    {
                         continue;
                     }
                     let found_again = !matches!(source.target, Target::Unknown);
@@ -323,9 +367,10 @@ impl NativeScreenCapture {
                     source.receiver = None;
                     source.live_connection = None;
                     source.target = Target::Captured(region);
-                    let device =
+                    let mut device =
                         self.backend
                             .capture_device(&region, &source.config, self.format.rate);
+                    attach_audio(input, source, audio, &mut device);
                     let mut config = NetworkInputConfig::device(
                         device,
                         capture_settings(&source.config),
@@ -375,41 +420,73 @@ impl NativeScreenCapture {
         let format = self.format;
         let mut pulled = Vec::with_capacity(self.sources.len());
         for (&input, source) in &mut self.sources {
+            // The receiver hands over each frame's picture and sound
+            // together, once per frame.
+            let (picture, sound) = match &source.receiver {
+                Some(receiver) if !source.closed => {
+                    let PulledFrame { picture, audio } = receiver.pull();
+                    (Some(picture), Some(audio))
+                }
+                _ => (None, None),
+            };
             let video = match source.pending.take() {
                 Some(Pending::Blank) => output_timing(frame, format.rate, format.clock_domain)
                     .and_then(|timing| blank_picture(format.dimensions, timing)),
                 Some(Pending::Black) => format.black(frame),
-                None => match &source.receiver {
-                    Some(receiver) if !source.closed => {
-                        let PulledFrame { picture, .. } = receiver.pull();
-                        match picture {
-                            Picture::New(bytes) => format.picture(frame, bytes),
-                            Picture::Black => format.black(frame),
-                            Picture::Hold => None,
-                        }
-                    }
-                    _ => None,
+                None => match picture {
+                    Some(Picture::New(bytes)) => format.picture(frame, bytes),
+                    Some(Picture::Black) => format.black(frame),
+                    Some(Picture::Hold) | None => None,
                 },
             };
             if source.closed && video.is_none() {
                 continue;
             }
+            let audio = match sound {
+                Some(planes) if source.audio.captures_sound() => format.audio(frame, planes),
+                _ => format.silence(frame),
+            };
             pulled.push(PulledStream {
                 input,
                 video,
-                audio: format.silence(frame),
+                audio,
             });
         }
         pulled
     }
 
+    /// Every open screen capture with sound's drift loop as wire samples
+    /// (Protocol 2.76).
+    pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        self.sources
+            .iter()
+            .filter(|(_, source)| !source.closed && source.audio.captures_sound())
+            .filter_map(|(&input, source)| {
+                let telemetry = source.receiver.as_ref()?.sync_telemetry()?;
+                wire_sample(SourceKind::ScreenCapture, input, &telemetry)
+            })
+            .collect()
+    }
+
     /// The statuses due for a report at `now`: a changed state, size,
-    /// window, attempt, or restart count at once, a changed error at most
-    /// once a second.
+    /// window, attempt, restart count, or audio state at once, a changed
+    /// error at most once a second.
     pub(crate) fn statuses(&mut self, now: Instant) -> Vec<(InputId, ScreenCaptureStatus)> {
         self.follow_targets();
         let mut due = Vec::new();
         for (&input, source) in &mut self.sources {
+            if !source.closed && source.audio.captures_sound() {
+                source.sync_log.report(
+                    SourceKind::ScreenCapture,
+                    input,
+                    source
+                        .receiver
+                        .as_ref()
+                        .and_then(NetworkReceiver::sync_telemetry)
+                        .as_ref(),
+                    now,
+                );
+            }
             let status = status_of(source);
             let report = match &source.reported {
                 None => true,
@@ -419,8 +496,11 @@ impl NativeScreenCapture {
                         || reported.width != status.width
                         || reported.height != status.height
                         || reported.window_id != status.window_id
+                        || reported.audio != status.audio
                         || (reported.last_error.is_none() && status.last_error.is_some())
-                        || (reported.last_error != status.last_error
+                        || (reported.audio_error.is_none() && status.audio_error.is_some())
+                        || ((reported.last_error != status.last_error
+                            || reported.audio_error != status.audio_error)
                             && now.saturating_duration_since(*at) >= STATUS_INTERVAL)
                 }
             };
@@ -442,6 +522,18 @@ impl NativeScreenCapture {
                     source.config.target.kind_token()
                 );
             }
+            if source
+                .reported
+                .as_ref()
+                .is_none_or(|(reported, _)| reported.audio != status.audio)
+                && status.audio != ScreenCaptureAudioState::Off
+            {
+                eprintln!(
+                    "FREEMIXD_SCREEN_CAPTURE_AUDIO\tv=1\tinput={input}\taudio={}\tstate={}",
+                    source.config.audio.token(),
+                    status.audio.token(),
+                );
+            }
             source.reported = Some((status.clone(), now));
             due.push((input, status));
         }
@@ -449,8 +541,125 @@ impl NativeScreenCapture {
     }
 }
 
+/// The capture child's audio input for `audio`, attached to `device`; a
+/// tap is started, or kept while it gathers the same source.
+fn attach_audio(
+    input: InputId,
+    source: &mut Source,
+    audio: AudioPlan,
+    device: &mut fm_codec_ffmpeg::network_input::DeviceInput,
+) {
+    match &audio {
+        AudioPlan::Silent | AudioPlan::Unsupported(_) => {
+            source.tap = None;
+            source.tap_error = None;
+        }
+        AudioPlan::Device { input, environment } => {
+            source.tap = None;
+            source.tap_error = None;
+            device.audio = Some(input.clone());
+            for name in environment {
+                if !device.environment.contains(name) {
+                    device.environment.push(name.clone());
+                }
+            }
+        }
+        AudioPlan::Tap(wanted) => {
+            if source
+                .tap
+                .as_ref()
+                .is_none_or(|(running, _)| running != wanted)
+            {
+                source.tap = None;
+                match AudioTap::start(wanted.clone()) {
+                    Ok(tap) => {
+                        source.tap = Some((wanted.clone(), tap));
+                        source.tap_error = None;
+                    }
+                    Err(error) => {
+                        eprintln!("FREEMIXD_SCREEN_CAPTURE_AUDIO\tv=1\tinput={input}\ttap_failed");
+                        source.tap_error = Some(format!("the audio tap did not start: {error}"));
+                    }
+                }
+            }
+            if let Some((_, tap)) = &source.tap {
+                device.audio = Some(tap.audio_input());
+            }
+        }
+    }
+    source.audio = audio;
+}
+
+impl AudioPlan {
+    /// Whether the plan captures any sound.
+    pub(crate) fn captures_sound(&self) -> bool {
+        matches!(self, Self::Device { .. } | Self::Tap(_))
+    }
+}
+
+/// The audio state of a source whose picture is in `capture`.
+fn audio_status(
+    source: &Source,
+    capture: ScreenCaptureState,
+) -> (ScreenCaptureAudioState, Option<String>) {
+    let bounded =
+        |text: &str| Some(bound_screen_capture_error(text)).filter(|text| !text.is_empty());
+    if source.closed || !matches!(source.target, Target::Captured(_)) {
+        return (ScreenCaptureAudioState::Off, None);
+    }
+    let receiver = match &source.audio {
+        AudioPlan::Silent => return (ScreenCaptureAudioState::Off, None),
+        AudioPlan::Unsupported(reason) => {
+            return (ScreenCaptureAudioState::Unsupported, bounded(reason));
+        }
+        AudioPlan::Tap(_) if source.tap.is_none() => {
+            return (
+                ScreenCaptureAudioState::Failed,
+                source.tap_error.as_deref().and_then(bounded),
+            );
+        }
+        AudioPlan::Device { .. } | AudioPlan::Tap(_) => match &source.receiver {
+            Some(receiver) => receiver,
+            None => return (ScreenCaptureAudioState::Opening, None),
+        },
+    };
+    let live = capture == ScreenCaptureState::Live;
+    if live && !receiver.audio_active() {
+        return (
+            ScreenCaptureAudioState::Failed,
+            bounded(match &source.audio {
+                AudioPlan::Device { .. } => {
+                    "the system audio did not open (is PulseAudio or PipeWire running?)"
+                }
+                _ => "the capture could not read its audio",
+            }),
+        );
+    }
+    let tap_state = source.tap.as_ref().map(|(_, tap)| tap.state());
+    match tap_state {
+        Some(TapState::NoStream) => (ScreenCaptureAudioState::NoStream, None),
+        Some(TapState::Unsupported(reason)) => {
+            (ScreenCaptureAudioState::Unsupported, bounded(&reason))
+        }
+        Some(TapState::Failed(reason)) => (ScreenCaptureAudioState::Failed, bounded(&reason)),
+        Some(TapState::Live) | None if live => (ScreenCaptureAudioState::Live, None),
+        Some(TapState::Starting | TapState::Live) | None => {
+            (ScreenCaptureAudioState::Opening, None)
+        }
+    }
+}
+
 /// A source's status now.
 fn status_of(source: &mut Source) -> ScreenCaptureStatus {
+    let mut status = picture_status(source);
+    let (audio, audio_error) = audio_status(source, status.state);
+    status.audio = audio;
+    status.audio_error = audio_error;
+    status
+}
+
+/// A source's picture status now.
+fn picture_status(source: &mut Source) -> ScreenCaptureStatus {
     if source.closed {
         return ScreenCaptureStatus::default();
     }
@@ -766,5 +975,68 @@ mod tests {
         capture.sync(&[], |_| false);
         assert!(capture.watch.is_none());
         assert_eq!(capture.inputs().len(), 0);
+    }
+
+    /// Each audio choice plans its capture: silence, the default output's
+    /// monitor read by the capture child, or a tap following the window's
+    /// process (or, without one, its application); application audio
+    /// without a window cannot be captured.
+    #[test]
+    fn audio_choices_plan_their_capture() {
+        use fm_io_linux::capture_audio::AppAudioKey;
+        use fm_protocol::ScreenCaptureAudio;
+
+        let backend = DesktopBackend::fake(Arc::new(Mutex::new(listing(Vec::new()))));
+        let region = CaptureRegion {
+            window_id: Some(7),
+            screen: None,
+            origin_x: 0,
+            origin_y: 0,
+            target_width: 40,
+            target_height: 20,
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 20,
+        };
+        let with = |audio| ScreenCaptureConfig {
+            audio,
+            ..window_config()
+        };
+        let mut owned = window(7, 40);
+        owned.pid = Some(4_120);
+        assert_eq!(
+            backend.audio_plan(&with(ScreenCaptureAudio::None), &region, Some(&owned)),
+            AudioPlan::Silent
+        );
+        let AudioPlan::Device { input, environment } =
+            backend.audio_plan(&with(ScreenCaptureAudio::System), &region, Some(&owned))
+        else {
+            panic!("system audio is read by the capture child");
+        };
+        assert_eq!(
+            (input.format.as_str(), input.path.as_str()),
+            ("pulse", "@DEFAULT_MONITOR@")
+        );
+        assert!(environment.contains(&"PULSE_SERVER".to_owned()));
+        assert_eq!(
+            backend.audio_plan(
+                &with(ScreenCaptureAudio::Application),
+                &region,
+                Some(&owned)
+            ),
+            AudioPlan::Tap(TapSource::pulse_application(AppAudioKey {
+                pid: Some(4_120),
+                app: "XTerm".into(),
+            }))
+        );
+        assert!(matches!(
+            backend.audio_plan(&with(ScreenCaptureAudio::Application), &region, None),
+            AudioPlan::Unsupported(_)
+        ));
+        assert!(
+            AudioPlan::Tap(TapSource::pulse_application(AppAudioKey::default())).captures_sound()
+        );
+        assert!(!AudioPlan::Silent.captures_sound());
     }
 }

@@ -6144,6 +6144,7 @@ impl NativeDaemon {
             &self.network,
             &self.system_audio,
             self.captures.as_ref(),
+            &self.screen_capture,
         ))
     }
 
@@ -6156,9 +6157,10 @@ impl NativeDaemon {
     ) -> Option<fm_protocol::SourceSyncStatusMessage> {
         let (network, system_audio) = (&self.network, &self.system_audio);
         let captures = self.captures.as_ref();
+        let screen_capture = &self.screen_capture;
         self.source_sync_status.poll(
             server,
-            || live_sync_samples(network, system_audio, captures),
+            || live_sync_samples(network, system_audio, captures, screen_capture),
             Instant::now(),
         )
     }
@@ -8408,9 +8410,11 @@ fn live_sync_samples(
     network: &native_streams::NativeNetworkStreams,
     system_audio: &native_system_audio::NativeSystemAudio,
     captures: Option<&native_captures::NativeCaptures>,
+    screen_capture: &native_screen_capture::NativeScreenCapture,
 ) -> Vec<fm_protocol::SourceSyncSample> {
     let mut samples = network.sync_samples();
     samples.extend(system_audio.sync_samples());
+    samples.extend(screen_capture.sync_samples());
     if let Some(captures) = captures {
         samples.extend(captures.sync_samples());
     }
