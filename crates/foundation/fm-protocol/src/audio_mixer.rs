@@ -45,7 +45,9 @@
 //! announces `audio_strip_dsp_states`: that many
 //! [`AudioStripDspStateMessage`] records (one per input whose chain is not
 //! the default, ascending) follow the snapshot's other follow-on records.
-//! Gain reduction reaches clients in `audio_meters` `dynamics`.
+//! Gain reduction reaches clients in `audio_meters` `dynamics`, and
+//! BS.1770 loudness and true peak in `audio_meters` `loudness`
+//! ([`AudioLoudnessMeter`]).
 //!
 //! Every accepted operation, undo and redo included, is announced by
 //! `event=audio_mixer_changed` carrying the operation (`operation=<payload>`
@@ -95,6 +97,42 @@ pub struct AudioDynamicsMeter {
     pub expander_millidb: Option<u32>,
     pub compressor_millidb: Option<u32>,
     pub limiter_millidb: Option<u32>,
+}
+
+/// Lowest and highest loudness or true-peak value `audio_meters` carries,
+/// in milli-LUFS or milli-dBTP; a quieter measurement is reported as none.
+pub const MIN_LOUDNESS_MILLI: i32 = -100_000;
+pub const MAX_LOUDNESS_MILLI: i32 = 30_000;
+
+/// One bus's ITU-R BS.1770 / EBU R128 loudness over an `audio_meters`
+/// interval (AU-005): momentary (400 ms), short-term (3 s), and gated
+/// integrated loudness in milli-LUFS, and the true peak over the interval
+/// and since the meter started in milli-dBTP. Each is `None` while its
+/// window is not yet full, the bus is silent, or the value is below
+/// [`MIN_LOUDNESS_MILLI`]. A strip's loudness hears its post-fader
+/// contribution to Program; Master's hears Program as it leaves.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AudioLoudnessMeter {
+    pub target: AudioDspTarget,
+    pub momentary_millilufs: Option<i32>,
+    pub short_term_millilufs: Option<i32>,
+    pub integrated_millilufs: Option<i32>,
+    pub true_peak_millidbtp: Option<i32>,
+    pub max_true_peak_millidbtp: Option<i32>,
+}
+
+impl AudioLoudnessMeter {
+    /// The five values in wire order.
+    #[must_use]
+    pub const fn values(&self) -> [Option<i32>; 5] {
+        [
+            self.momentary_millilufs,
+            self.short_term_millilufs,
+            self.integrated_millilufs,
+            self.true_peak_millidbtp,
+            self.max_true_peak_millidbtp,
+        ]
+    }
 }
 
 /// One input strip's non-default DSP chain at a snapshot's `revision`

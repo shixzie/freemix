@@ -9149,6 +9149,45 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::FxStageExpander, t("Expansor")),
     (
+        Msg::LoudnessIdleHover,
+        t(
+            "Aún no se ha medido la sonoridad: la sonoridad momentánea necesita 400 ms de audio y la de corto plazo 3 s",
+        ),
+    ),
+    (
+        Msg::LoudnessStripHover,
+        t(
+            "Sonoridad de la aportación de este canal al Programa (ITU-R BS.1770 / EBU R128): corto plazo {short} LUFS (3 s), momentánea {momentary} LUFS (400 ms), integrada {integrated} LUFS; pico real {peak} dBTP, máximo {max} dBTP",
+        ),
+    ),
+    (
+        Msg::LoudnessMasterHover,
+        t(
+            "Sonoridad del Programa (ITU-R BS.1770 / EBU R128): integrada {integrated} LUFS desde que empezó la medición (objetivo de emisión -23 LUFS), corto plazo {short} LUFS, momentánea {momentary} LUFS; pico real {peak} dBTP, máximo {max} dBTP (manténgalo por debajo de -1 dBTP)",
+        ),
+    ),
+    (Msg::FxLoudnessLabel, t("Sonoridad")),
+    (
+        Msg::FxLoudnessMomentaryHover,
+        t("Sonoridad momentánea: los últimos 400 ms, en LUFS"),
+    ),
+    (
+        Msg::FxLoudnessShortTermHover,
+        t("Sonoridad de corto plazo: los últimos 3 segundos, en LUFS"),
+    ),
+    (
+        Msg::FxLoudnessIntegratedHover,
+        t(
+            "Sonoridad integrada: el promedio con compuerta desde que empezó la medición, en LUFS (objetivo de emisión EBU R128 -23 LUFS)",
+        ),
+    ),
+    (
+        Msg::FxTruePeakHover,
+        t(
+            "Pico real en dBTP: el pico entre muestras más alto ahora mismo y desde que empezó la medición (EBU R128 admite como máximo -1 dBTP)",
+        ),
+    ),
+    (
         Msg::FxExpThresholdHover,
         t("El expansor baja los niveles por debajo de este valor"),
     ),

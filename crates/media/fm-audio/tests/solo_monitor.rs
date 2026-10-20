@@ -185,7 +185,9 @@ fn pfl_hears_a_muted_strip_and_ignores_follow_video_and_source_envelopes() {
                 master: &mut master_meters,
                 inputs: &mut input_meters,
                 monitor: &mut monitor_meters,
+                loudness: None,
             },
+            None,
         )
         .unwrap();
     assert!(solo);
@@ -441,7 +443,9 @@ fn monitor_meter_slices_are_checked_before_rendering() {
                 master: &mut [ChannelMeter::default(); 2],
                 inputs: &mut [ChannelMeter::default(); 4],
                 monitor: &mut [ChannelMeter::default(); 1],
+                loudness: None,
             },
+            None,
         ),
         Err(AudioError::MeterCountMismatch {
             expected: 2,

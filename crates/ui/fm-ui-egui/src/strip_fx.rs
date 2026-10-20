@@ -214,6 +214,7 @@ impl StudioShell {
             &[("strip", Arg::Str(&target_name(l, state, target)))],
         );
         let gr = reductions(state, target);
+        let loudness = crate::mixer::loudness_for(state, target);
         let clipboard = self.strip_fx.clipboard;
         let Some(binding) = self.strip_fx.binding.as_mut() else {
             return;
@@ -247,6 +248,8 @@ impl StudioShell {
                         draw_bands(ui, &mut chain, (enabled, reason));
                         ui.separator();
                         draw_dynamics(ui, &mut chain, (enabled, reason), gr);
+                        ui.separator();
+                        draw_loudness(ui, loudness.as_ref());
                     },
                 );
                 header.close |= close;
@@ -1044,6 +1047,61 @@ fn draw_dynamics(
             "REL ",
             gate(Msg::FxReleaseHover),
         );
+    });
+}
+
+/// The chain's BS.1770 loudness and true peak (AU-005), as `audio_meters`
+/// last reported it.
+fn draw_loudness(ui: &mut Ui, meter: Option<&fm_protocol::AudioLoudnessMeter>) {
+    let l = l10n::locale(ui.ctx());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(l.text(Msg::FxLoudnessLabel).to_uppercase())
+                .size(crate::theme::legible(10.0))
+                .color(muted_color()),
+        )
+        .on_hover_text(crate::mixer::loudness_hover(l, meter, false));
+        let value = |pick: fn(&fm_protocol::AudioLoudnessMeter) -> Option<i32>| {
+            crate::mixer::format_loudness(l, meter.and_then(pick))
+        };
+        for (scale, text, unit, hover) in [
+            (
+                "M",
+                value(|meter| meter.momentary_millilufs),
+                "LUFS",
+                Msg::FxLoudnessMomentaryHover,
+            ),
+            (
+                "S",
+                value(|meter| meter.short_term_millilufs),
+                "LUFS",
+                Msg::FxLoudnessShortTermHover,
+            ),
+            (
+                "I",
+                value(|meter| meter.integrated_millilufs),
+                "LUFS",
+                Msg::FxLoudnessIntegratedHover,
+            ),
+            (
+                "TP",
+                format!(
+                    "{} / {}",
+                    value(|meter| meter.true_peak_millidbtp),
+                    value(|meter| meter.max_true_peak_millidbtp)
+                ),
+                "dBTP",
+                Msg::FxTruePeakHover,
+            ),
+        ] {
+            ui.label(
+                RichText::new(format!("{scale} {text} {unit}"))
+                    .monospace()
+                    .size(crate::theme::legible(10.0))
+                    .color(text_color()),
+            )
+            .on_hover_text(l.text(hover));
+        }
     });
 }
 

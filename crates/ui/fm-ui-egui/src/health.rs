@@ -547,6 +547,7 @@ mod tests {
             inputs: Vec::new(),
             monitor: None,
             dynamics: Vec::new(),
+            loudness: Vec::new(),
         });
         let mut tracker = HealthTracker::default();
         tracker.observe(&state, start);

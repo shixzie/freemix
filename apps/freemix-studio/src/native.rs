@@ -3544,6 +3544,7 @@ mod tests {
                     inputs: Vec::new(),
                     monitor: None,
                     dynamics: Vec::new(),
+                    loudness: Vec::new(),
                 })) {
                     return;
                 }

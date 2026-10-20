@@ -443,6 +443,24 @@ fn native_daemon_applies_strip_and_master_dsp_and_meters_gain_reduction() {
         master_peak(&client.settled("the tone on Master", 5, |meters| master_peak(meters) > LOUD));
     let strip = AudioDspTarget::Input(wire(11));
 
+    // BS.1770 loudness and true peak reach clients for Master and the
+    // strip once a 400 ms window has been heard.
+    let meters = client.settled("loudness on Master and the strip", 3, |meters| {
+        [AudioDspTarget::Master, strip].into_iter().all(|target| {
+            meters
+                .loudness
+                .iter()
+                .find(|meter| meter.target == target)
+                .is_some_and(|meter| {
+                    meter.momentary_millilufs.is_some() && meter.true_peak_millidbtp.is_some()
+                })
+        })
+    });
+    for meter in &meters.loudness {
+        let momentary = meter.momentary_millilufs.unwrap_or(-100_000);
+        assert!((-40_000..=-5_000).contains(&momentary), "{meter:?}");
+    }
+
     // EQ: +12 dB at the tone lifts Master about four times; no dynamics
     // stage runs, so none is metered.
     client.dsp(strip, tone_boost());
@@ -484,6 +502,21 @@ fn native_daemon_applies_strip_and_master_dsp_and_meters_gain_reduction() {
             && dynamics(meters, strip)
                 .and_then(|meter| meter.gate_millidb)
                 .is_some_and(|reduction| reduction > 30_000)
+    });
+
+    // Expander: 8 dB under a -10 dB threshold at 4:1 is turned down by
+    // its 20 dB range.
+    let mut expanded = StripDsp::DEFAULT;
+    expanded.expander.enabled = true;
+    expanded.expander.threshold_millidb = -10_000;
+    expanded.expander.ratio_milli = 4_000;
+    expanded.expander.range_millidb = 20_000;
+    client.dsp(strip, expanded);
+    client.settled("the expanded tone", 10, |meters| {
+        master_peak(meters) < flat / 6
+            && dynamics(meters, strip)
+                .and_then(|meter| meter.expander_millidb)
+                .is_some_and(|reduction| reduction > 15_000)
     });
 
     // Master limiter: the boosted tone held under a -20 dBFS ceiling, its

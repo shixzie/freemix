@@ -1918,6 +1918,27 @@ fn meters() -> AudioMetersMessage {
                 limiter_millidb: None,
             },
         ],
+        // Master and input 1 report loudness (AU-005); input 1 has not yet
+        // filled its 3 s window, and other strips report none, so the
+        // idle readout's help is audited too.
+        loudness: vec![
+            fm_protocol::AudioLoudnessMeter {
+                target: fm_protocol::AudioDspTarget::Master,
+                momentary_millilufs: Some(-22_400),
+                short_term_millilufs: Some(-23_100),
+                integrated_millilufs: Some(-23_000),
+                true_peak_millidbtp: Some(-2_300),
+                max_true_peak_millidbtp: Some(-800),
+            },
+            fm_protocol::AudioLoudnessMeter {
+                target: fm_protocol::AudioDspTarget::Input(wire(1)),
+                momentary_millilufs: Some(-28_000),
+                short_term_millilufs: None,
+                integrated_millilufs: None,
+                true_peak_millidbtp: Some(-9_000),
+                max_true_peak_millidbtp: Some(-9_000),
+            },
+        ],
     }
 }
 

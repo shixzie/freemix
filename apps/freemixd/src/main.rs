@@ -8300,7 +8300,34 @@ fn audio_meters_message(
                 limiter_millidb: reading.limiter_db.map(reduction_millidb),
             })
             .collect(),
+        loudness: meters
+            .loudness
+            .iter()
+            .map(|&(input, reading)| fm_protocol::AudioLoudnessMeter {
+                target: input.map_or(fm_protocol::AudioDspTarget::Master, |input| {
+                    fm_protocol::AudioDspTarget::Input(WireInputId::from_domain(input))
+                }),
+                momentary_millilufs: reading.momentary_lufs.and_then(loudness_milli),
+                short_term_millilufs: reading.short_term_lufs.and_then(loudness_milli),
+                integrated_millilufs: reading.integrated_lufs.and_then(loudness_milli),
+                true_peak_millidbtp: reading.true_peak_dbtp.and_then(loudness_milli),
+                max_true_peak_millidbtp: reading.max_true_peak_dbtp.and_then(loudness_milli),
+            })
+            .filter(|meter| meter.values().iter().any(Option::is_some))
+            .collect(),
     }
+}
+
+/// A loudness (LUFS) or true-peak (dBTP) value in thousandths for the
+/// wire: `None` below the wire floor, clamped at its ceiling (AU-005).
+#[cfg(feature = "native-media")]
+// Values are clamped to the wire bounds before the cast; truncation is not
+// reachable.
+#[allow(clippy::cast_possible_truncation)]
+fn loudness_milli(value: f64) -> Option<i32> {
+    let milli = (value * 1_000.0).round();
+    (milli.is_finite() && milli >= f64::from(fm_protocol::MIN_LOUDNESS_MILLI))
+        .then(|| milli.min(f64::from(fm_protocol::MAX_LOUDNESS_MILLI)) as i32)
 }
 
 /// A DSP stage's gain reduction in positive millidecibels, bounded for the

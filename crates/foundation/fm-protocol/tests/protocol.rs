@@ -289,11 +289,33 @@ fn audio_meter_codec_is_bounded_and_exact() {
                 limiter_millidb: None,
             },
         ],
+        // BS.1770 loudness (AU-005): Master first, then ascending inputs;
+        // a strip whose 3 s window has not filled has no short-term value.
+        loudness: vec![
+            fm_protocol::AudioLoudnessMeter {
+                target: fm_protocol::AudioDspTarget::Master,
+                momentary_millilufs: Some(-23_000),
+                short_term_millilufs: Some(-22_500),
+                integrated_millilufs: Some(-23_100),
+                true_peak_millidbtp: Some(-1_500),
+                max_true_peak_millidbtp: Some(-1_000),
+            },
+            fm_protocol::AudioLoudnessMeter {
+                target: fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::new(
+                    core::num::NonZeroU128::new(3).unwrap(),
+                )),
+                momentary_millilufs: Some(-30_000),
+                short_term_millilufs: None,
+                integrated_millilufs: None,
+                true_peak_millidbtp: Some(-12_000),
+                max_true_peak_millidbtp: Some(-12_000),
+            },
+        ],
     });
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\n"
+        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\tloudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -338,6 +360,21 @@ fn audio_meter_codec_is_bounded_and_exact() {
             "\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-",
             "",
         ),
+        // Loudness is ascending by target, each with a value, canonical,
+        // and within -100000..=30000.
+        (
+            "loudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000",
+            "loudness=3%7E-30000%7E-%7E-%7E-12000%7E-12000%2Cmaster%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000",
+        ),
+        (
+            "3%7E-30000%7E-%7E-%7E-12000%7E-12000",
+            "3%7E-%7E-%7E-%7E-%7E-",
+        ),
+        ("3%7E-30000%7E", "3%7E-030000%7E"),
+        ("3%7E-30000%7E", "3%7E-100001%7E"),
+        ("master%7E-23000", "master%7E30001"),
+        ("%7E-12000%7E-12000\n", "%7E-12000\n"),
+        ("\tloudness=master%7E", "\tloudness=main%7E"),
         (
             "\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000",
             "",
@@ -404,6 +441,7 @@ fn every_message_variant_round_trips() {
             inputs: Vec::new(),
             monitor: None,
             dynamics: Vec::new(),
+            loudness: Vec::new(),
         }),
         WireMessage::DiagnosticsRequest(DiagnosticsRequest {
             protocol: CURRENT_PROTOCOL_VERSION,
@@ -3050,7 +3088,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -3058,7 +3096,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -3926,7 +3964,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
             ),
             "{encoded}"
         );
@@ -4808,7 +4846,7 @@ mod playlists {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
             ),
             "{encoded}"
         );

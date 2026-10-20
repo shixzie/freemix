@@ -3323,6 +3323,10 @@ fn encode_audio_meters(
     record.field_string(
         "dynamics",
         super::audio_mixer::encode_dynamics(&message.dynamics)?,
+    )?;
+    record.field_string(
+        "loudness",
+        super::audio_mixer::encode_loudness(&message.loudness)?,
     )
 }
 

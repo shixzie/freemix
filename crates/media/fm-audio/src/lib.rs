@@ -1250,6 +1250,22 @@ pub struct MixerMeterSlices<'a> {
     pub inputs: &'a mut [ChannelMeter],
     /// The monitor bus, in Master channel-layout order.
     pub monitor: &'a mut [ChannelMeter],
+    /// One loudness meter per input strip in [`InputId`] order, each in the
+    /// Master channel layout (AU-005). A strip's meter hears exactly what
+    /// its peak/RMS meter does: its post-fader contribution to Program, or
+    /// silence while it is not audible.
+    pub loudness: Option<&'a mut [LoudnessMeter]>,
+}
+
+/// Audio summed into (or replacing) the Program bus after the strips and
+/// before the Master DSP chain, clipping, and the Master meters, so it is
+/// processed and metered like the strips (a stinger clip's own audio).
+#[derive(Clone, Copy, Debug)]
+pub struct MasterBusInsert<'a> {
+    /// One plane per Master channel, each at least the render's length.
+    pub planes: &'a [Vec<f32>],
+    /// Replaces the summed strips instead of adding to them.
+    pub replace: bool,
 }
 
 /// One borrowed planar source for allocation-free Master mixing.
@@ -1382,6 +1398,14 @@ struct MixedMaster {
 struct RenderMeters {
     master: MeterReadings,
     inputs: Vec<InputMeterReadings>,
+}
+
+/// Optional per-render additions: strip loudness meters and a Master bus
+/// insert.
+#[derive(Default)]
+struct RenderExtras<'a> {
+    loudness: Option<&'a mut [LoudnessMeter]>,
+    insert: Option<MasterBusInsert<'a>>,
 }
 
 /// Where one render writes the monitor bus and its meters.
@@ -2111,6 +2135,7 @@ impl MasterMixer {
             false,
             None,
             None,
+            RenderExtras::default(),
         )
         .map(drop)
     }
@@ -2146,13 +2171,15 @@ impl MasterMixer {
             false,
             Some(meters),
             None,
+            RenderExtras::default(),
         )
         .map(drop)
     }
 
     /// Like [`Self::mix_planar_timed_into_with_meters`], and also renders the
     /// monitor bus into caller-owned `monitor` planes (one per Master
-    /// channel, at least `samples` long) with its meters.
+    /// channel, at least `samples` long) with its meters, the strips'
+    /// loudness meters when given, and an optional [`MasterBusInsert`].
     ///
     /// Returns whether the monitor bus carries a PFL/AFL solo (`true`) or
     /// follows Master (`false`).
@@ -2160,7 +2187,8 @@ impl MasterMixer {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::mix_planar_timed_into_with_meters`]
-    /// plus plane-shape and meter-count errors for the monitor bus.
+    /// plus plane-shape and meter-count errors for the monitor bus, the
+    /// loudness meters, and the insert, and non-finite insert samples.
     #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     pub fn mix_planar_timed_into_with_monitor(
         &mut self,
@@ -2171,6 +2199,7 @@ impl MasterMixer {
         output: &mut [Vec<f32>],
         monitor: &mut [Vec<f32>],
         meters: MixerMeterSlices<'_>,
+        insert: Option<MasterBusInsert<'_>>,
     ) -> Result<bool, AudioError> {
         validate_sample_count(samples)?;
         validate_canonical_output(&self.format, samples)?;
@@ -2181,6 +2210,19 @@ impl MasterMixer {
                 expected: channels,
                 actual: meters.monitor.len(),
             });
+        }
+        if let Some(loudness) = &meters.loudness
+            && (loudness.len() != self.inputs.len()
+                || loudness.iter().any(|meter| meter.channels() != channels))
+        {
+            return Err(AudioError::MeterCountMismatch {
+                expected: self.inputs.len(),
+                actual: loudness.len(),
+            });
+        }
+        if let Some(insert) = insert {
+            validate_mixer_output_planes(samples, channels, insert.planes)?;
+            validate_finite_sample_prefix(insert.planes, samples)?;
         }
         let solo = self.monitor_carries_solo();
         self.mix_block_views_into(
@@ -2194,6 +2236,10 @@ impl MasterMixer {
                 planes: monitor,
                 meters: Some(meters.monitor),
             }),
+            RenderExtras {
+                loudness: meters.loudness,
+                insert,
+            },
         )?;
         Ok(solo)
     }
@@ -2252,6 +2298,7 @@ impl MasterMixer {
                     planes: &mut monitor,
                     meters: None,
                 }),
+                RenderExtras::default(),
             )?
             .expect("metering was requested");
         let monitor_meters = measure_planes(&monitor);
@@ -2281,7 +2328,12 @@ impl MasterMixer {
         measure_output: bool,
         mut meter_output: Option<(&mut [ChannelMeter], &mut [ChannelMeter])>,
         mut monitor: Option<MonitorTarget<'_>>,
+        extras: RenderExtras<'_>,
     ) -> Result<Option<RenderMeters>, AudioError> {
+        let RenderExtras {
+            mut loudness,
+            insert,
+        } = extras;
         validate_sample_count(samples)?;
         validate_mixer_submissions(samples, blocks, &self.inputs)?;
         let channels = self.format.channels.channels().len();
@@ -2335,6 +2387,10 @@ impl MasterMixer {
                 pan: strip.pan_ramp,
                 groups: groups.ramps,
             };
+            let mut strip_loudness = loudness
+                .as_deref_mut()
+                .and_then(|meters| meters.get_mut(input_index))
+                .filter(|_| metering);
             if audible {
                 mix_audible_strip_samples(
                     samples,
@@ -2345,9 +2401,11 @@ impl MasterMixer {
                     StripTap::Program,
                     meter_channels
                         .as_mut()
-                        .map(|meters| &mut meters[..channels]),
+                        .map(|meters| (&mut meters[..channels], strip_loudness.as_deref_mut())),
                     output,
                 )?;
+            } else if let Some(meter) = strip_loudness {
+                meter.push_silence(samples);
             }
             if listen
                 && soloed
@@ -2389,6 +2447,17 @@ impl MasterMixer {
             }
         }
 
+        if let Some(insert) = insert {
+            for (target, source) in output.iter_mut().zip(insert.planes) {
+                if insert.replace {
+                    target[..samples].copy_from_slice(&source[..samples]);
+                } else {
+                    for (target, source) in target[..samples].iter_mut().zip(&source[..samples]) {
+                        *target += *source;
+                    }
+                }
+            }
+        }
         if let Some(live) = &mut self.master_dsp
             && !live.is_transparent()
         {
@@ -2606,7 +2675,7 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
     strip: &InputStrip,
     ramps: &mut StripRamps,
     tap: StripTap,
-    mut meter_channels: Option<&mut [ChannelMeterAccumulator]>,
+    mut meter_channels: Option<(&mut [ChannelMeterAccumulator], Option<&mut LoudnessMeter>)>,
     output: &mut [Vec<f32>],
 ) -> Result<(), AudioError> {
     let source_gain = match tap {
@@ -2614,9 +2683,10 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
         StripTap::PreFader | StripTap::AfterFader => SourceGain::UNITY,
     };
     let pans = strip.pans();
+    let master_channels = master_layout.channels().len();
     for sample in 0..samples {
-        if let Some(meter_channels) = &mut meter_channels {
-            for meter in &mut meter_channels[..master_layout.channels().len()] {
+        if let Some((meter_channels, _)) = &mut meter_channels {
+            for meter in &mut meter_channels[..master_channels] {
                 meter.begin_sample();
             }
         }
@@ -2649,7 +2719,7 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
                 });
             }
             output[destination][sample] = mapped;
-            if let Some(meter_channels) = &mut meter_channels
+            if let Some((meter_channels, _)) = &mut meter_channels
                 && !meter_channels[destination].add(contribution)
             {
                 return Err(AudioError::NonFiniteSample {
@@ -2658,9 +2728,14 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
                 });
             }
         }
-        if let Some(meter_channels) = &mut meter_channels {
-            for meter in &mut meter_channels[..master_layout.channels().len()] {
+        if let Some((meter_channels, loudness)) = &mut meter_channels {
+            let mut frame = [0.0_f32; MAX_CHANNELS];
+            for (meter, value) in meter_channels[..master_channels].iter_mut().zip(&mut frame) {
                 meter.end_sample();
+                *value = meter.sample;
+            }
+            if let Some(loudness) = loudness {
+                loudness.push_frame(&frame[..master_channels]);
             }
         }
     }

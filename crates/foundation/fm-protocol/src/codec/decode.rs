@@ -3678,6 +3678,7 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
         inputs,
         monitor,
         dynamics: super::audio_mixer::decode_dynamics(&fields.required("dynamics")?)?,
+        loudness: super::audio_mixer::decode_loudness(&fields.required("loudness")?)?,
     })
 }
 

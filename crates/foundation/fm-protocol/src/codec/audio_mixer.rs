@@ -611,6 +611,100 @@ pub(super) fn decode_dynamics(value: &str) -> Result<Vec<crate::AudioDynamicsMet
         .collect()
 }
 
+/// Encodes `audio_meters` `loudness`: comma-separated
+/// `<target>~<momentary>~<short_term>~<integrated>~<true_peak>~<max_true_peak>`
+/// entries, each value a canonical signed decimal in
+/// [`crate::MIN_LOUDNESS_MILLI`]`..=`[`crate::MAX_LOUDNESS_MILLI`] (milli-LUFS
+/// or milli-dBTP) or `-` for none, at least one value present, strictly
+/// ascending by target (Master first).
+pub(super) fn encode_loudness(meters: &[crate::AudioLoudnessMeter]) -> Result<String, CodecError> {
+    if meters.len() > MAX_LIST_ITEMS + 1 {
+        return Err(CodecError::TooManyItems("loudness"));
+    }
+    let mut previous: Option<AudioDspTarget> = None;
+    let mut entries = Vec::with_capacity(meters.len());
+    for meter in meters {
+        let values = meter.values();
+        if previous.is_some_and(|previous| previous >= meter.target)
+            || values.iter().all(Option::is_none)
+            || values.iter().flatten().any(|value| {
+                !(crate::MIN_LOUDNESS_MILLI..=crate::MAX_LOUDNESS_MILLI).contains(value)
+            })
+        {
+            return Err(invalid("loudness", encode_target(meter.target)));
+        }
+        previous = Some(meter.target);
+        let mut entry = encode_target(meter.target);
+        for value in values {
+            match value {
+                Some(value) => write!(entry, "~{value}"),
+                None => write!(entry, "~-"),
+            }
+            .expect("writing to a string cannot fail");
+        }
+        entries.push(entry);
+    }
+    Ok(entries.join(","))
+}
+
+/// Decodes `audio_meters` `loudness`, the exact inverse of
+/// [`encode_loudness`].
+pub(super) fn decode_loudness(value: &str) -> Result<Vec<crate::AudioLoudnessMeter>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 2).count() > MAX_LIST_ITEMS + 1 {
+        return Err(CodecError::TooManyItems("loudness"));
+    }
+    let level = |value: &str| -> Result<Option<i32>, CodecError> {
+        if value == "-" {
+            return Ok(None);
+        }
+        value
+            .parse::<i32>()
+            .ok()
+            .filter(|level| {
+                (crate::MIN_LOUDNESS_MILLI..=crate::MAX_LOUDNESS_MILLI).contains(level)
+                    && level.to_string() == value
+            })
+            .map(Some)
+            .ok_or_else(|| invalid("loudness", value))
+    };
+    let mut previous: Option<AudioDspTarget> = None;
+    value
+        .split(',')
+        .map(|entry| {
+            let parts: Vec<&str> = entry.split('~').collect();
+            let [
+                target,
+                momentary,
+                short_term,
+                integrated,
+                true_peak,
+                max_true_peak,
+            ] = parts.as_slice()
+            else {
+                return Err(invalid("loudness", entry));
+            };
+            let meter = crate::AudioLoudnessMeter {
+                target: decode_target("loudness", target)?,
+                momentary_millilufs: level(momentary)?,
+                short_term_millilufs: level(short_term)?,
+                integrated_millilufs: level(integrated)?,
+                true_peak_millidbtp: level(true_peak)?,
+                max_true_peak_millidbtp: level(max_true_peak)?,
+            };
+            if previous.is_some_and(|previous| previous >= meter.target)
+                || meter.values().iter().all(Option::is_none)
+            {
+                return Err(invalid("loudness", entry));
+            }
+            previous = Some(meter.target);
+            Ok(meter)
+        })
+        .collect()
+}
+
 /// Decodes an optional knob drag: `gesture` (a canonical nonzero decimal)
 /// with `continues` (`true` or `false`), or neither.
 fn decode_gesture(fields: &mut dyn FieldSource) -> Result<Option<crate::GradeGesture>, CodecError> {

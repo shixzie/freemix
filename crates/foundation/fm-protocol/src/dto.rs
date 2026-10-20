@@ -3050,6 +3050,9 @@ pub struct AudioMetersMessage {
     /// Gain reduction of every chain with a running dynamics stage, Master
     /// first and then ascending by input (2.75).
     pub dynamics: Vec<crate::AudioDynamicsMeter>,
+    /// BS.1770 loudness and true peak of every metered bus with a value,
+    /// Master first and then ascending by input (AU-005).
+    pub loudness: Vec<crate::AudioLoudnessMeter>,
 }
 
 /// Latest health of one local HLS output: playlist depth and free space.

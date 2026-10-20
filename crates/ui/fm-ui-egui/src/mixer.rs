@@ -29,7 +29,7 @@ use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Key, Rect, RichText, ScrollArea,
     Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
 };
-use fm_protocol::{AudioMeterChannel, SourceSyncSample};
+use fm_protocol::{AudioLoudnessMeter, AudioMeterChannel, SourceSyncSample};
 use fm_types::strip_dsp::StripDspTarget;
 use fm_ui_model::{ClientView, InputAudioStripStatus};
 
@@ -68,7 +68,7 @@ const MIXER_SIDE_RESERVE: f32 = 8.0;
 /// scrolls.
 const MIXER_BOTTOM_RESERVE: f32 = 16.0;
 /// Vertical space a strip needs besides its fader and meters.
-const STRIP_CHROME_HEIGHT: f32 = 302.0;
+const STRIP_CHROME_HEIGHT: f32 = 322.0;
 /// Height of the label, group, gain, balance, and delay entry rows inside
 /// the chrome.
 const ENTRY_ROWS_HEIGHT: f32 = 124.0;
@@ -754,7 +754,7 @@ pub(crate) fn draw_mixer(
                                 if draw_input_strip(
                                     ui,
                                     (view, fx_active(state, target), &mut *fx),
-                                    (status, sync),
+                                    (status, sync, loudness_for(state, target)),
                                     MeterFeed {
                                         channels,
                                         holds: &holds,
@@ -861,6 +861,7 @@ pub(crate) fn draw_mixer(
             },
             layout,
             (fx_active(state, StripDspTarget::Master), &mut *fx),
+            loudness_for(state, StripDspTarget::Master),
         ) {
             clear.push(MeterKey::Master);
         }
@@ -872,6 +873,126 @@ pub(crate) fn draw_mixer(
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// The latest BS.1770 loudness `audio_meters` reports for `target`
+/// (AU-005).
+pub(crate) fn loudness_for(
+    state: &StudioUiState,
+    target: StripDspTarget,
+) -> Option<AudioLoudnessMeter> {
+    let wire = fm_ui_model::strip_dsp::wire_target(target);
+    state
+        .audio_meters
+        .as_ref()?
+        .loudness
+        .iter()
+        .find(|meter| meter.target == wire)
+        .copied()
+}
+
+/// A milli-LUFS or milli-dBTP value with one decimal, or `--` for none.
+pub(crate) fn format_loudness(l: Locale, value: Option<i32>) -> String {
+    value.map_or_else(
+        || "--".to_owned(),
+        |value| l.decimal(f64::from(value) / 1_000.0, 1),
+    )
+}
+
+/// The loudness hover text: every value of `meter`, or why there is none.
+pub(crate) fn loudness_hover(
+    l: Locale,
+    meter: Option<&AudioLoudnessMeter>,
+    master: bool,
+) -> String {
+    let Some(meter) = meter else {
+        return l.text(Msg::LoudnessIdleHover).to_owned();
+    };
+    l.format(
+        if master {
+            Msg::LoudnessMasterHover
+        } else {
+            Msg::LoudnessStripHover
+        },
+        &[
+            (
+                "momentary",
+                Arg::Str(&format_loudness(l, meter.momentary_millilufs)),
+            ),
+            (
+                "short",
+                Arg::Str(&format_loudness(l, meter.short_term_millilufs)),
+            ),
+            (
+                "integrated",
+                Arg::Str(&format_loudness(l, meter.integrated_millilufs)),
+            ),
+            (
+                "peak",
+                Arg::Str(&format_loudness(l, meter.true_peak_millidbtp)),
+            ),
+            (
+                "max",
+                Arg::Str(&format_loudness(l, meter.max_true_peak_millidbtp)),
+            ),
+        ],
+    )
+}
+
+/// A strip's loudness readout (AU-005): Master shows its integrated
+/// loudness and a strip its short-term loudness (momentary until 3 s have
+/// been heard), in LUFS; amber past a true peak of -1 dBTP. The hover
+/// lists every value.
+fn loudness_box(ui: &mut Ui, meter: Option<&AudioLoudnessMeter>, master: bool, stale: bool) {
+    let l = l10n::locale(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), READOUT_HEIGHT),
+        Sense::hover(),
+    );
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(2), MONITOR_BLACK);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(2),
+            Stroke::new(1.0, border_color()),
+            StrokeKind::Inside,
+        );
+        let shown = meter.and_then(|meter| {
+            if master {
+                meter
+                    .integrated_millilufs
+                    .map(|value| ("I", value))
+                    .or(meter.short_term_millilufs.map(|value| ("S", value)))
+            } else {
+                meter.short_term_millilufs.map(|value| ("S", value))
+            }
+            .or(meter.momentary_millilufs.map(|value| ("M", value)))
+        });
+        let text = shown.map_or_else(
+            || "LUFS --".to_owned(),
+            |(scale, value)| format!("{scale} {}", format_loudness(l, Some(value))),
+        );
+        let hot = meter
+            .and_then(|meter| meter.true_peak_millidbtp)
+            .is_some_and(|peak| peak > -1_000);
+        let color = if shown.is_none() || stale {
+            muted_color()
+        } else if hot {
+            AMBER
+        } else {
+            text_color()
+        };
+        let galley = crate::theme::elided(
+            painter,
+            &text,
+            FontId::new(10.0, FontFamily::Monospace),
+            color,
+            rect.width() - 4.0,
+        );
+        painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+    }
+    response.on_hover_text(loudness_hover(l, meter, master));
 }
 
 /// Whether `target`'s DSP chain processes audio now (AU-005): its `FX` key
@@ -1750,7 +1871,11 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
 fn draw_input_strip(
     ui: &mut Ui,
     (view, fx_on, fx): (&ClientView, bool, &mut Option<StripDspTarget>),
-    (status, sync): (&InputAudioStripStatus, SyncRow<'_>),
+    (status, sync, loudness): (
+        &InputAudioStripStatus,
+        SyncRow<'_>,
+        Option<AudioLoudnessMeter>,
+    ),
     feed: MeterFeed<'_>,
     gate: StripGate,
     layout: StripLayout,
@@ -1919,6 +2044,7 @@ fn draw_input_strip(
                 *fx = Some(StripDspTarget::Input(status.input));
             }
         });
+        loudness_box(ui, loudness.as_ref(), false, feed.stale);
         match sync {
             SyncRow::Key(sample) => {
                 crate::source_sync_ui::strip_badge(ui, sample, &input_name, layout.inner_width());
@@ -2233,9 +2359,11 @@ fn draw_master_strip(
     feed: MeterFeed<'_>,
     layout: StripLayout,
     (fx_on, fx): (bool, &mut Option<StripDspTarget>),
+    loudness: Option<AudioLoudnessMeter>,
 ) -> bool {
     let l = l10n::locale(ui.ctx());
     let mut clear_clip = false;
+    let stale = feed.stale;
     strip_frame(ui, accent_color(), layout.width, |ui| {
         let (rect, _) = ui.allocate_exact_size(
             Vec2::new(layout.inner_width(), NAME_PLATE_HEIGHT),
@@ -2279,6 +2407,7 @@ fn draw_master_strip(
         ) {
             *fx = Some(StripDspTarget::Master);
         }
+        loudness_box(ui, loudness.as_ref(), true, stale);
     });
     clear_clip
 }
@@ -2876,7 +3005,7 @@ mod tests {
         // faders, fine scales, and wide meter bars.
         let big = strip_layout(Vec2::new(1_900.0, 1_000.0), 6, false);
         assert!((big.width - MAX_STRIP_WIDTH).abs() < f32::EPSILON);
-        assert!((big.fader_height - 806.0).abs() < f32::EPSILON);
+        assert!((big.fader_height - 786.0).abs() < f32::EPSILON);
         assert!(big.fine_scale());
         assert!((big.bar_width() - 10.0).abs() < f32::EPSILON);
         assert_eq!(big.fader_cap(), Vec2::new(40.0, 18.0));
@@ -2886,7 +3015,7 @@ mod tests {
         let mid = strip_layout(Vec2::new(1_100.0, 600.0), 6, false);
         assert!((mid.width - 128.0).abs() < f32::EPSILON);
         assert!((mid.inner_width() - 118.0).abs() < f32::EPSILON);
-        assert!((mid.fader_height - 406.0).abs() < f32::EPSILON);
+        assert!((mid.fader_height - 386.0).abs() < f32::EPSILON);
         // A narrow dock: compact strips with the coarse scales.
         let compact = strip_layout(Vec2::new(600.0, 250.0), 6, false);
         assert!((compact.width - STRIP_WIDTH).abs() < f32::EPSILON);

@@ -104,6 +104,7 @@ pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
         inputs: Vec::new(),
         monitor: None,
         dynamics: Vec::new(),
+        loudness: Vec::new(),
     }
 }
 

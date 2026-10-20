@@ -238,6 +238,7 @@ fn audio_meters(sequence: u64) -> AudioMetersMessage {
         }],
         monitor: None,
         dynamics: Vec::new(),
+        loudness: Vec::new(),
     }
 }
 

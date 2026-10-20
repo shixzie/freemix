@@ -23,9 +23,10 @@ use std::{
 
 use fm_audio::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerLimits, Balance,
-    ChannelMapping, ChannelMeter, ClippingPolicy, ClockMappedAudioSynchronizer, GroupState,
-    InputState, MAX_CHANNEL_MAPPING_CHANNELS, MasterAudioInterval, MasterMixer, MixerGroup,
-    MixerMeterSlices, Pan, PlanarAudioSource, SoloMode, SourceGain,
+    ChannelMapping, ChannelMeter, ClockMappedAudioSynchronizer, GroupState, InputState,
+    LoudnessMeter, LoudnessReading, MAX_CHANNEL_MAPPING_CHANNELS, MasterAudioInterval,
+    MasterBusInsert, MasterMixer, MixerGroup, MixerMeterSlices, Pan, PlanarAudioSource, SoloMode,
+    SourceGain,
 };
 use fm_clock::{
     ClockDomainId as MappingClockDomainId, ClockMapping, ClockSnapshot, ClockTime, FrameCadence,
@@ -3126,6 +3127,18 @@ struct NativeAudioScratch {
     /// The gain reduction of every running DSP chain at the last taken
     /// interval (AU-005): Master (`None`) first, then ascending inputs.
     dynamics: Vec<(Option<InputId>, fm_audio::DspDynamicsReading)>,
+    /// One loudness meter per `loudness_inputs` entry, in the Master layout
+    /// (AU-005), built on the first render and when the strips change.
+    input_loudness: Vec<LoudnessMeter>,
+    loudness_inputs: Vec<InputId>,
+    /// The Master loudness meter, fed the final Program mix.
+    master_loudness: Option<LoudnessMeter>,
+    /// The loudness readings at the last taken interval: Master (`None`)
+    /// first, then ascending inputs.
+    loudness: Vec<(Option<InputId>, LoudnessReading)>,
+    /// Silent planes a stinger that replaces Program inserts while its clip
+    /// has no audio.
+    silence: Vec<Vec<f32>>,
 }
 
 /// Borrowed meter values for one completed native Master interval.
@@ -3149,6 +3162,9 @@ pub struct NativeAudioMeters<'a> {
     /// The gain reduction of every DSP chain with a running dynamics stage
     /// (AU-005): the Master (`None`) first, then ascending inputs.
     pub dynamics: &'a [(Option<InputId>, fm_audio::DspDynamicsReading)],
+    /// BS.1770 loudness and true peak (AU-005): the Master (`None`) first,
+    /// then every strip, ascending.
+    pub loudness: &'a [(Option<InputId>, LoudnessReading)],
 }
 
 struct StagedAudioPadding {
@@ -3202,6 +3218,11 @@ impl NativeAudioScratch {
             monitor_meters: vec![ChannelMeter::default(); channels],
             monitor_solo: false,
             dynamics: Vec::with_capacity(source_count + 1),
+            input_loudness: Vec::new(),
+            loudness_inputs: Vec::new(),
+            master_loudness: None,
+            loudness: Vec::with_capacity(source_count + 1),
+            silence: vec![vec![0.0; samples]; channels],
             meter_inputs,
             meter_frame: None,
         }
@@ -4121,6 +4142,20 @@ impl NativeMasterRuntime {
                 self.scratch.dynamics.push((Some(input), reading));
             }
         }
+        self.scratch.loudness.clear();
+        if let Some(meter) = &mut self.scratch.master_loudness {
+            self.scratch.loudness.push((None, meter.take_reading()));
+        }
+        for (&input, meter) in self
+            .scratch
+            .loudness_inputs
+            .iter()
+            .zip(&mut self.scratch.input_loudness)
+        {
+            self.scratch
+                .loudness
+                .push((Some(input), meter.take_reading()));
+        }
         Some(NativeAudioMeters {
             frame,
             start_sample,
@@ -4134,7 +4169,65 @@ impl NativeMasterRuntime {
             monitor_planes: &self.scratch.monitor,
             sample_rate: self.format.sample_rate.hertz(),
             dynamics: &self.scratch.dynamics,
+            loudness: &self.scratch.loudness,
         })
+    }
+
+    /// Keeps one loudness meter per metered strip, carrying each strip's
+    /// measurement across a change of the strip set; allocates only when
+    /// the set changes (AU-005).
+    fn sync_loudness_meters(&mut self) -> Result<(), NativeMasterError> {
+        let scratch = &mut self.scratch;
+        if scratch.master_loudness.is_none() {
+            scratch.master_loudness = Some(
+                LoudnessMeter::new(self.format.sample_rate.hertz(), &self.format.channels)
+                    .map_err(|_| NativeMasterError::InvalidFormat)?,
+            );
+        }
+        if scratch.loudness_inputs == scratch.meter_inputs
+            && scratch.input_loudness.len() == scratch.meter_inputs.len()
+        {
+            return Ok(());
+        }
+        let mut previous: BTreeMap<InputId, LoudnessMeter> = scratch
+            .loudness_inputs
+            .drain(..)
+            .zip(scratch.input_loudness.drain(..))
+            .collect();
+        for &input in &scratch.meter_inputs {
+            let meter = match previous.remove(&input) {
+                Some(meter) => meter,
+                None => LoudnessMeter::new(self.format.sample_rate.hertz(), &self.format.channels)
+                    .map_err(|_| NativeMasterError::InvalidFormat)?,
+            };
+            scratch.input_loudness.push(meter);
+            scratch.loudness_inputs.push(input);
+        }
+        let entries = scratch.meter_inputs.len() + 1;
+        if scratch.loudness.capacity() < entries {
+            scratch.loudness.reserve(entries - scratch.loudness.len());
+        }
+        Ok(())
+    }
+
+    /// Resets the integrated loudness and maximum true peak of Master
+    /// (`None`) or one strip; `false` when that meter does not exist yet.
+    pub fn reset_loudness(&mut self, target: Option<InputId>) -> bool {
+        match target {
+            None => self
+                .scratch
+                .master_loudness
+                .as_mut()
+                .map(LoudnessMeter::reset),
+            Some(input) => self
+                .scratch
+                .loudness_inputs
+                .iter()
+                .position(|candidate| *candidate == input)
+                .and_then(|index| self.scratch.input_loudness.get_mut(index))
+                .map(LoudnessMeter::reset),
+        }
+        .is_some()
     }
 
     fn apply_project_audio_strips(
@@ -5083,6 +5176,34 @@ impl NativeMasterRuntime {
             self.scratch.plans.push((input, render_plan));
         }
         self.pending_mixer.copy_runtime_state_from(&self.mixer)?;
+        self.sync_loudness_meters()?;
+        // Stinger clip-local audio joins Program ahead of the Master chain,
+        // so it is processed, clipped, and metered like the strips.
+        let stinger_clip = match project {
+            Some(project) => {
+                let request = stinger_audio_request(project, frame)?;
+                match self.stinger_audio.as_mut() {
+                    Some(playback) => playback.render(frame, project)?,
+                    None if request
+                        .is_none_or(|request| request.policy == ModelStingerAudioPolicy::Muted) =>
+                    {
+                        None
+                    }
+                    None => return Err(NativeMasterError::InvalidFormat),
+                }
+            }
+            None => None,
+        };
+        let insert = match &stinger_clip {
+            Some((request, clip)) => stinger_insert(
+                request.policy,
+                clip.as_ref(),
+                &self.scratch.silence,
+                samples,
+                &self.format,
+            )?,
+            None => None,
+        };
         let mut active_video_inputs = [strip_plan.primary; 2];
         let active_video_input_count = if let Some((secondary, _)) = strip_plan.secondary {
             active_video_inputs[1] = secondary;
@@ -5109,7 +5230,9 @@ impl NativeMasterRuntime {
                     master: &mut self.scratch.master_meters,
                     inputs: &mut self.scratch.input_meters,
                     monitor: &mut self.scratch.monitor_meters,
+                    loudness: Some(&mut self.scratch.input_loudness),
                 },
+                insert,
             )?;
         } else {
             let primary = planar_audio_submission(
@@ -5152,7 +5275,9 @@ impl NativeMasterRuntime {
                                 master: &mut self.scratch.master_meters,
                                 inputs: &mut self.scratch.input_meters,
                                 monitor: &mut self.scratch.monitor_meters,
+                                loudness: Some(&mut self.scratch.input_loudness),
                             },
+                            insert,
                         )?;
                 }
                 (Some(submission), None) | (None, Some(submission)) => {
@@ -5168,7 +5293,9 @@ impl NativeMasterRuntime {
                                 master: &mut self.scratch.master_meters,
                                 inputs: &mut self.scratch.input_meters,
                                 monitor: &mut self.scratch.monitor_meters,
+                                loudness: Some(&mut self.scratch.input_loudness),
                             },
+                            insert,
                         )?;
                 }
                 (None, None) => {
@@ -5184,37 +5311,13 @@ impl NativeMasterRuntime {
                                 master: &mut self.scratch.master_meters,
                                 inputs: &mut self.scratch.input_meters,
                                 monitor: &mut self.scratch.monitor_meters,
+                                loudness: Some(&mut self.scratch.input_loudness),
                             },
+                            insert,
                         )?;
                 }
             }
         }
-        if let Some(project) = project {
-            let request = stinger_audio_request(project, frame)?;
-            let rendered = match self.stinger_audio.as_mut() {
-                Some(playback) => playback.render(frame, project)?,
-                None if request
-                    .is_none_or(|request| request.policy == ModelStingerAudioPolicy::Muted) =>
-                {
-                    None
-                }
-                None => return Err(NativeMasterError::InvalidFormat),
-            };
-            if let Some((request, clip)) = rendered {
-                mix_clip_local_stinger_audio(
-                    &mut self.scratch.mix,
-                    samples,
-                    request.policy,
-                    clip.as_ref(),
-                    &self.format,
-                )?;
-            }
-        }
-        apply_master_clipping(
-            &mut self.scratch.mix,
-            samples,
-            self.pending_mixer.clipping_policy(),
-        );
         for &(input, render_plan) in &self.scratch.plans {
             self.sources
                 .get(&input)
@@ -5269,6 +5372,10 @@ impl NativeMasterRuntime {
             ));
         }
         apply_fade_to_black_audio(&mut self.scratch.mix, samples, frame.fade_to_black);
+        // Master loudness measures what Program carries (AU-005).
+        if let Some(meter) = &mut self.scratch.master_loudness {
+            meter.process_planes(&self.scratch.mix, samples);
+        }
         // Canonical ownership is required by the returned/recorded frame. The
         // diagnostic collecting sink also retains its own bounded clone; these
         // are the only per-frame PCM allocations after reusable scratch render.
@@ -5511,16 +5618,18 @@ impl NativeStingerAudioPlayback {
     }
 }
 
-fn mix_clip_local_stinger_audio(
-    output: &mut [Vec<f32>],
-    samples: usize,
+/// The Master bus insert a stinger's clip-local audio makes under `policy`:
+/// nothing while muted, the clip (or silence while it has no audio)
+/// replacing Program for `StingerOnly`, and the clip added to Program for
+/// `MixWithProgram`. The insert passes the Master chain, clipping, and the
+/// Master meters with the strips (AU-005).
+fn stinger_insert<'a>(
     policy: ModelStingerAudioPolicy,
-    clip: Option<&AudioBlock>,
+    clip: Option<&'a AudioBlock>,
+    silence: &'a [Vec<f32>],
+    samples: usize,
     format: &AudioFormat,
-) -> Result<(), NativeMasterError> {
-    if output.len() != format.channels.channels().len() {
-        return Err(NativeMasterError::InvalidFormat);
-    }
+) -> Result<Option<MasterBusInsert<'a>>, NativeMasterError> {
     if let Some(clip) = clip
         && (clip.sample_rate() != format.sample_rate
             || clip.channel_layout() != &format.channels
@@ -5528,39 +5637,23 @@ fn mix_clip_local_stinger_audio(
     {
         return Err(NativeMasterError::InvalidFormat);
     }
-    for (channel, output_plane) in output.iter_mut().enumerate() {
-        let clip_plane = clip
-            .map(|clip| clip.plane(channel).ok_or(NativeMasterError::InvalidFormat))
-            .transpose()?;
-        match policy {
-            ModelStingerAudioPolicy::Muted => {}
-            ModelStingerAudioPolicy::StingerOnly => {
-                if let Some(clip_plane) = clip_plane {
-                    output_plane[..samples].copy_from_slice(clip_plane);
-                } else {
-                    output_plane[..samples].fill(0.0);
-                }
-            }
-            ModelStingerAudioPolicy::MixWithProgram => {
-                if let Some(clip_plane) = clip_plane {
-                    for (output, clip) in output_plane[..samples].iter_mut().zip(clip_plane) {
-                        *output += *clip;
-                    }
-                }
-            }
+    Ok(match (policy, clip) {
+        (ModelStingerAudioPolicy::Muted, _) | (ModelStingerAudioPolicy::MixWithProgram, None) => {
+            None
         }
-    }
-    Ok(())
-}
-
-fn apply_master_clipping(output: &mut [Vec<f32>], samples: usize, policy: ClippingPolicy) {
-    if policy == ClippingPolicy::Clamp {
-        for plane in output {
-            for sample in &mut plane[..samples] {
-                *sample = sample.clamp(-1.0, 1.0);
-            }
-        }
-    }
+        (ModelStingerAudioPolicy::StingerOnly, None) => Some(MasterBusInsert {
+            planes: silence,
+            replace: true,
+        }),
+        (ModelStingerAudioPolicy::StingerOnly, Some(clip)) => Some(MasterBusInsert {
+            planes: clip.planes(),
+            replace: true,
+        }),
+        (ModelStingerAudioPolicy::MixWithProgram, Some(clip)) => Some(MasterBusInsert {
+            planes: clip.planes(),
+            replace: false,
+        }),
+    })
 }
 
 fn validate_audio_limits(
@@ -6076,6 +6169,7 @@ fn mix_project_audio_strips(
     sample_rate: fm_types::SampleRate,
     master_layout: &fm_types::ChannelLayout,
     meters: MixerMeterSlices<'_>,
+    insert: Option<MasterBusInsert<'_>>,
 ) -> Result<bool, NativeMasterError> {
     let mut first = None;
     for (&logical, route) in &project.audio_routes {
@@ -6105,6 +6199,7 @@ fn mix_project_audio_strips(
             output,
             monitor,
             meters,
+            insert,
         )?);
     };
 
@@ -6141,6 +6236,7 @@ fn mix_project_audio_strips(
         output,
         monitor,
         meters,
+        insert,
     )?)
 }
 
@@ -13440,33 +13536,34 @@ mod tests {
     }
 
     #[test]
-    fn clip_local_mix_applies_the_master_clipping_policy_after_summing() {
+    fn a_stinger_clip_joins_program_ahead_of_the_master_chain_by_policy() {
         let format = mono_audio_format();
         let clock = ClockDomainId::new(NonZeroU128::new(9).unwrap());
         let clip = audio_block(0, 0, &[0.8], &format, clock);
-        let mut clamped = vec![vec![0.8]];
-        mix_clip_local_stinger_audio(
-            &mut clamped,
-            1,
-            ModelStingerAudioPolicy::MixWithProgram,
-            Some(&clip),
-            &format,
-        )
-        .unwrap();
-        apply_master_clipping(&mut clamped, 1, ClippingPolicy::Clamp);
-        assert_eq!(clamped, vec![vec![1.0]]);
-
-        let mut allowed = vec![vec![0.8]];
-        mix_clip_local_stinger_audio(
-            &mut allowed,
-            1,
-            ModelStingerAudioPolicy::MixWithProgram,
-            Some(&clip),
-            &format,
-        )
-        .unwrap();
-        apply_master_clipping(&mut allowed, 1, ClippingPolicy::Allow);
-        assert!((allowed[0][0] - 1.6).abs() < 1.0e-6);
+        let silence = vec![vec![0.0]];
+        let insert = |policy, clip| stinger_insert(policy, clip, &silence, 1, &format).unwrap();
+        assert!(insert(ModelStingerAudioPolicy::Muted, Some(&clip)).is_none());
+        assert!(insert(ModelStingerAudioPolicy::MixWithProgram, None).is_none());
+        let mixed = insert(ModelStingerAudioPolicy::MixWithProgram, Some(&clip)).unwrap();
+        assert!(!mixed.replace);
+        assert_eq!(mixed.planes, clip.planes());
+        let only = insert(ModelStingerAudioPolicy::StingerOnly, Some(&clip)).unwrap();
+        assert!(only.replace);
+        assert_eq!(only.planes, clip.planes());
+        let silent = insert(ModelStingerAudioPolicy::StingerOnly, None).unwrap();
+        assert!(silent.replace);
+        assert_eq!(silent.planes, silence.as_slice());
+        // A clip of another length is refused.
+        assert!(
+            stinger_insert(
+                ModelStingerAudioPolicy::MixWithProgram,
+                Some(&clip),
+                &silence,
+                2,
+                &format
+            )
+            .is_err()
+        );
     }
 
     #[test]
