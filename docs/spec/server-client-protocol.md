@@ -3183,8 +3183,8 @@ xdg-desktop-portal (IN-011, schema 72).
   `not_screen_capture` for an input that is not a screen capture input).
   An accepted request has no reply; the input's next
   `screen_capture_status` events show it.
-- Native `freemixd` built with `RUSTFLAGS="--cfg freemix_pipewire"` (needs
-  `libpipewire-0.3`) captures a Wayland session (`WAYLAND_DISPLAY` or
+- Native `freemixd` where libpipewire (`libpipewire-0.3.so.0`, loaded at
+  run time) is installed captures a Wayland session (`WAYLAND_DISPLAY` or
   `XDG_SESSION_TYPE=wayland`) this way: `CreateSession`, `SelectSources`
   (`types` 1 or 2, `multiple` false, `cursor_mode` 2 when the pointer is
   drawn and offered, else 1, and `persist_mode` 2 with the input's restore
@@ -3194,11 +3194,13 @@ xdg-desktop-portal (IN-011, schema 72).
   offered), cropped after capture,
   letterboxed into the program picture, and capped at the capture rate. A
   desktop without the embedded pointer captures without it and says so in
-  `last_error`. Other builds report a Wayland session without XWayland
-  `unsupported` with that advice.
-- A portal capture is silent: an input asking for `audio=system` or
-  `audio=app` there reports `audio=unsupported` with an `audio_error`
-  (pair it with a system audio input, `AU-011`, for desktop sound).
+  `last_error`. A server without the library reports a Wayland session
+  without XWayland `unsupported` with "install PipeWire" advice.
+- A portal capture's `audio=system` is the default output's monitor, as on
+  X11: `audio_state` is `off` until the share is `live`, then `opening`,
+  `live`, or `failed` with an `audio_error`. `audio=app` reports
+  `audio_state=unsupported` with an `audio_error`: the desktop's sharing
+  dialog does not say which application a window belongs to.
 - Durability (schema 72): the project gains required
   `"screen_capture_restore_tokens"` after `"title_timelines"`: a list,
   strictly ascending by input, of `{"input", "token"}` (1 to 256 printable

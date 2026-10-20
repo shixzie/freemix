@@ -103,6 +103,7 @@ They are target-specific leaves; portable crates never depend on them.
 | `fm-io-omt` | OMT send/receive and direct-record capability |
 | `fm-io-windows` | Media Foundation, WASAPI, screen/window capture, virtual devices |
 | `fm-io-macos` | AVFoundation, CoreAudio, ScreenCaptureKit, virtual devices |
+| `fm-io-pipewire` | libpipewire loaded at run time: the narrow audited `unsafe` boundary reading a shared PipeWire video stream, and its SPA pods |
 | `fm-io-linux` | PipeWire, V4L2, ALSA/JACK, Wayland/X11 capture, virtual devices |
 | `fm-io-decklink` | Blackmagic capture/output and key/fill |
 | `fm-io-aja` | AJA capture/output and key/fill |

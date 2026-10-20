@@ -2100,15 +2100,33 @@ picture.
   native daemon process showing a window on Program, losing it to the black
   slate, and following a new window.
 - **Linux Wayland** (Protocol 2.85, schema 72; working and tested against
-  a headless desktop, in builds with `RUSTFLAGS="--cfg freemix_pipewire"`,
-  which need `libpipewire-0.3`): the xdg-desktop-portal `ScreenCast`
+  a headless desktop in the default `--features native-media` build, which
+  needs nothing `PipeWire` to build): the xdg-desktop-portal `ScreenCast`
   interface over D-Bus in pure Rust (`zbus`): `CreateSession`,
   `SelectSources` (a monitor for a screen target, a window for a window
   target, the embedded cursor mode or hidden, `persist_mode` 2 with the
   input's restore token), `Start`, and `OpenPipeWireRemote`, whose stream is
-  read with the `pipewire` crate as shared-memory `BGRx`/`RGBx`/`xRGB`/`xBGR`
-  pictures (DMA-BUF is not offered), cropped after capture and letterboxed
-  into the program picture at the capture rate. Nothing is listed (backend
+  read as shared-memory `BGRx`/`RGBx`/`xRGB`/`xBGR` pictures (DMA-BUF is not
+  offered), cropped after capture and letterboxed into the program picture
+  at the capture rate. The stream is read through libpipewire
+  (`libpipewire-0.3.so.0`) loaded at run time by `fm-io-pipewire`, the
+  workspace's one narrow `unsafe` FFI crate: a minimal hand-written binding
+  of exactly the exported functions the stream needs (`pw_init`, a
+  `pw_thread_loop`, `pw_context_connect_fd` with the portal's descriptor,
+  and a `pw_stream` with mapped shared-memory buffers), whose callbacks copy
+  out the newest picture of each pass, and a small safe SPA pod encoder and
+  decoder for the `EnumFormat` offered, the `Buffers` asked for, and the
+  `Format` negotiated, checked byte for byte against libspa's own builder.
+  A server where the library cannot be loaded reports a Wayland session
+  `unsupported` with "install PipeWire" advice (under XWayland it lists X11
+  windows as before). System audio is the `PulseAudio`/`PipeWire` default
+  output's monitor exactly as on X11 (it is keyed by the audio system, not
+  the window system), read by an audio-only receiver that starts when the
+  share first goes live, with its own drift loop and the input's audio
+  state; application audio is `unsupported` with its reason: a portal
+  grant names neither the process nor the application of the picked
+  window, and the restore data that might is private to each desktop's
+  portal backend, so no playback stream can be matched reliably. Nothing is listed (backend
   `portal`): the desktop's own dialog picks the screen or window, so a
   window target is the picked rule (no application, no title, any title),
   and the input is `awaiting_selection` while the dialog waits on the
@@ -2125,10 +2143,20 @@ picture.
   `dbus-daemon` (options, the dialog wait, a cancel, a missing source type,
   a dismissed dialog, the session's `Closed` signal); and, with
   `FM_WAYLAND_E2E=1`, a real share of a headless sway desktop through
-  xdg-desktop-portal-wlr and PipeWire (the picture's pixels, the crop, and
-  a second share restored by its token). Builds without `PipeWire` (and the
-  CI matrix) report a Wayland session `unsupported` with the build advice;
-  under XWayland they list X11 windows as before.
+  xdg-desktop-portal-wlr and PipeWire by a default build with libpipewire
+  only on the loader's path (the picture's pixels, the crop, and a second
+  share restored by its token); without the library the same desktop
+  reports `unsupported` with the install advice and its portal is never
+  asked. `fm-io-pipewire`'s tests cover the pods against libspa's bytes,
+  truncated and corrupt pods, the C structure layouts, a missing or
+  unusable library, and, against real libpipewire, a dead connection and
+  a missing node ending the stream with the daemon's reason. The daemon's
+  portal sources hear a test tone as a live share's system audio, and
+  report application audio `unsupported`; a scripted run of the default
+  build's `freemixd` on the headless desktop with a private PulseAudio
+  playing a tone shows the share `live` with `audio_state=live` and a
+  running drift loop, and the same run without libpipewire on its path
+  shows `unsupported` with the install advice.
 - **Windows** (compile-checked for `x86_64-pc-windows-msvc`, not run): a
   long-lived PowerShell child lists `Screen.AllScreens` and visible,
   non-minimized top-level windows (`EnumWindows`, process name, title,
@@ -2203,13 +2231,15 @@ Remaining gaps:
   about 30–60 ms to application audio against the picture (the strip's
   delay can compensate), and the tap absorbs a stream clock's drift by
   dropping or padding at its buffer bounds rather than resampling;
-- Wayland: no DMA-BUF import (the compositor copies into shared memory),
-  the cursor metadata mode is not drawn (a desktop without the embedded
-  mode captures without the pointer, and says so), only one stream per
-  input, no capture audio on a portal capture, and the headless test shares a screen through
-  xdg-desktop-portal-wlr only (it cannot share windows); GNOME and KDE
-  portals and window sharing are untested, and the default build needs
-  `--cfg freemix_pipewire` to capture at all;
+- Wayland: no DMA-BUF import (the compositor copies into shared memory,
+  and each picture is copied once more out of the stream's buffer), the
+  cursor metadata mode is not drawn (a desktop without the embedded mode
+  captures without the pointer, and says so), only one stream per input,
+  no application audio on a portal capture (system audio only), and the
+  headless test shares a screen through xdg-desktop-portal-wlr only (it
+  cannot share windows); GNOME and KDE portals and window sharing are
+  untested, and PipeWire releases other than 1.0 are not run (only
+  exported functions and the stable leading structure fields are used);
 - Windows and macOS paths are compile-checked only; no run on either OS, no
   Windows Graphics Capture (covered windows), and no signed macOS helper;
 - X11 captures only on-screen pixels, so a covered window shows what covers
