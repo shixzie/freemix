@@ -130,6 +130,7 @@ fn set_shortcut(shortcut: u64, action: WireShortcutAction) -> CommandPayload {
     CommandPayload::SetShortcut {
         shortcut,
         spec: Box::new(spec(shortcut, action)),
+        position: None,
     }
 }
 
@@ -247,6 +248,7 @@ fn a_cue_or_script_fire_needs_what_its_command_needs() {
                     actions: vec![cut(2), mute(3)],
                 }],
             }),
+            position: None,
         },
     );
     submit(
@@ -259,6 +261,7 @@ fn a_cue_or_script_fire_needs_what_its_command_needs() {
                 name: "Mute".into(),
                 source: "mute 3".into(),
             }),
+            position: None,
         },
     );
     submit(
@@ -334,6 +337,7 @@ fn an_unknown_or_disabled_fire_is_refused_with_its_reason() {
         CommandPayload::SetShortcut {
             shortcut: 1,
             spec: Box::new(disabled),
+            position: None,
         },
     );
     let refused = submit(&mut control, &admin(), "disabled", fire(1));

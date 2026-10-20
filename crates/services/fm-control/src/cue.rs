@@ -328,16 +328,22 @@ const fn domain_operation(operation: CueOperation) -> EngineCueOperation {
 /// Maps the cue list commands.
 pub fn cue_engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
-        CommandPayload::SetCueList { list, spec } => EngineCommand::SetCueList {
+        CommandPayload::SetCueList {
+            list,
+            spec,
+            position,
+        } => EngineCommand::SetCueList {
             list: *list,
             definition: Some(EngineCueListDefinition {
                 name: spec.name.clone(),
                 cues: spec.cues.iter().map(domain_cue).collect(),
             }),
+            position: position.map(usize::from),
         },
         CommandPayload::RemoveCueList { list } => EngineCommand::SetCueList {
             list: *list,
             definition: None,
+            position: None,
         },
         CommandPayload::CueControl { list, operation } => EngineCommand::CueControl {
             list: *list,
@@ -353,13 +359,19 @@ pub fn cue_engine_command(payload: &CommandPayload) -> EngineCommand {
 
 /// The wire form of a list edit (for undo and redo previews).
 pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
-    let EngineCommand::SetCueList { list, definition } = command else {
+    let EngineCommand::SetCueList {
+        list,
+        definition,
+        position,
+    } = command
+    else {
         return None;
     };
     Some(match definition {
         Some(definition) => CommandPayload::SetCueList {
             list: *list,
             spec: Box::new(wire_spec(&definition.name, &definition.cues)),
+            position: position.and_then(|position| u8::try_from(position).ok()),
         },
         None => CommandPayload::RemoveCueList { list: *list },
     })

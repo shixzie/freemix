@@ -23982,6 +23982,7 @@ mod tests {
                 CommandPayload::SetCueList {
                     list: 7,
                     spec: Box::new(spec),
+                    position: None,
                 },
             ),
             test_command(
@@ -24091,6 +24092,7 @@ mod tests {
                 CommandPayload::SetCueList {
                     list: 7,
                     spec: Box::new(spec),
+                    position: None,
                 },
             ),
             test_command(

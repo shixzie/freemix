@@ -514,6 +514,11 @@ pub enum EngineCommand {
     SetCueList {
         list: u64,
         definition: Option<crate::EngineCueListDefinition>,
+        /// `Some(index)` places it at that index of the project's list
+        /// (clamped to its end): an undone removal returns to its old
+        /// place. `None` keeps an existing one where it is and appends a
+        /// new one; a removal ignores it.
+        position: Option<usize>,
     },
     /// Operates cue list `list` on the command's target frame (RC-017): a
     /// GO runs every action due on that frame together. A live operation.
@@ -540,6 +545,11 @@ pub enum EngineCommand {
     SetScript {
         script: u64,
         definition: Option<crate::EngineScriptDefinition>,
+        /// `Some(index)` places it at that index of the project's list
+        /// (clamped to its end): an undone removal returns to its old
+        /// place. `None` keeps an existing one where it is and appends a
+        /// new one; a removal ignores it.
+        position: Option<usize>,
     },
     /// Runs script `script` in the sandbox on the command's target frame
     /// (RC-011): every action it performs applies together, or the run is
@@ -560,6 +570,11 @@ pub enum EngineCommand {
     SetShortcut {
         shortcut: u64,
         definition: Option<Box<fm_model::Shortcut>>,
+        /// `Some(index)` places it at that index of the project's list
+        /// (clamped to its end): an undone removal returns to its old
+        /// place. `None` keeps an existing one where it is and appends a
+        /// new one; a removal ignores it.
+        position: Option<usize>,
     },
     /// Fires user shortcut `shortcut` on the command's target frame
     /// (RC-004): resolved into the cue list operation or script run it
@@ -3220,8 +3235,13 @@ impl EngineMutation {
         {
             return apply_playlist_mutation(state, events, self);
         }
-        if let EngineCommand::SetCueList { list, definition } = &self.command {
-            crate::cue::apply_set(state, *list, definition.as_ref())?;
+        if let EngineCommand::SetCueList {
+            list,
+            definition,
+            position,
+        } = &self.command
+        {
+            crate::cue::apply_set(state, *list, definition.as_ref(), *position)?;
             events.push(EngineEvent::CueListChanged {
                 list: *list,
                 frame: self.target_frame.get(),
@@ -3236,8 +3256,13 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
-        if let EngineCommand::SetScript { script, definition } = &self.command {
-            crate::script::apply_set(state, *script, definition.as_ref())?;
+        if let EngineCommand::SetScript {
+            script,
+            definition,
+            position,
+        } = &self.command
+        {
+            crate::script::apply_set(state, *script, definition.as_ref(), *position)?;
             events.push(EngineEvent::ScriptChanged { script: *script });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,
@@ -3246,9 +3271,10 @@ impl EngineMutation {
         if let EngineCommand::SetShortcut {
             shortcut,
             definition,
+            position,
         } = &self.command
         {
-            crate::shortcut::apply_set(state, *shortcut, definition.as_deref())?;
+            crate::shortcut::apply_set(state, *shortcut, definition.as_deref(), *position)?;
             events.push(EngineEvent::ShortcutChanged {
                 shortcut: *shortcut,
             });

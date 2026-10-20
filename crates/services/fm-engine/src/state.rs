@@ -1968,3 +1968,34 @@ impl fmt::Display for ShowState {
         self.name.fmt(formatter)
     }
 }
+
+/// Stores `item` in an authored project list (shortcuts, scripts, cue
+/// lists): it replaces the entry at `existing`, or is new. `Some(position)`
+/// places it at that index, clamped to the end of the list; `None` keeps an
+/// existing entry where it is and appends a new one.
+pub(crate) fn place_in_list<T>(
+    list: &mut Vec<T>,
+    existing: Option<usize>,
+    item: T,
+    position: Option<usize>,
+) {
+    if let Some(index) = existing {
+        list[index] = item;
+        if let Some(position) = position {
+            let moved = list.remove(index);
+            let position = position.min(list.len());
+            list.insert(position, moved);
+        }
+    } else {
+        let index = position.map_or(list.len(), |position| position.min(list.len()));
+        list.insert(index, item);
+    }
+}
+
+/// The index an entry ends up at in a list of `len` entries where it is
+/// at `existing` (see [`place_in_list`]), so a recorded edit replays
+/// exactly.
+pub(crate) fn placed_index(len: usize, existing: Option<usize>, position: Option<usize>) -> usize {
+    let last = existing.map_or(len, |_| len - 1);
+    position.map_or(existing.unwrap_or(last), |position| position.min(last))
+}

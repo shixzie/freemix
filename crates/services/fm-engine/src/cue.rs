@@ -410,16 +410,18 @@ fn zero_list() -> Rejection {
 /// Refuses list id zero (the cue clock's list `0` is the waiting script
 /// run, schema 56), an invalid definition, an unknown reference, a list
 /// past the project bound, removing an unknown list, and changing or
-/// removing a cue whose deferred actions still wait.
+/// removing a cue whose deferred actions still wait. `position` places the
+/// list in the project's cue lists (see [`crate::EngineCommand::SetCueList`]).
 pub(crate) fn apply_set(
     state: &mut ShowState,
     list: u64,
     definition: Option<&EngineCueListDefinition>,
+    position: Option<usize>,
 ) -> Result<(), Rejection> {
     if list == 0 && definition.is_some() {
         return Err(zero_list());
     }
-    replace(state, list, definition)
+    replace(state, list, definition, position)
 }
 
 /// Creates, replaces, or removes list `list` (see [`apply_set`]).
@@ -427,6 +429,7 @@ fn replace(
     state: &mut ShowState,
     list: u64,
     definition: Option<&EngineCueListDefinition>,
+    position: Option<usize>,
 ) -> Result<(), Rejection> {
     let existing = state
         .cue_lists()
@@ -501,7 +504,7 @@ fn replace(
         let previous: Vec<u64> = current.cues.iter().map(|cue| cue.id).collect();
         let reconciled = new_stack.reconcile(&previous, &stack_state(&current.state));
         next.state = run_state(reconciled, &current.state);
-        state.cue_lists_mut()[index] = next;
+        crate::state::place_in_list(state.cue_lists_mut(), Some(index), next, position);
     } else {
         {
             if state.cue_lists().len() >= fm_model::MAX_CUE_LISTS {
@@ -516,7 +519,7 @@ fn replace(
                 );
             }
             next.state = run_state(new_stack.initial_state(), &CueRunState::default());
-            state.cue_lists_mut().push(next);
+            crate::state::place_in_list(state.cue_lists_mut(), None, next, position);
         }
     }
     Ok(())

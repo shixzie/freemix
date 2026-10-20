@@ -136,13 +136,19 @@ pub fn domain_shortcut(id: u64, spec: &ShortcutSpec) -> Shortcut {
 #[must_use]
 pub fn shortcut_engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
-        CommandPayload::SetShortcut { shortcut, spec } => EngineCommand::SetShortcut {
+        CommandPayload::SetShortcut {
+            shortcut,
+            spec,
+            position,
+        } => EngineCommand::SetShortcut {
             shortcut: *shortcut,
             definition: Some(Box::new(domain_shortcut(*shortcut, spec))),
+            position: position.map(usize::from),
         },
         CommandPayload::RemoveShortcut { shortcut } => EngineCommand::SetShortcut {
             shortcut: *shortcut,
             definition: None,
+            position: None,
         },
         CommandPayload::FireShortcut { shortcut } => EngineCommand::FireShortcut {
             shortcut: *shortcut,
@@ -156,6 +162,7 @@ pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
     let EngineCommand::SetShortcut {
         shortcut,
         definition,
+        position,
     } = command
     else {
         return None;
@@ -164,6 +171,7 @@ pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         Some(definition) => CommandPayload::SetShortcut {
             shortcut: *shortcut,
             spec: Box::new(wire_shortcut(definition).spec),
+            position: position.and_then(|position| u8::try_from(position).ok()),
         },
         None => CommandPayload::RemoveShortcut {
             shortcut: *shortcut,

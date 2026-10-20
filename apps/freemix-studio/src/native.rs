@@ -2981,6 +2981,7 @@ fn cue_payload(intent: fm_ui_egui::CueIntent) -> CommandPayload {
         fm_ui_egui::CueIntent::Set { list, spec } => CommandPayload::SetCueList {
             list,
             spec: Box::new(spec),
+            position: None,
         },
         fm_ui_egui::CueIntent::Remove { list } => CommandPayload::RemoveCueList { list },
         fm_ui_egui::CueIntent::Control { list, operation } => {
@@ -2999,6 +3000,7 @@ fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
         } => CommandPayload::SetScript {
             script,
             spec: Box::new(fm_protocol::ScriptSpec { name, source }),
+            position: None,
         },
         fm_ui_egui::ScriptIntent::Remove { script } => CommandPayload::RemoveScript { script },
         fm_ui_egui::ScriptIntent::Run { script } => CommandPayload::RunScript { script },
@@ -3010,9 +3012,11 @@ fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
 /// fire (RC-004).
 fn shortcut_payload(intent: fm_ui_egui::ShortcutIntent) -> CommandPayload {
     match intent {
-        fm_ui_egui::ShortcutIntent::Set { shortcut, spec } => {
-            CommandPayload::SetShortcut { shortcut, spec }
-        }
+        fm_ui_egui::ShortcutIntent::Set { shortcut, spec } => CommandPayload::SetShortcut {
+            shortcut,
+            spec,
+            position: None,
+        },
         fm_ui_egui::ShortcutIntent::Remove { shortcut } => {
             CommandPayload::RemoveShortcut { shortcut }
         }
@@ -6210,7 +6214,8 @@ mod tests {
             ),
             Ok(CommandPayload::SetCueList {
                 list: 3,
-                spec: Box::new(spec)
+                spec: Box::new(spec),
+                position: None,
             })
         );
         assert_eq!(
@@ -6251,6 +6256,7 @@ mod tests {
                     name: "Opening".into(),
                     source: "cut 2".into(),
                 }),
+                position: None,
             })
         );
         assert_eq!(

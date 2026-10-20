@@ -2711,6 +2711,7 @@ pub(crate) fn script_payload(
             CommandPayload::SetScript {
                 script,
                 spec: Box::new(ScriptSpec { name, source }),
+                position: None,
             }
         }
         ScriptCommand::Remove { script } => CommandPayload::RemoveScript { script },

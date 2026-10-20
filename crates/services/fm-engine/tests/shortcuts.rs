@@ -54,6 +54,7 @@ fn set(definition: Shortcut) -> EngineCommand {
     EngineCommand::SetShortcut {
         shortcut: definition.id,
         definition: Some(Box::new(definition)),
+        position: None,
     }
 }
 
@@ -232,6 +233,7 @@ fn a_cue_or_script_shortcut_fires_as_that_command() {
                     },
                 ],
             }),
+            position: None,
         },
     ));
     accepted(&submit(
@@ -268,6 +270,7 @@ fn a_cue_or_script_shortcut_fires_as_that_command() {
                 name: "Preview".to_owned(),
                 source: "preview 2".to_owned(),
             }),
+            position: None,
         },
     ));
     accepted(&submit(
@@ -354,6 +357,7 @@ fn edits_are_undoable_padlocked_and_keep_keys_unique() {
         EngineCommand::SetShortcut {
             shortcut: 1,
             definition: None,
+            position: None,
         },
     ));
     assert_eq!(engine.show().shortcuts(), []);
@@ -393,6 +397,7 @@ fn a_shortcut_running_a_waiting_script_is_refused_when_saved() {
             name: "Script".to_owned(),
             source: source.to_owned(),
         }),
+        position: None,
     };
     let script_waits = |outcome: &EngineCommandOutcome| {
         outcome

@@ -913,6 +913,7 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
                     cue(30, false, vec![cut(3)]),
                 ],
             }),
+            position: None,
         },
     ));
     let revision = admin.accepted("set-cues");
@@ -998,6 +999,7 @@ fn web_tally_arms_and_disarms_a_timed_go_within_its_role() {
                     ),
                 ],
             }),
+            position: None,
         },
     ));
     admin.accepted("set-cues");

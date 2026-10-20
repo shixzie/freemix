@@ -150,11 +150,13 @@ pub(crate) fn waits_in_cue(script: u64, owner: &str) -> Rejection {
 /// project bound, removing an unknown script, removing a script a cue
 /// runs, adding a wait to a script a cue or a shortcut's cue actions run,
 /// and changing or removing the running script. Replacing or removing a
-/// faulted script clears its fault.
+/// faulted script clears its fault. `position` places the script in the
+/// project's list (see [`crate::EngineCommand::SetScript`]).
 pub(crate) fn apply_set(
     state: &mut ShowState,
     script: u64,
     definition: Option<&EngineScriptDefinition>,
+    position: Option<usize>,
 ) -> Result<(), Rejection> {
     let existing = state
         .scripts()
@@ -233,7 +235,7 @@ pub(crate) fn apply_set(
         source: definition.source.clone(),
     };
     if let Some(index) = existing {
-        state.scripts_mut()[index] = next;
+        crate::state::place_in_list(state.scripts_mut(), Some(index), next, position);
         // The fault's line and column belong to the source that ran: an
         // edit clears it, as a removal does (Protocol 2.62).
         state.script_run_mut().clear_fault_of(script);
@@ -252,7 +254,7 @@ pub(crate) fn apply_set(
             fm_model::MAX_SCRIPTS as u64,
         )));
     }
-    state.scripts_mut().push(next);
+    crate::state::place_in_list(state.scripts_mut(), None, next, position);
     Ok(())
 }
 

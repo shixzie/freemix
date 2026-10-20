@@ -14189,6 +14189,7 @@ fn remote_cue_list_set_sends_the_exact_definition() {
         payload: CommandPayload::SetCueList {
             list: 7,
             spec: Box::new(spec.clone()),
+            position: None,
         },
         event: EventPayload::CueListChanged(Box::new(fm_protocol::CueListStatus {
             id: 7,
@@ -15119,6 +15120,7 @@ fn remote_script_set_sends_the_exact_source() {
         payload: CommandPayload::SetScript {
             script: 3,
             spec: Box::new(spec.clone()),
+            position: None,
         },
         event: EventPayload::ScriptChanged(Box::new(fm_protocol::ScriptStatus { id: 3, spec })),
         domain: "project",

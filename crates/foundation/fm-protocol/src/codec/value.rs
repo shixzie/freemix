@@ -114,6 +114,53 @@ pub(super) fn parse_canonical_u64(value: &str) -> Option<u64> {
     value.parse().ok()
 }
 
+/// Checks an optional `position` field: an index below `bound` in an
+/// authored project list (shortcuts, scripts, cue lists; Protocol 2.77).
+pub(super) fn check_list_position(position: u8, bound: usize) -> Result<u8, CodecError> {
+    if usize::from(position) < bound {
+        Ok(position)
+    } else {
+        Err(CodecError::InvalidField {
+            field: "position",
+            value: position.to_string(),
+        })
+    }
+}
+
+/// Encodes an optional `position` field (see [`check_list_position`]).
+pub(super) fn encode_list_position(
+    position: Option<u8>,
+    bound: usize,
+    push: &mut dyn FnMut(&'static str, String) -> Result<(), CodecError>,
+) -> Result<(), CodecError> {
+    match position {
+        Some(position) => push(
+            "position",
+            check_list_position(position, bound)?.to_string(),
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Decodes an optional `position` field (see [`check_list_position`]).
+pub(super) fn decode_list_position(
+    fields: &mut dyn super::media::FieldSource,
+    bound: usize,
+) -> Result<Option<u8>, CodecError> {
+    fields
+        .optional("position")
+        .map(|value| {
+            parse_canonical_u64(&value)
+                .and_then(|position| u8::try_from(position).ok())
+                .ok_or(CodecError::InvalidField {
+                    field: "position",
+                    value,
+                })
+                .and_then(|position| check_list_position(position, bound))
+        })
+        .transpose()
+}
+
 /// Parses a canonical nonzero input identifier as written by its `Display`.
 pub(super) fn parse_canonical_input(value: &str) -> Option<crate::WireInputId> {
     if value.is_empty()

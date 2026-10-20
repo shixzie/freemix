@@ -803,6 +803,7 @@ fn a_media_input_a_cue_addresses_keeps_a_media_source() {
                     auto_follow: false,
                 }],
             }),
+            position: None,
         },
     );
     assert!(

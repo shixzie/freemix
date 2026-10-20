@@ -46,6 +46,7 @@ fn set(script: u64, source: &str) -> EngineCommand {
             name: format!("Script {script}"),
             source: source.to_owned(),
         }),
+        position: None,
     }
 }
 
@@ -290,7 +291,8 @@ fn script_edits_are_undoable_and_padlocked_and_runs_are_live() {
             "remove-unknown",
             EngineCommand::SetScript {
                 script: 5,
-                definition: None
+                definition: None,
+                position: None,
             }
         ))
         .1,
@@ -305,6 +307,7 @@ fn script_edits_are_undoable_and_padlocked_and_runs_are_live() {
             name: " ".to_owned(),
             source: String::new(),
         }),
+        position: None,
     };
     assert!(matches!(
         refusal(&submit(&mut engine, "blank", blank)).1,
@@ -327,6 +330,7 @@ fn script_edits_are_undoable_and_padlocked_and_runs_are_live() {
         EngineCommand::SetScript {
             script: 16,
             definition: None,
+            position: None,
         },
     ));
     assert!(engine.show().script(16).is_none());
@@ -485,6 +489,7 @@ fn a_script_runs_once_at_a_time_and_is_frozen_until_it_stops() {
             EngineCommand::SetScript {
                 script: 1,
                 definition: None,
+                position: None,
             },
         ),
     ] {
@@ -733,6 +738,7 @@ fn a_cue_never_runs_a_script_that_waits() {
                 auto_follow: false,
             }],
         }),
+        position: None,
     };
     let outcome = submit(&mut engine, "list-1", list(1));
     let rejection = &outcome.receipt.rejected().expect("refused").rejection;
@@ -769,6 +775,7 @@ fn no_cue_list_takes_the_script_runs_list_zero() {
                     auto_follow: false,
                 }],
             }),
+            position: None,
         },
     );
     let rejection = &outcome.receipt.rejected().expect("refused").rejection;
@@ -1196,6 +1203,7 @@ fn runs_due_with_a_cue_join_its_held_frame() {
                     auto_follow: false,
                 }],
             }),
+            position: None,
         },
     ));
     let start = accepted(&submit(

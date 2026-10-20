@@ -477,6 +477,7 @@ fn set_list(client: &mut Client, cues: Vec<WireCue>) {
                 name: "Show".into(),
                 cues,
             }),
+            position: None,
         },
     );
 }
@@ -757,6 +758,7 @@ fn two_script_runs_interleave_and_survive_sigkill() {
                     name: name.into(),
                     source: source.into(),
                 }),
+                position: None,
             },
         );
     }

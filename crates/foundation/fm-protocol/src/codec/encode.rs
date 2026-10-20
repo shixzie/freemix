@@ -443,11 +443,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => encode_playlist_command(record, payload)?,
-        CommandPayload::SetCueList { list, spec } => {
+        CommandPayload::SetCueList {
+            list,
+            spec,
+            position,
+        } => {
             record.field("payload", "cue_list_set")?;
             super::cue::encode_spec(*list, spec, &mut |name, value| {
                 record.field_string(name, value)
             })?;
+            super::value::encode_list_position(
+                *position,
+                crate::MAX_CUE_LISTS,
+                &mut |name, value| record.field_string(name, value),
+            )?;
         }
         CommandPayload::RemoveCueList { list } => {
             record.field("payload", "cue_list_remove")?;
@@ -465,11 +474,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 record.field_string(name, value)
             })?;
         }
-        CommandPayload::SetScript { script, spec } => {
+        CommandPayload::SetScript {
+            script,
+            spec,
+            position,
+        } => {
             record.field("payload", "script_set")?;
             super::script::encode_spec(*script, spec, &mut |name, value| {
                 record.field_string(name, value)
             })?;
+            super::value::encode_list_position(
+                *position,
+                crate::MAX_SCRIPTS,
+                &mut |name, value| record.field_string(name, value),
+            )?;
         }
         CommandPayload::RemoveScript { script } | CommandPayload::RunScript { script } => {
             record.field(
@@ -489,11 +507,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("list", list)?;
             record.field("frame", frame)?;
         }
-        CommandPayload::SetShortcut { shortcut, spec } => {
+        CommandPayload::SetShortcut {
+            shortcut,
+            spec,
+            position,
+        } => {
             record.field("payload", "shortcut_set")?;
             super::shortcut::encode_spec(*shortcut, spec, &mut |name, value| {
                 record.field_string(name, value)
             })?;
+            super::value::encode_list_position(
+                *position,
+                crate::MAX_SHORTCUTS,
+                &mut |name, value| record.field_string(name, value),
+            )?;
         }
         CommandPayload::RemoveShortcut { shortcut } | CommandPayload::FireShortcut { shortcut } => {
             record.field(

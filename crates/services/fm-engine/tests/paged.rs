@@ -336,6 +336,7 @@ fn a_cue_page_action_steps_a_document() {
                     cue(3, PagedNavigation::Next),
                 ],
             }),
+            position: None,
         },
     );
     assert!(set.receipt.accepted().is_some(), "{:?}", set.receipt);

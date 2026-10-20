@@ -124,6 +124,7 @@ fn set_script(script: u64, source: &str) -> CommandPayload {
             name: format!("Script {script}"),
             source: source.to_owned(),
         }),
+        position: None,
     }
 }
 
@@ -147,6 +148,7 @@ fn set_list(cues: Vec<WireCue>) -> CommandPayload {
             name: "Show".into(),
             cues,
         }),
+        position: None,
     }
 }
 

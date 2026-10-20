@@ -98,6 +98,7 @@ fn shortcut_commands_round_trip_exactly() {
     let line = round_trip(&command(CommandPayload::SetShortcut {
         shortcut: 4,
         spec: Box::new(spec(actions())),
+        position: None,
     }));
     assert_eq!(
         line,
@@ -159,6 +160,7 @@ fn shortcut_commands_round_trip_exactly() {
         let line = round_trip(&command(CommandPayload::SetShortcut {
             shortcut: 1,
             spec: Box::new(spec),
+            position: None,
         }));
         assert!(
             line.ends_with(&format!("\tenabled=0\tkey=-\tosc=-\taction={wire}\n")),
@@ -237,6 +239,7 @@ fn shortcut_commands_are_strict() {
         encode_line(&command(CommandPayload::SetShortcut {
             shortcut: 1,
             spec: Box::new(wait.clone()),
+            position: None,
         }))
         .is_err()
     );
@@ -246,6 +249,7 @@ fn shortcut_commands_are_strict() {
         encode_line(&command(CommandPayload::SetShortcut {
             shortcut: 1,
             spec: Box::new(wait),
+            position: None,
         }))
         .is_err()
     );
@@ -478,7 +482,46 @@ fn a_lone_dash_is_not_an_osc_name() {
         encode_line(&command(CommandPayload::SetShortcut {
             shortcut: 1,
             spec: Box::new(dash),
+            position: None,
         }))
+        .is_err()
+    );
+}
+
+/// `shortcut_set` carries an optional `position` (the index in the
+/// project's shortcut list, below `MAX_SHORTCUTS`): an undone removal is
+/// journaled with its old place so a replay restores the order.
+#[test]
+fn shortcut_set_carries_an_optional_position_exactly() {
+    let prefix = prefix();
+    let set = |position| {
+        command(CommandPayload::SetShortcut {
+            shortcut: 4,
+            spec: Box::new(spec(WireShortcutAction::Script { script: 2 })),
+            position,
+        })
+    };
+    let without = round_trip(&set(None));
+    assert!(!without.contains("position="), "{without}");
+    let line = round_trip(&set(Some(2)));
+    assert!(line.ends_with("\tposition=2\n"), "{line}");
+    let last = u8::try_from(fm_protocol::MAX_SHORTCUTS - 1).unwrap();
+    let line = round_trip(&set(Some(last)));
+    for bad in [
+        format!("position={}", fm_protocol::MAX_SHORTCUTS),
+        "position=02".to_owned(),
+        "position=-1".to_owned(),
+        "position=".to_owned(),
+        "position=256".to_owned(),
+    ] {
+        let line = line.replacen(&format!("position={last}"), &bad, 1);
+        assert!(decode_line(&line).is_err(), "{line}");
+    }
+    assert!(encode_line(&set(Some(last + 1))).is_err());
+    assert!(
+        decode_line(&format!(
+            "{prefix}\tpayload=shortcut_remove\tshortcut=4\tposition=1\n"
+        ))
         .is_err()
     );
 }

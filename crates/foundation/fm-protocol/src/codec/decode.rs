@@ -681,6 +681,7 @@ fn decode_command_payload(
         "script_set" => CommandPayload::SetScript {
             script: super::script::decode_script_id(fields)?,
             spec: Box::new(super::script::decode_spec(fields)?),
+            position: super::value::decode_list_position(fields, crate::MAX_SCRIPTS)?,
         },
         "script_remove" => CommandPayload::RemoveScript {
             script: super::script::decode_script_id(fields)?,
@@ -691,6 +692,7 @@ fn decode_command_payload(
         "shortcut_set" => CommandPayload::SetShortcut {
             shortcut: super::shortcut::decode_shortcut_id(fields)?,
             spec: Box::new(super::shortcut::decode_spec(fields)?),
+            position: super::value::decode_list_position(fields, crate::MAX_SHORTCUTS)?,
         },
         "shortcut_remove" => CommandPayload::RemoveShortcut {
             shortcut: super::shortcut::decode_shortcut_id(fields)?,
@@ -859,6 +861,7 @@ fn decode_playlist_command(fields: &mut Fields, name: &str) -> Result<CommandPay
             return Ok(CommandPayload::SetCueList {
                 list: super::cue::decode_list_id(fields)?,
                 spec: Box::new(super::cue::decode_spec(fields)?),
+                position: super::value::decode_list_position(fields, crate::MAX_CUE_LISTS)?,
             });
         }
         "cue_list_remove" => {

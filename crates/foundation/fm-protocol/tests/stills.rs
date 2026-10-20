@@ -232,6 +232,7 @@ fn page_navigation_command_event_and_cue_action_encode_exactly() {
                 ],
             }],
         }),
+        position: None,
     });
     let cues = "\tpayload=cue_list_set\tlist=1\tname=Show\tcues=1%7E536c69646573%7E0%7E";
     assert_eq!(

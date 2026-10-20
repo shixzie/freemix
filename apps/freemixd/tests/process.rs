@@ -8129,6 +8129,7 @@ fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
         CommandPayload::SetCueList {
             list: 7,
             spec: Box::new(spec.clone()),
+            position: None,
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "set-cues"), 1);
@@ -8286,6 +8287,7 @@ fn an_armed_go_fires_on_the_clock_and_survives_restart() {
         CommandPayload::SetCueList {
             list: 7,
             spec: Box::new(spec),
+            position: None,
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "set-cues"), 1);
@@ -8427,6 +8429,7 @@ fn simulated_cue_controls_catch_up_to_wall_clock_time() {
                     },
                 ],
             }),
+            position: None,
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "set-cues"), 1);
@@ -8524,6 +8527,7 @@ fn scripts_run_through_the_daemon_and_persist_with_the_project() {
             name: name.into(),
             source: source.into(),
         }),
+        position: None,
     };
     let directory = TestDirectory::new("scripts");
     let project_path = directory.project_path();
@@ -8676,6 +8680,7 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
                 name: "Parts".into(),
                 source: "cut 2\nwait 10\ncut 1\nwait 5000\ncut 2\n".into(),
             }),
+            position: None,
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "set"), 1);
@@ -8837,6 +8842,7 @@ fn two_waiting_scripts_interleave_replay_and_stop_one_or_all() {
                     name: name.into(),
                     source: source.into(),
                 }),
+                position: None,
             },
         ));
         assert_eq!(accepted_revision(&mut admin, &format!("set-{id}")), id);
@@ -9010,6 +9016,7 @@ fn a_deferred_script_failure_reaches_clients_with_its_reason() {
                 name: "Late".into(),
                 source: "cut 2\nwait 5\ntitle_off 2\n".into(),
             }),
+            position: None,
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "set"), 1);
@@ -9151,6 +9158,7 @@ fn cue_runs_report_the_scripts_they_ran_through_the_daemon() {
             name: format!("Script {script}"),
             source: source.into(),
         }),
+        position: None,
     };
     let run_event =
         |client: &mut Client, revision: u64| match durable_event_at(client, revision).payload {
@@ -9200,6 +9208,7 @@ fn cue_runs_report_the_scripts_they_ran_through_the_daemon() {
                     ],
                 }],
             }),
+            position: None,
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "set-cues"), 3);

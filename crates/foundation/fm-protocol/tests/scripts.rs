@@ -91,6 +91,7 @@ fn script_commands_round_trip_exactly() {
     let line = round_trip(&command(CommandPayload::SetScript {
         script: 4,
         spec: Box::new(spec()),
+        position: None,
     }));
     assert_eq!(
         line,
@@ -116,6 +117,7 @@ fn script_commands_round_trip_exactly() {
             name: "Empty".to_owned(),
             source: String::new(),
         }),
+        position: None,
     }));
 }
 
@@ -142,6 +144,7 @@ fn script_commands_are_strict() {
         encode_line(&command(CommandPayload::SetScript {
             script,
             spec: Box::new(spec),
+            position: None,
         }))
     };
     assert!(matches!(
@@ -588,4 +591,40 @@ fn concurrent_runs_stop_one_or_all_exactly() {
     let wire = encode_refusal_reason(&reason).unwrap();
     assert_eq!(wire, "bounds_exceeded:script_runs:8");
     assert_eq!(decode_refusal_reason(&wire).unwrap(), reason);
+}
+
+/// `script_set` carries an optional `position` (the index in the project's
+/// script list, below `MAX_SCRIPTS`): an undone removal is journaled with
+/// its old place so a replay restores the order.
+#[test]
+fn script_set_carries_an_optional_position_exactly() {
+    let set = |position| {
+        command(CommandPayload::SetScript {
+            script: 4,
+            spec: Box::new(spec()),
+            position,
+        })
+    };
+    let without = round_trip(&set(None));
+    assert!(!without.contains("position="), "{without}");
+    let line = round_trip(&set(Some(3)));
+    assert!(line.ends_with("\tposition=3\n"), "{line}");
+    let last = u8::try_from(fm_protocol::MAX_SCRIPTS - 1).unwrap();
+    let line = round_trip(&set(Some(last)));
+    for bad in [
+        format!("position={}", fm_protocol::MAX_SCRIPTS),
+        "position=03".to_owned(),
+        "position=".to_owned(),
+        "position=x".to_owned(),
+    ] {
+        let line = line.replacen(&format!("position={last}"), &bad, 1);
+        assert!(decode_line(&line).is_err(), "{line}");
+    }
+    assert!(encode_line(&set(Some(last + 1))).is_err());
+    assert!(
+        decode_line(&format!(
+            "{PREFIX}\tpayload=script_remove\tscript=4\tposition=1\n"
+        ))
+        .is_err()
+    );
 }

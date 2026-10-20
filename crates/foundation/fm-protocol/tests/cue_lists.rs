@@ -215,6 +215,7 @@ fn cue_commands_round_trip_exactly() {
     let line = round_trip(&command(CommandPayload::SetCueList {
         list: 3,
         spec: Box::new(spec()),
+        position: None,
     }));
     assert!(
         line.starts_with(&format!(
@@ -340,6 +341,7 @@ fn cue_commands_are_strict() {
         encode_line(&command(CommandPayload::SetCueList {
             list: 1,
             spec: Box::new(spec),
+            position: None,
         }))
     };
     let mut many = spec();
@@ -700,4 +702,39 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
         let line = format!("cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\t{bad}\n");
         assert!(decode_line(&line).is_err(), "{bad}");
     }
+}
+
+/// `cue_list_set` carries an optional `position` (the index in the
+/// project's cue lists, below `MAX_CUE_LISTS`): an undone removal is
+/// journaled with its old place so a replay restores the order.
+#[test]
+fn cue_list_set_carries_an_optional_position_exactly() {
+    let set = |position| {
+        command(CommandPayload::SetCueList {
+            list: 3,
+            spec: Box::new(spec()),
+            position,
+        })
+    };
+    let without = round_trip(&set(None));
+    assert!(!without.contains("position="), "{without}");
+    let line = round_trip(&set(Some(1)));
+    assert!(line.ends_with("\tposition=1\n"), "{line}");
+    let last = u8::try_from(fm_protocol::MAX_CUE_LISTS - 1).unwrap();
+    let line = round_trip(&set(Some(last)));
+    for bad in [
+        format!("position={}", fm_protocol::MAX_CUE_LISTS),
+        "position=07".to_owned(),
+        "position=".to_owned(),
+    ] {
+        let line = line.replacen(&format!("\tposition={last}\n"), &format!("\t{bad}\n"), 1);
+        assert!(decode_line(&line).is_err(), "{line}");
+    }
+    assert!(encode_line(&set(Some(last + 1))).is_err());
+    assert!(
+        decode_line(&format!(
+            "{PREFIX}\tpayload=cue_list_remove\tlist=3\tposition=1\n"
+        ))
+        .is_err()
+    );
 }

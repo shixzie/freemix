@@ -1731,6 +1731,10 @@ pub enum CommandPayload {
     SetCueList {
         list: u64,
         spec: Box<crate::CueListSpec>,
+        /// Protocol 2.77: places the cue list at this index of the project's
+        /// list (an undone removal returns to its old place); `None` keeps
+        /// an existing one where it is and appends a new one.
+        position: Option<u8>,
     },
     /// Removes cue list `list`. Wire payload `cue_list_remove`.
     RemoveCueList {
@@ -1754,6 +1758,10 @@ pub enum CommandPayload {
     SetScript {
         script: u64,
         spec: Box<crate::ScriptSpec>,
+        /// Protocol 2.77: places the script at this index of the project's
+        /// list (an undone removal returns to its old place); `None` keeps
+        /// an existing one where it is and appends a new one.
+        position: Option<u8>,
     },
     /// Removes script `script`. Wire payload `script_remove`.
     RemoveScript {
@@ -1776,6 +1784,10 @@ pub enum CommandPayload {
     SetShortcut {
         shortcut: u64,
         spec: Box<crate::ShortcutSpec>,
+        /// Protocol 2.77: places the shortcut at this index of the project's
+        /// list (an undone removal returns to its old place); `None` keeps
+        /// an existing one where it is and appends a new one.
+        position: Option<u8>,
     },
     /// Removes user shortcut `shortcut`. Wire payload `shortcut_remove`.
     RemoveShortcut {

@@ -6748,6 +6748,7 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
             CommandPayload::SetCueList {
                 list,
                 spec: Box::new(CueListSpec { name, cues }),
+                position: None,
             }
         }
         "cue-list-remove" => CommandPayload::RemoveCueList { list },
@@ -9233,6 +9234,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)] // one case per cue command
     #[test]
     fn parses_cue_commands_local_and_remote() {
         use fm_protocol::{CommandPayload, CueOperation};
@@ -9310,6 +9312,7 @@ mod tests {
                         name: "Show".into(),
                         cues: Vec::new(),
                     }),
+                    position: None,
                 },
                 key: None,
                 expected_revision: None,

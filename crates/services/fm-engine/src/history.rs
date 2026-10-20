@@ -843,6 +843,46 @@ fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
                 position.map_or(existing.unwrap_or(last), |position| position.min(last))
             }),
         },
+        // So is a shortcut, script, or cue list edit.
+        EngineCommand::SetShortcut {
+            shortcut,
+            definition,
+            position,
+        } => EngineCommand::SetShortcut {
+            shortcut: *shortcut,
+            definition: definition.clone(),
+            position: definition.as_ref().map(|_| {
+                let list = state.shortcuts();
+                let existing = list.iter().position(|candidate| candidate.id == *shortcut);
+                crate::state::placed_index(list.len(), existing, *position)
+            }),
+        },
+        EngineCommand::SetScript {
+            script,
+            definition,
+            position,
+        } => EngineCommand::SetScript {
+            script: *script,
+            definition: definition.clone(),
+            position: definition.as_ref().map(|_| {
+                let list = state.scripts();
+                let existing = list.iter().position(|candidate| candidate.id == *script);
+                crate::state::placed_index(list.len(), existing, *position)
+            }),
+        },
+        EngineCommand::SetCueList {
+            list,
+            definition,
+            position,
+        } => EngineCommand::SetCueList {
+            list: *list,
+            definition: definition.clone(),
+            position: definition.as_ref().map(|_| {
+                let lists = state.cue_lists();
+                let existing = lists.iter().position(|candidate| candidate.id == *list);
+                crate::state::placed_index(lists.len(), existing, *position)
+            }),
+        },
         command => command.clone(),
     }
 }
@@ -1007,17 +1047,31 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                 .position(|config| config.id().get() == target.get()),
         }),
 
+        // Like a destination, a shortcut, script, or cue list is restored
+        // at its old place in the project's list.
         EngineCommand::SetShortcut { shortcut, .. } => Some(EngineCommand::SetShortcut {
             shortcut: *shortcut,
             definition: crate::shortcut::definition(state, *shortcut),
+            position: state
+                .shortcuts()
+                .iter()
+                .position(|candidate| candidate.id == *shortcut),
         }),
         EngineCommand::SetScript { script, .. } => Some(EngineCommand::SetScript {
             script: *script,
             definition: crate::script::definition(state, *script),
+            position: state
+                .scripts()
+                .iter()
+                .position(|candidate| candidate.id == *script),
         }),
         EngineCommand::SetCueList { list, .. } => Some(EngineCommand::SetCueList {
             list: *list,
             definition: crate::cue::definition(state, *list),
+            position: state
+                .cue_lists()
+                .iter()
+                .position(|candidate| candidate.id == *list),
         }),
         EngineCommand::SetTransitionFavorite { slot, .. } => state
             .transition_favorites()

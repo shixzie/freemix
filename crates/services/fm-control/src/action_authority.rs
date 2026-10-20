@@ -248,7 +248,7 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             .map_or_else(ClassSet::default, |(found, cue)| {
                 classes(engine, cue_chain_actions(&found.cues, cue, 0))
             }),
-        CommandPayload::SetCueList { list, spec } => {
+        CommandPayload::SetCueList { list, spec, .. } => {
             let Some(found) = engine.show().cue_list(*list) else {
                 return ClassSet::default();
             };
@@ -282,7 +282,7 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             ),
             _ => ClassSet::default(),
         },
-        CommandPayload::SetScript { script, spec } if armed_chain_runs(engine, *script) => {
+        CommandPayload::SetScript { script, spec, .. } if armed_chain_runs(engine, *script) => {
             let edited = fm_script::parse(&spec.source)
                 .map(|program| program.verbs())
                 .unwrap_or_default();

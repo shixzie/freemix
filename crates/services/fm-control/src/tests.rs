@@ -3764,6 +3764,7 @@ mod cues {
         CommandPayload::SetCueList {
             list: 7,
             spec: Box::new(spec()),
+            position: None,
         }
     }
 
@@ -7864,6 +7865,7 @@ mod scripts {
                 name: format!("Script {script}"),
                 source: source.to_owned(),
             }),
+            position: None,
         }
     }
 
@@ -8046,6 +8048,7 @@ mod scripts {
                     actions: vec![fm_protocol::WireCueAction::RunScript { script: 1 }],
                 }],
             }),
+            position: None,
         };
         submit(&mut cues, Role::Admin, "list", list);
         cues.tick(&server_identity()).unwrap();
@@ -8079,6 +8082,7 @@ mod scripts {
 }
 
 mod automation_authority;
+mod list_order_journal;
 mod media_lists;
 mod shortcut_authority;
 
@@ -8243,6 +8247,7 @@ fn paged_inputs_step_against_the_reported_page_count() {
                 }],
             }],
         }),
+        position: None,
     };
     let set = control
         .submit(&principal(Role::Admin), command("cues", "cues", list), 0)

@@ -62,6 +62,7 @@ fn set(list: u64, cues: Vec<Cue>) -> EngineCommand {
             name: format!("List {list}"),
             cues,
         }),
+        position: None,
     }
 }
 
@@ -686,6 +687,7 @@ fn set_script(script: u64, source: &str) -> EngineCommand {
             name: format!("Script {script}"),
             source: source.to_owned(),
         }),
+        position: None,
     }
 }
 
@@ -740,6 +742,7 @@ fn a_script_step_runs_on_its_frame_against_the_show_then() {
         EngineCommand::SetScript {
             script: 5,
             definition: None,
+            position: None,
         },
     );
     assert_eq!(refusal(&removed).0, RejectionCode::Conflict);
@@ -1188,6 +1191,7 @@ fn an_armed_go_fires_on_its_frame_and_keeps_through_edits() {
     let removed = EngineCommand::SetCueList {
         list: 1,
         definition: None,
+        position: None,
     };
     assert_eq!(
         refusal(&submit(&mut engine, "remove", removed)).1,

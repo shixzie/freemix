@@ -75,11 +75,13 @@ fn invalid(error: &ShortcutError) -> Rejection {
 /// Refuses shortcut id zero, an invalid definition, a definition whose id
 /// differs from the command's, a key or OSC name another shortcut uses, a
 /// shortcut past the project bound, cue actions running a script that
-/// waits, and removing an unknown shortcut.
+/// waits, and removing an unknown shortcut. `position` places the
+/// shortcut in the project's list (see [`crate::EngineCommand::SetShortcut`]).
 pub(crate) fn apply_set(
     state: &mut ShowState,
     shortcut: u64,
     definition: Option<&Shortcut>,
+    position: Option<usize>,
 ) -> Result<(), Rejection> {
     let existing = state
         .shortcuts()
@@ -121,10 +123,7 @@ pub(crate) fn apply_set(
         ));
     }
     let mut next = state.shortcuts().to_vec();
-    match existing {
-        Some(index) => next[index] = definition.clone(),
-        None => next.push(definition.clone()),
-    }
+    crate::state::place_in_list(&mut next, existing, definition.clone(), position);
     fm_model::validate_shortcuts(&next).map_err(|error| invalid(&error))?;
     *state.shortcuts_mut() = next;
     Ok(())

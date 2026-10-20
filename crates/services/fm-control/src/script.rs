@@ -34,16 +34,22 @@ pub fn wire_script(script: &Script) -> ScriptStatus {
 #[must_use]
 pub fn script_engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
-        CommandPayload::SetScript { script, spec } => EngineCommand::SetScript {
+        CommandPayload::SetScript {
+            script,
+            spec,
+            position,
+        } => EngineCommand::SetScript {
             script: *script,
             definition: Some(EngineScriptDefinition {
                 name: spec.name.clone(),
                 source: spec.source.clone(),
             }),
+            position: position.map(usize::from),
         },
         CommandPayload::RemoveScript { script } => EngineCommand::SetScript {
             script: *script,
             definition: None,
+            position: None,
         },
         CommandPayload::RunScript { script } => EngineCommand::RunScript { script: *script },
         CommandPayload::StopScript { run } => EngineCommand::StopScript { run: *run },
@@ -53,7 +59,12 @@ pub fn script_engine_command(payload: &CommandPayload) -> EngineCommand {
 
 /// The wire form of a script edit (for undo and redo previews).
 pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
-    let EngineCommand::SetScript { script, definition } = command else {
+    let EngineCommand::SetScript {
+        script,
+        definition,
+        position,
+    } = command
+    else {
         return None;
     };
     Some(match definition {
@@ -63,6 +74,7 @@ pub fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
                 name: definition.name.clone(),
                 source: definition.source.clone(),
             }),
+            position: position.and_then(|position| u8::try_from(position).ok()),
         },
         None => CommandPayload::RemoveScript { script: *script },
     })
