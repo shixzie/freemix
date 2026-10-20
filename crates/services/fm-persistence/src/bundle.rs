@@ -3,7 +3,8 @@
 //! Both operations copy a source bundle's durable manifest and exactly the
 //! assets its media and title inputs reference (title templates, their fonts
 //! and image defaults, and title image values) plus every imported grading
-//! LUT into a brand-new destination bundle. Title and LUT asset keys are
+//! LUT, and every picture in a folder slideshow's folder (kept in that
+//! folder), into a brand-new destination bundle. Title and LUT asset keys are
 //! never rewritten: a title key that would need a
 //! portable rename refuses the export with
 //! [`BundleError::TitleAssetRewriteUnsupported`].
@@ -159,7 +160,12 @@ fn export_bundle(
         .chain(&lut_uris)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let mapping = portable_mapping(&stored, &fixed_uris)?;
+    // A folder slideshow shows whatever pictures its folder holds, so they
+    // travel too, kept in their folder (IN-009).
+    let folder_pictures = source.folder_slideshow_picture_uris(stored.project());
+    let mut mapping = portable_mapping(&stored, &fixed_uris, &folder_pictures)?;
+    let referenced = referenced_uris(&stored, &fixed_uris);
+    mapping.retain(|uri, bundled| referenced.contains(uri) || parent_of(uri) == parent_of(bundled));
     if let Some((uri, _)) = mapping
         .iter()
         .find(|(uri, bundled)| fixed_uris.contains(*uri) && uri != bundled)
@@ -220,27 +226,23 @@ fn export_bundle(
 fn portable_mapping(
     stored: &StoredProject,
     title_uris: &BTreeSet<String>,
+    folder_pictures: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, String>, BundleError> {
-    let mut uris = title_uris
-        .iter()
-        .map(|uri| (uri.clone(), String::new()))
+    let mut uris = referenced_uris(stored, title_uris)
+        .into_iter()
+        .chain(folder_pictures.iter().cloned())
+        .map(|uri| (uri, String::new()))
         .collect::<BTreeMap<_, _>>();
-    for input in stored.project().inputs() {
-        for uri in input.kind.file_asset_uris() {
-            uris.insert(uri.to_owned(), String::new());
-        }
-    }
-    // Every file of a media list travels, not only the active one (IN-006).
-    for list in stored.project().media_lists().values() {
-        for item in &list.items {
-            uris.insert(item.asset_uri.clone(), String::new());
-        }
-    }
-    let (titles, media): (Vec<_>, Vec<_>) = uris
+    let (titles, rest): (Vec<_>, Vec<_>) = uris
         .iter_mut()
         .partition(|(uri, _)| title_uris.contains(*uri));
+    // Folder pictures claim their keys before other media, so they keep
+    // their names in their folder whenever those are portable.
+    let (pictures, media): (Vec<_>, Vec<_>) = rest
+        .into_iter()
+        .partition(|(uri, _)| folder_pictures.contains(*uri));
     let mut taken = FoldedKeys::default();
-    for (uri, bundled) in titles.into_iter().chain(media) {
+    for (uri, bundled) in titles.into_iter().chain(pictures).chain(media) {
         let key =
             asset_uri_key(uri).map_err(|_| BundleError::NoAvailableKey { key: uri.clone() })?;
         let base = portable_key(key);
@@ -254,6 +256,25 @@ fn portable_mapping(
         *bundled = asset_uri(&chosen);
     }
     Ok(uris)
+}
+
+/// Every URI the project names directly: `fixed_uris` (title and LUT
+/// assets), input files, and media list files.
+fn referenced_uris(stored: &StoredProject, fixed_uris: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut uris = fixed_uris.clone();
+    for input in stored.project().inputs() {
+        uris.extend(input.kind.file_asset_uris().into_iter().map(str::to_owned));
+    }
+    // Every file of a media list travels, not only the active one (IN-006).
+    for list in stored.project().media_lists().values() {
+        uris.extend(list.items.iter().map(|item| item.asset_uri.clone()));
+    }
+    uris
+}
+
+/// The folder part of an asset URI.
+fn parent_of(uri: &str) -> &str {
+    uri.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
 /// A hidden sibling directory removed on drop unless published.

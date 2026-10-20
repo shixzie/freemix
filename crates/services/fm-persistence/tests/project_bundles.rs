@@ -253,6 +253,53 @@ fn portable_bundle_copies_only_referenced_media_and_reopens_identically() {
     assert!(source.assets_root().join("unused.wav").exists());
 }
 
+/// A folder slideshow (IN-009) shows every picture file directly inside its
+/// asset folder, so a self-contained copy carries those pictures under the
+/// same folder; other files in the folder stay behind.
+#[test]
+fn portable_bundle_copies_a_folder_slideshows_pictures() {
+    use fm_types::still::{SlideshowConfig, SlideshowSource};
+
+    let temp = TestDirectory::new("portable-folder-slideshow");
+    let source = temp.store("show.freemix");
+    let mut project = empty_project(1, "Show");
+    project.add_input(Input {
+        id: input_id(1),
+        name: "Slides".into(),
+        kind: InputKind::Slideshow(SlideshowConfig::new(SlideshowSource::Folder {
+            asset_uri: "asset://slides".into(),
+        })),
+        required_capabilities: Vec::new(),
+    });
+    let project = stored(project);
+    source.save(&project).unwrap();
+    write_asset(&source, "slides/1.png", b"one");
+    write_asset(&source, "slides/2.jpg", b"two");
+    write_asset(&source, "slides/notes.txt", b"notes");
+    write_asset(&source, "slides/nested/3.png", b"nested");
+    write_asset(&source, "unused.png", b"unused");
+
+    fs::create_dir(temp.path("export")).unwrap();
+    let destination = ProjectStore::new(temp.path("export/show.freemix")).unwrap();
+    let export = source.export_portable_bundle(&destination).unwrap();
+
+    assert_eq!(export.project, project);
+    assert_eq!(
+        tree(destination.root()),
+        [
+            "assets/",
+            "assets/slides/",
+            "assets/slides/1.png",
+            "assets/slides/2.jpg",
+            "project.json",
+        ]
+    );
+    assert_eq!(
+        fs::read(destination.assets_root().join("slides/2.jpg")).unwrap(),
+        b"two"
+    );
+}
+
 #[test]
 fn portable_bundle_rewrites_keys_that_clash_or_are_illegal_elsewhere() {
     let temp = TestDirectory::new("portable-keys");

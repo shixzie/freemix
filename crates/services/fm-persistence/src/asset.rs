@@ -55,6 +55,52 @@ impl ProjectStore {
         Ok(candidate)
     }
 
+    /// The pictures every folder slideshow of `project` shows (IN-009):
+    /// each regular file with a picture extension directly inside the
+    /// slideshow's asset folder, as the daemon lists it, that resolves
+    /// within the assets. Sorted and distinct; a missing folder, or one that
+    /// leads out of the assets, contributes nothing.
+    pub(crate) fn folder_slideshow_picture_uris(
+        &self,
+        project: &Project,
+    ) -> std::collections::BTreeSet<String> {
+        let mut pictures = std::collections::BTreeSet::new();
+        for input in project.inputs() {
+            let InputKind::Slideshow(config) = &input.kind else {
+                continue;
+            };
+            let fm_types::still::SlideshowSource::Folder { asset_uri: folder } = &config.source
+            else {
+                continue;
+            };
+            let Ok(key) = asset_uri_key(folder) else {
+                continue;
+            };
+            let (Ok(root), Ok(directory)) = (
+                fs::canonicalize(self.assets_root()),
+                fs::canonicalize(self.assets_root().join(key)),
+            ) else {
+                continue;
+            };
+            if !directory.starts_with(&root) {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            pictures.extend(
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .filter(|name| fm_types::still::is_image_file_name(name))
+                    .map(|name| format!("{folder}/{name}"))
+                    .filter(|uri| self.resolve_asset_uri(uri).is_ok()),
+            );
+        }
+        pictures
+    }
+
     /// Reports media inputs whose project asset cannot be resolved, and title
     /// inputs whose template, template fonts and image defaults, or image
     /// field values cannot be resolved (one issue per unresolved URI; a
