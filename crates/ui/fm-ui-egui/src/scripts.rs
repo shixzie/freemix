@@ -166,9 +166,18 @@ impl ScriptsWindow {
         }
     }
 
-    /// Starts a new, empty draft under the next free id.
+    /// Starts a new, empty draft under the next free id (the lowest free
+    /// one once the largest id is taken).
     pub(crate) fn new_draft(&mut self, scripts: &[ScriptStatus]) {
-        let next = scripts.iter().map(|script| script.id).max().unwrap_or(0) + 1;
+        let taken = |id: u64| scripts.iter().any(|script| script.id == id);
+        let next = scripts
+            .iter()
+            .map(|script| script.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .or_else(|| (1..=u64::MAX).find(|id| !taken(*id)))
+            .unwrap_or(1);
         self.selected = Some(next);
         self.name = format!("Script {next}");
         self.source.clear();
@@ -1305,6 +1314,19 @@ mod tests {
         scripts.remove(0);
         window.follow(&scripts);
         assert_eq!(window.selected, Some(2));
+    }
+
+    /// Script ids are any nonzero u64 a client chose: after `u64::MAX` a
+    /// new draft takes the lowest free id instead of overflowing.
+    #[test]
+    fn a_new_draft_after_the_largest_id_takes_the_lowest_free_one() {
+        let mut window = ScriptsWindow::default();
+        let scripts = vec![script(1, "cut 2"), script(u64::MAX, "cut 3")];
+        window.new_draft(&scripts);
+        assert_eq!(
+            (window.selected, window.name.as_str()),
+            (Some(2), "Script 2")
+        );
     }
 
     #[test]
