@@ -28,9 +28,11 @@
 //! A capture's sound does not depend on how its picture is shared: it is
 //! keyed by the server's audio system, not by the window system. **System
 //! audio** is the `PulseAudio`/`PipeWire` default output's monitor, exactly
-//! as on X11, read by an audio-only receiver (`SystemSound`) that starts
-//! when the share first goes live and runs until the share is dropped
-//! (picked again, closed, or its kind or sound changed). Its sound feeds
+//! as on X11, read by an audio-only receiver (`SystemSound`) that runs
+//! while the share is live: it starts when the share goes live and stops
+//! when the share is dropped (picked again, closed, or its kind or sound
+//! changed) or stops being live (denied, its target gone or paused, or
+//! asked for again), starting anew if it is live again. Its sound feeds
 //! the input's own Master strip while the picture is live, with the
 //! receiver's own drift loop (AU-004); its state travels in the input's
 //! status as on X11. **Application audio** stays `unsupported`
@@ -310,16 +312,19 @@ impl PortalSources {
     }
 
     /// Starts a share for every open input without one, and the system
-    /// audio of every share that went live without it.
+    /// audio of every share that went live without it; stops the system
+    /// audio of every share that is not live (denied, gone, paused, or
+    /// asked for again).
     fn follow(&mut self) {
         for (input, source) in &mut self.sources {
             if source.closed {
                 continue;
             }
             if let Some(capture) = &source.capture {
-                if source.config.audio == ScreenCaptureAudio::System
+                if capture.status().state != ScreenCaptureState::Live {
+                    source.sound = None;
+                } else if source.config.audio == ScreenCaptureAudio::System
                     && source.sound.is_none()
-                    && capture.status().state == ScreenCaptureState::Live
                 {
                     source.sound = Some(SystemSound::start(*input, (self.sound)(&self.format)));
                 }
@@ -597,6 +602,8 @@ mod tests {
         Grant(Option<&'static str>),
         /// Refused.
         Deny,
+        /// Granted, red pictures for a while, then stopped on the desktop.
+        Stop,
     }
 
     #[derive(Default)]
@@ -638,10 +645,15 @@ mod tests {
                 }
                 Share::Wait => sink.awaiting_selection(),
                 Share::Grant(token) => sink.granted(token.map(str::to_owned), None),
+                Share::Stop => sink.granted(None, None),
             }
+            let until = Instant::now() + Duration::from_millis(300);
             let data: Vec<u8> = (0..16).flat_map(|_| [0, 0, 255, 0]).collect();
             while !sink.stopping() {
-                if matches!(share, Share::Grant(_)) {
+                if matches!(share, Share::Stop) && Instant::now() >= until {
+                    return ShareEnd::Denied(fm_io_linux::wayland::STOPPED_ON_DESKTOP.into());
+                }
+                if matches!(share, Share::Grant(_) | Share::Stop) {
                     sink.frame(&SourcePicture {
                         data: &data,
                         width: 4,
@@ -799,6 +811,32 @@ mod tests {
                 == ScreenCaptureState::Idle)
             .state,
             ScreenCaptureState::Idle
+        );
+    }
+
+    #[test]
+    fn a_share_stopped_on_the_desktop_stops_its_system_audio() {
+        let (mut sources, _script) = sources_with(vec![Share::Stop], tone);
+        let system = ScreenCaptureConfig {
+            audio: ScreenCaptureAudio::System,
+            ..window()
+        };
+        sources.sync(&[(input(1), system)], |_| false);
+        settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::Live
+        });
+        // The next pass starts the reader of the live share.
+        sources.statuses(Instant::now());
+        assert!(
+            sources.sources[&input(1)].sound.is_some(),
+            "heard while live"
+        );
+        settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::Denied
+        });
+        assert!(
+            sources.sources[&input(1)].sound.is_none(),
+            "the system audio reader stopped"
         );
     }
 
