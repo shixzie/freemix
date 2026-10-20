@@ -93,6 +93,61 @@ use crate::source_wait::SourceWait;
 /// before it is realized with the input's previous picture.
 pub(crate) const MAX_MEDIA_FRAME_WAIT: Duration = Duration::from_millis(100);
 
+/// Most media list standbys (IN-006) opening their files at once; the
+/// others wait their turn on their own threads.
+pub(crate) const MAX_CONCURRENT_PREFETCHES: usize = 2;
+
+/// Bounds how many standbys open their files at once.
+#[derive(Default)]
+pub(crate) struct PrefetchGate {
+    opening: Mutex<usize>,
+    freed: Condvar,
+}
+
+/// One standby's turn to open its file; the turn passes on when dropped.
+pub(crate) struct PrefetchPermit<'g>(&'g PrefetchGate);
+
+impl Drop for PrefetchPermit<'_> {
+    fn drop(&mut self) {
+        let mut opening = self
+            .0
+            .opening
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *opening = opening.saturating_sub(1);
+        self.0.freed.notify_all();
+    }
+}
+
+impl PrefetchGate {
+    /// Waits for a turn among at most `max` open at once; `None` once
+    /// `cancelled` is set (the standby was dropped while it waited).
+    pub(crate) fn acquire(&self, max: usize, cancelled: &AtomicBool) -> Option<PrefetchPermit<'_>> {
+        let mut opening = self.opening.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return None;
+            }
+            if *opening < max {
+                *opening += 1;
+                return Some(PrefetchPermit(self));
+            }
+            // A dropped standby sets its flag without the lock; the
+            // timeout bounds how late its waiter notices.
+            opening = self
+                .freed
+                .wait_timeout(opening, Duration::from_millis(100))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Wakes every waiter to look at its cancellation again.
+    fn wake(&self) {
+        self.freed.notify_all();
+    }
+}
+
 /// One media-file input a native daemon plays.
 pub(crate) struct MediaFileInput {
     pub(crate) input: InputId,
@@ -205,6 +260,8 @@ pub(crate) struct NativeMediaFiles {
     /// Each media list's next item, opened and cued ahead of need
     /// (IN-006), by list input.
     standbys: BTreeMap<InputId, Standby>,
+    /// Bounds how many standbys open their files at once.
+    prefetch_gate: Arc<PrefetchGate>,
 }
 
 /// A media list's next item file, opened, indexed, and cued on its own
@@ -218,6 +275,17 @@ struct Standby {
     cue: u64,
     config: FilePlaybackConfig,
     result: mpsc::Receiver<Result<Prefetched, EngineMediaFault>>,
+    /// Set when the standby is dropped, so a thread still waiting for its
+    /// turn to open the file gives up.
+    cancelled: Arc<AtomicBool>,
+    gate: Arc<PrefetchGate>,
+}
+
+impl Drop for Standby {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.gate.wake();
+    }
 }
 
 /// A file a [`Standby`] opened and cued.
@@ -585,6 +653,7 @@ impl NativeMediaFiles {
                 wait: SourceWait::new(MAX_MEDIA_FRAME_WAIT),
                 adapter: Some(adapter.clone()),
                 standbys: BTreeMap::new(),
+                prefetch_gate: Arc::default(),
             },
             seeds,
         ))
@@ -608,6 +677,7 @@ impl NativeMediaFiles {
                 wait: SourceWait::new(MAX_MEDIA_FRAME_WAIT),
                 adapter: None,
                 standbys: BTreeMap::new(),
+                prefetch_gate: Arc::default(),
             },
             Vec::new(),
         )
@@ -714,9 +784,24 @@ impl NativeMediaFiles {
         let (sender, result) = mpsc::sync_channel(1);
         let dimensions = self.dimensions;
         let opening = path.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&self.prefetch_gate);
+        let (thread_cancelled, thread_gate) = (Arc::clone(&cancelled), Arc::clone(&gate));
         let spawned = thread::Builder::new()
             .name(format!("freemix-media-next-{input}"))
             .spawn(move || {
+                // At most MAX_CONCURRENT_PREFETCHES files open at once.
+                let Some(_turn) = thread_gate.acquire(MAX_CONCURRENT_PREFETCHES, &thread_cancelled)
+                else {
+                    return;
+                };
+                // A still image is not a media file: its standby holds
+                // nothing and the list opens it the slow way. The sniff
+                // reads the file, so it runs here, off the session loop.
+                if crate::native_catalogue::is_still(&opening) {
+                    let _ = sender.send(Err(EngineMediaFault::Unsupported));
+                    return;
+                }
                 let opened = catch_unwind(AssertUnwindSafe(|| {
                     open_cued(&adapter, &opening, config, cue, dimensions)
                 }))
@@ -731,6 +816,8 @@ impl NativeMediaFiles {
                     cue,
                     config,
                     result,
+                    cancelled,
+                    gate,
                 },
             );
         }
@@ -773,13 +860,6 @@ impl NativeMediaFiles {
     /// Every media list input with a standby.
     pub(crate) fn prefetched_inputs(&self) -> Vec<InputId> {
         self.standbys.keys().copied().collect()
-    }
-
-    /// The file media list input `input`'s standby opens, if it has one.
-    pub(crate) fn prefetched_path(&self, input: InputId) -> Option<&std::path::Path> {
-        self.standbys
-            .get(&input)
-            .map(|standby| standby.path.as_path())
     }
 
     /// Replaces media-file input `input`'s worker with one that plays
@@ -1474,6 +1554,60 @@ mod tests {
                 .waited_out(10, deadline, later + MAX_MEDIA_FRAME_WAIT)
         );
         assert_eq!(files.late_frames(), 2);
+    }
+
+    /// Standbys open at most [`MAX_CONCURRENT_PREFETCHES`] files at once,
+    /// and one dropped while it waits for its turn gives up.
+    #[test]
+    fn background_opens_are_capped_and_a_dropped_waiter_gives_up() {
+        let gate = Arc::new(PrefetchGate::default());
+        let open = Arc::new(Mutex::new((0_usize, 0_usize)));
+        let openers: Vec<_> = (0..8)
+            .map(|_| {
+                let (gate, open) = (Arc::clone(&gate), Arc::clone(&open));
+                thread::spawn(move || {
+                    let never = AtomicBool::new(false);
+                    let _turn = gate.acquire(MAX_CONCURRENT_PREFETCHES, &never).unwrap();
+                    {
+                        let mut open = open.lock().unwrap();
+                        open.0 += 1;
+                        open.1 = open.1.max(open.0);
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                    open.lock().unwrap().0 -= 1;
+                })
+            })
+            .collect();
+        for opener in openers {
+            opener.join().unwrap();
+        }
+        let most = open.lock().unwrap().1;
+        assert!(
+            (1..=MAX_CONCURRENT_PREFETCHES).contains(&most),
+            "{most} files opened at once"
+        );
+
+        let held: Vec<_> = (0..MAX_CONCURRENT_PREFETCHES)
+            .map(|_| gate.acquire(MAX_CONCURRENT_PREFETCHES, &AtomicBool::new(false)))
+            .collect();
+        assert!(held.iter().all(Option::is_some));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let (gate, cancelled) = (Arc::clone(&gate), Arc::clone(&cancelled));
+            thread::spawn(move || {
+                gate.acquire(MAX_CONCURRENT_PREFETCHES, &cancelled)
+                    .is_some()
+            })
+        };
+        thread::sleep(Duration::from_millis(30));
+        cancelled.store(true, Ordering::Release);
+        gate.wake();
+        assert!(!waiter.join().unwrap(), "a dropped standby never opens");
+        drop(held);
+        assert!(
+            gate.acquire(MAX_CONCURRENT_PREFETCHES, &AtomicBool::new(false))
+                .is_some()
+        );
     }
 
     #[test]

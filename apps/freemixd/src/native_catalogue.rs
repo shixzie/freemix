@@ -604,8 +604,10 @@ impl NativeDaemon {
     /// Opens every media list's next item ahead of need (IN-006): the item
     /// Auto Next or Next steps to from the active one ([`next_list_item`]),
     /// when it is another file (an item of the file already open re-cues
-    /// in place) that is not a still image. A closed list prefetches
-    /// nothing; a list that no longer has a next item drops its standby.
+    /// in place). A still image is recognized on the standby's own thread
+    /// (reading the file never blocks the loop) and holds nothing. A closed
+    /// list prefetches nothing; a list that no longer has a next item drops
+    /// its standby.
     pub(crate) fn sync_media_list_prefetch(&mut self, project: &Project) {
         let mut wanted = BTreeSet::new();
         for input in project.inputs() {
@@ -636,10 +638,6 @@ impl NativeDaemon {
             settings.trim_in = next.mark_in;
             settings.trim_out = next.mark_out;
             settings.start_frame = next.mark_in;
-            if self.files.prefetched_path(input.id) != Some(path.as_path()) && is_still(&path) {
-                wanted.remove(&input.id);
-                continue;
-            }
             let assets_root = self.assets_root.clone();
             self.files.prefetch(input.id, path, &settings, || {
                 Adapter::new(FfmpegConfig {
@@ -746,7 +744,7 @@ pub(crate) fn next_list_item(list: &fm_model::MediaList) -> Option<&fm_model::Me
 /// Whether the file at `path` starts like a still image (one read of its
 /// first bytes; a file that cannot be read plays, and faults, as a media
 /// file).
-fn is_still(path: &std::path::Path) -> bool {
+pub(crate) fn is_still(path: &std::path::Path) -> bool {
     let mut prefix = Vec::with_capacity(fm_codec_image::STILL_SNIFF_BYTES);
     File::open(path)
         .and_then(|file| {
