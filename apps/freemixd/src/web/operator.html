@@ -194,6 +194,13 @@
     <p id="why-transition" class="why" aria-live="polite"></p>
   </section>
 
+  <section aria-labelledby="shortcuts-heading">
+    <h2 id="shortcuts-heading" data-i18n="shortcuts">Shortcuts</h2>
+    <div id="shortcut-buttons" class="bus" role="group" data-i18n-label="shortcutsLabel" aria-label="Project shortcuts"></div>
+    <p id="no-shortcuts" class="why" hidden style="color:var(--muted)" data-i18n="noShortcuts">This show has no shortcuts.</p>
+    <p id="why-shortcuts" class="why" aria-live="polite"></p>
+  </section>
+
   <section aria-labelledby="outputs-heading">
     <h2 id="outputs-heading" data-i18n="outputs">Record and stream</h2>
     <div id="recorders"></div>
@@ -397,6 +404,12 @@
       startStream: "Start stream {name}",
       stopStream: "Stop stream {name}",
       noStreams: "No stream destinations are configured.",
+      shortcuts: "Shortcuts",
+      shortcutsLabel: "Project shortcuts",
+      noShortcuts: "This show has no shortcuts.",
+      shortcutDisabled: "This shortcut is disabled",
+      fireShortcut: "Fire shortcut {name}",
+      commandShortcut: "Shortcut {name}",
       programAudio: "Program audio",
       metersLabel: "Program audio level meters",
       meterWaiting: "Waiting for audio meters (the daemon sends them only with native media).",
@@ -581,6 +594,12 @@
       startStream: "Iniciar la transmisión {name}",
       stopStream: "Detener la transmisión {name}",
       noStreams: "No hay destinos de transmisión configurados.",
+      shortcuts: "Atajos",
+      shortcutsLabel: "Atajos del proyecto",
+      noShortcuts: "Este show no tiene atajos.",
+      shortcutDisabled: "Este atajo está desactivado",
+      fireShortcut: "Disparar el atajo {name}",
+      commandShortcut: "Atajo {name}",
       programAudio: "Audio de Programa",
       metersLabel: "Medidores de nivel del audio de Programa",
       meterWaiting: "Esperando los medidores de audio (el daemon solo los envía con medios nativos).",
@@ -671,6 +690,7 @@
     cut: $("cut"), auto: $("auto"), autoKind: $("auto-kind"), ftb: $("ftb"), ftbState: $("ftb-state"),
     kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
     recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
+    shortcuts: $("shortcut-buttons"), noShortcuts: $("no-shortcuts"), whyShortcuts: $("why-shortcuts"),
     whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
     whyAudio: $("why-audio"), recorderNote: $("recorder-note"), language: $("language"),
     meters: $("meters"), meterScale: $("meter-scale"), meterNote: $("meter-note"),
@@ -750,6 +770,8 @@
     desiredByRevision: new Map(),
     ftb: { target: false, position: 0 }, realizedFtb: { target: false, position: 0 },
     strips: new Map(), recordings: [false, false], streams: [],
+    // Project shortcuts (RC-004), in project order: { id, name, enabled, action }.
+    shortcuts: [],
   };
   // Lossy live status (Protocol 2.66), latest-wins, each kind with its own
   // sequence and the local time it arrived; cleared with the connection.
@@ -1206,7 +1228,8 @@
   const LOSSY = "lossy";
 
   // Events that carry the whole switcher state, including cue and script runs.
-  const SWITCHER_EVENTS = new Set(["desired_switcher", "stinger_slots_changed", "cue_run_changed", "script_ran"]);
+  const SWITCHER_EVENTS = new Set(["desired_switcher", "stinger_slots_changed", "cue_run_changed", "script_ran",
+    "shortcut_fired"]);
 
   function receive(record) {
     switch (record.kind) {
@@ -1251,6 +1274,8 @@
         show.strips = parseStrips(required(record, "input_audio_strips"));
         show.recordings = parseRecordings(required(record, "recordings"));
         show.streams = parseStreams(required(record, "streams"));
+        // Its `shortcut_state` records follow it.
+        show.shortcuts = [];
         show.desiredByRevision.clear();
         trackDesired(link.revision);
         link.phase = "live";
@@ -1262,6 +1287,9 @@
         requestWakeLock();
         return;
       }
+      case "shortcut_state":
+        if (link.phase === "live") upsertShortcut(record);
+        return;
       case "event": {
         if (link.phase !== "live" || !sameServer(record)) throw new Error("unexpected event");
         const revision = Number(required(record, "revision"));
@@ -1356,7 +1384,7 @@
       show.desired = { program: required(record, "program"), preview: required(record, "preview") };
       show.ftb = parseFtb(record, "");
       show.strips = parseStrips(required(record, "input_audio_strips"));
-      if (name === "cue_run_changed" || name === "script_ran") {
+      if (name === "cue_run_changed" || name === "script_ran" || name === "shortcut_fired") {
         show.streams = parseStreams(required(record, "streams"));
         show.recordings = parseRecordings(required(record, "recordings"));
       }
@@ -1381,11 +1409,27 @@
       const id = required(record, "input");
       show.inputs = show.inputs.filter((candidate) => candidate.id !== id);
       show.strips.delete(id);
+    } else if (name === "shortcut_changed") {
+      upsertShortcut(record);
+    } else if (name === "shortcut_removed") {
+      const id = required(record, "shortcut");
+      show.shortcuts = show.shortcuts.filter((shortcut) => shortcut.id !== id);
     } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_group_solo") {
       // A group solo re-solos its members; resynchronize so a mute never
       // writes back a stale solo.
       closeSocket();
     }
+  }
+
+  // One shortcut from a `shortcut_state` record or `shortcut_changed`
+  // event, replacing the one with its id or appended in project order.
+  function upsertShortcut(record) {
+    const shortcut = {
+      id: required(record, "shortcut"), name: required(record, "name"),
+      enabled: required(record, "enabled") === "1", action: required(record, "action"),
+    };
+    const index = show.shortcuts.findIndex((candidate) => candidate.id === shortcut.id);
+    if (index >= 0) show.shortcuts[index] = shortcut; else show.shortcuts.push(shortcut);
   }
 
   function sameStrip(a, b) {
@@ -1446,6 +1490,30 @@
   function sectionReason(kind) {
     return link.phase !== "live" ? tr("notLive")
       : link.permissions.includes(PERMISSION[kind]) ? "" : tr("permission", { name: PERMISSION[kind] });
+  }
+
+  // Mirrors freemix-web's OperatorSurface::shortcut_gate: a fire is a
+  // transition-class control that also needs the permission of each cue
+  // action it runs (preview: select_preview, title text and numbers:
+  // edit_project, gain and mute: control_audio, the rest: transition). A
+  // cue list GO or a script also needs what its cues or verbs need, which
+  // only the daemon knows; it refuses the whole fire then.
+  const ACTION_PERMISSION = {
+    preview: "select_preview", title_text: "edit_project", title_number: "edit_project",
+    audio_gain: "control_audio", audio_mute: "control_audio", run_script: "", wait: "", delay: "",
+  };
+  function shortcutGate(shortcut) {
+    if (link.phase !== "live") return tr("notLive");
+    if (!link.permissions.includes(PERMISSION.transition)) return tr("permission", { name: PERMISSION.transition });
+    if (!shortcut.enabled) return tr("shortcutDisabled");
+    if (shortcut.action.startsWith("actions:")) {
+      for (const token of shortcut.action.slice("actions:".length).split("/")) {
+        const verb = token.split(".")[0];
+        const needed = Object.hasOwn(ACTION_PERMISSION, verb) ? ACTION_PERMISSION[verb] : PERMISSION.transition;
+        if (needed && !link.permissions.includes(needed)) return tr("permission", { name: needed });
+      }
+    }
+    return "";
   }
 
   // Mirrors freemix-web's duration_frames.
@@ -1598,6 +1666,24 @@
     ui.whyTransition.textContent = transitionReason;
 
     renderOutputs();
+
+    const shortcutIds = live ? show.shortcuts.map((shortcut) => shortcut.id) : [];
+    syncChildren(ui.shortcuts, shortcutIds, (id) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("aria-describedby", "why-shortcuts");
+      button.addEventListener("click", () => fireShortcut(id));
+      return button;
+    }, (button, id) => {
+      const shortcut = show.shortcuts.find((candidate) => candidate.id === id);
+      button.textContent = shortcut.name;
+      button.setAttribute("aria-label", tr("fireShortcut", { name: shortcut.name }));
+      setDisabled(button, shortcutGate(shortcut));
+    });
+    ui.noShortcuts.hidden = !live || show.shortcuts.length > 0;
+    ui.whyShortcuts.textContent = live && show.shortcuts.length > 0
+      ? (link.permissions.includes(PERMISSION.transition) ? "" : tr("permission", { name: PERMISSION.transition }))
+      : (live ? "" : tr("notLive"));
 
     syncChildren(ui.strips, ids, (id) => {
       const row = document.createElement("div");
@@ -1868,6 +1954,11 @@
     const active = !show.ftb.target;
     sendCommand(tr(active ? "commandFadeToBlack" : "commandFadeFromBlack"),
       [["payload", "fade_to_black"], ["active", active ? "1" : "0"], ["duration_frames", String(durationFrames())]]);
+  }
+  function fireShortcut(id) {
+    const shortcut = show.shortcuts.find((candidate) => candidate.id === id);
+    if (!shortcut || shortcutGate(shortcut)) return;
+    sendCommand(tr("commandShortcut", { name: shortcut.name }), [["payload", "shortcut_fire"], ["shortcut", id]]);
   }
   function toggleRecorder(slot) {
     const on = show.recordings[slot - 1];

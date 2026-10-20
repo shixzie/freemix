@@ -36,9 +36,10 @@ pub use manual_transition::{
     ManualTransitionPresentation, ManualTransitionProjection,
 };
 pub use operator::{
-    FadeToBlackPhase, OPERATOR_AUDIO_PERMISSION, OPERATOR_PREVIEW_PERMISSION,
-    OPERATOR_TRANSITION_PERMISSION, OperatorBlock, OperatorControl, OperatorSurface,
-    OperatorTransition, duration_frames, stream_state_label,
+    FadeToBlackPhase, OPERATOR_AUDIO_PERMISSION, OPERATOR_EDIT_PERMISSION,
+    OPERATOR_PREVIEW_PERMISSION, OPERATOR_TRANSITION_PERMISSION, OperatorBlock, OperatorControl,
+    OperatorSurface, OperatorTransition, cue_action_permission, duration_frames,
+    stream_state_label,
 };
 pub use overlay::{OverlayControl, OverlayControls};
 pub use stinger::{StingerControl, StingerControls};

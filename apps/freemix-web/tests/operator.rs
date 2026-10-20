@@ -525,3 +525,126 @@ fn durations_round_to_whole_frames_at_the_show_rate() {
     assert_eq!(duration_frames(0, 25, 1), 1);
     assert_eq!(duration_frames(1, 25, 1), 1);
 }
+
+fn shortcut(
+    id: u64,
+    enabled: bool,
+    action: fm_protocol::WireShortcutAction,
+) -> fm_protocol::ShortcutStatus {
+    fm_protocol::ShortcutStatus {
+        id,
+        spec: fm_protocol::ShortcutSpec {
+            name: format!("Shortcut {id}"),
+            enabled,
+            key: None,
+            osc: None,
+            action,
+        },
+    }
+}
+
+/// RC-004: a shortcut button needs `transition`, an enabled shortcut, and
+/// the permission of every cue action it runs; a cue list GO or a script
+/// is left to the daemon's authority. An enabled button sends exactly
+/// `shortcut_fire`.
+#[test]
+fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
+    use fm_protocol::{
+        WireCueAction, WireOverlayChannelId, WireShortcutAction, WireShortcutCueOperation,
+    };
+    let show = Show::default();
+    let overlay = shortcut(
+        1,
+        true,
+        WireShortcutAction::Actions(vec![WireCueAction::OverlayOn {
+            channel: WireOverlayChannelId::new(1).unwrap(),
+            input: wire(CAMERA),
+        }]),
+    );
+    let mute = shortcut(
+        2,
+        true,
+        WireShortcutAction::Actions(vec![
+            WireCueAction::Preview {
+                input: wire(SLIDES),
+            },
+            WireCueAction::AudioMute {
+                input: wire(GUEST),
+                muted: true,
+            },
+        ]),
+    );
+    let title = shortcut(
+        3,
+        true,
+        WireShortcutAction::Actions(vec![WireCueAction::TitleNumber {
+            input: wire(SLIDES),
+            field: fm_protocol::WireTitleFieldId::new(target(1)),
+            add: true,
+            value: 1,
+        }]),
+    );
+    let go = shortcut(
+        4,
+        true,
+        WireShortcutAction::Cue {
+            list: 1,
+            operation: WireShortcutCueOperation::Go { cue: None },
+        },
+    );
+    let off = shortcut(5, false, WireShortcutAction::Script { script: 1 });
+
+    let operator = ready(Role::Operator, &show);
+    let granted_operator = granted(&operator);
+    let operator_view = operator.model().view();
+    let surface = OperatorSurface::new(operator_view.as_ref(), &granted_operator);
+    assert_eq!(surface.shortcut_gate(&overlay), Ok(()));
+    assert_eq!(
+        surface.shortcut_command(&overlay),
+        Some(CommandPayload::FireShortcut { shortcut: 1 })
+    );
+    assert_eq!(surface.shortcut_gate(&mute), Ok(()));
+    assert_eq!(surface.shortcut_gate(&go), Ok(()));
+    let blocked = surface.shortcut_gate(&title).unwrap_err();
+    assert_eq!(blocked, OperatorBlock::MissingPermission("edit_project"));
+    assert_eq!(
+        blocked.reason(),
+        "This session lacks the edit_project permission"
+    );
+    assert_eq!(surface.shortcut_command(&title), None);
+    assert_eq!(
+        surface.shortcut_gate(&off),
+        Err(OperatorBlock::ShortcutDisabled)
+    );
+    assert_eq!(
+        OperatorBlock::ShortcutDisabled.reason(),
+        "This shortcut is disabled"
+    );
+
+    // An audio session lacks `transition` for every shortcut.
+    let audio = ready(Role::Audio, &show);
+    let granted_audio = granted(&audio);
+    let audio_view = audio.model().view();
+    let surface = OperatorSurface::new(audio_view.as_ref(), &granted_audio);
+    for found in [&overlay, &mute, &go] {
+        assert_eq!(
+            surface.shortcut_gate(found),
+            Err(OperatorBlock::MissingPermission("transition"))
+        );
+    }
+    // Without audio control, a shortcut that mutes is held.
+    let no_audio: Vec<String> = granted_operator
+        .iter()
+        .filter(|permission| *permission != "control_audio")
+        .cloned()
+        .collect();
+    let surface = OperatorSurface::new(operator_view.as_ref(), &no_audio);
+    assert_eq!(
+        surface.shortcut_gate(&mute),
+        Err(OperatorBlock::MissingPermission("control_audio"))
+    );
+    assert_eq!(surface.shortcut_gate(&overlay), Ok(()));
+    // Not live.
+    let offline = OperatorSurface::new(None, &granted_operator);
+    assert_eq!(offline.shortcut_gate(&overlay), Err(OperatorBlock::NotLive));
+}

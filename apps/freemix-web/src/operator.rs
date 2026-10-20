@@ -1,6 +1,7 @@
 //! Transport-free phone and tablet operator surface: Preview and Program
 //! buses, Cut and automatic transitions, Fade to Black, the two program
-//! recorders, stream destinations, and per-input audio mute.
+//! recorders, stream destinations, per-input audio mute, and a button per
+//! project shortcut (RC-004).
 //!
 //! Every control derives its state from the replicated [`ClientView`] and the
 //! session's granted permissions, and a disabled control always carries an
@@ -11,8 +12,8 @@
 use core::num::NonZeroU128;
 
 use fm_protocol::{
-    CommandPayload, FadeToBlackPosition, StreamRealizedState, WireInputId, WireRecorderSlot,
-    WireStreamTargetId,
+    CommandPayload, FadeToBlackPosition, ShortcutStatus, StreamRealizedState, WireCueAction,
+    WireInputId, WireRecorderSlot, WireShortcutAction, WireStreamTargetId,
 };
 use fm_types::InputId;
 use fm_ui_model::ClientView;
@@ -24,6 +25,39 @@ pub const OPERATOR_PREVIEW_PERMISSION: &str = "select_preview";
 pub const OPERATOR_TRANSITION_PERMISSION: &str = "transition";
 /// Permission that gates audio mute.
 pub const OPERATOR_AUDIO_PERMISSION: &str = "control_audio";
+/// Permission a shortcut that sets title text or numbers also needs.
+pub const OPERATOR_EDIT_PERMISSION: &str = "edit_project";
+
+/// The permission the command equivalent to one cue action needs (as the
+/// daemon's authority classes it): `None` for a wait or delay, which does
+/// nothing, and for a script step, whose verbs only the daemon resolves.
+#[must_use]
+pub const fn cue_action_permission(action: &WireCueAction) -> Option<&'static str> {
+    Some(match action {
+        WireCueAction::Preview { .. } => OPERATOR_PREVIEW_PERMISSION,
+        WireCueAction::TitleText { .. } | WireCueAction::TitleNumber { .. } => {
+            OPERATOR_EDIT_PERMISSION
+        }
+        WireCueAction::AudioGain { .. } | WireCueAction::AudioMute { .. } => {
+            OPERATOR_AUDIO_PERMISSION
+        }
+        WireCueAction::Wait { .. }
+        | WireCueAction::Delay { .. }
+        | WireCueAction::RunScript { .. } => return None,
+        WireCueAction::Take { .. }
+        | WireCueAction::OverlayOn { .. }
+        | WireCueAction::OverlayOff { .. }
+        | WireCueAction::TitleOn { .. }
+        | WireCueAction::TitleOff { .. }
+        | WireCueAction::FadeToBlack { .. }
+        | WireCueAction::PlaylistStart
+        | WireCueAction::PlaylistStop
+        | WireCueAction::Record { .. }
+        | WireCueAction::Stream { .. }
+        | WireCueAction::Media { .. }
+        | WireCueAction::Page { .. } => OPERATOR_TRANSITION_PERMISSION,
+    })
+}
 
 /// An automatic Preview-to-Program transition the operator page can take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +161,8 @@ pub enum OperatorBlock {
     /// The input has no replicated audio strip yet (an input added live is
     /// replicated before the next switcher event carries its strip).
     NoAudioStrip,
+    /// The project shortcut is disabled.
+    ShortcutDisabled,
 }
 
 impl OperatorBlock {
@@ -141,6 +177,7 @@ impl OperatorBlock {
             Self::AlreadyOnPreview => "Already on Preview".to_owned(),
             Self::NotInShow => "No longer in the show".to_owned(),
             Self::NoAudioStrip => "Waiting for this input's audio state".to_owned(),
+            Self::ShortcutDisabled => "This shortcut is disabled".to_owned(),
         }
     }
 }
@@ -331,6 +368,47 @@ impl<'a> OperatorSurface<'a> {
                     delay_samples: strip.delay_samples,
                 }
             }
+        })
+    }
+
+    /// Whether project shortcut `shortcut`'s button is enabled, or why it
+    /// is not: a lost session, the `transition` permission every fire
+    /// needs, a disabled shortcut, then the permission of each cue action
+    /// it runs, in order. A cue list GO or a script also needs whatever its
+    /// cues or verbs need, which the daemon checks when it is fired,
+    /// refusing the whole fire.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`OperatorBlock`] the page shows on the button.
+    pub fn shortcut_gate(&self, shortcut: &ShortcutStatus) -> Result<(), OperatorBlock> {
+        self.view.ok_or(OperatorBlock::NotLive)?;
+        let granted = |permission: &str| self.permissions.iter().any(|found| found == permission);
+        if !granted(OPERATOR_TRANSITION_PERMISSION) {
+            return Err(OperatorBlock::MissingPermission(
+                OPERATOR_TRANSITION_PERMISSION,
+            ));
+        }
+        if !shortcut.spec.enabled {
+            return Err(OperatorBlock::ShortcutDisabled);
+        }
+        if let WireShortcutAction::Actions(actions) = &shortcut.spec.action
+            && let Some(missing) = actions
+                .iter()
+                .filter_map(cue_action_permission)
+                .find(|permission| !granted(permission))
+        {
+            return Err(OperatorBlock::MissingPermission(missing));
+        }
+        Ok(())
+    }
+
+    /// The `shortcut_fire` an enabled shortcut button sends.
+    #[must_use]
+    pub fn shortcut_command(&self, shortcut: &ShortcutStatus) -> Option<CommandPayload> {
+        self.shortcut_gate(shortcut).ok()?;
+        Some(CommandPayload::FireShortcut {
+            shortcut: shortcut.id,
         })
     }
 

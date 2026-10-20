@@ -1098,6 +1098,7 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "on ? \"record_stop\" : \"record_start\"",
         "stream.desired ? \"stream_stop\" : \"stream_start\"",
         "[\"payload\", \"input_audio_strip\"]",
+        "[\"payload\", \"shortcut_fire\"], [\"shortcut\", id]",
     ] {
         assert!(page.contains(payload), "{payload}");
     }
@@ -1119,6 +1120,21 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "alreadyOnPreview: \"Already on Preview\"",
         "notInShow: \"No longer in the show\"",
         "noAudioStrip: \"Waiting for this input's audio state\"",
+        "shortcutDisabled: \"This shortcut is disabled\"",
+    ] {
+        assert!(page.contains(reason), "{reason}");
+    }
+    // Project shortcut buttons (RC-004): the shortcuts follow the snapshot
+    // and their events; a button needs `transition` and the permission of
+    // each cue action it runs (freemix-web's OperatorSurface::shortcut_gate).
+    for reason in [
+        "case \"shortcut_state\":",
+        "name === \"shortcut_changed\"",
+        "name === \"shortcut_removed\"",
+        "\"shortcut_fired\"",
+        "preview: \"select_preview\", title_text: \"edit_project\", title_number: \"edit_project\"",
+        "audio_gain: \"control_audio\", audio_mute: \"control_audio\"",
+        "id=\"shortcut-buttons\"",
     ] {
         assert!(page.contains(reason), "{reason}");
     }
@@ -2087,4 +2103,147 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
         "permission_denied"
     );
     page_command(&mut operator, "operator-off", None, &off_air).unwrap();
+}
+
+/// RC-004 operator page shortcut buttons end to end: a page that connects
+/// receives every project shortcut after its snapshot (`shortcut_state`),
+/// and its `shortcut_fire`, exactly as the page writes it, fires within the
+/// session role: an Operator page runs a shortcut that keys an overlay but
+/// is refused one that edits a title (`edit_project`), a disabled shortcut
+/// fires nothing, and an Audio page may fire none.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn operator_page_fires_project_shortcuts_within_the_session_role() {
+    use fm_protocol::{
+        ShortcutSpec, WireCueAction, WireOverlayChannelId, WireShortcutAction, WireTitleFieldId,
+    };
+
+    let directory = TestDirectory::new("operator-shortcuts");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+
+    let shortcut = |name: &str, enabled: bool, action: WireCueAction| ShortcutSpec {
+        name: name.into(),
+        enabled,
+        key: None,
+        osc: None,
+        action: WireShortcutAction::Actions(vec![action]),
+    };
+    let overlay = WireCueAction::OverlayOn {
+        channel: WireOverlayChannelId::new(1).unwrap(),
+        input: input(3),
+    };
+    let score = WireCueAction::TitleNumber {
+        input: input(4),
+        field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+        add: true,
+        value: 1,
+    };
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    for (id, spec) in [
+        (1, shortcut("Guest box", true, overlay.clone())),
+        (2, shortcut("Score", true, score)),
+        (3, shortcut("Spare", false, overlay)),
+    ] {
+        let key = format!("set-shortcut-{id}");
+        admin.send(&command(
+            &key,
+            CommandPayload::SetShortcut {
+                shortcut: id,
+                spec: Box::new(spec),
+                position: None,
+            },
+        ));
+        admin.accepted(&key);
+    }
+
+    // A page connecting now gets the shortcuts with its snapshot.
+    let connect = |role: Role| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "page never connected");
+            let Some(mut socket) = browser_connect(daemon.web) else {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            send(&mut socket, &hello(role));
+            let WireMessage::HandshakeResponse(response) = receive(&mut socket) else {
+                panic!("expected a handshake response");
+            };
+            let WireMessage::Snapshot(snapshot) = receive(&mut socket) else {
+                panic!("expected a snapshot");
+            };
+            assert_eq!(snapshot.shortcut_states, 3);
+            let mut names = Vec::new();
+            let mut layouts = snapshot.layout_scenes.len();
+            while names.len() < 3 || layouts > 0 {
+                match receive(&mut socket) {
+                    WireMessage::ShortcutState(state) => names.push(state.shortcut.spec.name),
+                    WireMessage::SceneLayoutState(_) => layouts -= 1,
+                    WireMessage::Event(_)
+                    | WireMessage::RuntimeEvent(_)
+                    | WireMessage::CommandResult(_) => panic!("expected snapshot records"),
+                    _ => {}
+                }
+            }
+            assert_eq!(names, ["Guest box", "Score", "Spare"]);
+            return (socket, response.permissions);
+        }
+    };
+    let (mut page, permissions) = connect(Role::Operator);
+    assert!(permissions.iter().any(|granted| granted == "transition"));
+    assert!(!permissions.iter().any(|granted| granted == "edit_project"));
+
+    match page_command(
+        &mut page,
+        "op-shortcut-1",
+        None,
+        "payload=shortcut_fire\tshortcut=1",
+    ) {
+        Ok((_, EventPayload::ShortcutFired(change))) => {
+            assert_eq!(change.shortcut, 1);
+            assert_eq!(change.actions, 1);
+            assert!(
+                change
+                    .overlays
+                    .iter()
+                    .any(|overlay| overlay.source == Some(input(3))),
+                "{:?}",
+                change.overlays
+            );
+        }
+        other => panic!("expected the shortcut to fire: {other:?}"),
+    }
+    let Err((code, _)) = page_command(
+        &mut page,
+        "op-shortcut-2",
+        None,
+        "payload=shortcut_fire\tshortcut=2",
+    ) else {
+        panic!("a title edit needs edit_project");
+    };
+    assert_eq!(code, "permission_denied");
+    assert!(
+        page_command(
+            &mut page,
+            "op-shortcut-3",
+            None,
+            "payload=shortcut_fire\tshortcut=3"
+        )
+        .is_err(),
+        "a disabled shortcut fires nothing"
+    );
+    drop(page);
+
+    let (mut audio, _) = connect(Role::Audio);
+    let Err((code, _)) = page_command(
+        &mut audio,
+        "audio-shortcut-1",
+        None,
+        "payload=shortcut_fire\tshortcut=1",
+    ) else {
+        panic!("an Audio page may not fire shortcuts");
+    };
+    assert_eq!(code, "permission_denied");
 }
