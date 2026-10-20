@@ -3176,7 +3176,11 @@ xdg-desktop-portal (IN-011, schema 72).
   on the server's desktop) and `state=denied` (the dialog was cancelled or
   refused, or sharing was stopped on the desktop; `last_error` says which).
   A denied input is not asked again on its own. A shared window that closes
-  is `target_gone` and is asked for again.
+  is `target_gone` and is asked for again: with a restore token at once, and
+  without one as `reopening`, after 30 s doubling to 5 min, so the dialog
+  does not open every few seconds. A share the desktop pauses is
+  `target_gone` (its `last_error` says paused) and goes live again when the
+  desktop resumes it, without asking.
 - A client sends `screen_capture_pick_request` with `request_id` and
   `input`: the server forgets the input's restore token and starts its
   capture again, which opens the desktop's dialog anew (a listed desktop
