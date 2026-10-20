@@ -1484,6 +1484,25 @@ pub enum TitlePhase {
     Out,
 }
 
+/// Where a shown title is (Protocol 2.75). Wire encoding:
+/// `shown=air|preview`, `shown=none` for a title not shown.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitleShownOn {
+    /// On Program (either side of a transition) or an overlay channel.
+    Air,
+    /// On Preview and not on air.
+    Preview,
+}
+
+/// Where a shown title is and the engine frame its timeline (tickers,
+/// scene clocks, since-take clocks, and its In phase on Program or
+/// Preview) started on (Protocol 2.75, GX-001).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitleTimelineStatus {
+    pub shown: TitleShownOn,
+    pub since_frame: u64,
+}
+
 /// The complete field state of one title input at durable `revision`, and
 /// its animation phase at the snapshot's frame cursor.
 ///
@@ -1493,7 +1512,10 @@ pub enum TitlePhase {
 ///
 /// `phase_frame` and `phase_frames` give In/Out progress in project frames:
 /// `phase_frame < phase_frames` while In or Out plays, and both are zero
-/// while idle or holding.
+/// while idle or holding. Since Protocol 2.75 the phase is also the title's
+/// In/Out on Program or Preview when no title take animates it, and
+/// `timeline` says where it is shown (`shown`, and `since_frame`, zero
+/// when it is not shown).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleStateMessage {
     pub revision: u64,
@@ -1503,6 +1525,7 @@ pub struct TitleStateMessage {
     pub phase: TitlePhase,
     pub phase_frame: u64,
     pub phase_frames: u64,
+    pub timeline: Option<TitleTimelineStatus>,
     pub fields: Vec<TitleFieldStatus>,
 }
 

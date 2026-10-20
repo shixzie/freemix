@@ -3004,6 +3004,7 @@ messages! {
     WebAccessRoleViewer => t("Viewer (tally light)"),
     WebAccessRoleAudio => t("Audio (mutes strips)"),
     WebAccessRoleOperator => t("Operator (switches, records, streams)"),
+    WebAccessRoleGraphics => t("Graphics (edits title text in the browser)"),
     WebAccessRoleOptionHover => t("Pair the next device as {role}"),
     WebAccessStart => t("Start pairing"),
     WebAccessStartHover => t("Show a one-time code and QR code that pair one device within two minutes; a new code replaces the previous one"),

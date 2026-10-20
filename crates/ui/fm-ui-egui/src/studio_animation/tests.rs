@@ -178,6 +178,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
             phase: fm_protocol::TitlePhase::Idle,
             phase_frame: 0,
             phase_frames: 0,
+            timeline: None,
             fields: vec![TitleFieldStatus {
                 field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Name".into(),

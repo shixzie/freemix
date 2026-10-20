@@ -19,6 +19,7 @@ mod shortcut;
 mod still;
 mod strip_dsp;
 mod system_audio;
+mod title_timeline;
 mod transition_favorite;
 
 use crate::ProjectValidationError;

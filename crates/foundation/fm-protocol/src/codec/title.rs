@@ -23,7 +23,8 @@ use core::num::NonZeroU128;
 use crate::{
     CodecError, MAX_LIST_ITEMS, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES,
     MAX_TITLE_FIELDS, MAX_TITLE_NAME_BYTES, MAX_TITLE_TEXT_CHARS, TitleAirRequirement,
-    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleSummary, WireInputId, WireTitleFieldId,
+    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleShownOn, TitleSummary,
+    TitleTimelineStatus, WireInputId, WireTitleFieldId,
 };
 
 use super::value::{parse_canonical_input, parse_canonical_u64};
@@ -187,6 +188,47 @@ pub(super) const fn encode_title_phase(phase: TitlePhase) -> &'static str {
         TitlePhase::Hold => "hold",
         TitlePhase::Out => "out",
     }
+}
+
+/// The wire token of where a title is shown (Protocol 2.75).
+pub(super) const fn encode_title_shown(timeline: Option<TitleTimelineStatus>) -> &'static str {
+    match timeline {
+        None => "none",
+        Some(TitleTimelineStatus {
+            shown: TitleShownOn::Air,
+            ..
+        }) => "air",
+        Some(TitleTimelineStatus {
+            shown: TitleShownOn::Preview,
+            ..
+        }) => "preview",
+    }
+}
+
+/// Strictly decodes where a title is shown and its timeline's start: a
+/// title not shown carries `since_frame=0`.
+pub(super) fn decode_title_timeline(
+    shown: &str,
+    since_frame: u64,
+) -> Result<Option<TitleTimelineStatus>, CodecError> {
+    let shown = match shown {
+        "none" if since_frame == 0 => return Ok(None),
+        "none" => {
+            return Err(CodecError::InvalidField {
+                field: "since_frame",
+                value: since_frame.to_string(),
+            });
+        }
+        "air" => TitleShownOn::Air,
+        "preview" => TitleShownOn::Preview,
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "shown",
+                value: shown.to_owned(),
+            });
+        }
+    };
+    Ok(Some(TitleTimelineStatus { shown, since_frame }))
 }
 
 /// Strictly decodes a title animation phase token.

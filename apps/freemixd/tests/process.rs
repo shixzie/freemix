@@ -6419,6 +6419,7 @@ fn assert_title_state(
             phase: fm_protocol::TitlePhase::Idle,
             phase_frame: 0,
             phase_frames: 0,
+            timeline: None,
             fields: vec![fm_protocol::TitleFieldStatus {
                 field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Bar".into(),

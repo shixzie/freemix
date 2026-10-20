@@ -968,6 +968,7 @@ pub struct Project {
     script_run: crate::ScriptRunState,
     shortcuts: Vec<crate::Shortcut>,
     media_lists: BTreeMap<InputId, crate::MediaList>,
+    title_timelines: BTreeMap<InputId, crate::TitleTimeline>,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
@@ -1011,6 +1012,7 @@ impl Project {
             script_run: crate::ScriptRunState::default(),
             shortcuts: Vec::new(),
             media_lists: BTreeMap::new(),
+            title_timelines: BTreeMap::new(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
@@ -1526,6 +1528,20 @@ impl Project {
         self.media_lists = lists;
     }
 
+    /// Where each shown title input's timeline started (GX-001, schema 65),
+    /// ascending by input. Runtime state the engine owns.
+    #[must_use]
+    pub const fn title_timelines(&self) -> &BTreeMap<InputId, crate::TitleTimeline> {
+        &self.title_timelines
+    }
+
+    /// Replaces the title timelines without checking them;
+    /// [`Project::validate`] reports one naming an input that is not a
+    /// title.
+    pub fn set_title_timelines(&mut self, timelines: BTreeMap<InputId, crate::TitleTimeline>) {
+        self.title_timelines = timelines;
+    }
+
     /// The project's scripts, in display order (RC-011, schema 54).
     #[must_use]
     pub fn scripts(&self) -> &[crate::Script] {
@@ -1939,6 +1955,7 @@ impl Project {
         self.grading.inputs.remove(&input);
         self.input_lifecycle.remove(&input);
         self.media_lists.remove(&input);
+        self.title_timelines.remove(&input);
         Ok(())
     }
 

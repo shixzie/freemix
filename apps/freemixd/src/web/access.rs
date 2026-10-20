@@ -340,6 +340,7 @@ const fn device_role(role: WebDeviceRole) -> DeviceRole {
         WebDeviceRole::Viewer => DeviceRole::Viewer,
         WebDeviceRole::Audio => DeviceRole::Audio,
         WebDeviceRole::Operator => DeviceRole::Operator,
+        WebDeviceRole::Graphics => DeviceRole::Graphics,
     }
 }
 
@@ -348,6 +349,7 @@ const fn protocol_role(role: DeviceRole) -> WebDeviceRole {
         DeviceRole::Viewer => WebDeviceRole::Viewer,
         DeviceRole::Audio => WebDeviceRole::Audio,
         DeviceRole::Operator => WebDeviceRole::Operator,
+        DeviceRole::Graphics => WebDeviceRole::Graphics,
     }
 }
 

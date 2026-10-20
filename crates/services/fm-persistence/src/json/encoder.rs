@@ -123,6 +123,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::script::write_script_run(output, project.script_run());
     super::shortcut::write_shortcuts(output, project.shortcuts());
     super::media_list::write_media_lists(output, project);
+    super::title_timeline::write_title_timelines(output, project);
     output.push_str("\n  },");
 }
 

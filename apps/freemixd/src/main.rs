@@ -12225,7 +12225,7 @@ fn restore_engine_with_titles(
     )?;
     show.set_shortcuts(canonical.shortcuts().to_vec())?;
     let position = project.position();
-    Ok(Engine::restore_persisted(
+    let mut engine = Engine::restore_persisted(
         show,
         realized,
         canonical.settings().frame_rate,
@@ -12243,7 +12243,10 @@ fn restore_engine_with_titles(
                 .map(runtime_receipt)
                 .collect::<AppResult<Vec<_>>>()?,
         },
-    )?)
+    )?;
+    // Every shown title continues its timeline (GX-001, schema 65).
+    engine.restore_title_timelines(canonical.title_timelines())?;
+    Ok(engine)
 }
 
 /// Seeds every Scene input's scene (layers and animation) into the restored
@@ -14930,6 +14933,7 @@ fn stored_project_with_receipts(
     project.set_script_run(show.script_run().clone());
     project.set_shortcuts(show.shortcuts().to_vec());
     project.set_media_lists(show.media_lists().clone());
+    project.set_title_timelines(snapshot.title_timelines().clone());
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());

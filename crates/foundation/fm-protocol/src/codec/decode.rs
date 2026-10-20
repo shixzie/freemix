@@ -48,6 +48,7 @@ use super::scene_layout::{
 };
 use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
+    decode_title_timeline,
     parse_title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{
@@ -1384,6 +1385,9 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
     let phase_frame = fields.canonical_required("phase_frame")?;
     let phase_frames = fields.canonical_required("phase_frames")?;
     validate_title_phase(phase, phase_frame, phase_frames)?;
+    let shown = fields.required("shown")?;
+    let since_frame = fields.canonical_required("since_frame")?;
+    let timeline = decode_title_timeline(&shown, since_frame)?;
     Ok(TitleStateMessage {
         revision: fields.canonical_required("revision")?,
         input: fields.canonical_input("input")?,
@@ -1392,6 +1396,7 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
         phase,
         phase_frame,
         phase_frames,
+        timeline,
         fields: values
             .into_iter()
             .zip(names)

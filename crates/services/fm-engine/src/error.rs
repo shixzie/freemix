@@ -322,6 +322,13 @@ pub enum SnapshotError {
         due_frame: u64,
         frame_cursor: u64,
     },
+    /// A saved title timeline names an input that is not a title, or starts
+    /// at or after the frame cursor (GX-001, schema 65).
+    TitleTimelineOutOfReach {
+        input: InputId,
+        since_frame: u64,
+        frame_cursor: u64,
+    },
 }
 
 impl fmt::Display for SnapshotError {
@@ -378,6 +385,14 @@ impl fmt::Display for SnapshotError {
             } => write!(
                 formatter,
                 "cue list {list}'s waiting cue resumes on frame {due_frame}, further past cursor {frame_cursor} than its wait allows"
+            ),
+            Self::TitleTimelineOutOfReach {
+                input,
+                since_frame,
+                frame_cursor,
+            } => write!(
+                formatter,
+                "title timeline of input {input} starts on frame {since_frame}, which is not a title shown before cursor {frame_cursor}"
             ),
         }
     }

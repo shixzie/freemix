@@ -43,7 +43,8 @@ use super::scene_layout::{
     encode_layout_scenes, encode_scene_clip, encode_scene_layers, encode_scene_list,
 };
 use super::title::{
-    encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_summaries,
+    encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_shown,
+    encode_title_summaries,
     title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{encode_favorite, encode_favorites, validate_favorite_slot};
@@ -1379,6 +1380,11 @@ fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Resul
     record.field("phase", encode_title_phase(message.phase))?;
     record.field("phase_frame", message.phase_frame)?;
     record.field("phase_frames", message.phase_frames)?;
+    record.field("shown", encode_title_shown(message.timeline))?;
+    record.field(
+        "since_frame",
+        message.timeline.map_or(0, |timeline| timeline.since_frame),
+    )?;
     record.field_string("fields", fields)?;
     record.field_string("field_names", names)
 }

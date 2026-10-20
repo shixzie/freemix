@@ -352,7 +352,7 @@ pub struct EngineSceneAir {
 
 /// What one frame of the realized switcher shows of a Scene input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SceneRole {
+pub(crate) enum SceneRole {
     /// On Program, or being brought in by a transition.
     Program,
     /// Being taken off Program by a transition.
@@ -361,7 +361,7 @@ enum SceneRole {
     Preview,
 }
 
-fn role(
+pub(crate) fn role(
     input: InputId,
     program: &fm_switcher::ProgramFrame,
     preview: InputId,

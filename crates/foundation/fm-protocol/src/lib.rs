@@ -92,6 +92,7 @@ pub use dto::{
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
     StreamRealizedState, StreamStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
     TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitlePhase,
+    TitleShownOn, TitleTimelineStatus,
     TitleStateMessage, TitleSummary, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId,
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
     choose_handshake_outcome,

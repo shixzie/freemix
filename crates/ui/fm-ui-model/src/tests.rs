@@ -1553,6 +1553,7 @@ mod titles {
             phase: fm_protocol::TitlePhase::In,
             phase_frame: 3,
             phase_frames: 20,
+            timeline: None,
             fields: vec![
                 TitleFieldStatus {
                     field: field(1),

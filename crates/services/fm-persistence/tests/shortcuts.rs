@@ -161,7 +161,7 @@ fn shortcuts_round_trip_exactly_and_strictly() {
              \"action\": {\"type\": \"script\", \"script\": 2}},\n      {\"id\": 5, \"name\": \
              \"Back\", \"enabled\": true, \"key\": {\"key\": \"B\", \"command\": false, \
              \"shift\": false, \"alt\": false}, \"osc\": null, \"action\": {\"type\": \"cue\", \
-             \"list\": 1, \"operation\": \"back\"}}\n    ],\n    \"media_lists\": []\n  },"
+             \"list\": 1, \"operation\": \"back\"}}\n    ],\n    \"media_lists\": [],\n    \"title_timelines\": []\n  },"
         ),
         "{text}"
     );

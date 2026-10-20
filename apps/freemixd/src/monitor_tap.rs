@@ -226,9 +226,15 @@ pub(crate) struct RealizedMonitorState {
     /// Every realized active overlay, in channel order (lowest channel
     /// composites first, so the highest channel is on top).
     pub(crate) overlays: Vec<RealizedOverlay>,
-    /// The animation pose of every title a title take put on air, ascending
+    /// The animation pose of every title a title take put on air, or that
+    /// plays its In or Out phase on Program or Preview (GX-001), ascending
     /// by input; any other title renders its Hold pose.
     pub(crate) titles: Vec<(InputId, AnimSample)>,
+    /// The frame each title input shown on Program, an overlay channel, or
+    /// Preview started its timeline on, ascending by input: the engine's
+    /// own dating, so tickers and clocks count from the take exactly as
+    /// journal replay reproduces it (GX-001).
+    pub(crate) shown: Vec<(InputId, u64)>,
     /// The animation pose of every Scene input mid or after an In or Out
     /// phase on Program or Preview (GX-011 stage 5), ascending by input;
     /// any other scene renders its Hold pose.
@@ -267,10 +273,11 @@ impl RealizedMonitorState {
                 .iter()
                 .filter_map(RealizedOverlay::from_status)
                 .collect(),
-            titles: control
-                .titles_on_air()
+            titles: title_poses(control),
+            shown: control
+                .titles_shown()
                 .into_iter()
-                .map(|title| (title.input, title.frame.sample))
+                .map(|title| (title.input, title.timeline.since_frame))
                 .collect(),
             scenes: control
                 .scenes_on_air()
@@ -292,6 +299,14 @@ impl RealizedMonitorState {
             .iter()
             .find(|(title, _)| *title == input)
             .map_or(AnimSample::Hold, |(_, pose)| *pose)
+    }
+
+    /// The frame `input`'s timeline started on, while it is shown.
+    fn taken_frame(&self, input: InputId) -> Option<u64> {
+        self.shown
+            .iter()
+            .find(|(title, _)| *title == input)
+            .map(|(_, since)| *since)
     }
 
     fn scene_pose(&self, input: InputId) -> AnimSample {
@@ -386,10 +401,6 @@ pub(crate) struct SimulatedMonitorTap {
     composed: Vec<ComposedScene>,
     /// The latest render of each title input, keyed by its full title state.
     rendered_titles: BTreeMap<InputId, RenderedTitle>,
-    /// The frame each title input on air (on Program or a realized overlay)
-    /// was first seen there, which since-take clocks count from. Observed
-    /// once per poll, so a take is dated to the first poll that sees it.
-    taken_titles: BTreeMap<InputId, u64>,
     /// The title phase each title on air is in, and the instant this tap saw
     /// that phase start (`None` when it did not: the phase began before the
     /// tap was watching, or its replay has caught up with the engine).
@@ -461,7 +472,6 @@ impl SimulatedMonitorTap {
         demand: bool,
         emit: &mut dyn FnMut(MonitorTap, Vec<u8>),
     ) {
-        self.observe_takes(state, project);
         if !demand {
             self.idle();
             return;
@@ -693,7 +703,7 @@ impl SimulatedMonitorTap {
     ) -> Option<&RenderedTitle> {
         let title = title_render::title_of_input(project, input)?;
         let (frame, pose) = (state.frame, state.pose(input));
-        let taken_frame = self.taken_frame(input);
+        let taken_frame = state.taken_frame(input);
         let key = title_render::title_key(&self.titles, title, frame, taken_frame, pose)?;
         let cached = self
             .rendered_titles
@@ -783,7 +793,7 @@ impl SimulatedMonitorTap {
                             &self.titles,
                             title,
                             state.frame,
-                            self.taken_frame(input),
+                            state.taken_frame(input),
                             state.pose(input),
                         )
                     })
@@ -883,24 +893,21 @@ impl SimulatedMonitorTap {
         }
         replayed
     }
+}
 
-    /// Dates each title input newly on Program or a realized overlay to the
-    /// current frame and forgets every title no longer on air.
-    fn observe_takes(&mut self, state: &RealizedMonitorState, project: &Project) {
-        let on_air = std::iter::once(state.program)
-            .chain(state.overlays.iter().map(|overlay| overlay.source))
-            .filter(|input| title_render::title_of_input(project, *input).is_some())
-            .collect::<Vec<_>>();
-        self.taken_titles.retain(|input, _| on_air.contains(input));
-        for input in on_air {
-            self.taken_titles.entry(input).or_insert(state.frame);
-        }
+/// The pose of every title a title take animates on its overlay channel or
+/// that plays its In or Out phase on Program or Preview, ascending by
+/// input: a take's pose wins over the bus pose (GX-001).
+fn title_poses(control: &ControlService<Policy>) -> Vec<(InputId, AnimSample)> {
+    let mut poses: BTreeMap<InputId, AnimSample> = control
+        .titles_shown()
+        .into_iter()
+        .filter_map(|title| Some((title.input, title.bus?.sample)))
+        .collect();
+    for title in control.titles_on_air() {
+        poses.insert(title.input, title.frame.sample);
     }
-
-    /// The frame `input` went on air at, while it is on air.
-    fn taken_frame(&self, input: InputId) -> Option<u64> {
-        self.taken_titles.get(&input).copied()
-    }
+    poses.into_iter().collect()
 }
 
 /// Whole frames of a show at `rate` in `elapsed` wall time.
@@ -1336,6 +1343,7 @@ mod tests {
             preview: input_id(preview),
             overlays: Vec::new(),
             titles: Vec::new(),
+            shown: Vec::new(),
             scenes: Vec::new(),
             airs: Vec::new(),
             slideshows: Vec::new(),
@@ -1999,39 +2007,35 @@ mod tests {
     }
 
     #[test]
-    fn titles_on_program_or_an_overlay_are_dated_to_the_frame_they_went_on_air() {
+    fn titles_are_dated_by_the_engine_timeline_not_by_when_the_tap_sees_them() {
         let mut project = project(1_920, 1_080);
         add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
         add_title(&mut project, 22, CLOCK_TITLE_URI, (200, 40, 10));
-        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
-        let observe = |tap: &mut SimulatedMonitorTap, frame, program, overlays: &[u128]| {
-            let mut realized = state(1, program, 1);
-            realized.frame = frame;
-            realized.overlays = overlays
-                .iter()
-                .map(|source| {
-                    overlay(
-                        *source,
-                        255,
-                        OverlayPositionPreset::FullFrame,
-                        OverlayBorderPreset::None,
-                    )
-                })
-                .collect();
-            // Taking is observed with or without monitor demand.
-            tap.poll_state(realized, &project, &server(), Instant::now(), false);
-            (tap.taken_frame(input_id(20)), tap.taken_frame(input_id(22)))
+        let assets = title_assets();
+        let title = title_render::title_of_input(&project, input_id(22)).unwrap();
+        // The engine took the clock title to air on frame 4; a tap that
+        // first looks on frame 9 still counts from frame 4.
+        let mut realized = state(1, 22, 1);
+        realized.frame = 9;
+        realized.shown = vec![(input_id(22), 4)];
+        assert_eq!(realized.taken_frame(input_id(22)), Some(4));
+        assert_eq!(realized.taken_frame(input_id(20)), None);
+        let key = |frame, taken| {
+            title_render::title_key(&assets, title, frame, taken, AnimSample::Hold).unwrap()
         };
-        // Preview alone and non-title sources are not on air.
-        assert_eq!(observe(&mut tap, 3, 1, &[2]), (None, None));
-        assert_eq!(observe(&mut tap, 4, 1, &[22]), (None, Some(4)));
-        // A title stays dated to its take while it remains on air, on any
-        // bus.
-        assert_eq!(observe(&mut tap, 9, 20, &[22]), (Some(9), Some(4)));
-        assert_eq!(observe(&mut tap, 12, 22, &[20]), (Some(9), Some(4)));
-        // Off air forgets the take; the next take starts over.
-        assert_eq!(observe(&mut tap, 15, 1, &[20]), (Some(9), None));
-        assert_eq!(observe(&mut tap, 18, 1, &[22]), (None, Some(18)));
+        assert_eq!(
+            key(9, realized.taken_frame(input_id(22))),
+            key(9, Some(4))
+        );
+        // The take frame is part of a scene-timed title's key: the same
+        // frame on another timeline is another picture.
+        assert_ne!(key(9, Some(4)), key(9, Some(5)));
+        let mut tap = SimulatedMonitorTap::with_titles(Arc::clone(&assets));
+        assert_eq!(
+            tap.poll_state(realized, &project, &server(), Instant::now(), true)
+                .len(),
+            2
+        );
     }
 
     #[test]

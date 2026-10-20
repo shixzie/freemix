@@ -1009,6 +1009,10 @@ pub struct FrameResult {
     /// input, with the pose to render it in (GX-011 stage 5). A scene
     /// absent here (shown any other way, or restored) holds.
     pub scenes: Vec<crate::EngineSceneAir>,
+    /// Every title input this frame shows on Program, an overlay channel,
+    /// or Preview, ascending by input, with the frame its timeline started
+    /// and its pose on Program or Preview (GX-001).
+    pub titles_shown: Vec<crate::EngineTitleShown>,
     /// Every media input with an open source, a realized command, or a
     /// fault this frame, ascending by input (IN-003).
     pub media: Vec<crate::EngineMediaFrame>,
@@ -1047,9 +1051,17 @@ pub struct EngineSnapshot {
     clock_time: ClockTime,
     frames_rendered: u64,
     receipts: Vec<(IdempotencyKey, CommandReceipt<EngineAcceptance>)>,
+    title_timelines: BTreeMap<InputId, fm_model::TitleTimeline>,
 }
 
 impl EngineSnapshot {
+    /// Where each shown title input's timeline started (GX-001): runtime
+    /// state a project persists so a restored show continues it.
+    #[must_use]
+    pub const fn title_timelines(&self) -> &BTreeMap<InputId, fm_model::TitleTimeline> {
+        &self.title_timelines
+    }
+
     #[must_use]
     pub const fn show(&self) -> &ShowState {
         &self.show
@@ -1162,6 +1174,10 @@ pub struct Engine {
     /// (see [`crate::EngineSceneAnimationEdit`]). Runtime state: never
     /// snapshotted, so a restored scene holds.
     scene_air: BTreeMap<InputId, crate::scene_animation::SceneAir>,
+    /// Every title input on Program, an overlay channel, or Preview, with
+    /// the frame its timeline started (GX-001). Snapshotted, so a restored
+    /// title's tickers and clocks continue.
+    title_shown: BTreeMap<InputId, crate::title_timeline::TitleShown>,
     /// Whether a scene clip can be carried to clients (see
     /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
     scene_clip_bound: Option<crate::SceneClipBound>,
@@ -1194,6 +1210,7 @@ impl Engine {
             title_air: BTreeMap::new(),
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
+            title_shown: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
@@ -1542,6 +1559,60 @@ impl Engine {
     #[must_use]
     pub fn scenes_in_motion(&self) -> bool {
         crate::scene_animation::scenes_in_motion(&self.scene_air, self.frame_cursor().get())
+    }
+
+    /// Every title input shown on Program, an overlay channel, or Preview
+    /// as the next frame (the frame cursor) shows it absent new commands,
+    /// ascending by input, with the frame its timeline started (GX-001).
+    #[must_use]
+    pub fn titles_shown(&self) -> Vec<crate::EngineTitleShown> {
+        crate::title_timeline::shown_frames(
+            &self.title_shown,
+            self.commands.state(),
+            self.frame_cursor().get(),
+            self.frame_rate,
+        )
+    }
+
+    /// Where each shown title input's timeline started (GX-001).
+    #[must_use]
+    pub fn title_timelines(&self) -> BTreeMap<InputId, fm_model::TitleTimeline> {
+        crate::title_timeline::saved(&self.title_shown)
+    }
+
+    /// Whether any title is playing an In or Out phase on Program or
+    /// Preview on the next frame.
+    #[must_use]
+    pub fn titles_in_motion(&self) -> bool {
+        self.titles_shown()
+            .iter()
+            .any(crate::EngineTitleShown::in_motion)
+    }
+
+    /// Resumes the title timelines a snapshot or project saved (GX-001), on
+    /// a freshly restored engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotError::TitleTimelineOutOfReach`] when a timeline
+    /// names an input that is not a title or starts at or after the frame
+    /// cursor; nothing changes then.
+    pub fn restore_title_timelines(
+        &mut self,
+        timelines: &BTreeMap<InputId, fm_model::TitleTimeline>,
+    ) -> Result<(), SnapshotError> {
+        let cursor = self.frame_cursor().get();
+        if let Some((input, timeline)) = timelines.iter().find(|(input, timeline)| {
+            self.show().title(**input).is_none() || timeline.since_frame >= cursor
+        }) {
+            return Err(SnapshotError::TitleTimelineOutOfReach {
+                input: *input,
+                since_frame: timeline.since_frame,
+                frame_cursor: cursor,
+            });
+        }
+        self.title_shown = crate::title_timeline::restored(timelines, &self.realized_switcher);
+        Ok(())
     }
 
     /// The length of `phase` of Scene input `input`'s animation in frames of
@@ -2655,6 +2726,20 @@ impl Engine {
             self.frame_rate,
         );
         let scenes = crate::scene_animation::scene_air_frames(&self.scene_air, frame);
+        crate::title_timeline::step_titles_shown(
+            &mut self.title_shown,
+            self.commands.state(),
+            &program,
+            &self.realized_switcher,
+            &self.title_air,
+            frame,
+        );
+        let titles_shown = crate::title_timeline::shown_frames(
+            &self.title_shown,
+            self.commands.state(),
+            frame,
+            self.frame_rate,
+        );
         for event in self.realized_switcher.advance_frame_events() {
             if matches!(event, SwitcherEvent::ProgramChanged { .. }) {
                 self.transition_in_flight = None;
@@ -2694,6 +2779,7 @@ impl Engine {
             manual_transition,
             titles,
             scenes,
+            titles_shown,
             media: self.tick_media(&media_operations),
             slideshows: self.tick_slideshows(&page_operations),
             revision: self.commands.revision(),
@@ -2794,6 +2880,7 @@ impl Engine {
             clock_time: self.clock.now(),
             frames_rendered: self.scheduler.pacer().next_frame().get(),
             receipts,
+            title_timelines: crate::title_timeline::saved(&self.title_shown),
         })
     }
 
@@ -2812,14 +2899,15 @@ impl Engine {
             frame_cursor: FrameNumber::new(snapshot.frames_rendered),
             receipts: snapshot.receipts,
         };
-        Self::restore_persisted(
+        let mut engine = Self::restore_persisted(
             snapshot.show,
             snapshot.realized_switcher,
             snapshot.frame_rate,
             snapshot.clock_domain,
             restore_state,
-        )
-        .map_err(EngineError::from)
+        )?;
+        engine.restore_title_timelines(&snapshot.title_timelines)?;
+        Ok(engine)
     }
 
     /// Restores durable and idle runtime state supplied by persistence.
@@ -2867,6 +2955,7 @@ impl Engine {
             title_air: BTreeMap::new(),
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
+            title_shown: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),

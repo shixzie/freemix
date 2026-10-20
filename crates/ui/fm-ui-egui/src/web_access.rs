@@ -94,6 +94,7 @@ pub(crate) const fn role_message(role: WebDeviceRole) -> Msg {
         WebDeviceRole::Viewer => Msg::WebAccessRoleViewer,
         WebDeviceRole::Audio => Msg::WebAccessRoleAudio,
         WebDeviceRole::Operator => Msg::WebAccessRoleOperator,
+        WebDeviceRole::Graphics => Msg::WebAccessRoleGraphics,
     }
 }
 
@@ -311,6 +312,7 @@ fn draw_pairing(
                             WebDeviceRole::Viewer,
                             WebDeviceRole::Audio,
                             WebDeviceRole::Operator,
+                            WebDeviceRole::Graphics,
                         ] {
                             let name = l.text(role_message(role));
                             if ui

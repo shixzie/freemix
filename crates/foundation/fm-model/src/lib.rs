@@ -139,8 +139,8 @@ pub use stream::{
 };
 pub use title::{
     MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELDS, MAX_TITLE_TEXT_CHARS, SetTitleFieldsError,
-    TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleFieldsError, TitleInput,
-    validate_title_fields,
+    TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleFieldsError, TitleInput, TitleShownOn,
+    TitleTimeline, validate_title_fields,
 };
 pub use transition_favorite::{
     DEFAULT_TRANSITION_FAVORITE_DURATION_FRAMES, MAX_TRANSITION_FAVORITE_DURATION_FRAMES,

@@ -271,7 +271,7 @@ fn live_lan_round_trips_exactly_and_strictly() {
     store.save(&stored(expected.clone())).unwrap();
     assert_eq!(store.load().unwrap().project(), &expected);
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    let live_lan = "\"live_lan\": {\"enabled\": true, \"source\": \"output:41\", \"max_viewers\": 12, \"pin\": \"024680\"},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": []\n  },";
+    let live_lan = "\"live_lan\": {\"enabled\": true, \"source\": \"output:41\", \"max_viewers\": 12, \"pin\": \"024680\"},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": []\n  },";
     assert!(text.contains(live_lan), "{text}");
 
     let mut open = expected.clone();

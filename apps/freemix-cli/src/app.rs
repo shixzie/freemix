@@ -3087,6 +3087,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     project.set_script_run(snapshot.show().script_run().clone());
     project.set_shortcuts(snapshot.show().shortcuts().to_vec());
     project.set_media_lists(snapshot.show().media_lists().clone());
+    project.set_title_timelines(snapshot.title_timelines().clone());
     sync_title_fields(&mut project, snapshot.show())?;
     // A document's page lives beside its asset (IN-014).
     for (&input, &page) in snapshot.show().paged_inputs() {
@@ -4586,7 +4587,7 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
     restore_titles(path, &mut show, &project)?;
     restore_project_edit_state(&mut show, &project)?;
     let position = stored.position();
-    let engine = Engine::restore_persisted(
+    let mut engine = Engine::restore_persisted(
         show,
         realized,
         project.settings().frame_rate,
@@ -4607,6 +4608,8 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
     )?;
     let mut engine = engine;
     restore_document_page_counts(path, &project, &mut engine);
+    // Every shown title continues its timeline (GX-001, schema 65).
+    engine.restore_title_timelines(project.title_timelines())?;
     Ok(ProjectEngine { project, engine })
 }
 

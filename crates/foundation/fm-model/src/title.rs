@@ -212,3 +212,27 @@ impl fmt::Display for SetTitleFieldsError {
 }
 
 impl std::error::Error for SetTitleFieldsError {}
+
+/// Where a title input is shown, for its timeline (GX-001, schema 65).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TitleShownOn {
+    /// On air: on Program (either side of a transition) or on an overlay
+    /// channel.
+    Air,
+    /// On Preview and not on air.
+    Preview,
+}
+
+/// The frame a shown title's timeline started on (GX-001, schema 65).
+///
+/// A title's tickers, scene clocks, and since-take clocks count from the
+/// engine frame it was taken to Program, an overlay channel, or Preview,
+/// not from the start of the show. The engine owns this runtime state; a
+/// project carries it so a restored show (a checkpoint followed by journal
+/// replay) continues every timeline exactly where it was.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TitleTimeline {
+    pub on: TitleShownOn,
+    /// The engine frame the title was taken to `on`.
+    pub since_frame: u64,
+}

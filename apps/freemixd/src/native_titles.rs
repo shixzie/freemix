@@ -26,18 +26,23 @@
 //! project frame interval and never more often than every
 //! [`MIN_ANIMATED_TITLE_REFRESH`] (25 Hz), on the one worker. A render
 //! slower than that just lowers the refresh rate; it never delays a frame.
-//! Scene time is the most recent frame cursor the loop published times the
-//! project frame duration, the same approximation the simulated monitor tap
-//! documents: every title is treated as having started at frame zero.
+//! Scene time (what tickers and scene clocks show) is the frames between
+//! the title's timeline start and the most recent frame cursor the loop
+//! published, times the project frame duration: the engine dates each title
+//! to the frame it was taken to Program, an overlay channel, or Preview
+//! ([`fm_engine::FrameResult::titles_shown`], GX-001), so a ticker starts
+//! its crawl on the take and journal replay reproduces it exactly.
 //!
 //! Keyframe animation is frame-accurate. Before each frame is realized the
 //! loop hands the worker the pose the engine projects for it
-//! ([`fm_engine::FrameResult::titles`]; the Hold pose for any title it does
-//! not track) with [`NativeTitleSources::observe_frame`]: a title whose pose
+//! ([`fm_engine::FrameResult::titles`] for a title take, otherwise the In or
+//! Out phase a title plays on Program or Preview,
+//! [`fm_engine::FrameResult::titles_shown`]; the Hold pose for any title it
+//! does not track) with [`NativeTitleSources::observe_frame`]: a title whose pose
 //! changed (every frame of its In or Out phase, and once when it settles)
 //! renders that pose at that frame. [`NativeTitleSources::covered`] then
-//! holds the frame until every title the engine tracks on an overlay has
-//! ingested the pose of exactly that frame, so the first In frame, each
+//! holds the frame until every title the engine animates has ingested the
+//! pose of exactly that frame, so the first In frame, each
 //! phase frame, and the last Out frame go to air as projected. A frame is
 //! held at most [`MAX_TITLE_POSE_WAIT`] past its host deadline or, when the
 //! loop runs late, past the moment it first waited ([`SourceWait`]), and
@@ -48,10 +53,9 @@
 //! clock domain (see [`title_render::TitleTime`]): the monotonic clock is the
 //! published frame on the project frame grid and time of day reads the
 //! system wall clock at the render. A since-take stopwatch counts from the
-//! frame a title was first projected on Program (either side of a
-//! transition) or on an active overlay channel, which the session loop
-//! publishes with [`NativeTitleSources::observe_frame`]; it rests at zero
-//! while the title is off air. Production clock templates are
+//! same engine timeline start, which the session loop publishes with
+//! [`NativeTitleSources::observe_frame`]; it rests at zero while the title
+//! is not shown. Production clock templates are
 //! time-dependent, so they refresh at the same bounded rate.
 //!
 //! A re-render that fails (for example a field value the template no longer
@@ -78,13 +82,19 @@ use fm_video::ImageFrame;
 use crate::source_wait::SourceWait;
 use crate::title_render::{self, TitleAssets};
 
-/// The pose the engine projects for each title it tracks on `projected`.
+/// The pose the engine projects for each title it animates on `projected`:
+/// a title take's pose on its overlay channel, otherwise the title's In or
+/// Out phase on Program or Preview (GX-001).
 fn projected_poses(projected: &FrameResult) -> Vec<(InputId, AnimSample)> {
-    projected
-        .titles
+    let mut poses: BTreeMap<InputId, AnimSample> = projected
+        .titles_shown
         .iter()
-        .map(|title| (title.input, title.frame.sample))
-        .collect()
+        .filter_map(|title| Some((title.input, title.bus?.sample)))
+        .collect();
+    for title in &projected.titles {
+        poses.insert(title.input, title.frame.sample);
+    }
+    poses.into_iter().collect()
 }
 
 /// Shortest interval between two renders of a time-dependent title.
@@ -200,7 +210,8 @@ struct WorkerState {
     /// Finished frames not yet ingested, latest-wins per input, with the
     /// pose each was rendered in.
     completed: BTreeMap<InputId, (AnimSample, CpuVideoFrame)>,
-    /// The frame each title input on air was first projected there.
+    /// The frame each shown title input's timeline started on, as the
+    /// engine projects it.
     taken: BTreeMap<InputId, u64>,
     /// The pose, and the projected frame it is for, each title renders in
     /// next; a title absent renders its Hold pose at the published frame.
@@ -366,23 +377,17 @@ impl NativeTitleSources {
         self.shared.frame.store(frame, Ordering::Relaxed);
     }
 
-    /// Dates every title input this projected frame puts on air (either
-    /// Program endpoint or an active overlay channel's source) to its frame,
-    /// keeping the date of a title already on air, and forgets every title
-    /// it does not show; hands the worker every title whose animation pose
-    /// for this frame differs from the one it last rendered. Never renders.
+    /// Takes the engine's timeline start of every title input this
+    /// projected frame shows (on Program, an overlay channel, or Preview)
+    /// and forgets every title it does not show; hands the worker every
+    /// title whose animation pose for this frame differs from the one it
+    /// last rendered. Never renders.
     pub(crate) fn observe_frame(&self, projected: &FrameResult) {
-        let program = &projected.program;
-        let overlays = projected
-            .overlays
-            .iter()
-            .filter(|channel| channel.is_active() || channel.is_transitioning())
-            .filter_map(fm_switcher::OverlayChannelState::source);
-        self.observe_on_air(
-            projected.frame.get(),
-            std::iter::once(program.primary)
-                .chain(program.secondary)
-                .chain(overlays),
+        self.observe_shown(
+            projected
+                .titles_shown
+                .iter()
+                .map(|title| (title.input, title.timeline.since_frame)),
         );
         self.observe_poses(projected.frame.get(), &projected_poses(projected));
     }
@@ -454,18 +459,14 @@ impl NativeTitleSources {
         !pending || self.wait.waited_out(frame, deadline, now)
     }
 
-    fn observe_on_air(&self, frame: u64, on_air: impl Iterator<Item = InputId>) {
+    fn observe_shown(&self, shown: impl Iterator<Item = (InputId, u64)>) {
         if self.worker.is_none() {
             return;
         }
-        let on_air = on_air
-            .filter(|input| self.submitted.contains_key(input))
-            .collect::<BTreeSet<_>>();
-        let mut state = self.shared.lock();
-        state.taken.retain(|input, _| on_air.contains(input));
-        for input in on_air {
-            state.taken.entry(input).or_insert(frame);
-        }
+        let shown = shown
+            .filter(|(input, _)| self.submitted.contains_key(input))
+            .collect::<BTreeMap<_, _>>();
+        self.shared.lock().taken = shown;
     }
 
     /// Takes every finished frame not yet ingested, in input order, noting
@@ -861,30 +862,31 @@ mod tests {
     }
 
     #[test]
-    fn titles_are_dated_to_the_projected_frame_they_go_on_air_until_they_leave_it() {
+    fn titles_take_the_engine_timeline_start_and_forget_it_when_not_shown() {
         let project = project(&[
             (20, title(BAR_URI, 0, [1, 2, 3, 255])),
             (21, title(CLOCK_URI, 0, [1, 2, 3, 255])),
         ]);
         let (sources, _) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
         // Inputs that are not titles are never dated.
-        sources.observe_on_air(5, [input_id(20), input_id(99)].into_iter());
+        sources.observe_shown([(input_id(20), 5), (input_id(99), 5)].into_iter());
         assert_eq!(sources.taken_frames(), vec![(input_id(20), 5)]);
-        // A title already on air keeps its take frame.
-        sources.observe_on_air(7, [input_id(21), input_id(20)].into_iter());
+        // The engine's dating is taken as is, never re-dated here.
+        sources.observe_shown([(input_id(21), 7), (input_id(20), 5)].into_iter());
         assert_eq!(
             sources.taken_frames(),
             vec![(input_id(20), 5), (input_id(21), 7)]
         );
-        // Leaving air forgets the take; the next take starts over.
-        sources.observe_on_air(9, [input_id(21)].into_iter());
+        // A title the engine no longer shows is forgotten; a new timeline
+        // replaces the old one.
+        sources.observe_shown([(input_id(21), 7)].into_iter());
         assert_eq!(sources.taken_frames(), vec![(input_id(21), 7)]);
-        sources.observe_on_air(11, [input_id(20), input_id(21)].into_iter());
+        sources.observe_shown([(input_id(20), 11), (input_id(21), 7)].into_iter());
         assert_eq!(
             sources.taken_frames(),
             vec![(input_id(20), 11), (input_id(21), 7)]
         );
-        sources.observe_on_air(12, std::iter::empty());
+        sources.observe_shown(std::iter::empty());
         assert_eq!(sources.taken_frames(), Vec::new());
     }
 

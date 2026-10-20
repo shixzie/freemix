@@ -44,6 +44,9 @@ pub enum WebDeviceRole {
     Viewer,
     Audio,
     Operator,
+    /// Edits title fields from the title editor page (Protocol 2.75,
+    /// GX-006).
+    Graphics,
 }
 
 impl WebDeviceRole {
@@ -53,6 +56,7 @@ impl WebDeviceRole {
             Self::Viewer => "viewer",
             Self::Audio => "audio",
             Self::Operator => "operator",
+            Self::Graphics => "graphics",
         }
     }
 
@@ -62,17 +66,19 @@ impl WebDeviceRole {
             "viewer" => Some(Self::Viewer),
             "audio" => Some(Self::Audio),
             "operator" => Some(Self::Operator),
+            "graphics" => Some(Self::Graphics),
             _ => None,
         }
     }
 
     /// The page a device of this role opens: the tally light for a viewer,
-    /// the operator surface otherwise.
+    /// the title editor for graphics, the operator surface otherwise.
     #[must_use]
     pub const fn page_path(self) -> &'static str {
         match self {
             Self::Viewer => "/tally",
             Self::Audio | Self::Operator => "/operator",
+            Self::Graphics => "/titles",
         }
     }
 }

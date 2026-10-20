@@ -9737,6 +9737,7 @@ mod tests {
             input_audio_strip_updates: Vec::new(),
             titles: Vec::new(),
             scenes: Vec::new(),
+            titles_shown: Vec::new(),
             slideshows: Vec::new(),
             media: Vec::new(),
             frame: FrameNumber::new(frame),

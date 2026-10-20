@@ -28,6 +28,9 @@ pub enum DeviceRole {
     Audio,
     /// Switches, records, streams, and mutes.
     Operator,
+    /// Edits title text and other project content from the title editor
+    /// page (GX-006), and watches.
+    Graphics,
 }
 
 impl DeviceRole {
@@ -39,6 +42,7 @@ impl DeviceRole {
             Self::Viewer => &[Role::Viewer],
             Self::Audio => &[Role::Viewer, Role::Audio],
             Self::Operator => &[Role::Viewer, Role::Audio, Role::Operator],
+            Self::Graphics => &[Role::Viewer, Role::Graphics],
         }
     }
 
@@ -49,6 +53,7 @@ impl DeviceRole {
             Self::Viewer => "viewer",
             Self::Audio => "audio",
             Self::Operator => "operator",
+            Self::Graphics => "graphics",
         }
     }
 
@@ -58,6 +63,7 @@ impl DeviceRole {
             "viewer" => Some(Self::Viewer),
             "audio" => Some(Self::Audio),
             "operator" => Some(Self::Operator),
+            "graphics" => Some(Self::Graphics),
             _ => None,
         }
     }

@@ -1747,6 +1747,7 @@ mod titles {
             phase: fm_protocol::TitlePhase::Idle,
             phase_frame: 0,
             phase_frames: 0,
+            timeline: None,
             fields: vec![TitleFieldStatus {
                 field: field(1),
                 name: "Name".into(),
@@ -2088,6 +2089,7 @@ mod playlists {
             phase: fm_protocol::TitlePhase::Idle,
             phase_frame: 0,
             phase_frames: 0,
+            timeline: None,
             fields: vec![TitleFieldStatus {
                 field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Name".into(),

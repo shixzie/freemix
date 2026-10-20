@@ -7391,6 +7391,7 @@ mod tests {
                 phase: fm_protocol::TitlePhase::Idle,
                 phase_frame: 0,
                 phase_frames: 0,
+                timeline: None,
                 fields: vec![TitleFieldStatus {
                     field: title_field(),
                     name: "Name".into(),

@@ -3979,6 +3979,7 @@ mod titles {
             phase: TitlePhase::In,
             phase_frame: 3,
             phase_frames: 20,
+            timeline: None,
             fields,
         })
     }
@@ -4119,6 +4120,7 @@ mod titles {
                 phase,
                 phase_frame: frame,
                 phase_frames: frames,
+                timeline: None,
                 ..match state(Vec::new()) {
                     WireMessage::TitleState(message) => message,
                     _ => unreachable!(),
@@ -4144,6 +4146,7 @@ mod titles {
                 phase,
                 phase_frame: frame,
                 phase_frames: frames,
+                timeline: None,
                 ..match state(Vec::new()) {
                     WireMessage::TitleState(message) => message,
                     _ => unreachable!(),
@@ -4180,6 +4183,7 @@ mod titles {
             phase: TitlePhase::Out,
             phase_frame: u64::MAX - 1,
             phase_frames: u64::MAX,
+            timeline: None,
             fields: ids
                 .map(|id| {
                     status(

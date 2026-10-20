@@ -405,18 +405,19 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
         }
     }
 
-    /// Returns `ticks` extended until no scene is mid In or Out phase
-    /// (GX-011 stage 5): the frames a command must realize so the scenes it
-    /// takes to Program or Preview (or off Program) finish their phases, as
-    /// a title take realizes its whole In phase. A staged engine without
-    /// Scene inputs, or one that cannot tick, needs exactly `ticks`.
+    /// Returns `ticks` extended until no scene or title is mid In or Out
+    /// phase on Program or Preview (GX-011 stage 5, GX-001): the frames a
+    /// command must realize so the scenes and titles it takes to Program or
+    /// Preview (or off Program) finish their phases, as a title take
+    /// realizes its whole In phase. A staged engine without Scene or title
+    /// inputs, or one that cannot tick, needs exactly `ticks`.
     #[must_use]
     pub fn scene_settle_ticks(&self, ticks: u64) -> u64 {
         let engine = match &self.kind {
             PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
             PreparedSubmissionKind::AuthorizationDenial { .. } => &self.control.engine,
         };
-        if engine.show().scene_inputs().is_empty() {
+        if engine.show().scene_inputs().is_empty() && engine.show().titles().is_empty() {
             return ticks;
         }
         let mut projected = engine.clone();
@@ -426,7 +427,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             }
         }
         let mut settled = ticks;
-        while projected.scenes_in_motion() {
+        while projected.scenes_in_motion() || projected.titles_in_motion() {
             if projected.tick().is_err() {
                 break;
             }
@@ -1980,6 +1981,22 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.scenes_in_motion()
     }
 
+    /// Every title input shown on Program, an overlay channel, or Preview
+    /// at the frame cursor, with the frame its timeline started (GX-001).
+    #[must_use]
+    pub fn titles_shown(&self) -> Vec<fm_engine::EngineTitleShown> {
+        self.engine.titles_shown()
+    }
+
+    /// Where each shown title input's timeline started (GX-001), as a
+    /// project persists it.
+    #[must_use]
+    pub fn title_timelines(
+        &self,
+    ) -> std::collections::BTreeMap<fm_types::InputId, fm_model::TitleTimeline> {
+        self.engine.title_timelines()
+    }
+
     /// Returns the `playlist_state` a session writes after [`Self::snapshot`]
     /// (and its title states) when the snapshot announces one
     /// ([`SnapshotMessage::playlist_follows`]), at the current revision and
@@ -3271,15 +3288,21 @@ fn title_changed(engine: &Engine, input: InputId) -> EventPayload {
 fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
     let revision = engine.revision().get();
     let on_air = engine.titles_on_air();
+    let shown = engine.titles_shown();
     engine
         .show()
         .titles()
         .iter()
         .map(|(input, title)| {
+            let shown = shown.iter().find(|shown| shown.input == *input);
+            // A title take animates the title on its channel; otherwise it
+            // plays on Program or Preview (GX-001, Protocol 2.75).
             let air = on_air
                 .iter()
                 .find(|air| air.input == *input)
-                .map(|air| air.frame);
+                .map(|air| air.frame)
+                .or_else(|| shown.and_then(|shown| shown.bus))
+                .filter(|air| air.phase_frames != 0 || air.phase == TitleAirPhase::Hold);
             TitleStateMessage {
                 revision,
                 input: WireInputId::from_domain(*input),
@@ -3292,6 +3315,13 @@ fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
                 }),
                 phase_frame: air.map_or(0, |air| air.phase_frame),
                 phase_frames: air.map_or(0, |air| air.phase_frames),
+                timeline: shown.map(|shown| fm_protocol::TitleTimelineStatus {
+                    shown: match shown.timeline.on {
+                        fm_model::TitleShownOn::Air => fm_protocol::TitleShownOn::Air,
+                        fm_model::TitleShownOn::Preview => fm_protocol::TitleShownOn::Preview,
+                    },
+                    since_frame: shown.timeline.since_frame,
+                }),
                 fields: title
                     .fields
                     .values()

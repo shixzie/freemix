@@ -26,10 +26,12 @@
 //! A title renders by instantiating its template, applying the input's
 //! persisted field values, rendering at the template size with the
 //! `fm_titles` reference renderer, and scaling nearest-neighbor onto the
-//! requested size. The scene time of a title is its [`TitleTime`] frame
-//! times the project frame duration; in the simulated monitor tap that is
-//! the frame cursor, a documented approximation: scene clocks and tickers
-//! treat every title as having started at frame zero.
+//! requested size. The scene time of a title (what its tickers and scene
+//! clocks show) is the frames since its timeline started
+//! ([`TitleTime::taken_frame`], the frame the engine took it to Program, an
+//! overlay channel, or Preview, see [`fm_engine::EngineTitleShown`]) times
+//! the project frame duration, so a ticker starts its crawl on the take
+//! (GX-001). A title not shown rests at scene time zero.
 //!
 //! Keyframe animation is drawn in the pose [`TitleTime::pose`] names (in the
 //! daemon, the pose the engine reports for the rendered frame,
@@ -96,6 +98,9 @@ pub struct LoadedTitleTemplate {
     /// Whether a clock counts from the title's take, so the take frame
     /// belongs in its cache key.
     uses_take: bool,
+    /// Whether a scene clock or ticker counts scene time from the title's
+    /// take, so the take frame belongs in its cache key too.
+    scene_timed: bool,
 }
 
 /// A template's catalog and every image URI it already tried to decode.
@@ -113,6 +118,9 @@ impl LoadedTitleTemplate {
                 ElementKind::Clock(_) | ElementKind::Ticker(_) | ElementKind::ProductionClock(_)
             )
         });
+        let scene_timed = template.elements.iter().any(|element| {
+            matches!(element.kind, ElementKind::Clock(_) | ElementKind::Ticker(_))
+        });
         Self {
             template: Mutex::new(Arc::new(template)),
             images: Mutex::new(TitleImages {
@@ -122,6 +130,7 @@ impl LoadedTitleTemplate {
             time_dependent,
             clocks: Vec::new(),
             uses_take: false,
+            scene_timed,
         }
     }
 
@@ -426,7 +435,8 @@ pub fn title_of_input(project: &Project, input: InputId) -> Option<&TitleInput> 
 
 /// Everything one rendered title picture depends on. The frame is present
 /// only for a time-dependent template, the take frame only for a template
-/// with a since-take clock; the animation pose always.
+/// with a since-take clock, a scene clock, or a ticker; the animation pose
+/// always.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleKey {
     template_uri: String,
@@ -455,7 +465,7 @@ pub fn title_key(
         field_revision: title.field_revision,
         fields: title.fields.clone(),
         frame: loaded.time_dependent().then_some(frame),
-        taken_frame: taken_frame.filter(|_| loaded.uses_take),
+        taken_frame: taken_frame.filter(|_| loaded.uses_take || loaded.scene_timed),
         pose,
         animation_revision: loaded.current().animation.revision,
     })
@@ -470,7 +480,9 @@ pub struct TitleTime {
     pub rate: FrameRate,
     /// Wall-clock UTC for time-of-day and countdown-to clocks.
     pub utc: UtcInstant,
-    /// The frame the title went on air at, while it is on air.
+    /// The frame the title's timeline started on while it is shown: taken
+    /// to Program, an overlay channel, or Preview (GX-001). Scene time and
+    /// since-take clocks count from it; `None` rests them at zero.
     pub taken_frame: Option<u64>,
     /// The keyframe animation pose the engine reports for `frame`.
     pub pose: AnimSample,
@@ -490,8 +502,12 @@ impl TitleTime {
         }
     }
 
+    /// Scene time: the frames since the title's timeline started, or zero
+    /// while it is not shown.
     fn scene_time_ms(self) -> u64 {
-        scene_time_ms(self.rate, self.frame)
+        self.taken_frame.map_or(0, |taken| {
+            scene_time_ms(self.rate, self.frame.saturating_sub(taken))
+        })
     }
 
     /// The production clock reading of this render.

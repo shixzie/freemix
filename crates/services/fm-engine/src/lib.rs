@@ -21,6 +21,7 @@ mod slideshow;
 mod state;
 mod stream_target;
 mod title_animation;
+mod title_timeline;
 
 pub use animation_preset::EngineAnimationPresetEdit;
 pub use audio_mixer::{
@@ -77,6 +78,7 @@ pub use slideshow::{
     EngineSlide, EngineSlideCrop, EngineSlideView, EngineSlideshowError, EngineSlideshowFrame,
     EngineSlideshowStatus, KEN_BURNS_SPACE,
 };
+pub use title_timeline::EngineTitleShown;
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,
 };

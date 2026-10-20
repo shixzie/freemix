@@ -8262,6 +8262,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Operador (conmuta, graba, emite)"),
     ),
     (
+        Msg::WebAccessRoleGraphics,
+        t("Gráficos (edita textos de títulos en el navegador)"),
+    ),
+    (
         Msg::WebAccessRoleOptionHover,
         t("Emparejar el siguiente dispositivo como {role}"),
     ),

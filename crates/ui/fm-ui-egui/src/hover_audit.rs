@@ -488,6 +488,7 @@ fn model(variant: Variant) -> ClientModel {
             phase: fm_protocol::TitlePhase::Idle,
             phase_frame: 0,
             phase_frames: 0,
+            timeline: None,
             fields: vec![
                 TitleFieldStatus {
                     field: field(1),
