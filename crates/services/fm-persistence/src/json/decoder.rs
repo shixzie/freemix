@@ -79,6 +79,7 @@ struct ProjectDto {
     audio_groups: fm_model::AudioGroups,
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor_output: fm_model::AudioMonitorOutput,
+    master_audio_dsp: fm_types::strip_dsp::StripDsp,
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
     fade_to_black_output_durations: Vec<(fm_types::OutputId, u32)>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -139,6 +140,10 @@ impl ProjectDto {
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
             audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
             audio_monitor_output: super::audio_mixer::parse_audio_monitor_output(&mut object)?,
+            master_audio_dsp: super::strip_dsp::parse_strip_dsp(
+                object.take("master_audio_dsp")?,
+                "master_audio_dsp",
+            )?,
             fade_to_black_excluded_outputs:
                 super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
             fade_to_black_output_durations:
@@ -191,7 +196,13 @@ impl ProjectDto {
             project.set_input_audio_group(strip.input, strip.group);
             // An unusable label is reported by project validation.
             project.restore_input_audio_label(strip.input, strip.label);
+            project
+                .set_input_audio_dsp(strip.input, strip.dsp)
+                .expect("a parsed strip DSP chain is validated");
         }
+        project
+            .set_master_audio_dsp(self.master_audio_dsp)
+            .expect("a parsed Master DSP chain is validated");
         // Group names are reported by project validation.
         project.restore_audio_groups(self.audio_groups);
         project.set_audio_solo_mode(self.audio_solo_mode);
@@ -363,6 +374,7 @@ fn parse_input_audio_strip(value: Value) -> Result<InputAudioStrip, DecodeError>
                     ))
                 })
         })?,
+        dsp: super::strip_dsp::parse_strip_dsp(object.take("dsp")?, "input audio strip dsp")?,
     };
     object.finish()?;
     Ok(strip)

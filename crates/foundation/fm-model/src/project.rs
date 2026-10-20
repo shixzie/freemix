@@ -969,6 +969,7 @@ pub struct Project {
     audio_groups: crate::AudioGroups,
     audio_solo_mode: crate::AudioSoloMode,
     audio_monitor_output: crate::AudioMonitorOutput,
+    master_audio_dsp: fm_types::strip_dsp::StripDsp,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
     fade_to_black_output_durations: BTreeMap<OutputId, u32>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -1011,6 +1012,7 @@ impl Project {
             audio_groups: crate::AudioGroups::default(),
             audio_solo_mode: crate::AudioSoloMode::InPlace,
             audio_monitor_output: crate::AudioMonitorOutput::default(),
+            master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
             fade_to_black_excluded_outputs: BTreeSet::new(),
             fade_to_black_output_durations: BTreeMap::new(),
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
@@ -1128,6 +1130,56 @@ impl Project {
         {
             strip.label = label;
         }
+    }
+
+    /// The DSP chain of `input`'s strip (AU-005).
+    #[must_use]
+    pub fn input_audio_dsp(&self, input: InputId) -> Option<&fm_types::strip_dsp::StripDsp> {
+        self.input_audio_strips
+            .iter()
+            .find(|strip| strip.input == input)
+            .map(|strip| &strip.dsp)
+    }
+
+    /// Replaces the DSP chain of `input`'s strip.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::UnknownInput`] or
+    /// [`SetAudioMixerError::Dsp`]. Nothing changes on error.
+    pub fn set_input_audio_dsp(
+        &mut self,
+        input: InputId,
+        dsp: fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), SetAudioMixerError> {
+        dsp.validate().map_err(SetAudioMixerError::Dsp)?;
+        let strip = self
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+            .ok_or(SetAudioMixerError::UnknownInput(input))?;
+        strip.dsp = dsp;
+        Ok(())
+    }
+
+    /// The Master bus DSP chain (AU-005, schema 61).
+    #[must_use]
+    pub const fn master_audio_dsp(&self) -> &fm_types::strip_dsp::StripDsp {
+        &self.master_audio_dsp
+    }
+
+    /// Replaces the Master bus DSP chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::Dsp`]; nothing changes on error.
+    pub fn set_master_audio_dsp(
+        &mut self,
+        dsp: fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), SetAudioMixerError> {
+        dsp.validate().map_err(SetAudioMixerError::Dsp)?;
+        self.master_audio_dsp = dsp;
+        Ok(())
     }
 
     /// Assigns `input`'s strip to `group`, or to none.
@@ -1745,6 +1797,7 @@ impl Project {
             state: InputAudioStripState::default(),
             label: String::new(),
             group: None,
+            dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
         });
         self.inputs.push(input);
     }
@@ -4205,6 +4258,8 @@ pub struct InputAudioStrip {
     pub label: String,
     /// The strip group the strip belongs to (schema 39).
     pub group: Option<crate::AudioGroupNumber>,
+    /// The strip's DSP chain (schema 61, AU-005).
+    pub dsp: fm_types::strip_dsp::StripDsp,
 }
 
 /// Why a mixer label, group, or group name edit is refused.
@@ -4216,6 +4271,8 @@ pub enum SetAudioMixerError {
     GroupCycle(crate::AudioGroupNumber),
     /// The monitor output device name is unusable.
     MonitorDevice(crate::AudioMonitorDeviceError),
+    /// A strip DSP chain value is out of range (AU-005).
+    Dsp(fm_types::strip_dsp::StripDspError),
 }
 
 impl std::fmt::Display for SetAudioMixerError {
@@ -4227,6 +4284,7 @@ impl std::fmt::Display for SetAudioMixerError {
                 write!(formatter, "{group} cannot be nested inside itself")
             }
             Self::MonitorDevice(error) => error.fmt(formatter),
+            Self::Dsp(error) => error.fmt(formatter),
         }
     }
 }

@@ -133,6 +133,20 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
                 kind: ValidationErrorKind::OutOfRange,
             });
         }
+        if strip.dsp.validate().is_err() {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(strip.input)),
+                field: "audio_strip.dsp",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
+    if project.master_audio_dsp().validate().is_err() {
+        errors.push(ValidationError {
+            entity: None,
+            field: "master_audio_dsp",
+            kind: ValidationErrorKind::OutOfRange,
+        });
     }
     for (_, group) in project.audio_groups().iter() {
         if crate::validate_audio_group_name(&group.name).is_err() {

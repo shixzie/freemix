@@ -564,10 +564,13 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
         .expect("writing to a string cannot fail");
         escape_string(output, &strip.label);
         match strip.group {
-            Some(group) => write!(output, "\", \"group\": {}}}", group.get()),
-            None => write!(output, "\", \"group\": null}}"),
+            Some(group) => write!(output, "\", \"group\": {}", group.get()),
+            None => write!(output, "\", \"group\": null"),
         }
         .expect("writing to a string cannot fail");
+        output.push_str(", \"dsp\": ");
+        super::strip_dsp::write_strip_dsp(output, &strip.dsp);
+        output.push('}');
     }
     array_end(output, project.input_audio_strips().is_empty(), 4);
 }

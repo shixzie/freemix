@@ -15,6 +15,7 @@ mod scene_animation;
 mod script;
 mod shortcut;
 mod still;
+mod strip_dsp;
 mod system_audio;
 mod transition_favorite;
 

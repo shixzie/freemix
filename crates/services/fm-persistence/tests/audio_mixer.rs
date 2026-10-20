@@ -194,17 +194,19 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
     assert!(text.contains("\"schema_version\": 64"));
     assert!(text.contains(
-        "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2}"
+        "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null}"
     ), "{text}");
-    assert!(text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null}"));
+    assert!(
+        text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null, \"dsp\": null}")
+    );
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": []\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": []\n  },"
     ), "{text}");
 
     for (from, to) in [
-        ("\"group\": 2}", "\"group\": 0}"),
-        ("\"group\": 2}", "\"group\": 5}"),
-        ("\"group\": 2}", "\"group\": \"2\"}"),
+        ("\"group\": 2,", "\"group\": 0,"),
+        ("\"group\": 2,", "\"group\": 5,"),
+        ("\"group\": 2,", "\"group\": \"2\","),
         ("\"pan_basis_points\": -2500", "\"pan_basis_points\": 10001"),
         (
             "{\"name\": \"Group 4\", \"gain_milli_db\": 0,",
@@ -342,7 +344,7 @@ fn the_monitor_output_round_trips_exactly_and_strictly() {
     let encoded = "\"audio_monitor_output\": {\"device\": \"hw:CARD=Headset,DEV=0\", \"gain_milli_db\": -6000, \"muted\": true}";
     assert!(
         text.contains(&format!(
-            "\"audio_solo_mode\": \"sip\",\n    {encoded},\n    \"fade_to_black_excluded_outputs\""
+            "\"audio_solo_mode\": \"sip\",\n    {encoded},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\""
         )),
         "{text}"
     );
@@ -396,5 +398,90 @@ fn the_monitor_output_round_trips_exactly_and_strictly() {
             "{device:?}: {:?}",
             store.load()
         );
+    }
+}
+
+#[test]
+fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
+    use fm_types::strip_dsp::{EqBandKind, StripDsp, StripDspPreset};
+
+    let directory = TestDirectory::new("strip-dsp");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let host = InputId::new(id(10));
+    let mut voice = StripDspPreset::Voice.chain();
+    voice.eq.bands[2].kind = EqBandKind::HighShelf;
+    voice.eq.bands[2].enabled = false;
+    voice.bypass = true;
+    let mut expected = project();
+    expected.set_input_audio_dsp(host, voice).unwrap();
+    expected
+        .set_master_audio_dsp(StripDspPreset::Master.chain())
+        .unwrap();
+    // An out-of-range chain or an unknown strip is refused by the model.
+    let mut broken = StripDsp::DEFAULT;
+    broken.compressor.ratio_milli = 25_000;
+    assert!(expected.set_input_audio_dsp(host, broken).is_err());
+    assert!(
+        expected
+            .set_input_audio_dsp(InputId::new(id(99)), voice)
+            .is_err()
+    );
+    store.save(&stored(expected.clone())).unwrap();
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.project(), &expected);
+    assert_eq!(loaded.project().input_audio_dsp(host), Some(&voice));
+    assert_eq!(
+        loaded.project().input_audio_dsp(InputId::new(id(11))),
+        Some(&StripDsp::DEFAULT)
+    );
+    assert_eq!(
+        loaded.project().master_audio_dsp(),
+        &StripDspPreset::Master.chain()
+    );
+
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(text.contains(
+        "\"group\": null, \"dsp\": {\"bypass\": true, \"high_pass\": {\"enabled\": true, \"frequency_hz\": 100}, \"eq\": {\"enabled\": true, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 150, \"gain_milli_db\": -2000, \"q_milli\": 707}"
+    ), "{text}");
+    assert!(text.contains(
+        "{\"enabled\": false, \"kind\": \"high_shelf\", \"frequency_hz\": 1000, \"gain_milli_db\": 0, \"q_milli\": 1000}"
+    ), "{text}");
+    assert!(text.contains(
+        "\"master_audio_dsp\": {\"bypass\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}"
+    ), "{text}");
+    assert!(
+        text.contains(
+            "\"limiter\": {\"enabled\": true, \"ceiling_milli_db\": -1000, \"release_us\": 50000}}"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("\"group\": null, \"dsp\": null}"), "{text}");
+
+    let default_chain = "\"master_audio_dsp\": {\"bypass\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}, \"eq\": {\"enabled\": false, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 100, \"gain_milli_db\": 0, \"q_milli\": 707}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 250, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 1000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 4000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"high_shelf\", \"frequency_hz\": 10000, \"gain_milli_db\": 0, \"q_milli\": 707}]}, \"gate\": {\"enabled\": false, \"threshold_milli_db\": -50000, \"range_milli_db\": 40000, \"attack_us\": 1000, \"hold_us\": 50000, \"release_us\": 200000}, \"compressor\": {\"enabled\": false, \"threshold_milli_db\": -18000, \"ratio_milli\": 3000, \"attack_us\": 10000, \"release_us\": 150000, \"knee_milli_db\": 6000, \"makeup_milli_db\": 0}, \"limiter\": {\"enabled\": false, \"ceiling_milli_db\": -1000, \"release_us\": 50000}}";
+    let master_start = text.find("\"master_audio_dsp\": {").unwrap();
+    let master_end = master_start + text[master_start..].find("}},\n").unwrap() + 2;
+    let master = text[master_start..master_end].to_owned();
+    for (from, to) in [
+        ("\"frequency_hz\": 100}", "\"frequency_hz\": 10}"),
+        ("\"kind\": \"low_shelf\"", "\"kind\": \"notch\""),
+        ("\"q_milli\": 707}", "\"q_milli\": 99}"),
+        ("\"ratio_milli\": 2000", "\"ratio_milli\": 20001"),
+        ("\"ceiling_milli_db\": -1000", "\"ceiling_milli_db\": 1"),
+        (
+            "\"release_us\": 50000}}",
+            "\"release_us\": 50000, \"extra\": 1}}",
+        ),
+        ("\"bypass\": true, ", ""),
+        (
+            ", {\"enabled\": true, \"kind\": \"high_shelf\", \"frequency_hz\": 10000, \"gain_milli_db\": 2000, \"q_milli\": 707}]",
+            "]",
+        ),
+        // The default chain is written only as null.
+        (master.as_str(), default_chain),
+    ] {
+        let invalid = text.replacen(from, to, 1);
+        assert_ne!(invalid, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), &invalid).unwrap();
+        assert!(store.load().is_err(), "{from} -> {to} loaded");
     }
 }
