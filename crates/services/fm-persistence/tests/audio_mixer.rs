@@ -412,6 +412,9 @@ fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
     voice.eq.bands[2].kind = EqBandKind::HighShelf;
     voice.eq.bands[2].enabled = false;
     voice.bypass = true;
+    voice.invert_polarity = true;
+    voice.expander.enabled = true;
+    voice.expander.range_millidb = 30_000;
     let mut expected = project();
     expected.set_input_audio_dsp(host, voice).unwrap();
     expected
@@ -441,13 +444,16 @@ fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
     assert!(text.contains(
-        "\"group\": null, \"dsp\": {\"bypass\": true, \"high_pass\": {\"enabled\": true, \"frequency_hz\": 100}, \"eq\": {\"enabled\": true, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 150, \"gain_milli_db\": -2000, \"q_milli\": 707}"
+        "\"group\": null, \"dsp\": {\"bypass\": true, \"invert_polarity\": true, \"high_pass\": {\"enabled\": true, \"frequency_hz\": 100}, \"eq\": {\"enabled\": true, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 150, \"gain_milli_db\": -2000, \"q_milli\": 707}"
     ), "{text}");
     assert!(text.contains(
         "{\"enabled\": false, \"kind\": \"high_shelf\", \"frequency_hz\": 1000, \"gain_milli_db\": 0, \"q_milli\": 1000}"
     ), "{text}");
     assert!(text.contains(
-        "\"master_audio_dsp\": {\"bypass\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}"
+        "\"master_audio_dsp\": {\"bypass\": false, \"invert_polarity\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}"
+    ), "{text}");
+    assert!(text.contains(
+        "\"expander\": {\"enabled\": true, \"threshold_milli_db\": -40000, \"ratio_milli\": 2000, \"attack_us\": 1000, \"release_us\": 100000, \"range_milli_db\": 30000}"
     ), "{text}");
     assert!(
         text.contains(
@@ -457,7 +463,7 @@ fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
     );
     assert!(text.contains("\"group\": null, \"dsp\": null}"), "{text}");
 
-    let default_chain = "\"master_audio_dsp\": {\"bypass\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}, \"eq\": {\"enabled\": false, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 100, \"gain_milli_db\": 0, \"q_milli\": 707}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 250, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 1000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 4000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"high_shelf\", \"frequency_hz\": 10000, \"gain_milli_db\": 0, \"q_milli\": 707}]}, \"gate\": {\"enabled\": false, \"threshold_milli_db\": -50000, \"range_milli_db\": 40000, \"attack_us\": 1000, \"hold_us\": 50000, \"release_us\": 200000}, \"compressor\": {\"enabled\": false, \"threshold_milli_db\": -18000, \"ratio_milli\": 3000, \"attack_us\": 10000, \"release_us\": 150000, \"knee_milli_db\": 6000, \"makeup_milli_db\": 0}, \"limiter\": {\"enabled\": false, \"ceiling_milli_db\": -1000, \"release_us\": 50000}}";
+    let default_chain = "\"master_audio_dsp\": {\"bypass\": false, \"invert_polarity\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}, \"eq\": {\"enabled\": false, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 100, \"gain_milli_db\": 0, \"q_milli\": 707}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 250, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 1000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 4000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"high_shelf\", \"frequency_hz\": 10000, \"gain_milli_db\": 0, \"q_milli\": 707}]}, \"gate\": {\"enabled\": false, \"threshold_milli_db\": -50000, \"range_milli_db\": 40000, \"attack_us\": 1000, \"hold_us\": 50000, \"release_us\": 200000}, \"expander\": {\"enabled\": false, \"threshold_milli_db\": -40000, \"ratio_milli\": 2000, \"attack_us\": 1000, \"release_us\": 100000, \"range_milli_db\": 20000}, \"compressor\": {\"enabled\": false, \"threshold_milli_db\": -18000, \"ratio_milli\": 3000, \"attack_us\": 10000, \"release_us\": 150000, \"knee_milli_db\": 6000, \"makeup_milli_db\": 0}, \"limiter\": {\"enabled\": false, \"ceiling_milli_db\": -1000, \"release_us\": 50000}}";
     let master_start = text.find("\"master_audio_dsp\": {").unwrap();
     let master_end = master_start + text[master_start..].find("}},\n").unwrap() + 2;
     let master = text[master_start..master_end].to_owned();
@@ -472,6 +478,9 @@ fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
             "\"release_us\": 50000, \"extra\": 1}}",
         ),
         ("\"bypass\": true, ", ""),
+        ("\"invert_polarity\": true, ", ""),
+        ("\"range_milli_db\": 30000}", "\"range_milli_db\": 80001}"),
+        ("\"invert_polarity\": true", "\"invert_polarity\": 1"),
         (
             ", {\"enabled\": true, \"kind\": \"high_shelf\", \"frequency_hz\": 10000, \"gain_milli_db\": 2000, \"q_milli\": 707}]",
             "]",

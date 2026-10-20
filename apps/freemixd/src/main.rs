@@ -8295,6 +8295,7 @@ fn audio_meters_message(
                     fm_protocol::AudioDspTarget::Input(WireInputId::from_domain(input))
                 }),
                 gate_millidb: reading.gate_db.map(reduction_millidb),
+                expander_millidb: reading.expander_db.map(reduction_millidb),
                 compressor_millidb: reading.compressor_db.map(reduction_millidb),
                 limiter_millidb: reading.limiter_db.map(reduction_millidb),
             })

@@ -34,10 +34,10 @@
 //! | [`AudioMixerOperation::SetMonitorLevel`] | `audio_monitor_level` | `gain_millidb`, `muted` | live operation |
 //!
 //! Since 2.75 every input strip and the Master bus carry a native DSP chain
-//! (AU-005, [`fm_types::strip_dsp::StripDsp`]): high-pass, five EQ bands,
-//! gate, compressor, and limiter, each switchable, plus a chain bypass.
+//! (AU-005, [`fm_types::strip_dsp::StripDsp`]): polarity, high-pass, five EQ bands,
+//! gate, expander, compressor, and limiter, each switchable, plus a chain bypass.
 //!
-//! | [`AudioMixerOperation::SetStripDsp`] | `audio_strip_dsp` | `target` (`master` or an input), `chain` (the 114-character chain code), optional `gesture` + `continues` | project edit |
+//! | [`AudioMixerOperation::SetStripDsp`] | `audio_strip_dsp` | `target` (`master` or an input), `chain` (the 138-character chain code), optional `gesture` + `continues` | project edit |
 //!
 //! A knob drag sends its whole chain every few frames under one `gesture`
 //! token (as a grade drag does, 2.56): the server folds the drag into one
@@ -84,14 +84,15 @@ pub enum AudioDspTarget {
 pub const MAX_DYNAMICS_REDUCTION_MILLIDB: u32 = 200_000;
 
 /// One chain's gain reduction over an `audio_meters` interval (2.75): the
-/// deepest gate attenuation, compressor reduction, and limiter reduction on
-/// any channel, in positive millidecibels, each `None` while that stage is
+/// deepest gate attenuation, expander attenuation, compressor reduction,
+/// and limiter reduction on any channel, in positive millidecibels, each `None` while that stage is
 /// off or the chain bypassed. Only chains with a running dynamics stage are
 /// reported.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AudioDynamicsMeter {
     pub target: AudioDspTarget,
     pub gate_millidb: Option<u32>,
+    pub expander_millidb: Option<u32>,
     pub compressor_millidb: Option<u32>,
     pub limiter_millidb: Option<u32>,
 }

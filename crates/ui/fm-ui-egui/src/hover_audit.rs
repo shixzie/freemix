@@ -1906,12 +1906,14 @@ fn meters() -> AudioMetersMessage {
             fm_protocol::AudioDynamicsMeter {
                 target: fm_protocol::AudioDspTarget::Master,
                 gate_millidb: None,
+                expander_millidb: None,
                 compressor_millidb: Some(4_500),
                 limiter_millidb: Some(1_200),
             },
             fm_protocol::AudioDynamicsMeter {
                 target: fm_protocol::AudioDspTarget::Input(wire(1)),
                 gate_millidb: Some(30_000),
+                expander_millidb: Some(6_000),
                 compressor_millidb: Some(14_000),
                 limiter_millidb: None,
             },

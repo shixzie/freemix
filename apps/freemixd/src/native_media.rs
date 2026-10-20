@@ -4108,6 +4108,7 @@ impl NativeMasterRuntime {
         self.scratch.dynamics.clear();
         let running = |reading: fm_audio::DspDynamicsReading| {
             (reading.gate_db.is_some()
+                || reading.expander_db.is_some()
                 || reading.compressor_db.is_some()
                 || reading.limiter_db.is_some())
             .then_some(reading)

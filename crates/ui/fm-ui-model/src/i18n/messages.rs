@@ -3195,7 +3195,7 @@ messages! {
 
     // Strip and Master FX (AU-005).
     FxKey => t("FX"),
-    FxKeyHover => t("Open this strip's FX chain: high-pass, EQ, gate, compressor, and limiter; lit while a stage is on"),
+    FxKeyHover => t("Open this strip's FX chain: polarity, high-pass, EQ, gate, expander, compressor, and limiter; lit while a stage is on"),
     FxMasterKeyHover => t("Open the Master FX chain, which processes the summed Program bus; lit while a stage is on"),
     FxWindowTitle => t("FX: {strip}"),
     FxMasterName => t("Master bus"),
@@ -3309,4 +3309,11 @@ messages! {
     ScTargetContains => t("the {app} window whose title contains \"{title}\""),
     ScTargetAny => t("any {app} window"),
     ThumbScreenCapture => t("Captured on the server"),
+    FxPolarity => t("Ø INVERT"),
+    FxPolarityOffHover => t("Invert this strip's polarity on every channel, for example for a microphone wired out of phase"),
+    FxPolarityOnHover => t("Polarity is inverted on every channel: click to restore it"),
+    FxStageExpander => t("Expander"),
+    FxExpThresholdHover => t("The expander turns down levels below this"),
+    FxExpRatioHover => t("How much faster the level falls below the threshold: at 2:1 each dB under it becomes 2 dB"),
+    FxExpRangeHover => t("The most the expander turns the strip down"),
 }

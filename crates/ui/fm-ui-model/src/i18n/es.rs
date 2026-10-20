@@ -8833,7 +8833,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::FxKeyHover,
         t(
-            "Abre la cadena FX de este canal: paso alto, EQ, puerta, compresor y limitador; se ilumina mientras alguna etapa está activa",
+            "Abre la cadena FX de este canal: polaridad, paso alto, EQ, puerta, expansor, compresor y limitador; se ilumina mientras alguna etapa está activa",
         ),
     ),
     (
@@ -9136,4 +9136,30 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::ScTargetAny, t("cualquier ventana de {app}")),
     (Msg::ThumbScreenCapture, t("Capturado en el servidor")),
+    (Msg::FxPolarity, t("Ø INVERTIR")),
+    (
+        Msg::FxPolarityOffHover,
+        t(
+            "Invierte la polaridad de este canal en todos sus canales de audio, por ejemplo para un micrófono cableado en contrafase",
+        ),
+    ),
+    (
+        Msg::FxPolarityOnHover,
+        t("La polaridad está invertida en todos los canales de audio: haga clic para restaurarla"),
+    ),
+    (Msg::FxStageExpander, t("Expansor")),
+    (
+        Msg::FxExpThresholdHover,
+        t("El expansor baja los niveles por debajo de este valor"),
+    ),
+    (
+        Msg::FxExpRatioHover,
+        t(
+            "Cuánto más rápido baja el nivel por debajo del umbral: con 2:1 cada dB por debajo se convierte en 2 dB",
+        ),
+    ),
+    (
+        Msg::FxExpRangeHover,
+        t("Lo máximo que el expansor baja el canal"),
+    ),
 ];

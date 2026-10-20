@@ -4,9 +4,10 @@
 //! for that chain: a chain bypass, presets, copy and paste between strips,
 //! and a reset in the header; an EQ response curve with a draggable point
 //! per band (frequency left and right, gain up and down, the wheel for the
-//! width) and a draggable high-pass corner; each band's switch, shape,
-//! frequency, gain, and Q; and the gate, compressor, and limiter with their
-//! switches, settings, and gain-reduction meters fed by `audio_meters`.
+//! width) and a draggable high-pass corner; the polarity invert; each
+//! band's switch, shape, frequency, gain, and Q; and the gate, expander,
+//! compressor, and limiter with their switches, settings, and
+//! gain-reduction meters fed by `audio_meters`.
 //!
 //! Every edit goes through [`StripDspBinding`]: a drag sends the whole
 //! chain every few frames under one gesture token, so the server folds it
@@ -22,10 +23,12 @@ use egui::{
 use fm_types::strip_dsp::{
     EqBandKind, MAX_COMPRESSOR_KNEE_MILLIDB, MAX_COMPRESSOR_MAKEUP_MILLIDB,
     MAX_COMPRESSOR_RATIO_MILLI, MAX_EQ_FREQUENCY_HZ, MAX_EQ_GAIN_MILLIDB, MAX_EQ_Q_MILLI,
-    MAX_GATE_HOLD_US, MAX_GATE_RANGE_MILLIDB, MAX_GATE_RELEASE_US, MAX_HIGH_PASS_HZ, MAX_TIME_US,
-    MIN_COMPRESSOR_RATIO_MILLI, MIN_COMPRESSOR_THRESHOLD_MILLIDB, MIN_EQ_FREQUENCY_HZ,
-    MIN_EQ_Q_MILLI, MIN_GATE_THRESHOLD_MILLIDB, MIN_HIGH_PASS_HZ, MIN_LIMITER_CEILING_MILLIDB,
-    MIN_TIME_US, StripDsp, StripDspPreset, StripDspTarget,
+    MAX_EXPANDER_RANGE_MILLIDB, MAX_EXPANDER_RATIO_MILLI, MAX_GATE_HOLD_US, MAX_GATE_RANGE_MILLIDB,
+    MAX_GATE_RELEASE_US, MAX_HIGH_PASS_HZ, MAX_TIME_US, MIN_COMPRESSOR_RATIO_MILLI,
+    MIN_COMPRESSOR_THRESHOLD_MILLIDB, MIN_EQ_FREQUENCY_HZ, MIN_EQ_Q_MILLI,
+    MIN_EXPANDER_RATIO_MILLI, MIN_EXPANDER_THRESHOLD_MILLIDB, MIN_GATE_THRESHOLD_MILLIDB,
+    MIN_HIGH_PASS_HZ, MIN_LIMITER_CEILING_MILLIDB, MIN_TIME_US, StripDsp, StripDspPreset,
+    StripDspTarget,
 };
 use fm_ui_model::strip_dsp::{DRAG_SEND_INTERVAL, StripDspBinding, response_db};
 
@@ -157,16 +160,17 @@ fn target_exists(state: &StudioUiState, target: StripDspTarget) -> bool {
 }
 
 /// The latest gain reduction `audio_meters` reports for `target`:
-/// gate, compressor, and limiter, in millidecibels.
-fn reductions(state: &StudioUiState, target: StripDspTarget) -> [Option<u32>; 3] {
+/// gate, expander, compressor, and limiter, in millidecibels.
+fn reductions(state: &StudioUiState, target: StripDspTarget) -> [Option<u32>; 4] {
     let wire = fm_ui_model::strip_dsp::wire_target(target);
     state
         .audio_meters
         .as_ref()
         .and_then(|meters| meters.dynamics.iter().find(|meter| meter.target == wire))
-        .map_or([None; 3], |meter| {
+        .map_or([None; 4], |meter| {
             [
                 meter.gate_millidb,
+                meter.expander_millidb,
                 meter.compressor_millidb,
                 meter.limiter_millidb,
             ]
@@ -653,11 +657,13 @@ fn time_entry(
     )
 }
 
-/// Each band's switch, shape, frequency, gain, and width, and the
-/// high-pass corner.
+/// The polarity invert, the high-pass corner, and each band's switch,
+/// shape, frequency, gain, and width.
 fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)) {
     let l = l10n::locale(ui.ctx());
     ui.horizontal(|ui| {
+        polarity_key(ui, &mut chain.invert_polarity, (enabled, reason));
+        ui.add_space(8.0);
         stage_key(
             ui,
             &mut chain.high_pass.enabled,
@@ -747,6 +753,32 @@ fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
         });
 }
 
+/// The polarity invert key, amber while the strip is inverted.
+fn polarity_key(ui: &mut Ui, inverted: &mut bool, (enabled, reason): (bool, &str)) {
+    let l = l10n::locale(ui.ctx());
+    let mut value = *inverted;
+    if crate::mixer::led_key(
+        ui,
+        enabled,
+        &mut value,
+        l.text(Msg::FxPolarity),
+        AMBER,
+        96.0,
+    )
+    .hint(
+        l.text(if value {
+            Msg::FxPolarityOnHover
+        } else {
+            Msg::FxPolarityOffHover
+        }),
+        reason,
+    )
+    .changed()
+    {
+        *inverted = value;
+    }
+}
+
 /// A stage's on/off key.
 fn stage_key(ui: &mut Ui, on: &mut bool, stage: Msg, (enabled, reason): (bool, &str)) {
     let l = l10n::locale(ui.ctx());
@@ -829,13 +861,13 @@ fn gr_meter(ui: &mut Ui, stage: Msg, reduction_millidb: Option<u32>) {
     }
 }
 
-/// The gate, compressor, and limiter rows with their meters.
+/// The gate, expander, compressor, and limiter rows with their meters.
 #[allow(clippy::too_many_lines)] // one row per stage setting
 fn draw_dynamics(
     ui: &mut Ui,
     chain: &mut StripDsp,
     (enabled, reason): (bool, &str),
-    [gate_gr, compressor_gr, limiter_gr]: [Option<u32>; 3],
+    [gate_gr, expander_gr, compressor_gr, limiter_gr]: [Option<u32>; 4],
 ) {
     let l = l10n::locale(ui.ctx());
     let gate = |hover: Msg| (enabled, l.text(hover), reason);
@@ -884,6 +916,54 @@ fn draw_dynamics(
             MAX_GATE_RELEASE_US,
             "REL ",
             gate(Msg::FxReleaseHover),
+        );
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        stage_key(
+            ui,
+            &mut chain.expander.enabled,
+            Msg::FxStageExpander,
+            (enabled, reason),
+        );
+        gr_meter(ui, Msg::FxStageExpander, expander_gr);
+    });
+    ui.horizontal_wrapped(|ui| {
+        millidb_entry(
+            ui,
+            &mut chain.expander.threshold_millidb,
+            MIN_EXPANDER_THRESHOLD_MILLIDB..=0,
+            "THR ",
+            gate(Msg::FxExpThresholdHover),
+        );
+        scaled_entry(
+            ui,
+            &mut chain.expander.ratio_milli,
+            MIN_EXPANDER_RATIO_MILLI..=MAX_EXPANDER_RATIO_MILLI,
+            (1_000.0, 1, 50.0),
+            ("RATIO ", ":1"),
+            gate(Msg::FxExpRatioHover),
+        );
+        time_entry(
+            ui,
+            &mut chain.expander.attack_us,
+            MAX_TIME_US,
+            "ATK ",
+            gate(Msg::FxAttackHover),
+        );
+        time_entry(
+            ui,
+            &mut chain.expander.release_us,
+            MAX_GATE_RELEASE_US,
+            "REL ",
+            gate(Msg::FxReleaseHover),
+        );
+        millidb_amount_entry(
+            ui,
+            &mut chain.expander.range_millidb,
+            MAX_EXPANDER_RANGE_MILLIDB,
+            "RNG ",
+            gate(Msg::FxExpRangeHover),
         );
     });
     ui.add_space(4.0);

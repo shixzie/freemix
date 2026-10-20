@@ -527,7 +527,7 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerSt
 }
 
 /// Encodes `audio_meters` `dynamics`: comma-separated
-/// `<target>~<gate>~<compressor>~<limiter>` entries, each reduction a
+/// `<target>~<gate>~<expander>~<compressor>~<limiter>` entries, each reduction a
 /// canonical millidecibel count up to [`crate::MAX_DYNAMICS_REDUCTION_MILLIDB`]
 /// or `-` for a stage that is off, at least one stage present, strictly
 /// ascending by target (Master first).
@@ -545,6 +545,7 @@ pub(super) fn encode_dynamics(meters: &[crate::AudioDynamicsMeter]) -> Result<St
     for meter in meters {
         if previous.is_some_and(|previous| previous >= meter.target)
             || (meter.gate_millidb.is_none()
+                && meter.expander_millidb.is_none()
                 && meter.compressor_millidb.is_none()
                 && meter.limiter_millidb.is_none())
         {
@@ -552,9 +553,10 @@ pub(super) fn encode_dynamics(meters: &[crate::AudioDynamicsMeter]) -> Result<St
         }
         previous = Some(meter.target);
         entries.push(format!(
-            "{}~{}~{}~{}",
+            "{}~{}~{}~{}~{}",
             encode_target(meter.target),
             stage(meter.gate_millidb)?,
+            stage(meter.expander_millidb)?,
             stage(meter.compressor_millidb)?,
             stage(meter.limiter_millidb)?
         ));
@@ -585,17 +587,19 @@ pub(super) fn decode_dynamics(value: &str) -> Result<Vec<crate::AudioDynamicsMet
         .split(',')
         .map(|entry| {
             let parts: Vec<&str> = entry.split('~').collect();
-            let [target, gate, compressor, limiter] = parts.as_slice() else {
+            let [target, gate, expander, compressor, limiter] = parts.as_slice() else {
                 return Err(invalid("dynamics", entry));
             };
             let meter = crate::AudioDynamicsMeter {
                 target: decode_target("dynamics", target)?,
                 gate_millidb: stage(gate)?,
+                expander_millidb: stage(expander)?,
                 compressor_millidb: stage(compressor)?,
                 limiter_millidb: stage(limiter)?,
             };
             if previous.is_some_and(|previous| previous >= meter.target)
                 || (meter.gate_millidb.is_none()
+                    && meter.expander_millidb.is_none()
                     && meter.compressor_millidb.is_none()
                     && meter.limiter_millidb.is_none())
             {

@@ -275,6 +275,7 @@ fn audio_meter_codec_is_bounded_and_exact() {
             fm_protocol::AudioDynamicsMeter {
                 target: fm_protocol::AudioDspTarget::Master,
                 gate_millidb: None,
+                expander_millidb: Some(2_000),
                 compressor_millidb: Some(3_500),
                 limiter_millidb: Some(120),
             },
@@ -283,6 +284,7 @@ fn audio_meter_codec_is_bounded_and_exact() {
                     core::num::NonZeroU128::new(3).unwrap(),
                 )),
                 gate_millidb: Some(40_000),
+                expander_millidb: None,
                 compressor_millidb: None,
                 limiter_millidb: None,
             },
@@ -291,7 +293,7 @@ fn audio_meter_codec_is_bounded_and_exact() {
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E3500%7E120%2C3%7E40000%7E-%7E-\n"
+        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -323,15 +325,19 @@ fn audio_meter_codec_is_bounded_and_exact() {
         // Dynamics are ascending by target, Master first, each with a stage,
         // canonical, and bounded.
         (
-            "dynamics=master%7E-%7E3500%7E120%2C3%7E40000%7E-%7E-",
-            "dynamics=3%7E40000%7E-%7E-%2Cmaster%7E-%7E3500%7E120",
+            "dynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-",
+            "dynamics=3%7E40000%7E-%7E-%7E-%2Cmaster%7E-%7E2000%7E3500%7E120",
         ),
-        ("3%7E40000%7E-%7E-", "3%7E-%7E-%7E-"),
-        ("3%7E40000%7E-%7E-", "3%7E040000%7E-%7E-"),
-        ("3%7E40000%7E-%7E-", "3%7E200001%7E-%7E-"),
-        ("3%7E40000%7E-%7E-", "3%7E40000%7E-"),
-        ("master%7E-%7E3500", "main%7E-%7E3500"),
-        ("\tdynamics=master%7E-%7E3500%7E120%2C3%7E40000%7E-%7E-", ""),
+        ("3%7E40000%7E-%7E-%7E-", "3%7E-%7E-%7E-%7E-"),
+        ("3%7E40000%7E-%7E-%7E-", "3%7E040000%7E-%7E-%7E-"),
+        ("3%7E40000%7E-%7E-%7E-", "3%7E200001%7E-%7E-%7E-"),
+        ("3%7E40000%7E-%7E-%7E-", "3%7E40000%7E-%7E-"),
+        ("master%7E-%7E2000%7E3500", "master%7E-%7E2000x%7E3500"),
+        ("master%7E-%7E2000", "main%7E-%7E2000"),
+        (
+            "\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-",
+            "",
+        ),
         (
             "\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000",
             "",

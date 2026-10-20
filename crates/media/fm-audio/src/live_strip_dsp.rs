@@ -1,7 +1,8 @@
 //! The live, click-free strip DSP chain the Master mixer runs (AU-005).
 //!
 //! [`LiveStripDsp`] runs one [`fm_types::strip_dsp::StripDsp`] chain
-//! (`high-pass -> 5-band EQ -> gate -> compressor -> limiter`) over every
+//! (`polarity -> high-pass -> 5-band EQ -> gate -> expander -> compressor ->
+//! limiter`) over every
 //! channel of a strip, with independent filter and detector state per
 //! channel. It is built from the tested primitives in [`crate::dsp`].
 //!
@@ -21,6 +22,8 @@
 //!   between the stage's input and output over [`CROSSFADE_SECONDS`]. A
 //!   stage at rest fully off is skipped and its state cleared, so it
 //!   re-enters from silence.
+//! - Inverting the polarity ramps the sign through zero over the same
+//!   crossfade, so a flip mid-programme dips briefly instead of stepping.
 //!
 //! # Real-time safety
 //!
@@ -31,13 +34,14 @@
 //!
 //! # Gain-reduction metering
 //!
-//! Every processed block records the deepest gate attenuation, compressor
-//! gain reduction, and limiter gain reduction seen on any channel
+//! Every processed block records the deepest gate attenuation, expander
+//! attenuation, compressor gain reduction, and limiter gain reduction seen
+//! on any channel
 //! ([`LiveStripDsp::dynamics`]), for operators' GR meters.
 
 use fm_types::strip_dsp::{EqBandKind, STRIP_EQ_BAND_COUNT, StripDsp as StripDspSettings};
 
-use crate::dsp::{Biquad, BiquadCoefficients, Compressor, DspError, Gate, Limiter};
+use crate::dsp::{Biquad, BiquadCoefficients, Compressor, DspError, Expander, Gate, Limiter};
 
 /// Samples between parameter glide steps and filter retunes.
 pub const SUB_BLOCK: usize = 32;
@@ -53,6 +57,7 @@ const HIGH_PASS_Q: f32 = core::f32::consts::FRAC_1_SQRT_2;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DspDynamicsReading {
     pub gate_db: Option<f32>,
+    pub expander_db: Option<f32>,
     pub compressor_db: Option<f32>,
     pub limiter_db: Option<f32>,
 }
@@ -160,18 +165,22 @@ struct ChannelState {
     high_pass: Biquad,
     bands: [Biquad; STRIP_EQ_BAND_COUNT],
     gate: Gate,
+    expander: Expander,
     compressor: Compressor,
     limiter: Limiter,
 }
 
-/// Stage indices into the crossfades.
+/// Stage indices into the crossfades. The chain bypass is last, so
+/// `..CHAIN` is every stage.
 const HIGH_PASS: usize = 0;
 const EQ: usize = 1;
 const GATE: usize = 2;
-const COMPRESSOR: usize = 3;
-const LIMITER: usize = 4;
-const CHAIN: usize = 5;
-const FADES: usize = 6;
+const EXPANDER: usize = 3;
+const COMPRESSOR: usize = 4;
+const LIMITER: usize = 5;
+const POLARITY: usize = 6;
+const CHAIN: usize = 7;
+const FADES: usize = 8;
 
 /// One strip's live DSP chain; see the module documentation.
 #[derive(Clone, Debug)]
@@ -184,6 +193,9 @@ pub struct LiveStripDsp {
     band_coefficients: [BiquadCoefficients; STRIP_EQ_BAND_COUNT],
     gate_threshold: Glide,
     gate_range: Glide,
+    expander_threshold: Glide,
+    expander_ratio: Glide,
+    expander_range: Glide,
     compressor_threshold: Glide,
     compressor_ratio: Glide,
     compressor_knee: Glide,
@@ -306,6 +318,7 @@ impl LiveStripDsp {
             *coefficients = band_coefficients_of(sample_rate_hz, band)?;
         }
         let gate = &settings.gate;
+        let expander = &settings.expander;
         let compressor = &settings.compressor;
         let limiter = &settings.limiter;
         let channel = ChannelState {
@@ -318,6 +331,14 @@ impl LiveStripDsp {
                 ms(gate.attack_us),
                 ms(gate.hold_us),
                 ms(gate.release_us),
+            )?,
+            expander: Expander::new(
+                sample_rate_hz,
+                db(expander.threshold_millidb),
+                milli(expander.ratio_milli),
+                ms(expander.attack_us),
+                ms(expander.release_us),
+                udb(expander.range_millidb),
             )?,
             compressor: Compressor::new(
                 sample_rate_hz,
@@ -345,6 +366,9 @@ impl LiveStripDsp {
             band_coefficients,
             gate_threshold: Glide::settled(db(gate.threshold_millidb)),
             gate_range: Glide::settled(udb(gate.range_millidb)),
+            expander_threshold: Glide::settled(db(expander.threshold_millidb)),
+            expander_ratio: Glide::settled(milli(expander.ratio_milli)),
+            expander_range: Glide::settled(udb(expander.range_millidb)),
             compressor_threshold: Glide::settled(db(compressor.threshold_millidb)),
             compressor_ratio: Glide::settled(milli(compressor.ratio_milli)),
             compressor_knee: Glide::settled(udb(compressor.knee_millidb)),
@@ -399,6 +423,7 @@ impl LiveStripDsp {
     pub fn set_settings(&mut self, settings: &StripDspSettings) -> Result<(), DspError> {
         // Validate every detector setting before touching any channel.
         let gate = &settings.gate;
+        let expander = &settings.expander;
         let compressor = &settings.compressor;
         let limiter = &settings.limiter;
         let mut probe = self
@@ -414,6 +439,13 @@ impl LiveStripDsp {
         probe.gate.set_release_ms(ms(gate.release_us))?;
         probe.gate.set_threshold_db(db(gate.threshold_millidb))?;
         probe.gate.set_range_db(udb(gate.range_millidb))?;
+        probe.expander.set_attack_ms(ms(expander.attack_us))?;
+        probe.expander.set_release_ms(ms(expander.release_us))?;
+        probe
+            .expander
+            .set_threshold_db(db(expander.threshold_millidb))?;
+        probe.expander.set_ratio(milli(expander.ratio_milli))?;
+        probe.expander.set_range_db(udb(expander.range_millidb))?;
         probe.compressor.set_attack_ms(ms(compressor.attack_us))?;
         probe.compressor.set_release_ms(ms(compressor.release_us))?;
         probe
@@ -442,6 +474,8 @@ impl LiveStripDsp {
             let _ = channel.gate.set_attack_ms(ms(gate.attack_us));
             let _ = channel.gate.set_hold_ms(ms(gate.hold_us));
             let _ = channel.gate.set_release_ms(ms(gate.release_us));
+            let _ = channel.expander.set_attack_ms(ms(expander.attack_us));
+            let _ = channel.expander.set_release_ms(ms(expander.release_us));
             let _ = channel.compressor.set_attack_ms(ms(compressor.attack_us));
             let _ = channel.compressor.set_release_ms(ms(compressor.release_us));
             let _ = channel.limiter.set_release_ms(ms(limiter.release_us));
@@ -456,6 +490,9 @@ impl LiveStripDsp {
         }
         self.gate_threshold.target = db(gate.threshold_millidb);
         self.gate_range.target = udb(gate.range_millidb);
+        self.expander_threshold.target = db(expander.threshold_millidb);
+        self.expander_ratio.target = milli(expander.ratio_milli);
+        self.expander_range.target = udb(expander.range_millidb);
         self.compressor_threshold.target = db(compressor.threshold_millidb);
         self.compressor_ratio.target = milli(compressor.ratio_milli);
         self.compressor_knee.target = udb(compressor.knee_millidb);
@@ -486,6 +523,9 @@ impl LiveStripDsp {
             &mut self.high_pass_log_frequency,
             &mut self.gate_threshold,
             &mut self.gate_range,
+            &mut self.expander_threshold,
+            &mut self.expander_ratio,
+            &mut self.expander_range,
             &mut self.compressor_threshold,
             &mut self.compressor_ratio,
             &mut self.compressor_knee,
@@ -509,6 +549,7 @@ impl LiveStripDsp {
                 band.reset();
             }
             channel.gate.reset();
+            channel.expander.reset();
             channel.compressor.reset();
             channel.limiter.reset();
         }
@@ -537,6 +578,9 @@ impl LiveStripDsp {
         self.band_coefficients = other.band_coefficients;
         self.gate_threshold = other.gate_threshold;
         self.gate_range = other.gate_range;
+        self.expander_threshold = other.expander_threshold;
+        self.expander_ratio = other.expander_ratio;
+        self.expander_range = other.expander_range;
         self.compressor_threshold = other.compressor_threshold;
         self.compressor_ratio = other.compressor_ratio;
         self.compressor_knee = other.compressor_knee;
@@ -589,6 +633,24 @@ impl LiveStripDsp {
                 let _ = channel.gate.set_range_db(value);
             }
         }
+        if self.expander_threshold.step(coefficient, 1.0e-3) || force {
+            let value = self.expander_threshold.current;
+            for channel in &mut self.channels {
+                let _ = channel.expander.set_threshold_db(value);
+            }
+        }
+        if self.expander_ratio.step(coefficient, 1.0e-4) || force {
+            let value = self.expander_ratio.current;
+            for channel in &mut self.channels {
+                let _ = channel.expander.set_ratio(value);
+            }
+        }
+        if self.expander_range.step(coefficient, 1.0e-3) || force {
+            let value = self.expander_range.current;
+            for channel in &mut self.channels {
+                let _ = channel.expander.set_range_db(value);
+            }
+        }
         if self.compressor_threshold.step(coefficient, 1.0e-3) || force {
             let value = self.compressor_threshold.current;
             for channel in &mut self.channels {
@@ -626,7 +688,7 @@ impl LiveStripDsp {
     /// Performs no allocation. A fully transparent chain copies input to
     /// output unchanged.
     pub fn process(&mut self, samples: usize, io: &mut impl LiveDspIo) {
-        let mut reading = [0.0_f32; 3];
+        let mut reading = [0.0_f32; 4];
         let mut buffer = [0.0_f32; SUB_BLOCK];
         let mut mixes = [[0.0_f32; SUB_BLOCK]; FADES];
         let mut start = 0;
@@ -643,6 +705,7 @@ impl LiveStripDsp {
                             HIGH_PASS => channel.high_pass.reset(),
                             EQ => channel.bands.iter_mut().for_each(Biquad::reset),
                             GATE => channel.gate.reset(),
+                            EXPANDER => channel.expander.reset(),
                             COMPRESSOR => channel.compressor.reset(),
                             LIMITER => channel.limiter.reset(),
                             _ => {}
@@ -659,6 +722,10 @@ impl LiveStripDsp {
                     for (offset, sample) in buffer.iter_mut().enumerate() {
                         let dry = *sample;
                         let mut value = dry;
+                        if running[POLARITY] {
+                            // Ramps the sign: +1 at rest normal, -1 inverted.
+                            value *= 1.0 - 2.0 * mixes[POLARITY][offset];
+                        }
                         if running[HIGH_PASS] {
                             let wet = channel.high_pass.process(value);
                             value += mixes[HIGH_PASS][offset] * (wet - value);
@@ -674,6 +741,10 @@ impl LiveStripDsp {
                             let wet = channel.gate.process(value);
                             value += mixes[GATE][offset] * (wet - value);
                         }
+                        if running[EXPANDER] {
+                            let wet = channel.expander.process(value);
+                            value += mixes[EXPANDER][offset] * (wet - value);
+                        }
                         if running[COMPRESSOR] {
                             let wet = channel.compressor.process(value);
                             value += mixes[COMPRESSOR][offset] * (wet - value);
@@ -687,11 +758,14 @@ impl LiveStripDsp {
                     if running[GATE] {
                         reading[0] = reading[0].max(channel.gate.current_attenuation_db());
                     }
+                    if running[EXPANDER] {
+                        reading[1] = reading[1].max(channel.expander.current_gain_reduction_db());
+                    }
                     if running[COMPRESSOR] {
-                        reading[1] = reading[1].max(channel.compressor.current_gain_reduction_db());
+                        reading[2] = reading[2].max(channel.compressor.current_gain_reduction_db());
                     }
                     if running[LIMITER] {
-                        reading[2] = reading[2].max(channel.limiter.current_gain_reduction_db());
+                        reading[3] = reading[3].max(channel.limiter.current_gain_reduction_db());
                     }
                 }
                 io.write(index, start, buffer);
@@ -701,8 +775,9 @@ impl LiveStripDsp {
         let on = |stage: usize| self.fades[CHAIN].target > 0.0 && self.fades[stage].target > 0.0;
         self.dynamics = DspDynamicsReading {
             gate_db: on(GATE).then_some(reading[0]),
-            compressor_db: on(COMPRESSOR).then_some(reading[1]),
-            limiter_db: on(LIMITER).then_some(reading[2]),
+            expander_db: on(EXPANDER).then_some(reading[1]),
+            compressor_db: on(COMPRESSOR).then_some(reading[2]),
+            limiter_db: on(LIMITER).then_some(reading[3]),
         };
     }
 }
@@ -720,14 +795,17 @@ fn band_coefficients_of(
     )
 }
 
-/// Each crossfade's target: high-pass, EQ, gate, compressor, limiter, chain.
+/// Each crossfade's target: high-pass, EQ, gate, expander, compressor,
+/// limiter, polarity, chain.
 const fn stage_switches(settings: &StripDspSettings) -> [bool; FADES] {
     [
         settings.high_pass.enabled,
         settings.eq.enabled,
         settings.gate.enabled,
+        settings.expander.enabled,
         settings.compressor.enabled,
         settings.limiter.enabled,
+        settings.invert_polarity,
         !settings.bypass,
     ]
 }
@@ -798,6 +876,70 @@ mod tests {
         assert!(reading.compressor_db.unwrap() > 1.0);
         assert!(reading.limiter_db.is_some());
         assert!(reading.gate_db.is_none());
+        assert!(reading.expander_db.is_none());
         assert!(peak(&planes[0]) <= 10.0_f32.powf(-1.0 / 20.0) + 1.0e-6);
+    }
+
+    #[test]
+    fn polarity_invert_ramps_through_zero_and_settles_exactly_negated() {
+        let mut dsp = LiveStripDsp::new(48_000.0, 2, &StripDspSettings::DEFAULT).unwrap();
+        let mut settings = StripDspSettings::DEFAULT;
+        settings.invert_polarity = true;
+        dsp.set_settings(&settings).unwrap();
+        assert!(!dsp.is_transparent());
+        let input = vec![0.5_f32; 4_800];
+        let mut planes = vec![input.clone(), input];
+        dsp.process(4_800, &mut InPlacePlanes(&mut planes));
+        // The flip ramps over the 10 ms crossfade (480 samples) ...
+        let largest_step = planes[0]
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(largest_step < 0.01, "{largest_step}");
+        // ... and then is the exact negation on every channel.
+        for plane in &planes {
+            assert!(
+                plane[600..]
+                    .iter()
+                    .all(|sample| sample.to_bits() == (-0.5_f32).to_bits())
+            );
+        }
+        assert_eq!(dsp.dynamics(), DspDynamicsReading::default());
+    }
+
+    #[test]
+    fn expander_turns_quiet_signals_down_by_ratio_within_range() {
+        let mut settings = StripDspSettings::DEFAULT;
+        settings.expander.enabled = true;
+        settings.expander.threshold_millidb = -30_000;
+        settings.expander.ratio_milli = 2_000;
+        settings.expander.range_millidb = 12_000;
+        // Loud material above the threshold passes untouched.
+        let mut dsp = LiveStripDsp::new(48_000.0, 1, &settings).unwrap();
+        let mut planes = vec![sine(1_000.0, 0.5, 9_600)];
+        dsp.process(9_600, &mut InPlacePlanes(&mut planes));
+        let loud = peak(&planes[0][4_800..]);
+        assert!((loud - 0.5).abs() < 0.01, "{loud}");
+        assert!(dsp.dynamics().expander_db.unwrap() < 0.1);
+        // 6 dB under the threshold at 2:1 is turned down by about 6 dB more.
+        let mut dsp = LiveStripDsp::new(48_000.0, 1, &settings).unwrap();
+        let amplitude = 10.0_f32.powf(-36.0 / 20.0);
+        let mut planes = vec![sine(1_000.0, amplitude, 48_000)];
+        dsp.process(48_000, &mut InPlacePlanes(&mut planes));
+        let gain_db = 20.0 * (peak(&planes[0][40_000..]) / amplitude).log10();
+        assert!((-7.5..=-5.0).contains(&gain_db), "{gain_db}");
+        // The meter reads the deepest attenuation of the last block; a
+        // settled block reads the steady state.
+        let mut settled = vec![sine(1_000.0, amplitude, 48_000)[..4_800].to_vec()];
+        dsp.process(4_800, &mut InPlacePlanes(&mut settled));
+        let reading = dsp.dynamics().expander_db.unwrap();
+        assert!((5.0..=8.0).contains(&reading), "{reading}");
+        // Far below the threshold the range caps the attenuation.
+        let mut dsp = LiveStripDsp::new(48_000.0, 1, &settings).unwrap();
+        let amplitude = 10.0_f32.powf(-70.0 / 20.0);
+        let mut planes = vec![sine(1_000.0, amplitude, 48_000)];
+        dsp.process(48_000, &mut InPlacePlanes(&mut planes));
+        let gain_db = 20.0 * (peak(&planes[0][40_000..]) / amplitude).log10();
+        assert!((gain_db + 12.0).abs() < 0.2, "{gain_db}");
     }
 }

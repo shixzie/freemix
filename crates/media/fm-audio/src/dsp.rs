@@ -5,8 +5,8 @@
 //! - [`Polarity`] performs exact sign inversion.
 //! - [`Biquad`] and [`ParametricEq`] implement the RBJ audio-EQ cookbook
 //!   filters with `f64` coefficients and transposed direct form II state.
-//! - [`Gate`], [`Compressor`], and [`Limiter`] implement dynamics with `f64`
-//!   detectors and `f32` input/output.
+//! - [`Gate`], [`Expander`], [`Compressor`], and [`Limiter`] implement
+//!   dynamics with `f64` detectors and `f32` input/output.
 //! - [`DspMeter`] accumulates sample peak and RMS over a caller-selected
 //!   window.
 //!
@@ -43,6 +43,13 @@ const MIN_GATE_HOLD_MS: f32 = 0.0;
 const MAX_GATE_HOLD_MS: f32 = 1_000.0;
 const MIN_GATE_RELEASE_MS: f32 = 0.1;
 const MAX_GATE_RELEASE_MS: f32 = 5_000.0;
+
+const MIN_EXPANDER_THRESHOLD_DB: f32 = -80.0;
+const MAX_EXPANDER_THRESHOLD_DB: f32 = 0.0;
+const MIN_EXPANDER_RATIO: f32 = 1.0;
+const MAX_EXPANDER_RATIO: f32 = 20.0;
+const MIN_EXPANDER_RANGE_DB: f32 = 0.0;
+const MAX_EXPANDER_RANGE_DB: f32 = 80.0;
 
 const MIN_LIMITER_CEILING_DB: f32 = -60.0;
 const MAX_LIMITER_CEILING_DB: f32 = 0.0;
@@ -98,7 +105,7 @@ impl fmt::Display for DspError {
             Self::InvalidThresholdDb(threshold_db) => {
                 write!(formatter, "invalid dynamics threshold: {threshold_db} dB")
             }
-            Self::InvalidRatio(ratio) => write!(formatter, "invalid compressor ratio: {ratio}"),
+            Self::InvalidRatio(ratio) => write!(formatter, "invalid dynamics ratio: {ratio}"),
             Self::InvalidAttackMs(attack_ms) => {
                 write!(formatter, "invalid attack time: {attack_ms} ms")
             }
@@ -113,7 +120,7 @@ impl fmt::Display for DspError {
                 write!(formatter, "invalid makeup gain: {makeup_gain_db} dB")
             }
             Self::InvalidRangeDb(range_db) => {
-                write!(formatter, "invalid gate range: {range_db} dB")
+                write!(formatter, "invalid gate or expander range: {range_db} dB")
             }
             Self::InvalidCeilingDb(ceiling_db) => {
                 write!(formatter, "invalid limiter ceiling: {ceiling_db} dB")
@@ -1410,6 +1417,210 @@ impl Gate {
             self.gain += (self.closed_gain - self.gain) * self.release_coefficient;
         }
         to_f32(f64::from(sample) * self.gain)
+    }
+}
+
+/// Downward expander with threshold, ratio, attack, release, and range.
+///
+/// A one-pole peak envelope follows `|sample|` (the attack coefficient while
+/// the level rises, the release coefficient while it falls). Below the
+/// threshold the output level falls `ratio` times faster than the input,
+/// so the attenuation is
+///
+/// ```text
+/// under_db     = threshold_db - envelope_db
+/// reduction_db = min((ratio - 1) * max(under_db, 0), range_db)
+/// ```
+///
+/// A ratio of 1 or a range of 0 is transparent. Unlike [`Gate`], the
+/// attenuation grows gradually with the distance below the threshold, so
+/// quiet room tone is turned down rather than switched off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Expander {
+    sample_rate_hz: f32,
+    threshold_db: f32,
+    ratio: f32,
+    attack_ms: f32,
+    release_ms: f32,
+    range_db: f32,
+    attack_coefficient: f64,
+    release_coefficient: f64,
+    envelope: f64,
+    reduction_db: f64,
+}
+
+impl Expander {
+    /// Creates an expander.
+    ///
+    /// Accepted bounds are:
+    ///
+    /// - `threshold_db` in `-80.0..=0.0`,
+    /// - `ratio` in `1.0..=20.0`,
+    /// - `attack_ms` in `0.1..=1000.0`,
+    /// - `release_ms` in `0.1..=5000.0`,
+    /// - `range_db` in `0.0..=80.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching [`DspError`] variant for any value outside its
+    /// bound. Nothing is mutated on error.
+    pub fn new(
+        sample_rate_hz: f32,
+        threshold_db: f32,
+        ratio: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        range_db: f32,
+    ) -> Result<Self, DspError> {
+        let sample_rate = validate_sample_rate(sample_rate_hz)?;
+        let mut expander = Self {
+            sample_rate_hz,
+            threshold_db: 0.0,
+            ratio: 1.0,
+            attack_ms: MIN_ATTACK_MS,
+            release_ms: MIN_GATE_RELEASE_MS,
+            range_db: 0.0,
+            attack_coefficient: one_pole_coefficient(MIN_ATTACK_MS, sample_rate),
+            release_coefficient: one_pole_coefficient(MIN_GATE_RELEASE_MS, sample_rate),
+            envelope: 0.0,
+            reduction_db: 0.0,
+        };
+        expander.set_threshold_db(threshold_db)?;
+        expander.set_ratio(ratio)?;
+        expander.set_attack_ms(attack_ms)?;
+        expander.set_release_ms(release_ms)?;
+        expander.set_range_db(range_db)?;
+        Ok(expander)
+    }
+
+    #[must_use]
+    pub const fn sample_rate_hz(&self) -> f32 {
+        self.sample_rate_hz
+    }
+
+    #[must_use]
+    pub const fn threshold_db(&self) -> f32 {
+        self.threshold_db
+    }
+
+    #[must_use]
+    pub const fn ratio(&self) -> f32 {
+        self.ratio
+    }
+
+    #[must_use]
+    pub const fn attack_ms(&self) -> f32 {
+        self.attack_ms
+    }
+
+    #[must_use]
+    pub const fn release_ms(&self) -> f32 {
+        self.release_ms
+    }
+
+    #[must_use]
+    pub const fn range_db(&self) -> f32 {
+        self.range_db
+    }
+
+    /// Sets the threshold in dB.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DspError::InvalidThresholdDb`] outside `-80.0..=0.0`.
+    pub fn set_threshold_db(&mut self, threshold_db: f32) -> Result<(), DspError> {
+        if !in_range(
+            threshold_db,
+            MIN_EXPANDER_THRESHOLD_DB,
+            MAX_EXPANDER_THRESHOLD_DB,
+        ) {
+            return Err(DspError::InvalidThresholdDb(threshold_db));
+        }
+        self.threshold_db = threshold_db;
+        Ok(())
+    }
+
+    /// Sets the expansion ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DspError::InvalidRatio`] outside `1.0..=20.0`.
+    pub fn set_ratio(&mut self, ratio: f32) -> Result<(), DspError> {
+        if !in_range(ratio, MIN_EXPANDER_RATIO, MAX_EXPANDER_RATIO) {
+            return Err(DspError::InvalidRatio(ratio));
+        }
+        self.ratio = ratio;
+        Ok(())
+    }
+
+    /// Sets the attack time in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DspError::InvalidAttackMs`] outside `0.1..=1000.0`.
+    pub fn set_attack_ms(&mut self, attack_ms: f32) -> Result<(), DspError> {
+        if !in_range(attack_ms, MIN_ATTACK_MS, MAX_ATTACK_MS) {
+            return Err(DspError::InvalidAttackMs(attack_ms));
+        }
+        self.attack_ms = attack_ms;
+        self.attack_coefficient = one_pole_coefficient(attack_ms, f64::from(self.sample_rate_hz));
+        Ok(())
+    }
+
+    /// Sets the release time in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DspError::InvalidReleaseMs`] outside `0.1..=5000.0`.
+    pub fn set_release_ms(&mut self, release_ms: f32) -> Result<(), DspError> {
+        if !in_range(release_ms, MIN_GATE_RELEASE_MS, MAX_GATE_RELEASE_MS) {
+            return Err(DspError::InvalidReleaseMs(release_ms));
+        }
+        self.release_ms = release_ms;
+        self.release_coefficient = one_pole_coefficient(release_ms, f64::from(self.sample_rate_hz));
+        Ok(())
+    }
+
+    /// Sets the deepest attenuation in dB.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DspError::InvalidRangeDb`] outside `0.0..=80.0`.
+    pub fn set_range_db(&mut self, range_db: f32) -> Result<(), DspError> {
+        if !in_range(range_db, MIN_EXPANDER_RANGE_DB, MAX_EXPANDER_RANGE_DB) {
+            return Err(DspError::InvalidRangeDb(range_db));
+        }
+        self.range_db = range_db;
+        Ok(())
+    }
+
+    /// Returns the last computed attenuation as a non-negative dB value.
+    #[must_use]
+    pub fn current_gain_reduction_db(&self) -> f32 {
+        to_f32(self.reduction_db.max(0.0))
+    }
+
+    /// Clears the detector envelope and attenuation state.
+    pub fn reset(&mut self) {
+        self.envelope = 0.0;
+        self.reduction_db = 0.0;
+    }
+
+    /// Processes one sample.
+    #[must_use]
+    pub fn process(&mut self, sample: f32) -> f32 {
+        let level = f64::from(sample.abs());
+        let coefficient = if level > self.envelope {
+            self.attack_coefficient
+        } else {
+            self.release_coefficient
+        };
+        self.envelope += (level - self.envelope) * coefficient;
+        let level_db = 20.0 * self.envelope.max(ENVELOPE_FLOOR).log10();
+        let under_db = (f64::from(self.threshold_db) - level_db).max(0.0);
+        self.reduction_db =
+            ((f64::from(self.ratio) - 1.0) * under_db).min(f64::from(self.range_db));
+        to_f32(f64::from(sample) * 10.0_f64.powf(-self.reduction_db / 20.0))
     }
 }
 

@@ -4,15 +4,16 @@
 //! [`StripDsp`] chain processed in a fixed order:
 //!
 //! ```text
-//! high-pass -> EQ (5 bands) -> gate -> compressor -> limiter
+//! polarity -> high-pass -> EQ (5 bands) -> gate -> expander -> compressor -> limiter
 //! ```
 //!
-//! Each stage has its own enable switch and the whole chain has a bypass.
+//! Each stage has its own enable switch (the polarity stage is the invert
+//! switch itself) and the whole chain has a bypass.
 //! Every value is an integer in a fixed unit (hertz, millidecibels,
 //! thousandths, microseconds), so a chain compares, hashes, persists, and
 //! travels on the wire exactly. [`StripDsp::validate`] checks every bound;
 //! [`StripDsp::code`] and [`StripDsp::from_code`] are the canonical compact
-//! text form (85 bytes packed big-endian as unpadded base64url, 114
+//! text form (103 bytes packed big-endian as unpadded base64url, 138
 //! characters) shared by the protocol, the CLI, and the Studio clipboard.
 //!
 //! The default chain has every stage disabled and is therefore transparent;
@@ -44,6 +45,13 @@ pub const MAX_GATE_RANGE_MILLIDB: u32 = 80_000;
 pub const MAX_GATE_HOLD_US: u32 = 1_000_000;
 /// Gate release bound, in microseconds.
 pub const MAX_GATE_RELEASE_US: u32 = 5_000_000;
+/// Expander threshold lower bound, in millidecibels.
+pub const MIN_EXPANDER_THRESHOLD_MILLIDB: i32 = -80_000;
+/// Expander ratio bounds, in thousandths (1:1 to 20:1 below the threshold).
+pub const MIN_EXPANDER_RATIO_MILLI: u32 = 1_000;
+pub const MAX_EXPANDER_RATIO_MILLI: u32 = 20_000;
+/// Expander range bound (deepest attenuation), in millidecibels.
+pub const MAX_EXPANDER_RANGE_MILLIDB: u32 = 80_000;
 /// Compressor threshold lower bound, in millidecibels.
 pub const MIN_COMPRESSOR_THRESHOLD_MILLIDB: i32 = -60_000;
 /// Compressor ratio bounds, in thousandths (1:1 to 20:1).
@@ -55,13 +63,13 @@ pub const MAX_COMPRESSOR_MAKEUP_MILLIDB: u32 = 24_000;
 /// Limiter ceiling lower bound, in millidecibels.
 pub const MIN_LIMITER_CEILING_MILLIDB: i32 = -60_000;
 /// Attack and release bounds shared by every dynamics stage, in
-/// microseconds (0.1 ms to 1 s; the gate release reaches 5 s).
+/// microseconds (0.1 ms to 1 s; the gate and expander releases reach 5 s).
 pub const MIN_TIME_US: u32 = 100;
 pub const MAX_TIME_US: u32 = 1_000_000;
 
 /// Length of [`StripDsp::code`] in characters.
-pub const STRIP_DSP_CODE_LEN: usize = 114;
-const PACKED_BYTES: usize = 85;
+pub const STRIP_DSP_CODE_LEN: usize = 138;
+const PACKED_BYTES: usize = 103;
 
 /// The shape of one EQ band.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -149,6 +157,19 @@ pub struct StripGate {
     pub release_us: u32,
 }
 
+/// The downward expander: below the threshold the level falls `ratio`
+/// times faster than the input, attenuating by at most `range`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StripExpander {
+    pub enabled: bool,
+    pub threshold_millidb: i32,
+    pub ratio_milli: u32,
+    pub attack_us: u32,
+    pub release_us: u32,
+    /// The deepest attenuation, in millidecibels.
+    pub range_millidb: u32,
+}
+
 /// The feed-forward compressor.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StripCompressor {
@@ -174,9 +195,12 @@ pub struct StripLimiter {
 pub struct StripDsp {
     /// Bypasses the whole chain without losing its settings.
     pub bypass: bool,
+    /// Inverts the strip's polarity (every channel), ahead of the filters.
+    pub invert_polarity: bool,
     pub high_pass: StripHighPass,
     pub eq: StripEq,
     pub gate: StripGate,
+    pub expander: StripExpander,
     pub compressor: StripCompressor,
     pub limiter: StripLimiter,
 }
@@ -201,6 +225,7 @@ impl StripDsp {
     /// Every stage off; parameters at their starting points.
     pub const DEFAULT: Self = Self {
         bypass: false,
+        invert_polarity: false,
         high_pass: StripHighPass {
             enabled: false,
             frequency_hz: 80,
@@ -232,6 +257,14 @@ impl StripDsp {
             hold_us: 50_000,
             release_us: 200_000,
         },
+        expander: StripExpander {
+            enabled: false,
+            threshold_millidb: -40_000,
+            ratio_milli: 2_000,
+            attack_us: 1_000,
+            release_us: 100_000,
+            range_millidb: 20_000,
+        },
         compressor: StripCompressor {
             enabled: false,
             threshold_millidb: -18_000,
@@ -259,18 +292,24 @@ impl StripDsp {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         !self.bypass
-            && (self.high_pass.enabled
+            && (self.invert_polarity
+                || self.high_pass.enabled
                 || self.eq.enabled
                 || self.gate.enabled
+                || self.expander.enabled
                 || self.compressor.enabled
                 || self.limiter.enabled)
     }
 
-    /// Whether a dynamics stage (gate, compressor, or limiter) is running
-    /// and so reports gain reduction.
+    /// Whether a dynamics stage (gate, expander, compressor, or limiter) is
+    /// running and so reports gain reduction.
     #[must_use]
     pub const fn has_active_dynamics(&self) -> bool {
-        !self.bypass && (self.gate.enabled || self.compressor.enabled || self.limiter.enabled)
+        !self.bypass
+            && (self.gate.enabled
+                || self.expander.enabled
+                || self.compressor.enabled
+                || self.limiter.enabled)
     }
 
     /// Checks every bound.
@@ -322,6 +361,27 @@ impl StripDsp {
             (MIN_TIME_US..=MAX_GATE_RELEASE_US).contains(&gate.release_us),
             "gate.release_us",
         )?;
+        let expander = &self.expander;
+        check(
+            (MIN_EXPANDER_THRESHOLD_MILLIDB..=0).contains(&expander.threshold_millidb),
+            "expander.threshold_millidb",
+        )?;
+        check(
+            (MIN_EXPANDER_RATIO_MILLI..=MAX_EXPANDER_RATIO_MILLI).contains(&expander.ratio_milli),
+            "expander.ratio_milli",
+        )?;
+        check(
+            (MIN_TIME_US..=MAX_TIME_US).contains(&expander.attack_us),
+            "expander.attack_us",
+        )?;
+        check(
+            (MIN_TIME_US..=MAX_GATE_RELEASE_US).contains(&expander.release_us),
+            "expander.release_us",
+        )?;
+        check(
+            expander.range_millidb <= MAX_EXPANDER_RANGE_MILLIDB,
+            "expander.range_millidb",
+        )?;
         let compressor = &self.compressor;
         check(
             (MIN_COMPRESSOR_THRESHOLD_MILLIDB..=0).contains(&compressor.threshold_millidb),
@@ -358,16 +418,17 @@ impl StripDsp {
         )
     }
 
-    /// The canonical compact text form: the chain packed big-endian into 85
+    /// The canonical compact text form: the chain packed big-endian into 103
     /// bytes and written as unpadded base64url ([`STRIP_DSP_CODE_LEN`]
     /// characters, letters, digits, `-`, and `_` only).
     ///
     /// The layout is a 16-bit flag word (bit 0 bypass, 1 high-pass, 2 EQ,
-    /// 3 through 7 the bands, 8 gate, 9 compressor, 10 limiter), the
-    /// high-pass frequency (u16), five bands (kind u8 `0` low shelf, `1`
-    /// peak, `2` high shelf; frequency u16; gain i16; Q u16), the gate
-    /// (threshold i32, range u32, attack u32, hold u32, release u32), the
-    /// compressor (threshold i32, ratio u16, attack u32, release u32, knee
+    /// 3 through 7 the bands, 8 gate, 9 compressor, 10 limiter, 11 polarity
+    /// invert, 12 expander), the high-pass frequency (u16), five bands (kind
+    /// u8 `0` low shelf, `1` peak, `2` high shelf; frequency u16; gain i16; Q
+    /// u16), the gate (threshold i32, range u32, attack u32, hold u32,
+    /// release u32), the expander (threshold i32, ratio u16, attack u32,
+    /// release u32, range u32), the compressor (threshold i32, ratio u16, attack u32, release u32, knee
     /// u16, makeup u16), and the limiter (ceiling i32, release u32).
     ///
     /// # Panics
@@ -388,7 +449,9 @@ impl StripDsp {
         }
         flags |= u16::from(self.gate.enabled) << 8
             | u16::from(self.compressor.enabled) << 9
-            | u16::from(self.limiter.enabled) << 10;
+            | u16::from(self.limiter.enabled) << 10
+            | u16::from(self.invert_polarity) << 11
+            | u16::from(self.expander.enabled) << 12;
         let narrow = |value: u32| u16::try_from(value).expect("validated value fits u16");
         bytes.extend_from_slice(&flags.to_be_bytes());
         bytes.extend_from_slice(&narrow(self.high_pass.frequency_hz).to_be_bytes());
@@ -412,6 +475,12 @@ impl StripDsp {
         ] {
             bytes.extend_from_slice(&value.to_be_bytes());
         }
+        let expander = &self.expander;
+        bytes.extend_from_slice(&expander.threshold_millidb.to_be_bytes());
+        bytes.extend_from_slice(&narrow(expander.ratio_milli).to_be_bytes());
+        bytes.extend_from_slice(&expander.attack_us.to_be_bytes());
+        bytes.extend_from_slice(&expander.release_us.to_be_bytes());
+        bytes.extend_from_slice(&expander.range_millidb.to_be_bytes());
         let compressor = &self.compressor;
         bytes.extend_from_slice(&compressor.threshold_millidb.to_be_bytes());
         bytes.extend_from_slice(&narrow(compressor.ratio_milli).to_be_bytes());
@@ -442,7 +511,7 @@ impl StripDsp {
         }
         let mut reader = Reader { bytes: &bytes };
         let flags = reader.u16();
-        if flags >> 11 != 0 {
+        if flags >> 13 != 0 {
             return Err(invalid);
         }
         let flag = |bit: u32| flags & (1 << bit) != 0;
@@ -474,6 +543,14 @@ impl StripDsp {
             hold_us: reader.u32(),
             release_us: reader.u32(),
         };
+        let expander = StripExpander {
+            enabled: flag(12),
+            threshold_millidb: reader.i32(),
+            ratio_milli: u32::from(reader.u16()),
+            attack_us: reader.u32(),
+            release_us: reader.u32(),
+            range_millidb: reader.u32(),
+        };
         let compressor = StripCompressor {
             enabled: flag(9),
             threshold_millidb: reader.i32(),
@@ -490,12 +567,14 @@ impl StripDsp {
         };
         let chain = Self {
             bypass: flag(0),
+            invert_polarity: flag(11),
             high_pass,
             eq: StripEq {
                 enabled: flag(2),
                 bands,
             },
             gate,
+            expander,
             compressor,
             limiter,
         };
@@ -747,6 +826,15 @@ mod tests {
         };
         chain.gate.threshold_millidb = MIN_GATE_THRESHOLD_MILLIDB;
         chain.gate.release_us = MAX_GATE_RELEASE_US;
+        chain.invert_polarity = true;
+        chain.expander = StripExpander {
+            enabled: true,
+            threshold_millidb: MIN_EXPANDER_THRESHOLD_MILLIDB,
+            ratio_milli: MAX_EXPANDER_RATIO_MILLI,
+            attack_us: MIN_TIME_US,
+            release_us: MAX_GATE_RELEASE_US,
+            range_millidb: MAX_EXPANDER_RANGE_MILLIDB,
+        };
         chain.compressor.ratio_milli = MAX_COMPRESSOR_RATIO_MILLI;
         chain.limiter.ceiling_millidb = MIN_LIMITER_CEILING_MILLIDB;
         assert_eq!(StripDsp::from_code(&chain.code()), Ok(chain));
@@ -779,5 +867,31 @@ mod tests {
         let mut chain = StripDsp::DEFAULT;
         chain.eq.bands[4].gain_millidb = 24_001;
         assert!(chain.validate().is_err());
+        let mut chain = StripDsp::DEFAULT;
+        chain.expander.ratio_milli = 20_001;
+        assert_eq!(
+            chain.validate(),
+            Err(StripDspError {
+                field: "expander.ratio_milli"
+            })
+        );
+        let mut chain = StripDsp::DEFAULT;
+        chain.expander.range_millidb = 80_001;
+        assert!(chain.validate().is_err());
+    }
+
+    #[test]
+    fn polarity_and_expander_make_a_chain_active() {
+        let mut chain = StripDsp::DEFAULT;
+        chain.invert_polarity = true;
+        assert!(chain.is_active());
+        assert!(!chain.has_active_dynamics());
+        let decoded = StripDsp::from_code(&chain.code()).unwrap();
+        assert!(decoded.invert_polarity);
+        let mut chain = StripDsp::DEFAULT;
+        chain.expander.enabled = true;
+        assert!(chain.is_active());
+        assert!(chain.has_active_dynamics());
+        assert!(StripDsp::from_code(&chain.code()).unwrap().expander.enabled);
     }
 }

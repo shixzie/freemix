@@ -5,13 +5,15 @@
 //! off), otherwise the whole chain:
 //!
 //! ```text
-//! {"bypass": false,
+//! {"bypass": false, "invert_polarity": false,
 //!  "high_pass": {"enabled": true, "frequency_hz": 80},
 //!  "eq": {"enabled": true, "bands": [
 //!    {"enabled": true, "kind": "low_shelf", "frequency_hz": 100, "gain_milli_db": -2000, "q_milli": 707},
 //!    ... five bands ...]},
 //!  "gate": {"enabled": true, "threshold_milli_db": -50000, "range_milli_db": 40000,
 //!           "attack_us": 1000, "hold_us": 50000, "release_us": 200000},
+//!  "expander": {"enabled": false, "threshold_milli_db": -40000, "ratio_milli": 2000,
+//!               "attack_us": 1000, "release_us": 100000, "range_milli_db": 20000},
 //!  "compressor": {"enabled": true, "threshold_milli_db": -18000, "ratio_milli": 3000,
 //!                 "attack_us": 10000, "release_us": 150000, "knee_milli_db": 6000,
 //!                 "makeup_milli_db": 0},
@@ -26,8 +28,8 @@
 use core::fmt::Write as _;
 
 use fm_types::strip_dsp::{
-    EqBandKind, STRIP_EQ_BAND_COUNT, StripCompressor, StripDsp, StripEq, StripEqBand, StripGate,
-    StripHighPass, StripLimiter,
+    EqBandKind, STRIP_EQ_BAND_COUNT, StripCompressor, StripDsp, StripEq, StripEqBand,
+    StripExpander, StripGate, StripHighPass, StripLimiter,
 };
 
 use super::{DecodeError, Object, Value, parse_array, parse_optional, syntax, unknown_enum};
@@ -40,9 +42,13 @@ pub(crate) fn write_strip_dsp(output: &mut String, dsp: &StripDsp) {
     }
     write!(
         output,
-        "{{\"bypass\": {}, \"high_pass\": {{\"enabled\": {}, \"frequency_hz\": {}}}, \
-         \"eq\": {{\"enabled\": {}, \"bands\": [",
-        dsp.bypass, dsp.high_pass.enabled, dsp.high_pass.frequency_hz, dsp.eq.enabled
+        "{{\"bypass\": {}, \"invert_polarity\": {}, \"high_pass\": {{\"enabled\": {}, \
+         \"frequency_hz\": {}}}, \"eq\": {{\"enabled\": {}, \"bands\": [",
+        dsp.bypass,
+        dsp.invert_polarity,
+        dsp.high_pass.enabled,
+        dsp.high_pass.frequency_hz,
+        dsp.eq.enabled
     )
     .expect("writing to a string cannot fail");
     for (index, band) in dsp.eq.bands.iter().enumerate() {
@@ -62,12 +68,15 @@ pub(crate) fn write_strip_dsp(output: &mut String, dsp: &StripDsp) {
         .expect("writing to a string cannot fail");
     }
     let gate = &dsp.gate;
+    let expander = &dsp.expander;
     let compressor = &dsp.compressor;
     let limiter = &dsp.limiter;
     write!(
         output,
         "]}}, \"gate\": {{\"enabled\": {}, \"threshold_milli_db\": {}, \"range_milli_db\": {}, \
-         \"attack_us\": {}, \"hold_us\": {}, \"release_us\": {}}}, \"compressor\": \
+         \"attack_us\": {}, \"hold_us\": {}, \"release_us\": {}}}, \"expander\": \
+         {{\"enabled\": {}, \"threshold_milli_db\": {}, \"ratio_milli\": {}, \"attack_us\": {}, \
+         \"release_us\": {}, \"range_milli_db\": {}}}, \"compressor\": \
          {{\"enabled\": {}, \"threshold_milli_db\": {}, \"ratio_milli\": {}, \"attack_us\": {}, \
          \"release_us\": {}, \"knee_milli_db\": {}, \"makeup_milli_db\": {}}}, \"limiter\": \
          {{\"enabled\": {}, \"ceiling_milli_db\": {}, \"release_us\": {}}}}}",
@@ -77,6 +86,12 @@ pub(crate) fn write_strip_dsp(output: &mut String, dsp: &StripDsp) {
         gate.attack_us,
         gate.hold_us,
         gate.release_us,
+        expander.enabled,
+        expander.threshold_millidb,
+        expander.ratio_milli,
+        expander.attack_us,
+        expander.release_us,
+        expander.range_millidb,
         compressor.enabled,
         compressor.threshold_millidb,
         compressor.ratio_milli,
@@ -112,6 +127,7 @@ pub(crate) fn parse_strip_dsp(
 fn parse_chain(value: Value, context: &'static str) -> Result<StripDsp, DecodeError> {
     let mut object = Object::new(value, context)?;
     let bypass = object.boolean("bypass")?;
+    let invert_polarity = object.boolean("invert_polarity")?;
     let mut high_pass = Object::new(object.take("high_pass")?, "strip DSP high_pass")?;
     let high_pass_value = StripHighPass {
         enabled: high_pass.boolean("enabled")?,
@@ -152,6 +168,16 @@ fn parse_chain(value: Value, context: &'static str) -> Result<StripDsp, DecodeEr
         release_us: gate.u32("release_us")?,
     };
     gate.finish()?;
+    let mut expander = Object::new(object.take("expander")?, "strip DSP expander")?;
+    let expander_value = StripExpander {
+        enabled: expander.boolean("enabled")?,
+        threshold_millidb: expander.i32("threshold_milli_db")?,
+        ratio_milli: expander.u32("ratio_milli")?,
+        attack_us: expander.u32("attack_us")?,
+        release_us: expander.u32("release_us")?,
+        range_millidb: expander.u32("range_milli_db")?,
+    };
+    expander.finish()?;
     let mut compressor = Object::new(object.take("compressor")?, "strip DSP compressor")?;
     let compressor_value = StripCompressor {
         enabled: compressor.boolean("enabled")?,
@@ -173,12 +199,14 @@ fn parse_chain(value: Value, context: &'static str) -> Result<StripDsp, DecodeEr
     object.finish()?;
     Ok(StripDsp {
         bypass,
+        invert_polarity,
         high_pass: high_pass_value,
         eq: StripEq {
             enabled: eq_enabled,
             bands,
         },
         gate: gate_value,
+        expander: expander_value,
         compressor: compressor_value,
         limiter: limiter_value,
     })

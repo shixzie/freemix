@@ -44,7 +44,7 @@ pub use clock_recalibration::{
 };
 pub use dsp::{
     Biquad, BiquadCoefficients, BiquadKind, BiquadSettings, Compressor, DspError, DspMeter,
-    DspMeterReading, Gate, Limiter, MAX_EQ_BANDS, ParametricEq, Polarity, StripDsp,
+    DspMeterReading, Expander, Gate, Limiter, MAX_EQ_BANDS, ParametricEq, Polarity, StripDsp,
 };
 pub use embedded_audio::{
     EMBEDDED_CHANNELS, EMBEDDED_CHANNELS_PER_GROUP, EMBEDDED_GROUPS, EmbeddedAssignment,
