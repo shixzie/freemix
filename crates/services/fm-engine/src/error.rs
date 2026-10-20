@@ -186,6 +186,13 @@ pub enum InputCatalogueError {
         list: u64,
         cue: u64,
     },
+    /// The run of cue list `list` in progress (or its armed GO) bound the
+    /// input to a dynamic target that cue `cue` has yet to act on (RC-004).
+    BoundByCueRun {
+        input: InputId,
+        list: u64,
+        cue: u64,
+    },
 }
 
 impl fmt::Display for InputCatalogueError {
@@ -216,6 +223,11 @@ impl fmt::Display for InputCatalogueError {
                 formatter,
                 "input {input} cannot be removed: cue {cue} of cue list {list} names it"
             ),
+            Self::BoundByCueRun { input, list, cue } => write!(
+                formatter,
+                "input {input} cannot be removed: the run of cue list {list} bound it for cue \
+                 {cue}; stop or disarm the list first"
+            ),
         }
     }
 }
@@ -243,10 +255,12 @@ impl InputCatalogueError {
                 input: input.get().get(),
                 usage: InputUse::PlaylistEntry { entry },
             },
-            Self::InCueList { input, list, cue } => RefusalReason::InputInUse {
-                input: input.get().get(),
-                usage: InputUse::CueAction { list, cue },
-            },
+            Self::InCueList { input, list, cue } | Self::BoundByCueRun { input, list, cue } => {
+                RefusalReason::InputInUse {
+                    input: input.get().get(),
+                    usage: InputUse::CueAction { list, cue },
+                }
+            }
         }
     }
 }

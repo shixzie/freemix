@@ -1732,3 +1732,104 @@ fn an_advance_into_a_cue_edited_to_a_dynamic_target_binds_preview_and_program() 
     assert_eq!(state.live, Some(10));
     assert_eq!(overlay_on(&armed, 2), Some(input(4)));
 }
+
+/// RC-004: an input a cue run in progress (or an armed GO) bound to a
+/// dynamic target it has yet to act on cannot be removed, like an input a
+/// cue names: the run would otherwise fault at that action. A replayed GO
+/// carrying the journaled bindings holds the same input, an input bound to
+/// nothing still to run is free, and Stop or Disarm frees it.
+#[test]
+fn an_input_a_cue_run_still_binds_cannot_be_removed() {
+    use fm_model::{InputTarget, TargetBindings};
+    let list = set(
+        1,
+        vec![
+            cue(10, vec![CueAction::Wait { frames: 5 }], true),
+            cue(
+                20,
+                vec![CueAction::OverlayOn {
+                    channel: 2,
+                    input: InputTarget::Selected,
+                }],
+                false,
+            ),
+        ],
+    );
+    let held = |list, cue| {
+        Some(RefusalReason::InputInUse {
+            input: 3,
+            usage: fm_command::InputUse::CueAction { list, cue },
+        })
+    };
+    let remove = |engine: &mut Engine, key: &str, value| {
+        submit(
+            engine,
+            key,
+            EngineCommand::RemoveInput {
+                input: input(value),
+            },
+        )
+    };
+
+    // A live GO binds the selection 3; the follower after the wait acts on
+    // it, so 3 stays while 2, bound to nothing, goes.
+    let go = |selected: TargetBindings| EngineCueOperation::Go {
+        cue: None,
+        targets: selected,
+    };
+    let selection = TargetBindings {
+        selected: Some(input(3)),
+        ..TargetBindings::NONE
+    };
+    let mut live = engine();
+    accepted(&submit(&mut live, "set", list.clone()));
+    live.tick().unwrap();
+    accepted(&submit(&mut live, "go", control(1, go(selection))));
+    drive(&mut live, 2);
+    let state = &live.show().cue_list(1).unwrap().state;
+    assert!(state.pending.is_some(), "{state:?}");
+    let refused = remove(&mut live, "remove-3", 3);
+    assert_eq!(refusal(&refused).1, held(1, 20));
+    assert!(live.show().inputs().contains(&input(3)));
+    accepted(&remove(&mut live, "remove-2", 2));
+    // A replay GO carries what the authority bound and holds the same input.
+    let bound = live.show().cue_list(1).unwrap().state.targets.unwrap();
+    let mut replay = engine();
+    accepted(&submit(&mut replay, "set", list.clone()));
+    replay.tick().unwrap();
+    accepted(&submit(&mut replay, "go", control(1, go(bound))));
+    assert_eq!(refusal(&remove(&mut replay, "remove-3", 3)).1, held(1, 20));
+    // Stop drops the rest of the run, and with it the binding.
+    accepted(&submit(
+        &mut live,
+        "stop",
+        control(1, EngineCueOperation::Stop),
+    ));
+    live.tick().unwrap();
+    accepted(&remove(&mut live, "remove-3-stopped", 3));
+
+    // An armed GO binds when armed and holds the selection until disarmed.
+    let mut armed = engine();
+    accepted(&submit(&mut armed, "set", list));
+    armed.tick().unwrap();
+    accepted(&submit(
+        &mut armed,
+        "arm",
+        control(
+            1,
+            EngineCueOperation::Arm {
+                cue: None,
+                in_millis: 1000,
+                targets: selection,
+            },
+        ),
+    ));
+    assert_eq!(refusal(&remove(&mut armed, "remove-3", 3)).1, held(1, 20));
+    accepted(&submit(
+        &mut armed,
+        "disarm",
+        control(1, EngineCueOperation::Disarm),
+    ));
+    armed.tick().unwrap();
+    accepted(&remove(&mut armed, "remove-3-disarmed", 3));
+}

@@ -279,6 +279,45 @@ pub(crate) fn check_selection(
     Ok(())
 }
 
+/// The cue of `list` whose action still to run resolves a dynamic target
+/// to `input` under the bindings its run in progress (or its armed GO)
+/// holds (RC-004): the waiting cue from its next action, or the armed cue,
+/// then each cue it auto-follows into. Removing that input would fault the
+/// run at that action, so the removal is refused like that of an input a
+/// cue names (see [`crate::ShowState::remove_input`]).
+pub(crate) fn run_binding(list: &CueList, input: fm_types::InputId) -> Option<u64> {
+    let state = &list.state;
+    let waiting = state
+        .pending
+        .zip(state.targets)
+        .map(|(pending, targets)| (pending.cue, pending.action, targets));
+    let armed = state
+        .armed
+        .and_then(|armed| armed.targets.map(|targets| (armed.cue, 0, targets)));
+    waiting
+        .into_iter()
+        .chain(armed)
+        .find_map(|(cue, step, targets)| {
+            let first = list.position(cue)?;
+            let mut step = step;
+            for cue in &list.cues[first..] {
+                let binds = cue.actions.iter().skip(step).any(|action| {
+                    action.is_dynamic()
+                        && action.target().and_then(|target| target.resolve(&targets))
+                            == Some(input)
+                });
+                if binds {
+                    return Some(cue.id);
+                }
+                if !cue.auto_follow {
+                    break;
+                }
+                step = 0;
+            }
+            None
+        })
+}
+
 /// The fault of action `action` of cue `cue`, refused with `rejection`
 /// when its wait ended (schema 57): the refusal's typed reason and
 /// message, exactly as a refused GO of the action would have said.

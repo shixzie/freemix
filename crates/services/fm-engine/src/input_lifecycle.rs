@@ -433,7 +433,10 @@ fn catalogue(error: crate::InputCatalogueError) -> Rejection {
         crate::InputCatalogueError::UnknownInput(_) => (RejectionCode::NotFound, "unknown_input"),
         crate::InputCatalogueError::InUse { .. }
         | crate::InputCatalogueError::InPlaylist { .. }
-        | crate::InputCatalogueError::InCueList { .. } => (RejectionCode::Conflict, "input_in_use"),
+        | crate::InputCatalogueError::InCueList { .. }
+        | crate::InputCatalogueError::BoundByCueRun { .. } => {
+            (RejectionCode::Conflict, "input_in_use")
+        }
         crate::InputCatalogueError::DuplicateInput(_) => {
             (RejectionCode::Conflict, "duplicate_input")
         }

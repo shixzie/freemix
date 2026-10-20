@@ -1545,7 +1545,9 @@ Protocol 2.50 adds operator cue lists with a GO key (RC-017).
   its position, else to the next surviving cue; a list with nothing on
   standby (played out or empty) puts the first cue added after its last
   surviving cue on standby. Removing an input a cue names is refused
-  `conflict` with the usage `cue_action:<list>:<cue>`; a stream target a
+  `conflict` with the usage `cue_action:<list>:<cue>`, and so is removing
+  an input a run in progress (or an armed GO) bound to a dynamic target
+  that `<cue>` has yet to act on (RC-004); a stream target a
   cue names cannot be removed from the project either.
 - `payload=cue_go` with `list` and an optional `cue` fires the cue on
   standby (or `cue`): its actions up to the first `wait` run in order on

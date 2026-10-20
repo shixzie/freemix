@@ -4453,7 +4453,8 @@ fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
         InputCatalogueError::UnknownInput(_) => (RejectionCode::NotFound, "input", "unknown_input"),
         InputCatalogueError::InUse { .. }
         | InputCatalogueError::InPlaylist { .. }
-        | InputCatalogueError::InCueList { .. } => {
+        | InputCatalogueError::InCueList { .. }
+        | InputCatalogueError::BoundByCueRun { .. } => {
             (RejectionCode::Conflict, "input", "input_in_use")
         }
     };

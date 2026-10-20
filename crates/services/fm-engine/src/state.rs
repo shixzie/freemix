@@ -622,7 +622,11 @@ impl ShowState {
     ///
     /// Returns [`InputCatalogueError::UnknownInput`] for an input outside the
     /// show and [`InputCatalogueError::InUse`] while the desired switcher
-    /// references it. The show is unchanged on error.
+    /// references it, [`InputCatalogueError::InPlaylist`] and
+    /// [`InputCatalogueError::InCueList`] while a playlist entry or a cue
+    /// names it, and [`InputCatalogueError::BoundByCueRun`] while a cue run
+    /// in progress (or an armed GO) bound it to a dynamic target it has yet
+    /// to act on. The show is unchanged on error.
     pub fn remove_input(&mut self, input: InputId) -> Result<(), InputCatalogueError> {
         let index = self
             .inputs
@@ -651,6 +655,15 @@ impl ShowState {
                 .map(|cue| (list.id, cue.id))
         }) {
             return Err(InputCatalogueError::InCueList { input, list, cue });
+        }
+        // A run in progress (or an armed GO) that bound the input to a
+        // dynamic target still to act on it holds it too (RC-004).
+        if let Some((list, cue)) = self
+            .cue_lists
+            .iter()
+            .find_map(|list| crate::cue::run_binding(list, input).map(|cue| (list.id, cue)))
+        {
+            return Err(InputCatalogueError::BoundByCueRun { input, list, cue });
         }
         self.desired_switcher
             .remove_input(input)
