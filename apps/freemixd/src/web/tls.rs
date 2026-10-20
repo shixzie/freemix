@@ -446,10 +446,23 @@ pub(super) fn create_private_dir(directory: &Path) -> AppResult<()> {
 
 /// Replaces `path` with `contents`, readable only by this user, through a
 /// temporary file renamed into place.
+///
+/// The temporary file is always created afresh: a leftover one (from an
+/// interrupted write, or planted in a state directory others can write)
+/// would keep its own mode, or be a link leading elsewhere, and the key
+/// renamed into place would carry that mode or be written where it leads.
 pub(super) fn write_private(path: &Path, contents: &[u8]) -> AppResult<()> {
     let temporary: PathBuf = path.with_extension("tmp");
+    match fs::remove_file(&temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!("cannot replace {}: {error}", temporary.display()).into());
+        }
+    }
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    // `create_new` never opens an existing file and never follows a link.
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -593,6 +606,35 @@ mod tests {
             state.problem("studio.lan", now_ms()),
             Some(WebCertProblem::ReloadFailed)
         );
+    }
+
+    /// A leftover temporary file never decides the key's mode or where the
+    /// key is written: the key always lands private, at its own path.
+    #[cfg(unix)]
+    #[test]
+    fn a_leftover_temporary_file_never_exposes_the_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join(KEY_FILE);
+        let temporary = key.with_extension("tmp");
+        // A readable leftover from an interrupted write.
+        std::fs::write(&temporary, b"stale").unwrap();
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&key, b"secret key").unwrap();
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the key is private: {mode:o}");
+        assert_eq!(std::fs::read(&key).unwrap(), b"secret key");
+        assert!(!temporary.exists());
+        // A link planted where the temporary file goes is not followed.
+        let elsewhere = directory.path().join("elsewhere");
+        std::fs::write(&elsewhere, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &temporary).unwrap();
+        write_private(&key, b"second key").unwrap();
+        assert_eq!(std::fs::read(&elsewhere).unwrap(), b"untouched");
+        assert_eq!(std::fs::read(&key).unwrap(), b"second key");
+        let metadata = std::fs::symlink_metadata(&key).unwrap();
+        assert!(metadata.file_type().is_file());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
