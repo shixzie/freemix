@@ -27,8 +27,13 @@
 //! digits) and the modifiers held with it. A key may be a chord (a second
 //! stroke pressed after the first, Ctrl+K then 1) and may be scoped to one
 //! console panel ([`SHORTCUT_SCOPES`]), answering only while that panel has
-//! the console's focus. Two enabled-or-not shortcuts may not share an OSC
-//! name or hold clashing keys ([`ShortcutKey::clashes`]).
+//! the console's focus, or to a panel's pop-out window (`<panel>-window`,
+//! [`shortcut_scope_is_valid`]), answering only while that window has the
+//! system's focus. A key name may instead be one of
+//! [`SHORTCUT_MOUSE_BUTTONS`], a press of that mouse button with the same
+//! modifiers: a single stroke, never a chord's. Two enabled-or-not
+//! shortcuts may not share an OSC name or hold clashing keys
+//! ([`ShortcutKey::clashes`]).
 //!
 //! [`Key::name`]: https://docs.rs/egui/latest/egui/enum.Key.html#method.name
 
@@ -69,6 +74,40 @@ pub const SHORTCUT_SCOPES: [&str; 12] = [
     "cues",
 ];
 
+/// The mouse buttons a shortcut key may name in place of a key (the middle
+/// button and the two side buttons, back and forward). The primary and
+/// secondary buttons stay the console's.
+pub const SHORTCUT_MOUSE_BUTTONS: [&str; 3] = ["MouseMiddle", "MouseBack", "MouseForward"];
+
+/// What a window scope adds to a panel name: `mixer-window` is the Mixer
+/// panel's pop-out window.
+pub const SHORTCUT_WINDOW_SUFFIX: &str = "-window";
+
+/// Whether `scope` names a console panel ([`SHORTCUT_SCOPES`]) or a panel's
+/// pop-out window (the panel's name and [`SHORTCUT_WINDOW_SUFFIX`]).
+#[must_use]
+pub fn shortcut_scope_is_valid(scope: &str) -> bool {
+    SHORTCUT_SCOPES.contains(&shortcut_scope_panel(scope))
+}
+
+/// Whether keys in scopes `first` and `second` can answer one press:
+/// either is unscoped, both are the same, or one is a panel and the other
+/// that panel's pop-out window (where the panel has the focus).
+#[must_use]
+pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> bool {
+    let (Some(first), Some(second)) = (first, second) else {
+        return true;
+    };
+    shortcut_scope_panel(first) == shortcut_scope_panel(second)
+}
+
+/// The panel a scope names: the panel itself, or the panel whose pop-out
+/// window it is.
+#[must_use]
+pub fn shortcut_scope_panel(scope: &str) -> &str {
+    scope.strip_suffix(SHORTCUT_WINDOW_SUFFIX).unwrap_or(scope)
+}
+
 /// A key and the modifiers held with it. `command` is Ctrl on Windows and
 /// Linux and Cmd on macOS. A chord names its second stroke in `then`, a
 /// plain stroke (no `then` or `scope` of its own).
@@ -82,8 +121,9 @@ pub struct ShortcutKey {
     pub alt: bool,
     /// A chord's second stroke.
     pub then: Option<Box<ShortcutKey>>,
-    /// The panel (one of [`SHORTCUT_SCOPES`]) the key answers in; `None`
-    /// answers anywhere on the console.
+    /// The panel (one of [`SHORTCUT_SCOPES`]) or pop-out window
+    /// ([`shortcut_scope_is_valid`]) the key answers in; `None` answers
+    /// anywhere on the console.
     pub scope: Option<String>,
 }
 
@@ -107,18 +147,26 @@ impl ShortcutKey {
             && self.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
     }
 
+    /// Whether the stroke is a mouse button ([`SHORTCUT_MOUSE_BUTTONS`]).
+    #[must_use]
+    pub fn is_mouse(&self) -> bool {
+        SHORTCUT_MOUSE_BUTTONS.contains(&self.key.as_str())
+    }
+
     /// Whether the key names are within their bounds, a second stroke is
-    /// plain, and the scope is a known panel.
+    /// plain, a mouse button is a single stroke, and the scope is a known
+    /// panel or pop-out window.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.stroke_is_valid()
             && self.then.as_deref().is_none_or(|then| {
-                then.stroke_is_valid() && then.then.is_none() && then.scope.is_none()
+                !self.is_mouse()
+                    && !then.is_mouse()
+                    && then.stroke_is_valid()
+                    && then.then.is_none()
+                    && then.scope.is_none()
             })
-            && self
-                .scope
-                .as_deref()
-                .is_none_or(|scope| SHORTCUT_SCOPES.contains(&scope))
+            && self.scope.as_deref().is_none_or(shortcut_scope_is_valid)
     }
 
     /// Whether the first strokes of `self` and `other` are the same key
@@ -133,8 +181,8 @@ impl ShortcutKey {
 
     /// Whether `self` and `other` cannot both be bound: the same first
     /// stroke where either is a single stroke or both chords end on the
-    /// same second stroke, in overlapping scopes (either unscoped, or the
-    /// same panel).
+    /// same second stroke, in overlapping scopes
+    /// ([`shortcut_scopes_overlap`]).
     #[must_use]
     pub fn clashes(&self, other: &Self) -> bool {
         let strokes = self.same_stroke(other)
@@ -142,11 +190,7 @@ impl ShortcutKey {
                 (Some(mine), Some(theirs)) => mine.same_stroke(theirs),
                 _ => true,
             };
-        let scopes = match (&self.scope, &other.scope) {
-            (Some(mine), Some(theirs)) => mine == theirs,
-            _ => true,
-        };
-        strokes && scopes
+        strokes && shortcut_scopes_overlap(self.scope.as_deref(), other.scope.as_deref())
     }
 }
 

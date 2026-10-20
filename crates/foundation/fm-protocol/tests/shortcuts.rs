@@ -585,6 +585,52 @@ fn chorded_and_scoped_keys_round_trip_exactly_and_strictly() {
     assert!(!alone.clashes(&key("K", true, true, false)));
 }
 
+/// Protocol 2.93 (RC-004): a key may name a mouse button, a single stroke,
+/// and may be scoped to a panel's pop-out window (`<panel>-window`).
+#[test]
+fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
+    let mut mouse = spec(WireShortcutAction::Script { script: 2 });
+    mouse.key = Some(WireShortcutKey {
+        scope: Some("mixer-window".to_owned()),
+        ..key("MouseBack", true, false, false)
+    });
+    let message = command(CommandPayload::SetShortcut {
+        shortcut: 4,
+        spec: Box::new(mouse),
+        position: None,
+    });
+    let line = round_trip(&message);
+    assert!(
+        line.contains("\tkey=MouseBack.1.0.0%40mixer-window\t"),
+        "{line}"
+    );
+    for (to, valid) in [
+        ("key=MouseMiddle.0.0.0", true),
+        ("key=MouseForward.0.1.1%40cues", true),
+        ("key=K.1.0.0%40cues-window", true),
+        ("key=MouseBack.1.0.0%2B1.0.0.0", false),
+        ("key=K.1.0.0%2BMouseBack.0.0.0", false),
+        ("key=K.1.0.0%40timeline-window", false),
+        ("key=K.1.0.0%40-window", false),
+        ("key=K.1.0.0%40cues-window-window", false),
+    ] {
+        let changed = line.replacen("key=MouseBack.1.0.0%40mixer-window", to, 1);
+        assert_eq!(decode_line(&changed).is_ok(), valid, "{to}");
+    }
+
+    let at = |name: &str, scope: Option<&str>| WireShortcutKey {
+        scope: scope.map(str::to_owned),
+        ..key(name, false, false, false)
+    };
+    assert!(at("MouseBack", None).is_mouse());
+    assert!(!at("B", None).is_mouse());
+    assert!(at("MouseBack", Some("mixer")).clashes(&at("MouseBack", Some("mixer-window"))));
+    assert!(at("MouseBack", None).clashes(&at("MouseBack", Some("cues-window"))));
+    assert!(!at("MouseBack", Some("cues")).clashes(&at("MouseBack", Some("mixer-window"))));
+    assert!(!at("MouseBack", Some("cues-window")).clashes(&at("MouseBack", Some("mixer-window"))));
+    assert!(!at("MouseBack", None).clashes(&at("MouseForward", None)));
+}
+
 /// Protocol 2.88 (RC-004): an action names an input id or the role
 /// `preview`, `program`, or `selected`; `shortcut_fire`, `cue_go`, and
 /// `cue_arm` carry the fire's optional bindings `selected`,

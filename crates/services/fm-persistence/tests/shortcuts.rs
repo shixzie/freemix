@@ -270,3 +270,74 @@ fn the_shortcut_count_is_bounded() {
     project.set_shortcuts((1..=limit).map(bare).collect());
     assert!(stored(project).is_ok());
 }
+
+/// Schema 75: a key may name a mouse button and be scoped to a panel's
+/// pop-out window; both round-trip exactly, and a mouse button in a chord
+/// or an unknown window is project validation.
+#[test]
+fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
+    let directory = TestDirectory::new("mouse");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    expected.set_shortcuts(vec![
+        Shortcut {
+            id: 1,
+            name: "Next".into(),
+            enabled: true,
+            key: Some(ShortcutKey {
+                command: true,
+                scope: Some("mixer-window".into()),
+                ..ShortcutKey::plain("MouseBack")
+            }),
+            osc: None,
+            action: ShortcutAction::Script { script: 1 },
+        },
+        Shortcut {
+            id: 2,
+            name: "Mark".into(),
+            enabled: true,
+            key: Some(ShortcutKey::plain("MouseMiddle")),
+            osc: None,
+            action: ShortcutAction::Script { script: 2 },
+        },
+    ]);
+    store.save(&stored(expected.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains(
+            "\"key\": {\"key\": \"MouseBack\", \"command\": true, \"shift\": false, \
+             \"alt\": false, \"then\": null, \"scope\": \"mixer-window\"}"
+        ),
+        "{text}"
+    );
+    for (from, to) in [
+        // A mouse button is a single stroke.
+        (
+            "\"key\": \"MouseMiddle\", \"command\": false, \"shift\": false, \"alt\": false, \
+             \"then\": null",
+            "\"key\": \"MouseMiddle\", \"command\": false, \"shift\": false, \"alt\": false, \
+             \"then\": {\"key\": \"1\", \"command\": false, \"shift\": false, \"alt\": false}",
+        ),
+        (
+            "\"scope\": \"mixer-window\"",
+            "\"scope\": \"timeline-window\"",
+        ),
+        ("\"scope\": \"mixer-window\"", "\"scope\": \"-window\""),
+        // The same button in the whole console clashes with the window's.
+        (
+            "\"key\": \"MouseMiddle\", \"command\": false",
+            "\"key\": \"MouseBack\", \"command\": true",
+        ),
+    ] {
+        let invalid = text.replacen(from, to, 1);
+        assert_ne!(invalid, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::Validation(_))),
+            "{from} -> {to}: {:?}",
+            store.load()
+        );
+    }
+}

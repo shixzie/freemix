@@ -120,10 +120,11 @@ pub use script::{
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,
-    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, SHORTCUT_SCOPES, Shortcut,
-    ShortcutAction, ShortcutCueOperation, ShortcutError, ShortcutKey, shortcut_name_is_valid,
-    shortcut_osc_is_valid, validate_shortcut_action, validate_shortcut_definition,
-    validate_shortcuts,
+    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_MOUSE_BUTTONS, SHORTCUT_OSC_PREFIX,
+    SHORTCUT_SCOPES, SHORTCUT_WINDOW_SUFFIX, Shortcut, ShortcutAction, ShortcutCueOperation,
+    ShortcutError, ShortcutKey, shortcut_name_is_valid, shortcut_osc_is_valid,
+    shortcut_scope_is_valid, shortcut_scope_panel, shortcut_scopes_overlap,
+    validate_shortcut_action, validate_shortcut_definition, validate_shortcuts,
 };
 pub use stream::{
     DEFAULT_STREAM_SRT_LATENCY_MS, DEFAULT_VIDEO_BITRATE_KBPS, MAX_STREAM_ENDPOINT_BYTES,

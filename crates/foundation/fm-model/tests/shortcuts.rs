@@ -377,3 +377,95 @@ fn chords_and_scopes_are_bounded_and_clash_only_where_they_overlap() {
         })
     );
 }
+
+/// Schema 75: a key may name a mouse button, a single stroke never part of
+/// a chord, and may be scoped to a panel's pop-out window, which overlaps
+/// that panel and the whole console but no other panel or window.
+#[test]
+fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
+    let mouse = |name: &str, scope: Option<&str>| ShortcutKey {
+        shift: true,
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain(name)
+    };
+    for name in fm_model::SHORTCUT_MOUSE_BUTTONS {
+        assert!(mouse(name, None).is_valid(), "{name}");
+        assert!(mouse(name, None).is_mouse(), "{name}");
+    }
+    assert!(!ShortcutKey::plain("F9").is_mouse());
+    // A mouse button is a single stroke: never a chord's first or second.
+    let mut chorded = mouse("MouseBack", None);
+    chorded.then = Some(Box::new(ShortcutKey::plain("1")));
+    assert!(!chorded.is_valid());
+    let mut ending = ShortcutKey::plain("K");
+    ending.then = Some(Box::new(ShortcutKey::plain("MouseBack")));
+    assert!(!ending.is_valid());
+
+    assert!(mouse("MouseBack", Some("mixer-window")).is_valid());
+    assert!(mouse("MouseBack", Some("cues-window")).is_valid());
+    assert!(!mouse("MouseBack", Some("timeline-window")).is_valid());
+    assert!(!mouse("MouseBack", Some("-window")).is_valid());
+    assert!(!mouse("MouseBack", Some("mixer-window-window")).is_valid());
+    assert_eq!(
+        mouse("MouseForward", Some("mixer-window")).to_string(),
+        "Shift+MouseForward in mixer-window"
+    );
+
+    assert!(fm_model::shortcut_scopes_overlap(
+        None,
+        Some("mixer-window")
+    ));
+    assert!(fm_model::shortcut_scopes_overlap(
+        Some("mixer"),
+        Some("mixer-window")
+    ));
+    assert!(fm_model::shortcut_scopes_overlap(
+        Some("mixer-window"),
+        Some("mixer-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("cues"),
+        Some("mixer-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("cues-window"),
+        Some("mixer-window")
+    ));
+
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    // A mouse button clashes like a key: the same button and modifiers in
+    // overlapping scopes.
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, mouse("MouseBack", Some("mixer"))),
+            with_key(2, mouse("MouseBack", Some("mixer-window"))),
+        ]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, mouse("MouseBack", Some("cues-window"))),
+            with_key(2, mouse("MouseBack", Some("mixer-window"))),
+            with_key(3, mouse("MouseForward", None)),
+            with_key(
+                4,
+                ShortcutKey {
+                    shift: false,
+                    ..mouse("MouseBack", None)
+                }
+            ),
+            with_key(5, ShortcutKey::plain("F9")),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        validate_shortcuts(&[with_key(1, chorded)]),
+        Err(ShortcutError::InvalidKey)
+    );
+}

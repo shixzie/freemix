@@ -1,5 +1,6 @@
 //! The project's user shortcuts in `project.json` (RC-004, schema 63; a
-//! key's `then` and `scope` since schema 70).
+//! key's `then` and `scope` since schema 70; mouse buttons and pop-out
+//! window scopes since schema 75).
 //!
 //! ```text
 //! "shortcuts": [
@@ -18,7 +19,10 @@
 //! ```
 //!
 //! A chord's `then` is its second stroke, `{"key", "command", "shift",
-//! "alt"}`; `scope` is `null` or the console panel the key answers in.
+//! "alt"}`; `scope` is `null`, the console panel the key answers in, or that
+//! panel's pop-out window (`"mixer-window"`). A `key` may name a mouse
+//! button (`MouseMiddle`, `MouseBack`, `MouseForward`), a single stroke
+//! whose `then` is `null`.
 //!
 //! An `actions` action holds cue actions in the cue list form (see
 //! [`super::cue`]). A `cue` action's `operation` is `go` (with `cue`, a cue

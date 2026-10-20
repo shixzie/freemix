@@ -17,7 +17,8 @@
 //! A set holds 1 to [`MAX_SHORTCUTS`] shortcuts without their project ids,
 //! with unique names and OSC names and keys that do not clash
 //! ([`WireShortcutKey::clashes`]; a key's `then` is a chord's second
-//! stroke and `scope` the console panel it answers in). `action` is written in the
+//! stroke and `scope` the console panel or pop-out window it answers in; a
+//! `key` may name a mouse button, a single stroke). `action` is written in the
 //! protocol's shortcut action notation
 //! ([`fm_protocol::shortcut_action_text`]); the inputs, cue lists, and
 //! scripts it names are the exporting project's ids and are checked when

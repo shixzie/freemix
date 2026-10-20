@@ -194,6 +194,9 @@ fn a_shortcut_set_is_refused_unless_strict_and_valid() {
         ("\"key\": \"K\"", "\"key\": \"K+\""),
         ("\"key\": \"1\"", "\"key\": \"\""),
         ("\"scope\": \"cues\"", "\"scope\": \"timeline\""),
+        // A pop-out window of no panel, or a mouse button in a chord.
+        ("\"scope\": \"cues\"", "\"scope\": \"timeline-window\""),
+        ("\"key\": \"K\"", "\"key\": \"MouseBack\""),
     ] {
         let bad = text.replacen(from, to, 1);
         assert!(
@@ -204,6 +207,9 @@ fn a_shortcut_set_is_refused_unless_strict_and_valid() {
             "{to}"
         );
     }
+    // A panel's pop-out window is a scope (schema 75).
+    let window = text.replacen("\"scope\": \"cues\"", "\"scope\": \"cues-window\"", 1);
+    assert!(decode_shortcut_set_file(&window).is_ok());
     // A second stroke is a plain stroke.
     let nested = text.replacen(
         "\"alt\": false}, \"scope\": \"cues\"",

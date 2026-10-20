@@ -2,8 +2,9 @@
 //!
 //! A project holds up to [`MAX_SHORTCUTS`] named shortcuts. Each has an
 //! optional key (a key name and its modifiers; since 2.83 optionally a
-//! chord's second stroke and the console panel the key is scoped to), an
-//! optional OSC name (the
+//! chord's second stroke and the console panel the key is scoped to; since
+//! 2.93 a mouse button in place of a key and a panel's pop-out window as
+//! its scope), an optional OSC name (the
 //! shortcut answers `/freemix/user/<name>`), whether it is enabled, and
 //! what it does ([`WireShortcutAction`]): cue actions run together on one
 //! frame, a cue list operation, or a project script run. `shortcut_set`
@@ -67,23 +68,61 @@ pub const SHORTCUT_SCOPES: [&str; 12] = [
     "cues",
 ];
 
+/// The mouse buttons a shortcut key may name in place of a key (Protocol
+/// 2.93): the middle button and the two side buttons, back and forward. A
+/// mouse button is a single stroke, never part of a chord.
+pub const SHORTCUT_MOUSE_BUTTONS: [&str; 3] = ["MouseMiddle", "MouseBack", "MouseForward"];
+
+/// What a window scope adds to a panel name (Protocol 2.93):
+/// `mixer-window` is the Mixer panel's pop-out window, and a key scoped to
+/// it answers only while that window has the system's focus.
+pub const SHORTCUT_WINDOW_SUFFIX: &str = "-window";
+
+/// The panel a scope names: the panel itself, or the panel whose pop-out
+/// window it is.
+#[must_use]
+pub fn shortcut_scope_panel(scope: &str) -> &str {
+    scope.strip_suffix(SHORTCUT_WINDOW_SUFFIX).unwrap_or(scope)
+}
+
+/// Whether `scope` names a console panel ([`SHORTCUT_SCOPES`]) or a panel's
+/// pop-out window.
+#[must_use]
+pub fn shortcut_scope_is_valid(scope: &str) -> bool {
+    SHORTCUT_SCOPES.contains(&shortcut_scope_panel(scope))
+}
+
+/// Whether keys in scopes `first` and `second` can answer one press:
+/// either is unscoped, or both name the same panel (the panel itself or
+/// its pop-out window, where that panel has the focus).
+#[must_use]
+pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> bool {
+    match (first, second) {
+        (Some(first), Some(second)) => shortcut_scope_panel(first) == shortcut_scope_panel(second),
+        _ => true,
+    }
+}
+
 /// A key and the modifiers held with it; `command` is Ctrl (Cmd on macOS).
 ///
 /// Since Protocol 2.83 a key may be a chord, `then` naming the second
 /// stroke pressed after it (Ctrl+K, then 1), and may be scoped to one
 /// console panel. The second stroke is a plain stroke: no `then` or
-/// `scope` of its own.
+/// `scope` of its own. Since 2.93 `key` may name a mouse button
+/// ([`SHORTCUT_MOUSE_BUTTONS`]), a single stroke, and the scope may be a
+/// panel's pop-out window ([`shortcut_scope_is_valid`]).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WireShortcutKey {
-    /// 1 to [`MAX_SHORTCUT_KEY_BYTES`] ASCII letters and digits.
+    /// 1 to [`MAX_SHORTCUT_KEY_BYTES`] ASCII letters and digits: a key's
+    /// name or one of [`SHORTCUT_MOUSE_BUTTONS`].
     pub key: String,
     pub command: bool,
     pub shift: bool,
     pub alt: bool,
     /// A chord's second stroke.
     pub then: Option<Box<WireShortcutKey>>,
-    /// The panel (one of [`SHORTCUT_SCOPES`]) the key answers in; `None`
-    /// answers anywhere on the console.
+    /// The panel (one of [`SHORTCUT_SCOPES`]) or pop-out window the key
+    /// answers in; `None` answers anywhere on the console.
     pub scope: Option<String>,
 }
 
@@ -101,6 +140,12 @@ impl WireShortcutKey {
         }
     }
 
+    /// Whether the stroke is a mouse button ([`SHORTCUT_MOUSE_BUTTONS`]).
+    #[must_use]
+    pub fn is_mouse(&self) -> bool {
+        SHORTCUT_MOUSE_BUTTONS.contains(&self.key.as_str())
+    }
+
     /// Whether the first strokes of `self` and `other` are the same key
     /// with the same modifiers.
     #[must_use]
@@ -113,8 +158,8 @@ impl WireShortcutKey {
 
     /// Whether `self` and `other` cannot both be bound in one project: the
     /// same first stroke where either is a single stroke or both chords
-    /// end on the same second stroke, in overlapping scopes (either
-    /// unscoped, or the same panel).
+    /// end on the same second stroke, in overlapping scopes
+    /// ([`shortcut_scopes_overlap`]).
     #[must_use]
     pub fn clashes(&self, other: &Self) -> bool {
         let strokes = self.same_stroke(other)
@@ -122,11 +167,7 @@ impl WireShortcutKey {
                 (Some(mine), Some(theirs)) => mine.same_stroke(theirs),
                 _ => true,
             };
-        let scopes = match (&self.scope, &other.scope) {
-            (Some(mine), Some(theirs)) => mine == theirs,
-            _ => true,
-        };
-        strokes && scopes
+        strokes && shortcut_scopes_overlap(self.scope.as_deref(), other.scope.as_deref())
     }
 }
 
@@ -219,7 +260,9 @@ pub fn shortcut_name_is_valid(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
-/// Whether `key` names a valid key.
+/// Whether `key` names a valid key: names within their bounds, a plain
+/// second stroke, a mouse button only as a single stroke, and a known
+/// panel or pop-out window as its scope.
 #[must_use]
 pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
     let stroke = |key: &WireShortcutKey| {
@@ -228,14 +271,14 @@ pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
             && key.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
     };
     stroke(key)
-        && key
-            .then
-            .as_deref()
-            .is_none_or(|then| stroke(then) && then.then.is_none() && then.scope.is_none())
-        && key
-            .scope
-            .as_deref()
-            .is_none_or(|scope| SHORTCUT_SCOPES.contains(&scope))
+        && key.then.as_deref().is_none_or(|then| {
+            !key.is_mouse()
+                && !then.is_mouse()
+                && stroke(then)
+                && then.then.is_none()
+                && then.scope.is_none()
+        })
+        && key.scope.as_deref().is_none_or(shortcut_scope_is_valid)
 }
 
 /// Whether `name` is a valid OSC name. A lone `-` is not: the `osc` field
