@@ -74,6 +74,9 @@ pub(crate) type PortalFactory = Arc<dyn Fn() -> Box<dyn PortalBackend> + Send + 
 /// default output's monitor, or a test tone in tests).
 pub(crate) type SoundFactory = fn(&Format) -> NetworkInputConfig;
 
+/// How long restore tokens the project refused wait to be offered again.
+pub(crate) const TOKEN_RETRY: Duration = Duration::from_secs(5);
+
 /// Longest a changed error text waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -195,6 +198,9 @@ pub(crate) struct PortalSources {
     /// Each input's latest restore token.
     tokens: BTreeMap<InputId, String>,
     tokens_changed: bool,
+    /// The project refused the tokens last taken: they are offered again
+    /// from then on.
+    tokens_retry_at: Option<Instant>,
 }
 
 /// Why a desktop-portal capture carries no application audio.
@@ -228,6 +234,7 @@ impl PortalSources {
             sources: BTreeMap::new(),
             tokens: BTreeMap::new(),
             tokens_changed: false,
+            tokens_retry_at: None,
         }
     }
 
@@ -433,10 +440,25 @@ impl PortalSources {
         }
     }
 
-    /// Every input's restore token, when any changed since the last call.
-    pub(crate) fn take_restore_tokens(&mut self) -> Option<BTreeMap<InputId, String>> {
+    /// Every input's restore token, when any changed since the last call
+    /// (or the project refused them, once [`TOKEN_RETRY`] has passed).
+    pub(crate) fn take_restore_tokens(
+        &mut self,
+        now: Instant,
+    ) -> Option<BTreeMap<InputId, String>> {
         self.collect_tokens();
+        if self.tokens_retry_at.is_some_and(|at| now < at) {
+            return None;
+        }
+        self.tokens_retry_at = None;
         std::mem::take(&mut self.tokens_changed).then(|| self.tokens.clone())
+    }
+
+    /// The project refused the tokens last taken: they are offered again
+    /// after [`TOKEN_RETRY`] (sooner would only repeat the refusal).
+    pub(crate) fn restore_tokens_refused(&mut self, now: Instant) {
+        self.tokens_changed = true;
+        self.tokens_retry_at = Some(now + TOKEN_RETRY);
     }
 
     /// The statuses due for a report at `now`.
@@ -557,25 +579,36 @@ fn attempt_of(state: ScreenCaptureState) -> (&'static str, u32) {
     }
 }
 
+/// What [`keep_restore_tokens`] made of the tokens.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Kept {
+    /// The project changed and is due to be written.
+    Changed,
+    /// The project already kept them.
+    Unchanged,
+    /// The project refused them: they are to be offered again
+    /// ([`PortalSources::restore_tokens_refused`]).
+    Refused,
+}
+
 /// Keeps `tokens` as the screen capture restore tokens of the `durable`
-/// project; returns whether the project changed (and is due to be
-/// written).
+/// project.
 pub(crate) fn keep_restore_tokens(
     durable: &mut StoredProject,
     tokens: BTreeMap<InputId, String>,
-) -> bool {
+) -> Kept {
     let mut project = durable.project().clone();
     if !project.set_screen_capture_restore_tokens(tokens) {
-        return false;
+        return Kept::Unchanged;
     }
     match durable.with_project(project) {
         Ok(updated) => {
             *durable = updated;
-            true
+            Kept::Changed
         }
         Err(error) => {
             eprintln!("FREEMIXD_SCREEN_CAPTURE\tv=1\trestore_tokens=refused\terror={error}");
-            false
+            Kept::Refused
         }
     }
 }
@@ -771,7 +804,7 @@ mod tests {
                 restore_token: Some("old".into())
             }
         );
-        assert_eq!(sources.take_restore_tokens(), None);
+        assert_eq!(sources.take_restore_tokens(Instant::now()), None);
 
         // Pick again: the token is forgotten and the dialog asks anew.
         script
@@ -781,7 +814,10 @@ mod tests {
             .push_back(Share::Grant(Some("new")));
         assert!(sources.pick(input(1)));
         assert!(!sources.pick(input(2)));
-        assert_eq!(sources.take_restore_tokens(), Some(BTreeMap::new()));
+        assert_eq!(
+            sources.take_restore_tokens(Instant::now()),
+            Some(BTreeMap::new())
+        );
         let status = settle(&mut sources, input(1), |state| {
             state == ScreenCaptureState::Live
         });
@@ -789,7 +825,7 @@ mod tests {
         assert_eq!(status.audio, ScreenCaptureAudioState::Off);
         assert_eq!(script.lock().unwrap().requests[1].restore_token, None);
         assert_eq!(
-            sources.take_restore_tokens(),
+            sources.take_restore_tokens(Instant::now()),
             Some(BTreeMap::from([(input(1), "new".to_owned())]))
         );
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -841,6 +877,28 @@ mod tests {
     }
 
     #[test]
+    fn refused_restore_tokens_are_offered_again() {
+        let (mut sources, _script) = sources(vec![Share::Grant(Some("granted"))]);
+        sources.sync(&[(input(1), window())], |_| false);
+        settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::Live
+        });
+        let now = Instant::now();
+        let granted = Some(BTreeMap::from([(input(1), "granted".to_owned())]));
+        assert_eq!(sources.take_restore_tokens(now), granted);
+        assert_eq!(sources.take_restore_tokens(now), None, "once per change");
+        // The project refused them: not offered at once, but again later.
+        sources.restore_tokens_refused(now);
+        assert_eq!(sources.take_restore_tokens(now), None);
+        assert_eq!(
+            sources.take_restore_tokens(now + TOKEN_RETRY.saturating_sub(Duration::from_millis(1))),
+            None
+        );
+        assert_eq!(sources.take_restore_tokens(now + TOKEN_RETRY), granted);
+        assert_eq!(sources.take_restore_tokens(now + TOKEN_RETRY), None);
+    }
+
+    #[test]
     fn a_new_pick_asks_only_once_the_last_share_closed() {
         let (mut sources, script) = sources(Vec::new());
         script.lock().unwrap().close = Duration::from_millis(400);
@@ -886,7 +944,10 @@ mod tests {
             ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 0 })
         };
         sources.sync(&[(input(1), screen)], |_| false);
-        assert_eq!(sources.take_restore_tokens(), Some(BTreeMap::new()));
+        assert_eq!(
+            sources.take_restore_tokens(Instant::now()),
+            Some(BTreeMap::new())
+        );
         let status = settle(&mut sources, input(1), |state| {
             state == ScreenCaptureState::AwaitingSelection
         });
@@ -900,7 +961,10 @@ mod tests {
         // A removed input's token goes with it.
         sources.set_restore_tokens(BTreeMap::from([(input(1), "kept".to_owned())]));
         sources.sync(&[], |_| false);
-        assert_eq!(sources.take_restore_tokens(), Some(BTreeMap::new()));
+        assert_eq!(
+            sources.take_restore_tokens(Instant::now()),
+            Some(BTreeMap::new())
+        );
         assert_eq!(sources.inputs(), Vec::<InputId>::new());
     }
 

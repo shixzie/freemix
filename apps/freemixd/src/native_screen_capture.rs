@@ -332,11 +332,23 @@ impl NativeScreenCapture {
     }
 
     /// Every input's restore token, when a Wayland desktop granted or
-    /// dropped one since the last call.
-    pub(crate) fn take_restore_tokens(&mut self) -> Option<BTreeMap<InputId, String>> {
+    /// dropped one since the last call (or the project refused them a
+    /// while ago).
+    pub(crate) fn take_restore_tokens(
+        &mut self,
+        now: Instant,
+    ) -> Option<BTreeMap<InputId, String>> {
         self.portal
             .as_mut()
-            .and_then(crate::native_portal_capture::PortalSources::take_restore_tokens)
+            .and_then(|portal| portal.take_restore_tokens(now))
+    }
+
+    /// The project refused the restore tokens last taken: they are
+    /// offered again later.
+    pub(crate) fn restore_tokens_refused(&mut self, now: Instant) {
+        if let Some(portal) = &mut self.portal {
+            portal.restore_tokens_refused(now);
+        }
     }
 
     /// Picks `input`'s target again: a Wayland desktop's dialog asks anew

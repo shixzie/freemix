@@ -1203,12 +1203,22 @@ pub(super) fn run(
         if let Some(native) = native.as_deref_mut() {
             // A Wayland desktop's new screen capture grants (IN-011) are
             // kept in the project and folded at once.
+            // Tokens the project refuses are offered again later.
             #[cfg(feature = "native-media")]
-            if let Some(tokens) = native.take_screen_capture_restore_tokens()
-                && crate::native_portal_capture::keep_restore_tokens(durable, tokens)
-                && let Some(progress) = progress.as_mut()
             {
-                progress.request_fold();
+                use crate::native_portal_capture::{Kept, keep_restore_tokens};
+                let now = Instant::now();
+                if let Some(tokens) = native.take_screen_capture_restore_tokens(now) {
+                    match keep_restore_tokens(durable, tokens) {
+                        Kept::Changed => {
+                            if let Some(progress) = progress.as_mut() {
+                                progress.request_fold();
+                            }
+                        }
+                        Kept::Unchanged => {}
+                        Kept::Refused => native.screen_capture_restore_tokens_refused(now),
+                    }
+                }
             }
             if let Some(progress) = progress.as_mut() {
                 progress.poll(control, store, durable);

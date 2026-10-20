@@ -6120,11 +6120,19 @@ impl NativeDaemon {
     }
 
     /// Every screen capture input's restore token, when a Wayland desktop
-    /// granted or dropped one since the last call (IN-011).
+    /// granted or dropped one since the last call, or the project refused
+    /// them a while ago (IN-011).
     fn take_screen_capture_restore_tokens(
         &mut self,
+        now: Instant,
     ) -> Option<std::collections::BTreeMap<InputId, String>> {
-        self.screen_capture.take_restore_tokens()
+        self.screen_capture.take_restore_tokens(now)
+    }
+
+    /// The project refused the screen capture restore tokens last taken:
+    /// they are offered again later (IN-011).
+    fn screen_capture_restore_tokens_refused(&mut self, now: Instant) {
+        self.screen_capture.restore_tokens_refused(now);
     }
 
     /// The realized recorder slots (Protocol 2.66), at most every
