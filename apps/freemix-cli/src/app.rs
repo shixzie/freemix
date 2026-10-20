@@ -4606,7 +4606,6 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?;
-    let mut engine = engine;
     restore_document_page_counts(path, &project, &mut engine);
     // Every shown title continues its timeline (GX-001, schema 67).
     engine.restore_title_timelines(project.title_timelines())?;
