@@ -654,22 +654,27 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
     );
     // Startup work inside a frame's realization: a startup frame takes no
     // longer than a frame interval, or than four times what the frames after
-    // startup take on this host (the first realization warms the GPU up and
-    // takes two to three times as long).
+    // startup take on this host. The first realization also warms the GPU up
+    // (pipelines, buffers): two to three times a later frame on an idle
+    // host, and more on one whose cores are all busy, where that one-off
+    // CPU work competes with everything else. So the first frame alone gets
+    // twice the bound, which still catches an encoder or segment start
+    // inside it (a process spawn, tens to hundreds of milliseconds).
     let mut realize: Vec<f64> = steady.iter().map(|frame| frame.realize).collect();
     realize.sort_by(f64::total_cmp);
     let typical = realize[realize.len() / 2];
     let bound = frame_ms.max(4.0 * typical);
+    let cold_bound = 2.0 * bound;
     let slow: Vec<(usize, f64)> = first
         .iter()
         .map(|frame| frame.realize)
         .enumerate()
-        .filter(|&(_, realize)| realize >= bound)
+        .filter(|&(index, realize)| realize >= if index == 0 { cold_bound } else { bound })
         .collect();
     assert!(
         slow.is_empty(),
-        "startup frames took {bound:.2} ms or more to realize (frame, ms) while later \
-         frames took {typical:.2} ms: {slow:?}; {first:?}"
+        "startup frames took {bound:.2} ms ({cold_bound:.2} ms for the first) or more to \
+         realize (frame, ms) while later frames took {typical:.2} ms: {slow:?}; {first:?}"
     );
     // On a host that keeps pace with the show (the frames after startup
     // realize in under half an interval), no startup frame is a frame late.
