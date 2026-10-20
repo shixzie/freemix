@@ -26,7 +26,7 @@
 //! STREAM, AUDIO UNSUPPORTED, AUDIO FAILED; none while the audio is off),
 //! whose hover gives the state, its reason, and what it means.
 
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, RichText, Ui, Vec2};
 use fm_protocol::{
     MAX_SCREEN_CAPTURE_CROP, MAX_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_TITLE_BYTES,
     MIN_SCREEN_CAPTURE_FPS, ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig,
@@ -516,7 +516,7 @@ pub(crate) fn draw_screen_capture_form(
         ui.label(section_label(l.text(Msg::ScFollow)));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
-            let width = option_key_width(
+            let size = option_key_size(
                 ui,
                 &[
                     l.text(Msg::ScMatchExact),
@@ -534,8 +534,7 @@ pub(crate) fn draw_screen_capture_form(
                 (TitleMatch::Any, Msg::ScMatchAny, Msg::ScMatchAnyHover),
             ] {
                 let selected = rule.title_match == title_match;
-                if ui
-                    .add(option_key(l.text(label), selected, width))
+                if add_option_key(ui, true, l.text(label), selected, size)
                     .on_hover_text(l.text(hover))
                     .clicked()
                     && !selected
@@ -580,16 +579,21 @@ pub(crate) fn draw_screen_capture_form(
 
     ui.add_space(4.0);
     ui.label(section_label(l.text(Msg::ScCrop)));
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
+    // Four equal columns, each edge's name over its field, so the row
+    // never wraps whatever the language.
+    ui.columns(4, |columns| {
         let crop = &mut draft.config.crop;
-        for (label, value) in [
+        for (ui, (label, value)) in columns.iter_mut().zip([
             (Msg::ScCropLeft, &mut crop.left),
             (Msg::ScCropTop, &mut crop.top),
             (Msg::ScCropRight, &mut crop.right),
             (Msg::ScCropBottom, &mut crop.bottom),
-        ] {
-            ui.label(RichText::new(l.text(label)).size(crate::theme::legible(10.5)));
+        ]) {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add(
+                egui::Label::new(RichText::new(l.text(label)).size(crate::theme::legible(10.5)))
+                    .truncate(),
+            );
             ui.add(
                 egui::DragValue::new(value)
                     .range(0..=MAX_SCREEN_CAPTURE_CROP)
@@ -615,7 +619,7 @@ pub(crate) fn draw_screen_capture_form(
     ui.label(section_label(l.text(Msg::ScStall)));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
-        let width = option_key_width(ui, &[l.text(Msg::ScStallFreeze), l.text(Msg::ScStallBlack)]);
+        let size = option_key_size(ui, &[l.text(Msg::ScStallFreeze), l.text(Msg::ScStallBlack)]);
         for (slate, label, hover) in [
             (
                 StallSlate::Freeze,
@@ -625,8 +629,7 @@ pub(crate) fn draw_screen_capture_form(
             (StallSlate::Black, Msg::ScStallBlack, Msg::ScStallBlackHover),
         ] {
             let selected = draft.config.slate == slate;
-            if ui
-                .add(option_key(l.text(label), selected, width))
+            if add_option_key(ui, true, l.text(label), selected, size)
                 .on_hover_text(l.text(hover))
                 .clicked()
             {
@@ -639,7 +642,7 @@ pub(crate) fn draw_screen_capture_form(
     let window = matches!(draft.config.target, ScreenCaptureTarget::Window(_));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
-        let width = option_key_width(
+        let size = option_key_size(
             ui,
             &[
                 l.text(Msg::ScAudioNone),
@@ -666,8 +669,7 @@ pub(crate) fn draw_screen_capture_form(
         ] {
             let selected = draft.config.audio == audio;
             let enabled = audio != ScreenCaptureAudio::Application || window;
-            if ui
-                .add_enabled(enabled, option_key(l.text(label), selected, width))
+            if add_option_key(ui, enabled, l.text(label), selected, size)
                 .hint(l.text(hover), Msg::ScAudioAppScreenHover.en())
                 .clicked()
             {
@@ -687,37 +689,71 @@ pub(crate) fn draw_screen_capture_form(
 const OPTION_KEY_SPACING: f32 = 6.0;
 /// Columns of the option rows.
 const OPTION_COLUMNS: f32 = 3.0;
+/// The height of a one-line option key.
+const OPTION_KEY_HEIGHT: f32 = 28.0;
 
-/// The column width that puts every key of an option row on one line, or
-/// `None` when one of `labels` would not fit (the row then wraps keys of
-/// the usual width).
-fn option_key_width(ui: &Ui, labels: &[&str]) -> Option<f32> {
+/// The key size that puts an option row's keys on one line in three
+/// columns: a long label wraps onto a second line inside its key, and every
+/// key of the row takes the tallest one's height. `None` when a single word
+/// of `labels` would not fit a column (the row then wraps keys of their
+/// natural width).
+fn option_key_size(ui: &Ui, labels: &[&str]) -> Option<Vec2> {
     // Every option row is laid out in three columns, so the keys of the
     // two- and three-key rows line up.
     let count = OPTION_COLUMNS;
     // A point to spare so rounding never pushes the last key to a new line.
     let width = ((ui.available_width() - OPTION_KEY_SPACING * (count - 1.0)) / count - 1.0).floor();
+    let padding = ui.spacing().button_padding;
+    let text_width = width - 2.0 * padding.x - 4.0;
     let font = egui::FontId::proportional(crate::theme::legible(11.5));
-    let widest = ui.fonts_mut(|fonts| {
+    let (widest_word, tallest) = ui.fonts_mut(|fonts| {
         labels
             .iter()
-            .map(|label| {
-                fonts
-                    .layout_no_wrap((*label).to_owned(), font.clone(), egui::Color32::WHITE)
+            .fold((0.0_f32, 0.0_f32), |(word, tall), label| {
+                let widest_word = label
+                    .split_whitespace()
+                    .map(|word| {
+                        fonts
+                            .layout_no_wrap(word.to_owned(), font.clone(), egui::Color32::WHITE)
+                            .size()
+                            .x
+                    })
+                    .fold(0.0_f32, f32::max);
+                let height = fonts
+                    .layout(
+                        (*label).to_owned(),
+                        font.clone(),
+                        egui::Color32::WHITE,
+                        text_width.max(1.0),
+                    )
                     .size()
-                    .x
+                    .y;
+                (word.max(widest_word), tall.max(height))
             })
-            .fold(0.0_f32, f32::max)
     });
-    (widest + 2.0 * ui.spacing().button_padding.x + 4.0 <= width).then_some(width)
+    (widest_word <= text_width).then(|| {
+        Vec2::new(
+            width,
+            (tallest + 2.0 * padding.y + 6.0).max(OPTION_KEY_HEIGHT),
+        )
+    })
 }
 
-/// A kind key of `width` when the row fits on one line.
-fn option_key(label: &str, selected: bool, width: Option<f32>) -> egui::Button<'static> {
+/// Adds a kind key of `size` (wrapping its label), or of its natural size.
+fn add_option_key(
+    ui: &mut Ui,
+    enabled: bool,
+    label: &str,
+    selected: bool,
+    size: Option<Vec2>,
+) -> egui::Response {
     let key = kind_key(label, selected);
-    match width {
-        Some(width) => key.min_size(egui::Vec2::new(width, 28.0)),
-        None => key,
+    match size {
+        Some(size) => {
+            ui.add_enabled_ui(enabled, |ui| ui.add_sized(size, key.wrap()))
+                .inner
+        }
+        None => ui.add_enabled(enabled, key),
     }
 }
 
