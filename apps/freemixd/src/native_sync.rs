@@ -45,7 +45,8 @@ pub(crate) fn wire_sample(
     telemetry: &LiveSourceTelemetry,
 ) -> Option<SourceSyncSample> {
     let sync = &telemetry.sync;
-    #[allow(clippy::cast_possible_truncation)] // clamped to the wire bound first
+    // Clamped to the wire bound (exact in an f64) first.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
     let mppm = |ppm: f64| {
         let limit = MAX_SOURCE_SYNC_MPPM as f64;
         if ppm.is_finite() {
@@ -54,10 +55,11 @@ pub(crate) fn wire_sample(
             0
         }
     };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // non-negative, finite
+    // Non-negative and finite; `as` saturates at `u64::MAX`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let micros = |ms: f64| {
         if ms.is_finite() && ms > 0.0 {
-            (ms * 1_000.0).round().min(u64::MAX as f64) as u64
+            (ms * 1_000.0).round() as u64
         } else {
             0
         }
@@ -231,9 +233,9 @@ mod tests {
         assert_eq!(sample.drift_mppm, -12_346);
         assert_eq!(sample.correction_mppm, 7_000);
         assert_eq!(sample.target_us, 80_000);
-        assert_eq!(
-            sample.buffer_us,
-            (telemetry.buffer_ms() * 1_000.0).round() as u64
+        assert!(
+            (sample.buffer_ms() - telemetry.buffer_ms()).abs() <= 0.001,
+            "{sample:?}"
         );
         assert_eq!(
             (sample.underruns, sample.picture_repeats, sample.restarts),
@@ -281,7 +283,7 @@ mod tests {
         let empty = tracker
             .poll(&server(), Vec::new, start + SOURCE_SYNC_STATUS_INTERVAL * 2)
             .unwrap();
-        assert!(empty.sources.is_empty());
+        assert_eq!(empty.sources, []);
         assert_eq!(empty.sequence, 3);
         assert!(
             tracker

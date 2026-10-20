@@ -3606,7 +3606,7 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
     assert!(subscriber_limit > 0);
     assert!(subscriber_queue_limit > 0);
     // A daemon without live sources reports no drift loop.
-    assert!(source_sync.is_empty());
+    assert_eq!(source_sync, []);
     drop(client);
     let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(persisted.position().revision, handshake.current_revision);
