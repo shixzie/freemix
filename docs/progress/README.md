@@ -1071,6 +1071,107 @@ Still open:
 - The keyboard reference grows to fit the project shortcuts group and may
   need scrolling at 1280x720 with many shortcuts.
 
+## Round 9
+
+Captures of 2026-10-20 at Protocol 2.84, schema 71: a polish pass over what
+landed since round 8. That covers the screen and window capture form with its
+captured audio, document inputs with page keys and presenter notes, the strip
+FX polarity, expander and loudness meters, the mixer's LUFS readouts, and the
+shortcuts editor with chords, panel scope, per-console keys and import/export.
+It also covers the media list thumbnails, the SYNC lamp and strip key, auto
+key and the eyedropper in the layer designer, and the browser `/titles` editor
+and operator shortcut buttons.
+
+The setup is the same Xvfb + lavapipe console, `--role admin`, simulated
+daemon and synthetic meter feed as before. The synthetic feed now also
+reports loudness and gain reduction. The SYNC captures use a native daemon
+with two UDP streams, and the web pages use headless Chromium against
+`freemixd --web-listen`. "Round 9 captures" under Reproducing has the
+details.
+
+| File | What it shows |
+| --- | --- |
+| `studio-round9-workspace.png` | 1920x1080 mid-show on the Cues tab. Every mixer strip and Master shows a `S LUFS` / `I LUFS` readout under its meter: a dim legend beside a bright figure, or `LUFS --` with no reading. The bank now holds Flood Briefing (PDF), Guest Talk (PPTX), Presenter Laptop (window capture) and Guest Green Screen. |
+| `studio-round9-workspace-720.png` | The same show at 1280x720 with the side group on Overlays. |
+| `studio-round9-strip-fx.png` | Anchor Mic's FX window. It shows `Ø INVERT` lit beside HIGH-PASS, the EXPANDER stage on, and `GR` meters with their figures (`0.0 dB`, not `-0.0 dB`) clear of the legend. A LOUDNESS row of boxed M / S / I / TP readouts closes the window. |
+| `studio-round9-media-list.png` | The Media tab maximized. Rundown Clips lists each item with a thumbnail beside its name and In/Out fields. |
+| `studio-round9-documents.png` | The same tab scrolled to DOCUMENTS. Flood Briefing is `READY` on page 2 of 5, with ◀ / ▶, page thumbnails (the current one ringed in the accent while off air) and PRESENTER NOTES. Guest Talk is `UNAVAILABLE`, with the server's advice as a sentence and its own notes. |
+| `studio-round9-add-screen-capture.png` | Add input › `WINDOW / SCREEN` with the Slides · Keynote deck window chosen. Follow-by, While-gone and Captured audio are aligned rows of three option keys, and `Application audio` is selected. The sample's corner badge reads `APPLICATION AUDIO`. |
+| `studio-round9-shortcuts.png` | Edit › Project shortcuts after importing a four-shortcut set. Picker rows are two lines (name, then key in mono): `Shift+F12 (this console)`, `Ctrl+K, 2 in Cues`, and `Weather wall (off)` dimmed. Jump to cold open is selected, showing the chord key cap, `Remove second key`, `ANSWERS IN Cues`, the OSC hint `None (optional)`, the THIS CONSOLE row, and the SHORTCUT SET FILE export/import row. |
+| `studio-round9-auto-key.png` | The layer designer on Guest Key after `Auto key`: Chroma, the key colour sampled from the green screen, and `Pick colour` lit as an armed toggle over the source picture. |
+| `studio-round9-sync-lamp.png` | A native daemon with Field Feed on Program and Venue Return on Preview. Hovering the status bar `SYNC` lamp opens its popup: a summary, then one non-wrapping line per source. |
+| `studio-round9-sync-key.png` | Field Mic's strip `SYNC +0.0` key clicked: the per-source detail (drift, resampling ratio, buffer, resyncs, dropped pictures). |
+| `studio-round9-*-es.png` | Workspace, strip FX, media list, documents, Add input (window/screen), shortcuts, auto key and both SYNC views with `--lang es`. The Spanish shortcuts capture shows Lower third on with a `Mayús+F12` console key over its project key `Mayús+F10`. |
+| `web-round9-titles.png` | `/titles` at 1920x1080 with a draft on Role: the editor column capped at 64rem, a field-level Revert, and CHANGES TO SEND listing the old and new text. |
+| `web-round9-titles-720.png` | The same at 1280x720. |
+| `web-round9-operator.png` | `/operator` at 1920x1080 (full page) with the SHORTCUTS card. |
+| `web-round9-operator-shortcuts.png` | The SHORTCUTS card on its own. A shortcut disabled in the project is greyed and says `OFF` under its name. |
+| `web-round9-operator-phone.png` | The operator page at 390x844 (2x) scrolled to SHORTCUTS. |
+| `web-round9-*-es.png` | The same pages with `#lang=es`. |
+
+Defects found in these captures and fixed (the captures above are after the
+fixes):
+
+- The synthetic meter feed sent no loudness or dynamics, so every LUFS readout
+  and GR meter read `--` in captures. It now reports both, per strip and for
+  Master, for running stages only.
+- GR meters drew their bar under the `GR` legend and printed `-0.0 dB`. The
+  bar starts after the legend, and no reduction reads `0.0 dB`.
+- The strip FX loudness readouts were one run-on line. Each is a small box
+  with a dim scale and unit and a bright value, and the row wraps centred.
+- The mixer's LUFS readout was a bare number. It has a dim `S LUFS` /
+  `I LUFS` legend that drops to the scale on narrow strips.
+- The screen capture option keys had ragged widths and wrapped one key at a
+  time. Follow-by, While-gone and Captured audio now share a three-column
+  width when the labels fit, and the application caption has room below it.
+- The Add input sample said `SILENT` for every kind. It names a screen
+  capture's audio (`SYSTEM AUDIO` / `APPLICATION AUDIO`) and says nothing
+  for kinds whose sound comes from the source. The intro now mentions
+  window and screen capture.
+- Document cards repeated the input name as the title. They also ringed the
+  current page in red off air, and showed the server's advice in English and
+  lower case. The title is hidden when it equals the name, the ring is red
+  only on Program, and the known messages are translated and capitalised.
+- Shortcut picker rows crammed name, key, scope and console note onto one
+  clipped line. They are two lines with the key in mono. An empty OSC field
+  says `None (optional)`. Cue timings read `1 frames`; they read `1 fr`.
+  The Edit menu item reads `Project shortcuts…`, like the dialog.
+- `Pick colour` was a plain button with no armed state, and the Green / Blue
+  presets did not show which was in use. All three are small keys lit when
+  active.
+- The SYNC popup wrapped its per-source lines mid-figure. They stay on one
+  line under a separator.
+- The media list append field clipped `Añadir al final` in Spanish. Its
+  width now follows the label.
+- On the operator page, a shortcut disabled in the project was only greyed.
+  It now says `OFF` / `DESACTIVADO` under the name.
+- The `/titles` editor stretched across a 1920-pixel window. It stops at
+  64rem.
+- At 1280x720 in Spanish, the `/titles` list broke `Lower third` letter by
+  letter beside the wide badges. The name keeps room for a word, and the
+  badges stack.
+
+Still open:
+
+- Strip FX stage abbreviations (`THR`, `ATK`, `REL`, `RNG`, `KNEE`,
+  `CEIL`) are not translated.
+- The layer designer canvas reads `OUTLINES ONLY` on the simulated daemon.
+- The PPTX needs LibreOffice on the server. Without it, its tile reads
+  `no thumbnail` and the card says `UNAVAILABLE` (expected, but it is what
+  the capture shows).
+- The native SYNC lamp is amber in these captures because of loopback UDP
+  overruns, not a product fault.
+- Document cards have no First/Last keys, unlike slideshows.
+- The bank's add tile hint (`camera · stream · audio · image · list`) does
+  not mention screen captures. It is painted unclipped, so a longer hint
+  needs a layout check at 1280x720 first.
+- Media list item In/Out fields read `0` until the server probes the file.
+- In Spanish, `Cualquier ventana de la aplicación` is too wide for the
+  three-column screen capture keys, so the Follow-by row falls back to
+  natural widths and wraps. The crop row's last field also wraps.
+- On the operator page, the SHORTCUTS card stretches to the row's height on
+  wide screens (the captures crop it).
+
 ## Reproducing
 
 ```sh
@@ -1768,6 +1869,88 @@ Package Rotation (add media list), `SLIDESHOW` with the folder
 `Advanced`, and `Vectorscope`; the animation capture follows round 7; the
 pop-out capture drags the Program panel's grip out of its dock; and the
 reference capture presses `?` with the saved shortcut in the project.
+
+### Round 9 captures
+
+The round 9 captures (2026-10-20, Protocol 2.84, schema 71) built the
+working tree with `cargo build -p freemix-cli -p freemix-studio --features
+freemix-studio/capture-meter-signal` and `cargo build -p freemixd
+--features native-media`. Studio ran as in round 8 (`--role admin`, a fresh
+`FREEMIX_STUDIO_PREFS` file, `FREEMIX_STUDIO_CAPTURE_METERS=1`, `--daemon
+target/debug/freemixd`) on Xvfb at 1920x1080x24 (English, then `--lang es`)
+and 1280x720x24. Each run used a freshly built show: the round 8 script plus
+the commands below.
+
+```sh
+freemix-cli project-import-media news.freemix "Flood Briefing.pdf" --input 12
+freemix-cli project-import-media news.freemix "Guest Talk.pptx" --input 13
+freemix-cli rename news.freemix 12 "Flood Briefing"
+freemix-cli rename news.freemix 13 "Guest Talk"
+freemix-cli input-add-screen-capture news.freemix 14 "Presenter Laptop" window ffplay "Quarterly Review" \
+    --match contains --cursor off --fps 30 --audio app
+freemix-cli input-page news.freemix 12 goto 2
+freemix-cli shortcut-import news.freemix desk.fmshortcuts
+freemix-cli input-add-image news.freemix 16 "Guest Green Screen" greenscreen.png
+freemix-cli scene-layer-add news.freemix 100 16 2 "Guest Key"
+freemix-cli scene-layer-geometry news.freemix 100 2 120 300 720 405 0
+```
+
+The show also sets categories and colours for 12, 13, 14 and 16. The input
+files are generated:
+
+- `Flood Briefing.pdf` is a five-page ImageMagick PDF.
+- `Guest Talk.pptx` is a three-slide python-pptx deck with speaker notes.
+- `greenscreen.png` is a 1920x1080 green field with a drawn presenter.
+
+`desk.fmshortcuts` is a schema 71 shortcut set named News Desk with four
+shortcuts:
+
+| Shortcut | Key | Action |
+| --- | --- | --- |
+| Go next cue | F9 | `cue:1:go:-` |
+| Lower third on | Shift+F10 | `actions:overlay_on.1.8/take.3.cut.0` |
+| Jump to cold open | Ctrl+K, 2, answers in `cues` | `cue:1:go:2` |
+| Weather wall | Alt+W, answers in `inputs`, disabled | `actions:take.5.fade.20` |
+
+With Studio up, add Rundown Clips through Inputs › Add input › `MEDIA LIST`,
+then run the rundown as in round 8. The captures then click, in turn:
+
+1. The `CUES` tab (workspace).
+2. Anchor Mic's `FX` key, then `Ø INVERT` and `EXPANDER` (strip FX).
+3. A single click on the `MEDIA` tab, then a double click to maximize it
+   (media list), then a scroll to the bottom (documents).
+4. Inputs › Add input › `WINDOW / SCREEN`, the Slides · Keynote deck
+   window and `Application audio` (add screen capture).
+5. Edit › Project shortcuts, Lower third on › `Set console key` ›
+   Shift+F12, then Jump to cold open (shortcuts). The Spanish capture stays
+   on Lower third on.
+6. Ctrl+Shift+L, Guest Key, `Auto key`, then `Pick colour` (auto key).
+
+The 1280x720 capture is the workspace right after the rundown.
+
+The SYNC captures are separate. They use:
+
+- a fresh show with two solids and two UDP stream inputs, Field Feed
+  `udp://127.0.0.1:7591` and Venue Return `udp://127.0.0.1:7592`, each with
+  `--jitter-ms 200` and the `voice` preset on strip 3;
+- two `ffmpeg -re` senders (`testsrc2` / `smptebars` with a sine, MPEG-2
+  and MP2 in MPEG-TS);
+- `freemixd serve … --native-media --listen 127.0.0.1:7530`;
+- Studio on `--connect 127.0.0.1:7530 --project-id <id>`.
+
+After `remote-cut` and `remote-preview … 4`, the captures hover the status
+bar `SYNC` lamp, then click Field Mic's strip `SYNC` key.
+
+The web captures run a simulated daemon with
+`FREEMIXD_WEB_TOKEN=<32+ chars> freemixd serve news.freemix --listen
+127.0.0.1:7520 --web-listen 127.0.0.1:7521` on the same show, which needs
+`lower-third.fmtitle` installed on input 8. A Playwright script drives
+headless Chromium at `http://127.0.0.1:7521/{titles,operator}#lang={en,es}`
+and enters the token under the token option. For `/titles` it uses the
+graphics role, fills the Role field with a draft, and captures at 1920x1080
+and 1280x720. For `/operator` it uses the operator role and captures the full
+page, the shortcuts section on its own, and a 390x844 (2x) phone viewport
+scrolled to it.
 
 ### Screen capture (IN-011)
 
