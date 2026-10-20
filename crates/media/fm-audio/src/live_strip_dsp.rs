@@ -613,6 +613,49 @@ impl LiveStripDsp {
         Ok(())
     }
 
+    /// The gliding dynamics parameters now, in [`set_dynamics`] order.
+    const fn dynamics_values(&self) -> [f32; DYNAMICS] {
+        [
+            self.gate_threshold.current,
+            self.gate_range.current,
+            self.expander_threshold.current,
+            self.expander_ratio.current,
+            self.expander_range.current,
+            self.compressor_threshold.current,
+            self.compressor_ratio.current,
+            self.compressor_knee.current,
+            self.compressor_makeup.current,
+            self.limiter_ceiling.current,
+        ]
+    }
+
+    /// Steps every glide one sub-block of `length` samples and returns the
+    /// moves to spread over it.
+    fn glide(&mut self, length: usize) -> Ramps {
+        let high_pass_from = self.high_pass_coefficients;
+        let bands_from = self.band_coefficients;
+        let dynamics_from = self.dynamics_values();
+        self.apply_glides(false);
+        let dynamics_to = self.dynamics_values();
+        let high_pass = (high_pass_from != self.high_pass_coefficients)
+            .then_some((high_pass_from, self.high_pass_coefficients));
+        let bands = core::array::from_fn(|band| {
+            (bands_from[band] != self.band_coefficients[band])
+                .then_some((bands_from[band], self.band_coefficients[band]))
+        });
+        #[allow(clippy::float_cmp)]
+        let dynamics = dynamics_from != dynamics_to;
+        Ramps {
+            length,
+            high_pass,
+            filters: high_pass.is_some() || bands.iter().any(Option::is_some),
+            bands,
+            dynamics_from,
+            dynamics_to,
+            dynamics,
+        }
+    }
+
     /// Steps every glide one sub-block and retunes what moved (`force`
     /// retunes everything).
     fn apply_glides(&mut self, force: bool) {
@@ -723,22 +766,7 @@ impl LiveStripDsp {
         let mut start = 0;
         while start < samples {
             let length = SUB_BLOCK.min(samples - start);
-            // A filter retuned by a glide blends from its previous
-            // coefficients sample by sample: a coefficient step at the
-            // sub-block boundary would kink the waveform (zipper noise).
-            let high_pass_from = self.high_pass_coefficients;
-            let bands_from = self.band_coefficients;
-            self.apply_glides(false);
-            let high_pass_ramp = (high_pass_from != self.high_pass_coefficients)
-                .then_some((high_pass_from, self.high_pass_coefficients));
-            let band_ramps: [Option<(BiquadCoefficients, BiquadCoefficients)>;
-                STRIP_EQ_BAND_COUNT] = core::array::from_fn(|band| {
-                (bands_from[band] != self.band_coefficients[band])
-                    .then_some((bands_from[band], self.band_coefficients[band]))
-            });
-            let ramping = high_pass_ramp.is_some() || band_ramps.iter().any(Option::is_some);
-            #[allow(clippy::cast_precision_loss)]
-            let ramp_length = length as f64;
+            let ramps = self.glide(length);
             // A stage fully off is skipped; it re-enters with clear state.
             let mut running = [false; FADES];
             for (stage, fade) in self.fades.iter_mut().enumerate() {
@@ -766,18 +794,7 @@ impl LiveStripDsp {
                     for (offset, sample) in buffer.iter_mut().enumerate() {
                         let dry = *sample;
                         let mut value = dry;
-                        if ramping {
-                            #[allow(clippy::cast_precision_loss)]
-                            let fraction = (offset + 1) as f64 / ramp_length;
-                            if let Some((from, to)) = high_pass_ramp {
-                                channel.high_pass.retune(from.blend(to, fraction));
-                            }
-                            for (filter, ramp) in channel.bands.iter_mut().zip(&band_ramps) {
-                                if let Some((from, to)) = ramp {
-                                    filter.retune(from.blend(*to, fraction));
-                                }
-                            }
-                        }
+                        ramps.apply(channel, offset);
                         if running[POLARITY] {
                             // Ramps the sign: +1 at rest normal, -1 inverted.
                             value *= 1.0 - 2.0 * mixes[POLARITY][offset];
@@ -836,6 +853,77 @@ impl LiveStripDsp {
             limiter_db: on(LIMITER).then_some(reading[3]),
         };
     }
+}
+
+/// One sub-block's parameter moves, spread sample by sample: a filter
+/// retuned by a glide blends from its previous coefficients, and a gliding
+/// dynamics parameter moves linearly, because a step at the sub-block
+/// boundary would kink the waveform (zipper noise).
+struct Ramps {
+    length: usize,
+    high_pass: Option<(BiquadCoefficients, BiquadCoefficients)>,
+    bands: [Option<(BiquadCoefficients, BiquadCoefficients)>; STRIP_EQ_BAND_COUNT],
+    filters: bool,
+    dynamics_from: [f32; DYNAMICS],
+    dynamics_to: [f32; DYNAMICS],
+    dynamics: bool,
+}
+
+impl Ramps {
+    /// Sets `channel`'s parameters for sample `offset` of the sub-block;
+    /// the last sample lands exactly on the glides' new values.
+    fn apply(&self, channel: &mut ChannelState, offset: usize) {
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = (offset + 1) as f64 / self.length as f64;
+        if self.filters {
+            if let Some((from, to)) = self.high_pass {
+                channel.high_pass.retune(from.blend(to, fraction));
+            }
+            for (filter, ramp) in channel.bands.iter_mut().zip(&self.bands) {
+                if let Some((from, to)) = ramp {
+                    filter.retune(from.blend(*to, fraction));
+                }
+            }
+        }
+        if self.dynamics {
+            #[allow(clippy::cast_possible_truncation)]
+            let fraction = fraction as f32;
+            for (parameter, (from, to)) in
+                self.dynamics_from.iter().zip(&self.dynamics_to).enumerate()
+            {
+                #[allow(clippy::float_cmp)]
+                if from != to {
+                    let value = if offset + 1 == self.length {
+                        *to
+                    } else {
+                        from + (to - from) * fraction
+                    };
+                    set_dynamics(channel, parameter, value);
+                }
+            }
+        }
+    }
+}
+
+/// How many dynamics parameters glide.
+const DYNAMICS: usize = 10;
+
+/// Sets gliding dynamics parameter `index` (in
+/// [`LiveStripDsp::dynamics_values`] order) on one channel. Values between
+/// two validated settings are in range, so the setters cannot fail.
+fn set_dynamics(channel: &mut ChannelState, index: usize, value: f32) {
+    let _ = match index {
+        0 => channel.gate.set_threshold_db(value),
+        1 => channel.gate.set_range_db(value),
+        2 => channel.expander.set_threshold_db(value),
+        3 => channel.expander.set_ratio(value),
+        4 => channel.expander.set_range_db(value),
+        5 => channel.compressor.set_threshold_db(value),
+        6 => channel.compressor.set_ratio(value),
+        7 => channel.compressor.set_knee_db(value),
+        8 => channel.compressor.set_makeup_gain_db(value),
+        _ => channel.limiter.set_ceiling_db(value),
+    };
 }
 
 fn band_coefficients_of(
@@ -988,6 +1076,51 @@ mod tests {
                 .map(|three| (three[2] - 2.0 * three[1] + three[0]).abs())
                 .fold(0.0_f32, f32::max);
             assert!(kink < bound, "{kind:?}: {kink} vs {bound}");
+        }
+    }
+
+    #[test]
+    fn dynamics_glides_have_no_sub_block_steps() {
+        type Edit = fn(&mut StripDspSettings);
+        let edits: [(&str, Edit); 4] = [
+            ("makeup", |settings| {
+                settings.compressor.makeup_millidb = 18_000;
+            }),
+            ("threshold", |settings| {
+                settings.compressor.threshold_millidb = -40_000;
+            }),
+            ("ceiling", |settings| {
+                settings.limiter.ceiling_millidb = -30_000;
+            }),
+            ("gate range", |settings| settings.gate.range_millidb = 0),
+        ];
+        for (name, edit) in edits {
+            let mut settings = StripDspSettings::DEFAULT;
+            settings.compressor.enabled = true;
+            settings.compressor.threshold_millidb = -20_000;
+            settings.compressor.knee_millidb = 0;
+            settings.limiter.enabled = true;
+            settings.limiter.ceiling_millidb = -6_000;
+            settings.gate.enabled = true;
+            settings.gate.threshold_millidb = 0;
+            settings.gate.range_millidb = 40_000;
+            let mut dsp = LiveStripDsp::new(48_000.0, 1, &settings).unwrap();
+            let input = sine(60.0, 0.4, 48_000);
+            let mut planes = vec![input[..24_000].to_vec()];
+            dsp.process(24_000, &mut InPlacePlanes(&mut planes));
+            edit(&mut settings);
+            dsp.set_settings(&settings).unwrap();
+            let mut after = vec![input[24_000..].to_vec()];
+            dsp.process(24_000, &mut InPlacePlanes(&mut after));
+            let mut joined = planes[0][20_000..].to_vec();
+            joined.extend_from_slice(&after[0]);
+            let omega = core::f32::consts::TAU * 60.0 / 48_000.0;
+            let bound = 10.0 * peak(&joined) * omega * omega;
+            let kink = joined
+                .windows(3)
+                .map(|three| (three[2] - 2.0 * three[1] + three[0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(kink < bound, "{name}: {kink} vs {bound}");
         }
     }
 
