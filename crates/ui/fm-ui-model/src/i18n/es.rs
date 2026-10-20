@@ -6263,7 +6263,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::LcImportIntro,
         t(
-            "Pegue una ruta de archivo por línea. Cada archivo se convierte en una entrada de medios con su nombre; el daemon copia los archivos del equipo al proyecto.",
+            "Pegue una ruta de archivo por línea: vídeos, imágenes o archivos solo de audio (WAV, MP3, AAC/M4A, FLAC, Ogg) para fondos musicales y ráfagas. Cada archivo se convierte en una entrada de medios con su nombre; el daemon copia los archivos del equipo al proyecto.",
         ),
     ),
     (
@@ -6320,7 +6320,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::LcSourceMedia, t("ARCHIVO")),
     (
         Msg::LcSourceMediaHover,
-        t("Reproducir un archivo de medios; una ruta del equipo se copia al proyecto"),
+        t(
+            "Reproducir un archivo de medios (vídeo, o solo audio: un archivo de audio se ve negro y se oye por su canal); una ruta del equipo se copia al proyecto",
+        ),
     ),
     (Msg::LcSourceDevice, t("DISPOSITIVO")),
     (

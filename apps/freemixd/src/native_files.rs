@@ -39,6 +39,13 @@
 //! A media file must have the project's video dimensions, like every native
 //! source; one that does not faults its input as unsupported.
 //!
+//! An audio-only file (a WAV, MP3, AAC/M4A, FLAC, or Ogg music bed or sting;
+//! IN-005) plays through the same transport: its frames are synthesized at
+//! the program rate and every one shows one transparent-black picture of
+//! the project's dimensions, so the input is black on Program on its own and
+//! absent as a layer, while its audio reaches the Master through its strip
+//! like any clip's. The shared picture is ingested once, not per frame.
+//!
 //! A closed input (IN-026) is not opened at startup and releases its decoder
 //! when it closes; while closed it shows no picture (transparent black, so
 //! black on its own and absent as a layer) and no sound, as the simulated
@@ -202,13 +209,16 @@ struct WorkerStart {
     open_live: bool,
 }
 
-/// The playback configuration of an input with `settings`.
+/// The playback configuration of an input with `settings`. An audio-only
+/// file presents a transparent picture of the project's `dimensions`.
 fn playback_config(
     settings: &MediaPlaybackSettings,
     rate: FrameRate,
     clock_domain: ClockDomainId,
+    dimensions: (u32, u32),
 ) -> FilePlaybackConfig {
     let mut config = FilePlaybackConfig::new(clock_domain, rate);
+    config.audio_only_picture = VideoDimensions::new(dimensions.0, dimensions.1);
     config.audio = Some(
         settings
             .audio_stream
@@ -446,7 +456,7 @@ impl NativeMediaFiles {
             closed,
         } in inputs
         {
-            let config = playback_config(&settings, rate, clock_domain);
+            let config = playback_config(&settings, rate, clock_domain, dimensions);
             let growing = settings.growing.is_some();
             let seed_timing = timing_at(0, rate, clock_domain)
                 .ok_or_else(|| format!("native media input {input} cannot be timed"))?;
@@ -557,7 +567,7 @@ impl NativeMediaFiles {
         let seed = timing_at(0, self.rate, self.clock_domain)
             .and_then(|timing| blank_picture(self.dimensions, timing))
             .ok_or_else(|| format!("native media input {input} cannot be timed"))?;
-        let config = playback_config(&settings, self.rate, self.clock_domain);
+        let config = playback_config(&settings, self.rate, self.clock_domain, self.dimensions);
         let growing = settings.growing.is_some();
         let worker = if let Some(adapter) = self.adapter.clone() {
             spawn_worker(

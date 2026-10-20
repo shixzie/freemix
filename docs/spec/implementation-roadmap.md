@@ -6,7 +6,7 @@
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
 (2026-10-19). Every parity row is still `planned` (or `blocked`); these are the
-ten highest-value remaining items, ranked:
+highest-value remaining items, ranked:
 
 1. **Web gateway on the LAN with pairing and TLS (`RC-007`, `RC-014`, `RC-008`).**
    The phone/tablet operator and tally pages exist but `--web-listen` is
@@ -14,31 +14,32 @@ ten highest-value remaining items, ranked:
 2. **Native Preview monitor tap (`SW-001`, `SW-002`).** The native daemon reads
    back Program only; Studio operators on real media switch without seeing
    Preview.
-3. **Audio-only media files (`IN-005`, `IN-003`).** An audio-only WAV/MP3 is
-   refused by file playback, so music beds and stings, a basic show need, cannot
-   be played.
-4. **Strip DSP on the live mix (`AU-005`).** The tested `fm-audio` EQ, gate,
+3. **Strip DSP on the live mix (`AU-005`).** The tested `fm-audio` EQ, gate,
    compressor, and limiter chain is not wired to persisted strips, the engine,
    or the daemon; this is a P0 row.
-5. **User shortcuts that persist and dispatch (`RC-004`).** Studio's key map is
+4. **User shortcuts that persist and dispatch (`RC-004`).** Studio's key map is
    fixed; the `fm-automation` template layer has no project state, editor, wire
    payload, or runtime dispatch, and this is a P0 row.
-6. **Wire the tested library-only crates: Media List and slideshow (`IN-006`,
+5. **Wire the tested library-only crates: Media List and slideshow (`IN-006`,
    `IN-009`, `OR-015`).** `ListPlayer` and the slideshow are covered by tests
    but used by no app; wiring them is cheap breadth for real shows.
-7. **Native key/fill and key refinements (`SW-008`).** Chroma and luma keys run
+6. **Native key/fill and key refinements (`SW-008`).** Chroma and luma keys run
    natively, but key/fill, choke/despill refinements, and auto key are refused
    by the native GPU path and absent from Studio.
-8. **Source clock drift correction (`AU-004`).** `SourceSync` is unwired, so
+7. **Source clock drift correction (`AU-004`).** `SourceSync` is unwired, so
    capture and system audio drift against Master over a long show.
-9. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
+8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
    `AU-001`).** Live capture hot-plug, system audio inputs, and device listing
    are Linux-only; the roadmap requires the vertical slice on all Tier-1 OSes
    before more breadth.
-10. **Titles that start at the take, with a browser title editor (`GX-001`,
-    `GX-006`).** Tickers and scene clocks still run from frame zero, and the
-    gateway pages have no title UI even though Protocol 2.24 title commands
-    exist.
+9. **Titles that start at the take, with a browser title editor (`GX-001`,
+   `GX-006`).** Tickers and scene clocks still run from frame zero, and the
+   gateway pages have no title UI even though Protocol 2.24 title commands
+   exist.
+
+Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
+since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
+(see the `IN-003` boundary).
 
 Smaller follow-ups found by the audit: the Colour window sends no
 `ScenePreview` (`SW-019`); headphone output needs device enumeration
@@ -557,6 +558,40 @@ native_live_inputs`). There is still no persistent decoder process (each window 
 bounded tool run), no reverse play, no variable-frame-rate source support,
 no pitch-preserving time stretch, and no certification on the Windows,
 macOS, or profile-a-hd profiles, so `IN-003` remains planned.
+
+Audio-only media files (`IN-005`, music beds and stings) play through the
+same path with no protocol or schema change. A file without a video stream
+(WAV, MP3, AAC/M4A, FLAC, Ogg Vorbis/Opus; `.opus` joins the importable
+extensions) opens in `FilePlayer` when its configuration names a picture
+size (`FilePlaybackConfig::audio_only_picture`; without one it is refused as
+before). Its frame timeline is synthesized at the output rate from the
+container duration (frame zero at the format start time,
+`ceil(duration x rate)` frames), so play, seek, trim, rate, loop, stop,
+hold, end trigger, track selection, and sample-exact audio placement behave
+as for video, and no video window is ever decoded. Its picture is one
+shared transparent-black frame (straight alpha, sRGB): taken to Program on
+its own it shows black, and as a layer or overlay it is absent; an attached
+cover picture is not shown. The native daemon sizes that picture to the
+project, ingests it once, and pushes the audio through the input's strip to
+the Master like any clip, so the strip's mix mode decides whether a bed is
+heard off Program; the simulated daemon plays it over its synthetic source.
+Both daemons thumbnail an input whose file name says audio
+(`fm_model::is_audio_file_name`) as an audio card: a waveform glyph lit up
+to the playhead over a progress bar. Studio's import and source-replacement
+help names audio files. Acceptance: `fm-codec-ffmpeg --test
+audio_only_media` (WAV ramp sample placement, seek, loop, stop, end trigger,
+and WAV/MP3/M4A/FLAC/Ogg fixtures generated with lavfi `sine`), the
+simulated playlist end-trigger test airing a WAV sting
+(`freemixd --test media_playback`), and `freemixd --test
+native_audio_only_media` (a WAV bed in the project and an MP3 sting imported
+live from a host path: synthesized source, black on Program, tone on Master
+while playing, loop, stop, and end). Gaps: a duration ffprobe estimates
+(raw MP3/AAC without an index) is only as exact as that estimate; growing
+audio-only files are refused; Studio's own input tile cannot tell an
+audio-only media input from a video one (the wire carries no source kind),
+so it shows the server's audio card rather than its system-audio meter
+placeholder; and multichannel audio-only devices beyond system audio remain
+open, so `IN-005` stays planned.
 
 Current implementation boundary for the input lifecycle (`IN-026`): schema
 37 adds a project input category list (at most 32, unique nonzero ids,

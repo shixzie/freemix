@@ -34,10 +34,14 @@ pub const MAX_INPUT_SOURCE_BYTES: usize = 1024;
 /// Prefix of every project asset URI.
 pub const MEDIA_ASSET_URI_PREFIX: &str = "asset://";
 /// File extensions (lower case) a batch import accepts as media.
-pub const MEDIA_FILE_EXTENSIONS: [&str; 26] = [
+pub const MEDIA_FILE_EXTENSIONS: [&str; 27] = [
     "mp4", "m4v", "mov", "mkv", "mxf", "ts", "m2ts", "mts", "webm", "avi", "nut", "mpg", "mpeg",
-    "wav", "mp3", "aac", "m4a", "flac", "ogg", "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff",
+    "wav", "mp3", "aac", "m4a", "flac", "ogg", "opus", "png", "jpg", "jpeg", "bmp", "gif", "tif",
+    "tiff",
 ];
+/// The media file extensions (lower case) that name audio-only files: music
+/// beds and stings (IN-005). Such a media input has no picture of its own.
+pub const AUDIO_FILE_EXTENSIONS: [&str; 7] = ["wav", "mp3", "aac", "m4a", "flac", "ogg", "opus"];
 
 /// A project-local category identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -400,6 +404,19 @@ pub fn is_media_file_name(path: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(stem, extension)| {
         !stem.is_empty()
             && MEDIA_FILE_EXTENSIONS
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+    })
+}
+
+/// Whether `path` (a host path or asset URI) names an audio-only media file
+/// by its extension ([`AUDIO_FILE_EXTENSIONS`], case-insensitive).
+#[must_use]
+pub fn is_audio_file_name(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && AUDIO_FILE_EXTENSIONS
                 .iter()
                 .any(|known| known.eq_ignore_ascii_case(extension))
     })

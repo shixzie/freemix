@@ -29,6 +29,20 @@
 //!   for per-stream time bases (NUT, MP4/MOV with a sample-rate timescale,
 //!   WAV), within one sample for `MPEG-TS` (90 kHz), and within ±0.5 ms for
 //!   Matroska (millisecond timestamps).
+//! * **Audio-only files.** A file without a video stream (WAV, MP3, AAC/M4A,
+//!   FLAC, Ogg Vorbis/Opus: a music bed or a sting) opens only when
+//!   [`FilePlaybackConfig::audio_only_picture`] names a picture size; it is
+//!   refused ([`Error::MissingStream`]) otherwise. Its frame timeline is
+//!   synthesized at the output rate from the container duration (frame zero
+//!   at the format start time, `ceil(duration * rate)` frames, every frame a
+//!   keyframe), so transport, trims, loops, end actions, and audio placement
+//!   behave exactly as for video; audio past the decoded end is silence. Its
+//!   picture is one transparent-black frame of that size (straight alpha,
+//!   sRGB), shared by every frame, so it shows as black on its own and is
+//!   absent as a layer. An attached cover picture is not shown. A
+//!   container duration that is estimated (raw MP3/AAC without an index)
+//!   is as exact as `FFmpeg`'s estimate. Growing audio-only files are
+//!   refused.
 //! * **Growing files.** With [`GrowingFileConfig`] the player follows a file
 //!   that is still being written (a recording in progress). [`FilePlayer::refresh`]
 //!   (also called automatically while the transport waits at the live edge)
@@ -55,8 +69,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use fm_frame::{
-    AudioBlock, ClockDomainId, CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, PixelFormat,
-    TimeBase, VideoDimensions,
+    AlphaMode, AudioBlock, ChromaLocation, ClockDomainId, ColorMetadata, ColorPrimaries,
+    CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, MatrixCoefficients, PixelFormat, SignalRange,
+    TimeBase, TransferFunction, VideoDimensions, VideoFrameMetadata,
 };
 use fm_playback::{
     AudioPlan, AudioTrack, FrameIndex, MediaControlError, MediaPlayback, MediaSourceConfig,
@@ -117,6 +132,9 @@ pub struct FilePlaybackConfig {
     pub audio_window_samples: NonZeroU32,
     /// `Some` to follow a growing file.
     pub growing: Option<GrowingFileConfig>,
+    /// The size of the transparent picture an audio-only file presents; with
+    /// `None` (the default) a file without a video stream is refused.
+    pub audio_only_picture: Option<VideoDimensions>,
 }
 
 impl FilePlaybackConfig {
@@ -132,6 +150,7 @@ impl FilePlaybackConfig {
             window_frames: NonZeroU32::MIN.saturating_add(11),
             audio_window_samples: NonZeroU32::MIN.saturating_add(47_999),
             growing: None,
+            audio_only_picture: None,
         }
     }
 }
@@ -295,13 +314,28 @@ struct FileState {
     prefix_len: usize,
 }
 
+/// An audio-only file's synthesized frame timeline (microsecond timestamps
+/// on the output-rate grid) and the transparent picture every frame shows.
+#[derive(Clone, Debug)]
+struct AudioOnly {
+    start_microseconds: i64,
+    duration_microseconds: i64,
+    picture: Arc<CpuVideoFrame>,
+}
+
+/// The time base of an audio-only file's synthesized frame timestamps.
+const AUDIO_ONLY_TIME_BASE: (u32, u32) = (1, 1_000_000);
+
 /// A frame-accurate player over one local file. See the module documentation.
 pub struct FilePlayer {
     adapter: Adapter,
     path: PathBuf,
     redaction: String,
     clock_domain: ClockDomainId,
-    video: StreamInfo,
+    /// The selected video stream; `None` for an audio-only file.
+    video: Option<StreamInfo>,
+    /// An audio-only file's synthesized timeline and shared picture.
+    audio_only: Option<AudioOnly>,
     time_base: TimeBase,
     frame_rate: FrameRate,
     width: u32,
@@ -362,17 +396,61 @@ impl FilePlayer {
             adapter.limits().max_probe_stdout_bytes,
         )?;
         let probe = parse_probe(&output.stdout, adapter.limits().max_streams)?;
-        let video = probe.select_video(config.video)?.clone();
-        let (width, height, _) = validate_video_stream(adapter.limits(), &video)?;
-        let time_base = video.time_base.ok_or(Error::MalformedProbe)?;
         let format_start_microseconds =
             parse_input_start_microseconds(probe.format.start_time.as_deref())?;
         let details = stream_details(adapter, &path, &redaction)?;
-        let frame_rate = details
-            .iter()
-            .find(|detail| detail.index == video.index)
-            .and_then(|detail| detail.frame_rate)
-            .ok_or(FilePlaybackError::UnknownFrameRate)?;
+        let video = match probe.select_video(config.video) {
+            Ok(video) => Some(video.clone()),
+            Err(Error::MissingStream)
+                if config.audio_only_picture.is_some()
+                    && config.growing.is_none()
+                    && probe.select_audio(StreamSelector::Best).is_ok() =>
+            {
+                None
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let (width, height, time_base, frame_rate, audio_only) =
+            match (&video, config.audio_only_picture) {
+                (Some(video), _) => {
+                    let (width, height, _) = validate_video_stream(adapter.limits(), video)?;
+                    let time_base = video.time_base.ok_or(Error::MalformedProbe)?;
+                    let frame_rate = details
+                        .iter()
+                        .find(|detail| detail.index == video.index)
+                        .and_then(|detail| detail.frame_rate)
+                        .ok_or(FilePlaybackError::UnknownFrameRate)?;
+                    (width, height, time_base, frame_rate, None)
+                }
+                (None, Some(size)) => {
+                    let duration_microseconds =
+                        parse_input_start_microseconds(probe.format.duration.as_deref())?;
+                    if probe.format.duration.is_none() || duration_microseconds <= 0 {
+                        return Err(FilePlaybackError::NoVideoFrames);
+                    }
+                    let time_base = TimeBase::new(AUDIO_ONLY_TIME_BASE.0, AUDIO_ONLY_TIME_BASE.1)
+                        .map_err(|_| Error::InvalidTimeline)?;
+                    let picture = transparent_picture(
+                        size,
+                        format_start_microseconds,
+                        time_base,
+                        config.output_rate,
+                        config.clock_domain,
+                    )?;
+                    (
+                        size.width(),
+                        size.height(),
+                        time_base,
+                        config.output_rate,
+                        Some(AudioOnly {
+                            start_microseconds: format_start_microseconds,
+                            duration_microseconds,
+                            picture: Arc::new(picture),
+                        }),
+                    )
+                }
+                (None, None) => return Err(Error::MissingStream.into()),
+            };
 
         let audio = probe
             .streams
@@ -423,6 +501,7 @@ impl FilePlayer {
             redaction,
             clock_domain: config.clock_domain,
             video,
+            audio_only,
             time_base,
             frame_rate,
             width,
@@ -496,6 +575,13 @@ impl FilePlayer {
     #[must_use]
     pub const fn frame_rate(&self) -> FrameRate {
         self.frame_rate
+    }
+
+    /// Whether the file has no video stream: its frames are synthesized at
+    /// the output rate and every one presents the same transparent picture.
+    #[must_use]
+    pub const fn is_audio_only(&self) -> bool {
+        self.audio_only.is_some()
     }
 
     /// Frames currently indexed (including any withheld live-edge frames).
@@ -762,13 +848,20 @@ impl FilePlayer {
     }
 
     fn scan_index(&mut self) -> Result<VideoIndex, FilePlaybackError> {
+        let Some(video) = &self.video else {
+            return self
+                .audio_only
+                .as_ref()
+                .map(|audio_only| audio_only_index(audio_only, self.frame_rate))
+                .ok_or(FilePlaybackError::NoVideoFrames)?;
+        };
         let args = [
             "-v",
             "error",
             "-protocol_whitelist",
             "file",
             "-select_streams",
-            &self.video.index.to_string(),
+            &video.index.to_string(),
             "-show_entries",
             "packet=pts,flags",
             "-of",
@@ -806,6 +899,15 @@ impl FilePlayer {
         &mut self,
         frame: FrameIndex,
     ) -> Result<Option<Arc<CpuVideoFrame>>, FilePlaybackError> {
+        if let Some(audio_only) = &self.audio_only {
+            // Every frame of an audio-only file shows the same picture.
+            let end = self.controller.playable_end().get().min(self.frame_count());
+            return if frame.get() < end {
+                Ok(Some(Arc::clone(&audio_only.picture)))
+            } else {
+                Err(FilePlaybackError::FrameUnavailable { frame })
+            };
+        }
         if let Some(window) = &self.video_window
             && frame.get() >= window.start
             && let Some(decoded) = usize::try_from(frame.get() - window.start)
@@ -858,6 +960,11 @@ impl FilePlayer {
         count: usize,
     ) -> Result<Vec<Arc<CpuVideoFrame>>, FilePlaybackError> {
         self.check_identity()?;
+        let video = self
+            .video
+            .as_ref()
+            .ok_or(FilePlaybackError::NoVideoFrames)?
+            .index;
         let target = FrameIndex::new(u64::try_from(start).unwrap_or(u64::MAX));
         let frame_bytes = usize::try_from(self.width)
             .ok()
@@ -896,7 +1003,7 @@ impl FilePlayer {
                 }
                 None => None,
             };
-            let args = video_window_args(&self.path, self.video.index, seek, expected[0], count);
+            let args = video_window_args(&self.path, video, seek, expected[0], count);
             let output = self.adapter.run_unchecked(
                 &self.redaction,
                 Tool::Ffmpeg,
@@ -968,7 +1075,7 @@ impl FilePlayer {
         let payload = CpuVideoPayload::new(PixelFormat::Rgba8, dimensions, vec![plane])
             .map_err(|_| Error::FrameConstruction)?;
         let frame = CpuVideoFrame::new(timing, payload);
-        match mapped_video_metadata(&self.video) {
+        match self.video.as_ref().and_then(mapped_video_metadata) {
             Some(metadata) => Ok(frame
                 .with_metadata(metadata)
                 .map_err(|_| Error::FrameConstruction)?),
@@ -1204,6 +1311,63 @@ impl FilePlayer {
             frame: FrameIndex::new(start),
         })
     }
+}
+
+/// An audio-only file's synthesized index: `ceil(duration * rate)` frames
+/// on the output-rate grid from the format start, every one a keyframe.
+fn audio_only_index(
+    audio_only: &AudioOnly,
+    frame_rate: FrameRate,
+) -> Result<VideoIndex, FilePlaybackError> {
+    let numerator = i128::from(frame_rate.numerator());
+    let denominator = i128::from(frame_rate.denominator());
+    // Frames whose start lies before the end: ceil(duration * rate).
+    let scaled = i128::from(audio_only.duration_microseconds) * numerator;
+    let unit = denominator * 1_000_000;
+    let frames = usize::try_from((scaled + unit - 1) / unit).map_err(|_| Error::InvalidTimeline)?;
+    let pts = (0..frames)
+        .map(|ordinal| {
+            let offset = i128::try_from(ordinal).unwrap_or(i128::MAX) * unit / numerator;
+            i64::try_from(i128::from(audio_only.start_microseconds) + offset)
+                .map_err(|_| Error::InvalidTimeline.into())
+        })
+        .collect::<Result<Vec<_>, FilePlaybackError>>()?;
+    Ok(VideoIndex {
+        keyframes: (0..frames).collect(),
+        pts,
+    })
+}
+
+/// The transparent-black picture an audio-only file presents: `size`,
+/// straight alpha, sRGB, dated at the file's frame zero.
+fn transparent_picture(
+    size: VideoDimensions,
+    start_microseconds: i64,
+    time_base: TimeBase,
+    frame_rate: FrameRate,
+    clock_domain: ClockDomainId,
+) -> Result<CpuVideoFrame, FilePlaybackError> {
+    let duration = u64::try_from(
+        i128::from(frame_rate.denominator()) * 1_000_000
+            / i128::from(frame_rate.numerator()).max(1),
+    )
+    .map_err(|_| Error::InvalidTimeline)?
+    .max(1);
+    let timing = media_timing(start_microseconds, duration, time_base, clock_domain, 0)?;
+    let payload = CpuVideoPayload::allocate(PixelFormat::Rgba8, size)
+        .map_err(|_| Error::FrameConstruction)?;
+    CpuVideoFrame::new(timing, payload)
+        .with_metadata(VideoFrameMetadata::new(
+            ColorMetadata {
+                primaries: ColorPrimaries::Bt709,
+                transfer: TransferFunction::Srgb,
+                matrix: MatrixCoefficients::Identity,
+                range: SignalRange::Full,
+                chroma_location: ChromaLocation::Center,
+            },
+            Some(AlphaMode::Straight),
+        ))
+        .map_err(|_| Error::FrameConstruction.into())
 }
 
 struct StreamDetail {

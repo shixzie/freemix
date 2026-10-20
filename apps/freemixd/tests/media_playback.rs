@@ -4,7 +4,7 @@
 //! wall time. Transport and settings commands are journaled, settings
 //! persist across restart, the snapshot's `media_state` and `media` runtime
 //! events report the transport, and an end trigger of the media input the
-//! playlist airs advances the playlist.
+//! playlist airs (an audio-only WAV sting, IN-005) advances the playlist.
 
 use std::{
     fs,
@@ -73,9 +73,10 @@ impl Drop for TestDirectory {
     }
 }
 
-/// Input 1 a solid generator on Program, input 2 the media input on
-/// Preview (with `settings`), input 3 another solid generator; 25 fps.
-fn save_project(path: &Path, settings: MediaPlaybackSettings) {
+/// Input 1 a solid generator on Program, input 2 the media input of
+/// `asset_uri` on Preview (with `settings`), input 3 another solid
+/// generator; 25 fps.
+fn save_project(path: &Path, asset_uri: &str, settings: MediaPlaybackSettings) {
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
         ProjectId::new(NonZeroU128::new(44).unwrap()),
@@ -108,7 +109,7 @@ fn save_project(path: &Path, settings: MediaPlaybackSettings) {
             2,
             "Clip",
             InputKind::Media {
-                asset_uri: "asset://clip.mkv".into(),
+                asset_uri: asset_uri.into(),
                 playback: settings,
             },
         ),
@@ -362,7 +363,11 @@ impl Client {
 fn simulated_media_inputs_play_in_wall_time_report_state_and_persist_settings() {
     let directory = TestDirectory::new("transport");
     let project = directory.project();
-    save_project(&project, MediaPlaybackSettings::default());
+    save_project(
+        &project,
+        "asset://clip.mkv",
+        MediaPlaybackSettings::default(),
+    );
     let daemon = Daemon::start(&project);
     let (mut client, snapshot, states) = Client::connect(&daemon);
     assert_eq!(snapshot.media_states, 1);
@@ -498,8 +503,11 @@ fn simulated_media_inputs_play_in_wall_time_report_state_and_persist_settings() 
 fn a_media_end_trigger_advances_the_playlist_it_airs_on_and_replays_after_restart() {
     let directory = TestDirectory::new("playlist");
     let project = directory.project();
+    // The playlist airs an audio-only sting (IN-005): its media input plays
+    // and triggers like any clip.
     save_project(
         &project,
+        "asset://sting.wav",
         MediaPlaybackSettings {
             end_trigger_lead: Some(5),
             ..MediaPlaybackSettings::default()

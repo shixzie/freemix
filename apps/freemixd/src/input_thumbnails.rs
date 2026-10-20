@@ -32,6 +32,11 @@
 //!   synthesizes a moving test pattern for network stream and capture
 //!   inputs and a card with the playhead's position for media inputs, which
 //!   have no real source there; those records say `origin=simulated`.
+//! - An audio-only media input (a music bed or sting whose file name says
+//!   audio, [`fm_model::is_audio_file_name`]; IN-005) gets an audio card on
+//!   both daemons: a waveform glyph whose played part lights up with the
+//!   playhead, over the same progress bar a simulated media card draws.
+//!   Its own picture is transparent black, which would be a black tile.
 //! - System audio, and anything else without a picture, gets no thumbnail.
 //!   An input without a picture is tried again at most every
 //!   [`THUMBNAIL_INTERVAL`], like one with a picture.
@@ -299,6 +304,19 @@ impl ThumbnailRenderer {
             )
             .map(|composed| opaque(&composed));
         }
+        if let InputKind::Media { asset_uri, .. } = &input.kind
+            && fm_model::is_audio_file_name(asset_uri)
+        {
+            // An audio-only file has no picture: its card stands in, ungraded.
+            let (width, height) = pipeline.map_or(
+                (
+                    u32::from(MAX_INPUT_THUMBNAIL_WIDTH),
+                    u32::from(MAX_INPUT_THUMBNAIL_HEIGHT),
+                ),
+                |pipeline| (pipeline.width(), pipeline.height()),
+            );
+            return audio_media_picture(width, height, media_playhead(work, id));
+        }
         let picture = if let Some(live) = &work.live {
             live.thumbnail(id, MAX_INPUT_THUMBNAIL_WIDTH, MAX_INPUT_THUMBNAIL_HEIGHT)?
         } else {
@@ -328,12 +346,7 @@ impl ThumbnailRenderer {
                     synthetic_picture(id, width, height, now.saturating_duration_since(self.epoch))?
                 }
                 InputKind::Media { .. } => {
-                    let playhead = work
-                        .media
-                        .iter()
-                        .find(|(media, _, _)| *media == id)
-                        .map(|(_, position, end)| (*position, *end));
-                    synthetic_media_picture(id, width, height, playhead)?
+                    synthetic_media_picture(id, width, height, media_playhead(work, id))?
                 }
                 _ => return None,
             }
@@ -344,6 +357,14 @@ impl ThumbnailRenderer {
         };
         Some(over_black(&graded))
     }
+}
+
+/// Media input `input`'s playhead and the end of its playable range.
+fn media_playhead(work: &ThumbnailWork, input: InputId) -> Option<(u64, u64)> {
+    work.media
+        .iter()
+        .find(|(media, _, _)| *media == input)
+        .map(|(_, position, end)| (*position, *end))
 }
 
 /// The animation pose of `input` in `poses`, or Hold.
@@ -468,13 +489,7 @@ fn synthetic_media_picture(
     let tint = [52_u8, 40, 72].map(|channel| channel.saturating_add(shift));
     let columns = usize::try_from(width).ok()?;
     let rows = usize::try_from(height).ok()?;
-    let filled = playhead.map_or(0, |(position, end)| {
-        if end == 0 {
-            return 0;
-        }
-        let fraction = u128::from(position.min(end)) * u128::from(width) / u128::from(end);
-        usize::try_from(fraction).unwrap_or(columns)
-    });
+    let filled = played_columns(width, playhead);
     let bar = (rows / 12).max(2);
     let mut pixels = Vec::with_capacity(columns * rows * 4);
     for y in 0..rows {
@@ -487,6 +502,67 @@ fn synthetic_media_picture(
                 }
             } else {
                 tint
+            };
+            pixels.extend_from_slice(&[red, green, blue, 255]);
+        }
+    }
+    ImageFrame::new(width, height, columns * 4, pixels).ok()
+}
+
+/// The columns of `width` the playhead has passed within the playable
+/// range (none when unknown).
+fn played_columns(width: u32, playhead: Option<(u64, u64)>) -> usize {
+    playhead.map_or(0, |(position, end)| {
+        if end == 0 {
+            return 0;
+        }
+        let fraction = u128::from(position.min(end)) * u128::from(width) / u128::from(end);
+        usize::try_from(fraction).unwrap_or(usize::MAX)
+    })
+}
+
+/// An audio-only media input's card (IN-005): a dark teal card with a
+/// symmetric waveform glyph across its middle, lit up to the playhead and
+/// dim after it, and a progress bar along the bottom, so it reads as audio
+/// and moves exactly while the engine plays the file.
+fn audio_media_picture(
+    width: u32,
+    height: u32,
+    playhead: Option<(u64, u64)>,
+) -> Option<ImageFrame> {
+    const CARD: [u8; 3] = [20, 44, 48];
+    const PLAYED: [u8; 3] = [120, 220, 200];
+    const UNPLAYED: [u8; 3] = [56, 96, 100];
+    const TRACK: [u8; 3] = [24, 24, 28];
+    const BAR: [u8; 3] = [220, 180, 60];
+    let columns = usize::try_from(width).ok()?;
+    let rows = usize::try_from(height).ok()?;
+    let filled = played_columns(width, playhead);
+    let bar = (rows / 12).max(2);
+    let middle = rows.saturating_sub(bar) / 2;
+    let reach = rows.saturating_sub(bar) * 3 / 8;
+    // Glyph bars: two lit columns, one gap, with a deterministic envelope.
+    let pitch = (columns / 40).max(3);
+    let margin = columns / 10;
+    let mut pixels = Vec::with_capacity(columns * rows * 4);
+    for y in 0..rows {
+        for x in 0..columns {
+            let [red, green, blue] = if y + bar >= rows {
+                if x < filled { BAR } else { TRACK }
+            } else if x >= margin && x + margin < columns && (x - margin) % pitch + 1 < pitch {
+                let stroke = (x - margin) / pitch;
+                // A smooth swell with a little variation, 25..100 % of reach.
+                let shape = [4_usize, 7, 10, 8, 12, 9, 6, 11, 5, 8];
+                let swell = 12 - (stroke % 24).abs_diff(12) / 2;
+                let level = (shape[stroke % shape.len()] + swell).clamp(4, 16);
+                let half = reach * level / 16;
+                if y.abs_diff(middle) <= half {
+                    if x < filled { PLAYED } else { UNPLAYED }
+                } else {
+                    CARD
+                }
+            } else {
+                CARD
             };
             pixels.extend_from_slice(&[red, green, blue, 255]);
         }
@@ -1281,6 +1357,34 @@ mod tests {
         assert_eq!(pixel(&moved[0].1, 10, 89), [220, 180, 60, 255]);
         assert_eq!(pixel(&moved[0].1, 100, 89), [24, 24, 28, 255]);
     }
+
+    /// An audio-only media input (IN-005) gets an audio card: a waveform
+    /// glyph lit up to the playhead, over the progress bar.
+    #[test]
+    fn audio_only_media_inputs_get_an_audio_card() {
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, Arc::default());
+        let bed = input(
+            7,
+            InputKind::Media {
+                asset_uri: "asset://media/bed.wav".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+        );
+        let mut halfway = work(project(vec![bed]), 1);
+        halfway.media = vec![(input_id(7), 50, 100)];
+        let sent = step(&mut renderer, &halfway, start, false);
+        assert_eq!(sent.len(), 1);
+        let card = &sent[0].1;
+        assert_eq!((card.width, card.height), (160, 90));
+        // A glyph stroke before the playhead is lit, one after it dim, the
+        // gap between strokes is the card, and the bar shows the playhead.
+        assert_eq!(pixel(card, 17, 41), [120, 220, 200, 255]);
+        assert_eq!(pixel(card, 141, 41), [56, 96, 100, 255]);
+        assert_eq!(pixel(card, 19, 41), [20, 44, 48, 255]);
+        assert_eq!(pixel(card, 10, 89), [220, 180, 60, 255]);
+        assert_eq!(pixel(card, 100, 89), [24, 24, 28, 255]);
+    }
 }
 
 /// A native daemon's thumbnails come from the media pipeline's newest
@@ -1341,9 +1445,9 @@ mod native_tests {
         )
     }
 
-    /// A 1920x1080 project: input 2 a media clip, input 3 a title, and
-    /// Scene input 11 showing scene 1 (the clip over the left half on an
-    /// opaque grey background).
+    /// A 1920x1080 project: input 2 a media clip, input 3 a title, input 4
+    /// an audio-only music bed, and Scene input 11 showing scene 1 (the clip
+    /// over the left half on an opaque grey background).
     fn project() -> Project {
         let frame_rate = fm_types::FrameRate::new(25, 1).unwrap();
         let mut project = Project::new(
@@ -1382,6 +1486,15 @@ mod native_tests {
                 field_revision: 0,
                 fields: Vec::new(),
             }),
+            required_capabilities: Vec::new(),
+        });
+        project.add_input(Input {
+            id: input_id(4),
+            name: "Bed".into(),
+            kind: InputKind::Media {
+                asset_uri: "asset://media/bed.mp3".into(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
             required_capabilities: Vec::new(),
         });
         let scene = fm_types::SceneId::new(NonZeroU128::new(1).unwrap());
@@ -1487,5 +1600,20 @@ mod native_tests {
 
         // Without the clip's frame the scene cannot be composed honestly.
         assert!(!thumbnails(BTreeMap::new()).contains_key(&input_id(11)));
+    }
+
+    /// A native audio-only media input's transparent picture is not its
+    /// thumbnail: its audio card is (IN-005).
+    #[test]
+    fn native_audio_only_media_inputs_get_an_audio_card() {
+        let mut frames = BTreeMap::new();
+        frames.insert(input_id(4), frame([0, 0, 0, 0]));
+        let images = thumbnails(frames);
+        let card = &images[&input_id(4)];
+        assert_eq!((card.width, card.height), (160, 90));
+        assert_eq!(pixel(card, 17, 41), [56, 96, 100, 255]);
+        assert_eq!(pixel(card, 19, 41), [20, 44, 48, 255]);
+        // Even before the file presents its picture.
+        assert!(thumbnails(BTreeMap::new()).contains_key(&input_id(4)));
     }
 }

@@ -9,7 +9,8 @@ use fm_model::{
     InputColorLabel, InputKind, InputLifecycle, InputLifecycleError, InputSourceError,
     InputSourceSpec, MAX_BATCH_IMPORT_ITEMS, MAX_INPUT_CATEGORIES, MAX_INPUT_CATEGORY_NAME_BYTES,
     MediaPlaybackSettings, Project, ProjectSettings, SimulatedAudio, SimulatedInput,
-    SimulatedVideo, SolidColor, plan_batch_import, unique_input_name, validate_input_categories,
+    SimulatedVideo, SolidColor, is_audio_file_name, is_media_file_name, plan_batch_import,
+    unique_input_name, validate_input_categories,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -370,4 +371,41 @@ fn a_batch_import_plan_accepts_and_refuses_per_item() {
             Some(refusal)
         );
     }
+}
+
+/// Audio-only files (music beds and stings, IN-005) are media a batch
+/// import accepts, and their names say they have no picture.
+#[test]
+fn audio_files_are_media_and_named_audio_only() {
+    for name in [
+        "asset://bed.wav",
+        "asset://sting.MP3",
+        "/music/bed.aac",
+        "asset://beds/bed.m4a",
+        "C:\\music\\bed.flac",
+        "asset://bed.ogg",
+        "asset://bed.opus",
+    ] {
+        assert!(is_media_file_name(name), "{name}");
+        assert!(is_audio_file_name(name), "{name}");
+    }
+    for name in [
+        "asset://clip.mp4",
+        "asset://still.png",
+        "asset://.wav",
+        "asset://wav",
+    ] {
+        assert!(!is_audio_file_name(name), "{name}");
+    }
+    let plan = plan_batch_import(
+        &[],
+        8,
+        &[BatchImportRequest {
+            input: input(9),
+            name: None,
+            asset_uri: "asset://music-bed.wav".into(),
+        }],
+    );
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+    assert_eq!(plan.accepted[0].name, "music-bed");
 }

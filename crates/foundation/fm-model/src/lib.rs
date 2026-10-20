@@ -48,13 +48,13 @@ pub use grade::{
     lut_id_from_uri, next_free_id,
 };
 pub use input_lifecycle::{
-    BatchImportItem, BatchImportPlan, BatchImportRefusal, BatchImportRequest, GeneratorVideo,
-    InputCategory, InputCategoryId, InputColorLabel, InputLifecycle, InputLifecycleError,
-    InputSourceError, InputSourceSpec, MAX_BATCH_IMPORT_ITEMS, MAX_INPUT_CATEGORIES,
-    MAX_INPUT_CATEGORY_NAME_BYTES, MAX_INPUT_SOURCE_BYTES, MEDIA_ASSET_URI_PREFIX,
-    MEDIA_FILE_EXTENSIONS, is_media_file_name, media_input_name, plan_batch_import,
-    unique_input_name, validate_input_categories, validate_input_category_name,
-    validate_media_asset_uri,
+    AUDIO_FILE_EXTENSIONS, BatchImportItem, BatchImportPlan, BatchImportRefusal,
+    BatchImportRequest, GeneratorVideo, InputCategory, InputCategoryId, InputColorLabel,
+    InputLifecycle, InputLifecycleError, InputSourceError, InputSourceSpec, MAX_BATCH_IMPORT_ITEMS,
+    MAX_INPUT_CATEGORIES, MAX_INPUT_CATEGORY_NAME_BYTES, MAX_INPUT_SOURCE_BYTES,
+    MEDIA_ASSET_URI_PREFIX, MEDIA_FILE_EXTENSIONS, is_audio_file_name, is_media_file_name,
+    media_input_name, plan_batch_import, unique_input_name, validate_input_categories,
+    validate_input_category_name, validate_media_asset_uri,
 };
 pub use layer_key::{ChromaLayerKey, LayerKey, LayerKeyError, LumaLayerKey};
 pub use media_playback::{
