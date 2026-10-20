@@ -19,6 +19,7 @@
 //! `FM_REQUIRE_FFMPEG=1` or `FM_REQUIRE_NATIVE_MEDIA=1` makes that a failure.
 
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket},
     num::NonZeroU128,
@@ -264,6 +265,12 @@ struct Client {
     server: Option<ServerIdentity>,
     heartbeats: u64,
     last_heartbeat: Instant,
+    /// The camera's statuses in arrival order, not yet looked at by
+    /// [`Client::status`]: a status can arrive while another wait (a
+    /// command result, an event) reads the wire, and the snapshot's status
+    /// leads them all, as a state reached before the handshake is not sent
+    /// again.
+    statuses: VecDeque<NetworkStreamStatus>,
 }
 
 impl Client {
@@ -281,6 +288,7 @@ impl Client {
             server: None,
             heartbeats: 0,
             last_heartbeat: Instant::now(),
+            statuses: VecDeque::new(),
         }
     }
 
@@ -322,8 +330,27 @@ impl Client {
         );
         assert!(!line.contains(SECRET), "the URL secret leaked: {line}");
         let message = decode_line(&line).unwrap();
-        if let WireMessage::HandshakeResponse(response) = &message {
-            self.server = Some(response.server.clone());
+        match &message {
+            WireMessage::HandshakeResponse(response) => {
+                self.server = Some(response.server.clone());
+            }
+            WireMessage::Snapshot(snapshot) => {
+                self.statuses.extend(
+                    snapshot
+                        .network_streams
+                        .iter()
+                        .filter(|entry| entry.input == camera())
+                        .map(|entry| entry.status.clone()),
+                );
+            }
+            WireMessage::RuntimeEvent(event) => {
+                if let RuntimeLifecycleEvent::NetworkStreamStatus { input, status } = &event.event
+                    && *input == camera()
+                {
+                    self.statuses.push_back((**status).clone());
+                }
+            }
+            _ => {}
         }
         assert!(
             !matches!(&message, WireMessage::Error(_)),
@@ -356,21 +383,24 @@ impl Client {
         (image.tap == MonitorTap::Program).then_some(image)
     }
 
-    /// Waits for a camera status that satisfies `wanted`.
+    /// Waits for a camera status that satisfies `wanted`, starting with the
+    /// statuses that arrived (or came in the snapshot) since the last one
+    /// this looked at.
     fn status(
         &mut self,
         what: &str,
         wanted: impl Fn(&NetworkStreamStatus) -> bool,
     ) -> NetworkStreamStatus {
-        self.wait_for(what, |_, message| {
-            let WireMessage::RuntimeEvent(event) = message else {
-                return None;
-            };
-            let RuntimeLifecycleEvent::NetworkStreamStatus { input, status } = event.event else {
-                return None;
-            };
-            (input == camera() && wanted(&status)).then_some(*status)
-        })
+        let deadline = Instant::now() + WAIT;
+        loop {
+            while let Some(status) = self.statuses.pop_front() {
+                if wanted(&status) {
+                    return status;
+                }
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            self.receive();
+        }
     }
 
     /// Waits until Program shows a picture that satisfies `wanted`.
