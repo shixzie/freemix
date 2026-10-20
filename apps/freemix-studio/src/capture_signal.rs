@@ -7,14 +7,18 @@
 //! show the meter bridge lit. The signal is a deterministic function of the
 //! time since first use: each input strip sits at its own level with slow
 //! movement, input 4 peaks into 0 dBFS every few seconds (latching its clip
-//! lamp), and Master follows the loudest strip.
+//! lamp), and Master follows the loudest strip. Each strip and Master also
+//! reads a loudness and true peak near its level, and a chain with a running
+//! dynamics stage reports some gain reduction.
 
 use std::sync::OnceLock;
 use std::time::Instant;
 
 use fm_protocol::{
-    AudioMeterChannel, AudioMetersMessage, InputAudioMeters, ServerIdentity, WireInputId,
+    AudioDspTarget, AudioDynamicsMeter, AudioLoudnessMeter, AudioMeterChannel, AudioMetersMessage,
+    InputAudioMeters, ServerIdentity, WireInputId,
 };
+use fm_types::strip_dsp::{StripDsp, StripDspTarget};
 use fm_ui_egui::StudioUiState;
 
 /// The environment switch for the synthetic feed.
@@ -67,6 +71,44 @@ fn strip_levels(index: usize, seconds: f64) -> [(f64, f64); 2] {
     levels
 }
 
+/// Milli-units of a decibel or LUFS value.
+#[allow(clippy::cast_possible_truncation)] // within the loudness range
+fn milli(value: f64) -> i32 {
+    (value * 1000.0).round() as i32
+}
+
+/// A loudness reading for a bus resting at `base` dBFS RMS and now at
+/// `rms`, with the interval's `peak`.
+fn loudness(target: AudioDspTarget, base: f64, rms: f64, peak: f64) -> AudioLoudnessMeter {
+    AudioLoudnessMeter {
+        target,
+        momentary_millilufs: Some(milli(rms + 1.0)),
+        short_term_millilufs: Some(milli(rms.midpoint(base) + 1.0)),
+        integrated_millilufs: Some(milli(base + 1.5)),
+        true_peak_millidbtp: Some(milli((peak + 0.3).min(1.0))),
+        max_true_peak_millidbtp: Some(milli((peak + 0.3).max(base + 12.0).min(1.0))),
+    }
+}
+
+/// The gain reduction of `dsp`'s running dynamics stages at `rms` dBFS, or
+/// `None` while it has none (or is bypassed).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=40 dB
+fn dynamics(target: AudioDspTarget, dsp: &StripDsp, rms: f64) -> Option<AudioDynamicsMeter> {
+    let reduction = |enabled: bool, db: f64| enabled.then(|| (db.clamp(0.0, 40.0) * 1000.0) as u32);
+    let meter = AudioDynamicsMeter {
+        target,
+        gate_millidb: reduction(dsp.gate.enabled, 0.0),
+        expander_millidb: reduction(dsp.expander.enabled, (-rms).midpoint(-30.0)),
+        compressor_millidb: reduction(dsp.compressor.enabled, (rms + 24.0) * 0.6),
+        limiter_millidb: reduction(dsp.limiter.enabled, rms.midpoint(8.0)),
+    };
+    let running = meter.gate_millidb.is_some()
+        || meter.expander_millidb.is_some()
+        || meter.compressor_millidb.is_some()
+        || meter.limiter_millidb.is_some();
+    (!dsp.bypass && running).then_some(meter)
+}
+
 /// Fills `state.audio_meters` with the synthetic feed when it is switched on
 /// and the daemon sent no meters for a synchronized view.
 pub fn inject(state: &mut StudioUiState) {
@@ -103,6 +145,29 @@ pub fn inject(state: &mut StudioUiState) {
         .map(|index| strip_levels(index, seconds)[0].0)
         .fold(-60.0_f64, f64::max);
     let master_rms = (loudest + 2.0).min(-6.0);
+    let master_peak = (master_rms + 8.0).min(-1.0);
+    let mut loudness_meters = Vec::new();
+    let mut dynamics_meters = Vec::new();
+    for (index, strip) in view.input_audio_strips.iter().enumerate() {
+        let target = AudioDspTarget::Input(WireInputId::from_domain(strip.input));
+        let [(rms, peak), _] = strip_levels(index, seconds);
+        let base = BASE_RMS_DB[index % BASE_RMS_DB.len()];
+        loudness_meters.push(loudness(target, base, rms, peak));
+        if let Some(project) = &state.project_state {
+            let dsp = project.audio_dsp(StripDspTarget::Input(strip.input));
+            dynamics_meters.extend(dynamics(target, &dsp, rms));
+        }
+    }
+    loudness_meters.push(loudness(
+        AudioDspTarget::Master,
+        -16.0,
+        master_rms,
+        master_peak,
+    ));
+    if let Some(project) = &state.project_state {
+        let dsp = project.audio_dsp(StripDspTarget::Master);
+        dynamics_meters.extend(dynamics(AudioDspTarget::Master, &dsp, master_rms));
+    }
     state.audio_meters = Some(AudioMetersMessage {
         server: ServerIdentity {
             engine_id: CAPTURE_ENGINE.to_owned(),
@@ -115,12 +180,12 @@ pub fn inject(state: &mut StudioUiState) {
         start_sample: 0,
         end_sample: 0,
         master: vec![
-            channel(master_rms, (master_rms + 8.0).min(-1.0)),
+            channel(master_rms, master_peak),
             channel(master_rms - 1.0, (master_rms + 7.0).min(-1.5)),
         ],
         inputs,
         monitor: None,
-        dynamics: Vec::new(),
-        loudness: Vec::new(),
+        dynamics: dynamics_meters,
+        loudness: loudness_meters,
     });
 }
