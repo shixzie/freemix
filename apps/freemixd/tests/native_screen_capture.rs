@@ -368,6 +368,10 @@ struct Client {
     server: Option<ServerIdentity>,
     heartbeats: u64,
     last_heartbeat: Instant,
+    /// The newest status of each capture input: status events are sent on
+    /// change only, so one consumed while waiting for something else is
+    /// still the input's current state.
+    latest: Vec<(WireInputId, ScreenCaptureStatus)>,
 }
 
 impl Client {
@@ -384,6 +388,7 @@ impl Client {
             server: None,
             heartbeats: 0,
             last_heartbeat: Instant::now(),
+            latest: Vec::new(),
         };
         client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
             protocol: CURRENT_PROTOCOL_VERSION,
@@ -433,6 +438,12 @@ impl Client {
             !matches!(&message, WireMessage::Error(_)),
             "daemon error: {message:?}"
         );
+        if let WireMessage::RuntimeEvent(event) = &message
+            && let RuntimeLifecycleEvent::ScreenCaptureStatus { input, status } = &event.event
+        {
+            self.latest.retain(|(known, _)| known != input);
+            self.latest.push((*input, (**status).clone()));
+        }
         message
     }
 
@@ -475,6 +486,13 @@ impl Client {
         what: &str,
         wanted: impl Fn(&ScreenCaptureStatus) -> bool,
     ) -> ScreenCaptureStatus {
+        if let Some((_, status)) = self
+            .latest
+            .iter()
+            .find(|(input, status)| *input == wanted_input && wanted(status))
+        {
+            return status.clone();
+        }
         self.wait_for(what, |_, message| {
             let WireMessage::RuntimeEvent(event) = message else {
                 return None;
