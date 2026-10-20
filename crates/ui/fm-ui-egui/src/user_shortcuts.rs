@@ -46,6 +46,8 @@ const LIST_WIDTH: f32 = 200.0;
 const DIVIDER_GAP: f32 = 12.0;
 /// Width of the editor's field label column, so the fields line up.
 const FORM_LABEL_WIDTH: f32 = 118.0;
+/// What a label cell adds past its width before the field beside it.
+const FORM_LABEL_GAP: f32 = 6.0;
 
 /// A field label in the editor's label column.
 fn form_label(ui: &mut Ui, text: &str) {
@@ -1217,7 +1219,7 @@ fn draw_action(
             let lists = project.cue_lists();
             ui.horizontal_wrapped(|ui| {
                 // Under the Runs picker, in the fields' column.
-                ui.add_space(FORM_LABEL_WIDTH);
+                ui.add_space(FORM_LABEL_WIDTH + FORM_LABEL_GAP);
                 let name = lists.iter().find(|found| found.id == *list).map_or_else(
                     || l.text(Msg::UserShortcutNoneChosen).to_owned(),
                     |found| found.spec.name.clone(),
@@ -1320,7 +1322,7 @@ fn draw_action(
         WireShortcutAction::Script { script } => {
             let scripts = project.scripts();
             ui.horizontal(|ui| {
-                ui.add_space(FORM_LABEL_WIDTH);
+                ui.add_space(FORM_LABEL_WIDTH + FORM_LABEL_GAP);
                 let name = scripts
                     .iter()
                     .find(|found| found.id == *script)

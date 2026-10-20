@@ -1670,13 +1670,27 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
         | NewInputKind::Image
         | NewInputKind::Slideshow
         | NewInputKind::MediaList => {
+            // A media list names its first file until the server decodes it.
+            let first_file = (draft.kind == NewInputKind::MediaList)
+                .then(|| {
+                    draft
+                        .media_list
+                        .text
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty())
+                })
+                .flatten()
+                .map(|line| line.rsplit(['/', '\\']).next().unwrap_or(line));
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                l.text(match draft.kind {
-                    NewInputKind::SystemAudio => Msg::ThumbAudioOnly,
-                    NewInputKind::MediaList => Msg::ThumbMediaListEmpty,
-                    _ => Msg::ThumbSlideshowEmpty,
+                first_file.unwrap_or_else(|| {
+                    l.text(match draft.kind {
+                        NewInputKind::SystemAudio => Msg::ThumbAudioOnly,
+                        NewInputKind::MediaList => Msg::ThumbMediaListEmpty,
+                        _ => Msg::ThumbSlideshowEmpty,
+                    })
                 }),
                 FontId::new(10.0, FontFamily::Proportional),
                 muted_color(),

@@ -446,6 +446,11 @@ pub(crate) fn draw_slideshow_form(ui: &mut Ui, l: Locale, draft: &mut SlideshowD
                 .suffix(" s"),
         )
         .on_hover_text(l.text(Msg::StSlideSecondsHover));
+    });
+    // The transition keys on their own row, the fade length beside FADE
+    // TO NEXT, so the length never wraps away from the key it belongs to.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::Vec2::new(6.0, 6.0);
         for (fade, label, hover) in [
             (false, Msg::StCut, Msg::StCutHover),
             (true, Msg::StFade, Msg::StFadeHover),
