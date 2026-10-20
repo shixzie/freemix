@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.87 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.88 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3307,6 +3307,41 @@ the daemon's web state directory and options, never in the project.
   `--display-presenter`, and Studio's `--display-presenter-if-available`)
   serves the gateway with the same options.
 - 2.86 is refused.
+
+Protocol 2.88 adds dynamic input targets to shortcut and cue actions
+(RC-004, schema 73).
+
+- Every `<input>` of a cue action token (in `cue_list_set`, `shortcut_set`,
+  their events and snapshot records, and `.fmshortcuts` files) is a
+  canonical input id or one of the roles `preview`, `program`, and
+  `selected`: the input on Preview, on Program, or selected on the console
+  that fires the action. Anything else is refused. A take's `-` (the
+  current Preview) stays as it was.
+- `shortcut_fire`, `cue_go`, and `cue_arm` gain the optional fields
+  `selected`, `bound_preview`, and `bound_program`, each a canonical input
+  id, in that order. A client sends `selected`, its console's selection;
+  the authority binds Preview and Program and writes them into the
+  journaled command, so a replay resolves to the same inputs. A field a
+  client sends wins over the live switcher.
+- A role resolves when fired: a shortcut fire binds Preview and Program as
+  they stand before its actions; a GO binds once for its whole run (a step
+  after a wait or an auto-follow acts on the inputs bound at GO); an arm
+  binds when armed. A resolved input is checked as a fixed one is at
+  definition (it exists, and is a title, media, or paged input as the action
+  needs). An action on `selected` without a selection is refused
+  `invalid_command` with field `selected` / `unbound`, naming the action; a
+  GO or arm whose cue (or the cues it auto-follows into) holds one is refused
+  whole. Before 2.88, an action's input was always an id.
+- Durability (schema 73): an action's `"input"` is an id or `"preview"`,
+  `"program"`, or `"selected"`; a cue list's run state gains required
+  `"targets": null | {"preview", "program", "selected"}` (each an id or
+  null) after `"armed"`, and `"armed"` gains the same required `"targets"`
+  after `"due_frame"`.
+- Studio's shortcut and cue action editors offer the roles in their input
+  pickers, with hover help; clicking, right-clicking, or tabbing to an input
+  tile selects its input on this console. The Web page, OSC, and the CLI
+  send no selection.
+- 2.87 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

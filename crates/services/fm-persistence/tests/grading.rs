@@ -196,7 +196,7 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_34() {
     let expected = stored(graded_project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 72,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 73,\n"));
     let grading = format!(
         "\n    \"luts\": [{{\"id\": 3, \"name\": \"Film\", \"kind\": \"3d\", \"size\": 33}}],\
          \n    \"grades\": [{{\"id\": 9, \"name\": \"Night \\\"blue\\\"\", \"grade\": {FULL_GRADE_JSON}}}],\
@@ -296,11 +296,11 @@ fn schema_45_and_47_manifests_are_refused() {
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
 
     // The previous schema is refused outright; there is no migration path.
-    for found in [71, 73] {
+    for found in [72, 74] {
         fs::write(
             store.manifest_path(),
             encoded.replacen(
-                "\"schema_version\": 72",
+                "\"schema_version\": 73",
                 &format!("\"schema_version\": {found}"),
                 1,
             ),
@@ -311,7 +311,7 @@ fn schema_45_and_47_manifests_are_refused() {
             Err(StoreError::Validation(
                 ProjectValidationError::UnsupportedSchema {
                     found: f,
-                    supported: 72
+                    supported: 73
                 }
             )) if f == found
         ));
