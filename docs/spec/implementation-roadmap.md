@@ -18,7 +18,7 @@ highest-value remaining items, ranked:
    daemon publishes a Preview `monitor_frame` tap (the incoming source during a
    transition) through nonblocking readbacks, and Studio shows it with a
    `PVW FEED` lamp. Timed transitions and title phases run on the native
-   frame loop like a held T-bar (Protocol 2.88), so the tap streams through
+   frame loop like a held T-bar (Protocol 2.86), so the tap streams through
    them too. The rows stay `planned` for their wider acceptance.
 3. **Strip DSP on the live mix (`AU-005`), remaining parts.** Every input
    strip and Master now carry a persisted, undoable polarity / high-pass /

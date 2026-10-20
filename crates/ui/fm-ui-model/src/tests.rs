@@ -594,7 +594,7 @@ fn runtime_realization_leaves_durable_and_command_tracking_unchanged() {
 
 /// A retained revision realized after a newer one is a timed transition
 /// completing on the native frame loop after later commands were realized
-/// on its frames (Protocol 2.88): it stands for the newest realized
+/// on its frames (Protocol 2.86): it stands for the newest realized
 /// revision, whose desired state already holds the transition's target.
 #[test]
 fn runtime_realization_of_a_retained_revision_keeps_the_newest_realized_desired_state() {

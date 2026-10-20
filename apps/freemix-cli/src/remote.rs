@@ -2279,7 +2279,7 @@ impl Remote {
     /// The next message of an accepted command's events. A native daemon
     /// answers a command once its first frame is realized and realizes the
     /// rest of a transition or title phase on its frame loop (Protocol
-    /// 2.88), so the realization can follow the result by the whole
+    /// 2.86), so the realization can follow the result by the whole
     /// transition. While nothing arrives the wait heartbeats every
     /// [`REALIZATION_HEARTBEAT_EVERY`] (`heartbeats` sent so far) and keeps
     /// waiting as long as the daemon acknowledges them, up to

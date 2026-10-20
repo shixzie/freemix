@@ -2065,7 +2065,7 @@ fn remote_commands_reject_non_loopback_addresses_before_connecting() {
 }
 
 /// A native daemon answers a transition once its first frame is realized
-/// and realizes the rest on its frame loop (Protocol 2.88), so the
+/// and realizes the rest on its frame loop (Protocol 2.86), so the
 /// command's events can follow its result by the whole transition:
 /// `remote-fade` waits past its I/O timeout for them, heartbeating, while
 /// the daemon acknowledges its heartbeats.

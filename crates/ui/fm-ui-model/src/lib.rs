@@ -2625,7 +2625,7 @@ pub struct ClientModel {
     >,
     last_runtime_realization: Option<RuntimeRealization>,
     /// The newest durable revision a runtime realization has stood for
-    /// (Protocol 2.88): an older revision realized after it (a timed
+    /// (Protocol 2.86): an older revision realized after it (a timed
     /// transition completing on the frame loop) does not regress it.
     realized_revision: Option<Revision>,
     pending: Vec<PendingCommand>,
@@ -4042,7 +4042,7 @@ impl ClientModel {
             });
         }
         // A timed transition completes on the native frame loop after
-        // later commands were realized on its frames (Protocol 2.88): its
+        // later commands were realized on its frames (Protocol 2.86): its
         // realization then stands for the newest realized revision, whose
         // desired state already holds the transition's target.
         let revision = self

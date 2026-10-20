@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.85 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.86 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3209,6 +3209,48 @@ xdg-desktop-portal (IN-011, schema 72).
   server; the tile shows PICK ON SERVER and DENIED, and its menu's Pick
   target again sends the pick request.
 - 2.84 is refused.
+
+Protocol 2.86 realizes timed transitions and title phases on the native
+daemon's frame loop (`SW-001`, `SW-002`, `GX-001`). No message changes; the
+timing of command results and what a session may send meanwhile do.
+
+- A native command is answered once its first frame is realized. The rest
+  of a timed transition (`transition`, `fade` and the other direct kinds,
+  a Stinger, a playlist or cue transition), a Fade to Black, an overlay
+  channel's motion, and a title's In or Out phase are realized by the
+  pacer one frame per tick, exactly as a held T-bar transition is, so a
+  `transition` result now arrives when it starts, not when it ends. The
+  end is signalled by the event that always reported it: the
+  `runtime_event` `realized` in domain `switcher` for the command's
+  revision, published on the frame the transition (or Fade to Black)
+  completes; overlay and title commands report theirs as before.
+  The simulated daemon still realizes a command's frames within it.
+- While such work runs every session is served as between commands:
+  monitor frames of both taps, meters, events, heartbeats, and other
+  sessions' commands, one per scheduler pass as before. A command accepted
+  meanwhile is judged on the frame it was dispatched on by the engine's
+  existing rules for a Program transition in flight: a `cut`, another
+  transition, `select_preview`, a Stinger configuration, an input removal
+  or close, and every other command the engine does not exempt are
+  refused `conflict` ("a <kind> transition is already in flight"), while
+  Fade to Black, overlay and title commands, audio, media transport,
+  stream and recording control, and project edits that leave the switcher
+  alone (renames, grades, animations, layers, inputs added) are accepted.
+  An accepted one is durable as the project the in-flight work settles
+  on.
+- The playlist and cue clocks and media end triggers wait while the
+  frame loop realizes such work, so a boundary that falls inside it is cut
+  on the first frame after it (the entry keeps its scheduled start), as
+  before.
+- A heartbeat already received from a peer is recorded (and
+  acknowledged) before that peer's heartbeat timeout is judged, unless a
+  reply to it is held behind backpressure.
+- Durability: each journal record also carries the engine frame cursor
+  its command was committed at, after the submission time; replay ticks to
+  it before re-executing the command. Journal records are stamped with the
+  protocol version, so records written by 2.85 are refused as before. The
+  project schema is unchanged.
+- 2.85 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
