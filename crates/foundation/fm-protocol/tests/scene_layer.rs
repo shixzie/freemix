@@ -18,7 +18,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.91\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.92\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -197,7 +197,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_43() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 91));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 92));
 }
 
 #[test]
