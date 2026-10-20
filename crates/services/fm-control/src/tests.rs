@@ -7928,3 +7928,4 @@ mod scripts {
 }
 
 mod automation_authority;
+mod shortcut_authority;
