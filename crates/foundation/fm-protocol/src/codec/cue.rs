@@ -30,7 +30,10 @@
 //!   with, `reason` the lowercase hex of the refusal's `reason` token (`-`
 //!   for none) and `message` the lowercase hex of its English text (see
 //!   [`fm_command::FaultDetail`]); `armed` (Protocol 2.64) is
-//!   `<cue>.<due frame>` or `-`.
+//!   `<cue>.<due frame>` or `-`. Since Protocol 2.89 (RC-004) `armed` is
+//!   `<cue>.<due frame>.<targets>` when the armed GO bound targets, and the
+//!   state gains a seventh part, the run's bound `targets` or `-`; `targets`
+//!   is `<preview>.<program>.<selected>`, each a canonical input id or `-`.
 //! * `cue_arm` carries `list`, an optional `cue`, and `in_ms` (canonical
 //!   decimal, `1..=86400000`); `cue_disarm` carries `list` (Protocol 2.64).
 //! * `fired` is `.`-separated cue ids; `titles` is a `/`-separated list of
@@ -489,7 +492,7 @@ pub(super) fn encode_state(state: &CueRunStatus) -> Result<String, CodecError> {
         ),
     };
     Ok(format!(
-        "{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}",
         optional_id(state.standby),
         optional_id(state.live),
         state.pending.map_or_else(
@@ -500,16 +503,57 @@ pub(super) fn encode_state(state: &CueRunStatus) -> Result<String, CodecError> {
         fault,
         state.armed.map_or_else(
             || "-".to_owned(),
-            |armed| format!("{}.{}", armed.cue, armed.due_frame)
+            |armed| match armed.targets {
+                None => format!("{}.{}", armed.cue, armed.due_frame),
+                Some(targets) => format!(
+                    "{}.{}.{}",
+                    armed.cue,
+                    armed.due_frame,
+                    encode_bound(&targets)
+                ),
+            }
         ),
+        state
+            .targets
+            .map_or_else(|| "-".to_owned(), |targets| encode_bound(&targets)),
     ))
+}
+
+/// Encodes a run's bound targets as `<preview>.<program>.<selected>`, each
+/// a canonical input id or `-` (Protocol 2.89).
+fn encode_bound(targets: &WireTargetBindings) -> String {
+    let id = |input: Option<crate::WireInputId>| {
+        input.map_or_else(|| "-".to_owned(), |input| input.to_string())
+    };
+    format!(
+        "{}.{}.{}",
+        id(targets.preview),
+        id(targets.program),
+        id(targets.selected)
+    )
+}
+
+/// Decodes the three parts of a run's bound targets (see [`encode_bound`]).
+fn decode_bound(parts: &[&str]) -> Option<WireTargetBindings> {
+    let id = |value: &str| match value {
+        "-" => Some(None),
+        value => parse_canonical_input(value).map(Some),
+    };
+    let [preview, program, selected] = parts else {
+        return None;
+    };
+    Some(WireTargetBindings {
+        preview: id(preview)?,
+        program: id(program)?,
+        selected: id(selected)?,
+    })
 }
 
 /// Decodes a run state.
 pub(super) fn decode_state(value: &str) -> Result<CueRunStatus, CodecError> {
     let bad = || invalid("state", value);
     let parts: Vec<&str> = value.split(':').collect();
-    let [standby, live, pending, played, fault, armed] = parts.as_slice() else {
+    let [standby, live, pending, played, fault, armed, targets] = parts.as_slice() else {
         return Err(bad());
     };
     let played = decode_ids("state", played)?;
@@ -547,12 +591,21 @@ pub(super) fn decode_state(value: &str) -> Result<CueRunStatus, CodecError> {
         armed: match *armed {
             "-" => None,
             armed => match armed.split('.').collect::<Vec<_>>().as_slice() {
-                [cue, due] => Some(CueArmedStatus {
+                [cue, due, bound @ ..] => Some(CueArmedStatus {
                     cue: parse_canonical_u64(cue).ok_or_else(bad)?,
                     due_frame: parse_canonical_u64(due).ok_or_else(bad)?,
+                    targets: if bound.is_empty() {
+                        None
+                    } else {
+                        Some(decode_bound(bound).ok_or_else(bad)?)
+                    },
                 }),
                 _ => return Err(bad()),
             },
+        },
+        targets: match *targets {
+            "-" => None,
+            targets => Some(decode_bound(&targets.split('.').collect::<Vec<_>>()).ok_or_else(bad)?),
         },
     })
 }

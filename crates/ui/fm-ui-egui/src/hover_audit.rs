@@ -1016,9 +1016,21 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                     },
                 }),
                 // Protocol 2.64: the standby cue is armed to fire later.
+                // Protocol 2.89: the armed GO and the run show what their
+                // dynamic targets are bound to.
                 armed: Some(fm_protocol::CueArmedStatus {
                     cue: 20,
                     due_frame: 900,
+                    targets: Some(fm_protocol::WireTargetBindings {
+                        preview: Some(fm_protocol::WireInputId::from_domain(input(2))),
+                        program: Some(fm_protocol::WireInputId::from_domain(input(1))),
+                        selected: None,
+                    }),
+                }),
+                targets: Some(fm_protocol::WireTargetBindings {
+                    preview: Some(fm_protocol::WireInputId::from_domain(input(2))),
+                    program: Some(fm_protocol::WireInputId::from_domain(input(1))),
+                    selected: Some(fm_protocol::WireInputId::from_domain(input(3))),
                 }),
             },
         },
@@ -1047,6 +1059,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                 played: vec![1],
                 fault: None,
                 armed: None,
+                targets: None,
             },
         },
     ]

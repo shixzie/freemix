@@ -8529,6 +8529,7 @@ fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
             played: vec![10],
             fault: None,
             armed: None,
+            targets: None,
         }
     );
 
@@ -8662,6 +8663,7 @@ fn an_armed_go_fires_on_the_clock_and_survives_restart() {
         Some(CueArmedStatus {
             cue: 10,
             due_frame: due,
+            targets: None,
         })
     );
     let fired = run_event(&mut admin, 3);

@@ -273,6 +273,9 @@ pub struct CuePendingStatus {
 pub struct CueArmedStatus {
     pub cue: u64,
     pub due_frame: u64,
+    /// The inputs the armed GO's dynamic targets bound when it was armed
+    /// (Protocol 2.89, RC-004); `None` for a list naming no dynamic target.
+    pub targets: Option<WireTargetBindings>,
 }
 
 /// A list's run state.
@@ -290,6 +293,10 @@ pub struct CueRunStatus {
     pub fault: Option<CueFaultStatus>,
     /// The GO armed for a later frame (Protocol 2.64).
     pub armed: Option<CueArmedStatus>,
+    /// The inputs the dynamic targets of the run in progress are bound to,
+    /// by the GO (or armed GO) that started it (Protocol 2.89, RC-004);
+    /// `None` for a list naming no dynamic target.
+    pub targets: Option<WireTargetBindings>,
 }
 
 /// Action `action` of cue `cue` was refused when its wait ended; the cue

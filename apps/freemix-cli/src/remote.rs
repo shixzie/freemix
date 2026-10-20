@@ -384,8 +384,21 @@ pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protoco
     for list in lists {
         any = true;
         let state = &list.state;
+        // The inputs the run's (and the armed GO's) dynamic targets are
+        // bound to, when they bound any (Protocol 2.89, RC-004).
+        let bound = |targets: fm_protocol::WireTargetBindings| {
+            let id = |input: Option<fm_protocol::WireInputId>| {
+                input.map_or_else(|| "-".to_owned(), |input| input.to_string())
+            };
+            format!(
+                "preview:{},program:{},selected:{}",
+                id(targets.preview),
+                id(targets.program),
+                id(targets.selected)
+            )
+        };
         println!(
-            "CueList(id={}, name={:?}, standby={}, live={}, pending={}, played={:?}, fault={}, armed={})",
+            "CueList(id={}, name={:?}, standby={}, live={}, pending={}, played={:?}, fault={}, armed={}{})",
             list.id,
             list.spec.name,
             optional(state.standby),
@@ -406,8 +419,16 @@ pub(crate) fn print_cue_lists<'a>(lists: impl IntoIterator<Item = &'a fm_protoco
             ),
             state.armed.map_or_else(
                 || "-".to_owned(),
-                |armed| format!("{}@{}", armed.cue, armed.due_frame)
+                |armed| match armed.targets {
+                    None => format!("{}@{}", armed.cue, armed.due_frame),
+                    Some(targets) => {
+                        format!("{}@{} [{}]", armed.cue, armed.due_frame, bound(targets))
+                    }
+                }
             ),
+            state
+                .targets
+                .map_or_else(String::new, |targets| format!(", bound={}", bound(targets))),
         );
         for cue in &list.spec.cues {
             println!(

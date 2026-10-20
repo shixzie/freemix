@@ -3262,6 +3262,7 @@ mod cue_lists {
             played: vec![10],
             fault: None,
             armed: None,
+            targets: None,
         };
         client
             .apply_event(event(

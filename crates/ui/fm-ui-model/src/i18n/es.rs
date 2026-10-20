@@ -7229,6 +7229,27 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (
+        Msg::CueRunBoundNote,
+        t("Vinculado en GO: Previo {preview} · Programa {program} · Seleccionada {selected}"),
+    ),
+    (
+        Msg::CueRunBoundHover,
+        t(
+            "Las entradas a las que el último GO vinculó los papeles Previo, Programa y Seleccionada de esta lista. El resto de su ejecución, esperas y cues encadenados incluidos, actúa sobre estas entradas hasta el siguiente GO o Reiniciar",
+        ),
+    ),
+    (
+        Msg::CueArmedBoundNote,
+        t("GO armado vinculado: Previo {preview} · Programa {program} · Seleccionada {selected}"),
+    ),
+    (
+        Msg::CueArmedBoundHover,
+        t(
+            "Las entradas a las que el GO armado vinculó sus papeles Previo, Programa y Seleccionada al armarse; actúa sobre ellas cuando se dispara",
+        ),
+    ),
+    (Msg::CueBoundNone, t("sin entrada")),
+    (
         Msg::CueReasonArmDelay,
         t("escribe un retardo de 1 segundo a 24 horas en segundos, MM:SS o HH:MM:SS"),
     ),

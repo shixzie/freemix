@@ -1228,6 +1228,25 @@ impl CuePanel {
             ui.label(if late { text.color(AMBER) } else { text })
                 .on_hover_text(l.format(Msg::CueArmedHover, &[("frame", Arg::Str(&frame))]));
             ui.ctx().request_repaint_after(Duration::from_millis(200));
+            if let Some(targets) = armed.targets {
+                ui.label(caption(bound_note(
+                    l,
+                    state,
+                    Msg::CueArmedBoundNote,
+                    &targets,
+                )))
+                .on_hover_text(l.text(Msg::CueArmedBoundHover));
+            }
+        }
+        // What the run's dynamic targets are bound to (Protocol 2.89).
+        if let Some(targets) = list.state.targets {
+            ui.label(caption(bound_note(
+                l,
+                state,
+                Msg::CueRunBoundNote,
+                &targets,
+            )))
+            .on_hover_text(l.text(Msg::CueRunBoundHover));
         }
         let show = Show::of(state).map(|mut show| {
             show.selected = crate::selection::selected_input(ui.ctx());
@@ -1505,6 +1524,37 @@ impl Roles {
         .into_iter()
         .filter_map(|(offered, target)| offered.then_some(target))
     }
+}
+
+/// The inputs a run (or an armed GO) bound its dynamic targets to
+/// (Protocol 2.89, RC-004), under `note`'s `{preview}`, `{program}`, and
+/// `{selected}`; an unbound role reads "none".
+pub(crate) fn bound_note(
+    l: Locale,
+    state: &StudioUiState,
+    note: Msg,
+    targets: &fm_protocol::WireTargetBindings,
+) -> String {
+    let name = |input: Option<WireInputId>| match (input, state.view.as_ref()) {
+        (None, _) => l.text(Msg::CueBoundNone).to_owned(),
+        (Some(input), Some(view)) => {
+            input_name(l, &view.inputs, &view.input_names, input.to_domain())
+        }
+        (Some(input), None) => crate::monitors::fallback_input_name(l, input.to_domain()),
+    };
+    let (preview, program, selected) = (
+        name(targets.preview),
+        name(targets.program),
+        name(targets.selected),
+    );
+    l.format(
+        note,
+        &[
+            ("preview", Arg::Str(&preview)),
+            ("program", Arg::Str(&program)),
+            ("selected", Arg::Str(&selected)),
+        ],
+    )
 }
 
 /// A dynamic target's name (RC-004): the input on Preview, on Program,
@@ -2803,6 +2853,7 @@ mod tests {
             played: vec![10],
             fault: None,
             armed: None,
+            targets: None,
         };
         assert_eq!(CueRole::of(&state, 10), CueRole::Live);
         assert_eq!(CueRole::of(&state, 20), CueRole::Standby);
@@ -2838,6 +2889,7 @@ mod tests {
             armed: Some(fm_protocol::CueArmedStatus {
                 cue: 20,
                 due_frame: 90,
+                targets: None,
             }),
             ..played
         };
@@ -2981,6 +3033,38 @@ mod tests {
     /// Protocol 2.63: a deferred action's fault says what the server refused
     /// it with, a typed reason in the console language, else the server's
     /// message.
+    /// Protocol 2.89 (RC-004): the panel names the inputs a run (or an
+    /// armed GO) bound its dynamic targets to, an unbound role as none.
+    #[test]
+    fn a_bound_note_names_the_inputs_a_run_bound() {
+        let state = StudioUiState::new(crate::StudioConnectionStatus::Ready);
+        let wire = |value: u128| WireInputId::new(core::num::NonZeroU128::new(value).unwrap());
+        let targets = fm_protocol::WireTargetBindings {
+            preview: Some(wire(2)),
+            program: Some(wire(1)),
+            selected: None,
+        };
+        assert_eq!(
+            bound_note(Locale::ENGLISH, &state, Msg::CueRunBoundNote, &targets),
+            "Bound at GO: Preview Input 2 · Program Input 1 · Selected no input"
+        );
+        assert_eq!(
+            bound_note(Locale::ENGLISH, &state, Msg::CueArmedBoundNote, &targets),
+            "Armed GO bound: Preview Input 2 · Program Input 1 · Selected no input"
+        );
+        assert!(
+            bound_note(
+                Locale::new(fm_ui_model::i18n::Language::Spanish),
+                &state,
+                Msg::CueRunBoundNote,
+                &targets
+            )
+            .starts_with(
+                "Vinculado en GO: Previo Entrada 2 · Programa Entrada 1 · Seleccionada sin entrada"
+            ),
+        );
+    }
+
     #[test]
     fn a_fault_note_says_what_the_server_refused_the_action_with() {
         let state = StudioUiState::new(crate::StudioConnectionStatus::Ready);
@@ -3266,6 +3350,7 @@ mod tests {
         status.state.armed = Some(fm_protocol::CueArmedStatus {
             cue: 10,
             due_frame: 90,
+            targets: None,
         });
         assert_eq!(
             press(&ready, &status, "1:30", CueKey::Disarm),

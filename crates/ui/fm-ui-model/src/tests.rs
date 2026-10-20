@@ -3860,6 +3860,7 @@ fn a_cue_run_records_the_last_run_of_each_script_it_ran() {
     stray.state.armed = Some(fm_protocol::CueArmedStatus {
         cue: 9,
         due_frame: 90,
+        targets: None,
     });
     assert_eq!(
         apply(&mut model, DurableChange::CueRunChanged(Box::new(stray))),
@@ -3873,6 +3874,7 @@ fn a_cue_run_records_the_last_run_of_each_script_it_ran() {
     update.state.armed = Some(fm_protocol::CueArmedStatus {
         cue: 1,
         due_frame: 90,
+        targets: None,
     });
     apply(&mut model, DurableChange::CueRunChanged(Box::new(update))).unwrap();
     let state = model.state().unwrap();

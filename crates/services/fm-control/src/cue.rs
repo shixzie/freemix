@@ -296,8 +296,15 @@ pub fn wire_state(state: &CueRunState) -> CueRunStatus {
         armed: state.armed.map(|armed| CueArmedStatus {
             cue: armed.cue,
             due_frame: armed.due_frame,
+            targets: armed.targets.map(wire_targets),
         }),
+        targets: state.targets.map(wire_targets),
     }
+}
+
+/// The wire form of a run's bound targets (Protocol 2.89).
+fn wire_targets(targets: fm_types::TargetBindings) -> fm_protocol::WireTargetBindings {
+    targets.map(fm_protocol::WireInputId::from_domain)
 }
 
 /// The wire form of a whole list.

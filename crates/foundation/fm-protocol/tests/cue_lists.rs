@@ -187,6 +187,7 @@ fn state() -> CueRunStatus {
         played: vec![1],
         fault: None,
         armed: None,
+        targets: None,
     }
 }
 
@@ -396,6 +397,7 @@ fn an_armed_go_round_trips_in_the_run_state() {
         armed: Some(CueArmedStatus {
             cue: 7,
             due_frame: 90_000,
+            targets: None,
         }),
         ..state()
     };
@@ -410,18 +412,81 @@ fn an_armed_go_round_trips_in_the_run_state() {
     });
     let line = round_trip(&message);
     assert!(
-        line.contains("\tstate=7%3A1%3A1.15.1234%3A1%3A-%3A7.90000\n"),
+        line.contains("\tstate=7%3A1%3A1.15.1234%3A1%3A-%3A7.90000%3A-\n"),
         "{line}"
     );
     for bad in ["7.", "7", "x.5", "7.05", "7.5.1"] {
-        let broken = line.replace("%3A7.90000\n", &format!("%3A{bad}\n"));
+        let broken = line.replace("%3A7.90000%3A-\n", &format!("%3A{bad}%3A-\n"));
         assert!(decode_line(&broken).is_err(), "{bad}");
     }
-    let five = line.replace("%3A-%3A7.90000\n", "%3A-\n");
+    let five = line.replace("%3A-%3A7.90000%3A-\n", "%3A-%3A-\n");
     assert!(
         decode_line(&five).is_err(),
         "a state without its armed part"
     );
+}
+
+/// Protocol 2.89 (RC-004): a run state reports the inputs its run's
+/// dynamic targets are bound to as a seventh part,
+/// `<preview>.<program>.<selected>` (each an input id or `-`), and an armed
+/// GO that bound targets names them after its due frame; strictly.
+#[test]
+fn a_run_reports_its_bound_targets() {
+    use fm_protocol::WireTargetBindings;
+    let bound = CueRunStatus {
+        armed: Some(CueArmedStatus {
+            cue: 7,
+            due_frame: 90_000,
+            targets: Some(WireTargetBindings {
+                preview: Some(input(4)),
+                program: Some(input(3)),
+                selected: None,
+            }),
+        }),
+        targets: Some(WireTargetBindings {
+            preview: Some(input(3)),
+            program: Some(input(5)),
+            selected: Some(input(6)),
+        }),
+        ..state()
+    };
+    let message = WireMessage::CueListState(CueListStateMessage {
+        revision: 12,
+        frame: 1_000,
+        list: CueListStatus {
+            id: 3,
+            spec: spec(),
+            state: bound,
+        },
+    });
+    let line = round_trip(&message);
+    assert!(
+        line.contains("\tstate=7%3A1%3A1.15.1234%3A1%3A-%3A7.90000.4.3.-%3A3.5.6\n"),
+        "{line}"
+    );
+    for (good, bad) in [
+        ("%3A3.5.6\n", "%3A3.5\n"),
+        ("%3A3.5.6\n", "%3A3.5.6.7\n"),
+        ("%3A3.5.6\n", "%3A3.05.6\n"),
+        ("%3A3.5.6\n", "%3A0.5.6\n"),
+        ("%3A3.5.6\n", "%3Apreview.5.6\n"),
+        ("%3A3.5.6\n", "%3A\n"),
+        ("%3A3.5.6\n", "\n"),
+        ("7.90000.4.3.-", "7.90000.4.3"),
+        ("7.90000.4.3.-", "7.90000.4"),
+        ("7.90000.4.3.-", "7.90000.4.3.-.-"),
+        ("7.90000.4.3.-", "7.90000.x.3.-"),
+    ] {
+        let broken = line.replace(good, bad);
+        assert_ne!(broken, line, "{bad}");
+        assert!(decode_line(&broken).is_err(), "{bad}");
+    }
+    // Every role unbound still names the run's targets.
+    let open = line.replace("%3A3.5.6\n", "%3A-.-.-\n");
+    let WireMessage::CueListState(decoded) = decode_line(&open).unwrap() else {
+        panic!("expected a cue list state");
+    };
+    assert_eq!(decoded.list.state.targets, Some(WireTargetBindings::NONE));
 }
 
 /// A bare run event of list 3 on frame 1000 carrying `scripts`.
@@ -640,8 +705,12 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
         hex("input_in_use:4:program"),
         hex("input 4 is on Program")
     );
-    // Protocol 2.64: the armed GO follows the fault (`-` for none).
-    assert!(line.contains(&format!("%3A1%3A{fault}%3A-\t")), "{line}");
+    // Protocol 2.64: the armed GO follows the fault (`-` for none); Protocol
+    // 2.89: then the run's bound targets (`-` for none).
+    assert!(
+        line.contains(&format!("%3A1%3A{fault}%3A-%3A-\t")),
+        "{line}"
+    );
     let no_reason = line.replacen(
         &format!("1.2.{}.", hex("input_in_use:4:program")),
         "1.2.-.",
@@ -708,15 +777,17 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
     }));
     assert!(
         decode_line(
-            "cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\tstate=-%3A-%3A-%3A%3A-%3A-\n"
+            "cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\tstate=-%3A-%3A-%3A%3A-%3A-%3A-\n"
         )
         .is_ok()
     );
     for bad in [
-        "state=-%3A-%3A-%3A2.1%3A-%3A-",
+        "state=-%3A-%3A-%3A2.1%3A-%3A-%3A-",
         "state=-%3A-%3A-%3A%3A",
-        "state=-%3A-%3A1.1%3A%3A-%3A-",
-        "state=x%3A-%3A-%3A%3A-%3A-",
+        "state=-%3A-%3A1.1%3A%3A-%3A-%3A-",
+        "state=x%3A-%3A-%3A%3A-%3A-%3A-",
+        // The six-part state of Protocol 2.88 lacks the bound targets.
+        "state=-%3A-%3A-%3A%3A-%3A-",
     ] {
         let line = format!("cue_list_state\trevision=1\tframe=0\tlist=1\tname=A\tcues=\t{bad}\n");
         assert!(decode_line(&line).is_err(), "{bad}");

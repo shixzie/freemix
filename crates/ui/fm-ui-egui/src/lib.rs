@@ -471,6 +471,17 @@ pub enum StudioIntent {
 }
 
 impl StudioIntent {
+    /// The intent with `selected` as its fire's selected input (RC-004),
+    /// when it is a shortcut fire or a cue GO or arm that names none yet.
+    /// Other intents are unchanged.
+    #[must_use]
+    pub fn with_selected_input(self, selected: Option<InputId>) -> Self {
+        let mut intents = [self];
+        selection::bind(selected, &mut intents);
+        let [intent] = intents;
+        intent
+    }
+
     /// The title-editor request this intent carries, if any.
     #[must_use]
     pub const fn title_request(&self) -> Option<u64> {
