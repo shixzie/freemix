@@ -18,6 +18,7 @@ mod embedded_audio;
 mod gain_smoother;
 mod live_source;
 mod live_strip_dsp;
+mod loudness;
 mod monitor;
 mod multichannel;
 mod resampler;
@@ -61,6 +62,7 @@ pub use live_source::{
 pub use live_strip_dsp::{
     DspDynamicsReading, InPlacePlanes, LiveDspIo, LiveStripDsp, SUB_BLOCK as LIVE_DSP_SUB_BLOCK,
 };
+pub use loudness::{ABSOLUTE_GATE_LUFS, LoudnessMeter, LoudnessReading};
 pub use monitor::{
     MAX_MONITOR_AUX_BUSES, MAX_MONITOR_CHANNELS, MAX_MONITOR_LEVEL_DB, MAX_MONITOR_STRIPS,
     MAX_TALKBACK_GAIN_DB, MAX_TALKBACK_ROUTES, MONITOR_DIM_DB, MonitorBus, MonitorDeviceId,
