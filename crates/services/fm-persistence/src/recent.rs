@@ -326,6 +326,8 @@ fn push_string(output: &mut String, value: &str) {
 
 enum EncodedPath<'a> {
     Text(&'a str),
+    // Only Unix paths can hold bytes that are not UTF-8.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Hex(String),
 }
 

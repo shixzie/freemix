@@ -662,7 +662,7 @@ fn idle_safe_stop_has_no_second_input_timeout() {
 // ---------------------------------------------------------------------------
 
 mod resilient {
-    use std::fs::{self, File, OpenOptions};
+    use std::fs::{File, OpenOptions};
     use std::io::{self, Write};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -876,93 +876,91 @@ mod resilient {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
         if !tools_available() {
             return;
         }
-        #[cfg(unix)]
+        let directory = tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        let fallback = directory.path().join("fallback");
+        let config = SessionConfig::new("chmod", &primary)
+            .unwrap()
+            .with_fallback(&fallback)
+            .unwrap()
+            .with_bare_first_segment();
+        let session =
+            RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+        // One fragment per segment, so the next segment is created while
+        // the primary is unwritable.
+        let writer_config = ResilientWriterConfig {
+            max_segment_fragments: std::num::NonZeroU64::new(1),
+            ..ResilientWriterConfig::default()
+        };
+        let output = ResilientOutput::new(session, writer_config);
+        let status = output.status();
+        let format = format();
+        let mut recorder =
+            Recorder::start_with_sink(Box::new(output), RecordConfig::new(format.clone())).unwrap();
+        // The encoder's lookahead holds about a second of frames, so the
+        // first one-second fragment is muxed once frame ~75 is encoded.
+        let frames_total: u64 = 150;
+        enqueue_range(&mut recorder, &format, 0..75);
+        wait_for(&status, "the first fragment", |status| {
+            status.get().stats.fragments_written >= 1
+        });
+        fs::set_permissions(&primary, fs::Permissions::from_mode(0o555)).unwrap();
+        if OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(primary.join("probe"))
+            .is_ok()
         {
-            use std::os::unix::fs::PermissionsExt;
-
-            let directory = tempdir().unwrap();
-            let primary = directory.path().join("primary");
-            let fallback = directory.path().join("fallback");
-            let config = SessionConfig::new("chmod", &primary)
-                .unwrap()
-                .with_fallback(&fallback)
-                .unwrap()
-                .with_bare_first_segment();
-            let session =
-                RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
-            // One fragment per segment, so the next segment is created while
-            // the primary is unwritable.
-            let writer_config = ResilientWriterConfig {
-                max_segment_fragments: std::num::NonZeroU64::new(1),
-                ..ResilientWriterConfig::default()
-            };
-            let output = ResilientOutput::new(session, writer_config);
-            let status = output.status();
-            let format = format();
-            let mut recorder =
-                Recorder::start_with_sink(Box::new(output), RecordConfig::new(format.clone()))
-                    .unwrap();
-            // The encoder's lookahead holds about a second of frames, so the
-            // first one-second fragment is muxed once frame ~75 is encoded.
-            let frames_total: u64 = 150;
-            enqueue_range(&mut recorder, &format, 0..75);
-            wait_for(&status, "the first fragment", |status| {
-                status.get().stats.fragments_written >= 1
-            });
-            fs::set_permissions(&primary, fs::Permissions::from_mode(0o555)).unwrap();
-            if OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(primary.join("probe"))
-                .is_ok()
-            {
-                // Running as root: permissions do not bind; nothing to prove.
-                fs::set_permissions(&primary, fs::Permissions::from_mode(0o755)).unwrap();
-                drop(recorder.cancel());
-                eprintln!("skipping: directory permissions do not bind for this user");
-                return;
-            }
-            enqueue_range(&mut recorder, &format, 75..frames_total);
-            let report = recorder.stop();
+            // Running as root: permissions do not bind; nothing to prove.
             fs::set_permissions(&primary, fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
-            assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
-            assert_eq!(report.telemetry.failure, None, "{report:?}");
-
-            let state = status.get();
-            assert_eq!(state.error, None, "{state:?}");
-            assert_eq!(state.snapshot.disabled_roots, [0], "{state:?}");
-            assert_eq!(state.snapshot.active_root, 1, "{state:?}");
-            assert!(state.snapshot.errors.iter().any(|error| error.root == 0
-                && error.op == FailureOp::CreateSegment
-                && error.kind == FailureKind::PermissionDenied));
-            // Primary segments first, then only fallback segments.
-            let segments = segment_paths(&config, &status);
-            let on_primary = segments
-                .iter()
-                .take_while(|path| path.starts_with(&primary))
-                .count();
-            assert!(on_primary >= 1, "{segments:?}");
-            assert!(
-                segments.len() > on_primary
-                    && segments[on_primary..]
-                        .iter()
-                        .all(|path| path.starts_with(&fallback)),
-                "{segments:?}"
-            );
-            let frames: u64 = segments.iter().map(|path| decoded_video_frames(path)).sum();
-            assert_eq!(frames, frames_total, "every frame survives the failover");
-            // The fallback manifest is current and closed.
-            let manifest = fm_record::SessionManifest::parse(
-                &fs::read_to_string(fallback.join("chmod.fmsession")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(manifest.state, SessionState::Stopped);
+            drop(recorder.cancel());
+            eprintln!("skipping: directory permissions do not bind for this user");
+            return;
         }
+        enqueue_range(&mut recorder, &format, 75..frames_total);
+        let report = recorder.stop();
+        fs::set_permissions(&primary, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+        assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+        assert_eq!(report.telemetry.failure, None, "{report:?}");
+
+        let state = status.get();
+        assert_eq!(state.error, None, "{state:?}");
+        assert_eq!(state.snapshot.disabled_roots, [0], "{state:?}");
+        assert_eq!(state.snapshot.active_root, 1, "{state:?}");
+        assert!(state.snapshot.errors.iter().any(|error| error.root == 0
+            && error.op == FailureOp::CreateSegment
+            && error.kind == FailureKind::PermissionDenied));
+        // Primary segments first, then only fallback segments.
+        let segments = segment_paths(&config, &status);
+        let on_primary = segments
+            .iter()
+            .take_while(|path| path.starts_with(&primary))
+            .count();
+        assert!(on_primary >= 1, "{segments:?}");
+        assert!(
+            segments.len() > on_primary
+                && segments[on_primary..]
+                    .iter()
+                    .all(|path| path.starts_with(&fallback)),
+            "{segments:?}"
+        );
+        let frames: u64 = segments.iter().map(|path| decoded_video_frames(path)).sum();
+        assert_eq!(frames, frames_total, "every frame survives the failover");
+        // The fallback manifest is current and closed.
+        let manifest = fm_record::SessionManifest::parse(
+            &fs::read_to_string(fallback.join("chmod.fmsession")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.state, SessionState::Stopped);
     }
 
     #[test]

@@ -646,6 +646,7 @@ fn containing_directory(path: &Path) -> &Path {
 /// Flushes `directory`'s entries (a rename into it) to stable storage. A
 /// no-op where directories cannot be opened and synced (non-Unix), and
 /// where the file system refuses to sync a directory.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_directory(directory: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {

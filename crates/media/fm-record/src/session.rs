@@ -938,6 +938,7 @@ fn probe_directory_writable(directory: &Path) -> io::Result<()> {
 /// the lock.
 #[derive(Debug)]
 pub(crate) struct RootLock {
+    #[cfg(unix)]
     path: PathBuf,
     file: File,
 }
@@ -990,6 +991,7 @@ fn lock_root(path: &Path, root: usize) -> Result<Option<RootLock>, SessionError>
         }
         if names_same_file(&file, path) {
             return Ok(Some(RootLock {
+                #[cfg(unix)]
                 path: path.to_path_buf(),
                 file,
             }));

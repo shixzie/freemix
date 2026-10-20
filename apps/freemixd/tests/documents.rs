@@ -7,6 +7,9 @@
 //! notes, and says how to show it; with a converter it converts and
 //! becomes ready.
 
+// Every test here drives the daemon through Unix signals and helpers.
+#![cfg(unix)]
+
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -191,7 +194,6 @@ impl Daemon {
 
     /// Stops the daemon with SIGTERM, which folds the journal into the
     /// project manifest.
-    #[cfg(unix)]
     fn terminate(mut self) {
         let status = Command::new("kill")
             .args(["-TERM", &self.child.id().to_string()])
@@ -419,7 +421,6 @@ fn centre(content: &PagedPageContent) -> [u8; 3] {
     [rgb[index], rgb[index + 1], rgb[index + 2]]
 }
 
-#[cfg(unix)]
 #[test]
 #[allow(clippy::too_many_lines)] // one import, navigation, crash, and restart run
 fn a_pdf_steps_page_by_page_and_survives_replay_and_restart() {
@@ -501,7 +502,6 @@ fn a_pdf_steps_page_by_page_and_survives_replay_and_restart() {
     assert_eq!(restarted.page, 1);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_presentation_counts_and_serves_notes_without_libreoffice_and_converts_with_it() {
     use std::os::unix::fs::PermissionsExt;

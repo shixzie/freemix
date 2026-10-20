@@ -838,6 +838,7 @@ fn a_phone_that_installs_the_local_root_trusts_the_gateway() {
     );
 
     // Key material is private and never printed.
+    #[cfg(unix)]
     let state = directory.0.join("web-state");
     #[cfg(unix)]
     for file in [

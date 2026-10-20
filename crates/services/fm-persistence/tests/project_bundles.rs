@@ -390,6 +390,7 @@ fn portable_bundle_never_overwrites_and_requires_resolvable_media() {
     assert!(!nested.root().exists());
 
     // Missing media, `..` traversal, and an escaping symlink are all refused.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut inputs = vec![
         (1, "asset://a.mov"),
         (2, "asset://missing.mov"),
@@ -411,6 +412,7 @@ fn portable_bundle_never_overwrites_and_requires_resolvable_media() {
     else {
         panic!("unresolved media must be refused");
     };
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut expected = vec![
         AssetAuditIssue {
             input_id: input_id(2),

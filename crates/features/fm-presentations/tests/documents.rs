@@ -2,9 +2,6 @@
 //! notes without an office suite, the `LibreOffice` conversion worker, and
 //! the importer into the navigation model.
 
-use std::ffi::OsString;
-use std::time::Duration;
-
 use fm_presentations::sample::{self, SampleSlide, SolidPage};
 use fm_presentations::{
     CONVERTER_UNAVAILABLE, DocumentError, DocumentImporter, ImportSource, OfficeConverter,
@@ -213,8 +210,10 @@ fn without_libreoffice_a_presentation_says_what_to_do() {
 
 #[cfg(unix)]
 mod conversion {
+    use std::ffi::OsString;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use super::*;
 

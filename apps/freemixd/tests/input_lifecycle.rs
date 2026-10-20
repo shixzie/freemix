@@ -6,6 +6,9 @@
 //! media input holds its frame, a closed one releases its source and
 //! reopens on it, and a closed input on air is refused.
 
+// Every test here drives the daemon through Unix signals and helpers.
+#![cfg(unix)]
+
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -183,7 +186,6 @@ impl Daemon {
         let _ = self.child.wait();
     }
 
-    #[cfg(unix)]
     /// Stops the daemon with SIGTERM, which folds the journal into the
     /// project manifest, and waits for its clean exit.
     fn terminate(mut self) {
@@ -407,7 +409,6 @@ fn media_position(states: &[MediaStateMessage], id: u128) -> (bool, MediaTranspo
     (transport.available, transport.state, transport.position)
 }
 
-#[cfg(unix)]
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_lifecycle_commands_replicate_journal_and_persist() {
@@ -649,7 +650,6 @@ fn asset_files(project: &Path) -> Vec<String> {
 /// A refused import or source replacement leaves no copy of its host files
 /// in the bundle: the command is validated before anything is copied, and
 /// only accepted items are brought in.
-#[cfg(unix)]
 #[test]
 #[allow(clippy::too_many_lines)]
 fn refused_imports_and_replacements_leave_no_copies() {

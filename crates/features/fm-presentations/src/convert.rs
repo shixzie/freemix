@@ -316,6 +316,7 @@ impl Sandbox {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = fs::DirBuilder::new();
             #[cfg(unix)]
             {

@@ -28,9 +28,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+#[cfg(unix)]
+use fm_codec_ffmpeg::stream::SrtOptions;
 use fm_codec_ffmpeg::stream::{
-    CleanupStatus, DestinationKind, PairedFrame, RecordFormat, SrtOptions, StopOutcome,
-    StreamConfig, StreamDestination, StreamLimits, Streamer,
+    CleanupStatus, DestinationKind, PairedFrame, RecordFormat, StopOutcome, StreamConfig,
+    StreamDestination, StreamLimits, Streamer,
 };
 use fm_frame::{
     AudioBlock, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
@@ -383,6 +385,7 @@ fn live_srt_stream_reaches_a_real_listener_as_nonempty_mpegts() {
 
 /// The argv of every running publisher child for `key` (see
 /// [`publisher_alive`]), NUL separators shown as spaces.
+#[cfg(unix)]
 fn publisher_argv(key: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();

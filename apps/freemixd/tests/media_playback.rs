@@ -27,11 +27,13 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, MediaEndAction, MediaEvent, MediaOperation, MediaSeekTarget,
-    MediaStateMessage, MediaStatus, MediaTransportState, PlaylistEntrySpec, PlaylistLoopMode,
-    PlaylistOperation, PlaylistRunState, PlaylistStart, PlaylistTransitionKind, Role,
-    RuntimeLifecycleEvent, SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
+    EventPayload, HandshakeRequest, MediaOperation, MediaSeekTarget, MediaStateMessage,
+    MediaStatus, PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistRunState,
+    PlaylistStart, PlaylistTransitionKind, Role, SnapshotMessage, WireInputId, WireMessage,
+    decode_line, encode_line,
 };
+#[cfg(unix)]
+use fm_protocol::{MediaEndAction, MediaEvent, MediaTransportState, RuntimeLifecycleEvent};
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
     SampleFormat, SampleRate, ScanMode, VideoDimensions, VideoFormat,
@@ -345,6 +347,7 @@ impl Client {
     }
 
     /// Collects `media` runtime events until `until` holds for one.
+    #[cfg(unix)]
     fn media_until(
         &mut self,
         what: &str,

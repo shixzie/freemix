@@ -210,7 +210,9 @@ fn random_serial() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CA_CERT_FILE, CA_KEY_FILE, LocalCa};
+    #[cfg(unix)]
+    use super::CA_KEY_FILE;
+    use super::{CA_CERT_FILE, LocalCa};
     use crate::web::certs;
     use rustls::client::danger::ServerCertVerifier;
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject};

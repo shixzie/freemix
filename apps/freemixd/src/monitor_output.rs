@@ -877,6 +877,7 @@ mod tests {
         path.into_os_string()
     }
 
+    #[cfg(unix)]
     fn fail(slot: &mut MonitorOutputSlot, planes: &[Vec<f32>], sample_rate: u32) {
         let started = Instant::now();
         while slot.state() != fm_protocol::AudioMonitorOutputState::Failed {

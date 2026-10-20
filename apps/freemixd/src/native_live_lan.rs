@@ -320,6 +320,7 @@ impl NativeLiveLan {
         if !self.root_created {
             // A fresh, owner-only directory: one that already exists (another
             // user's, or a link) is refused rather than written into.
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = fs::DirBuilder::new();
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
