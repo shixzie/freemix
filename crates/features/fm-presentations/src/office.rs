@@ -22,7 +22,7 @@
 //! root element, and a slide named more than once is read once, so a
 //! hostile package can exhaust neither memory nor time.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 
 use fm_types::paged::{
@@ -465,19 +465,53 @@ fn bounded_notes(paragraphs: &[String]) -> String {
     bounded_paged_text(joined.trim_end(), MAX_PAGED_NOTES_BYTES, true)
 }
 
-/// The notes of every page of an `.odp`'s `content.xml`, in order.
+/// Follows `content.xml`'s automatic styles: `style` is the drawing-page
+/// style being read, and the result is its name when `element` says it
+/// hides its pages.
+fn hidden_page_style(element: &BytesStart<'_>, style: &mut Option<String>) -> Option<String> {
+    match element.local_name().as_ref() {
+        b"style" => {
+            *style = (attribute(element, b"family").as_deref() == Some("drawing-page"))
+                .then(|| attribute(element, b"name"))
+                .flatten();
+            None
+        }
+        b"drawing-page-properties" => style
+            .clone()
+            .filter(|_| attribute(element, b"visibility").as_deref() == Some("hidden")),
+        _ => None,
+    }
+}
+
+/// The notes of every shown page of an `.odp`'s `content.xml`, in order.
+/// A page whose drawing-page style is hidden
+/// (`presentation:visibility="hidden"`) is skipped, as the PDF export
+/// skips it.
 fn odp_notes(xml: &str) -> Result<Vec<String>, DocumentError> {
     let mut pages = Vec::new();
     let mut in_page = false;
+    let mut page_hidden = false;
     let mut in_notes = 0_usize;
     let mut paragraphs: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut paragraph_depth = 0_usize;
+    let mut style: Option<String> = None;
+    let mut hidden_styles = BTreeSet::new();
+    let hidden = |element: &BytesStart<'_>, hidden_styles: &BTreeSet<String>| {
+        attribute(element, b"style-name").is_some_and(|name| hidden_styles.contains(&name))
+    };
     walk("content.xml", xml, |event| {
+        if let Event::Start(element) | Event::Empty(element) = event
+            && !in_page
+            && let Some(name) = hidden_page_style(element, &mut style)
+        {
+            hidden_styles.insert(name);
+        }
         match event {
             Event::Start(element) => match element.local_name().as_ref() {
                 b"page" if !in_page => {
                     in_page = true;
+                    page_hidden = hidden(element, &hidden_styles);
                     paragraphs.clear();
                 }
                 b"notes" if in_page => in_notes += 1,
@@ -490,7 +524,9 @@ fn odp_notes(xml: &str) -> Result<Vec<String>, DocumentError> {
                 _ => {}
             },
             Event::Empty(element) => match element.local_name().as_ref() {
-                b"page" if !in_page => pages.push(String::new()),
+                b"page" if !in_page && !hidden(element, &hidden_styles) => {
+                    pages.push(String::new());
+                }
                 b"line-break" if paragraph_depth > 0 => current.push('\n'),
                 b"tab" if paragraph_depth > 0 => current.push('\t'),
                 b"s" if paragraph_depth > 0 => current.push(' '),
@@ -499,8 +535,11 @@ fn odp_notes(xml: &str) -> Result<Vec<String>, DocumentError> {
             Event::End(element) => match element.local_name().as_ref() {
                 b"page" if in_page => {
                     in_page = false;
-                    pages.push(bounded_notes(&paragraphs));
+                    if !page_hidden {
+                        pages.push(bounded_notes(&paragraphs));
+                    }
                 }
+                b"style" => style = None,
                 b"notes" if in_notes > 0 => in_notes -= 1,
                 b"p" | b"h" if paragraph_depth > 0 => {
                     paragraph_depth -= 1;
@@ -560,6 +599,24 @@ mod tests {
             pptx_body_text(xml).unwrap(),
             "Welcome & thanks\nSecond\nline"
         );
+    }
+
+    #[test]
+    fn hidden_odp_pages_are_skipped_as_the_pdf_export_skips_them() {
+        // A page is hidden by its drawing-page style.
+        let xml = r#"<office:document-content xmlns:office="o" xmlns:style="s" xmlns:draw="d" xmlns:text="t" xmlns:presentation="p">
+            <office:automatic-styles>
+              <style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties presentation:visibility="visible"/></style:style>
+              <style:style style:name="dp2" style:family="drawing-page"><style:drawing-page-properties presentation:display-footer="true" presentation:visibility="hidden"/></style:style>
+              <style:style style:name="gr1" style:family="graphic"><style:graphic-properties presentation:visibility="hidden"/></style:style>
+            </office:automatic-styles>
+            <office:body><office:presentation>
+              <draw:page draw:name="one" draw:style-name="dp1"><presentation:notes><text:p>First</text:p></presentation:notes></draw:page>
+              <draw:page draw:name="backup" draw:style-name="dp2"><presentation:notes><text:p>Backup</text:p></presentation:notes></draw:page>
+              <draw:page draw:name="empty-hidden" draw:style-name="dp2"/>
+              <draw:page draw:name="three" draw:style-name="gr1"><presentation:notes><text:p>Third</text:p></presentation:notes></draw:page>
+            </office:presentation></office:body></office:document-content>"#;
+        assert_eq!(odp_notes(xml).unwrap(), ["First", "Third"]);
     }
 
     const SLIDE_REL: &str =
