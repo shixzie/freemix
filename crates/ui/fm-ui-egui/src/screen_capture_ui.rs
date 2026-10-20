@@ -421,6 +421,11 @@ fn draw_portal_choice(
     {
         draft.pick_on_server(true);
     }
+    // The sharing dialog gives no application audio, so it falls back to
+    // system audio, as for a screen.
+    if draft.config.audio == ScreenCaptureAudio::Application {
+        draft.config.audio = ScreenCaptureAudio::System;
+    }
     if let Some(reason) = &inventory.error {
         ui.label(
             RichText::new(l.format(Msg::ScPortalLimit, &[("reason", Arg::Str(reason))]))
@@ -640,6 +645,13 @@ pub(crate) fn draw_screen_capture_form(
     ui.add_space(4.0);
     ui.label(section_label(l.text(Msg::ScAudio)));
     let window = matches!(draft.config.target, ScreenCaptureTarget::Window(_));
+    // A Wayland server's sharing dialog gives no application audio.
+    let portal = inventory.is_some_and(ScreenCaptureInventory::picks_on_desktop);
+    let app_reason = if portal {
+        Msg::ScAudioAppPortalHover.en()
+    } else {
+        Msg::ScAudioAppScreenHover.en()
+    };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = OPTION_KEY_SPACING;
         let size = option_key_size(
@@ -668,9 +680,9 @@ pub(crate) fn draw_screen_capture_form(
             ),
         ] {
             let selected = draft.config.audio == audio;
-            let enabled = audio != ScreenCaptureAudio::Application || window;
+            let enabled = audio != ScreenCaptureAudio::Application || (window && !portal);
             if add_option_key(ui, enabled, l.text(label), selected, size)
-                .hint(l.text(hover), Msg::ScAudioAppScreenHover.en())
+                .hint(l.text(hover), app_reason)
                 .clicked()
             {
                 draft.config.audio = audio;

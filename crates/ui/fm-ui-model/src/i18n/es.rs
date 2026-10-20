@@ -9508,6 +9508,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("el audio de la aplicación necesita una ventana; elija arriba una ventana de aplicación"),
     ),
     (
+        Msg::ScAudioAppPortalHover,
+        t(
+            "este servidor captura mediante el diálogo para compartir del escritorio Wayland, que no da audio de la aplicación; elija el audio del sistema",
+        ),
+    ),
+    (
         Msg::ScReasonAudio,
         t(
             "el audio de la aplicación necesita una ventana; elija una ventana u otra opción de audio",

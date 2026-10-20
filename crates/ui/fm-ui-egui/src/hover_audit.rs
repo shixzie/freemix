@@ -4760,8 +4760,9 @@ pub fn check_system_audio(language: Language) {
 /// of the kind key, Refresh targets, every listed screen and window, the
 /// three ways to follow a window, the title field, the crop, the pointer,
 /// the rate cap, both stall slates, the three audio choices (with the
-/// reason Application audio is unavailable for a screen), and a Wayland
-/// server's screen and window choices to have been shown.
+/// reasons Application audio is unavailable for a screen and on a Wayland
+/// server), and a Wayland server's screen and window choices to have been
+/// shown.
 pub fn check_screen_capture(language: Language) {
     let locale = Locale::new(language);
     let (findings, controls) = audit(language, screen_capture_scenes(locale));
@@ -4797,11 +4798,13 @@ pub fn check_screen_capture(language: Language) {
     .into_iter()
     .map(|msg| locale.text(msg).to_owned())
     .collect();
-    required.push(crate::l10n::disabled_text(
-        locale,
-        locale.text(Msg::ScAudioAppHover),
-        Msg::ScAudioAppScreenHover.en(),
-    ));
+    for reason in [Msg::ScAudioAppScreenHover, Msg::ScAudioAppPortalHover] {
+        required.push(crate::l10n::disabled_text(
+            locale,
+            locale.text(Msg::ScAudioAppHover),
+            reason.en(),
+        ));
+    }
     let inventory = screen_capture_inventory();
     for screen in &inventory.screens {
         required.push(locale.format(

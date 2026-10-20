@@ -3412,6 +3412,7 @@ messages! {
     ScAudioApp => t("Application audio"),
     ScAudioAppHover => t("Capture only the sound of the application that owns the captured window into this input's own mixer strip, in sync with the picture; the application stays audible on the server"),
     ScAudioAppScreenHover => t("application audio needs a window; pick an application window above"),
+    ScAudioAppPortalHover => t("this server captures through the Wayland desktop's sharing dialog, which gives no application audio; choose system audio"),
     ScReasonAudio => t("application audio needs a window; pick a window or another audio choice"),
     ScAudioLineOpening => t("{source}: starting"),
     ScAudioLineLive => t("{source}: live"),
