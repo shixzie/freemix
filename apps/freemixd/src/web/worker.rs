@@ -28,7 +28,7 @@ use super::{
     WEBSOCKET_MESSAGE_LIMIT, WEBSOCKET_READ_BUFFER, WEBSOCKET_WRITE_BUFFER, WebAccess,
     WebConnection, WebEvent, WebIdentity, WireMessage,
     access::PairRefusal,
-    base64url_decode, decode_line,
+    assets, base64url_decode, decode_line,
     http::{self, MAX_REQUEST_BODY, MAX_REQUEST_HEAD, json_response, json_string},
     page,
 };
@@ -283,7 +283,7 @@ fn read_body(
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Option<Vec<u8>> {
-    let mut chunk = [0; 512];
+    let mut chunk = [0; 16 * 1024];
     while already.len() < length {
         let wanted = chunk.len().min(length - already.len());
         match stream.read(&mut chunk[..wanted]) {
@@ -304,11 +304,14 @@ fn read_body(
 
 /// Writes one complete answer and closes the connection.
 fn respond(stream: &mut Stream, response: &[u8]) {
+    respond_within(stream, response, RESPONSE_WRITE_TIMEOUT);
+}
+
+/// Writes one complete answer, each write blocking at most `timeout`, and
+/// closes the connection.
+fn respond_within(stream: &mut Stream, response: &[u8], timeout: Duration) {
     if stream.tcp().set_nonblocking(false).is_ok()
-        && stream
-            .tcp()
-            .set_write_timeout(Some(RESPONSE_WRITE_TIMEOUT))
-            .is_ok()
+        && stream.tcp().set_write_timeout(Some(timeout)).is_ok()
         && stream
             .write_all(response)
             .and_then(|()| stream.flush())
@@ -425,8 +428,67 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
             };
             respond(&mut stream, &response);
         }
+        assets::IMAGES_PATH | assets::IMAGE_PATH => {
+            let response =
+                serve_assets(&mut stream, &request, &buffer[head_length..], tls, gateway);
+            respond_within(&mut stream, &response, assets::TRANSFER_TIMEOUT);
+        }
         _ if request.is_upgrade() => upgrade(stream, buffer, gateway),
         _ => respond(&mut stream, &http::empty_response("404 Not Found", "")),
+    }
+}
+
+/// The title editor's image assets (see [`assets`]): `GET` and `POST
+/// /v1/assets/images`, `GET` and `HEAD /v1/assets/image`.
+fn serve_assets(
+    stream: &mut Stream,
+    request: &http::Request,
+    already: &[u8],
+    tls: bool,
+    gateway: &Gateway,
+) -> Vec<u8> {
+    let allowed = match request.path.as_str() {
+        assets::IMAGES_PATH => matches!(request.method.as_str(), "GET" | "POST"),
+        _ => matches!(request.method.as_str(), "GET" | "HEAD"),
+    };
+    if !allowed {
+        return http::empty_response(
+            "405 Method Not Allowed",
+            if request.path == assets::IMAGES_PATH {
+                "Allow: GET, POST\r\n"
+            } else {
+                "Allow: GET, HEAD\r\n"
+            },
+        );
+    }
+    if let Err(refusal) = assets::authorize(request, tls, &gateway.access) {
+        return refusal;
+    }
+    let Some(root) = gateway.assets_root.as_deref() else {
+        return assets::unavailable();
+    };
+    match (request.path.as_str(), request.method.as_str()) {
+        (assets::IMAGE_PATH, method) => assets::image_response(root, request, method == "GET"),
+        (_, "GET") => assets::list_response(root),
+        _ => {
+            let (kind, length) = match assets::upload_head(request) {
+                Ok(head) => head,
+                Err(refusal) => return refusal,
+            };
+            let Some(_permit) = assets::UploadPermit::acquire() else {
+                return json_response(
+                    "503 Service Unavailable",
+                    r#"{"error":"busy"}"#,
+                    "Retry-After: 1\r\n",
+                );
+            };
+            let deadline = Instant::now() + assets::TRANSFER_TIMEOUT;
+            let Some(body) = read_body(stream, already.to_vec(), length, deadline, &gateway.cancel)
+            else {
+                return bad_request();
+            };
+            assets::store_upload(root, request.query_param("name").as_deref(), kind, &body)
+        }
     }
 }
 
@@ -906,6 +968,7 @@ mod tests {
                 tls: None,
                 hosts: Arc::new(Vec::new()),
                 clients: Arc::new(AtomicUsize::new(0)),
+                assets_root: None,
             },
             events_rx,
         )

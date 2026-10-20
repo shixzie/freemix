@@ -154,8 +154,17 @@ pub fn https(
     request: &str,
     timeout: Duration,
 ) -> (String, Vec<(String, String)>, Vec<u8>) {
+    https_bytes(address, request.as_bytes(), timeout)
+}
+
+/// [`https`] for a request whose body is binary.
+pub fn https_bytes(
+    address: SocketAddr,
+    request: &[u8],
+    timeout: Duration,
+) -> (String, Vec<(String, String)>, Vec<u8>) {
     let mut stream = connect(address, timeout).unwrap();
-    stream.write_all(request.as_bytes()).unwrap();
+    stream.write_all(request).unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
     let split = response

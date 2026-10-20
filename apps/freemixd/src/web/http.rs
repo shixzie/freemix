@@ -14,6 +14,8 @@ pub(super) const MAX_REQUEST_BODY: usize = 1024;
 pub(super) struct Request {
     pub(super) method: String,
     pub(super) path: String,
+    /// The raw query string after `?`, when present.
+    pub(super) query: Option<String>,
     headers: Vec<(String, String)>,
 }
 
@@ -32,7 +34,11 @@ impl Request {
         if method.is_empty() || !method.bytes().all(|byte| byte.is_ascii_uppercase()) {
             return None;
         }
-        let path = target.split_once('?').map_or(target, |(path, _)| path);
+        let (path, query) = target
+            .split_once('?')
+            .map_or((target, None), |(path, query)| {
+                (path, Some(query.to_owned()))
+            });
         if !path.starts_with('/') {
             return None;
         }
@@ -47,6 +53,7 @@ impl Request {
         Some(Self {
             method,
             path: path.to_owned(),
+            query,
             headers,
         })
     }
@@ -60,6 +67,21 @@ impl Request {
             .map(|(_, value)| value.as_str());
         let value = values.next()?;
         values.next().is_none().then_some(value)
+    }
+
+    /// The percent-decoded value of query parameter `name`; `None` when
+    /// absent, repeated, or not valid UTF-8 once decoded.
+    pub(super) fn query_param(&self, name: &str) -> Option<String> {
+        let query = self.query.as_deref()?;
+        let mut values = query.split('&').filter_map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode(key).as_deref() == Some(name)).then_some(value)
+        });
+        let value = values.next()?;
+        if values.next().is_some() {
+            return None;
+        }
+        percent_decode(value)
     }
 
     pub(super) fn content_length(&self) -> Option<usize> {
@@ -229,6 +251,14 @@ mod tests {
         ] {
             assert!(Request::parse(head.as_bytes()).is_none(), "{head:?}");
         }
+        let query = request(
+            "GET /v1/assets/image?uri=asset%3A%2F%2Fa%20b.png&x=1&x=2 HTTP/1.1\r\nHost: a\r\n\r\n",
+        );
+        assert_eq!(query.path, "/v1/assets/image");
+        assert_eq!(query.query_param("uri").as_deref(), Some("asset://a b.png"));
+        assert_eq!(query.query_param("x"), None, "a repeated parameter");
+        assert_eq!(query.query_param("missing"), None);
+        assert_eq!(parsed.query.as_deref(), Some("input=1"));
         let twice = request("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
         assert_eq!(twice.header("host"), None, "a repeated Host is ambiguous");
     }

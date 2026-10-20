@@ -1,6 +1,7 @@
 use std::{
     env,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -380,12 +381,18 @@ fn maintain(
 impl WebGateway {
     /// Starts the gateway on `listener` with `settings`: loads or creates
     /// the TLS certificate and the paired devices, then accepts connections
-    /// once [`Self::start_accepting`] is called.
+    /// once [`Self::start_accepting`] is called. `assets_root` is the
+    /// project bundle's `assets/` directory the title editor's image picker
+    /// lists and uploads into.
     ///
     /// # Errors
     ///
     /// Invalid TLS files or token, or an unreadable state directory.
-    pub(super) fn bind(listener: TcpListener, settings: &WebSettings) -> AppResult<Self> {
+    pub(super) fn bind(
+        listener: TcpListener,
+        settings: &WebSettings,
+        assets_root: Option<PathBuf>,
+    ) -> AppResult<Self> {
         let address = listener.local_addr()?;
         let state_dir = settings.resolved_state_dir(|name| env::var(name).ok());
         let lan = lan_addresses(address.ip());
@@ -448,6 +455,7 @@ impl WebGateway {
             tls: config,
             hosts: Arc::new(hosts),
             clients: Arc::new(AtomicUsize::new(0)),
+            assets_root: assets_root.map(Arc::new),
         };
         let listener_accepting = Arc::clone(&accepting);
         let listener_thread = thread::Builder::new()
@@ -565,6 +573,8 @@ struct Gateway {
     /// Upgrades holding a client slot: connected, or authorized and
     /// completing their handshake.
     clients: Arc<AtomicUsize>,
+    /// The project bundle's `assets/` directory (the image picker's).
+    assets_root: Option<Arc<PathBuf>>,
 }
 
 /// One of the [`MAX_WEB_CLIENTS`] slots, released when dropped.
@@ -591,6 +601,7 @@ impl Drop for ClientSlot {
 }
 
 mod access;
+mod assets;
 mod certs;
 mod http;
 mod local_ca;

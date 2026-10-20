@@ -2416,4 +2416,146 @@ fn web_pages_fire_with_the_input_selected_on_them() {
     assert_eq!(armed_targets.selected, Some(input(3)));
     // The run keeps the targets its GO bound.
     assert_eq!(change.state.targets, Some(bound));
+/// A small real PNG.
+fn png_bytes(seed: u8) -> Vec<u8> {
+    let image = image::RgbaImage::from_fn(24, 12, |x, y| {
+        image::Rgba([
+            seed,
+            u8::try_from(x).unwrap(),
+            u8::try_from(y).unwrap(),
+            255,
+        ])
+    });
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    bytes
+}
+
+/// One upload to the gateway: status and body.
+fn upload(
+    daemon: &Daemon,
+    token: Option<&str>,
+    name: &str,
+    content_type: &str,
+    bytes: &[u8],
+) -> (String, String) {
+    let authorization = token.map_or_else(String::new, |token| {
+        format!("Authorization: Bearer {token}\r\n")
+    });
+    let mut request = format!(
+        "POST /v1/assets/images?name={name} HTTP/1.1\r\nHost: {}\r\n{authorization}Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+        daemon.web,
+        bytes.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(bytes);
+    let (status, _, body) = web_tls::https_bytes(daemon.web, &request, TIMEOUT);
+    (status, String::from_utf8(body).unwrap())
+}
+
+fn asset_get(
+    daemon: &Daemon,
+    token: &str,
+    target: &str,
+) -> (String, Vec<(String, String)>, Vec<u8>) {
+    http(
+        daemon.web,
+        &format!(
+            "GET {target} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\r\n",
+            daemon.web
+        ),
+    )
+}
+
+#[test]
+fn title_editor_images_upload_into_the_bundle_and_list() {
+    let directory = TestDirectory::new("asset-upload");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start(&project);
+    let picture = png_bytes(3);
+
+    // Without a token nothing is listed or stored.
+    let (status, _) = upload(&daemon, None, "logo.png", "image/png", &picture);
+    assert_eq!(status, "HTTP/1.1 401 Unauthorized");
+    let (status, _, _) = http(
+        daemon.web,
+        &format!(
+            "GET /v1/assets/images HTTP/1.1\r\nHost: {}\r\n\r\n",
+            daemon.web
+        ),
+    );
+    assert_eq!(status, "HTTP/1.1 401 Unauthorized");
+
+    // A traversing name is reduced to a stem inside assets/uploads/.
+    let (status, body) = upload(
+        &daemon,
+        Some(TOKEN),
+        "..%2F..%2F..%2Fproject.json",
+        "image/png",
+        &picture,
+    );
+    assert_eq!(status, "HTTP/1.1 201 Created", "{body}");
+    assert!(
+        body.starts_with(r#"{"uri":"asset://uploads/project-"#),
+        "{body}"
+    );
+    assert!(body.ends_with(r#""width":24,"height":12}"#), "{body}");
+    let uri = body.split('"').nth(3).unwrap().to_owned();
+    let stored = project
+        .join("assets")
+        .join(uri.strip_prefix("asset://").unwrap());
+    assert_eq!(fs::read(&stored).unwrap(), picture);
+    // The same picture again is the stored one.
+    let (status, again) = upload(&daemon, Some(TOKEN), "copy.png", "image/png", &picture);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(again.contains(&uri));
+
+    // Mismatched type, markup, and a corrupt picture are refused.
+    let (status, _) = upload(&daemon, Some(TOKEN), "a.jpg", "image/jpeg", &picture);
+    assert_eq!(status, "HTTP/1.1 415 Unsupported Media Type");
+    let (status, _) = upload(&daemon, Some(TOKEN), "a.svg", "image/svg+xml", b"<svg/>");
+    assert_eq!(status, "HTTP/1.1 415 Unsupported Media Type");
+    let (status, _) = upload(
+        &daemon,
+        Some(TOKEN),
+        "a.png",
+        "image/png",
+        &picture[..picture.len() / 2],
+    );
+    assert_eq!(status, "HTTP/1.1 422 Unprocessable Content");
+
+    // Listed, and served back with its sniffed type.
+    let (status, _, list) = asset_get(&daemon, TOKEN, "/v1/assets/images");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    let list = String::from_utf8(list).unwrap();
+    assert!(
+        list.contains(&format!(r#"{{"uri":"{uri}","bytes":{}}}"#, picture.len())),
+        "{list}"
+    );
+    assert!(list.contains(r#""uploaded":1"#), "{list}");
+    let (status, headers, served) = asset_get(
+        &daemon,
+        TOKEN,
+        &format!("/v1/assets/image?uri={}", uri.replace("://", "%3A%2F%2F")),
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(header(&headers, "content-type"), "image/png");
+    assert_eq!(header(&headers, "x-content-type-options"), "nosniff");
+    assert_eq!(served, picture);
+    // Nothing outside the assets directory is served.
+    for target in [
+        "/v1/assets/image?uri=asset%3A%2F%2F..%2Fproject.json",
+        "/v1/assets/image?uri=asset%3A%2F%2Fuploads%2F..%2F..%2Fproject.json",
+        "/v1/assets/image?uri=..%2Fproject.json",
+    ] {
+        let (status, _, _) = asset_get(&daemon, TOKEN, target);
+        assert_eq!(status, "HTTP/1.1 404 Not Found", "{target}");
+    }
+    assert!(project.join("project.json").is_file());
 }

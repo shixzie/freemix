@@ -11334,7 +11334,11 @@ fn serve_inner(
     let web_gateway = if let Some(address) = web_listen {
         let web_listener = TcpListener::bind(address)?;
         web_listener.set_nonblocking(true)?;
-        Some(web::WebGateway::bind(web_listener, &web_settings)?)
+        Some(web::WebGateway::bind(
+            web_listener,
+            &web_settings,
+            Some(store.assets_root()),
+        )?)
     } else {
         None
     };
