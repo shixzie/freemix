@@ -368,6 +368,7 @@ impl TitlesPanel {
         });
     }
 
+    #[allow(clippy::too_many_lines)] // one field card: header, input, notes
     fn draw_field(
         &mut self,
         ui: &mut Ui,
@@ -505,6 +506,14 @@ impl TitlesPanel {
     /// The read-only In / Hold / Out strip of the selected title, with a
     /// playhead from the newest `title_phases` record run on at the show's
     /// frame rate (GX-006). Drawn once the template's animation is known.
+    // One painted strip; frame counts stay far below 2^52 and pixel
+    // widths far below f32's range.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn draw_timeline(&mut self, ui: &mut Ui, l: Locale, state: &StudioUiState, title: InputId) {
         let Some(project) = state.project_state.as_ref() else {
             return;
