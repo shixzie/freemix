@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.73 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.74 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2652,6 +2652,76 @@ generic paged-input step.
   native `freemixd` decodes each picture once off the frame loop, uploads it
   once, and composes the cut, fade, and Ken Burns crop on the GPU.
 - 2.72 is refused.
+
+Protocol 2.74 makes a Media List an input (IN-006, schema 64): one media
+input plays a list of video and audio files one at a time.
+
+- A list input is an ordinary media input whose source is always its active
+  item's file: its one transport plays the item, and `media_state`,
+  `media_changed`, `media` runtime events, thumbnails, and the monitor follow
+  it. Its trim is the active item's marks; a `media_trim` on it also moves
+  that item's marks. Replacing its source (`input_lifecycle replace_source`)
+  is refused `media_list_input`; duplicating it copies the list.
+- `payload=media_list` with `input` and `operation`:
+  - `create` with `name`, `items`, `auto_next`, `auto_first`, `loop`, and
+    `shuffle_seed` (`-` or a u64) appends a new list input on its first item
+    in play order, stopped (a project edit; undo removes the input). Refused
+    `duplicate_input` for an existing input id and `too_many_media_lists`
+    past 64 lists.
+  - `set` with `items` and the options replaces both (a padlocked project
+    edit; undo restores the old list). A kept active item stays active with
+    its new marks; otherwise the first item in play order is cued.
+  - `navigate` with `navigation` (`next`, `previous`, `first`, `last`,
+    `goto` with a zero-based play-order `index`, or `item` with an item id
+    as `index`) is an operator control (`transition`). Next past the last
+    item and Previous before the first wrap only with `loop` (a wrap starts
+    a new cycle); otherwise they stay. The new item plays at once when the
+    list was playing, else it is cued.
+  - `advance` with `from` (a nonzero item id) is what the authority journals
+    when the active item ends under Auto Next: the next item plays; past the
+    last, `loop` starts a new cycle on its first item, else Auto First cues
+    the first item stopped, else it is refused `end_of_list`. It is refused
+    `stale_advance` when `from` is no longer active and `auto_next_off`
+    without Auto Next.
+  - Every other refusal names the input (`not_media_list`, `unknown_input`)
+    or the item (`unknown_item`).
+- `items` is 1 to 256 comma-separated `<id>~<uri>~<title>~<in>~<out>` items
+  (each part escaped; `title` and `out` `-` when absent): unique nonzero ids
+  up to 1 000 000, a video or audio file (stills are refused), a title of at
+  most 128 bytes, an in mark before the out mark; files and titles total at
+  most 16 KiB.
+- The play order is the list order, or with `shuffle_seed` a SplitMix64
+  Fisher-Yates shuffle of it seeded by the seed and the loop cycle (the same
+  function as `fm-playback`'s list player), so a journal replay reaches the
+  same items on the same frames.
+- `event=media_list_changed` carries `frame`, `operation`, `created` (the new
+  input's name for `create`, else `-`), and the list's status: `input`,
+  `active`, `cycle`, `position`, the options, `items`, and `order` (the play
+  order: a permutation of the item ids with `active` at `position`).
+- Snapshots gain `media_list_states=<count>` (0 to 64) after
+  `still_states`, followed by that many `media_list_state` records
+  (`revision`, then the status fields) after the `still_state` records,
+  ascending by input.
+- Native and simulated `freemixd` journal `media_list advance from=<item>`
+  (key `media-list-end-<input>-<item>-<frame>`) when a list's active item
+  reports `ended` under Auto Next. A `create` or `set` naming absolute host
+  paths imports them into the bundle first, as a batch import does. On the
+  native runtime a move to another file holds the previous item's last
+  picture until the new decoder presents.
+- Durability (schema 64): the project gains required `"media_lists": [{"input",
+  "active", "cycle", "auto_next", "auto_first", "loop", "shuffle_seed",
+  "items": [{"id", "uri", "title", "mark_in", "mark_out"}]}]`, ascending by
+  input. Validation refuses a list on an unknown or non-media input, or one
+  whose input does not play its active item's file. Portable bundles and
+  appended projects carry every item's file.
+- Studio adds a list from Add input → Media list (pasted file paths and
+  `.m3u`/`.m3u8` playlists, relative entries resolved against the playlist,
+  `#EXTINF` titles kept), and the Media tab shows each list under its
+  transport bar: the active item highlighted, the play position, Previous
+  and Next, a search filter, per-row activate, drag (or Up / Down)
+  reordering, per-item in and out marks, removal, appending files, and the
+  Auto Next, Auto First, Loop, and Shuffle options.
+- 2.73 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

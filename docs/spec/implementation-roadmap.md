@@ -3487,17 +3487,21 @@ shuffle is `fm-playback`'s seeded per-cycle order. Activating an item swaps
 the input's source and trim (a file already open is re-cued in place) and
 plays it when the list was playing. Both daemons journal an Auto Next
 `advance` when the active item ends, so replay is frame-exact; host paths
-are imported into the bundle; snapshots carry `media_list_state` records.
+are imported into the bundle; snapshots carry `media_list_state` records
+(Protocol 2.74, schema 64).
 The native daemon holds the previous item's last picture until the next
 file's decoder presents (a few frames on the development box: the item
-swap is not gapless), since items are not prefetched. Studio adds lists (pasted paths and M3U playlists with
-relative entries and `#EXTINF` titles) and shows a list card in the Media
+swap is not gapless), since items are not prefetched. Studio adds lists (pasted paths and M3U
+playlists with relative entries and `#EXTINF` titles) and shows a list card in the Media
 tab with search, drag reorder, per-item marks, the active item, Previous and
 Next, and the options. Gaps: no next-item prefetch (so no gapless cut
 between files), no transitions between items, no per-item thumbnails (the
 input thumbnail follows the active item), no CLI or vMix API verbs, no
-cross-input GO bank, and Linux-only native evidence. `IN-006` stays
-`planned` until those land.
+cross-input GO bank, and Linux-only native evidence. The generic
+`page_navigate` step and the cue `page` action do not drive a list yet: a
+list steps with its own `navigate` (same next/previous/first/last/goto
+tokens, but Next and Previous wrap under Loop where a page step clamps).
+`IN-006` stays `planned` until those land.
 
 Current implementation boundary for item 5 playlist automation:
 `fm-automation` provides a caller-clocked playlist engine that sequences whole

@@ -13581,7 +13581,10 @@ fn host_media_uris(payload: &mut CommandPayload) -> Vec<(&mut String, bool)> {
                 fm_protocol::MediaListOperation::Create { items, .. }
                 | fm_protocol::MediaListOperation::Set { items, .. },
             ..
-        } => items.iter_mut().map(|item| (&mut item.uri, false)).collect(),
+        } => items
+            .iter_mut()
+            .map(|item| (&mut item.uri, false))
+            .collect(),
         _ => Vec::new(),
     }
 }
