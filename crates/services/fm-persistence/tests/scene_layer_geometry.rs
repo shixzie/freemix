@@ -133,13 +133,13 @@ const TURNED: &str = "\"geometry\": {\"translation_x\": -40, \"translation_y\": 
 
 #[test]
 fn free_rotation_and_anchor_round_trip_exactly() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 74);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 75);
     let temp = TestDirectory::new("round-trip");
     let store = temp.store("show.freemix");
     let expected = stored(project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 74,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 75,\n"));
     assert!(encoded.contains(TURNED), "{encoded}");
     // An unturned layer anchored at its centre spells out the defaults.
     assert!(
