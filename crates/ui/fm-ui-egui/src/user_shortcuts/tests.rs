@@ -408,6 +408,22 @@ fn the_draft_follows_the_project_until_edited() {
     assert!(window.dirty());
 }
 
+/// Shortcut ids are any nonzero u64 another client chose: a project
+/// holding id `u64::MAX` gives a new draft the lowest free id instead of
+/// overflowing.
+#[test]
+fn a_new_draft_after_the_largest_id_takes_the_lowest_free_one() {
+    let mut shortcuts = audit_shortcuts();
+    shortcuts[0].id = u64::MAX;
+    let mut window = ShortcutsWindow::default();
+    window.new_draft(&shortcuts);
+    let taken: Vec<u64> = shortcuts.iter().map(|found| found.id).collect();
+    let id = window.selected.unwrap();
+    assert_ne!(id, 0);
+    assert!(!taken.contains(&id), "{id} is taken: {taken:?}");
+    assert_eq!(id, 1);
+}
+
 #[test]
 fn the_keyboard_reference_lists_project_shortcuts() {
     let state = shortcuts_fixture(true);

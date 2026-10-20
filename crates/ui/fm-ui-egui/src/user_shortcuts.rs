@@ -577,9 +577,18 @@ impl ShortcutsWindow {
         self.unsupported = false;
     }
 
-    /// Starts a new draft under the next free id: cue actions, none yet.
+    /// Starts a new draft under the next free id (the lowest free one once
+    /// the largest id is taken): cue actions, none yet.
     pub(crate) fn new_draft(&mut self, shortcuts: &[ShortcutStatus]) {
-        let next = shortcuts.iter().map(|found| found.id).max().unwrap_or(0) + 1;
+        let taken = |id: u64| shortcuts.iter().any(|found| found.id == id);
+        let next = shortcuts
+            .iter()
+            .map(|found| found.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .or_else(|| (1..=u64::MAX).find(|id| !taken(*id)))
+            .unwrap_or(1);
         self.selected = Some(next);
         self.draft = Some(ShortcutSpec {
             name: format!("Shortcut {next}"),
