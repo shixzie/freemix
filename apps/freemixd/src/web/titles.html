@@ -31,7 +31,8 @@
   #link[data-phase="stopped"] { background: var(--program); }
   main { flex: 1; display: grid; gap: .75rem; padding: .75rem; align-content: start;
     grid-template-columns: minmax(0, 1fr); }
-  @media (min-width: 52rem) { main.editing { grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr); } }
+  /* The editor stops growing at a comfortable line length on wide screens. */
+  @media (min-width: 52rem) { main.editing { grid-template-columns: minmax(15rem, 20rem) minmax(0, 64rem); } }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: .75rem; min-width: 0; }
   section.wide { grid-column: 1 / -1; }
   h2 { font-size: .8rem; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .5rem; color: var(--muted); }
@@ -43,7 +44,8 @@
   .title-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .55rem; width: 100%;
     min-height: 56px; text-align: left; background: var(--panel-2); }
   .title-row[aria-current="true"] { border-color: var(--edit); box-shadow: inset 0 0 0 2px var(--edit); }
-  .title-row .name { overflow-wrap: anywhere; font-weight: 650; }
+  /* The name keeps room for a word; long badges wrap under each other instead. */
+  .title-row .name { overflow-wrap: anywhere; font-weight: 650; min-width: 5.5rem; }
   .lamp { width: .8rem; height: .8rem; border-radius: 50%; background: #3a3a3a; border: 1px solid #ffffff30; }
   .lamp[data-air="program"] { background: var(--program); box-shadow: 0 0 8px #ff3b4e; }
   .lamp[data-air="preview"] { background: var(--preview); box-shadow: 0 0 8px #3fe06b; }

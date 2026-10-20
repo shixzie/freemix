@@ -39,6 +39,7 @@
   .why:empty { display: none; }
   .bus { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); }
   .bus button, .bus .tile { min-height: 64px; padding: .25rem .5rem; text-align: center; overflow-wrap: anywhere; }
+  .bus button .sub { display: block; margin-top: .15rem; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
   .bus .tile { display: flex; align-items: center; justify-content: center; padding: .25rem .5rem;
     border-radius: 10px; border: 1px solid var(--line); background: var(--idle); font-weight: 650; }
   [data-light="program"] { background: var(--program) !important; border-color: #ff8a8a !important; }
@@ -408,6 +409,7 @@
       shortcutsLabel: "Project shortcuts",
       noShortcuts: "This show has no shortcuts.",
       shortcutDisabled: "This shortcut is disabled",
+      shortcutOff: "Off",
       fireShortcut: "Fire shortcut {name}",
       commandShortcut: "Shortcut {name}",
       programAudio: "Program audio",
@@ -598,6 +600,7 @@
       shortcutsLabel: "Atajos del proyecto",
       noShortcuts: "Este show no tiene atajos.",
       shortcutDisabled: "Este atajo está desactivado",
+      shortcutOff: "Desactivado",
       fireShortcut: "Disparar el atajo {name}",
       commandShortcut: "Atajo {name}",
       programAudio: "Audio de Programa",
@@ -1677,6 +1680,14 @@
     }, (button, id) => {
       const shortcut = show.shortcuts.find((candidate) => candidate.id === id);
       button.textContent = shortcut.name;
+      // A switched-off shortcut says so on the key itself: touch screens
+      // show no title tooltip.
+      if (!shortcut.enabled) {
+        const off = document.createElement("span");
+        off.className = "sub";
+        off.textContent = tr("shortcutOff");
+        button.append(off);
+      }
       button.setAttribute("aria-label", tr("fireShortcut", { name: shortcut.name }));
       setDisabled(button, shortcutGate(shortcut));
     });
